@@ -5,6 +5,7 @@ from pydantic_ai import Embedder
 from pydantic_ai.embeddings import EmbeddingSettings
 
 from aios.config import get_settings
+from aios.models import EMBEDDING_DIM
 
 
 @lru_cache
@@ -12,7 +13,7 @@ def get_embedder() -> Embedder:
     settings = get_settings()
     return Embedder(
         settings.embedding_model,
-        settings=EmbeddingSettings(dimensions=settings.embedding_dimensions),
+        settings=EmbeddingSettings(dimensions=EMBEDDING_DIM),
     )
 
 

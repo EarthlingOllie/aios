@@ -73,7 +73,8 @@ locals {
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
   )
 
-  image = { for k, r in aws_ecr_repository.this : k => "${r.repository_url}:${var.image_tag}" }
+  image         = { for k, r in aws_ecr_repository.this : k => "${r.repository_url}:${var.image_tag}" }
+  migrate_image = "${aws_ecr_repository.this["api"].repository_url}:${coalesce(var.migrate_image_tag, var.image_tag)}"
 
   log_config = {
     for k, g in aws_cloudwatch_log_group.this : k => {
@@ -112,7 +113,7 @@ resource "aws_ecs_task_definition" "api" {
   }])
 }
 
-# One-off: `alembic upgrade head` (see infra/deploy.sh). Same image as the API.
+# One-off: `alembic upgrade head` (see infra/deploy.sh). API image, at migrate_image_tag.
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${var.name}-migrate"
   requires_compatibilities = ["FARGATE"]
@@ -124,7 +125,7 @@ resource "aws_ecs_task_definition" "migrate" {
 
   container_definitions = jsonencode([{
     name             = "migrate"
-    image            = local.image.api
+    image            = local.migrate_image
     essential        = true
     command          = ["alembic", "upgrade", "head"]
     environment      = local.backend_env
@@ -198,7 +199,7 @@ resource "aws_ecs_service" "this" {
   name            = each.key
   cluster         = aws_ecs_cluster.main.id
   task_definition = each.value.task
-  desired_count   = each.value.count
+  desired_count   = var.run_services ? each.value.count : 0
   launch_type     = "FARGATE"
 
   network_configuration {

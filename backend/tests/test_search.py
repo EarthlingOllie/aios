@@ -1,7 +1,12 @@
+import asyncio
 import math
 
-from aios.models import Chunk, Document, DocumentStatus
-from aios.search import hybrid_search_with_vector
+import pytest
+
+from aios.auth import current_user
+from aios.main import app
+from aios.models import Chunk, Document, DocumentStatus, User
+from aios.search import hybrid_search, hybrid_search_with_vector
 
 DIM = 1024
 
@@ -52,3 +57,27 @@ def test_hybrid_search_is_scoped_to_owner(db, user):
         db, owner_id=user.id + 10_000, query="zebrafish", query_vector=unit(0)
     )
     assert hits == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"q": ""},
+        {"q": "   "},
+        {"q": "x", "limit": 0},
+        {"q": "x", "limit": -1},
+        {"q": "x", "limit": 51},
+    ],
+)
+def test_search_endpoint_rejects_bad_params(client, params):
+    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    try:
+        resp = client.get("/api/search", params=params)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 422
+
+
+def test_hybrid_search_blank_query_skips_embedding():
+    # Would hit the embedding API (and fail without a key) if not short-circuited.
+    assert asyncio.run(hybrid_search(owner_id=1, query="  ")) == []

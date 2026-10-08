@@ -51,6 +51,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("attempts", sa.Integer(), server_default="0", nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

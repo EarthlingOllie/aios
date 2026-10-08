@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -72,9 +72,11 @@ def list_documents(user: CurrentUser, db: DB):
 
 
 @router.post("/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-async def upload_document(file: UploadFile, user: CurrentUser, db: DB):
+def upload_document(file: UploadFile, user: CurrentUser, db: DB):
+    # Plain `def`: FastAPI runs it in the threadpool, so the blocking file read, DB commit
+    # and broker publish below don't stall the event loop (SSE streams, health checks).
     max_bytes = get_settings().max_upload_bytes
-    data = await file.read(max_bytes + 1)
+    data = file.file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     doc = Document(
@@ -84,8 +86,20 @@ async def upload_document(file: UploadFile, user: CurrentUser, db: DB):
         data=data,
     )
     db.add(doc)
+    db.flush()
+    db.refresh(doc, ["created_at"])  # load the server default now, not lazily after commit
     db.commit()
-    ingest_document_task.delay(doc.id)
+    try:
+        ingest_document_task.delay(doc.id)
+    except Exception as exc:
+        # Nothing would ever pick up a committed-but-unqueued row; drop it so the client
+        # can simply retry without leaving an orphan stuck in `pending`.
+        db.delete(doc)
+        db.commit()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Could not queue the document for processing; please try again shortly.",
+        ) from exc
     return DocumentOut(
         id=doc.id,
         filename=doc.filename,
@@ -106,5 +120,10 @@ def delete_document(document_id: int, user: CurrentUser, db: DB) -> None:
 
 
 @router.get("/search", response_model=list[SearchHitOut])
-async def search(q: str, user: CurrentUser, limit: int = 8):
-    return await hybrid_search(owner_id=user.id, query=q, limit=min(limit, 50))
+async def search(
+    user: CurrentUser,
+    # At least one non-whitespace character; blank queries would fail at the embedding API.
+    q: Annotated[str, Query(min_length=1, pattern=r"\S")],
+    limit: Annotated[int, Query(ge=1, le=50)] = 8,
+):
+    return await hybrid_search(owner_id=user.id, query=q, limit=limit)

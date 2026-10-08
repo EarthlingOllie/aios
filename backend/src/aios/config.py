@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     # Inference. Model strings are Pydantic AI "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
     llm_model: str = "anthropic:claude-sonnet-5-5"
+    # The model must be able to output models.EMBEDDING_DIM (1024) dimensions; that size is
+    # fixed by the vector column, so a model with a different size needs a migration too.
     embedding_model: str = "voyageai:voyage-4"
-    # Must match the vector column size in the migrations.
-    embedding_dimensions: int = 1024
     embedding_batch_size: int = 64
 
     # Docling HybridChunker.
@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     chunk_max_tokens: int = 512
 
     max_upload_bytes: int = 50 * 1024 * 1024
+    # Per-attempt budget for converting + embedding one document (Celery soft time limit).
+    ingest_time_limit: int = 30 * 60
 
     # Hybrid search.
     search_candidates: int = 40

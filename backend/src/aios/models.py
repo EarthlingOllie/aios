@@ -57,10 +57,15 @@ class Document(Base):
         Enum(DocumentStatus, name="document_status"), default=DocumentStatus.pending
     )
     error: Mapped[str | None] = mapped_column(Text)
+    # Ingest task deliveries so far; capped so a doc that kills the worker isn't retried forever.
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     chunks: Mapped[list["Chunk"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Chunk.ordinal",
     )
 
 

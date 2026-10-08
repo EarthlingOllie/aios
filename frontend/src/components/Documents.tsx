@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, Loader2, Trash2, Upload } from "lucide-react";
+import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, type DocumentInfo } from "@/lib/api";
+import { api, describeError, type DocumentInfo } from "@/lib/api";
 
 const statusVariant = {
   pending: "secondary",
@@ -15,9 +15,19 @@ const statusVariant = {
 export function Documents() {
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const refresh = useCallback(() => api.listDocuments().then(setDocs), []);
+  // Never rejects: a failed list (API restart, expired session) keeps the last list and the
+  // poll below simply tries again.
+  const refresh = useCallback(
+    () =>
+      api
+        .listDocuments()
+        .then(setDocs)
+        .catch(() => {}),
+    [],
+  );
 
   useEffect(() => {
     refresh();
@@ -34,12 +44,32 @@ export function Documents() {
   async function onFiles(files: FileList | null) {
     if (!files?.length) return;
     setUploading(true);
+    setErrors([]);
+    const failed: string[] = [];
     try {
-      for (const file of Array.from(files)) await api.uploadDocument(file);
-      await refresh();
+      for (const file of Array.from(files)) {
+        try {
+          await api.uploadDocument(file);
+        } catch (err) {
+          failed.push(`${file.name}: ${describeError(err)}`);
+        }
+      }
     } finally {
+      setErrors(failed);
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
+      await refresh();
+    }
+  }
+
+  async function onDelete(doc: DocumentInfo) {
+    setErrors([]);
+    try {
+      await api.deleteDocument(doc.id);
+    } catch (err) {
+      setErrors([`Couldn't delete ${doc.filename}: ${describeError(err)}`]);
+    } finally {
+      await refresh();
     }
   }
 
@@ -60,6 +90,27 @@ export function Documents() {
           onChange={(e) => onFiles(e.target.files)}
         />
       </div>
+      {errors.length > 0 && (
+        <div
+          role="alert"
+          className="border-destructive/50 text-destructive flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm"
+        >
+          <ul className="min-w-0 flex-1 space-y-0.5">
+            {errors.map((msg, i) => (
+              <li key={i} className="break-words">
+                {msg}
+              </li>
+            ))}
+          </ul>
+          <button
+            className="hover:text-foreground shrink-0"
+            onClick={() => setErrors([])}
+            aria-label="Dismiss errors"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
       <ul className="flex-1 space-y-1 overflow-y-auto">
         {docs.length === 0 && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
@@ -77,7 +128,7 @@ export function Documents() {
             </Badge>
             <button
               className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-              onClick={() => api.deleteDocument(doc.id).then(refresh)}
+              onClick={() => onDelete(doc)}
               aria-label={`Delete ${doc.filename}`}
             >
               <Trash2 className="size-4" />

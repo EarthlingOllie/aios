@@ -90,8 +90,9 @@ need the migrated database and skip otherwise) and `pnpm build` (frontend).
 ### Changing models
 
 `LLM_MODEL` and `EMBEDDING_MODEL` take any Pydantic AI model string. The vector column is
-`vector(1024)`. If you change the embedding model or `EMBEDDING_DIMENSIONS`, add a migration
-that changes the column size (and `EMBEDDING_DIM` in `models.py`), then re-ingest documents.
+`vector(1024)` (`EMBEDDING_DIM` in `models.py`), and embeddings are requested at that size, so
+`EMBEDDING_MODEL` must support 1024-dimension output. To use a different size, change
+`EMBEDDING_DIM`, add a migration that changes the column size, then re-ingest documents.
 
 ## Deploy to AWS
 

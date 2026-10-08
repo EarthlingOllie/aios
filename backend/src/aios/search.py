@@ -101,6 +101,8 @@ def hybrid_search_with_vector(
 
 
 async def hybrid_search(*, owner_id: int, query: str, limit: int = 8) -> list[SearchHit]:
+    if not query.strip():  # e.g. a blank query from the agent's tool call
+        return []
     query_vector = await embed_query(query)
 
     def run() -> list[SearchHit]:

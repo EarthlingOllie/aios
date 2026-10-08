@@ -23,8 +23,34 @@ docker buildx build --platform linux/amd64 --target api -t "$(repo api):$TAG" --
 docker buildx build --platform linux/amd64 --target worker -t "$(repo worker):$TAG" --push "$ROOT/backend"
 docker buildx build --platform linux/amd64 -t "$(repo web):$TAG" --push "$ROOT/frontend"
 
-echo "==> Applying infrastructure (data stores + migration task)"
-tf apply -auto-approve -input=false -var "image_tag=$TAG" -target=aws_ecs_task_definition.migrate
+# Full apply (network, NAT, IAM, RDS, secrets, ...) so everything the migration needs
+# exists, but with the services still pinned to the release that is running now:
+# only the migrate task gets the new image. On a fresh stack nothing is running yet,
+# so the services are created (or kept) at zero tasks until the schema exists.
+CURRENT_TAG="$(tf show -json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    state = json.load(sys.stdin)
+except ValueError:
+    sys.exit()
+resources = {
+    r["address"]: r["values"]
+    for r in state.get("values", {}).get("root_module", {}).get("resources", [])
+}
+# Only a stack whose services are actually running counts: after a first deploy that failed
+# at the migration they exist at zero tasks and must stay there until a migration succeeds.
+if resources.get("aws_ecs_service.this[\"api\"]", {}).get("desired_count"):
+    api = resources["aws_ecs_task_definition.api"]
+    print(json.loads(api["container_definitions"])[0]["image"].rsplit(":", 1)[1])
+' || true)"
+if [[ -n "$CURRENT_TAG" ]]; then
+  echo "==> Applying infrastructure (services stay on $CURRENT_TAG; migration uses $TAG)"
+  PREP_VARS=(-var "image_tag=$CURRENT_TAG")
+else
+  echo "==> First deploy: applying infrastructure with services scaled to zero"
+  PREP_VARS=(-var "image_tag=$TAG" -var "run_services=false")
+fi
+tf apply -auto-approve -input=false "${PREP_VARS[@]}" -var "migrate_image_tag=$TAG"
 
 echo "==> Running database migrations"
 CLUSTER="$(tf output -raw ecs_cluster)"

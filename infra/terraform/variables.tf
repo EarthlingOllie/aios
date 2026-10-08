@@ -38,6 +38,18 @@ variable "image_tag" {
   default     = "latest"
 }
 
+variable "migrate_image_tag" {
+  description = "Tag the migration task runs. Null = image_tag. infra/deploy.sh sets it to the new release while image_tag still pins the services to the running release, so migrations finish before new code serves traffic."
+  type        = string
+  default     = null
+}
+
+variable "run_services" {
+  description = "false = create/keep the ECS services at zero tasks. infra/deploy.sh uses it on the very first deploy, before the database has been migrated."
+  type        = bool
+  default     = true
+}
+
 variable "llm_model" {
   type    = string
   default = "anthropic:claude-sonnet-5-5"
