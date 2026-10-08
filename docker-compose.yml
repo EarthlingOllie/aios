@@ -4,8 +4,6 @@
 name: aios
 
 x-backend: &backend
-  build:
-    context: ./backend
   env_file:
     - path: .env
       required: false
@@ -41,16 +39,17 @@ services:
       interval: 2s
       retries: 30
 
+  # Reuses the api image (built once, by the api service) to run migrations.
   migrate:
     <<: *backend
-    build:
-      context: ./backend
-      target: api
+    image: aios-api:local
+    pull_policy: never
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
   api:
     <<: *backend
+    image: aios-api:local
     build:
       context: ./backend
       target: api
@@ -61,6 +60,7 @@ services:
 
   worker:
     <<: *backend
+    image: aios-worker:local
     build:
       context: ./backend
       target: worker

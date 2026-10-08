@@ -121,8 +121,12 @@ anything real.
 
 - **Uploads are stored in Postgres** (`documents.data`), so the API and worker don't need a
   shared bucket. Move them to S3 if files get large.
-- **Torch**: Docling pulls in `torch`, which comes from PyPI with CUDA dependencies, so the
-  worker image is large. `backend/pyproject.toml` has a commented-out CPU-only index block
-  that shrinks it a lot. It wasn't enabled because the lock was generated in an environment
-  that couldn't reach `download.pytorch.org`.
+- **Torch**: Docling needs `torch`, whose PyPI wheels pull in several GB of CUDA runtime.
+  The worker image installs the exact pins from `uv.lock` but takes torch/torchvision from
+  PyTorch's CPU-only index and drops the CUDA packages, so the build needs access to
+  `download.pytorch.org`. A local `uv sync --extra ingest` still installs the CUDA build.
+- **Docker disk**: the worker image is still a few GB (torch CPU + Docling models). If a build
+  fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
+  `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
+  (Settings → Resources).
 - Chat history is client-side (`useChat` sends the conversation each turn). It isn't saved yet.

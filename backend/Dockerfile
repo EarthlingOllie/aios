@@ -30,12 +30,18 @@ FROM base AS worker
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
+# Same pins as uv.lock, but torch/torchvision come from PyTorch's CPU-only index and the
+# CUDA runtime packages (several GB that a CPU worker never uses) are dropped.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-dev --no-install-project --extra ingest
+    uv export --locked --no-dev --no-hashes --no-emit-project --extra ingest \
+      | grep -vE '^(nvidia-|cuda-|triton==)' > /tmp/requirements.txt \
+    && uv venv /app/.venv \
+    && uv pip install --python /app/.venv --torch-backend cpu -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 COPY . .
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-editable --extra ingest
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /app/.venv --no-deps .
 
 # Bake Docling's layout/table models and the chunker tokenizer into the image so
 # workers never download at runtime.

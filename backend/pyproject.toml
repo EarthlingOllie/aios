@@ -31,18 +31,9 @@ build-backend = "hatchling.build"
 [tool.uv]
 exclude-newer = "7 days"
 
-# Docling pulls in torch, and torch from PyPI ships CUDA wheels (multi-GB images).
-# To use CPU-only wheels, add "torch" and "torchvision" to the `ingest` extra,
-# uncomment the block below and re-run `uv lock`.
-#
-# [[tool.uv.index]]
-# name = "pytorch-cpu"
-# url = "https://download.pytorch.org/whl/cpu"
-# explicit = true
-#
-# [tool.uv.sources]
-# torch = { index = "pytorch-cpu" }
-# torchvision = { index = "pytorch-cpu" }
+# Docling pulls in torch, and torch from PyPI depends on the CUDA runtime (multi-GB).
+# The worker Dockerfile installs these same pins but takes torch/torchvision from the
+# CPU-only index (`uv pip install --torch-backend cpu`) and drops the CUDA packages.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aios"]
