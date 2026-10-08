@@ -122,9 +122,9 @@ anything real.
 - **Uploads are stored in Postgres** (`documents.data`), so the API and worker don't need a
   shared bucket. Move them to S3 if files get large.
 - **Torch**: Docling needs `torch`, whose PyPI wheels pull in several GB of CUDA runtime.
-  The worker image installs the exact pins from `uv.lock` but takes torch/torchvision from
-  PyTorch's CPU-only index and drops the CUDA packages, so the build needs access to
-  `download.pytorch.org`. A local `uv sync --extra ingest` still installs the CUDA build.
+  `pyproject.toml` locks torch/torchvision to PyTorch's CPU-only index instead, so installs
+  (the worker image and a local `uv sync --extra ingest`) need access to `download.pytorch.org`
+  and `download-r2.pytorch.org`.
 - **Docker disk**: the worker image is still a few GB (torch CPU + Docling models). If a build
   fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit

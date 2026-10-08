@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ingest = ["docling==2.132.0"]
+# torch/torchvision are listed only to pin them to the CPU-only index below.
+ingest = ["docling==2.132.0", "torch==2.14.1", "torchvision==0.29.1"]
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.16.10"]
@@ -32,8 +33,15 @@ build-backend = "hatchling.build"
 exclude-newer = "7 days"
 
 # Docling pulls in torch, and torch from PyPI depends on the CUDA runtime (multi-GB).
-# The worker Dockerfile installs these same pins but takes torch/torchvision from the
-# CPU-only index (`uv pip install --torch-backend cpu`) and drops the CUDA packages.
+# Workers run on CPU, so take torch/torchvision from PyTorch's CPU-only index.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aios"]
