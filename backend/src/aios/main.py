@@ -1,0 +1,39 @@
+from fastapi import FastAPI
+from sqlalchemy import text
+from starlette.middleware.sessions import SessionMiddleware
+
+from aios import auth
+from aios.api import chat, documents
+from aios.config import get_settings
+from aios.db import engine
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(title="aios")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret.get_secret_value(),
+        session_cookie=settings.session_cookie,
+        max_age=settings.session_max_age,
+        same_site="lax",
+        https_only=settings.cookie_secure,
+    )
+    app.include_router(auth.router)
+    app.include_router(documents.router)
+    app.include_router(chat.router)
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    def readyz() -> dict[str, str]:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()

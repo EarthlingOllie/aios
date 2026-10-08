@@ -1,0 +1,99 @@
+variable "name" {
+  description = "Prefix for all resources."
+  type        = string
+  default     = "aios"
+}
+
+variable "environment" {
+  type    = string
+  default = "prod"
+}
+
+variable "region" {
+  description = "One region for everything: the app, Postgres and Redis live side by side."
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "vpc_cidr" {
+  type    = string
+  default = "10.40.0.0/16"
+}
+
+variable "domain_name" {
+  description = "Public hostname (e.g. aios.example.com). Empty = use the ALB's DNS name over HTTP."
+  type        = string
+  default     = ""
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate for domain_name, in the same region. Empty = HTTP only (dev)."
+  type        = string
+  default     = ""
+}
+
+variable "image_tag" {
+  description = "Tag of the api/worker/web images in ECR to run."
+  type        = string
+  default     = "latest"
+}
+
+variable "llm_model" {
+  type    = string
+  default = "anthropic:claude-sonnet-5-5"
+}
+
+variable "embedding_model" {
+  type    = string
+  default = "voyageai:voyage-4"
+}
+
+# --- Database ---
+variable "db_instance_class" {
+  type    = string
+  default = "db.t4g.medium"
+}
+
+variable "db_allocated_storage" {
+  type    = number
+  default = 50
+}
+
+variable "db_engine_version" {
+  description = "RDS PostgreSQL version (pgvector ships with RDS; the migration runs CREATE EXTENSION vector)."
+  type        = string
+  default     = "17"
+}
+
+variable "db_multi_az" {
+  type    = bool
+  default = false
+}
+
+variable "deletion_protection" {
+  type    = bool
+  default = true
+}
+
+# --- Redis (Celery broker) ---
+variable "redis_node_type" {
+  type    = string
+  default = "cache.t4g.micro"
+}
+
+# --- ECS sizing ---
+variable "api" {
+  type    = object({ cpu = number, memory = number, count = number })
+  default = { cpu = 512, memory = 1024, count = 2 }
+}
+
+variable "web" {
+  type    = object({ cpu = number, memory = number, count = number })
+  default = { cpu = 256, memory = 512, count = 2 }
+}
+
+variable "worker" {
+  description = "Docling is CPU/RAM hungry; give workers room."
+  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
+  default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
+}

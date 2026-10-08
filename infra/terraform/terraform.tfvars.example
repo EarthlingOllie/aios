@@ -1,0 +1,8 @@
+region      = "us-east-1"
+environment = "prod"
+
+# Optional but recommended: a hostname + ACM cert (same region) for HTTPS and secure cookies.
+# domain_name     = "aios.example.com"
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+
+image_tag = "latest"

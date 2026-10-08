@@ -1,0 +1,83 @@
+"""GitHub OAuth (Authlib) and cookie sessions (Starlette SessionMiddleware).
+
+Authlib keeps the OAuth `state` in `request.session`, and after the callback we store
+only the user's id there. The session is a signed (itsdangerous) cookie, so the SPA
+never handles tokens; it just sends the cookie.
+"""
+
+from typing import Annotated
+
+from authlib.integrations.starlette_client import OAuth, OAuthError
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from aios.config import get_settings
+from aios.db import get_db
+from aios.models import User
+
+settings = get_settings()
+
+oauth = OAuth()
+oauth.register(
+    name="github",
+    client_id=settings.github_client_id,
+    client_secret=settings.github_client_secret.get_secret_value(),
+    access_token_url="https://github.com/login/oauth/access_token",
+    authorize_url="https://github.com/login/oauth/authorize",
+    api_base_url="https://api.github.com/",
+    client_kwargs={"scope": "read:user user:email"},
+)
+
+router = APIRouter()
+
+
+@router.get("/login")
+async def login(request: Request):
+    return await oauth.github.authorize_redirect(request, settings.oauth_redirect_uri)
+
+
+@router.get("/auth/callback")
+async def auth_callback(request: Request, db: Annotated[Session, Depends(get_db)]):
+    try:
+        token = await oauth.github.authorize_access_token(request)
+    except OAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.description or exc.error) from exc
+
+    profile = (await oauth.github.get("user", token=token)).json()
+    email = profile.get("email")
+    if not email:
+        emails = (await oauth.github.get("user/emails", token=token)).json()
+        email = next((e["email"] for e in emails if e.get("primary") and e.get("verified")), None)
+
+    user = db.scalar(select(User).where(User.github_id == profile["id"]))
+    if user is None:
+        user = User(github_id=profile["id"])
+        db.add(user)
+    user.login = profile["login"]
+    user.name = profile.get("name")
+    user.email = email
+    user.avatar_url = profile.get("avatar_url")
+    db.commit()
+
+    # Drop anything left over (e.g. OAuth state) and start a fresh session.
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return RedirectResponse(settings.public_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(request: Request) -> None:
+    request.session.clear()
+
+
+def current_user(request: Request, db: Annotated[Session, Depends(get_db)]) -> User:
+    user_id = request.session.get("user_id")
+    user = db.get(User, user_id) if user_id is not None else None
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not signed in")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(current_user)]
