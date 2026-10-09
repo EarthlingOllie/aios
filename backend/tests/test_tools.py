@@ -198,3 +198,18 @@ def test_tool_removed_from_the_library(api, monkeypatch):
     assert (shown["name"], shown["available"]) == ("web_search", False)
     assert api.post(f"{url}/versions/2/restore").status_code == 409
     assert api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi")).status_code == 409
+
+
+def test_no_new_run_while_the_current_version_uses_a_removed_tool(api, monkeypatch):
+    agent = make_agent(api, "Searcher")
+    url = f"/api/agents/{agent['id']}"
+    api.put(url, json=agent_body(agent, tools=[WEB]))
+    monkeypatch.delitem(TOOLS, "web_search")
+
+    # Refused up front, rather than leaving a run whose first message would get the 409.
+    resp = api.post(f"{url}/runs")
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409,
+        "This agent version can't be run: Unknown tool: web_search",
+    )
+    assert api.get(f"{url}/runs").json() == []

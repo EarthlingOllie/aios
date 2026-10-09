@@ -449,6 +449,17 @@ def run_summary_query():
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
 
 
+def build_version_tools(version: AgentVersion) -> list[AbstractCapability[Any]]:
+    """The version's tools, built from their stored settings; a 409 if one can't be."""
+    try:
+        return [build_tool(t.tool_key, t.config) for t in version.tools]
+    except ToolError as exc:
+        # E.g. the tool has since left the library, or its settings model changed.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"This agent version can't be run: {exc}"
+        ) from exc
+
+
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
 def list_runs(agent_id: int, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
@@ -465,6 +476,8 @@ def list_runs(agent_id: int, user: CurrentUser, db: DB):
 )
 def create_run(agent_id: int, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
+    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
+    build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
     run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, messages=[])
     db.add(run)
@@ -598,18 +611,12 @@ class ChatContext:
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
     run = get_owned_run(db, user_id, agent_id, run_id)
     version = run.agent_version
-    try:
-        capabilities = [build_tool(t.tool_key, t.config) for t in version.tools]
-    except ToolError as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"This run's agent version can't be run: {exc}"
-        ) from exc
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
-        capabilities=capabilities,
+        capabilities=build_version_tools(version),
     )
 
 
