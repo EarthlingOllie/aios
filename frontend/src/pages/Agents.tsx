@@ -160,7 +160,18 @@ export function AgentDetail() {
       navigate(`runs/${run.id}`);
     });
 
-  const onUpdateSkill = (skill: AgentSkill) =>
+  const onUpdateSkill = (skill: AgentSkill) => {
+    // The update keeps the current tools, which the server rejects if any left the library.
+    // Dropping them here would change the agent unasked, so send the user to the edit form.
+    const retired = current.tools.filter((t) => !t.available).map((t) => t.name);
+    if (retired.length) {
+      const one = retired.length === 1;
+      setActionError(
+        `Can't update ${skill.name}: ${retired.join(", ")} ${one ? "is" : "are"} no longer ` +
+          `available. Use Edit to remove ${one ? "it" : "them"} first.`,
+      );
+      return;
+    }
     act(async () => {
       const ids = current.skills.map((s) =>
         s.skill_id === skill.skill_id ? skill.latest_version_id! : s.skill_version_id,
@@ -174,6 +185,7 @@ export function AgentDetail() {
       );
       await Promise.all([agent.reload(), versions.reload(), reloadList()]);
     });
+  };
 
   const onDeleteRun = (runId: number) => {
     if (!window.confirm("Delete this run and its history?")) return;
