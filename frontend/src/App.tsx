@@ -70,7 +70,8 @@ export default function App() {
   return (
     <Routes>
       <Route element={<Shell user={auth.user} onSignOut={signOut} />}>
-        <Route index element={<Chat />} />
+        {/* Chat is rendered by Shell so it stays mounted across navigation. */}
+        <Route index element={null} />
         <Route path="skills" element={<SkillsSection />}>
           <Route index element={<SkillsIndex />} />
           <Route path="new" element={<SkillForm />} />
@@ -144,6 +145,11 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         </Button>
       </nav>
       <main className="min-h-0">
+        {/* Kept mounted (just hidden) off the chat route, so an in-progress conversation
+            and any streaming reply survive a trip to Agents or Skills. */}
+        <div className={cn("h-full", !onChat && "hidden")}>
+          <Chat />
+        </div>
         <Outlet />
       </main>
     </div>
