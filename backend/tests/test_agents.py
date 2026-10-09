@@ -1,6 +1,8 @@
 import json
 
 import pytest
+from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.test import TestModel
 
 from aios.api import agents as agents_api
@@ -257,3 +259,39 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
 
     assert api.delete(url).status_code == 204
     assert api.get(url).status_code == 404
+
+
+def test_turn_messages_include_the_users_new_message():
+    agent = PydanticAgent(TestModel(custom_output_text="arr"))
+    first = agent.run_sync("hello")
+    history = [*first.all_messages(), ModelRequest(parts=[UserPromptPart("again")])]
+    second = agent.run_sync(message_history=history)
+    turn = agents_api.turn_messages(second)
+    assert [type(m) for m in turn] == [ModelRequest, ModelResponse]
+    assert turn[0].parts[0].content == "again"
+
+
+def test_concurrent_turns_on_a_run_are_both_kept(api, monkeypatch):
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
+    dispatch = agents_api.VercelAIAdapter.dispatch_request
+    other_turn = [
+        ModelRequest(parts=[UserPromptPart("from the other tab")]),
+        ModelResponse(parts=[TextPart("ok")]),
+    ]
+
+    async def other_tab_finishes_first(request, **kwargs):
+        # This request has already loaded the (empty) history; another turn lands meanwhile.
+        agents_api._append_run_messages(run["id"], other_turn)
+        return await dispatch(request, **kwargs)
+
+    monkeypatch.setattr(agents_api.VercelAIAdapter, "dispatch_request", other_tab_finishes_first)
+    with runner.override(model=TestModel(custom_output_text="arr")):
+        assert api.post(f"{url}/chat", json=chat_body("from this tab")).status_code == 200
+
+    detail = api.get(url).json()
+    assert detail["message_count"] == 4
+    assert detail["title"] == "from the other tab"
+    texts = [p["text"] for m in detail["ui_messages"] for p in m["parts"] if p["type"] == "text"]
+    assert texts == ["from the other tab", "ok", "from this tab", "arr"]

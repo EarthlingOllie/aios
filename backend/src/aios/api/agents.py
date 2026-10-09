@@ -400,14 +400,36 @@ def first_prompt(messages: list[ModelMessage]) -> str | None:
     return None
 
 
-def save_history(run_id: int, messages: list[ModelMessage]) -> None:
+def _append_run_messages(run_id: int, new_messages: list[ModelMessage]) -> None:
+    """Append one turn's messages to the run's stored history.
+
+    The row lock serializes concurrent turns on the same run (two tabs, two devices), and
+    appending to whatever is stored now, rather than writing back the history this request
+    loaded, keeps a turn that finished in the meantime from being erased.
+    """
+    if not new_messages:
+        return
     with SessionLocal() as db:
-        run = db.get(AgentRun, run_id)
+        run = db.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
         if run is None:  # deleted mid-stream
             return
-        run.messages = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
-        run.title = run.title or first_prompt(messages)
+        dumped = ModelMessagesTypeAdapter.dump_python(new_messages, mode="json")
+        run.messages = [*run.messages, *dumped]
+        run.title = run.title or first_prompt(new_messages)
         db.commit()
+
+
+def turn_messages(result: AgentRunResult) -> list[ModelMessage]:
+    """This turn's messages: the user's new message plus everything the model produced.
+
+    `result.new_messages()` would leave out the user's message, because the adapter passes it
+    in via `message_history`; the run stamps it, and its replies, with this run's id.
+    """
+    messages = result.all_messages()
+    for index, message in enumerate(messages):
+        if message.run_id == result.run_id:
+            return messages[index:]
+    return []
 
 
 def trace_metadata(run: AgentRun) -> dict[str, Any]:
@@ -435,7 +457,7 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
     metadata = trace_metadata(run)
 
     async def on_complete(result: AgentRunResult) -> None:
-        await to_thread.run_sync(save_history, run_id, result.all_messages())
+        await to_thread.run_sync(_append_run_messages, run_id, turn_messages(result))
 
     return await VercelAIAdapter.dispatch_request(
         request,
