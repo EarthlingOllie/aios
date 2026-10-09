@@ -295,6 +295,12 @@ export function AgentDetail() {
 export function AgentVersionPage() {
   const id = Number(useParams().agentId);
   const number = Number(useParams().version);
+  // Keyed so per-version state (e.g. the chosen comparison base) resets when
+  // navigating to another version.
+  return <AgentVersionView key={`${id}/${number}`} id={id} number={number} />;
+}
+
+function AgentVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));

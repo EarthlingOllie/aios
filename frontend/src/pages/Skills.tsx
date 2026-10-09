@@ -159,6 +159,12 @@ export function SkillDetail() {
 export function SkillVersionPage() {
   const id = Number(useParams().skillId);
   const number = Number(useParams().version);
+  // Keyed so per-version state (e.g. the chosen comparison base) resets when
+  // navigating to another version.
+  return <SkillVersionView key={`${id}/${number}`} id={id} number={number} />;
+}
+
+function SkillVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const skill = useLoad(useCallback(() => api.getSkill(id), [id]));
