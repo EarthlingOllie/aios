@@ -1,0 +1,107 @@
+"""Document ingestion: Docling conversion -> HybridChunker -> embeddings -> chunks table.
+
+Docling is only installed in the worker image (the `ingest` extra), so it's imported lazily.
+"""
+
+import asyncio
+from functools import lru_cache
+from io import BytesIO
+
+from sqlalchemy import delete, update
+from sqlalchemy.orm import Session
+
+from aios.config import get_settings
+from aios.embeddings import embed_documents
+from aios.models import Chunk, Document, DocumentStatus
+
+# Deliveries before giving up; a doc that crashes the worker would otherwise be redelivered forever.
+MAX_ATTEMPTS = 3
+
+
+@lru_cache
+def _converter():
+    from docling.document_converter import DocumentConverter
+
+    return DocumentConverter()
+
+
+@lru_cache
+def _chunker():
+    from docling.chunking import HybridChunker
+
+    settings = get_settings()
+    return HybridChunker(tokenizer=settings.chunk_tokenizer, max_tokens=settings.chunk_max_tokens)
+
+
+def chunk_document(filename: str, data: bytes) -> list[dict]:
+    from docling.datamodel.base_models import DocumentStream
+
+    result = _converter().convert(DocumentStream(name=filename, stream=BytesIO(data)))
+    chunker = _chunker()
+    chunks = []
+    for chunk in chunker.chunk(dl_doc=result.document):
+        pages = sorted(
+            {prov.page_no for item in chunk.meta.doc_items for prov in item.prov if prov.page_no}
+        )
+        chunks.append(
+            {
+                "text": chunk.text,
+                "contextualized": chunker.contextualize(chunk=chunk),
+                "meta": {"headings": chunk.meta.headings or [], "pages": pages},
+            }
+        )
+    return chunks
+
+
+def _set_status(db: Session, document_id: int, status: DocumentStatus, error: str | None) -> bool:
+    """UPDATE by id (no ORM instance), so a row deleted meanwhile is a no-op, not StaleDataError."""
+    result = db.execute(
+        update(Document).where(Document.id == document_id).values(status=status, error=error)
+    )
+    db.commit()
+    return result.rowcount > 0
+
+
+def ingest_document(db: Session, document_id: int) -> None:
+    # Atomically claim the row and count this delivery. Finished docs (e.g. a duplicate
+    # delivery) are skipped. The bytes come back with the claim, and the commit ends the
+    # transaction so none sits idle through the (possibly minutes-long) conversion.
+    claimed = db.execute(
+        update(Document)
+        .where(
+            Document.id == document_id,
+            Document.status.in_([DocumentStatus.pending, DocumentStatus.processing]),
+        )
+        .values(status=DocumentStatus.processing, error=None, attempts=Document.attempts + 1)
+        .returning(Document.attempts, Document.filename, Document.data)
+    ).one_or_none()
+    db.commit()
+    if claimed is None:
+        return
+    if claimed.attempts > MAX_ATTEMPTS:
+        # Earlier deliveries died without reaching the except below (OOM kill, hard time limit).
+        _set_status(
+            db,
+            document_id,
+            DocumentStatus.failed,
+            f"Gave up after {MAX_ATTEMPTS} attempts: the worker crashed or timed out "
+            "while processing this document.",
+        )
+        return
+
+    try:
+        pieces = chunk_document(claimed.filename, claimed.data)
+        vectors = asyncio.run(embed_documents([p["contextualized"] for p in pieces]))
+        db.execute(delete(Chunk).where(Chunk.document_id == document_id))
+        db.add_all(
+            Chunk(document_id=document_id, ordinal=i, embedding=vec, **piece)
+            for i, (piece, vec) in enumerate(zip(pieces, vectors, strict=True))
+        )
+        _set_status(db, document_id, DocumentStatus.ready, None)
+    except Exception as exc:
+        db.rollback()
+        if not _set_status(
+            db, document_id, DocumentStatus.failed, f"{type(exc).__name__}: {exc}"[:2000]
+        ):
+            return  # Deleted mid-ingest (the chunk insert hit the FK); nothing left to record.
+        raise
