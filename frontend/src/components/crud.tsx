@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useMatch } from "react-router";
 import { Plus, X } from "lucide-react";
 
@@ -6,23 +6,44 @@ import { Button } from "@/components/ui/button";
 import { describeError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/** Loads `fn()` on mount and whenever `fn` changes; `reload` re-runs it. */
+/**
+ * Loads `fn()` on mount and whenever `fn` changes; `reload` re-runs it.
+ *
+ * When `fn` changes, `data` and `error` are cleared straight away, so the
+ * previous item is never shown (or saved) under the new one. Only the latest
+ * request may update state: a slower, older response is dropped.
+ */
 export function useLoad<T>(fn: () => Promise<T>) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
-  const reload = useCallback(
-    () =>
-      fn().then(
-        (value) => {
-          setData(value);
-          setError(undefined);
-        },
-        (err) => setError(describeError(err)),
-      ),
-    [fn],
-  );
+  const [loadedFn, setLoadedFn] = useState(() => fn);
+  if (loadedFn !== fn) {
+    // Reset during render, so not even one frame shows the old data.
+    setLoadedFn(() => fn);
+    setData(undefined);
+    setError(undefined);
+  }
+  const latest = useRef(0);
+  const reload = useCallback(() => {
+    const request = ++latest.current;
+    return fn().then(
+      (value) => {
+        if (request !== latest.current) return;
+        setData(value);
+        setError(undefined);
+      },
+      (err) => {
+        if (request !== latest.current) return;
+        setError(describeError(err));
+      },
+    );
+  }, [fn]);
   useEffect(() => {
     reload();
+    // Unmounting or switching loaders makes any request in flight stale.
+    return () => {
+      latest.current++;
+    };
   }, [reload]);
   return { data, error, reload };
 }
