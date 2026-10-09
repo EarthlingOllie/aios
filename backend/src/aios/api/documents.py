@@ -1,20 +1,18 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
-from aios.db import get_db
+from aios.db import DB
 from aios.models import Chunk, Document, DocumentStatus
 from aios.search import hybrid_search
 from aios.worker import ingest_document_task
 
 router = APIRouter(prefix="/api")
-DB = Annotated[Session, Depends(get_db)]
 
 
 class DocumentOut(BaseModel):

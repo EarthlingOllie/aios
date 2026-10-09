@@ -1,14 +1,16 @@
+import asyncio
 import json
 import threading
 
 import pytest
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from aios.api import agents as agents_api
 from aios.auth import current_user
-from aios.db import SessionLocal
+from aios.db import SessionLocal, get_db
 from aios.main import app
 from aios.models import Agent, User
 from aios.runner import runner
@@ -331,3 +333,52 @@ def test_concurrent_turns_on_a_run_are_both_kept(api, monkeypatch):
     assert detail["title"] == "from the other tab"
     texts = [p["text"] for m in detail["ui_messages"] for p in m["parts"] if p["type"] == "text"]
     assert texts == ["from the other tab", "ok", "from this tab", "arr"]
+
+
+def on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_chat_releases_request_session_before_streaming(client, monkeypatch):
+    """DB work runs off the event loop, and the request's session is closed before the stream."""
+    events = []
+
+    def fake_db():
+        events.append("db opened")
+        yield object()
+        events.append("db closed")
+
+    def fake_load(db, user_id, agent_id, run_id):
+        events.append(("load on loop", on_event_loop()))
+        return agents_api.ChatContext(model=None, instructions="Hi.", history=[], metadata={})
+
+    def fake_save(run_id, messages):
+        events.append(("save on loop", on_event_loop()))
+
+    async def stream(messages, info):
+        events.append("model")
+        yield "arr"
+
+    monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
+    monkeypatch.setattr(agents_api, "_append_run_messages", fake_save)
+    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[get_db] = fake_db
+    try:
+        with runner.override(model=FunctionModel(stream_function=stream)):
+            resp = client.post("/api/agents/1/runs/1/chat", json=chat_body("hello"))
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert text_deltas(resp) == "arr"
+    assert events == [
+        "db opened",
+        ("load on loop", False),
+        "db closed",
+        "model",
+        ("save on loop", False),
+    ]

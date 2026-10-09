@@ -11,10 +11,9 @@ from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.db import get_db
+from aios.db import DB
 from aios.models import User
 
 settings = get_settings()
@@ -39,7 +38,7 @@ async def login(request: Request):
 
 
 @router.get("/auth/callback")
-async def auth_callback(request: Request, db: Annotated[Session, Depends(get_db)]):
+async def auth_callback(request: Request, db: DB):
     try:
         token = await oauth.github.authorize_access_token(request)
     except OAuthError as exc:
@@ -72,7 +71,7 @@ async def logout(request: Request) -> None:
     request.session.clear()
 
 
-def current_user(request: Request, db: Annotated[Session, Depends(get_db)]) -> User:
+def current_user(request: Request, db: DB) -> User:
     user_id = request.session.get("user_id")
     user = db.get(User, user_id) if user_id is not None else None
     if user is None:

@@ -1,21 +1,19 @@
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
-from aios.db import get_db
+from aios.db import DB
 from aios.models import Agent, AgentVersion, Skill, SkillVersion, agent_version_skills
 from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
-DB = Annotated[Session, Depends(get_db)]
 
 
 class SkillIn(BaseModel):

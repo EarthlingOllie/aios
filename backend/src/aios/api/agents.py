@@ -1,8 +1,9 @@
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 
-from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, UserPromptPart
@@ -12,13 +13,12 @@ from sqlalchemy.orm import Session
 
 from aios.api.skills import lock_live_skills, unique_name
 from aios.auth import CurrentUser
-from aios.db import SessionLocal, get_db
+from aios.db import DB, SessionLocal
 from aios.models import Agent, AgentRun, AgentVersion, Skill, SkillVersion, agent_version_skills
 from aios.runner import runner
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
-DB = Annotated[Session, Depends(get_db)]
 
 SDK_VERSION = 7
 
@@ -454,26 +454,47 @@ def trace_metadata(run: AgentRun) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class ChatContext:
+    """Everything a chat turn needs from the database, as plain values."""
+
+    model: str | None
+    instructions: str
+    history: list[ModelMessage]
+    metadata: dict[str, Any]
+
+
+def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
+    run = get_owned_run(db, user_id, agent_id, run_id)
+    version = run.agent_version
+    return ChatContext(
+        model=version.model,
+        instructions=version.instructions,
+        history=ModelMessagesTypeAdapter.validate_python(run.messages),
+        metadata=trace_metadata(run),
+    )
+
+
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
 async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the database."""
-    run = get_owned_run(db, user.id, agent_id, run_id)
-    version = run.agent_version
-    history = ModelMessagesTypeAdapter.validate_python(run.messages)
-    metadata = trace_metadata(run)
+    # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
+    # session is function-scoped (see `aios.db.DB`), so it's closed and its connection returned
+    # to the pool before the response streams; the save at the end uses a session of its own.
+    ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id)
 
     async def on_complete(result: AgentRunResult) -> None:
-        await to_thread.run_sync(_append_run_messages, run_id, turn_messages(result))
+        await run_in_threadpool(_append_run_messages, run_id, turn_messages(result))
 
     return await VercelAIAdapter.dispatch_request(
         request,
         agent=runner,
         sdk_version=SDK_VERSION,
-        message_history=history,
-        conversation_id=f"agent-run-{run.id}",
-        model=version.model,
-        instructions=version.instructions,
-        metadata=metadata,
+        message_history=ctx.history,
+        conversation_id=f"agent-run-{run_id}",
+        model=ctx.model,
+        instructions=ctx.instructions,
+        metadata=ctx.metadata,
         on_complete=on_complete,
         allowed_file_url_schemes=frozenset(),
     )
