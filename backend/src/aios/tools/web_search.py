@@ -7,13 +7,14 @@ from aios.tools.registry import ToolSpec, register
 class WebSearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Each search is billed by the provider. Anthropic enforces the cap per model request.
+    # Each search is billed by the provider. Anthropic enforces the cap per model request, and
+    # one turn can make several (tool calls, pause_turn continuations), so it does not cap a turn.
     max_uses: int = Field(
         5,
         ge=1,
         le=20,
         title="Max searches",
-        description="Per model request. Each search is billed.",
+        description="Per model request; one turn can make several. Each search is billed.",
     )
     allowed_domains: list[str] = Field(
         [],
