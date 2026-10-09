@@ -1,7 +1,15 @@
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_ai.capabilities import WebSearch
 
 from aios.tools.registry import ToolSpec, register
+
+# What Anthropic accepts: a bare hostname, optionally followed by a path (where `*` is allowed),
+# with no scheme or port. Anything else fails every request the agent makes, so it's rejected
+# on save rather than breaking the runs pinned to that version.
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_DOMAIN = re.compile(rf"{_LABEL}(?:\.{_LABEL})+(?:/[^\s?#]*)?")
 
 
 class WebSearchConfig(BaseModel):
@@ -32,8 +40,14 @@ class WebSearchConfig(BaseModel):
     @field_validator("allowed_domains", "blocked_domains")
     @classmethod
     def clean_domains(cls, domains: list[str]) -> list[str]:
-        cleaned = (d.strip().lower() for d in domains)
-        return list(dict.fromkeys(d for d in cleaned if d))
+        cleaned = list(dict.fromkeys(d for d in (d.strip().lower() for d in domains) if d))
+        for domain in cleaned:
+            if not _DOMAIN.fullmatch(domain):
+                raise ValueError(
+                    f"{domain!r} isn't a domain; use one like example.com or example.com/blog,"
+                    " without https://"
+                )
+        return cleaned
 
     @model_validator(mode="after")
     def allow_or_block(self) -> "WebSearchConfig":

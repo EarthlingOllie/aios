@@ -23,6 +23,11 @@ def test_web_search_settings():
         allowed_domains=[" Example.com ", "", "example.com", "docs.python.org"]
     )
     assert config.allowed_domains == ["example.com", "docs.python.org"]
+    paths = ["example.com/blog", "example.com/*/articles"]
+    assert WebSearchConfig(blocked_domains=paths).blocked_domains == paths
+    for bad in ["https://docs.python.org/3/", "python org", "*.example.com", "localhost"]:
+        with pytest.raises(ValidationError, match="isn't a domain"):
+            WebSearchConfig(allowed_domains=[bad])
     with pytest.raises(ValidationError, match="not both"):
         WebSearchConfig(allowed_domains=["a.com"], blocked_domains=["b.com"])
     with pytest.raises(ValidationError):
@@ -88,6 +93,13 @@ def test_invalid_tools_are_rejected(api):
     assert resp.status_code == 422
     assert resp.json()["detail"] == (
         "Invalid settings for Web search: set either allowed or blocked domains, not both"
+    )
+    url_entry = {"allowed_domains": ["https://docs.python.org/3/"]}
+    resp = api.put(url, json=agent_body(agent, tools=[{"key": "web_search", "config": url_entry}]))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "Invalid settings for Web search: allowed_domains: 'https://docs.python.org/3/' isn't a"
+        " domain; use one like example.com or example.com/blog, without https://"
     )
     assert api.get(url).json()["current_version"]["version"] == 1
 
