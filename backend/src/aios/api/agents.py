@@ -420,7 +420,7 @@ def trace_metadata(run: AgentRun) -> dict[str, Any]:
         "agent_version_id": version.id,
         "agent_run_id": run.id,
         "skill_versions": [
-            {"skill_id": sv.skill_id, "name": sv.skill.name, "version": sv.version, "id": sv.id}
+            {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
             for sv in version.skills
         ],
     }

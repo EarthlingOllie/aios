@@ -1,8 +1,10 @@
 """Creates the immutable versions behind agents and skills.
 
 Saving only creates a version when the behaviour-affecting config changed (compared by hash), so
-renames and no-op saves don't bump the version. The parent row is locked while the next number
-is allocated, so concurrent saves can't both claim it. Callers commit.
+no-op saves and agent renames don't bump the version. A skill's name is rendered into agent
+instructions, so it's snapshotted on the skill version and renaming a skill does create one. The
+parent row is locked while the next number is allocated, so concurrent saves can't both claim it.
+Callers commit.
 """
 
 import hashlib
@@ -35,7 +37,7 @@ def render_instructions(base_prompt: str, skills: list[SkillVersion]) -> str:
             "follow that skill's instructions."
         )
         for skill in skills:
-            sections.append(render_skill_block(skill.skill.name, skill.description, skill.content))
+            sections.append(render_skill_block(skill.name, skill.description, skill.content))
     return "\n\n".join(sections)
 
 
@@ -73,7 +75,9 @@ def save_skill_version(
     note: str | None,
     user_id: int,
 ) -> SkillVersion:
-    digest = config_hash({"description": description, "content": content})
+    # The name comes from the skill row (callers set it first) and is snapshotted with the content.
+    name = skill.name
+    digest = config_hash({"name": name, "description": description, "content": content})
     db.flush()  # assigns skill.id for a new skill
     # Compare against the current version only once the lock is held, so two identical
     # concurrent saves can't both see a change and create duplicate versions.
@@ -90,6 +94,7 @@ def save_skill_version(
     version = SkillVersion(
         skill=skill,
         version=number + 1,
+        name=name,
         description=description,
         content=content,
         content_hash=digest,

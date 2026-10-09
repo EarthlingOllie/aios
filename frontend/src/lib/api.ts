@@ -34,7 +34,12 @@ export type SkillVersionSummary = {
   created_at: string;
 };
 
-export type SkillVersion = SkillVersionSummary & { description: string; content: string };
+export type SkillVersion = SkillVersionSummary & {
+  /** The skill's name when this version was saved. */
+  name: string;
+  description: string;
+  content: string;
+};
 
 export type Skill = {
   id: number;

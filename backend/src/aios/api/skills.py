@@ -43,6 +43,7 @@ class SkillVersionSummary(BaseModel):
 
 
 class SkillVersionOut(SkillVersionSummary):
+    name: str
     description: str
     content: str
 

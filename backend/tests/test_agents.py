@@ -71,24 +71,29 @@ def test_skill_versions(api):
     assert api.post("/api/skills", json={"name": "  "}).status_code == 422
     url = f"/api/skills/{skill['id']}"
 
-    # Renaming, or saving unchanged content, doesn't create a version.
-    resp = api.put(url, json={"name": "Haiku!", "description": "Poems", "content": "5-7-5"})
+    # Saving unchanged content doesn't create a version.
+    resp = api.put(url, json={"name": "Haiku", "description": "Poems", "content": "5-7-5"})
     assert resp.json()["current_version"]["version"] == 1
-    assert resp.json()["name"] == "Haiku!"
+
+    # The name is sent to the model, so renaming does create one, which snapshots the name.
+    resp = api.put(url, json={"name": "Haiku!", "description": "Poems", "content": "5-7-5"})
+    v2 = resp.json()["current_version"]
+    assert (resp.json()["name"], v2["version"], v2["name"]) == ("Haiku!", 2, "Haiku!")
 
     resp = api.put(url, json={"name": "Haiku!", "content": "5/7/5", "note": "slashes"})
-    v2 = resp.json()["current_version"]
-    assert (v2["version"], v2["content"], v2["note"]) == (2, "5/7/5", "slashes")
-    assert [v["version"] for v in api.get(f"{url}/versions").json()] == [2, 1]
-    assert api.get(f"{url}/versions/1").json()["content"] == "5-7-5"
+    v3 = resp.json()["current_version"]
+    assert (v3["version"], v3["content"], v3["note"]) == (3, "5/7/5", "slashes")
+    assert [v["version"] for v in api.get(f"{url}/versions").json()] == [3, 2, 1]
+    v1 = api.get(f"{url}/versions/1").json()
+    assert (v1["name"], v1["content"]) == ("Haiku", "5-7-5")
 
-    # Restoring makes a new version with the old content; numbers only go up.
+    # Restoring makes a new version with the old content under the current name.
     restored = api.post(f"{url}/versions/1/restore").json()["current_version"]
-    assert (restored["version"], restored["content"]) == (3, "5-7-5")
+    assert (restored["version"], restored["name"], restored["content"]) == (4, "Haiku!", "5-7-5")
     assert restored["note"] == "Restored from v1"
 
     listed = api.get("/api/skills").json()
-    assert [(s["name"], s["version"]) for s in listed] == [("Haiku!", 3)]
+    assert [(s["name"], s["version"]) for s in listed] == [("Haiku!", 4)]
 
 
 def test_agent_versions_pin_skill_versions(api):
@@ -132,6 +137,42 @@ def test_agent_versions_pin_skill_versions(api):
     assert api.put(url, json=agent_body(agent, skill_version_ids=[-1])).status_code == 422
     twice = [pinned["skill_version_id"], pinned["latest_version_id"]]
     assert api.put(url, json=agent_body(agent, skill_version_ids=twice)).status_code == 422
+
+
+def test_skill_rename_is_pinned_like_content(api, monkeypatch):
+    skill = make_skill(api, "Haiku", "5-7-5")
+    agent = make_agent(api, "Poet", "Write.", [skill])
+    url = f"/api/agents/{agent['id']}"
+    run = api.post(f"{url}/runs").json()
+    api.put(f"/api/skills/{skill['id']}", json={"name": "Poetry", "content": "5-7-5"})
+
+    # The pinned version keeps the old name in both the instructions and the trace metadata,
+    # and re-saving the agent unchanged doesn't pick up the rename.
+    agent = api.get(url).json()
+    pinned = agent["current_version"]["skills"][0]
+    assert (pinned["version"], pinned["latest_version"]) == (1, 2)
+    assert '<skill name="Haiku">' in agent["current_version"]["instructions"]
+    assert api.put(url, json=agent_body(agent)).json()["current_version"]["version"] == 1
+
+    seen = {}
+    dispatch = agents_api.VercelAIAdapter.dispatch_request
+
+    async def spy(request, **kwargs):
+        seen.update(kwargs)
+        return await dispatch(request, **kwargs)
+
+    monkeypatch.setattr(agents_api.VercelAIAdapter, "dispatch_request", spy)
+    with runner.override(model=TestModel(custom_output_text="ok")):
+        resp = api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi"))
+    assert resp.status_code == 200
+    assert seen["metadata"]["skill_versions"][0]["name"] == "Haiku"
+
+    # Taking the update sends the new name.
+    resp = api.put(url, json=agent_body(agent, skill_version_ids=[pinned["latest_version_id"]]))
+    v2 = resp.json()["current_version"]
+    assert v2["version"] == 2
+    assert '<skill name="Poetry">' in v2["instructions"]
+    assert "Haiku" not in v2["instructions"]
 
 
 def test_skill_delete_blocked_while_in_use_then_soft(api):

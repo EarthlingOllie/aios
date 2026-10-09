@@ -100,6 +100,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("skill_id", sa.Integer(), nullable=False),
         sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("content_hash", sa.String(length=64), nullable=False),

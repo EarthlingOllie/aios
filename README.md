@@ -15,6 +15,8 @@ the model's behaviour:
 
 - Changing an agent's prompt or skills creates a new version. Renaming doesn't, and nor does
   saving without changes (configs are compared by hash).
+- Changing a skill's description or content creates a new version, and so does renaming it: the
+  name is sent to the model in each agent's instructions, so each skill version snapshots it.
 - Each agent version pins specific skill versions and stores the exact rendered instructions.
   Editing a skill doesn't change any agent; the agent shows "Update to vN" and taking the update
   creates a new agent version.

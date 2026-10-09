@@ -150,6 +150,8 @@ class SkillVersion(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id", ondelete="CASCADE"))
     version: Mapped[int] = mapped_column(Integer)
+    # The skill's name when this version was saved: it's rendered into agent instructions.
+    name: Mapped[str] = mapped_column(String(255))
     # Short summary of when to use the skill; `content` holds the instructions themselves.
     description: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
