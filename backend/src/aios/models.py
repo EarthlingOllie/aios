@@ -244,7 +244,7 @@ class AgentVersionTool(Base):
         ForeignKey("agent_versions.id", ondelete="CASCADE"), primary_key=True
     )
     # A key in aios.tools.TOOLS. Tools are code, so there's no row to reference.
-    tool_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    tool_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     # The tool's validated settings (its config_model, defaults filled in).
     config: Mapped[dict] = mapped_column(JSONB)
     position: Mapped[int] = mapped_column(Integer)

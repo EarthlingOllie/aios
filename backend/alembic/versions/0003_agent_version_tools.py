@@ -28,11 +28,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["agent_version_id"], ["agent_versions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("agent_version_id", "tool_key"),
     )
-    op.create_index(
-        op.f("ix_agent_version_tools_tool_key"), "agent_version_tools", ["tool_key"], unique=False
-    )
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_agent_version_tools_tool_key"), table_name="agent_version_tools")
     op.drop_table("agent_version_tools")
