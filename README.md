@@ -4,6 +4,11 @@ Chat with your documents. Upload files, they're parsed and chunked with Docling,
 Voyage, and stored in Postgres/pgvector. Chat uses a Pydantic AI agent (Anthropic) that calls a
 hybrid search tool (vector + full-text, fused with Reciprocal Rank Fusion).
 
+You can also define your own **agents** (a base prompt plus a set of **skills**, which are
+reusable instructions) and chat with them. Each conversation with an agent is saved as a **run**,
+whose page shows the conversation and an event log: model requests and responses, tool calls,
+the instructions sent and token usage.
+
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
@@ -29,6 +34,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     auth.py         /login, /auth/callback, /logout, current_user
     api/chat.py     POST /api/chat (AI SDK UI message stream)
     api/documents.py upload/list/delete, GET /api/search
+    api/skills.py   CRUD /api/skills
+    api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+    runner.py       runs user-defined agents (base prompt + skills as instructions)
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -129,4 +137,12 @@ anything real.
   fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
   (Settings → Resources).
-- Chat history is client-side (`useChat` sends the conversation each turn). It isn't saved yet.
+- Document chat history is client-side (`useChat` sends the conversation each turn). It isn't
+  saved yet. Agent runs are different: the server stores each run's full Pydantic AI message
+  history (`agent_runs.messages`, JSONB), the client sends only its new message, and the server
+  replays the stored history into the next turn.
+- **Skills are inlined into the agent's instructions** (base prompt, then each skill's
+  description and instructions in a `<skill>` block). That's simple and works well for a handful
+  of skills. With many large skills, switch to progressive disclosure: list only names and
+  descriptions, and give the agent a tool to load a skill's full instructions.
+- Agents have no tools yet; the run UI and event log already render tool calls and returns.
