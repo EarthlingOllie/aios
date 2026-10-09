@@ -171,7 +171,7 @@ def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     # and re-saving the agent unchanged doesn't pick up the rename.
     agent = api.get(url).json()
     pinned = agent["current_version"]["skills"][0]
-    assert (pinned["version"], pinned["latest_version"]) == (1, 2)
+    assert (pinned["name"], pinned["version"], pinned["latest_version"]) == ("Haiku", 1, 2)
     assert '<skill name="Haiku">' in agent["current_version"]["instructions"]
     assert api.put(url, json=agent_body(agent)).json()["current_version"]["version"] == 1
 
@@ -184,7 +184,7 @@ def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     # Taking the update sends the new name.
     resp = api.put(url, json=agent_body(agent, skill_version_ids=[pinned["latest_version_id"]]))
     v2 = resp.json()["current_version"]
-    assert v2["version"] == 2
+    assert (v2["version"], v2["skills"][0]["name"]) == (2, "Poetry")
     assert '<skill name="Poetry">' in v2["instructions"]
     assert "Haiku" not in v2["instructions"]
 

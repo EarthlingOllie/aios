@@ -173,7 +173,7 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
             AgentSkillOut(
                 skill_id=skill.id,
                 skill_version_id=sv.id,
-                name=skill.name,
+                name=sv.name,
                 description=sv.description,
                 version=sv.version,
                 latest_version=latest.version if latest else None,
