@@ -10,11 +10,12 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios.api.skills import SkillSummary, commit_unique
+from aios.api.skills import unique_name
 from aios.auth import CurrentUser
 from aios.db import SessionLocal, get_db
-from aios.models import Agent, AgentRun, Skill, agent_skills
-from aios.runner import build_instructions, runner
+from aios.models import Agent, AgentRun, AgentVersion, Skill, SkillVersion, agent_version_skills
+from aios.runner import runner
+from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
 DB = Annotated[Session, Depends(get_db)]
@@ -26,13 +27,49 @@ class AgentIn(BaseModel):
     name: str = Field(min_length=1, max_length=255, pattern=r"\S")
     description: str = ""
     base_prompt: str = ""
-    skill_ids: list[int] = []
+    # Specific skill versions, in order. The UI keeps already-attached skills on their pinned
+    # version and adds new ones at their latest; updating a skill is an explicit change.
+    skill_version_ids: list[int] = []
+    # Optional "what changed", stored on the new version if one is created.
+    note: str | None = None
+
+
+class AgentSkillOut(BaseModel):
+    skill_id: int
+    skill_version_id: int
+    name: str
+    description: str
+    version: int
+    # The skill's current version, or None if the skill has since been deleted.
+    latest_version: int | None
+    latest_version_id: int | None
+
+
+class AgentVersionSummary(BaseModel):
+    id: int
+    version: int
+    note: str | None
+    created_at: datetime
+    skill_count: int
+    run_count: int
+
+
+class AgentVersionOut(BaseModel):
+    id: int
+    version: int
+    note: str | None
+    created_at: datetime
+    base_prompt: str
+    model: str | None
+    instructions: str
+    skills: list[AgentSkillOut]
 
 
 class AgentSummary(BaseModel):
     id: int
     name: str
     description: str
+    version: int
     skill_count: int
     run_count: int
     updated_at: datetime
@@ -42,16 +79,16 @@ class AgentOut(BaseModel):
     id: int
     name: str
     description: str
-    base_prompt: str
-    skills: list[SkillSummary]
-    instructions: str
     created_at: datetime
     updated_at: datetime
+    current_version: AgentVersionOut
 
 
 class RunSummary(BaseModel):
     id: int
     agent_id: int
+    agent_version_id: int
+    agent_version: int
     title: str | None
     message_count: int
     created_at: datetime
@@ -72,6 +109,17 @@ def get_owned_agent(db: Session, user_id: int, agent_id: int) -> Agent:
     return agent
 
 
+def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
+    version = db.scalar(
+        select(AgentVersion).where(
+            AgentVersion.agent_id == agent.id, AgentVersion.version == number
+        )
+    )
+    if version is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return version
+
+
 def get_owned_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
     agent = get_owned_agent(db, user_id, agent_id)
     run = db.get(AgentRun, run_id)
@@ -80,12 +128,52 @@ def get_owned_run(db: Session, user_id: int, agent_id: int, run_id: int) -> Agen
     return run
 
 
-def resolve_skills(db: Session, user_id: int, skill_ids: list[int]) -> list[Skill]:
-    ids = set(skill_ids)
-    skills = db.scalars(select(Skill).where(Skill.owner_id == user_id, Skill.id.in_(ids))).all()
-    if len(skills) != len(ids):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill id")
-    return list(skills)
+def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[SkillVersion]:
+    """The requested versions of the user's live skills, in request order."""
+    found = {
+        v.id: v
+        for v in db.scalars(
+            select(SkillVersion)
+            .join(Skill, Skill.id == SkillVersion.skill_id)
+            .where(SkillVersion.id.in_(ids), Skill.owner_id == user_id, Skill.deleted_at.is_(None))
+        )
+    }
+    versions = [found[i] for i in ids if i in found]
+    if len(versions) != len(ids):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill version")
+    if len({v.skill_id for v in versions}) != len(versions):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Each skill can be attached only once"
+        )
+    return versions
+
+
+def version_out(version: AgentVersion) -> AgentVersionOut:
+    skills = []
+    for sv in version.skills:
+        skill = sv.skill
+        latest = skill.current_version if skill.deleted_at is None else None
+        skills.append(
+            AgentSkillOut(
+                skill_id=skill.id,
+                skill_version_id=sv.id,
+                name=skill.name,
+                description=sv.description,
+                version=sv.version,
+                latest_version=latest.version if latest else None,
+                latest_version_id=latest.id if latest else None,
+            )
+        )
+    return AgentVersionOut(
+        id=version.id,
+        version=version.version,
+        note=version.note,
+        created_at=version.created_at,
+        base_prompt=version.base_prompt,
+        model=version.model,
+        instructions=version.instructions,
+        skills=skills,
+    )
 
 
 def agent_out(agent: Agent) -> AgentOut:
@@ -93,22 +181,18 @@ def agent_out(agent: Agent) -> AgentOut:
         id=agent.id,
         name=agent.name,
         description=agent.description,
-        base_prompt=agent.base_prompt,
-        skills=[SkillSummary.model_validate(s, from_attributes=True) for s in agent.skills],
-        instructions=build_instructions(agent),
         created_at=agent.created_at,
         updated_at=agent.updated_at,
+        current_version=version_out(agent.current_version),
     )
 
 
-def run_summary(run: AgentRun) -> RunSummary:
-    return RunSummary(
-        id=run.id,
-        agent_id=run.agent_id,
-        title=run.title,
-        message_count=len(run.messages),
-        created_at=run.created_at,
-        updated_at=run.updated_at,
+def skill_count(version_id) -> Any:
+    return (
+        select(func.count())
+        .select_from(agent_version_skills)
+        .where(agent_version_skills.c.agent_version_id == version_id)
+        .scalar_subquery()
     )
 
 
@@ -117,42 +201,44 @@ def run_summary(run: AgentRun) -> RunSummary:
 
 @router.get("/agents", response_model=list[AgentSummary])
 def list_agents(user: CurrentUser, db: DB):
-    skill_count = (
-        select(func.count())
-        .select_from(agent_skills)
-        .where(agent_skills.c.agent_id == Agent.id)
-        .scalar_subquery()
-    )
     run_count = (
         select(func.count(AgentRun.id)).where(AgentRun.agent_id == Agent.id).scalar_subquery()
     )
     rows = db.execute(
-        select(Agent, skill_count, run_count).where(Agent.owner_id == user.id).order_by(Agent.name)
+        select(Agent, AgentVersion.version, skill_count(AgentVersion.id), run_count)
+        .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
+        .where(Agent.owner_id == user.id)
+        .order_by(Agent.name)
     ).all()
     return [
         AgentSummary(
             id=a.id,
             name=a.name,
             description=a.description,
+            version=version,
             skill_count=skills,
             run_count=runs,
             updated_at=a.updated_at,
         )
-        for a, skills, runs in rows
+        for a, version, skills, runs in rows
     ]
 
 
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
 def create_agent(body: AgentIn, user: CurrentUser, db: DB):
-    agent = Agent(
-        owner_id=user.id,
-        name=body.name,
-        description=body.description,
-        base_prompt=body.base_prompt,
-        skills=resolve_skills(db, user.id, body.skill_ids),
-    )
+    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
+    agent = Agent(owner_id=user.id, name=body.name, description=body.description)
     db.add(agent)
-    commit_unique(db, "an agent")
+    with unique_name(db, "an agent"):
+        save_agent_version(
+            db,
+            agent,
+            base_prompt=body.base_prompt,
+            skills=skills,
+            note=body.note,
+            user_id=user.id,
+        )
+        db.commit()
     return agent_out(agent)
 
 
@@ -163,36 +249,109 @@ def get_agent(agent_id: int, user: CurrentUser, db: DB):
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
 def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
+    """Rename/describe the agent; a changed prompt or skill set creates a new version."""
     agent = get_owned_agent(db, user.id, agent_id)
+    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent.name = body.name
     agent.description = body.description
-    agent.base_prompt = body.base_prompt
-    agent.skills = resolve_skills(db, user.id, body.skill_ids)
-    commit_unique(db, "an agent")
+    with unique_name(db, "an agent"):
+        save_agent_version(
+            db,
+            agent,
+            base_prompt=body.base_prompt,
+            skills=skills,
+            note=body.note,
+            user_id=user.id,
+            model=agent.current_version.model,
+        )
+        db.commit()
     return agent_out(agent)
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_agent(agent_id: int, user: CurrentUser, db: DB) -> None:
-    db.delete(get_owned_agent(db, user.id, agent_id))
+    # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
+    agent = get_owned_agent(db, user.id, agent_id)
+    agent.current_version_id = None  # break the agents <-> agent_versions cycle first
+    db.flush()
+    db.delete(agent)
     db.commit()
 
 
+@router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
+def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
+    agent = get_owned_agent(db, user.id, agent_id)
+    run_count = (
+        select(func.count(AgentRun.id))
+        .where(AgentRun.agent_version_id == AgentVersion.id)
+        .scalar_subquery()
+    )
+    rows = db.execute(
+        select(AgentVersion, skill_count(AgentVersion.id), run_count)
+        .where(AgentVersion.agent_id == agent.id)
+        .order_by(AgentVersion.version.desc())
+    ).all()
+    return [
+        AgentVersionSummary(
+            id=v.id,
+            version=v.version,
+            note=v.note,
+            created_at=v.created_at,
+            skill_count=skills,
+            run_count=runs,
+        )
+        for v, skills, runs in rows
+    ]
+
+
+@router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
+def get_agent_version_detail(agent_id: int, number: int, user: CurrentUser, db: DB):
+    return version_out(get_agent_version(db, get_owned_agent(db, user.id, agent_id), number))
+
+
+@router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
+def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB):
+    """Make an old version's config current again, as a new version (numbers only go up)."""
+    agent = get_owned_agent(db, user.id, agent_id)
+    old = get_agent_version(db, agent, number)
+    if any(sv.skill.deleted_at is not None for sv in old.skills):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
+        )
+    save_agent_version(
+        db,
+        agent,
+        base_prompt=old.base_prompt,
+        skills=list(old.skills),
+        model=old.model,
+        note=f"Restored from v{old.version}",
+        user_id=user.id,
+    )
+    db.commit()
+    return agent_out(agent)
+
+
 # --- Runs ---------------------------------------------------------------------------------------
+
+
+def run_summary_query():
+    return select(
+        AgentRun.id,
+        AgentRun.agent_id,
+        AgentRun.agent_version_id,
+        AgentVersion.version.label("agent_version"),
+        AgentRun.title,
+        func.jsonb_array_length(AgentRun.messages).label("message_count"),
+        AgentRun.created_at,
+        AgentRun.updated_at,
+    ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
 def list_runs(agent_id: int, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     rows = db.execute(
-        select(
-            AgentRun.id,
-            AgentRun.agent_id,
-            AgentRun.title,
-            func.jsonb_array_length(AgentRun.messages).label("message_count"),
-            AgentRun.created_at,
-            AgentRun.updated_at,
-        )
+        run_summary_query()
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
@@ -203,19 +362,23 @@ def list_runs(agent_id: int, user: CurrentUser, db: DB):
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
 def create_run(agent_id: int, user: CurrentUser, db: DB):
-    run = AgentRun(agent=get_owned_agent(db, user.id, agent_id), messages=[])
+    agent = get_owned_agent(db, user.id, agent_id)
+    # Pin the version: later edits to the agent don't change this conversation.
+    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, messages=[])
     db.add(run)
     db.commit()
-    return run_summary(run)
+    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
+    return RunSummary.model_validate(row, from_attributes=True)
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
 def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
+    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     history = ModelMessagesTypeAdapter.validate_python(run.messages)
     ui_messages = VercelAIAdapter.dump_messages(history, sdk_version=SDK_VERSION)
     return RunOut(
-        **run_summary(run).model_dump(),
+        **RunSummary.model_validate(row, from_attributes=True).model_dump(),
         ui_messages=[
             m.model_dump(mode="json", by_alias=True, exclude_none=True) for m in ui_messages
         ],
@@ -247,12 +410,29 @@ def save_history(run_id: int, messages: list[ModelMessage]) -> None:
         db.commit()
 
 
+def trace_metadata(run: AgentRun) -> dict[str, Any]:
+    """Attached to the run's OpenTelemetry spans (e.g. for Langfuse filtering and experiments)."""
+    version = run.agent_version
+    return {
+        "agent_id": run.agent_id,
+        "agent_name": run.agent.name,
+        "agent_version": version.version,
+        "agent_version_id": version.id,
+        "agent_run_id": run.id,
+        "skill_versions": [
+            {"skill_id": sv.skill_id, "name": sv.skill.name, "version": sv.version, "id": sv.id}
+            for sv in version.skills
+        ],
+    }
+
+
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
 async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the database."""
     run = get_owned_run(db, user.id, agent_id, run_id)
+    version = run.agent_version
     history = ModelMessagesTypeAdapter.validate_python(run.messages)
-    instructions = build_instructions(run.agent)
+    metadata = trace_metadata(run)
 
     async def on_complete(result: AgentRunResult) -> None:
         await to_thread.run_sync(save_history, run_id, result.all_messages())
@@ -262,7 +442,10 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
         agent=runner,
         sdk_version=SDK_VERSION,
         message_history=history,
-        instructions=instructions,
+        conversation_id=f"agent-run-{run.id}",
+        model=version.model,
+        instructions=version.instructions,
+        metadata=metadata,
         on_complete=on_complete,
         allowed_file_url_schemes=frozenset(),
     )

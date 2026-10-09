@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Pencil, Trash2 } from "lucide-react";
+import { History, Pencil, Trash2 } from "lucide-react";
 import Markdown from "react-markdown";
 
 import {
@@ -18,7 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { api, describeError, type SkillInput } from "@/lib/api";
+import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
+import { api, describeError, type SkillInput, type SkillVersion } from "@/lib/api";
 
 export function SkillsSection() {
   const { data, error, reload } = useLoad(api.listSkills);
@@ -32,7 +33,10 @@ export function SkillsSection() {
       reloadList={reload}
       renderItem={(skill) => (
         <>
-          <div className="truncate font-medium">{skill.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+            <VersionBadge version={skill.version} />
+          </div>
           {skill.description && (
             <div className="text-muted-foreground truncate text-xs">{skill.description}</div>
           )}
@@ -46,21 +50,44 @@ export function SkillsIndex() {
   return <Placeholder>Select a skill, or create a new one.</Placeholder>;
 }
 
+const markdownClass =
+  "prose-sm rounded-md border p-4 leading-relaxed [&_code]:text-sm [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5";
+
+function SkillContent({ version }: { version: SkillVersion }) {
+  return (
+    <>
+      <Section title="When to use">
+        <p className="text-sm whitespace-pre-wrap">
+          {version.description || <span className="text-muted-foreground">No description.</span>}
+        </p>
+      </Section>
+      <Section title="Instructions">
+        {version.content ? (
+          <div className={markdownClass}>
+            <Markdown>{version.content}</Markdown>
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">No instructions.</p>
+        )}
+      </Section>
+    </>
+  );
+}
+
 export function SkillDetail() {
   const id = Number(useParams().skillId);
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: skill, error } = useLoad(useCallback(() => api.getSkill(id), [id]));
+  const versions = useLoad(useCallback(() => api.listSkillVersions(id), [id]));
   const [deleteError, setDeleteError] = useState<string>();
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!skill) return null;
+  const current = skill.current_version;
 
   async function onDelete() {
-    const usage = skill!.agents.length
-      ? ` It will be removed from ${skill!.agents.length} agent(s).`
-      : "";
-    if (!window.confirm(`Delete the skill “${skill!.name}”?${usage}`)) return;
+    if (!window.confirm(`Delete the skill “${skill!.name}”?`)) return;
     try {
       await api.deleteSkill(id);
       await reloadList();
@@ -72,7 +99,11 @@ export function SkillDetail() {
 
   return (
     <DetailPage
-      title={skill.name}
+      title={
+        <span className="flex items-center gap-2">
+          {skill.name} <VersionBadge version={current.version} />
+        </span>
+      }
       subtitle={`Updated ${formatDate(skill.updated_at)}`}
       actions={
         <>
@@ -90,32 +121,110 @@ export function SkillDetail() {
       }
     >
       <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(undefined)} />
-      <Section title="When to use">
-        <p className="text-sm whitespace-pre-wrap">
-          {skill.description || <span className="text-muted-foreground">No description.</span>}
-        </p>
-      </Section>
-      <Section title="Instructions">
-        {skill.content ? (
-          <div className="prose-sm rounded-md border p-4 leading-relaxed [&_code]:text-sm [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5">
-            <Markdown>{skill.content}</Markdown>
-          </div>
-        ) : (
-          <p className="text-muted-foreground text-sm">No instructions.</p>
-        )}
-      </Section>
+      <SkillContent version={current} />
       <Section title="Used by">
         {skill.agents.length === 0 ? (
           <p className="text-muted-foreground text-sm">No agents use this skill yet.</p>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            {skill.agents.map((agent) => (
-              <Badge key={agent.id} variant="outline" asChild>
-                <Link to={`/agents/${agent.id}`}>{agent.name}</Link>
-              </Badge>
+          <ul className="divide-y rounded-md border">
+            {skill.agents.map((use) => (
+              <li key={use.agent_id}>
+                <Link
+                  to={`/agents/${use.agent_id}`}
+                  className="hover:bg-accent flex items-center gap-2 px-3 py-2 text-sm"
+                >
+                  <span className="flex-1">{use.agent_name}</span>
+                  <span className="text-muted-foreground text-xs">uses</span>
+                  <VersionBadge version={use.skill_version} />
+                  {use.skill_version < current.version && (
+                    <Badge variant="secondary">update available</Badge>
+                  )}
+                </Link>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
+      </Section>
+      <Section title="Version history">
+        <VersionHistory
+          versions={versions.data}
+          current={current.version}
+          href={(v) => `/skills/${id}/versions/${v}`}
+        />
+      </Section>
+    </DetailPage>
+  );
+}
+
+export function SkillVersionPage() {
+  const id = Number(useParams().skillId);
+  const number = Number(useParams().version);
+  const navigate = useNavigate();
+  const { reloadList } = useOutletContext<ListContext>();
+  const skill = useLoad(useCallback(() => api.getSkill(id), [id]));
+  const version = useLoad(useCallback(() => api.getSkillVersion(id, number), [id, number]));
+  const versions = useLoad(useCallback(() => api.listSkillVersions(id), [id]));
+  const older = (versions.data ?? []).map((v) => v.version).filter((v) => v < number);
+  const [base, setBase] = useState<number>();
+  const baseVersion = base ?? older[0];
+  const before = useLoad(
+    useCallback(
+      () =>
+        baseVersion === undefined
+          ? Promise.resolve(undefined)
+          : api.getSkillVersion(id, baseVersion),
+      [id, baseVersion],
+    ),
+  );
+  const [error, setError] = useState<string>();
+
+  if (version.error) return <Placeholder>{version.error}</Placeholder>;
+  if (!version.data || !skill.data) return null;
+  const v = version.data;
+  const isCurrent = skill.data.current_version.version === v.version;
+
+  async function onRestore() {
+    try {
+      await api.restoreSkillVersion(id, number);
+      await reloadList();
+      navigate(`/skills/${id}`);
+    } catch (err) {
+      setError(describeError(err));
+    }
+  }
+
+  const asText = (s: SkillVersion) => `${s.description}\n\n${s.content}`;
+  return (
+    <DetailPage
+      title={
+        <span className="flex items-center gap-2">
+          <Link to={`/skills/${id}`} className="hover:underline">
+            {skill.data.name}
+          </Link>
+          <VersionBadge version={v.version} />
+          {isCurrent && <Badge variant="secondary">current</Badge>}
+        </span>
+      }
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      actions={
+        !isCurrent && (
+          <Button size="sm" variant="outline" onClick={onRestore}>
+            <History />
+            Restore this version
+          </Button>
+        )
+      }
+    >
+      <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      <SkillContent version={v} />
+      <Section title="Changes">
+        <CompareVersions
+          versions={older}
+          base={baseVersion}
+          onBaseChange={setBase}
+          before={before.data ? asText(before.data) : undefined}
+          after={asText(v)}
+        />
       </Section>
     </DetailPage>
   );
@@ -129,6 +238,7 @@ export function SkillForm() {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<SkillInput>();
+  const [version, setVersion] = useState<number>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
@@ -137,7 +247,10 @@ export function SkillForm() {
     if (id === undefined) setForm(emptySkill);
     else
       api.getSkill(id).then(
-        ({ name, description, content }) => setForm({ name, description, content }),
+        ({ name, current_version: v }) => {
+          setForm({ name, description: v.description, content: v.content, note: "" });
+          setVersion(v.version);
+        },
         (err) => setError(describeError(err)),
       );
   }, [id]);
@@ -149,8 +262,9 @@ export function SkillForm() {
     e.preventDefault();
     setSaving(true);
     setError(undefined);
+    const body = { ...form!, note: form!.note?.trim() || undefined };
     try {
-      const saved = id === undefined ? await api.createSkill(form!) : await api.updateSkill(id, form!);
+      const saved = id === undefined ? await api.createSkill(body) : await api.updateSkill(id, body);
       await reloadList();
       navigate(`/skills/${saved.id}`);
     } catch (err) {
@@ -161,7 +275,13 @@ export function SkillForm() {
   }
 
   return (
-    <DetailPage title={id === undefined ? "New skill" : "Edit skill"}>
+    <DetailPage
+      title={id === undefined ? "New skill" : "Edit skill"}
+      subtitle={
+        version !== undefined &&
+        `Editing v${version}. Changing the description or instructions creates v${version + 1}; agents keep using the version they're pinned to until you update them.`
+      }
+    >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
         <Field label="Name" htmlFor="skill-name">
@@ -197,6 +317,16 @@ export function SkillForm() {
             placeholder={"1. Group changes by area.\n2. Lead with user-visible changes.\n…"}
           />
         </Field>
+        {id !== undefined && (
+          <Field label="Change note" htmlFor="skill-note" hint="Optional. Shown in the version history.">
+            <Input
+              id="skill-note"
+              value={form.note ?? ""}
+              onChange={(e) => set({ note: e.target.value })}
+              placeholder="What changed and why"
+            />
+          </Field>
+        )}
         <div className="flex gap-2">
           <Button type="submit" disabled={saving || !form.name.trim()}>
             {id === undefined ? "Create skill" : "Save changes"}

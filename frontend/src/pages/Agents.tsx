@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { MessageSquare, Pencil, Play, Trash2 } from "lucide-react";
+import { ArrowUpCircle, History, MessageSquare, Pencil, Play, Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -17,7 +17,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { api, describeError, type AgentInput, type SkillSummary } from "@/lib/api";
+import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
+import {
+  api,
+  describeError,
+  type Agent,
+  type AgentInput,
+  type AgentSkill,
+  type AgentVersion,
+  type SkillSummary,
+} from "@/lib/api";
 
 export function AgentsSection() {
   const { data, error, reload } = useLoad(api.listAgents);
@@ -31,7 +40,10 @@ export function AgentsSection() {
       reloadList={reload}
       renderItem={(agent) => (
         <>
-          <div className="truncate font-medium">{agent.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-medium">{agent.name}</span>
+            <VersionBadge version={agent.version} />
+          </div>
           <div className="text-muted-foreground truncate text-xs">
             {agent.skill_count} skill{agent.skill_count === 1 ? "" : "s"} · {agent.run_count} run
             {agent.run_count === 1 ? "" : "s"}
@@ -46,59 +58,137 @@ export function AgentsIndex() {
   return <Placeholder>Select an agent, or create a new one.</Placeholder>;
 }
 
+/** The agent as an update body, with optional changes. */
+function agentInput(agent: Agent, changes: Partial<AgentInput> = {}): AgentInput {
+  const v = agent.current_version;
+  return {
+    name: agent.name,
+    description: agent.description,
+    base_prompt: v.base_prompt,
+    skill_version_ids: v.skills.map((s) => s.skill_version_id),
+    ...changes,
+  };
+}
+
+function SkillRow({ skill, action }: { skill: AgentSkill; action?: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-2 pr-2">
+      <Link to={`/skills/${skill.skill_id}`} className="hover:bg-accent min-w-0 flex-1 px-3 py-2">
+        <span className="flex items-center gap-2">
+          <span className="text-sm font-medium">{skill.name}</span>
+          <VersionBadge version={skill.version} />
+          {skill.latest_version === null && <Badge variant="secondary">deleted</Badge>}
+        </span>
+        {skill.description && (
+          <span className="text-muted-foreground block truncate text-xs">{skill.description}</span>
+        )}
+      </Link>
+      {action}
+    </li>
+  );
+}
+
+function VersionConfig({ version }: { version: AgentVersion }) {
+  return (
+    <>
+      <Section title="Base prompt">
+        {version.base_prompt ? (
+          <pre className="bg-muted/50 rounded-md border p-3 text-sm whitespace-pre-wrap">
+            {version.base_prompt}
+          </pre>
+        ) : (
+          <p className="text-muted-foreground text-sm">No base prompt; a generic one is used.</p>
+        )}
+      </Section>
+      <details className="group">
+        <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs font-semibold tracking-wide uppercase">
+          Instructions sent to the model
+        </summary>
+        <pre className="bg-muted/50 mt-2 max-h-96 overflow-y-auto rounded-md border p-3 text-xs whitespace-pre-wrap">
+          {version.instructions}
+        </pre>
+      </details>
+    </>
+  );
+}
+
 export function AgentDetail() {
   const id = Number(useParams().agentId);
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
-  const { data: agent, error } = useLoad(useCallback(() => api.getAgent(id), [id]));
+  const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
+  const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
   const runs = useLoad(useCallback(() => api.listRuns(id), [id]));
   const [actionError, setActionError] = useState<string>();
-  const [starting, setStarting] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  if (error) return <Placeholder>{error}</Placeholder>;
-  if (!agent) return null;
+  if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
+  if (!agent.data) return null;
+  const a = agent.data;
+  const current = a.current_version;
 
-  async function onDelete() {
-    if (!window.confirm(`Delete the agent “${agent!.name}” and all of its runs?`)) return;
+  async function act(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setActionError(undefined);
     try {
-      await api.deleteAgent(id);
-      await reloadList();
-      navigate("/agents");
-    } catch (err) {
-      setActionError(describeError(err));
-    }
-  }
-
-  async function onNewRun() {
-    setStarting(true);
-    try {
-      const run = await api.createRun(id);
-      reloadList();
-      navigate(`runs/${run.id}`);
+      await fn();
     } catch (err) {
       setActionError(describeError(err));
     } finally {
-      setStarting(false);
+      setBusy(false);
     }
   }
 
-  async function onDeleteRun(runId: number) {
+  const onDelete = () => {
+    if (!window.confirm(`Delete the agent “${a.name}”, its versions and all of its runs?`)) return;
+    act(async () => {
+      await api.deleteAgent(id);
+      await reloadList();
+      navigate("/agents");
+    });
+  };
+
+  const onNewRun = () =>
+    act(async () => {
+      const run = await api.createRun(id);
+      reloadList();
+      navigate(`runs/${run.id}`);
+    });
+
+  const onUpdateSkill = (skill: AgentSkill) =>
+    act(async () => {
+      const ids = current.skills.map((s) =>
+        s.skill_id === skill.skill_id ? skill.latest_version_id! : s.skill_version_id,
+      );
+      await api.updateAgent(
+        id,
+        agentInput(a, {
+          skill_version_ids: ids,
+          note: `Update ${skill.name} to v${skill.latest_version}`,
+        }),
+      );
+      await Promise.all([agent.reload(), versions.reload(), reloadList()]);
+    });
+
+  const onDeleteRun = (runId: number) => {
     if (!window.confirm("Delete this run and its history?")) return;
-    try {
+    act(async () => {
       await api.deleteRun(id, runId);
-      await Promise.all([runs.reload(), reloadList()]);
-    } catch (err) {
-      setActionError(describeError(err));
-    }
-  }
+      await Promise.all([runs.reload(), versions.reload(), reloadList()]);
+    });
+  };
 
   return (
     <DetailPage
-      title={agent.name}
-      subtitle={agent.description || `Updated ${formatDate(agent.updated_at)}`}
+      title={
+        <span className="flex items-center gap-2">
+          {a.name} <VersionBadge version={current.version} />
+        </span>
+      }
+      subtitle={a.description || `Updated ${formatDate(a.updated_at)}`}
       actions={
         <>
-          <Button size="sm" onClick={onNewRun} disabled={starting}>
+          <Button size="sm" onClick={onNewRun} disabled={busy}>
             <Play />
             New run
           </Button>
@@ -116,45 +206,36 @@ export function AgentDetail() {
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
 
-      <Section title="Base prompt">
-        {agent.base_prompt ? (
-          <pre className="bg-muted/50 rounded-md border p-3 text-sm whitespace-pre-wrap">
-            {agent.base_prompt}
-          </pre>
-        ) : (
-          <p className="text-muted-foreground text-sm">No base prompt; a generic one is used.</p>
-        )}
-      </Section>
-
       <Section title="Skills">
-        {agent.skills.length === 0 ? (
+        {current.skills.length === 0 ? (
           <p className="text-muted-foreground text-sm">No skills attached.</p>
         ) : (
           <ul className="divide-y rounded-md border">
-            {agent.skills.map((skill) => (
-              <li key={skill.id}>
-                <Link to={`/skills/${skill.id}`} className="hover:bg-accent block px-3 py-2">
-                  <div className="text-sm font-medium">{skill.name}</div>
-                  {skill.description && (
-                    <div className="text-muted-foreground truncate text-xs">
-                      {skill.description}
-                    </div>
-                  )}
-                </Link>
-              </li>
+            {current.skills.map((skill) => (
+              <SkillRow
+                key={skill.skill_id}
+                skill={skill}
+                action={
+                  skill.latest_version !== null &&
+                  skill.latest_version > skill.version && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => onUpdateSkill(skill)}
+                    >
+                      <ArrowUpCircle />
+                      Update to v{skill.latest_version}
+                    </Button>
+                  )
+                }
+              />
             ))}
           </ul>
         )}
       </Section>
 
-      <details className="group">
-        <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs font-semibold tracking-wide uppercase">
-          Instructions sent to the model
-        </summary>
-        <pre className="bg-muted/50 mt-2 max-h-96 overflow-y-auto rounded-md border p-3 text-xs whitespace-pre-wrap">
-          {agent.instructions}
-        </pre>
-      </details>
+      <VersionConfig version={current} />
 
       <Section title="Runs">
         {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
@@ -180,6 +261,7 @@ export function AgentDetail() {
                       {formatDate(run.updated_at)}
                     </span>
                   </span>
+                  <VersionBadge version={run.agent_version} />
                   <Badge variant="secondary">{run.message_count} msgs</Badge>
                 </Link>
                 <button
@@ -194,41 +276,148 @@ export function AgentDetail() {
           </ul>
         )}
       </Section>
+
+      <Section title="Version history">
+        <VersionHistory
+          versions={versions.data}
+          current={current.version}
+          href={(v) => `/agents/${id}/versions/${v}`}
+          detail={(v) => {
+            const n = versions.data?.find((x) => x.version === v)?.run_count ?? 0;
+            return `${n} run${n === 1 ? "" : "s"}`;
+          }}
+        />
+      </Section>
     </DetailPage>
   );
 }
 
-const emptyAgent: AgentInput = { name: "", description: "", base_prompt: "", skill_ids: [] };
+export function AgentVersionPage() {
+  const id = Number(useParams().agentId);
+  const number = Number(useParams().version);
+  const navigate = useNavigate();
+  const { reloadList } = useOutletContext<ListContext>();
+  const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
+  const version = useLoad(useCallback(() => api.getAgentVersion(id, number), [id, number]));
+  const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
+  const older = (versions.data ?? []).map((v) => v.version).filter((v) => v < number);
+  const [base, setBase] = useState<number>();
+  const baseVersion = base ?? older[0];
+  const before = useLoad(
+    useCallback(
+      () =>
+        baseVersion === undefined
+          ? Promise.resolve(undefined)
+          : api.getAgentVersion(id, baseVersion),
+      [id, baseVersion],
+    ),
+  );
+  const [error, setError] = useState<string>();
+
+  if (version.error) return <Placeholder>{version.error}</Placeholder>;
+  if (!version.data || !agent.data) return null;
+  const v = version.data;
+  const isCurrent = agent.data.current_version.version === v.version;
+
+  async function onRestore() {
+    try {
+      await api.restoreAgentVersion(id, number);
+      await reloadList();
+      navigate(`/agents/${id}`);
+    } catch (err) {
+      setError(describeError(err));
+    }
+  }
+
+  return (
+    <DetailPage
+      title={
+        <span className="flex items-center gap-2">
+          <Link to={`/agents/${id}`} className="hover:underline">
+            {agent.data.name}
+          </Link>
+          <VersionBadge version={v.version} />
+          {isCurrent && <Badge variant="secondary">current</Badge>}
+        </span>
+      }
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      actions={
+        !isCurrent && (
+          <Button size="sm" variant="outline" onClick={onRestore}>
+            <History />
+            Restore this version
+          </Button>
+        )
+      }
+    >
+      <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      <Section title="Skills">
+        {v.skills.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No skills.</p>
+        ) : (
+          <ul className="divide-y rounded-md border">
+            {v.skills.map((skill) => (
+              <SkillRow key={skill.skill_id} skill={skill} />
+            ))}
+          </ul>
+        )}
+      </Section>
+      <VersionConfig version={v} />
+      <Section title="Changes to the instructions">
+        <CompareVersions
+          versions={older}
+          base={baseVersion}
+          onBaseChange={setBase}
+          before={before.data?.instructions}
+          after={v.instructions}
+        />
+      </Section>
+    </DetailPage>
+  );
+}
+
+type FormState = Omit<AgentInput, "skill_version_ids"> & { skill_ids: number[] };
+
+const emptyAgent: FormState = { name: "", description: "", base_prompt: "", skill_ids: [] };
 
 export function AgentForm() {
   const params = useParams();
   const id = params.agentId ? Number(params.agentId) : undefined;
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
-  const [form, setForm] = useState<AgentInput>();
+  const [form, setForm] = useState<FormState>();
+  const [version, setVersion] = useState<number>();
+  // Skills attached to the current version, by skill id: these stay on their pinned version.
+  const [pinned, setPinned] = useState<Map<number, AgentSkill>>(new Map());
   const [skills, setSkills] = useState<SkillSummary[]>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setForm(undefined);
+    setPinned(new Map());
     api.listSkills().then(setSkills, (err) => setError(describeError(err)));
     if (id === undefined) setForm(emptyAgent);
     else
       api.getAgent(id).then(
-        (a) =>
+        (a) => {
+          const v = a.current_version;
           setForm({
             name: a.name,
             description: a.description,
-            base_prompt: a.base_prompt,
-            skill_ids: a.skills.map((s) => s.id),
-          }),
+            base_prompt: v.base_prompt,
+            skill_ids: v.skills.map((s) => s.skill_id),
+            note: "",
+          });
+          setVersion(v.version);
+          setPinned(new Map(v.skills.map((s) => [s.skill_id, s])));
+        },
         (err) => setError(describeError(err)),
       );
   }, [id]);
 
   if (!form) return error ? <Placeholder>{error}</Placeholder> : null;
-  const set = (patch: Partial<AgentInput>) => setForm({ ...form, ...patch });
+  const set = (patch: Partial<FormState>) => setForm({ ...form, ...patch });
   const toggleSkill = (skillId: number, on: boolean) =>
     set({
       skill_ids: on
@@ -240,8 +429,16 @@ export function AgentForm() {
     e.preventDefault();
     setSaving(true);
     setError(undefined);
+    const latest = new Map(skills?.map((s) => [s.id, s.version_id]));
+    const { skill_ids, ...rest } = form!;
+    const body: AgentInput = {
+      ...rest,
+      note: rest.note?.trim() || undefined,
+      // Already-attached skills keep their pinned version; newly added ones get the latest.
+      skill_version_ids: skill_ids.map((s) => pinned.get(s)?.skill_version_id ?? latest.get(s)!),
+    };
     try {
-      const saved = id === undefined ? await api.createAgent(form!) : await api.updateAgent(id, form!);
+      const saved = id === undefined ? await api.createAgent(body) : await api.updateAgent(id, body);
       await reloadList();
       navigate(`/agents/${saved.id}`);
     } catch (err) {
@@ -252,7 +449,13 @@ export function AgentForm() {
   }
 
   return (
-    <DetailPage title={id === undefined ? "New agent" : "Edit agent"}>
+    <DetailPage
+      title={id === undefined ? "New agent" : "Edit agent"}
+      subtitle={
+        version !== undefined &&
+        `Editing v${version}. Changing the prompt or skills creates v${version + 1}; renaming doesn't. Existing runs stay on the version they started with.`
+      }
+    >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
         <Field label="Name" htmlFor="agent-name">
@@ -299,29 +502,46 @@ export function AgentForm() {
           )}
           {!!skills?.length && (
             <ul className="divide-y rounded-md border">
-              {skills.map((skill) => (
-                <li key={skill.id}>
-                  <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={form.skill_ids.includes(skill.id)}
-                      onChange={(e) => toggleSkill(skill.id, e.target.checked)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium">{skill.name}</span>
-                      {skill.description && (
-                        <span className="text-muted-foreground block truncate text-xs">
-                          {skill.description}
-                        </span>
+              {skills.map((skill) => {
+                const pin = pinned.get(skill.id);
+                return (
+                  <li key={skill.id}>
+                    <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={form.skill_ids.includes(skill.id)}
+                        onChange={(e) => toggleSkill(skill.id, e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{skill.name}</span>
+                        {skill.description && (
+                          <span className="text-muted-foreground block truncate text-xs">
+                            {skill.description}
+                          </span>
+                        )}
+                      </span>
+                      <VersionBadge version={pin?.version ?? skill.version} />
+                      {pin && pin.version < skill.version && (
+                        <span className="text-muted-foreground text-xs">latest v{skill.version}</span>
                       )}
-                    </span>
-                  </label>
-                </li>
-              ))}
+                    </label>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </fieldset>
+        {id !== undefined && (
+          <Field label="Change note" htmlFor="agent-note" hint="Optional. Shown in the version history.">
+            <Input
+              id="agent-note"
+              value={form.note ?? ""}
+              onChange={(e) => set({ note: e.target.value })}
+              placeholder="What changed and why"
+            />
+          </Field>
+        )}
         <div className="flex gap-2">
           <Button type="submit" disabled={saving || !form.name.trim()}>
             {id === undefined ? "Create agent" : "Save changes"}

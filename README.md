@@ -9,6 +9,24 @@ reusable instructions) and chat with them. Each conversation with an agent is sa
 whose page shows the conversation and an event log: model requests and responses, tool calls,
 the instructions sent and token usage.
 
+Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
+chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
+the model's behaviour:
+
+- Changing an agent's prompt or skills creates a new version. Renaming doesn't, and nor does
+  saving without changes (configs are compared by hash).
+- Each agent version pins specific skill versions and stores the exact rendered instructions.
+  Editing a skill doesn't change any agent; the agent shows "Update to vN" and taking the update
+  creates a new agent version.
+- A run is pinned to the agent version it started on, so editing an agent mid-conversation
+  doesn't change it.
+- Restoring an old version creates a new one with that config; numbers only go up.
+- Skills are soft-deleted (old agent versions still reference their versions), and can't be
+  deleted while an agent's current version uses them.
+- Each run passes `agent_id`, `agent_version`, `agent_version_id` and the skill versions as
+  Pydantic AI run metadata, and `agent-run-<id>` as the conversation id. These reach
+  OpenTelemetry spans once instrumentation is set up (e.g. for Langfuse).
+
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
@@ -36,7 +54,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/documents.py upload/list/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
-    runner.py       runs user-defined agents (base prompt + skills as instructions)
+    runner.py       the Pydantic AI agent that runs user-defined agents
+    versioning.py   creating agent/skill versions, rendering instructions
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -141,7 +160,7 @@ anything real.
   saved yet. Agent runs are different: the server stores each run's full Pydantic AI message
   history (`agent_runs.messages`, JSONB), the client sends only its new message, and the server
   replays the stored history into the next turn.
-- **Skills are inlined into the agent's instructions** (base prompt, then each skill's
+- **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
   descriptions, and give the agent a tool to load a skill's full instructions.

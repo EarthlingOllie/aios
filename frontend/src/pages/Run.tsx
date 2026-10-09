@@ -48,7 +48,11 @@ export function RunPage() {
         </Button>
         <div className="min-w-0 flex-1">
           <div className="text-muted-foreground truncate text-xs">
-            {agent.data?.name ?? "Agent"} · run #{runId} · started {formatDate(run.data.created_at)}
+            {agent.data?.name ?? "Agent"} ·{" "}
+            <Link to={`/agents/${agentId}/versions/${run.data.agent_version}`} className="hover:underline">
+              v{run.data.agent_version}
+            </Link>{" "}
+            · run #{runId} · started {formatDate(run.data.created_at)}
           </div>
           <div className="truncate text-sm font-medium">{run.data.title ?? "New run"}</div>
         </div>

@@ -8,9 +8,21 @@ import { Login } from "@/components/Login";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { AgentDetail, AgentForm, AgentsIndex, AgentsSection } from "@/pages/Agents";
+import {
+  AgentDetail,
+  AgentForm,
+  AgentsIndex,
+  AgentsSection,
+  AgentVersionPage,
+} from "@/pages/Agents";
 import { RunPage } from "@/pages/Run";
-import { SkillDetail, SkillForm, SkillsIndex, SkillsSection } from "@/pages/Skills";
+import {
+  SkillDetail,
+  SkillForm,
+  SkillsIndex,
+  SkillsSection,
+  SkillVersionPage,
+} from "@/pages/Skills";
 
 type AuthState =
   | { status: "loading" }
@@ -64,12 +76,14 @@ export default function App() {
           <Route path="new" element={<SkillForm />} />
           <Route path=":skillId" element={<SkillDetail />} />
           <Route path=":skillId/edit" element={<SkillForm />} />
+          <Route path=":skillId/versions/:version" element={<SkillVersionPage />} />
         </Route>
         <Route path="agents" element={<AgentsSection />}>
           <Route index element={<AgentsIndex />} />
           <Route path="new" element={<AgentForm />} />
           <Route path=":agentId" element={<AgentDetail />} />
           <Route path=":agentId/edit" element={<AgentForm />} />
+          <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
