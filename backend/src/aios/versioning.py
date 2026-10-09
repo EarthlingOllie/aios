@@ -35,8 +35,16 @@ def render_instructions(base_prompt: str, skills: list[SkillVersion]) -> str:
     return "\n\n".join(sections)
 
 
-def _lock(db: Session, model: type[Agent] | type[Skill], row_id: int) -> None:
-    db.execute(select(model.id).where(model.id == row_id).with_for_update())
+def _lock_current_version_id(
+    db: Session, model: type[Agent] | type[Skill], row_id: int
+) -> int | None:
+    """Locks the parent row and returns its committed current_version_id.
+
+    Read from the locked row rather than the ORM relationship: a concurrent save may have
+    committed a new current version while we waited, and the identity map would still show
+    the old one.
+    """
+    return db.scalar(select(model.current_version_id).where(model.id == row_id).with_for_update())
 
 
 def save_skill_version(
@@ -49,11 +57,14 @@ def save_skill_version(
     user_id: int,
 ) -> SkillVersion:
     digest = config_hash({"description": description, "content": content})
-    current = skill.current_version
-    if current is not None and current.content_hash == digest:
-        return current
     db.flush()  # assigns skill.id for a new skill
-    _lock(db, Skill, skill.id)
+    # Compare against the current version only once the lock is held, so two identical
+    # concurrent saves can't both see a change and create duplicate versions.
+    current_id = _lock_current_version_id(db, Skill, skill.id)
+    current = db.get(SkillVersion, current_id) if current_id is not None else None
+    if current is not None and current.content_hash == digest:
+        db.refresh(skill, ["current_version_id", "current_version"])  # drop stale state
+        return current
     number = db.scalar(
         select(func.coalesce(func.max(SkillVersion.version), 0)).where(
             SkillVersion.skill_id == skill.id
@@ -91,11 +102,13 @@ def save_agent_version(
             "skill_version_ids": [s.id for s in skills],
         }
     )
-    current = agent.current_version
-    if current is not None and current.config_hash == digest:
-        return current
     db.flush()  # assigns agent.id for a new agent
-    _lock(db, Agent, agent.id)
+    # Compare against the current version only once the lock is held (see save_skill_version).
+    current_id = _lock_current_version_id(db, Agent, agent.id)
+    current = db.get(AgentVersion, current_id) if current_id is not None else None
+    if current is not None and current.config_hash == digest:
+        db.refresh(agent, ["current_version_id", "current_version"])
+        return current
     number = db.scalar(
         select(func.coalesce(func.max(AgentVersion.version), 0)).where(
             AgentVersion.agent_id == agent.id
