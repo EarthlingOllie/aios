@@ -1,5 +1,7 @@
+from dataclasses import replace
+
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.native_tools import WebSearchTool
 from test_agents import agent_body, chat_body, make_agent, spy_run_stream
@@ -102,6 +104,42 @@ def test_invalid_tools_are_rejected(api):
         " domain; use one like example.com or example.com/blog, without https://"
     )
     assert api.get(url).json()["current_version"]["version"] == 1
+
+
+class DriftedWebSearchConfig(BaseModel):
+    # The settings model after a release that dropped `max_uses` and added `safe_search`.
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_domains: list[str] = []
+    blocked_domains: list[str] = []
+    safe_search: bool = True
+
+
+def test_stored_settings_survive_settings_model_changes(api, monkeypatch):
+    agent = make_agent(api, "Researcher")
+    url = f"/api/agents/{agent['id']}"
+    agent = api.put(url, json=agent_body(agent, tools=[WEB])).json()
+    stored = agent["current_version"]["tools"][0]["config"]
+    spec = replace(TOOLS["web_search"], config_model=DriftedWebSearchConfig)
+    monkeypatch.setitem(TOOLS, "web_search", spec)
+
+    # Sending the stored settings back unchanged, as the UI does, keeps them as they are, so
+    # renaming neither creates a version nor fails validation.
+    unchanged = [{"key": "web_search", "config": stored}]
+    resp = api.put(url, json=agent_body(agent, name="Renamed", tools=unchanged))
+    assert resp.status_code == 200
+    version = resp.json()["current_version"]
+    assert (version["version"], version["tools"][0]["config"]) == (2, stored)
+
+    # Changed settings are validated against the current model.
+    changed = [{"key": "web_search", "config": {**stored, "allowed_domains": ["a.com"]}}]
+    assert api.put(url, json=agent_body(agent, tools=changed)).status_code == 422
+    edited = [{"key": "web_search", "config": {"allowed_domains": ["a.com"]}}]
+    version = api.put(url, json=agent_body(agent, tools=edited)).json()["current_version"]
+    assert (version["version"], version["tools"][0]["config"]) == (
+        3,
+        {"allowed_domains": ["a.com"], "blocked_domains": [], "safe_search": True},
+    )
 
 
 def test_versions_without_tools_keep_their_hash(db, user):

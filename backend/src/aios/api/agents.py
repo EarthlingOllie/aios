@@ -193,14 +193,27 @@ def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[Sk
     return versions
 
 
-def resolve_tools(tools: list[AgentToolIn]) -> list[tuple[str, dict[str, Any]]]:
-    """The requested tools as (key, validated settings) pairs, in request order."""
+def resolve_tools(
+    tools: list[AgentToolIn], current: AgentVersion | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """The requested tools as (key, validated settings) pairs, in request order.
+
+    Settings sent back exactly as `current` stores them are kept as stored rather than
+    re-validated, so a later change to the tool's settings model (a new field with a default, a
+    removed field) doesn't turn a rename into a new version or reject the save.
+    """
     if len({t.key for t in tools}) != len(tools):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each tool can be added only once"
         )
+    stored = {t.tool_key: t.config for t in current.tools} if current else {}
     try:
-        return [(t.key, validate_tool(t.key, t.config)) for t in tools]
+        return [
+            (t.key, t.config)
+            if t.key in TOOLS and stored.get(t.key) == t.config
+            else (t.key, validate_tool(t.key, t.config))
+            for t in tools
+        ]
     except ToolError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
@@ -329,7 +342,7 @@ def get_agent(agent_id: int, user: CurrentUser, db: DB):
 def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
     agent = get_owned_agent(db, user.id, agent_id)
-    tools = resolve_tools(body.tools)
+    tools = resolve_tools(body.tools, agent.current_version)
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent.name = body.name
     agent.description = body.description
