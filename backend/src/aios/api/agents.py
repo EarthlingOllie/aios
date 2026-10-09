@@ -1,13 +1,24 @@
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, status
+from anyio import CancelScope
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
-from pydantic_ai import AgentRunResult
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, UserPromptPart
+from pydantic import BaseModel, Field, ValidationError
+from pydantic_ai import AgentRunResult, capture_run_messages
+from pydantic_ai.messages import (
+    CompactionPart,
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+)
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
+from pydantic_ai.ui.vercel_ai.response_types import BaseChunk
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -425,17 +436,49 @@ def _append_run_messages(run_id: int, new_messages: list[ModelMessage]) -> None:
         db.commit()
 
 
-def turn_messages(result: AgentRunResult) -> list[ModelMessage]:
-    """This turn's messages: the user's new message plus everything the model produced.
+def reply_messages(messages: list[ModelMessage], turn_id: str) -> list[ModelMessage]:
+    """What the model produced this turn: its responses and any tool results.
 
-    `result.new_messages()` would leave out the user's message, because the adapter passes it
-    in via `message_history`; the run stamps it, and its replies, with this run's id.
+    The run stamps the user's request and its replies with the turn's run id; the request is
+    left out because it was saved before the model was called (see `turn_request`).
     """
-    messages = result.all_messages()
     for index, message in enumerate(messages):
-        if message.run_id == result.run_id:
-            return messages[index:]
-    return []
+        if message.run_id == turn_id:
+            turn = messages[index:]
+            break
+    else:
+        return []
+    while turn and isinstance(turn[0], ModelRequest):
+        turn = turn[1:]
+    return turn
+
+
+def turn_request(
+    adapter: VercelAIAdapter, history: list[ModelMessage], turn_id: str, instructions: str
+) -> list[ModelMessage]:
+    """The client's new message, as the run will see it, to save before the model is called.
+
+    Sanitized like the adapter does (and with client compaction boundaries dropped once there is
+    server-side history), and stamped the way the run stamps the request it sends, so the stored
+    copy matches what a completed turn would have recorded.
+    """
+    messages = adapter.sanitize_messages(
+        adapter.messages, deferred_tool_results=adapter.deferred_tool_results
+    )
+    if history:
+        messages = [
+            replace(m, parts=[p for p in m.parts if not isinstance(p, CompactionPart)])
+            if isinstance(m, ModelResponse)
+            else m
+            for m in messages
+        ]
+        messages = [m for m in messages if m.parts]
+    return [
+        replace(m, run_id=turn_id, instructions=instructions)
+        if isinstance(m, ModelRequest)
+        else replace(m, run_id=turn_id)
+        for m in messages
+    ]
 
 
 def trace_metadata(run: AgentRun) -> dict[str, Any]:
@@ -477,24 +520,63 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
 async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUser, db: DB):
-    """Continue a run. The client sends only its new message; history comes from the database."""
+    """Continue a run. The client sends only its new message; history comes from the database.
+
+    The user's message is saved before the model is called, and the reply when the turn ends,
+    whether it completes, fails, or is stopped (the client disconnecting), so the stored history,
+    which is all the next turn sees, always matches what the user saw.
+    """
     # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
     # session is function-scoped (see `aios.db.DB`), so it's closed and its connection returned
-    # to the pool before the response streams; the save at the end uses a session of its own.
+    # to the pool before the response streams; the saves use sessions of their own.
     ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id)
 
-    async def on_complete(result: AgentRunResult) -> None:
-        await run_in_threadpool(_append_run_messages, run_id, turn_messages(result))
+    try:
+        adapter = await VercelAIAdapter.from_request(
+            request, agent=runner, sdk_version=SDK_VERSION, allowed_file_url_schemes=frozenset()
+        )
+    except ValidationError as e:
+        return Response(
+            e.json(include_input=False),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            media_type="application/json",
+        )
 
-    return await VercelAIAdapter.dispatch_request(
-        request,
-        agent=runner,
-        sdk_version=SDK_VERSION,
-        message_history=ctx.history,
-        conversation_id=f"agent-run-{run_id}",
-        model=ctx.model,
-        instructions=ctx.instructions,
-        metadata=ctx.metadata,
-        on_complete=on_complete,
-        allowed_file_url_schemes=frozenset(),
-    )
+    # Our own run id, so the turn's messages can be picked out of a run that didn't finish.
+    turn_id = str(uuid4())
+    request_messages = turn_request(adapter, ctx.history, turn_id, ctx.instructions)
+    await run_in_threadpool(_append_run_messages, run_id, request_messages)
+
+    saved = False
+
+    async def on_complete(result: AgentRunResult) -> None:
+        nonlocal saved
+        saved = True
+        await run_in_threadpool(
+            _append_run_messages, run_id, reply_messages(result.all_messages(), turn_id)
+        )
+
+    async def stream() -> AsyncIterator[BaseChunk]:
+        # `on_complete` only fires on success: a model error is turned into an error chunk, and
+        # the client stopping cancels this task. The captured history includes the partial reply
+        # (marked `state='interrupted'`) in both cases.
+        with capture_run_messages() as captured:
+            try:
+                async for chunk in adapter.run_stream(
+                    message_history=ctx.history,
+                    conversation_id=f"agent-run-{run_id}",
+                    run_id=turn_id,
+                    model=ctx.model,
+                    instructions=ctx.instructions,
+                    metadata=ctx.metadata,
+                    on_complete=on_complete,
+                ):
+                    yield chunk
+            finally:
+                if not saved:
+                    with CancelScope(shield=True):
+                        await run_in_threadpool(
+                            _append_run_messages, run_id, reply_messages(captured, turn_id)
+                        )
+
+    return adapter.streaming_response(stream())
