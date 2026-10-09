@@ -18,13 +18,6 @@ from aios.runner import runner
 from aios.versioning import save_agent_version
 
 
-@pytest.fixture
-def api(client, user):
-    app.dependency_overrides[current_user] = lambda: user
-    yield client
-    app.dependency_overrides.clear()
-
-
 def chat_body(text: str) -> dict:
     return {
         "trigger": "submit-message",

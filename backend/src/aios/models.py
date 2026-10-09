@@ -228,8 +228,26 @@ class AgentVersion(Base):
     skills: Mapped[list[SkillVersion]] = relationship(
         secondary=agent_version_skills, order_by=agent_version_skills.c.position, viewonly=True
     )
+    tools: Mapped[list["AgentVersionTool"]] = relationship(
+        order_by="AgentVersionTool.position", cascade="all, delete-orphan", passive_deletes=True
+    )
 
     __table_args__ = (UniqueConstraint("agent_id", "version"),)
+
+
+class AgentVersionTool(Base):
+    """A tool from the library (`aios.tools`) given to an agent version, with its settings."""
+
+    __tablename__ = "agent_version_tools"
+
+    agent_version_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_versions.id", ondelete="CASCADE"), primary_key=True
+    )
+    # A key in aios.tools.TOOLS. Tools are code, so there's no row to reference.
+    tool_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    # The tool's validated settings (its config_model, defaults filled in).
+    config: Mapped[dict] = mapped_column(JSONB)
+    position: Mapped[int] = mapped_column(Integer)
 
 
 class AgentRun(Base):

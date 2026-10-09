@@ -64,6 +64,37 @@ export type AgentSkill = {
   latest_version_id: number | null;
 };
 
+/** A JSON schema property, as Pydantic emits them for tool settings. */
+export type SchemaProperty = {
+  type?: "string" | "integer" | "number" | "boolean" | "array";
+  title?: string;
+  description?: string;
+  minimum?: number;
+  maximum?: number;
+  items?: SchemaProperty;
+};
+
+/** A tool in the library, which can be given to agents. */
+export type ToolInfo = {
+  key: string;
+  name: string;
+  description: string;
+  config_schema: { properties?: Record<string, SchemaProperty> };
+  /** The settings a newly added tool starts with. */
+  default_config: Record<string, unknown>;
+};
+
+export type AgentTool = {
+  key: string;
+  name: string;
+  description: string;
+  config: Record<string, unknown>;
+  /** False if the tool has since been removed from the library. */
+  available: boolean;
+};
+
+export type AgentToolInput = { key: string; config: Record<string, unknown> };
+
 export type AgentVersionSummary = {
   id: number;
   version: number;
@@ -83,6 +114,7 @@ export type AgentVersion = {
   /** The exact instructions this version sends to the model. */
   instructions: string;
   skills: AgentSkill[];
+  tools: AgentTool[];
 };
 
 export type AgentSummary = {
@@ -91,6 +123,7 @@ export type AgentSummary = {
   description: string;
   version: number;
   skill_count: number;
+  tool_count: number;
   run_count: number;
   updated_at: string;
 };
@@ -110,6 +143,8 @@ export type AgentInput = {
   base_prompt: string;
   /** Specific skill versions, in order. */
   skill_version_ids: number[];
+  /** Tools from the library, in order, each with its settings. */
+  tools: AgentToolInput[];
   note?: string;
 };
 
@@ -201,6 +236,7 @@ export const api = {
     request<SkillVersion>(`/api/skills/${id}/versions/${version}`),
   restoreSkillVersion: (id: number, version: number) =>
     request<Skill>(`/api/skills/${id}/versions/${version}/restore`, { method: "POST" }),
+  listTools: () => request<ToolInfo[]>("/api/tools"),
   listAgents: () => request<AgentSummary[]>("/api/agents"),
   getAgent: (id: number) => request<Agent>(`/api/agents/${id}`),
   createAgent: (body: AgentInput) => request<Agent>("/api/agents", json("POST", body)),

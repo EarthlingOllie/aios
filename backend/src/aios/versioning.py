@@ -11,12 +11,20 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from aios.models import Agent, AgentVersion, Skill, SkillVersion, agent_version_skills
+from aios.models import (
+    Agent,
+    AgentVersion,
+    AgentVersionTool,
+    Skill,
+    SkillVersion,
+    agent_version_skills,
+)
 
 DEFAULT_BASE_PROMPT = "You are a helpful assistant."
 
@@ -116,14 +124,19 @@ def save_agent_version(
     note: str | None,
     user_id: int,
     model: str | None = None,
+    tools: Sequence[tuple[str, dict[str, Any]]] = (),
 ) -> AgentVersion:
-    digest = config_hash(
-        {
-            "base_prompt": base_prompt,
-            "model": model,
-            "skill_version_ids": [s.id for s in skills],
-        }
-    )
+    """`tools` are (key, settings) pairs, already validated (`aios.tools.validate_tool`)."""
+    config: dict[str, Any] = {
+        "base_prompt": base_prompt,
+        "model": model,
+        "skill_version_ids": [s.id for s in skills],
+    }
+    # Only hashed when present, so versions saved before tools existed keep their hash and
+    # re-saving them unchanged doesn't create a version.
+    if tools:
+        config["tools"] = [{"key": key, "config": settings} for key, settings in tools]
+    digest = config_hash(config)
     db.flush()  # assigns agent.id for a new agent
     # Compare against the current version only once the lock is held (see save_skill_version).
     current_id = _lock_current_version_id(db, Agent, agent.id)
@@ -145,6 +158,10 @@ def save_agent_version(
         config_hash=digest,
         note=note,
         created_by=user_id,
+        tools=[
+            AgentVersionTool(tool_key=key, config=settings, position=i)
+            for i, (key, settings) in enumerate(tools)
+        ],
     )
     db.add(version)
     db.flush()
