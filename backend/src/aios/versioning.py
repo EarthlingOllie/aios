@@ -6,7 +6,9 @@ is allocated, so concurrent saves can't both claim it. Callers commit.
 """
 
 import hashlib
+import html
 import json
+import re
 from typing import Any
 
 from sqlalchemy import func, insert, select
@@ -15,6 +17,9 @@ from sqlalchemy.orm import Session
 from aios.models import Agent, AgentVersion, Skill, SkillVersion, agent_version_skills
 
 DEFAULT_BASE_PROMPT = "You are a helpful assistant."
+
+# `<skill` / `</skill` tags (any case, any spacing after `<`) inside a skill's text.
+_SKILL_TAG = re.compile(r"<(?=\s*/?\s*skill\b)", re.IGNORECASE)
 
 
 def config_hash(config: dict[str, Any]) -> str:
@@ -30,9 +35,21 @@ def render_instructions(base_prompt: str, skills: list[SkillVersion]) -> str:
             "follow that skill's instructions."
         )
         for skill in skills:
-            body = "\n\n".join(s for s in (skill.description.strip(), skill.content.strip()) if s)
-            sections.append(f'<skill name="{skill.skill.name}">\n{body}\n</skill>')
+            sections.append(render_skill_block(skill.skill.name, skill.description, skill.content))
     return "\n\n".join(sections)
+
+
+def render_skill_block(name: str, description: str, content: str) -> str:
+    """Wraps one skill in a `<skill name="...">` block that its own text can't break out of.
+
+    The name is attribute-escaped. The body only has `<` escaped where it starts a `skill` tag,
+    so content can neither close the block early nor open a fake one. Other markup (code,
+    HTML, `a < b`) is left as written: escaping every `<` and `&` would make skills harder for
+    the model to read, and only the block's own tags matter for where it ends.
+    """
+    body = "\n\n".join(s for s in (description.strip(), content.strip()) if s)
+    body = _SKILL_TAG.sub("&lt;", body)
+    return f'<skill name="{html.escape(name, quote=True)}">\n{body}\n</skill>'
 
 
 def _lock_current_version_id(
