@@ -423,20 +423,19 @@ export function AgentForm() {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<FormState>();
-  const [version, setVersion] = useState<number>();
+  // The version being edited, if any.
+  const [loaded, setLoaded] = useState<AgentVersion>();
   // Skills attached to the current version, by skill id: these stay on their pinned version.
   const [pinned, setPinned] = useState<Map<number, AgentSkill>>(new Map());
   const [skills, setSkills] = useState<SkillSummary[]>();
   const [catalog, setCatalog] = useState<ToolInfo[]>();
-  // Attached tools that have since left the library (key -> name), so they can be removed.
-  const [retired, setRetired] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setForm(undefined);
+    setLoaded(undefined);
     setPinned(new Map());
-    setRetired(new Map());
     api.listSkills().then(setSkills, (err) => setError(describeError(err)));
     api.listTools().then(setCatalog, (err) => setError(describeError(err)));
     if (id === undefined) setForm(emptyAgent);
@@ -452,8 +451,7 @@ export function AgentForm() {
             tools: v.tools.map(({ key, config }) => ({ key, config })),
             note: "",
           });
-          setRetired(new Map(v.tools.filter((t) => !t.available).map((t) => [t.key, t.name])));
-          setVersion(v.version);
+          setLoaded(v);
           setPinned(new Map(v.skills.map((s) => [s.skill_id, s])));
         },
         (err) => setError(describeError(err)),
@@ -476,6 +474,10 @@ export function AgentForm() {
     });
   const setToolConfig = (key: string, config: Record<string, unknown>) =>
     set({ tools: form.tools.map((t) => (t.key === key ? { ...t, config } : t)) });
+  // Attached tools that have since left the library, so they can be removed. Unknown until the
+  // catalog loads.
+  const retired = catalog ? form.tools.filter((t) => !catalog.some((c) => c.key === t.key)) : [];
+  const toolName = (key: string) => loaded?.tools.find((t) => t.key === key)?.name ?? key;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -504,8 +506,8 @@ export function AgentForm() {
     <DetailPage
       title={id === undefined ? "New agent" : "Edit agent"}
       subtitle={
-        version !== undefined &&
-        `Editing v${version}. Changing the prompt, skills or tools creates v${version + 1}; renaming doesn't. Existing runs stay on the version they started with.`
+        loaded &&
+        `Editing v${loaded.version}. Changing the prompt, skills or tools creates v${loaded.version + 1}; renaming doesn't. Existing runs stay on the version they started with.`
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
@@ -615,24 +617,20 @@ export function AgentForm() {
                 </li>
               );
             })}
-            {[...retired].map(([key, name]) => {
-              const attached = form.tools.some((t) => t.key === key);
-              return (
-                <li key={key}>
-                  <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={attached}
-                      disabled={!attached}
-                      onChange={() => set({ tools: form.tools.filter((t) => t.key !== key) })}
-                    />
-                    <span className="min-w-0 flex-1 text-sm font-medium">{name}</span>
-                    <Badge variant="secondary">no longer available, remove to save</Badge>
-                  </label>
-                </li>
-              );
-            })}
+            {retired.map(({ key }) => (
+              <li key={key}>
+                <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked
+                    onChange={() => set({ tools: form.tools.filter((t) => t.key !== key) })}
+                  />
+                  <span className="min-w-0 flex-1 text-sm font-medium">{toolName(key)}</span>
+                  <Badge variant="secondary">no longer available, remove to save</Badge>
+                </label>
+              </li>
+            ))}
           </ul>
         </fieldset>
         {id !== undefined && (
