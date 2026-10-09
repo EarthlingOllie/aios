@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Annotated
@@ -71,6 +71,27 @@ def get_owned_skill(db: Session, user_id: int, skill_id: int) -> Skill:
     if skill is None or skill.owner_id != user_id or skill.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return skill
+
+
+def lock_live_skills(db: Session, skill_ids: Iterable[int]) -> set[int]:
+    """Row-lock these skills (FOR UPDATE, in id order) and return the ids still live.
+
+    Attaching a skill to an agent and deleting the skill both take this lock, so a delete can't
+    slip in between an agent save's liveness check and its commit. Lock order is always skills
+    (ascending id) before the agent row that save_agent_version locks; nothing locks the other
+    way round, so the two paths can't deadlock.
+    """
+    ids = sorted(set(skill_ids))
+    if not ids:
+        return set()
+    return set(
+        db.scalars(
+            select(Skill.id)
+            .where(Skill.id.in_(ids), Skill.deleted_at.is_(None))
+            .order_by(Skill.id)
+            .with_for_update()
+        )
+    )
 
 
 def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
@@ -185,6 +206,9 @@ def update_skill(skill_id: int, body: SkillIn, user: CurrentUser, db: DB):
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_skill(skill_id: int, user: CurrentUser, db: DB) -> None:
     skill = get_owned_skill(db, user.id, skill_id)
+    # Hold the row lock across the usage check and the delete; agent saves take it too.
+    if not lock_live_skills(db, [skill.id]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     usage = skill_usage(db, skill.id)
     if usage:
         names = ", ".join(u.agent_name for u in usage)

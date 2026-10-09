@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 from pydantic_ai import Agent as PydanticAgent
@@ -7,9 +8,11 @@ from pydantic_ai.models.test import TestModel
 
 from aios.api import agents as agents_api
 from aios.auth import current_user
+from aios.db import SessionLocal
 from aios.main import app
-from aios.models import User
+from aios.models import Agent, User
 from aios.runner import runner
+from aios.versioning import save_agent_version
 
 
 @pytest.fixture
@@ -199,6 +202,39 @@ def test_skill_delete_blocked_while_in_use_then_soft(api):
 
     assert api.delete(url).status_code == 204
     assert api.get("/api/agents").json() == []
+
+
+def test_skill_delete_waits_for_in_flight_attach(api, user):
+    skill = make_skill(api, "Racy", "Go fast.")
+    agent = make_agent(api, "Bot")
+    result = {}
+
+    with SessionLocal() as session:
+        # An agent save that has resolved (and locked) the skill but not yet committed.
+        skills = agents_api.resolve_skill_versions(
+            session, user.id, [skill["current_version"]["id"]]
+        )
+        deleter = threading.Thread(
+            target=lambda: result.update(resp=api.delete(f"/api/skills/{skill['id']}"))
+        )
+        deleter.start()
+        deleter.join(timeout=0.5)
+        assert deleter.is_alive(), "delete should block on the skill row lock"
+
+        save_agent_version(
+            session,
+            session.get(Agent, agent["id"]),
+            base_prompt="",
+            skills=skills,
+            note=None,
+            user_id=user.id,
+        )
+        session.commit()
+
+    deleter.join(timeout=10)
+    # The delete saw the attach once it got the lock, so the agent never points at a dead skill.
+    assert result["resp"].status_code == 409
+    assert api.get(f"/api/skills/{skill['id']}").status_code == 200
 
 
 def test_other_users_cannot_see_agents(api, client, db):

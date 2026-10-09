@@ -10,7 +10,7 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios.api.skills import unique_name
+from aios.api.skills import lock_live_skills, unique_name
 from aios.auth import CurrentUser
 from aios.db import SessionLocal, get_db
 from aios.models import Agent, AgentRun, AgentVersion, Skill, SkillVersion, agent_version_skills
@@ -145,6 +145,11 @@ def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[Sk
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each skill can be attached only once"
         )
+    # Lock the skills until commit and re-check they're live, so a concurrent delete either
+    # waits for this save (and then sees the usage) or wins and we reject the attach.
+    skill_ids = {v.skill_id for v in versions}
+    if lock_live_skills(db, skill_ids) != skill_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill version")
     return versions
 
 
@@ -314,7 +319,8 @@ def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB)
     """Make an old version's config current again, as a new version (numbers only go up)."""
     agent = get_owned_agent(db, user.id, agent_id)
     old = get_agent_version(db, agent, number)
-    if any(sv.skill.deleted_at is not None for sv in old.skills):
+    skill_ids = {sv.skill_id for sv in old.skills}
+    if lock_live_skills(db, skill_ids) != skill_ids:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
         )
