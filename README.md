@@ -4,6 +4,31 @@ Chat with your documents. Upload files, they're parsed and chunked with Docling,
 Voyage, and stored in Postgres/pgvector. Chat uses a Pydantic AI agent (Anthropic) that calls a
 hybrid search tool (vector + full-text, fused with Reciprocal Rank Fusion).
 
+You can also define your own **agents** (a base prompt plus a set of **skills**, which are
+reusable instructions) and chat with them. Each conversation with an agent is saved as a **run**,
+whose page shows the conversation and an event log: model requests and responses, tool calls,
+the instructions sent and token usage.
+
+Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
+chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
+the model's behaviour:
+
+- Changing an agent's prompt or skills creates a new version. Renaming doesn't, and nor does
+  saving without changes (configs are compared by hash).
+- Changing a skill's description or content creates a new version, and so does renaming it: the
+  name is sent to the model in each agent's instructions, so each skill version snapshots it.
+- Each agent version pins specific skill versions and stores the exact rendered instructions.
+  Editing a skill doesn't change any agent; the agent shows "Update to vN" and taking the update
+  creates a new agent version.
+- A run is pinned to the agent version it started on, so editing an agent mid-conversation
+  doesn't change it.
+- Restoring an old version creates a new one with that config; numbers only go up.
+- Skills are soft-deleted (old agent versions still reference their versions), and can't be
+  deleted while an agent's current version uses them.
+- Each run passes `agent_id`, `agent_version`, `agent_version_id` and the skill versions as
+  Pydantic AI run metadata, and `agent-run-<id>` as the conversation id. These reach
+  OpenTelemetry spans once instrumentation is set up (e.g. for Langfuse).
+
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
@@ -29,6 +54,10 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     auth.py         /login, /auth/callback, /logout, current_user
     api/chat.py     POST /api/chat (AI SDK UI message stream)
     api/documents.py upload/list/delete, GET /api/search
+    api/skills.py   CRUD /api/skills
+    api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+    runner.py       the Pydantic AI agent that runs user-defined agents
+    versioning.py   creating agent/skill versions, rendering instructions
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -129,4 +158,12 @@ anything real.
   fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
   (Settings → Resources).
-- Chat history is client-side (`useChat` sends the conversation each turn). It isn't saved yet.
+- Document chat history is client-side (`useChat` sends the conversation each turn). It isn't
+  saved yet. Agent runs are different: the server stores each run's full Pydantic AI message
+  history (`agent_runs.messages`, JSONB), the client sends only its new message, and the server
+  replays the stored history into the next turn.
+- **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
+  description and instructions in a `<skill>` block). That's simple and works well for a handful
+  of skills. With many large skills, switch to progressive disclosure: list only names and
+  descriptions, and give the agent a tool to load a skill's full instructions.
+- Agents have no tools yet; the run UI and event log already render tool calls and returns.
