@@ -35,10 +35,15 @@ def register(spec: ToolSpec) -> ToolSpec:
     return spec
 
 
-def _parse(key: str, config: dict[str, Any]) -> tuple[ToolSpec, BaseModel]:
+def _parse(key: str, config: dict[str, Any], *, stored: bool = False) -> tuple[ToolSpec, BaseModel]:
     spec = TOOLS.get(key)
     if spec is None:
         raise ToolError(f"Unknown tool: {key}")
+    if stored:
+        # Settings saved under an older settings model: fields it has since dropped are ignored
+        # (and fields it has added take their defaults), so stored settings keep working. Values
+        # the current model rejects still fail.
+        config = {k: v for k, v in config.items() if k in spec.config_model.model_fields}
     try:
         return spec, spec.config_model.model_validate(config)
     except ValidationError as exc:
@@ -53,11 +58,17 @@ def _describe(error: dict[str, Any]) -> str:
 
 
 def validate_tool(key: str, config: dict[str, Any]) -> dict[str, Any]:
-    """The tool's settings with defaults filled in, in the canonical form that's stored."""
+    """New settings, checked strictly, with defaults filled in: the canonical form that's stored."""
     _, parsed = _parse(key, config)
     return parsed.model_dump(mode="json")
 
 
+def check_stored_tool(key: str, config: dict[str, Any]) -> None:
+    """Raises `ToolError` if stored settings can no longer be built (see `build_tool`)."""
+    _parse(key, config, stored=True)
+
+
 def build_tool(key: str, config: dict[str, Any]) -> AbstractCapability[Any]:
-    spec, parsed = _parse(key, config)
+    """Builds a tool from stored settings, which may predate its current settings model."""
+    spec, parsed = _parse(key, config, stored=True)
     return spec.build(parsed)

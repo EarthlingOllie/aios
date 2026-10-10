@@ -9,6 +9,22 @@ To add a tool, write a module that calls `register(ToolSpec(...))` and import it
 """
 
 from aios.tools import hybrid_search, web_search  # noqa: F401  (registers the tools)
-from aios.tools.registry import TOOLS, ToolError, ToolSpec, build_tool, register, validate_tool
+from aios.tools.registry import (
+    TOOLS,
+    ToolError,
+    ToolSpec,
+    build_tool,
+    check_stored_tool,
+    register,
+    validate_tool,
+)
 
-__all__ = ["TOOLS", "ToolError", "ToolSpec", "build_tool", "register", "validate_tool"]
+__all__ = [
+    "TOOLS",
+    "ToolError",
+    "ToolSpec",
+    "build_tool",
+    "check_stored_tool",
+    "register",
+    "validate_tool",
+]

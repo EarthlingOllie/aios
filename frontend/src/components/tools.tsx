@@ -15,13 +15,20 @@ export function ToolSettingsFields({
   value: Config;
   onChange: (value: Config) => void;
 }) {
-  const properties = Object.entries(tool.config_schema.properties ?? {});
+  const schema = tool.config_schema.properties ?? {};
+  const properties = Object.entries(schema);
   if (properties.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
       {properties.map(([name, prop]) => {
         const id = `tool-${tool.key}-${name}`;
-        const set = (v: unknown) => onChange({ ...value, [name]: v });
+        // Only the fields the tool has now: stored settings can carry ones it has since dropped,
+        // which the server would reject alongside the edit.
+        const set = (v: unknown) =>
+          onChange({
+            ...Object.fromEntries(Object.entries(value).filter(([k]) => k in schema)),
+            [name]: v,
+          });
         const current = value[name];
         let input: React.ReactNode;
         if (prop.type === "boolean") {
@@ -43,8 +50,10 @@ export function ToolSettingsFields({
               max={prop.maximum}
               step={prop.type === "integer" ? 1 : "any"}
               value={typeof current === "number" ? current : ""}
+              // An empty field is sent as null, which the server rejects, rather than left out,
+              // which it would quietly fill in with the default.
               onChange={(e) =>
-                set(e.target.value === "" ? undefined : Number(e.target.value))
+                set(e.target.value === "" ? null : Number(e.target.value))
               }
             />
           );
@@ -137,6 +146,34 @@ export function ToolList({
           tool={tool}
           info={catalog?.find((t) => t.key === tool.key)}
         />
+      ))}
+    </ul>
+  );
+}
+
+/** The tools added, removed or reconfigured between two versions. */
+export function ToolChanges({ before, after }: { before: AgentTool[]; after: AgentTool[] }) {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const changes = [
+    ...after
+      .filter((t) => !before.some((b) => b.key === t.key))
+      .map((t) => `Added ${t.name}`),
+    ...before
+      .filter((t) => !after.some((a) => a.key === t.key))
+      .map((t) => `Removed ${t.name}`),
+    ...after
+      .filter((t) => {
+        const old = before.find((b) => b.key === t.key);
+        return old && !same(old.config, t.config);
+      })
+      .map((t) => `Changed the settings of ${t.name}`),
+  ];
+  if (changes.length === 0)
+    return <p className="text-muted-foreground text-sm">No differences.</p>;
+  return (
+    <ul className="list-disc pl-5 text-sm">
+      {changes.map((change) => (
+        <li key={change}>{change}</li>
       ))}
     </ul>
   );

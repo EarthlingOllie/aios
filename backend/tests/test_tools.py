@@ -2,8 +2,9 @@ import json
 from dataclasses import replace
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_ai import ModelRequest, ToolReturnPart
+from pydantic_ai.capabilities import WebSearch
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.native_tools import WebSearchTool
 from test_agents import agent_body, chat_body, make_agent, spy_run_stream, text_deltas
@@ -11,6 +12,7 @@ from test_search import unit
 
 from aios import search
 from aios.agent import ChatDeps
+from aios.config import get_settings
 from aios.models import Agent, Chunk, Document, DocumentStatus, User
 from aios.runner import runner
 from aios.tools import TOOLS, ToolSpec, register
@@ -40,6 +42,10 @@ def test_web_search_settings():
     assert config.allowed_domains == ["example.com", "docs.python.org"]
     paths = ["example.com/blog", "example.com/*/articles"]
     assert WebSearchConfig(blocked_domains=paths).blocked_domains == paths
+    # Hostnames are case-insensitive, paths aren't.
+    assert WebSearchConfig(allowed_domains=["GitHub.com/MyOrg/Repo"]).allowed_domains == [
+        "github.com/MyOrg/Repo"
+    ]
     for bad in ["https://docs.python.org/3/", "python org", "*.example.com", "localhost"]:
         with pytest.raises(ValidationError, match="isn't a domain"):
             WebSearchConfig(allowed_domains=[bad])
@@ -166,6 +172,51 @@ def test_stored_settings_survive_settings_model_changes(api, monkeypatch):
         3,
         {"allowed_domains": ["a.com"], "blocked_domains": [], "safe_search": True},
     )
+
+
+def drifted_build(config: DriftedWebSearchConfig) -> WebSearch:
+    return WebSearch(allowed_domains=config.allowed_domains or None)
+
+
+def test_stored_settings_load_like_a_run_loads_them(api, monkeypatch):
+    agent = make_agent(api, "Researcher")
+    url = f"/api/agents/{agent['id']}"
+    agent = api.put(url, json=agent_body(agent, tools=[WEB])).json()
+    stored = agent["current_version"]["tools"]
+    api.put(url, json=agent_body(agent, tools=[]))
+    spec = replace(TOOLS["web_search"], config_model=DriftedWebSearchConfig, build=drifted_build)
+    monkeypatch.setitem(TOOLS, "web_search", spec)
+
+    # A dropped field is ignored when a version runs, and on restore, which keeps the settings
+    # as stored rather than filling in the new model's defaults.
+    run = api.post(f"{url}/runs").json()
+    assert run["agent_version"] == 3
+    restored = api.post(f"{url}/versions/2/restore").json()["current_version"]
+    assert (restored["version"], restored["tools"]) == (4, stored)
+    assert api.post(f"{url}/runs").status_code == 201
+
+    # Settings the current model rejects are refused on save and restore, not saved unrunnable.
+    class StricterConfig(DriftedWebSearchConfig):
+        max_uses: int = Field(3, le=3)
+
+    monkeypatch.setitem(TOOLS, "web_search", replace(spec, config_model=StricterConfig))
+    agent = api.get(url).json()
+    unchanged = [{"key": t["key"], "config": t["config"]} for t in stored]
+    resp = api.put(url, json=agent_body(agent, name="Renamed", tools=unchanged))
+    assert resp.status_code == 422
+    assert resp.json()["detail"].startswith("Invalid settings for Web search: max_uses")
+    resp = api.post(f"{url}/versions/2/restore")
+    assert resp.status_code == 409
+    assert resp.json()["detail"].startswith("That version can't be restored: Invalid settings")
+    assert api.get(url).json()["name"] == "Researcher"
+
+
+def test_version_history_counts_tools(api):
+    agent = make_agent(api, "Researcher")
+    url = f"/api/agents/{agent['id']}"
+    api.put(url, json=agent_body(agent, tools=[WEB]))
+    counts = [(v["version"], v["tool_count"]) for v in api.get(f"{url}/versions").json()]
+    assert counts == [(2, 1), (1, 0)]
 
 
 def test_versions_without_tools_keep_their_hash(db, user):
@@ -349,3 +400,12 @@ def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert text_deltas(api.post(url, json=chat_body("hi"))) == "found 0"
     assert seen["results"] == []
+
+
+def test_hybrid_search_fills_a_limit_above_its_candidates(db, user, documents, monkeypatch):
+    # A query with no keyword matches, so every result comes from the semantic branch.
+    monkeypatch.setattr(get_settings(), "search_candidates", 1)
+    hits = search.hybrid_search_with_vector(
+        db, owner_id=user.id, query="xylophone", query_vector=unit(0), limit=3
+    )
+    assert len(hits) == 3

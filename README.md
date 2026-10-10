@@ -174,7 +174,10 @@ anything real.
   To add a tool, write a module that calls `register(ToolSpec(...))` and import it in
   `aios/tools/__init__.py`. Never rename a key: old versions reference it. If a tool's behaviour
   changes in a way old versions shouldn't get, register it under a new key. A version whose tool
-  has been removed from the library can still be viewed, but not restored or run.
+  has been removed from the library can still be viewed, but not restored or run. Stored
+  settings are loaded leniently: fields the settings model has since dropped are ignored and new
+  fields take their defaults, so changing a settings model doesn't break old versions. Saving,
+  restoring and running all load them the same way, and refuse a value the model now rejects.
 - **Web search** uses the model provider's native search tool (Anthropic's server-side web
   search), which is billed per search; its settings cap searches per model request and can
   allow or block domains. A model without native web search fails the turn rather than running

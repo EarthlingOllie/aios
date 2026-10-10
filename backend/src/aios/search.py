@@ -78,7 +78,8 @@ def hybrid_search_with_vector(
             "qvec": vector_literal(query_vector),
             "query": query,
             "owner_id": owner_id,
-            "candidates": settings.search_candidates,
+            # Enough candidates from each branch to fill `limit` even when only one matches.
+            "candidates": max(settings.search_candidates, limit),
             "rrf_k": settings.search_rrf_k,
             "limit": limit,
         },

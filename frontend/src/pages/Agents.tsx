@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ToolList, ToolSettingsFields } from "@/components/tools";
+import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
 import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
 import {
   api,
@@ -304,8 +304,13 @@ export function AgentDetail() {
           current={current.version}
           href={(v) => `/agents/${id}/versions/${v}`}
           detail={(v) => {
-            const n = versions.data?.find((x) => x.version === v)?.run_count ?? 0;
-            return `${n} run${n === 1 ? "" : "s"}`;
+            const s = versions.data?.find((x) => x.version === v);
+            const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+            return [
+              count(s?.skill_count ?? 0, "skill"),
+              count(s?.tool_count ?? 0, "tool"),
+              count(s?.run_count ?? 0, "run"),
+            ].join(" · ");
           }}
         />
       </Section>
@@ -403,6 +408,11 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
           after={v.instructions}
         />
       </Section>
+      {baseVersion !== undefined && before.data && (
+        <Section title={`Changes to the tools since v${baseVersion}`}>
+          <ToolChanges before={before.data.tools} after={v.tools} />
+        </Section>
+      )}
     </DetailPage>
   );
 }

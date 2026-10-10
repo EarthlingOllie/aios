@@ -12,6 +12,12 @@ _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _DOMAIN = re.compile(rf"{_LABEL}(?:\.{_LABEL})+(?:/[^\s?#]*)?")
 
 
+def _normalize(entry: str) -> str:
+    # Hostnames are case-insensitive, paths aren't.
+    host, slash, path = entry.strip().partition("/")
+    return host.lower() + slash + path
+
+
 class WebSearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,7 +46,7 @@ class WebSearchConfig(BaseModel):
     @field_validator("allowed_domains", "blocked_domains")
     @classmethod
     def clean_domains(cls, domains: list[str]) -> list[str]:
-        cleaned = list(dict.fromkeys(d for d in (d.strip().lower() for d in domains) if d))
+        cleaned = list(dict.fromkeys(d for d in map(_normalize, domains) if d))
         for domain in cleaned:
             if not _DOMAIN.fullmatch(domain):
                 raise ValueError(

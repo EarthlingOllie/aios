@@ -37,7 +37,7 @@ from aios.models import (
     agent_version_skills,
 )
 from aios.runner import runner
-from aios.tools import TOOLS, ToolError, build_tool, validate_tool
+from aios.tools import TOOLS, ToolError, build_tool, check_stored_tool, validate_tool
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -90,6 +90,7 @@ class AgentVersionSummary(BaseModel):
     note: str | None
     created_at: datetime
     skill_count: int
+    tool_count: int
     run_count: int
 
 
@@ -197,26 +198,29 @@ def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[Sk
 def resolve_tools(
     tools: list[AgentToolIn], current: AgentVersion | None = None
 ) -> list[tuple[str, dict[str, Any]]]:
-    """The requested tools as (key, validated settings) pairs, in request order.
+    """The requested tools as (key, settings) pairs, in request order.
 
-    Settings sent back exactly as `current` stores them are kept as stored rather than
-    re-validated, so a later change to the tool's settings model (a new field with a default, a
-    removed field) doesn't turn a rename into a new version or reject the save.
+    Settings sent back exactly as `current` stores them are kept as stored, so a later change to
+    the tool's settings model doesn't turn a rename into a new version. They're still checked
+    the way a run loads them, so a version that couldn't run isn't saved. Other settings are new
+    and validated strictly.
     """
     if len({t.key for t in tools}) != len(tools):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each tool can be added only once"
         )
     stored = {t.tool_key: t.config for t in current.tools} if current else {}
+    resolved = []
     try:
-        return [
-            (t.key, t.config)
-            if t.key in TOOLS and stored.get(t.key) == t.config
-            else (t.key, validate_tool(t.key, t.config))
-            for t in tools
-        ]
+        for t in tools:
+            if t.key in stored and stored[t.key] == t.config:
+                check_stored_tool(t.key, t.config)
+                resolved.append((t.key, t.config))
+            else:
+                resolved.append((t.key, validate_tool(t.key, t.config)))
     except ToolError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    return resolved
 
 
 def tool_out(tool: AgentVersionTool) -> AgentToolOut:
@@ -279,6 +283,15 @@ def skill_count(version_id) -> Any:
     )
 
 
+def tool_count(version_id) -> Any:
+    return (
+        select(func.count())
+        .select_from(AgentVersionTool)
+        .where(AgentVersionTool.agent_version_id == version_id)
+        .scalar_subquery()
+    )
+
+
 # --- Agents -------------------------------------------------------------------------------------
 
 
@@ -287,14 +300,14 @@ def list_agents(user: CurrentUser, db: DB):
     run_count = (
         select(func.count(AgentRun.id)).where(AgentRun.agent_id == Agent.id).scalar_subquery()
     )
-    tool_count = (
-        select(func.count())
-        .select_from(AgentVersionTool)
-        .where(AgentVersionTool.agent_version_id == AgentVersion.id)
-        .scalar_subquery()
-    )
     rows = db.execute(
-        select(Agent, AgentVersion.version, skill_count(AgentVersion.id), tool_count, run_count)
+        select(
+            Agent,
+            AgentVersion.version,
+            skill_count(AgentVersion.id),
+            tool_count(AgentVersion.id),
+            run_count,
+        )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
         .where(Agent.owner_id == user.id)
         .order_by(Agent.name)
@@ -381,7 +394,7 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
         .scalar_subquery()
     )
     rows = db.execute(
-        select(AgentVersion, skill_count(AgentVersion.id), run_count)
+        select(AgentVersion, skill_count(AgentVersion.id), tool_count(AgentVersion.id), run_count)
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
@@ -392,9 +405,10 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
             note=v.note,
             created_at=v.created_at,
             skill_count=skills,
+            tool_count=tools,
             run_count=runs,
         )
-        for v, skills, runs in rows
+        for v, skills, tools, runs in rows
     ]
 
 
@@ -408,13 +422,9 @@ def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB)
     """Make an old version's config current again, as a new version (numbers only go up)."""
     agent = get_owned_agent(db, user.id, agent_id)
     old = get_agent_version(db, agent, number)
-    try:
-        # Re-validated: the tool may have left the library, or its settings model changed.
-        tools = [(t.tool_key, validate_tool(t.tool_key, t.config)) for t in old.tools]
-    except ToolError as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"That version can't be restored: {exc}"
-        ) from exc
+    # Kept as stored, like an unchanged save, but only if a run could still load them.
+    build_version_tools(old, "That version can't be restored")
+    tools = [(t.tool_key, t.config) for t in old.tools]
     skill_ids = {sv.skill_id for sv in old.skills}
     if lock_live_skills(db, skill_ids) != skill_ids:
         raise HTTPException(
@@ -450,15 +460,15 @@ def run_summary_query():
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
 
 
-def build_version_tools(version: AgentVersion) -> list[AbstractCapability[Any]]:
+def build_version_tools(
+    version: AgentVersion, refusal: str = "This agent version can't be run"
+) -> list[AbstractCapability[Any]]:
     """The version's tools, built from their stored settings; a 409 if one can't be."""
     try:
         return [build_tool(t.tool_key, t.config) for t in version.tools]
     except ToolError as exc:
-        # E.g. the tool has since left the library, or its settings model changed.
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"This agent version can't be run: {exc}"
-        ) from exc
+        # E.g. the tool has since left the library, or its settings model now rejects a value.
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])

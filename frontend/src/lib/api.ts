@@ -101,6 +101,7 @@ export type AgentVersionSummary = {
   note: string | null;
   created_at: string;
   skill_count: number;
+  tool_count: number;
   run_count: number;
 };
 
