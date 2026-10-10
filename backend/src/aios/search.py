@@ -112,3 +112,16 @@ async def hybrid_search(*, owner_id: int, query: str, limit: int = 8) -> list[Se
             )
 
     return await to_thread.run_sync(run)
+
+
+async def document_search_results(*, owner_id: int, query: str, limit: int = 8) -> list[dict]:
+    """Hybrid search hits in the form the search tools return to the model."""
+    hits = await hybrid_search(owner_id=owner_id, query=query, limit=limit)
+    return [
+        {
+            "source": hit.filename,
+            "headings": hit.meta.get("headings", []),
+            "text": hit.text,
+        }
+        for hit in hits
+    ]

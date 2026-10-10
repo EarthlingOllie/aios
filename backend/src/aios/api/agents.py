@@ -23,6 +23,7 @@ from pydantic_ai.ui.vercel_ai.response_types import BaseChunk
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from aios.agent import ChatDeps
 from aios.api.skills import lock_live_skills, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, SessionLocal
@@ -666,6 +667,7 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
             try:
                 async for chunk in adapter.run_stream(
                     message_history=ctx.history,
+                    deps=ChatDeps(user_id=user.id),
                     conversation_id=f"agent-run-{run_id}",
                     run_id=turn_id,
                     model=ctx.model,

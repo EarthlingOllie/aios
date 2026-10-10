@@ -1,14 +1,20 @@
+import json
 from dataclasses import replace
 
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai import ModelRequest, ToolReturnPart
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.native_tools import WebSearchTool
-from test_agents import agent_body, chat_body, make_agent, spy_run_stream
+from test_agents import agent_body, chat_body, make_agent, spy_run_stream, text_deltas
+from test_search import unit
 
-from aios.models import Agent
+from aios import search
+from aios.agent import ChatDeps
+from aios.models import Agent, Chunk, Document, DocumentStatus, User
 from aios.runner import runner
-from aios.tools import TOOLS
+from aios.tools import TOOLS, ToolSpec, register
+from aios.tools.hybrid_search import HybridSearchConfig
 from aios.tools.web_search import WebSearchConfig
 from aios.versioning import config_hash, save_agent_version
 
@@ -18,6 +24,13 @@ WEB = {"key": "web_search", "config": {}}
 def test_every_tool_has_default_settings():
     for spec in TOOLS.values():
         spec.build(spec.config_model())
+
+
+def test_tool_keys_are_unique():
+    spec = TOOLS["web_search"]
+    with pytest.raises(ValueError, match="already registered"):
+        register(ToolSpec(spec.key, "Other", "", spec.config_model, spec.build))
+    assert TOOLS["web_search"] is spec
 
 
 def test_web_search_settings():
@@ -38,11 +51,24 @@ def test_web_search_settings():
         WebSearchConfig(unknown=1)
 
 
+def test_hybrid_search_settings():
+    assert HybridSearchConfig().max_results == 8
+    assert HybridSearchConfig(max_results=50).max_results == 50
+    for bad in [0, 51]:
+        with pytest.raises(ValidationError):
+            HybridSearchConfig(max_results=bad)
+    with pytest.raises(ValidationError):
+        HybridSearchConfig(unknown=1)
+
+
 def test_tool_catalog(api):
     tools = {t["key"]: t for t in api.get("/api/tools").json()}
     web = tools["web_search"]
     assert web["default_config"] == {"max_uses": 5, "allowed_domains": [], "blocked_domains": []}
     assert web["config_schema"]["properties"]["max_uses"]["maximum"] == 20
+    hybrid = tools["hybrid_search"]
+    assert (hybrid["name"], hybrid["default_config"]) == ("Document search", {"max_results": 8})
+    assert hybrid["config_schema"]["properties"]["max_results"]["maximum"] == 50
 
 
 def test_tools_are_versioned_with_the_agent(api):
@@ -213,3 +239,113 @@ def test_no_new_run_while_the_current_version_uses_a_removed_tool(api, monkeypat
         "This agent version can't be run: Unknown tool: web_search",
     )
     assert api.get(f"{url}/runs").json() == []
+
+
+@pytest.fixture
+def documents(db, user):
+    """Three chunks of `user`'s, plus one of another user's that matches the same query."""
+    other = User(github_id=-2, login="other-user")
+    db.add(other)
+    db.flush()
+    docs = [
+        Document(owner_id=user.id, filename="fish.md", data=b"", status=DocumentStatus.ready),
+        Document(owner_id=other.id, filename="theirs.md", data=b"", status=DocumentStatus.ready),
+    ]
+    texts = [
+        ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."],
+        ["Their zebrafish notes."],
+    ]
+    for doc, chunks in zip(docs, texts, strict=True):
+        doc.chunks = [
+            Chunk(
+                ordinal=i, text=t, contextualized=t, meta={"headings": ["Fish"]}, embedding=unit(0)
+            )
+            for i, t in enumerate(chunks)
+        ]
+    docs[0].chunks.append(
+        Chunk(ordinal=2, text="Cats purr.", contextualized="Cats purr.", meta={}, embedding=unit(1))
+    )
+    db.add_all(docs)
+    db.commit()
+    yield
+    db.delete(docs[0])
+    db.delete(other)  # and, by the database's cascade, their document
+    db.commit()
+
+
+def search_once(query: str):
+    """A model that searches once with `query`, then replies with what came back."""
+    seen = {}
+
+    async def model(messages, info: AgentInfo):
+        returns = [
+            p
+            for m in messages
+            if isinstance(m, ModelRequest)
+            for p in m.parts
+            if isinstance(p, ToolReturnPart)
+        ]
+        if not returns:
+            seen["tools"] = [t.name for t in info.function_tools]
+            seen["description"] = info.function_tools[0].description
+            yield {0: DeltaToolCall("search_documents", json.dumps({"query": query}))}
+        else:
+            seen["results"] = returns[0].content
+            yield f"found {len(returns[0].content)}"
+
+    return FunctionModel(stream_function=model), seen
+
+
+def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, monkeypatch):
+    queries = []
+
+    async def embed_query(text):
+        queries.append(text)
+        return unit(0)
+
+    monkeypatch.setattr(search, "embed_query", embed_query)
+    tool = {"key": "hybrid_search", "config": {"max_results": 2}}
+    agent = make_agent(api, "Librarian")
+    agent = api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool])).json()
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    spy = spy_run_stream(monkeypatch)
+    model, seen = search_once("zebrafish")
+    with runner.override(model=model):
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        resp = api.post(url, json=chat_body("what about zebrafish?"))
+    assert resp.status_code == 200
+    assert spy["deps"] == ChatDeps(user_id=user.id)
+    assert seen["tools"] == ["search_documents"]
+    assert "hybrid (semantic + keyword)" in seen["description"]
+    assert queries == ["zebrafish"]
+    # Only this user's documents, best match first, capped at the tool's `max_results`.
+    assert seen["results"] == [
+        {"source": "fish.md", "headings": ["Fish"], "text": t}
+        for t in ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."]
+    ]
+    assert text_deltas(resp) == "found 2"
+    # The tool call and its results are saved with the run.
+    parts = [
+        p
+        for m in api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()["messages"]
+        for p in m["parts"]
+    ]
+    assert [p["part_kind"] for p in parts if p["part_kind"].startswith("tool")] == [
+        "tool-call",
+        "tool-return",
+    ]
+
+
+def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
+    # A blank query returns nothing without embedding it (or failing for lack of an API key).
+    monkeypatch.setattr(search, "embed_query", None)
+    agent = make_agent(api, "Librarian")
+    tools = [{"key": "hybrid_search", "config": {}}]
+    agent = api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools)).json()
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    model, seen = search_once("  ")
+    with runner.override(model=model):
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        assert text_deltas(api.post(url, json=chat_body("hi"))) == "found 0"
+    assert seen["results"] == []
