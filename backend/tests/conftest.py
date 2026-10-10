@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from aios.auth import current_user
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import User
@@ -36,3 +37,11 @@ def user(db):
     yield u
     db.delete(u)
     db.commit()
+
+
+@pytest.fixture
+def api(client, user):
+    """A client signed in as `user`."""
+    app.dependency_overrides[current_user] = lambda: user
+    yield client
+    app.dependency_overrides.clear()

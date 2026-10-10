@@ -292,7 +292,10 @@ function EventLog({ messages }: { messages: ModelMessage[] }) {
   if (messages.length === 0) return <Placeholder>Nothing has happened in this run yet.</Placeholder>;
 
   const responses = messages.filter((m) => m.kind === "response");
-  const toolCalls = responses.flatMap((m) => m.parts).filter((p) => p.part_kind === "tool-call");
+  // Native tools (e.g. web search) are run by the model provider and stored as builtin-tool-*.
+  const toolCalls = responses
+    .flatMap((m) => m.parts)
+    .filter((p) => p.part_kind === "tool-call" || p.part_kind === "builtin-tool-call");
   const tokens = (key: "input_tokens" | "output_tokens") =>
     responses.reduce((sum, m) => sum + (m.usage?.[key] ?? 0), 0);
 
@@ -376,10 +379,12 @@ function EventPart({ part }: { part: ModelMessage["parts"][number] }) {
         </div>
       );
     case "tool-call":
+    case "builtin-tool-call":
       return (
         <ToolCall name={String(p.tool_name)} state="call" input={parseArgs(p.args)} output={undefined} />
       );
     case "tool-return":
+    case "builtin-tool-return":
       return (
         <ToolCall
           name={String(p.tool_name)}

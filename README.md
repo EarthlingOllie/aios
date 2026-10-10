@@ -5,16 +5,18 @@ Voyage, and stored in Postgres/pgvector. Chat uses a Pydantic AI agent (Anthropi
 hybrid search tool (vector + full-text, fused with Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
-reusable instructions) and chat with them. Each conversation with an agent is saved as a **run**,
-whose page shows the conversation and an event log: model requests and responses, tool calls,
-the instructions sent and token usage.
+reusable instructions, and **tools** from a built-in library: web search, and document search,
+the same hybrid search as the documents chat, over the documents of the user running the agent)
+and chat with them. Each conversation with an agent is saved as a **run**, whose page shows the conversation
+and an event log: model requests and responses, tool calls, the instructions sent and token
+usage.
 
 Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
 chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
 the model's behaviour:
 
-- Changing an agent's prompt or skills creates a new version. Renaming doesn't, and nor does
-  saving without changes (configs are compared by hash).
+- Changing an agent's prompt, skills or tools (or a tool's settings) creates a new version.
+  Renaming doesn't, and nor does saving without changes (configs are compared by hash).
 - Changing a skill's description or content creates a new version, and so does renaming it: the
   name is sent to the model in each agent's instructions, so each skill version snapshots it.
 - Each agent version pins specific skill versions and stores the exact rendered instructions.
@@ -25,9 +27,10 @@ the model's behaviour:
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are soft-deleted (old agent versions still reference their versions), and can't be
   deleted while an agent's current version uses them.
-- Each run passes `agent_id`, `agent_version`, `agent_version_id` and the skill versions as
-  Pydantic AI run metadata, and `agent-run-<id>` as the conversation id. These reach
-  OpenTelemetry spans once instrumentation is set up (e.g. for Langfuse).
+- Each run passes `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the
+  tools with their settings as Pydantic AI run metadata, and `agent-run-<id>` as the
+  conversation id. These reach OpenTelemetry spans once instrumentation is set up (e.g. for
+  Langfuse).
 
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
@@ -58,6 +61,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     runner.py       the Pydantic AI agent that runs user-defined agents
     versioning.py   creating agent/skill versions, rendering instructions
+    tools/          the tool library agents can be given (registry + one module per tool)
+    api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -162,6 +167,21 @@ anything real.
   saved yet. Agent runs are different: the server stores each run's full Pydantic AI message
   history (`agent_runs.messages`, JSONB), the client sends only its new message, and the server
   replays the stored history into the next turn.
+- **Tools are code, not data.** Each lives in `backend/src/aios/tools/`, registered under a stable
+  key with a Pydantic settings model (every field has a default, and its JSON schema drives the
+  settings form). An agent version stores which tools it has and their validated settings
+  (`agent_version_tools`); each run builds them and passes them to Pydantic AI as capabilities.
+  To add a tool, write a module that calls `register(ToolSpec(...))` and import it in
+  `aios/tools/__init__.py`. Never rename a key: old versions reference it. If a tool's behaviour
+  changes in a way old versions shouldn't get, register it under a new key. A version whose tool
+  has been removed from the library can still be viewed, but not restored or run. Stored
+  settings are loaded leniently: fields the settings model has since dropped are ignored and new
+  fields take their defaults, so changing a settings model doesn't break old versions. Saving,
+  restoring and running all load them the same way, and refuse a value the model now rejects.
+- **Web search** uses the model provider's native search tool (Anthropic's server-side web
+  search), which is billed per search; its settings cap searches per model request and can
+  allow or block domains. A model without native web search fails the turn rather than running
+  without it.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and

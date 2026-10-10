@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
 import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
 import {
   api,
@@ -26,6 +27,7 @@ import {
   type AgentSkill,
   type AgentVersion,
   type SkillSummary,
+  type ToolInfo,
 } from "@/lib/api";
 
 export function AgentsSection() {
@@ -36,7 +38,7 @@ export function AgentsSection() {
       basePath="/agents"
       items={data}
       error={error}
-      empty="No agents yet. An agent is a base prompt plus a set of skills."
+      empty="No agents yet. An agent is a base prompt plus a set of skills and tools."
       reloadList={reload}
       renderItem={(agent) => (
         <>
@@ -45,7 +47,8 @@ export function AgentsSection() {
             <VersionBadge version={agent.version} />
           </div>
           <div className="text-muted-foreground truncate text-xs">
-            {agent.skill_count} skill{agent.skill_count === 1 ? "" : "s"} · {agent.run_count} run
+            {agent.skill_count} skill{agent.skill_count === 1 ? "" : "s"} · {agent.tool_count} tool
+            {agent.tool_count === 1 ? "" : "s"} · {agent.run_count} run
             {agent.run_count === 1 ? "" : "s"}
           </div>
         </>
@@ -66,6 +69,7 @@ function agentInput(agent: Agent, changes: Partial<AgentInput> = {}): AgentInput
     description: agent.description,
     base_prompt: v.base_prompt,
     skill_version_ids: v.skills.map((s) => s.skill_version_id),
+    tools: v.tools.map(({ key, config }) => ({ key, config })),
     ...changes,
   };
 }
@@ -119,6 +123,7 @@ export function AgentDetail() {
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
   const runs = useLoad(useCallback(() => api.listRuns(id), [id]));
+  const catalog = useLoad(api.listTools);
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
@@ -155,7 +160,18 @@ export function AgentDetail() {
       navigate(`runs/${run.id}`);
     });
 
-  const onUpdateSkill = (skill: AgentSkill) =>
+  const onUpdateSkill = (skill: AgentSkill) => {
+    // The update keeps the current tools, which the server rejects if any left the library.
+    // Dropping them here would change the agent unasked, so send the user to the edit form.
+    const retired = current.tools.filter((t) => !t.available).map((t) => t.name);
+    if (retired.length) {
+      const one = retired.length === 1;
+      setActionError(
+        `Can't update ${skill.name}: ${retired.join(", ")} ${one ? "is" : "are"} no longer ` +
+          `available. Use Edit to remove ${one ? "it" : "them"} first.`,
+      );
+      return;
+    }
     act(async () => {
       const ids = current.skills.map((s) =>
         s.skill_id === skill.skill_id ? skill.latest_version_id! : s.skill_version_id,
@@ -169,6 +185,7 @@ export function AgentDetail() {
       );
       await Promise.all([agent.reload(), versions.reload(), reloadList()]);
     });
+  };
 
   const onDeleteRun = (runId: number) => {
     if (!window.confirm("Delete this run and its history?")) return;
@@ -235,6 +252,10 @@ export function AgentDetail() {
         )}
       </Section>
 
+      <Section title="Tools">
+        <ToolList tools={current.tools} catalog={catalog.data} />
+      </Section>
+
       <VersionConfig version={current} />
 
       <Section title="Runs">
@@ -283,8 +304,13 @@ export function AgentDetail() {
           current={current.version}
           href={(v) => `/agents/${id}/versions/${v}`}
           detail={(v) => {
-            const n = versions.data?.find((x) => x.version === v)?.run_count ?? 0;
-            return `${n} run${n === 1 ? "" : "s"}`;
+            const s = versions.data?.find((x) => x.version === v);
+            const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+            return [
+              count(s?.skill_count ?? 0, "skill"),
+              count(s?.tool_count ?? 0, "tool"),
+              count(s?.run_count ?? 0, "run"),
+            ].join(" · ");
           }}
         />
       </Section>
@@ -306,6 +332,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const version = useLoad(useCallback(() => api.getAgentVersion(id, number), [id, number]));
   const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
+  const catalog = useLoad(api.listTools);
   const older = (versions.data ?? []).map((v) => v.version).filter((v) => v < number);
   const [base, setBase] = useState<number>();
   const baseVersion = base ?? older[0];
@@ -368,6 +395,9 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
           </ul>
         )}
       </Section>
+      <Section title="Tools">
+        <ToolList tools={v.tools} catalog={catalog.data} />
+      </Section>
       <VersionConfig version={v} />
       <Section title="Changes to the instructions">
         <CompareVersions
@@ -378,13 +408,24 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
           after={v.instructions}
         />
       </Section>
+      {baseVersion !== undefined && before.data && (
+        <Section title={`Changes to the tools since v${baseVersion}`}>
+          <ToolChanges before={before.data.tools} after={v.tools} />
+        </Section>
+      )}
     </DetailPage>
   );
 }
 
 type FormState = Omit<AgentInput, "skill_version_ids"> & { skill_ids: number[] };
 
-const emptyAgent: FormState = { name: "", description: "", base_prompt: "", skill_ids: [] };
+const emptyAgent: FormState = {
+  name: "",
+  description: "",
+  base_prompt: "",
+  skill_ids: [],
+  tools: [],
+};
 
 export function AgentForm() {
   const params = useParams();
@@ -392,17 +433,21 @@ export function AgentForm() {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<FormState>();
-  const [version, setVersion] = useState<number>();
+  // The version being edited, if any.
+  const [loaded, setLoaded] = useState<AgentVersion>();
   // Skills attached to the current version, by skill id: these stay on their pinned version.
   const [pinned, setPinned] = useState<Map<number, AgentSkill>>(new Map());
   const [skills, setSkills] = useState<SkillSummary[]>();
+  const [catalog, setCatalog] = useState<ToolInfo[]>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setForm(undefined);
+    setLoaded(undefined);
     setPinned(new Map());
     api.listSkills().then(setSkills, (err) => setError(describeError(err)));
+    api.listTools().then(setCatalog, (err) => setError(describeError(err)));
     if (id === undefined) setForm(emptyAgent);
     else
       api.getAgent(id).then(
@@ -413,9 +458,10 @@ export function AgentForm() {
             description: a.description,
             base_prompt: v.base_prompt,
             skill_ids: v.skills.map((s) => s.skill_id),
+            tools: v.tools.map(({ key, config }) => ({ key, config })),
             note: "",
           });
-          setVersion(v.version);
+          setLoaded(v);
           setPinned(new Map(v.skills.map((s) => [s.skill_id, s])));
         },
         (err) => setError(describeError(err)),
@@ -430,6 +476,18 @@ export function AgentForm() {
         ? [...form.skill_ids, skillId]
         : form.skill_ids.filter((existing) => existing !== skillId),
     });
+  const toggleTool = (tool: ToolInfo, on: boolean) =>
+    set({
+      tools: on
+        ? [...form.tools, { key: tool.key, config: tool.default_config }]
+        : form.tools.filter((t) => t.key !== tool.key),
+    });
+  const setToolConfig = (key: string, config: Record<string, unknown>) =>
+    set({ tools: form.tools.map((t) => (t.key === key ? { ...t, config } : t)) });
+  // Attached tools that have since left the library, so they can be removed. Unknown until the
+  // catalog loads.
+  const retired = catalog ? form.tools.filter((t) => !catalog.some((c) => c.key === t.key)) : [];
+  const toolName = (key: string) => loaded?.tools.find((t) => t.key === key)?.name ?? key;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -458,8 +516,8 @@ export function AgentForm() {
     <DetailPage
       title={id === undefined ? "New agent" : "Edit agent"}
       subtitle={
-        version !== undefined &&
-        `Editing v${version}. Changing the prompt or skills creates v${version + 1}; renaming doesn't. Existing runs stay on the version they started with.`
+        loaded &&
+        `Editing v${loaded.version}. Changing the prompt, skills or tools creates v${loaded.version + 1}; renaming doesn't. Existing runs stay on the version they started with.`
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
@@ -537,6 +595,53 @@ export function AgentForm() {
               })}
             </ul>
           )}
+        </fieldset>
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="mb-1.5 text-sm font-medium">Tools</legend>
+          <ul className="divide-y rounded-md border">
+            {catalog?.map((tool) => {
+              const attached = form.tools.find((t) => t.key === tool.key);
+              return (
+                <li key={tool.key}>
+                  <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={!!attached}
+                      onChange={(e) => toggleTool(tool, e.target.checked)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{tool.name}</span>
+                      <span className="text-muted-foreground block text-xs">{tool.description}</span>
+                    </span>
+                  </label>
+                  {attached && (
+                    <div className="px-3 pt-1 pb-3 pl-9">
+                      <ToolSettingsFields
+                        tool={tool}
+                        value={attached.config}
+                        onChange={(config) => setToolConfig(tool.key, config)}
+                      />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+            {retired.map(({ key }) => (
+              <li key={key}>
+                <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked
+                    onChange={() => set({ tools: form.tools.filter((t) => t.key !== key) })}
+                  />
+                  <span className="min-w-0 flex-1 text-sm font-medium">{toolName(key)}</span>
+                  <Badge variant="secondary">no longer available, remove to save</Badge>
+                </label>
+              </li>
+            ))}
+          </ul>
         </fieldset>
         {id !== undefined && (
           <Field label="Change note" htmlFor="agent-note" hint="Optional. Shown in the version history.">

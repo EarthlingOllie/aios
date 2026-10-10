@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_ai import AgentRunResult, capture_run_messages
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     CompactionPart,
     ModelMessage,
@@ -22,16 +23,32 @@ from pydantic_ai.ui.vercel_ai.response_types import BaseChunk
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from aios.agent import ChatDeps
 from aios.api.skills import lock_live_skills, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, SessionLocal
-from aios.models import Agent, AgentRun, AgentVersion, Skill, SkillVersion, agent_version_skills
+from aios.models import (
+    Agent,
+    AgentRun,
+    AgentVersion,
+    AgentVersionTool,
+    Skill,
+    SkillVersion,
+    agent_version_skills,
+)
 from aios.runner import runner
+from aios.tools import TOOLS, ToolError, build_tool, check_stored_tool, validate_tool
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
 
 SDK_VERSION = 7
+
+
+class AgentToolIn(BaseModel):
+    key: str
+    # Missing settings take the tool's defaults.
+    config: dict[str, Any] = {}
 
 
 class AgentIn(BaseModel):
@@ -41,6 +58,8 @@ class AgentIn(BaseModel):
     # Specific skill versions, in order. The UI keeps already-attached skills on their pinned
     # version and adds new ones at their latest; updating a skill is an explicit change.
     skill_version_ids: list[int] = []
+    # Tools from the library (GET /api/tools), in order, each with its settings.
+    tools: list[AgentToolIn] = []
     # Optional "what changed", stored on the new version if one is created.
     note: str | None = None
 
@@ -56,12 +75,22 @@ class AgentSkillOut(BaseModel):
     latest_version_id: int | None
 
 
+class AgentToolOut(BaseModel):
+    key: str
+    name: str
+    description: str
+    config: dict[str, Any]
+    # False if the tool has since been removed from the library.
+    available: bool
+
+
 class AgentVersionSummary(BaseModel):
     id: int
     version: int
     note: str | None
     created_at: datetime
     skill_count: int
+    tool_count: int
     run_count: int
 
 
@@ -74,6 +103,7 @@ class AgentVersionOut(BaseModel):
     model: str | None
     instructions: str
     skills: list[AgentSkillOut]
+    tools: list[AgentToolOut]
 
 
 class AgentSummary(BaseModel):
@@ -82,6 +112,7 @@ class AgentSummary(BaseModel):
     description: str
     version: int
     skill_count: int
+    tool_count: int
     run_count: int
     updated_at: datetime
 
@@ -164,6 +195,45 @@ def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[Sk
     return versions
 
 
+def resolve_tools(
+    tools: list[AgentToolIn], current: AgentVersion | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """The requested tools as (key, settings) pairs, in request order.
+
+    Settings sent back exactly as `current` stores them are kept as stored, so a later change to
+    the tool's settings model doesn't turn a rename into a new version. They're still checked
+    the way a run loads them, so a version that couldn't run isn't saved. Other settings are new
+    and validated strictly.
+    """
+    if len({t.key for t in tools}) != len(tools):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Each tool can be added only once"
+        )
+    stored = {t.tool_key: t.config for t in current.tools} if current else {}
+    resolved = []
+    try:
+        for t in tools:
+            if t.key in stored and stored[t.key] == t.config:
+                check_stored_tool(t.key, t.config)
+                resolved.append((t.key, t.config))
+            else:
+                resolved.append((t.key, validate_tool(t.key, t.config)))
+    except ToolError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    return resolved
+
+
+def tool_out(tool: AgentVersionTool) -> AgentToolOut:
+    spec = TOOLS.get(tool.tool_key)
+    return AgentToolOut(
+        key=tool.tool_key,
+        name=spec.name if spec else tool.tool_key,
+        description=spec.description if spec else "",
+        config=tool.config,
+        available=spec is not None,
+    )
+
+
 def version_out(version: AgentVersion) -> AgentVersionOut:
     skills = []
     for sv in version.skills:
@@ -189,6 +259,7 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
         model=version.model,
         instructions=version.instructions,
         skills=skills,
+        tools=[tool_out(t) for t in version.tools],
     )
 
 
@@ -212,6 +283,15 @@ def skill_count(version_id) -> Any:
     )
 
 
+def tool_count(version_id) -> Any:
+    return (
+        select(func.count())
+        .select_from(AgentVersionTool)
+        .where(AgentVersionTool.agent_version_id == version_id)
+        .scalar_subquery()
+    )
+
+
 # --- Agents -------------------------------------------------------------------------------------
 
 
@@ -221,7 +301,13 @@ def list_agents(user: CurrentUser, db: DB):
         select(func.count(AgentRun.id)).where(AgentRun.agent_id == Agent.id).scalar_subquery()
     )
     rows = db.execute(
-        select(Agent, AgentVersion.version, skill_count(AgentVersion.id), run_count)
+        select(
+            Agent,
+            AgentVersion.version,
+            skill_count(AgentVersion.id),
+            tool_count(AgentVersion.id),
+            run_count,
+        )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
         .where(Agent.owner_id == user.id)
         .order_by(Agent.name)
@@ -233,15 +319,17 @@ def list_agents(user: CurrentUser, db: DB):
             description=a.description,
             version=version,
             skill_count=skills,
+            tool_count=tools,
             run_count=runs,
             updated_at=a.updated_at,
         )
-        for a, version, skills, runs in rows
+        for a, version, skills, tools, runs in rows
     ]
 
 
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
 def create_agent(body: AgentIn, user: CurrentUser, db: DB):
+    tools = resolve_tools(body.tools)
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent = Agent(owner_id=user.id, name=body.name, description=body.description)
     db.add(agent)
@@ -251,6 +339,7 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
             agent,
             base_prompt=body.base_prompt,
             skills=skills,
+            tools=tools,
             note=body.note,
             user_id=user.id,
         )
@@ -265,8 +354,9 @@ def get_agent(agent_id: int, user: CurrentUser, db: DB):
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
 def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
-    """Rename/describe the agent; a changed prompt or skill set creates a new version."""
+    """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
     agent = get_owned_agent(db, user.id, agent_id)
+    tools = resolve_tools(body.tools, agent.current_version)
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent.name = body.name
     agent.description = body.description
@@ -276,6 +366,7 @@ def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
             agent,
             base_prompt=body.base_prompt,
             skills=skills,
+            tools=tools,
             note=body.note,
             user_id=user.id,
             model=agent.current_version.model,
@@ -303,7 +394,7 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
         .scalar_subquery()
     )
     rows = db.execute(
-        select(AgentVersion, skill_count(AgentVersion.id), run_count)
+        select(AgentVersion, skill_count(AgentVersion.id), tool_count(AgentVersion.id), run_count)
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
@@ -314,9 +405,10 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
             note=v.note,
             created_at=v.created_at,
             skill_count=skills,
+            tool_count=tools,
             run_count=runs,
         )
-        for v, skills, runs in rows
+        for v, skills, tools, runs in rows
     ]
 
 
@@ -330,6 +422,9 @@ def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB)
     """Make an old version's config current again, as a new version (numbers only go up)."""
     agent = get_owned_agent(db, user.id, agent_id)
     old = get_agent_version(db, agent, number)
+    # Kept as stored, like an unchanged save, but only if a run could still load them.
+    build_version_tools(old, "That version can't be restored")
+    tools = [(t.tool_key, t.config) for t in old.tools]
     skill_ids = {sv.skill_id for sv in old.skills}
     if lock_live_skills(db, skill_ids) != skill_ids:
         raise HTTPException(
@@ -340,6 +435,7 @@ def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB)
         agent,
         base_prompt=old.base_prompt,
         skills=list(old.skills),
+        tools=tools,
         model=old.model,
         note=f"Restored from v{old.version}",
         user_id=user.id,
@@ -364,6 +460,17 @@ def run_summary_query():
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
 
 
+def build_version_tools(
+    version: AgentVersion, refusal: str = "This agent version can't be run"
+) -> list[AbstractCapability[Any]]:
+    """The version's tools, built from their stored settings; a 409 if one can't be."""
+    try:
+        return [build_tool(t.tool_key, t.config) for t in version.tools]
+    except ToolError as exc:
+        # E.g. the tool has since left the library, or its settings model now rejects a value.
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
+
+
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
 def list_runs(agent_id: int, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
@@ -380,6 +487,8 @@ def list_runs(agent_id: int, user: CurrentUser, db: DB):
 )
 def create_run(agent_id: int, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
+    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
+    build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
     run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, messages=[])
     db.add(run)
@@ -494,6 +603,7 @@ def trace_metadata(run: AgentRun) -> dict[str, Any]:
             {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
             for sv in version.skills
         ],
+        "tools": [{"key": t.tool_key, "config": t.config} for t in version.tools],
     }
 
 
@@ -505,6 +615,8 @@ class ChatContext:
     instructions: str
     history: list[ModelMessage]
     metadata: dict[str, Any]
+    # The version's tools, built from their stored settings.
+    capabilities: list[AbstractCapability[Any]] = field(default_factory=list)
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
@@ -515,6 +627,7 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         instructions=version.instructions,
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
+        capabilities=build_version_tools(version),
     )
 
 
@@ -564,11 +677,13 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
             try:
                 async for chunk in adapter.run_stream(
                     message_history=ctx.history,
+                    deps=ChatDeps(user_id=user.id),
                     conversation_id=f"agent-run-{run_id}",
                     run_id=turn_id,
                     model=ctx.model,
                     instructions=ctx.instructions,
                     metadata=ctx.metadata,
+                    capabilities=ctx.capabilities,
                     on_complete=on_complete,
                 ):
                     yield chunk

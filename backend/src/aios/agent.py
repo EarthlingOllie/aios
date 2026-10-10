@@ -3,11 +3,12 @@ from dataclasses import dataclass
 from pydantic_ai import Agent, RunContext
 
 from aios.config import get_settings
-from aios.search import hybrid_search
+from aios.search import document_search_results
 
 
 @dataclass
 class ChatDeps:
+    # Also the deps of user-defined agents' runs (`aios.runner`), which tools read the user from.
     user_id: int
 
 
@@ -32,12 +33,4 @@ async def search_documents(ctx: RunContext[ChatDeps], query: str) -> list[dict]:
     Args:
         query: A natural-language search query.
     """
-    hits = await hybrid_search(owner_id=ctx.deps.user_id, query=query)
-    return [
-        {
-            "source": hit.filename,
-            "headings": hit.meta.get("headings", []),
-            "text": hit.text,
-        }
-        for hit in hits
-    ]
+    return await document_search_results(owner_id=ctx.deps.user_id, query=query)
