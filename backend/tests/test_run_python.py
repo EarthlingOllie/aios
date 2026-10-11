@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -346,6 +347,43 @@ def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, db, m
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("run it")).status_code == 200
     assert prewarmed == [["api.example.com"]]
+
+
+def test_later_turns_prewarm_only_while_the_run_uses_its_sandbox(api, backend, db, monkeypatch):
+    prewarmed = []
+
+    async def ensure(*, run_id, allowed_domains):
+        prewarmed.append(run_id)
+
+    monkeypatch.setattr(sessions.manager, "ensure", ensure)
+
+    def reply(run):
+        model = FunctionModel(stream_function=lambda messages, info: _say("no code needed"))
+        with runner.override(model=model):
+            url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+            assert api.post(url, json=chat_body("hello")).status_code == 200
+
+    agent, run = python_agent(api)
+    # The first turn pre-warms; a later one doesn't if the run hasn't used its sandbox.
+    reply(run)
+    reply(run)
+    assert prewarmed == [run["id"]]
+    # Once it has, later turns pre-warm...
+    chat(api, agent, run, "print(1)")
+    prewarmed.clear()
+    reply(run)
+    assert prewarmed == [run["id"]]
+    # ...until it goes unused for long enough to have stopped as idle.
+    row = db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run["id"]))
+    row.last_used_at -= timedelta(seconds=get_settings().sandbox_idle_seconds + 1)
+    db.commit()
+    prewarmed.clear()
+    reply(run)
+    assert prewarmed == []
+
+
+async def _say(text: str):
+    yield text
 
 
 def test_sandbox_errors_go_to_the_model(api, backend):

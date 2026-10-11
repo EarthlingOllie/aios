@@ -39,7 +39,13 @@ from aios.models import (
     agent_version_skills,
 )
 from aios.runner import runner
-from aios.sandbox.sessions import SandboxNotConfigured, manager, run_sandboxes, stop_sandboxes
+from aios.sandbox.sessions import (
+    SandboxNotConfigured,
+    manager,
+    run_sandboxes,
+    stop_sandboxes,
+    worth_prewarming,
+)
 from aios.tools import (
     TOOLS,
     ToolError,
@@ -639,29 +645,36 @@ class ChatContext:
     metadata: dict[str, Any]
     # The version's tools, built from their stored settings.
     capabilities: list[AbstractCapability[Any]] = field(default_factory=list)
-    # The `run_python` tool's allowed domains, if the version has the tool.
+    # The `run_python` tool's allowed domains, if the version has the tool and the run's
+    # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
     run = get_owned_run(db, user_id, agent_id, run_id)
     version = run.agent_version
+    capabilities = build_version_tools(version)
+    # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token
+    # carries the domains the tool expects.
+    sandbox_domains = next(
+        (
+            stored_settings(t.tool_key, t.config).allowed_domains
+            for t in version.tools
+            if t.tool_key == "run_python"
+        ),
+        None,
+    )
+    if sandbox_domains is not None and not worth_prewarming(
+        db, run.id, first_turn=not run.messages
+    ):
+        sandbox_domains = None
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
-        capabilities=build_version_tools(version),
-        # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
-        # token carries the domains the tool expects.
-        sandbox_domains=next(
-            (
-                stored_settings(t.tool_key, t.config).allowed_domains
-                for t in version.tools
-                if t.tool_key == "run_python"
-            ),
-            None,
-        ),
+        capabilities=capabilities,
+        sandbox_domains=sandbox_domains,
     )
 
 

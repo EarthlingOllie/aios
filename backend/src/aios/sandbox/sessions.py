@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from anyio import to_thread
@@ -128,6 +129,21 @@ def run_sandboxes(db: Session, run_ids: Select | list[int]) -> list[SandboxHandl
     """The sandboxes of these runs, e.g. to stop them once the runs are deleted."""
     rows = db.scalars(select(SandboxSession).where(SandboxSession.agent_run_id.in_(run_ids)))
     return [SandboxHandle(row.ref, row.endpoint, row.secret) for row in rows]
+
+
+def worth_prewarming(db: Session, run_id: int, *, first_turn: bool) -> bool:
+    """Whether to start the run's sandbox when a turn starts, before the model asks for it.
+
+    On the run's first turn, to hide the start-up time from its first call. Later, only while
+    the run is using its sandbox: if it has never used one, or not for long enough that it has
+    stopped as idle, a turn that might not need one doesn't start one.
+    """
+    last_used, now = db.execute(
+        select(SandboxSession.last_used_at, func.now()).where(SandboxSession.agent_run_id == run_id)
+    ).one_or_none() or (None, None)
+    if last_used is None:
+        return first_turn
+    return now - last_used < timedelta(seconds=get_settings().sandbox_idle_seconds)
 
 
 async def stop_sandboxes(handles: list[SandboxHandle]) -> None:
