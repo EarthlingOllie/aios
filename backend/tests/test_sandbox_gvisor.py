@@ -239,6 +239,11 @@ def test_startup_advertises_the_instance_ip_from_imdsv2():
     asyncio.run(broker.startup())
     assert broker.endpoint == "http://10.40.11.23:8090"
     assert [r.url.path for r in requests] == ["/latest/api/token", "/latest/meta-data/local-ipv4"]
+    # The client it was given is the caller's to close: a second startup can use it again.
+    assert not http.is_closed
+    broker.endpoint = ""
+    asyncio.run(broker.startup())
+    assert broker.endpoint == "http://10.40.11.23:8090"
 
 
 # --- sessions ------------------------------------------------------------------------------------

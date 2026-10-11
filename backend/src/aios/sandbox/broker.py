@@ -252,7 +252,9 @@ class Broker:
 
     async def _advertise_url(self) -> str:
         """http://<this instance's private IP>:<port>, from the metadata service (IMDSv2)."""
-        async with self._imds or httpx.AsyncClient(timeout=5) as http:
+        async with contextlib.AsyncExitStack() as stack:
+            # Closes only a client it made, never one it was given.
+            http = self._imds or await stack.enter_async_context(httpx.AsyncClient(timeout=5))
             resp = await http.put(
                 f"{IMDS}/latest/api/token", headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}
             )
