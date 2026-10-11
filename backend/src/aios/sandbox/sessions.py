@@ -135,33 +135,44 @@ class SessionManager:
         log.info("started sandbox %s for %s", handle.ref, session_key)
         return handle
 
+    async def _ready(
+        self, backend: SandboxBackend, run_id: int, allowed_domains: list[str]
+    ) -> tuple[SandboxHandle, bool]:
+        """The run's running sandbox, started if it has none or its last one has gone."""
+        handle, replaced = await to_thread.run_sync(_load, run_id)
+        if handle is not None:
+            if await backend.alive(handle):
+                return handle, replaced
+            log.info("sandbox %s for run %s is gone; starting another", handle.ref, run_id)
+            replaced = True
+        return await self._start(backend, run_id, allowed_domains, replaced=replaced), replaced
+
     async def ensure(self, *, run_id: int, allowed_domains: list[str]) -> None:
         """Makes sure the run has a running sandbox, so it's ready for the next call."""
         backend = self._backend()
         async with self._lock(run_id):
-            handle, replaced = await to_thread.run_sync(_load, run_id)
-            if handle is not None:
-                if await backend.alive(handle):
-                    return
-                log.info("sandbox %s for run %s is gone; starting another", handle.ref, run_id)
-                replaced = True
-            await self._start(backend, run_id, allowed_domains, replaced=replaced)
+            await self._ready(backend, run_id, allowed_domains)
 
     async def run(
         self, *, run_id: int, code: str, timeout: int, allowed_domains: list[str]
     ) -> Outcome:
         backend = self._backend()
         async with self._lock(run_id):
-            handle, replaced = await to_thread.run_sync(_load, run_id)
-            if handle is None:
-                handle = await self._start(backend, run_id, allowed_domains, replaced=False)
+            # Checked before the call, so a sandbox that has gone (e.g. stopped when idle) is
+            # replaced without the code having run anywhere.
+            handle, replaced = await self._ready(backend, run_id, allowed_domains)
             try:
                 result = await backend.execute(handle, code, timeout)
             except SandboxGone:
-                log.info("sandbox %s for run %s is gone; starting another", handle.ref, run_id)
-                handle = await self._start(backend, run_id, allowed_domains, replaced=True)
-                replaced = True
-                result = await backend.execute(handle, code, timeout)
+                # It stopped during the call (e.g. the code ran out of memory, or the sandbox
+                # reached its maximum lifetime), so the code may have partly run: it isn't run
+                # again, which could repeat its side effects. The next call starts a new one.
+                log.info("sandbox %s for run %s stopped during a call", handle.ref, run_id)
+                raise SandboxGone(
+                    "The sandbox stopped while running this code (for example, it ran out of"
+                    " memory or reached its time limit), so the code may have partly run. The"
+                    " next call starts a new sandbox, without the files in /work."
+                ) from None
             await to_thread.run_sync(_touch, run_id)
             return Outcome(result, replaced)
 

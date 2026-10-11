@@ -42,6 +42,10 @@ class FakeBackend:
         if handle.ref in self.gone:
             raise SandboxGone("stopped")
         self.calls.append((handle.ref, code, timeout))
+        if "crash" in code:
+            # Takes the sandbox down partway through, like running out of memory.
+            self.gone.add(handle.ref)
+            raise SandboxGone("stopped")
         return ExecResult(
             exit_code=0,
             stdout=f"ran in {handle.ref}\n",
@@ -173,6 +177,20 @@ def test_a_sandbox_that_has_gone_is_replaced(api, backend, monkeypatch):
     assert seen["result"]["sandbox_restarted"] is True
     assert len(backend.specs) == 2
     assert "sandbox_restarted" not in chat(api, agent, run, "print(1)")["result"]
+
+
+def test_code_is_not_run_twice_when_the_sandbox_stops_during_a_call(api, backend, monkeypatch):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    seen = chat(api, agent, run, "crash()")
+    # Not retried in a new sandbox: the code may have partly run, e.g. made a request.
+    assert [ref for ref, _, _ in backend.calls] == ["sandbox-1"]
+    assert "may have partly run" in seen["result"]["error"]
+    assert len(backend.specs) == 1
+    # The next call gets a new sandbox, and is told /work was reset.
+    seen = chat(api, agent, run, "print(1)")
+    assert seen["result"]["stdout"] == "ran in sandbox-2\n"
+    assert seen["result"]["sandbox_restarted"] is True
 
 
 def test_prewarming_replaces_a_sandbox_that_has_gone(api, backend, db):
