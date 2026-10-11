@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -686,6 +687,24 @@ def test_client_tries_another_host_when_one_is_full(monkeypatch):
     with pytest.raises(SandboxError, match="Couldn't start a sandbox"):
         asyncio.run(backend.start(SPEC))
     assert len(seen) == 1
+
+
+def test_client_refuses_a_proxy_token_the_broker_would(broker):
+    def proxy_url(length: int) -> str:
+        return f"http://sandbox:{'t' * length}@egress-proxy:3128"
+
+    async def scenario():
+        await broker.startup()
+        backend = in_process(broker)
+        longest = replace(SPEC, proxy_url=proxy_url(broker_module.PROXY_TOKEN_LIMIT))
+        assert (await backend.start(longest)).ref in broker.sessions
+        sessions = len(broker.sessions)
+        too_long = replace(SPEC, proxy_url=proxy_url(broker_module.PROXY_TOKEN_LIMIT + 1))
+        with pytest.raises(SandboxError, match="list of reachable domains is too long"):
+            await backend.start(too_long)
+        assert len(broker.sessions) == sessions
+
+    asyncio.run(scenario())
 
 
 def test_client_needs_a_broker_url():

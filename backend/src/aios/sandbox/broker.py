@@ -61,9 +61,14 @@ IMDS = "http://169.254.169.254"
 
 _SESSION_ID = re.compile(r"[0-9a-f]{32}")
 _SESSION_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# The longest proxy token a session may have. It grows with the run's allowed domains; the
+# egress proxy reads at most 8 KiB of request head, which holds the token base64-encoded again,
+# so a much longer one couldn't be used anyway. The API checks it before asking (`gvisor.py`).
+PROXY_TOKEN_LIMIT = 4000
 # `http://sandbox:<token>@host:port`, as `aios.sandbox.sessions` builds it.
 _PROXY_URL = re.compile(
-    r"http://[A-Za-z0-9._~%-]{1,64}:[A-Za-z0-9._~%-]{1,4000}@[a-z0-9.-]{1,253}:\d{1,5}"
+    rf"http://[A-Za-z0-9._~%-]{{1,64}}:[A-Za-z0-9._~%-]{{1,{PROXY_TOKEN_LIMIT}}}"
+    r"@[a-z0-9.-]{1,253}:\d{1,5}"
 )
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}")
 _CONTAINER_NAME = re.compile(r"aios-sandbox-[0-9a-f]{32}")

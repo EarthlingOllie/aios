@@ -17,6 +17,7 @@ import httpx
 
 from aios.config import Settings
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.broker import PROXY_TOKEN_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ class GVisorBackend:
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         if not self.url:
             raise SandboxError("Running Python isn't set up on this server.")
+        # The proxy token carries the run's allowed domains, so a long enough list makes it
+        # longer than the broker (and the egress proxy) accept.
+        token = spec.proxy_url.partition("@")[0].rpartition(":")[2]
+        if len(token) > PROXY_TOKEN_LIMIT:
+            raise SandboxError(
+                "This tool's list of reachable domains is too long for the sandbox; ask the"
+                " agent's owner to shorten it."
+            )
         for attempt in range(1, START_ATTEMPTS + 1):
             try:
                 resp = await self.http.post(
