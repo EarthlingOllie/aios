@@ -17,6 +17,8 @@ locals {
 # Sandboxes get subnets of their own (one IP per running sandbox) whose route table has no
 # default route: no NAT, no internet gateway. Even a wrong security group rule can't give them
 # a way out; only addresses inside the VPC and the S3 gateway endpoint are routable.
+# DNS lookups through the VPC resolver still leave the VPC, and DNS Firewall rule groups apply
+# to a whole VPC, not to subnets, so they aren't filtered here (see the README's known limits).
 resource "aws_subnet" "sandbox" {
   count             = length(local.azs)
   vpc_id            = aws_vpc.main.id

@@ -184,8 +184,13 @@ Known limits:
   subnets (a `/24` per AZ, so about 250 concurrent sandboxes per AZ).
 - The runner token is a RunTask override, visible to anyone in the account with
   `ecs:DescribeTasks`.
-- DNS lookups through the VPC resolver aren't filtered, which is a possible exfiltration
-  channel. Route 53 DNS Firewall is the fix.
+- DNS lookups through the VPC resolver aren't filtered, so sandbox code can leak data in the
+  names it looks up, and receive data in the answers. Route 53 DNS Firewall
+  can't simply allowlist the names sandboxes need: its rule groups apply to a whole VPC, and
+  the API, worker and egress proxy share this one and resolve any name (the proxy resolves
+  whatever domains a run allows). Closing this means moving sandboxes into a VPC of their own
+  (with their own endpoints, and the proxy and runner reached across VPCs), whose DNS Firewall
+  allows only the proxy's Cloud Map name and the ECR, S3 and CloudWatch Logs endpoint names.
 - The three interface endpoints cost about $45 a month across two AZs, plus data processing.
 
 ## Notes and trade-offs
