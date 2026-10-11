@@ -16,6 +16,7 @@ dependencies = [
     "itsdangerous==2.2.0",
     "python-multipart==0.0.32",
     "pydantic-ai-slim[anthropic,voyageai]==2.52.0",
+    "boto3==1.43.108",
 ]
 
 [project.optional-dependencies]
