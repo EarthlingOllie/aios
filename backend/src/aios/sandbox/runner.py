@@ -163,6 +163,9 @@ def prepare_workdir() -> None:
     os.makedirs(WORKDIR, exist_ok=True)
     if os.geteuid() == 0:
         os.chown(WORKDIR, CHILD_UID, CHILD_UID)
+        # A volume mounted at /tmp (as on Fargate) may come up writable by root only; the code
+        # runs as another user and needs it, like any /tmp, to be world-writable and sticky.
+        os.chmod(tempfile.gettempdir(), 0o1777)
 
 
 # --- serve ---------------------------------------------------------------------------------------
