@@ -169,7 +169,18 @@ class SessionManager:
         session_key = f"agent-run-{run_id}"
         proxy_url = ""
         secret = settings.sandbox_proxy_secret.get_secret_value()
-        if allowed_domains and settings.sandbox_proxy_address and secret:
+        if allowed_domains and not (settings.sandbox_proxy_address and secret):
+            # Not started without a proxy: the model is told these domains are reachable.
+            log.error(
+                "run %s's sandbox needs network access, but SANDBOX_PROXY_ADDRESS or"
+                " SANDBOX_PROXY_SECRET isn't set",
+                run_id,
+            )
+            raise SandboxNotConfigured(
+                "Network access for the sandbox isn't set up on this server, so the allowed"
+                " domains can't be reached. Ask the server's administrator to set it up."
+            )
+        if allowed_domains:
             token = proxy_token.mint(
                 secret,
                 session=session_key,

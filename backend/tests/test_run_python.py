@@ -291,6 +291,15 @@ def test_the_proxy_token_carries_the_allowed_domains(api, backend, monkeypatch):
     assert backend.specs[1].proxy_url == ""
 
 
+def test_allowed_domains_without_a_proxy_are_an_error(api, backend):
+    # No SANDBOX_PROXY_ADDRESS or SANDBOX_PROXY_SECRET: the sandbox isn't started without the
+    # network the model is told it has.
+    agent, run = python_agent(api, allowed_domains=["api.example.com"])
+    seen = chat(api, agent, run, "import httpx")
+    assert "Network access for the sandbox isn't set up" in seen["result"]["error"]
+    assert backend.specs == []
+
+
 def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
     agent, run = python_agent(api)
 
