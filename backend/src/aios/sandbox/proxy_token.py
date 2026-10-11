@@ -45,7 +45,9 @@ def mint(
 def verify(secret: str, token: str, now: float | None = None) -> ProxyGrant | None:
     """The token's grant, or None if it's malformed, forged or expired."""
     payload, _, signature = token.partition(".")
-    if not secret or not hmac.compare_digest(signature, _sign(secret, payload)):
+    # As bytes: comparing `str`s raises TypeError when the token has non-ASCII characters.
+    expected = _sign(secret, payload).encode()
+    if not secret or not hmac.compare_digest(signature.encode(), expected):
         return None
     try:
         body = json.loads(_unb64(payload))

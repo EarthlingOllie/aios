@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from anyio import CancelScope
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_ai import AgentRunResult, capture_run_messages
@@ -39,8 +39,21 @@ from aios.models import (
     agent_version_skills,
 )
 from aios.runner import runner
-from aios.sandbox.sessions import SandboxNotConfigured, manager
-from aios.tools import TOOLS, ToolError, build_tool, check_stored_tool, validate_tool
+from aios.sandbox.sessions import (
+    SandboxNotConfigured,
+    manager,
+    run_sandboxes,
+    stop_sandboxes,
+    worth_prewarming,
+)
+from aios.tools import (
+    TOOLS,
+    ToolError,
+    build_tool,
+    check_stored_tool,
+    stored_settings,
+    validate_tool,
+)
 from aios.versioning import save_agent_version
 
 log = logging.getLogger(__name__)
@@ -381,13 +394,17 @@ def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(agent_id: int, user: CurrentUser, db: DB) -> None:
+def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
     # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
     agent = get_owned_agent(db, user.id, agent_id)
+    sandboxes = run_sandboxes(db, select(AgentRun.id).where(AgentRun.agent_id == agent.id))
     agent.current_version_id = None  # break the agents <-> agent_versions cycle first
     db.flush()
     db.delete(agent)
     db.commit()
+    # Their session rows went with the runs; the sandboxes would run on until they time out.
+    if sandboxes:
+        background.add_task(stop_sandboxes, sandboxes)
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
@@ -518,9 +535,15 @@ def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
 
 
 @router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_run(agent_id: int, run_id: int, user: CurrentUser, db: DB) -> None:
-    db.delete(get_owned_run(db, user.id, agent_id, run_id))
+def delete_run(
+    agent_id: int, run_id: int, user: CurrentUser, db: DB, background: BackgroundTasks
+) -> None:
+    run = get_owned_run(db, user.id, agent_id, run_id)
+    sandboxes = run_sandboxes(db, [run.id])
+    db.delete(run)
     db.commit()
+    if sandboxes:
+        background.add_task(stop_sandboxes, sandboxes)
 
 
 def first_prompt(messages: list[ModelMessage]) -> str | None:
@@ -622,27 +645,36 @@ class ChatContext:
     metadata: dict[str, Any]
     # The version's tools, built from their stored settings.
     capabilities: list[AbstractCapability[Any]] = field(default_factory=list)
-    # The `run_python` tool's allowed domains, if the version has the tool.
+    # The `run_python` tool's allowed domains, if the version has the tool and the run's
+    # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
     run = get_owned_run(db, user_id, agent_id, run_id)
     version = run.agent_version
+    capabilities = build_version_tools(version)
+    # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token
+    # carries the domains the tool expects.
+    sandbox_domains = next(
+        (
+            stored_settings(t.tool_key, t.config).allowed_domains
+            for t in version.tools
+            if t.tool_key == "run_python"
+        ),
+        None,
+    )
+    if sandbox_domains is not None and not worth_prewarming(
+        db, run.id, first_turn=not run.messages
+    ):
+        sandbox_domains = None
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
-        capabilities=build_version_tools(version),
-        sandbox_domains=next(
-            (
-                t.config.get("allowed_domains", [])
-                for t in version.tools
-                if t.tool_key == "run_python"
-            ),
-            None,
-        ),
+        capabilities=capabilities,
+        sandbox_domains=sandbox_domains,
     )
 
 

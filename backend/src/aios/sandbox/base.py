@@ -55,7 +55,11 @@ class SandboxGone(SandboxError):
 
 class SandboxBackend(Protocol):
     async def start(self, spec: SessionSpec) -> SandboxHandle:
-        """Starts a sandbox and returns once it can take calls."""
+        """Starts a sandbox and returns once it can take calls.
+
+        If it fails or is cancelled partway, it stops whatever it started: until it returns,
+        nothing else knows the sandbox exists.
+        """
         ...
 
     async def alive(self, handle: SandboxHandle) -> bool:
