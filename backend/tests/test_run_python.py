@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -177,6 +178,8 @@ def test_a_sandbox_that_has_gone_is_replaced(api, backend, monkeypatch):
     assert seen["result"]["sandbox_restarted"] is True
     assert len(backend.specs) == 2
     assert "sandbox_restarted" not in chat(api, agent, run, "print(1)")["result"]
+    # The old one is stopped, in case it was only unreachable for a while.
+    assert backend.stopped == ["sandbox-1"]
 
 
 def test_code_is_not_run_twice_when_the_sandbox_stops_during_a_call(api, backend, monkeypatch):
@@ -191,6 +194,68 @@ def test_code_is_not_run_twice_when_the_sandbox_stops_during_a_call(api, backend
     seen = chat(api, agent, run, "print(1)")
     assert seen["result"]["stdout"] == "ran in sandbox-2\n"
     assert seen["result"]["sandbox_restarted"] is True
+
+
+def test_a_sandbox_another_replica_records_first_is_used(api, backend, monkeypatch):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    start = backend.start
+
+    async def racing_start(spec):
+        handle = await start(spec)
+        if handle.ref == "sandbox-1":
+            # Meanwhile, another replica starts a sandbox for the run and records it.
+            other = await start(spec)
+            assert sessions._save(run["id"], other, replaced=False, previous=None)
+        return handle
+
+    monkeypatch.setattr(backend, "start", racing_start)
+    seen = chat(api, agent, run, "print(1)")
+    # One sandbox per run: this request's is stopped rather than overwriting the other's.
+    assert seen["result"]["stdout"] == "ran in sandbox-2\n"
+    assert backend.stopped == ["sandbox-1"]
+
+
+def _run_id(api) -> int:
+    return python_agent(api)[1]["id"]
+
+
+def test_a_sandbox_that_cant_be_recorded_is_stopped(api, backend, monkeypatch):
+    run_id = _run_id(api)
+
+    def unreachable(*args, **kwargs):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(sessions, "_save", unreachable)
+    with pytest.raises(RuntimeError):
+        asyncio.run(sessions.manager.ensure(run_id=run_id, allowed_domains=[]))
+    assert backend.stopped == ["sandbox-1"]
+
+
+def test_a_start_cancelled_while_recording_keeps_its_sandbox(api, backend, db, monkeypatch):
+    run_id = _run_id(api)
+    save = sessions._save
+
+    def slow_save(*args, **kwargs):
+        time.sleep(0.3)
+        return save(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "_save", slow_save)
+
+    async def scenario():
+        task = asyncio.create_task(sessions.manager.ensure(run_id=run_id, allowed_domains=[]))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        while sessions._background:
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    # The save finished, so the sandbox is recorded for the run's next call, not left running
+    # with nothing pointing at it.
+    row = db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run_id))
+    assert (row.ref, backend.stopped) == ("sandbox-1", [])
 
 
 def test_prewarming_replaces_a_sandbox_that_has_gone(api, backend, db):
