@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "web", "migrate"])
+  for_each          = toset(["api", "worker", "web", "migrate", "sandbox", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -47,7 +47,9 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# Runtime role for the containers themselves (no AWS API access needed yet).
+# Runtime role for the api, worker, web and migrate containers. Its only permissions are for
+# starting and stopping sandboxes (sandbox.tf), which the API does for the run_python tool. The
+# sandbox and egress proxy tasks don't get it: they have no task role at all.
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -63,11 +65,18 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # run_python: one Fargate task per agent run (sandbox.tf).
+      SANDBOX_BACKEND         = "fargate"
+      SANDBOX_CLUSTER         = aws_ecs_cluster.main.name
+      SANDBOX_TASK_DEFINITION = aws_ecs_task_definition.sandbox.family
+      SANDBOX_SUBNETS         = join(",", aws_subnet.sandbox[*].id)
+      SANDBOX_SECURITY_GROUPS = aws_security_group.sandbox.id
+      SANDBOX_PROXY_ADDRESS   = local.proxy_address
     } : { name = k, value = v }
   ]
 
   backend_secrets = concat(
-    [for k in ["DATABASE_URL", "SESSION_SECRET"] :
+    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
     [for k in ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],

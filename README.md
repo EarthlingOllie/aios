@@ -74,7 +74,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
-docker-compose.yml  db, redis, migrate, api, worker, web
+docker-compose.yml  db, redis, migrate, api, worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -153,6 +153,40 @@ in one region (`var.region`). RDS and Valkey sit in private subnets and only acc
 from the app security group. Without `certificate_arn` the site is served over plain HTTP on
 the ALB hostname and session cookies aren't marked `Secure`. Set a domain and certificate for
 anything real.
+
+### Sandboxes on Fargate (`run_python`)
+
+On AWS, `SANDBOX_BACKEND=fargate` (`aios.sandbox.fargate`, `infra/terraform/sandbox.tf`): each
+agent run that uses `run_python` gets its own Fargate task, so its own Firecracker microVM.
+
+- **Starting**: the API calls `ecs:RunTask` on the sandbox task definition, passing the session's
+  runner token, proxy URL and lifetimes as environment overrides, waits for the task to run and
+  calls the runner (`serve` mode) at the task's private IP on port 8080. The runner exits when
+  idle or at its maximum lifetime, which stops the task; the API also stops it if starting fails.
+- **Network**: sandboxes run in subnets of their own whose route table has no default route.
+  Their security group only admits the API (8080) and only lets them out to the egress proxy
+  (3128), plus the ECR, CloudWatch Logs and S3 VPC endpoints Fargate needs to pull the image and
+  ship logs. The S3 endpoint only allows ECR's layer bucket, and the interface endpoints only
+  this account's credentials. RDS and Valkey don't admit sandboxes. The proxy is an ECS service
+  (`egress-proxy`, API image) found at `proxy.<name>.internal` through Cloud Map.
+- **IAM**: the sandbox task has no task role, so code in it has no AWS credentials. The API's
+  task role may run only the sandbox task definition, in this cluster, and describe and stop
+  the cluster's tasks.
+- **Locally**, `docker compose` runs one `sandbox` container that every run shares
+  (`SANDBOX_BACKEND=dev`). It has no isolation between runs and no network restrictions, so it's
+  for development only.
+
+Known limits:
+
+- A sandbox takes tens of seconds to start. Starting it in the background when a turn starts
+  hides most of that, but not all of it on a run's first turn.
+- Each sandbox is one `ecs:RunTask` call (rate limited per account) and one IP in the sandbox
+  subnets (a `/24` per AZ, so about 250 concurrent sandboxes per AZ).
+- The runner token is a RunTask override, visible to anyone in the account with
+  `ecs:DescribeTasks`.
+- DNS lookups through the VPC resolver aren't filtered, which is a possible exfiltration
+  channel. Route 53 DNS Firewall is the fix.
+- The three interface endpoints cost about $45 a month across two AZs, plus data processing.
 
 ## Notes and trade-offs
 
