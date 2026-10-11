@@ -21,6 +21,8 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 echo "==> Building and pushing images ($TAG)"
 docker buildx build --platform linux/amd64 --target api -t "$(repo api):$TAG" --push "$ROOT/backend"
 docker buildx build --platform linux/amd64 --target worker -t "$(repo worker):$TAG" --push "$ROOT/backend"
+docker buildx build --platform linux/amd64 --target sandbox -t "$(repo sandbox):$TAG" --push "$ROOT/backend"
+docker buildx build --platform linux/amd64 --target broker -t "$(repo broker):$TAG" --push "$ROOT/backend"
 docker buildx build --platform linux/amd64 -t "$(repo web):$TAG" --push "$ROOT/frontend"
 
 # Full apply (network, NAT, IAM, RDS, secrets, ...) so everything the migration needs

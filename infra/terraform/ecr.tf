@@ -1,5 +1,5 @@
 resource "aws_ecr_repository" "this" {
-  for_each             = toset(["api", "worker", "web"])
+  for_each             = toset(["api", "worker", "web", "sandbox", "broker"])
   name                 = "${var.name}/${each.key}"
   image_tag_mutability = "MUTABLE"
   force_delete         = !var.deletion_protection

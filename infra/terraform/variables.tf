@@ -109,3 +109,30 @@ variable "worker" {
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
 }
+
+# --- Sandbox hosts (run_python, sandbox.tf) ---
+variable "sandbox_hosts" {
+  description = "EC2 hosts for gVisor sandboxes. Each sandbox gets sandbox_memory_mb (a limit, not a reservation) and sandbox_cpus; a host runs at most sessions_per_host."
+  type = object({
+    instance_type     = string
+    min               = number
+    max               = number
+    desired           = number
+    sessions_per_host = optional(number, 12)
+    sandbox_memory_mb = optional(number, 1024)
+    sandbox_cpus      = optional(number, 1)
+  })
+  default = { instance_type = "m7i.large", min = 1, max = 4, desired = 1 }
+}
+
+variable "gvisor_release" {
+  description = "gVisor release installed on sandbox hosts (https://gvisor.dev/docs/user_guide/install/). Change gvisor_sha512 with it."
+  type        = string
+  default     = "20260914.0"
+}
+
+variable "gvisor_sha512" {
+  description = "SHA-512 of that release's x86_64/gvisor.tar.bz2."
+  type        = string
+  default     = "ff1c0577c8daa0e3511aedad554c3d5e20fa184b4ddd422454f573d60a8b9774f972755ca5c7f56588c5b4f42345b60b2ead077f35d7d3235e23f57c0fa194ca"
+}

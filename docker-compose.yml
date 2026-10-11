@@ -53,10 +53,51 @@ services:
     build:
       context: ./backend
       target: api
+    # Merges are shallow: `environment` and `depends_on` replace x-backend's, so repeat them.
+    environment:
+      <<: *backend-env
+      SANDBOX_BACKEND: gvisor
+      SANDBOX_BROKER_URL: http://broker:8090
+      SANDBOX_BROKER_TOKEN: ${SANDBOX_BROKER_TOKEN:-dev-broker-token}
+      SANDBOX_PROXY_SECRET: ${SANDBOX_PROXY_SECRET:-dev-proxy-secret}
+      SANDBOX_PROXY_ADDRESS: egress-proxy:3128
     depends_on:
       migrate:
         condition: service_completed_successfully
+      broker:
+        condition: service_started
     ports: ["8000:8000"]
+
+  # Starts run_python's sandboxes as containers on this machine's Docker (it gets the socket,
+  # which is root on the host). SANDBOX_DOCKER_RUNTIME defaults to runc, which needs no gVisor
+  # but isolates nothing: development only. Set it to runsc where gVisor is installed.
+  broker:
+    image: aios-broker:local
+    build:
+      context: ./backend
+      target: broker
+    environment:
+      SANDBOX_BROKER_TOKEN: ${SANDBOX_BROKER_TOKEN:-dev-broker-token}
+      SANDBOX_PROXY_SECRET: ${SANDBOX_PROXY_SECRET:-dev-proxy-secret}
+      SANDBOX_BROKER_ADVERTISE_URL: http://broker:8090
+      SANDBOX_DOCKER_RUNTIME: ${SANDBOX_DOCKER_RUNTIME:-runc}
+      SANDBOX_IMAGE: aios-sandbox:local
+      SANDBOX_PROXY_IMAGE: aios-broker:local
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      sandbox-image:
+        condition: service_completed_successfully
+
+  # Only builds the sandbox image (the broker never pulls), then exits.
+  sandbox-image:
+    image: aios-sandbox:local
+    build:
+      context: ./backend
+      target: sandbox
+    command: ["python", "-c", "pass"]
+    network_mode: none
+    restart: "no"
 
   worker:
     <<: *backend

@@ -64,17 +64,17 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     tools/          the tool library agents can be given (registry + one module per tool)
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
-                    runner and the egress proxy
+                    runner, the egress proxy and the gVisor broker
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest task
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
-  Dockerfile        targets: api, worker, sandbox
+  Dockerfile        targets: api, worker, sandbox, broker
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
-docker-compose.yml  db, redis, migrate, api, worker, web
+docker-compose.yml  db, redis, migrate, api, worker, web, broker (+ builds the sandbox image)
 ```
 
 ## Prerequisites
@@ -153,6 +153,49 @@ in one region (`var.region`). RDS and Valkey sit in private subnets and only acc
 from the app security group. Without `certificate_arn` the site is served over plain HTTP on
 the ALB hostname and session cookies aren't marked `Secure`. Set a domain and certificate for
 anything real.
+
+## Sandboxes on gVisor
+
+`run_python`'s sandboxes (`SANDBOX_BACKEND=gvisor`) are gVisor containers on EC2 hosts we run
+(`infra/terraform/sandbox.tf`), one per agent run:
+
+```
+api ──new session──▶ internal NLB :8090 ──▶ broker on some host ──docker run --runtime=runsc──▶ sandbox
+api ──later calls───▶ that host's broker :8090 ──docker exec runner.py exec──▶ same sandbox
+sandbox ──(internal Docker network, no route out)──▶ egress-proxy:3128 ──HTTPS, allowlist──▶ internet
+```
+
+- **The broker** (`aios.sandbox.broker`, the `broker` image: the api image plus the Docker CLI)
+  is an ECS daemon service on each host, with host networking and the Docker socket. It's the
+  only thing that starts containers. Every call needs `SANDBOX_BROKER_TOKEN`. On startup it
+  removes sandboxes a previous broker left, makes sure the internal network exists, and
+  (re)starts the egress proxy container. It removes sandboxes after `SANDBOX_IDLE_SECONDS`
+  without a call or `SANDBOX_MAX_SESSION_SECONDS` in total.
+- **A sandbox** is `docker run --runtime=runsc` from the `sandbox` image with a read-only root,
+  tmpfs `/work` and `/tmp`, user 1001, `--cap-drop=ALL`, `no-new-privileges`, memory, CPU and
+  process limits, and no published ports: each call is a `docker exec` of the runner. With
+  allowed domains it joins the `--internal` network `aios-sandbox`, whose only way out is the
+  egress proxy (on that network and the default bridge); with none it gets `--network=none`.
+  Hosts drop traffic from that network to the host itself, require IMDSv2 with a hop limit of 1
+  (no instance credentials for containers), and only allow HTTPS out. `db` and `redis` don't
+  admit the hosts.
+- **Locally**, `docker compose` runs the broker against your Docker with
+  `SANDBOX_DOCKER_RUNTIME=runc`, which needs no gVisor but **isolates nothing**: development
+  only. Set it to `runsc` where gVisor is installed and registered with Docker.
+- **Known limits**:
+  - The host kernel is shared, behind gVisor's Sentry, and we own the hosts and their patching
+    (a new ECS AMI or gVisor release reaches them through the ASG's instance refresh on the next
+    `terraform apply`).
+  - The broker holds the Docker socket, which is root on the host: it's security-critical code.
+  - Tenants share hosts, and sandboxes on one host share the internal network, so they can
+    reach each other's listening ports (nothing listens unless the code starts a server).
+  - gVisor adds overhead to I/O- and syscall-heavy code.
+  - DNS isn't filtered by the proxy (same as Fargate). Sandboxes only use it through Docker's
+    embedded resolver on the internal network.
+  - The broker's session table is in memory: when a broker restarts (e.g. on every deploy) its
+    host's sandboxes are removed, and their runs get fresh ones on their next call
+    (`sandbox_restarted`). A host that goes away does the same.
+  - API-to-broker traffic is plain HTTP inside the VPC, authenticated with the shared token.
 
 ## Notes and trade-offs
 
