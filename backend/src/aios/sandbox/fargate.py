@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 import httpx
-from anyio import to_thread
+from anyio import CancelScope, to_thread
 
 from aios.config import Settings
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
@@ -142,7 +142,10 @@ class FargateBackend:
             endpoint = f"http://{ip}:{RUNNER_PORT}"
             await self.runner.wait_healthy(endpoint, deadline, self.poll_interval)
         except BaseException:
-            await self.stop(SandboxHandle(arn, "", ""))
+            # Shielded: if the start was cancelled (e.g. the client went away), anyio would
+            # cancel the stop too, and the task would run until its runner's idle timeout.
+            with CancelScope(shield=True):
+                await self.stop(SandboxHandle(arn, "", ""))
             raise
         return SandboxHandle(arn, endpoint, token)
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 
+import anyio
 import boto3
 import httpx
 import pytest
@@ -171,6 +172,23 @@ def test_a_runner_that_never_answers_is_stopped(ecs):
     backend = FargateBackend(settings, ecs=client, runner=runner.client(), poll_interval=0)
     with pytest.raises(SandboxError, match="didn't respond in time"):
         asyncio.run(backend.start(SPEC))
+
+
+def test_a_cancelled_start_still_stops_its_task(ecs):
+    client, stubber = ecs
+    stubber.add_response("run_task", {"tasks": [task("PROVISIONING", ip=None)]})
+    stubber.add_response("describe_tasks", {"tasks": [task("RUNNING")]})
+    stubber.add_response(
+        "stop_task", {"task": task("STOPPING")}, {"cluster": "aios", "task": ARN, "reason": ANY}
+    )
+    runner = FakeRunner(healthy_after=1_000_000)
+    backend = FargateBackend(SETTINGS, ecs=client, runner=runner.client(), poll_interval=0.01)
+
+    async def scenario():
+        with anyio.move_on_after(0.2):
+            await backend.start(SPEC)
+
+    anyio.run(scenario)
 
 
 def test_execute_calls_the_runner(ecs):
