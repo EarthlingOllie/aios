@@ -10,6 +10,7 @@ counts, and any other failure raises SandboxError, so a brief network error or a
 doesn't throw away the run's sandbox (and its /work).
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -22,6 +23,10 @@ log = logging.getLogger(__name__)
 # How long to wait past a call's own time limit before giving up on the broker (which itself
 # gives `docker exec` a little longer than the call's time limit).
 EXEC_GRACE = 30
+# Each broker only knows its own host's capacity: a start a full host refuses (503) is tried
+# again, up to START_ATTEMPTS in all, on a new connection that may reach another host.
+START_ATTEMPTS = 3
+START_RETRY_DELAY = 0.5
 
 
 def _detail(resp: httpx.Response) -> str | None:
@@ -49,20 +54,28 @@ class GVisorBackend:
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         if not self.url:
             raise SandboxError("Running Python isn't set up on this server.")
-        try:
-            resp = await self.http.post(
-                f"{self.url}/sessions",
-                json={
-                    "session_key": spec.session_key,
-                    "proxy_url": spec.proxy_url,
-                    "idle_seconds": spec.idle_seconds,
-                    "max_seconds": spec.max_seconds,
-                },
-                headers=self._auth,
-                timeout=httpx.Timeout(self.start_timeout, connect=5),
-            )
-        except httpx.HTTPError as exc:
-            raise SandboxError("Couldn't reach the sandbox service.") from exc
+        for attempt in range(1, START_ATTEMPTS + 1):
+            try:
+                resp = await self.http.post(
+                    f"{self.url}/sessions",
+                    json={
+                        "session_key": spec.session_key,
+                        "proxy_url": spec.proxy_url,
+                        "idle_seconds": spec.idle_seconds,
+                        "max_seconds": spec.max_seconds,
+                    },
+                    # A new connection each time: the load balancer picks a host per connection,
+                    # so a retry can land on another one.
+                    headers={**self._auth, "Connection": "close"},
+                    timeout=httpx.Timeout(self.start_timeout, connect=5),
+                )
+            except httpx.HTTPError as exc:
+                raise SandboxError("Couldn't reach the sandbox service.") from exc
+            # 503: that host is full, but another may not be.
+            if resp.status_code != 503 or attempt == START_ATTEMPTS:
+                break
+            log.info("sandbox host full (attempt %d); trying again", attempt)
+            await asyncio.sleep(START_RETRY_DELAY * attempt)
         if resp.status_code != 201:
             raise SandboxError(_detail(resp) or f"Couldn't start a sandbox ({resp.status_code}).")
         body = resp.json()

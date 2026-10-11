@@ -15,6 +15,7 @@ from pydantic import SecretStr
 
 from aios.config import Settings
 from aios.sandbox import broker as broker_module
+from aios.sandbox import gvisor as gvisor_module
 from aios.sandbox import runner as runner_module
 from aios.sandbox.base import SandboxError, SandboxGone, SandboxHandle, SessionSpec
 from aios.sandbox.broker import Broker, Completed, OutputTooLarge, create_app, run_command
@@ -650,6 +651,41 @@ def test_client_timeouts_and_odd_answers():
         assert seen[-1].headers["Authorization"] == f"Bearer {TOKEN}"
 
     asyncio.run(scenario())
+
+
+def test_client_tries_another_host_when_one_is_full(monkeypatch):
+    monkeypatch.setattr(gvisor_module, "START_RETRY_DELAY", 0)
+    answers: list[httpx.Response] = []
+    seen: list[httpx.Request] = []
+
+    def brokers(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return answers.pop(0)
+
+    settings = SETTINGS.model_copy(update={"sandbox_broker_url": "http://brokers.internal:8090"})
+    backend = GVisorBackend(
+        settings, http=httpx.AsyncClient(transport=httpx.MockTransport(brokers))
+    )
+    full = httpx.Response(503, json={"detail": "No sandbox capacity right now; try again shortly."})
+    started = httpx.Response(201, json={"id": "a" * 32, "endpoint": ENDPOINT})
+
+    answers[:] = [full, full, started]
+    assert asyncio.run(backend.start(SPEC)).ref == "a" * 32
+    # Each on a new connection, which the load balancer may send to another host.
+    assert [r.headers["Connection"] for r in seen] == ["close"] * 3
+
+    seen.clear()
+    answers[:] = [full] * gvisor_module.START_ATTEMPTS
+    with pytest.raises(SandboxError, match="No sandbox capacity"):
+        asyncio.run(backend.start(SPEC))
+    assert len(seen) == gvisor_module.START_ATTEMPTS
+
+    # Other failures aren't about one host's capacity.
+    seen.clear()
+    answers[:] = [httpx.Response(502, json={"detail": "Couldn't start a sandbox."})]
+    with pytest.raises(SandboxError, match="Couldn't start a sandbox"):
+        asyncio.run(backend.start(SPEC))
+    assert len(seen) == 1
 
 
 def test_client_needs_a_broker_url():
