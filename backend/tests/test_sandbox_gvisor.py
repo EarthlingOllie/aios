@@ -531,12 +531,40 @@ def test_client_treats_an_unreachable_host_as_gone():
     async def scenario():
         with pytest.raises(SandboxGone):
             await backend.execute(handle, "1", 10)
-        assert not await backend.alive(handle)
+        # `alive()` can't tell, so it doesn't say the sandbox has gone: the next call finds out.
+        with pytest.raises(SandboxError, match="Couldn't reach the sandbox") as error:
+            await backend.alive(handle)
+        assert not isinstance(error.value, SandboxGone)
         await backend.stop(handle)
         with pytest.raises(SandboxError, match="Couldn't reach"):
             await backend.start(SPEC)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(503, json={"detail": "busy"}),
+        httpx.Response(500, text="oops"),
+        httpx.Response(401),
+        httpx.ReadTimeout("slow"),
+    ],
+)
+def test_client_alive_only_reports_gone_when_the_broker_says_so(answer):
+    def broker(request: httpx.Request) -> httpx.Response:
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    backend = GVisorBackend(SETTINGS, http=httpx.AsyncClient(transport=httpx.MockTransport(broker)))
+    handle = SandboxHandle("a" * 32, ENDPOINT, "")
+    with pytest.raises(SandboxError) as error:
+        asyncio.run(backend.alive(handle))
+    assert not isinstance(error.value, SandboxGone)
+
+    gone = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    assert asyncio.run(GVisorBackend(SETTINGS, http=gone).alive(handle)) is False
 
 
 def test_client_timeouts_and_odd_answers():

@@ -3,8 +3,11 @@
 The API asks a broker (`aios.sandbox.broker`, one per host) for a session at SANDBOX_BROKER_URL,
 the brokers' internal load balancer. The broker that answers starts the container and replies
 with its own address, which the session records, so the run's later calls go straight to the
-host its sandbox is on. A host or broker that has gone (unreachable, or no longer knows the
-session) means the sandbox has gone, and the session manager starts another.
+host its sandbox is on. A broker that no longer knows the session, or a host that refuses a
+call's connection, means the sandbox has gone, and the session manager starts another. `alive()`,
+which pre-warming asks on every chat turn, is stricter: only the broker saying the session is gone
+counts, and any other failure raises SandboxError, so a brief network error or a busy broker
+doesn't throw away the run's sandbox (and its /work).
 """
 
 import logging
@@ -71,13 +74,20 @@ class GVisorBackend:
         return SandboxHandle(ref=str(body["id"]), endpoint=endpoint, secret="")
 
     async def alive(self, handle: SandboxHandle) -> bool:
+        """True if the sandbox is running, False only if its broker says it has gone. Raises
+        SandboxError when it can't tell (unreachable, timed out, or an unexpected answer): the
+        sandbox may well still be there, and the next call finds out for sure."""
         try:
             resp = await self.http.get(
                 f"{handle.endpoint}/sessions/{handle.ref}", headers=self._auth, timeout=5
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            raise SandboxError("Couldn't reach the sandbox.") from exc
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 404:
             return False
-        return resp.status_code == 200
+        raise SandboxError(_detail(resp) or f"Couldn't check the sandbox ({resp.status_code}).")
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
         try:
