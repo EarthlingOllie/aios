@@ -30,6 +30,8 @@ def test_proxy_tokens_carry_their_grant():
     )
     assert proxy_token.verify(SECRET, f"{forged.decode()}.{signature}", now=1000) is None
     assert proxy_token.verify(SECRET, "garbage", now=1000) is None
+    assert proxy_token.verify(SECRET, "abc.\u00e9", now=1000) is None
+    assert proxy_token.verify(SECRET, f"{payload}\u00e9.{signature}", now=1000) is None
     assert proxy_token.verify("", token, now=1000) is None
 
 
@@ -120,6 +122,7 @@ def test_egress_proxy_tunnels_to_allowed_hosts():
     [
         (connect_request("api.example.com", None), "407", "missing or invalid proxy token"),
         (connect_request("api.example.com", "forged.token"), "407", "invalid proxy token"),
+        (connect_request("api.example.com", "abc.\u00e9"), "407", "invalid proxy token"),
         (connect_request("api.example.com", token(ttl=-1)), "407", "invalid proxy token"),
         (connect_request("other.com", token()), "403", "isn't in this sandbox's allowed domains"),
         (connect_request("api.example.com", token(), port=80), "403", "only port 443"),
