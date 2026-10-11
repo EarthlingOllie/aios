@@ -272,3 +272,26 @@ class AgentRun(Base):
 
     agent: Mapped[Agent] = relationship(back_populates="runs")
     agent_version: Mapped[AgentVersion] = relationship()
+
+
+class SandboxSession(Base):
+    """The sandbox an agent run's `run_python` calls go to (see `aios.sandbox`)."""
+
+    __tablename__ = "sandbox_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), unique=True
+    )
+    # The backend's id for the sandbox (a task ARN, a broker session id).
+    ref: Mapped[str] = mapped_column(String(512))
+    # Where exec calls go, and the bearer token they need.
+    endpoint: Mapped[str] = mapped_column(String(512))
+    secret: Mapped[str] = mapped_column(String(255))
+    # This sandbox replaced one that had gone, and no call has run since: the next call's result
+    # tells the model that /work was reset.
+    replaced: Mapped[bool] = mapped_column(server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

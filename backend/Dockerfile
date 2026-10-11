@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# Targets: `api` (FastAPI/Uvicorn, also used for migrations) and `worker` (Celery + Docling).
+# Targets: `api` (FastAPI/Uvicorn, also used for migrations and the egress proxy), `worker`
+# (Celery + Docling) and `sandbox` (runs agent-written Python, see aios.sandbox).
 
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 
@@ -49,3 +50,23 @@ RUN docling-tools models download -o "$DOCLING_ARTIFACTS_PATH" \
 ENV HF_HUB_OFFLINE=1
 USER app
 CMD ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=2"]
+
+# ---------- sandbox ----------
+# Runs agent-written code. Only the runner and the pinned libraries in sandbox/requirements.txt:
+# no app code and no app dependencies. Run it with a read-only root filesystem; /work and /tmp
+# are the only paths that need to be writable.
+FROM python:3.13-slim-bookworm AS sandbox
+COPY --from=uv /uv /bin/
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=sandbox/requirements.txt,target=/tmp/requirements.txt \
+    uv pip install --system --require-hashes -r /tmp/requirements.txt \
+    && rm /bin/uv
+# The code runs as this user (the runner drops to it when started as root).
+RUN useradd --uid 1001 --no-create-home --home-dir /work sandbox \
+    && mkdir /work && chown sandbox:sandbox /work
+COPY src/aios/sandbox/runner.py /opt/sandbox/runner.py
+WORKDIR /work
+CMD ["python", "/opt/sandbox/runner.py", "serve"]

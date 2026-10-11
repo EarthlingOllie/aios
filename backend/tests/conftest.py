@@ -1,3 +1,7 @@
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -7,6 +11,7 @@ from aios.auth import current_user
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import User
+from aios.sandbox import runner
 
 
 @pytest.fixture
@@ -45,3 +50,15 @@ def api(client, user):
     app.dependency_overrides[current_user] = lambda: user
     yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def workdir(monkeypatch):
+    # Not under pytest's tmp_path, whose parents only its owner can enter: run as root, the
+    # runner runs the code as another user, which needs to reach the working directory.
+    with tempfile.TemporaryDirectory() as parent:
+        os.chmod(parent, 0o755)
+        work = Path(parent) / "work"
+        monkeypatch.setattr(runner, "WORKDIR", str(work))
+        runner.prepare_workdir()
+        yield work

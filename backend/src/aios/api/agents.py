@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -37,8 +39,11 @@ from aios.models import (
     agent_version_skills,
 )
 from aios.runner import runner
+from aios.sandbox.sessions import SandboxNotConfigured, manager
 from aios.tools import TOOLS, ToolError, build_tool, check_stored_tool, validate_tool
 from aios.versioning import save_agent_version
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -617,6 +622,8 @@ class ChatContext:
     metadata: dict[str, Any]
     # The version's tools, built from their stored settings.
     capabilities: list[AbstractCapability[Any]] = field(default_factory=list)
+    # The `run_python` tool's allowed domains, if the version has the tool.
+    sandbox_domains: list[str] | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
@@ -628,7 +635,36 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
         capabilities=build_version_tools(version),
+        sandbox_domains=next(
+            (
+                t.config.get("allowed_domains", [])
+                for t in version.tools
+                if t.tool_key == "run_python"
+            ),
+            None,
+        ),
     )
+
+
+# Pre-warming tasks, kept so they aren't garbage-collected before they finish.
+_prewarming: set[asyncio.Task] = set()
+
+
+def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
+    """Starts the run's sandbox in the background, so it's ready by the model's first call."""
+
+    async def ensure() -> None:
+        try:
+            await manager.ensure(run_id=run_id, allowed_domains=allowed_domains)
+        except SandboxNotConfigured:
+            pass
+        except Exception:
+            # The tool call will try again, and report a failure to the model.
+            log.exception("couldn't pre-warm the sandbox for run %s", run_id)
+
+    task = asyncio.create_task(ensure())
+    _prewarming.add(task)
+    task.add_done_callback(_prewarming.discard)
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
@@ -670,6 +706,8 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
         )
 
     async def stream() -> AsyncIterator[BaseChunk]:
+        if ctx.sandbox_domains is not None:
+            prewarm_sandbox(run_id, ctx.sandbox_domains)
         # `on_complete` only fires on success: a model error is turned into an error chunk, and
         # the client stopping cancels this task. The captured history includes the partial reply
         # (marked `state='interrupted'`) in both cases.
@@ -677,7 +715,7 @@ async def run_chat(agent_id: int, run_id: int, request: Request, user: CurrentUs
             try:
                 async for chunk in adapter.run_stream(
                     message_history=ctx.history,
-                    deps=ChatDeps(user_id=user.id),
+                    deps=ChatDeps(user_id=user.id, run_id=run_id),
                     conversation_id=f"agent-run-{run_id}",
                     run_id=turn_id,
                     model=ctx.model,

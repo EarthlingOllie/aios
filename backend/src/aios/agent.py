@@ -10,6 +10,8 @@ from aios.search import document_search_results
 class ChatDeps:
     # Also the deps of user-defined agents' runs (`aios.runner`), which tools read the user from.
     user_id: int
+    # The agent run (user-defined agents only), e.g. for the run's sandbox (`run_python`).
+    run_id: int | None = None
 
 
 agent = Agent(
