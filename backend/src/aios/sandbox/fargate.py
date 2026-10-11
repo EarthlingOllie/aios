@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 from anyio import CancelScope, to_thread
+from botocore.exceptions import BotoCoreError, ClientError
 
 from aios.config import Settings
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
@@ -62,7 +63,10 @@ class RunnerClient:
             raise SandboxGone("The sandbox has stopped.")
         if resp.status_code != 200:
             raise SandboxError(f"The sandbox refused the call ({resp.status_code}).")
-        return ExecResult.model_validate(resp.json())
+        try:
+            return ExecResult.model_validate(resp.json())
+        except ValueError as exc:  # Bad JSON, or JSON that isn't a result (ValidationError).
+            raise SandboxError("The sandbox sent back a result that couldn't be read.") from exc
 
 
 def _private_ip(task: dict[str, Any]) -> str | None:
@@ -85,7 +89,13 @@ class FargateBackend:
         if ecs is None:
             import boto3
 
-            ecs = boto3.client("ecs")
+            try:
+                ecs = boto3.client("ecs")
+            except BotoCoreError as exc:  # E.g. no region configured.
+                log.warning("couldn't create the ECS client", exc_info=True)
+                raise SandboxError(
+                    f"Running Python isn't set up correctly ({type(exc).__name__})."
+                ) from exc
         self.ecs = ecs
         self.runner = runner or RunnerClient()
         self.cluster = settings.sandbox_cluster
@@ -97,8 +107,19 @@ class FargateBackend:
         self.poll_interval = poll_interval
 
     async def _call(self, method: str, **kwargs: Any) -> dict[str, Any]:
-        # boto3 is blocking, so it runs on a worker thread.
-        return await to_thread.run_sync(lambda: getattr(self.ecs, method)(**kwargs))
+        # boto3 is blocking, so it runs on a worker thread. AWS errors (throttling, access
+        # denied, missing credentials...) become SandboxErrors, which the tool reports to the
+        # model instead of failing the run.
+        try:
+            return await to_thread.run_sync(lambda: getattr(self.ecs, method)(**kwargs))
+        except (BotoCoreError, ClientError) as exc:
+            # Only the error's name reaches the model: AWS messages can name roles and accounts.
+            log.warning("ECS %s failed", method, exc_info=True)
+            if isinstance(exc, ClientError):
+                name = exc.response.get("Error", {}).get("Code") or "ClientError"
+            else:
+                name = type(exc).__name__
+            raise SandboxError(f"The sandbox service failed ({name}).") from exc
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         deadline = time.monotonic() + self.start_timeout

@@ -8,6 +8,7 @@ import anyio
 import boto3
 import httpx
 import pytest
+from botocore.exceptions import NoCredentialsError
 from botocore.stub import ANY, Stubber
 
 from aios.config import Settings
@@ -150,6 +151,46 @@ def test_start_reports_ecs_failures(ecs):
         asyncio.run(backend.start(SPEC))
 
 
+def test_aws_errors_from_run_task_are_sandbox_errors(ecs):
+    # Throttling, access denied, no capacity...: the tool reports them to the model.
+    client, stubber = ecs
+    stubber.add_client_error("run_task", "ThrottlingException", "Rate exceeded")
+    backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner().client(), poll_interval=0)
+    with pytest.raises(SandboxError, match=r"sandbox service failed \(ThrottlingException\)"):
+        asyncio.run(backend.start(SPEC))
+
+
+def test_missing_credentials_are_a_sandbox_error():
+    class NoCredentials:
+        def run_task(self, **_):
+            raise NoCredentialsError()
+
+    backend = FargateBackend(SETTINGS, ecs=NoCredentials(), runner=FakeRunner().client())
+    with pytest.raises(SandboxError, match="NoCredentialsError"):
+        asyncio.run(backend.start(SPEC))
+
+
+def test_a_missing_region_is_a_sandbox_error(monkeypatch):
+    for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/nonexistent")
+    with pytest.raises(SandboxError, match="NoRegionError"):
+        FargateBackend(SETTINGS)
+
+
+def test_a_failed_describe_still_stops_the_task(ecs):
+    client, stubber = ecs
+    stubber.add_response("run_task", {"tasks": [task("PROVISIONING", ip=None)]})
+    stubber.add_client_error("describe_tasks", "AccessDeniedException", "User: arn:aws:iam::1:x")
+    stop = {"cluster": "aios", "task": ARN, "reason": ANY}
+    stubber.add_response("stop_task", {"task": task("STOPPING")}, stop)
+    backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner().client(), poll_interval=0)
+    with pytest.raises(SandboxError) as info:
+        asyncio.run(backend.start(SPEC))
+    # The AWS message (which can name roles and accounts) stays out of what the model sees.
+    assert str(info.value) == "The sandbox service failed (AccessDeniedException)."
+
+
 def test_a_task_that_stops_while_starting_is_reported(ecs):
     client, stubber = ecs
     stubber.add_response("run_task", {"tasks": [task("PROVISIONING", ip=None)]})
@@ -221,6 +262,17 @@ def test_a_stopped_task_is_gone(ecs):
     backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner(status=500).client())
     with pytest.raises(SandboxError, match="refused the call"):
         asyncio.run(backend.execute(handle, "1", 5))
+
+
+def test_an_unreadable_result_is_a_sandbox_error(ecs):
+    client, _ = ecs
+    handle = SandboxHandle(ARN, "http://10.40.20.7:8080", "tok")
+    for body in (b"not json", b'{"stdout": 4}'):
+        transport = httpx.MockTransport(lambda _, body=body: httpx.Response(200, content=body))
+        runner = RunnerClient(httpx.AsyncClient(transport=transport))
+        backend = FargateBackend(SETTINGS, ecs=client, runner=runner)
+        with pytest.raises(SandboxError, match="couldn't be read"):
+            asyncio.run(backend.execute(handle, "1", 5))
 
 
 def test_stop_is_best_effort(ecs):
