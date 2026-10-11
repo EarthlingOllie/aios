@@ -17,13 +17,17 @@ import httpx
 
 from aios.config import Settings
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
-from aios.sandbox.broker import PROXY_TOKEN_LIMIT
 
 log = logging.getLogger(__name__)
 
 # How long to wait past a call's own time limit before giving up on the broker (which itself
 # gives `docker exec` a little longer than the call's time limit).
 EXEC_GRACE = 30
+# The longest proxy token a session may have. It grows with the run's allowed domains; the
+# egress proxy reads at most 8 KiB of request head, which holds the token base64-encoded again,
+# so a much longer one couldn't be used anyway. Checked here before asking a broker, which
+# enforces it too (`aios.sandbox.broker`).
+PROXY_TOKEN_LIMIT = 4000
 # Each broker only knows its own host's capacity: a start a full host refuses (503) is tried
 # again, up to START_ATTEMPTS in all, on a new connection that may reach another host.
 START_ATTEMPTS = 3

@@ -733,10 +733,10 @@ def test_client_refuses_a_proxy_token_the_broker_would(broker):
     async def scenario():
         await broker.startup()
         backend = in_process(broker)
-        longest = replace(SPEC, proxy_url=proxy_url(broker_module.PROXY_TOKEN_LIMIT))
+        longest = replace(SPEC, proxy_url=proxy_url(gvisor_module.PROXY_TOKEN_LIMIT))
         assert (await backend.start(longest)).ref in broker.sessions
         sessions = len(broker.sessions)
-        too_long = replace(SPEC, proxy_url=proxy_url(broker_module.PROXY_TOKEN_LIMIT + 1))
+        too_long = replace(SPEC, proxy_url=proxy_url(gvisor_module.PROXY_TOKEN_LIMIT + 1))
         with pytest.raises(SandboxError, match="list of reachable domains is too long"):
             await backend.start(too_long)
         assert len(broker.sessions) == sessions
