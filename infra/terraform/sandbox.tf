@@ -11,6 +11,12 @@ locals {
   # The Docker network sandboxes join (`--internal`: no route out). Hosts drop traffic from it
   # to the host itself, so sandboxes can't reach the broker, the ECS agent or other host ports.
   sandbox_subnet = "172.30.0.0/16"
+  # Host memory kept out of the sandboxes' reach (MiB): the kernel and OS (~512), Docker and
+  # containerd (~256), the ECS agent (~128), the broker (~256), the egress proxy (capped at 256)
+  # and headroom for gVisor's own per-sandbox processes (~128 in all). Sandboxes'
+  # limits must fit in what's left, or the host's OOM killer can take the broker or the proxy
+  # (and every session with them) instead of one sandbox hitting its own limit.
+  sandbox_host_reserved_mb = 1536
 
   sandbox_user_data = <<-EOT
     #!/bin/bash
@@ -141,6 +147,20 @@ resource "aws_launch_template" "sandbox" {
     resource_type = "instance"
     tags          = { Name = "${var.name}-sandbox" }
   }
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.sandbox_hosts.sessions_per_host * var.sandbox_hosts.sandbox_memory_mb
+        + local.sandbox_host_reserved_mb <= data.aws_ec2_instance_type.sandbox.memory_size
+      )
+      error_message = "sandbox_hosts: sessions_per_host x sandbox_memory_mb (${var.sandbox_hosts.sessions_per_host * var.sandbox_hosts.sandbox_memory_mb} MiB) plus ${local.sandbox_host_reserved_mb} MiB for the host doesn't fit in ${var.sandbox_hosts.instance_type}'s ${data.aws_ec2_instance_type.sandbox.memory_size} MiB. Lower one of them, or pick a bigger instance type."
+    }
+  }
+}
+
+data "aws_ec2_instance_type" "sandbox" {
+  instance_type = var.sandbox_hosts.instance_type
 }
 
 # A new AMI (applied with the next `terraform apply`) or user data replaces hosts one by one.

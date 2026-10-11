@@ -112,13 +112,13 @@ variable "worker" {
 
 # --- Sandbox hosts (run_python, sandbox.tf) ---
 variable "sandbox_hosts" {
-  description = "EC2 hosts for gVisor sandboxes. Each sandbox gets sandbox_memory_mb (a limit, not a reservation) and sandbox_cpus; a host runs at most sessions_per_host."
+  description = "EC2 hosts for gVisor sandboxes. Each sandbox gets sandbox_memory_mb (a limit, not a reservation, and its tmpfs /work and /tmp count towards it) and sandbox_cpus; a host runs at most sessions_per_host. sessions_per_host x sandbox_memory_mb plus local.sandbox_host_reserved_mb (sandbox.tf) must fit in the instance type's memory, so a host never runs out before every sandbox hits its own limit: on the default m7i.large (8192 MiB), 6 x 1024 + 1536 = 7680."
   type = object({
     instance_type     = string
     min               = number
     max               = number
     desired           = number
-    sessions_per_host = optional(number, 12)
+    sessions_per_host = optional(number, 6)
     sandbox_memory_mb = optional(number, 1024)
     sandbox_cpus      = optional(number, 1)
   })
