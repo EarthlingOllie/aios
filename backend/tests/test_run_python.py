@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import time
+from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -12,7 +14,7 @@ from test_agents import agent_body, chat_body, make_agent, spy_run_stream
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.models import SandboxSession
+from aios.models import AgentVersionTool, SandboxSession
 from aios.runner import runner
 from aios.sandbox import proxy_token, sessions
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
@@ -42,6 +44,10 @@ class FakeBackend:
         if handle.ref in self.gone:
             raise SandboxGone("stopped")
         self.calls.append((handle.ref, code, timeout))
+        if "crash" in code:
+            # Takes the sandbox down partway through, like running out of memory.
+            self.gone.add(handle.ref)
+            raise SandboxGone("stopped")
         return ExecResult(
             exit_code=0,
             stdout=f"ran in {handle.ref}\n",
@@ -155,10 +161,14 @@ def test_one_sandbox_per_run(api, backend, db, monkeypatch):
     chat(api, agent, other, "print('elsewhere')")
     assert backend.calls[-1][0] == "sandbox-2"
 
-    # Deleting a run deletes its session row (the sandbox stops itself when idle).
+    # Deleting a run deletes its session row, and stops its sandbox.
     api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}")
     db.expire_all()
     assert db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run["id"])) is None
+    assert backend.stopped == ["sandbox-1"]
+    # Deleting the agent stops its other runs' sandboxes.
+    api.delete(f"/api/agents/{agent['id']}")
+    assert backend.stopped == ["sandbox-1", "sandbox-2"]
 
 
 def test_a_sandbox_that_has_gone_is_replaced(api, backend, monkeypatch):
@@ -173,6 +183,84 @@ def test_a_sandbox_that_has_gone_is_replaced(api, backend, monkeypatch):
     assert seen["result"]["sandbox_restarted"] is True
     assert len(backend.specs) == 2
     assert "sandbox_restarted" not in chat(api, agent, run, "print(1)")["result"]
+    # The old one is stopped, in case it was only unreachable for a while.
+    assert backend.stopped == ["sandbox-1"]
+
+
+def test_code_is_not_run_twice_when_the_sandbox_stops_during_a_call(api, backend, monkeypatch):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    seen = chat(api, agent, run, "crash()")
+    # Not retried in a new sandbox: the code may have partly run, e.g. made a request.
+    assert [ref for ref, _, _ in backend.calls] == ["sandbox-1"]
+    assert "may have partly run" in seen["result"]["error"]
+    assert len(backend.specs) == 1
+    # The next call gets a new sandbox, and is told /work was reset.
+    seen = chat(api, agent, run, "print(1)")
+    assert seen["result"]["stdout"] == "ran in sandbox-2\n"
+    assert seen["result"]["sandbox_restarted"] is True
+
+
+def test_a_sandbox_another_replica_records_first_is_used(api, backend, monkeypatch):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    start = backend.start
+
+    async def racing_start(spec):
+        handle = await start(spec)
+        if handle.ref == "sandbox-1":
+            # Meanwhile, another replica starts a sandbox for the run and records it.
+            other = await start(spec)
+            assert sessions._save(run["id"], other, replaced=False, previous=None)
+        return handle
+
+    monkeypatch.setattr(backend, "start", racing_start)
+    seen = chat(api, agent, run, "print(1)")
+    # One sandbox per run: this request's is stopped rather than overwriting the other's.
+    assert seen["result"]["stdout"] == "ran in sandbox-2\n"
+    assert backend.stopped == ["sandbox-1"]
+
+
+def _run_id(api) -> int:
+    return python_agent(api)[1]["id"]
+
+
+def test_a_sandbox_that_cant_be_recorded_is_stopped(api, backend, monkeypatch):
+    run_id = _run_id(api)
+
+    def unreachable(*args, **kwargs):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(sessions, "_save", unreachable)
+    with pytest.raises(RuntimeError):
+        asyncio.run(sessions.manager.ensure(run_id=run_id, allowed_domains=[]))
+    assert backend.stopped == ["sandbox-1"]
+
+
+def test_a_start_cancelled_while_recording_keeps_its_sandbox(api, backend, db, monkeypatch):
+    run_id = _run_id(api)
+    save = sessions._save
+
+    def slow_save(*args, **kwargs):
+        time.sleep(0.3)
+        return save(*args, **kwargs)
+
+    monkeypatch.setattr(sessions, "_save", slow_save)
+
+    async def scenario():
+        task = asyncio.create_task(sessions.manager.ensure(run_id=run_id, allowed_domains=[]))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        while sessions._background:
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    # The save finished, so the sandbox is recorded for the run's next call, not left running
+    # with nothing pointing at it.
+    row = db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run_id))
+    assert (row.ref, backend.stopped) == ("sandbox-1", [])
 
 
 def test_prewarming_replaces_a_sandbox_that_has_gone(api, backend, db):
@@ -201,11 +289,23 @@ def test_the_proxy_token_carries_the_allowed_domains(api, backend, monkeypatch):
     grant = proxy_token.verify("s", prefix.removeprefix("http://sandbox:"))
     assert grant.session == f"agent-run-{run['id']}"
     assert grant.domains == ("api.example.com", "*.data.gov")
+    # Valid for the sandbox's whole life, which counts from when it has booted.
+    lifetime = settings.sandbox_start_timeout + settings.sandbox_max_session_seconds
+    assert grant.expires_at > time.time() + lifetime - 60
 
     # No allowed domains, no network: the sandbox gets no proxy at all.
     agent, run = python_agent(api, "Offline")
     chat(api, agent, run, "print(1)")
     assert backend.specs[1].proxy_url == ""
+
+
+def test_allowed_domains_without_a_proxy_are_an_error(api, backend):
+    # No SANDBOX_PROXY_ADDRESS or SANDBOX_PROXY_SECRET: the sandbox isn't started without the
+    # network the model is told it has.
+    agent, run = python_agent(api, allowed_domains=["api.example.com"])
+    seen = chat(api, agent, run, "import httpx")
+    assert "Network access for the sandbox isn't set up" in seen["result"]["error"]
+    assert backend.specs == []
 
 
 def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
@@ -224,6 +324,66 @@ def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
         assert api.post(url, json=chat_body("hello")).status_code == 200
     assert [s.session_key for s in backend.specs] == [f"agent-run-{run['id']}"]
     assert backend.calls == []
+
+
+def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, db, monkeypatch):
+    agent, run = python_agent(api, allowed_domains=["api.example.com"])
+    # Stored by an older version of the settings model: not in today's canonical form.
+    tool = db.scalar(
+        select(AgentVersionTool).where(
+            AgentVersionTool.agent_version_id == agent["current_version"]["id"]
+        )
+    )
+    tool.config = {"allowed_domains": ["API.Example.com."], "dropped_setting": 1}
+    db.commit()
+    prewarmed = []
+
+    async def ensure(*, run_id, allowed_domains):
+        prewarmed.append(allowed_domains)
+
+    monkeypatch.setattr(sessions.manager, "ensure", ensure)
+    model, _ = run_code("print(1)")
+    with runner.override(model=model):
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        assert api.post(url, json=chat_body("run it")).status_code == 200
+    assert prewarmed == [["api.example.com"]]
+
+
+def test_later_turns_prewarm_only_while_the_run_uses_its_sandbox(api, backend, db, monkeypatch):
+    prewarmed = []
+
+    async def ensure(*, run_id, allowed_domains):
+        prewarmed.append(run_id)
+
+    monkeypatch.setattr(sessions.manager, "ensure", ensure)
+
+    def reply(run):
+        model = FunctionModel(stream_function=lambda messages, info: _say("no code needed"))
+        with runner.override(model=model):
+            url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+            assert api.post(url, json=chat_body("hello")).status_code == 200
+
+    agent, run = python_agent(api)
+    # The first turn pre-warms; a later one doesn't if the run hasn't used its sandbox.
+    reply(run)
+    reply(run)
+    assert prewarmed == [run["id"]]
+    # Once it has, later turns pre-warm...
+    chat(api, agent, run, "print(1)")
+    prewarmed.clear()
+    reply(run)
+    assert prewarmed == [run["id"]]
+    # ...until it goes unused for long enough to have stopped as idle.
+    row = db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run["id"]))
+    row.last_used_at -= timedelta(seconds=get_settings().sandbox_idle_seconds + 1)
+    db.commit()
+    prewarmed.clear()
+    reply(run)
+    assert prewarmed == []
+
+
+async def _say(text: str):
+    yield text
 
 
 def test_sandbox_errors_go_to_the_model(api, backend):

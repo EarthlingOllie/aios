@@ -4,7 +4,9 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import threading
+import time
 
 import httpx
 import pytest
@@ -30,6 +32,8 @@ def test_proxy_tokens_carry_their_grant():
     )
     assert proxy_token.verify(SECRET, f"{forged.decode()}.{signature}", now=1000) is None
     assert proxy_token.verify(SECRET, "garbage", now=1000) is None
+    assert proxy_token.verify(SECRET, "abc.\u00e9", now=1000) is None
+    assert proxy_token.verify(SECRET, f"{payload}\u00e9.{signature}", now=1000) is None
     assert proxy_token.verify("", token, now=1000) is None
 
 
@@ -120,6 +124,7 @@ def test_egress_proxy_tunnels_to_allowed_hosts():
     [
         (connect_request("api.example.com", None), "407", "missing or invalid proxy token"),
         (connect_request("api.example.com", "forged.token"), "407", "invalid proxy token"),
+        (connect_request("api.example.com", "abc.\u00e9"), "407", "invalid proxy token"),
         (connect_request("api.example.com", token(ttl=-1)), "407", "invalid proxy token"),
         (connect_request("other.com", token()), "403", "isn't in this sandbox's allowed domains"),
         (connect_request("api.example.com", token(), port=80), "403", "only port 443"),
@@ -185,6 +190,38 @@ def test_runner_stops_background_processes(workdir):
     assert result["duration_ms"] < 10_000
 
 
+@pytest.mark.parametrize(
+    "start",
+    [
+        # Its own session, so outside the call's process group, still holding stdout.
+        "subprocess.Popen(sleeper, start_new_session=True)",
+        # Daemonised: its parent exits, so it's orphaned as well as in a new session.
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    subprocess.Popen(sleeper)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(pid, 0)",
+    ],
+)
+def test_runner_stops_processes_that_leave_the_group(workdir, start):
+    code = (
+        "import os, subprocess, sys, time\n"
+        "sleeper = [sys.executable, '-c',"
+        ' \'import os, time; open("pid", "w").write(str(os.getpid())); time.sleep(60)\']\n'
+        f"{start}\n"
+        "while not os.path.exists('pid'): time.sleep(0.01)\n"
+    )
+    result = runner.execute(code, 10)
+    assert result["exit_code"] == 0, result["stderr"]
+    # Not held up waiting for the background process to close the output pipes.
+    assert result["duration_ms"] < 4_000
+    # Gone, and reaped, rather than left running as the sandbox user.
+    pid = int((workdir / "pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_runner_gives_the_code_a_minimal_environment(workdir, monkeypatch):
     monkeypatch.setenv("SANDBOX_TOKEN", "runner-secret")
     monkeypatch.setenv("DATABASE_URL", "postgresql://secret")
@@ -228,6 +265,15 @@ def test_runner_serve_mode(workdir):
         resp = httpx.post(f"{url}/exec", json=body, headers=auth)
         assert (resp.status_code, resp.json()["stdout"]) == (200, "served\n")
         assert httpx.post(f"{url}/exec", json={"nope": 1}, headers=auth).status_code == 400
+        # A bad length is refused, rather than dropping the connection or reading until the
+        # client closes it.
+        for length in ["-1", "abc"]:
+            with socket.create_connection(server.server_address[:2], timeout=5) as conn:
+                conn.sendall(
+                    f"POST /exec HTTP/1.1\r\nAuthorization: Bearer tok\r\n"
+                    f"Content-Length: {length}\r\n\r\n{{}}".encode()
+                )
+                assert conn.recv(100).startswith(b"HTTP/1.0 400"), length
     finally:
         server.shutdown()
         server.server_close()
@@ -248,6 +294,32 @@ def test_runner_expires_when_idle_or_too_old():
         runner.watch(server, on_expire=lambda: expired.append(True), interval=0)
         assert expired == [True]
     finally:
+        server.server_close()
+
+
+def test_runner_counts_a_request_as_soon_as_it_is_accepted():
+    # Before its handler has read it, an accepted request already keeps the sandbox from being
+    # stopped as idle, so the watchdog can't exit under it.
+    server = runner.Server(("127.0.0.1", 0), "tok", idle_seconds=60, max_seconds=600)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        server.last_used -= 61
+        with socket.create_connection(server.server_address[:2], timeout=5) as conn:
+            conn.sendall(b"POST /exec HTTP/1.1\r\n")  # Headers not finished yet.
+            for _ in range(500):
+                if server.busy:
+                    break
+                time.sleep(0.01)
+            assert server.busy == 1
+            assert not server.expired()
+        for _ in range(500):
+            if not server.busy:
+                break
+            time.sleep(0.01)
+        assert server.expired()
+    finally:
+        server.shutdown()
         server.server_close()
 
 
