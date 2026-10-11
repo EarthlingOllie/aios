@@ -75,6 +75,10 @@ class FakeDocker:
         self.calls.append({"argv": argv, "input": input, "timeout": timeout, "env": env})
         command, args = argv[1], argv[2:]
         if command == "ps":
+            if "{{.Names}}" in args:
+                # Labelled containers only, so never the egress proxy.
+                names = sorted(n for n in self.running if n.startswith("aios-sandbox-"))
+                return Completed(0, "".join(f"{n}\n" for n in names).encode(), b"")
             return Completed(0, self.leftovers.encode(), b"")
         if command == "rm":
             names = [a for a in args if not a.startswith("--")]
@@ -434,6 +438,35 @@ def test_reaper_removes_idle_and_expired_sandboxes(client, docker, broker, clock
     assert asyncio.run(broker.reap()) == [old]
     assert set(broker.sessions) == {used}
     assert {f"aios-sandbox-{idle}", f"aios-sandbox-{old}"} <= set(docker.removed)
+
+
+def test_reaper_removes_containers_without_a_session(client, docker, broker):
+    kept = start(client)
+    failed_rm = start(client)
+
+    async def rm_times_out(argv, **kwargs):
+        if argv[1] == "rm":
+            raise TimeoutError
+        return await FakeDocker.__call__(docker, argv, **kwargs)
+
+    # `docker rm` times out: the session is dropped but its container is still there.
+    broker._run = rm_times_out
+    assert client.delete(f"/sessions/{failed_rm}", headers=AUTH).status_code == 204
+    # A timed-out `docker run` whose container the daemon created anyway, after its rm.
+    late = "aios-sandbox-" + "e" * 32
+    docker.running |= {late, "aios-sandbox-not-ours", "egress-proxy"}
+    broker._run = docker
+
+    assert asyncio.run(broker.reap()) == []
+    [ps] = [c for c in docker.commands("ps") if "{{.Names}}" in c]
+    assert ps == [
+        "docker", "ps", "--all", "--filter", "label=aios.sandbox=1", "--format", "{{.Names}}",
+    ]  # fmt: skip
+    rm = docker.commands("rm")[-1]
+    assert rm[:4] == ["docker", "rm", "--force", "--volumes"]
+    assert sorted(rm[4:]) == sorted([f"aios-sandbox-{failed_rm}", late])
+    assert set(broker.sessions) == {kept}
+    assert f"aios-sandbox-{kept}" in docker.running
 
 
 def test_busy_sandboxes_are_never_idle(broker, clock):

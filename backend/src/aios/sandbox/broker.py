@@ -66,6 +66,7 @@ _PROXY_URL = re.compile(
     r"http://[A-Za-z0-9._~%-]{1,64}:[A-Za-z0-9._~%-]{1,4000}@[a-z0-9.-]{1,253}:\d{1,5}"
 )
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}")
+_CONTAINER_NAME = re.compile(r"aios-sandbox-[0-9a-f]{32}")
 
 
 # --- docker --------------------------------------------------------------------------------------
@@ -480,13 +481,33 @@ class Broker:
 
     async def reap(self) -> list[str]:
         """Removes sandboxes idle for longer than their idle time, or older than their maximum
-        lifetime. Returns their session ids."""
+        lifetime, and any sandbox container without a session. Returns the expired sessions'
+        ids."""
         now = self._clock()
         expired = [s for s in self.sessions.values() if s.expired(now)]
         for session in expired:
             log.info("removing %s (%s): idle or expired", session.container, session.key)
             await self._remove(session)
+        await self._remove_orphans()
         return [s.id for s in expired]
+
+    async def _remove_orphans(self) -> None:
+        """Removes sandbox containers no session owns: ones whose `docker rm` failed, or that the
+        daemon went on to create after a timed-out `docker run` (which only kills the CLI), and
+        so after its session's `docker rm` had already run. A container that is starting has its
+        session already, so it's never one of these."""
+        done = await self._check(
+            "ps", "--all", "--filter", f"label={LABEL}=1", "--format", "{{.Names}}"
+        )
+        owned = {s.container for s in self.sessions.values()}
+        orphans = [
+            name
+            for name in done.stdout.decode().split()
+            if _CONTAINER_NAME.fullmatch(name) and name not in owned
+        ]
+        if orphans:
+            log.warning("removing %d sandboxes without a session", len(orphans))
+            await self._check("rm", "--force", "--volumes", *orphans)
 
     async def reap_forever(self, interval: float = REAP_INTERVAL) -> None:
         while True:
