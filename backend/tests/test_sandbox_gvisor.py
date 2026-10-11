@@ -45,6 +45,9 @@ START = {
     "idle_seconds": 900,
     "max_seconds": 7200,
 }
+# An existing sandbox network as `docker network inspect` describes it: internal, on the subnet
+# the hosts' firewall covers.
+NETWORK = b"true 172.30.0.0/16"
 
 
 class FakeDocker:
@@ -53,7 +56,8 @@ class FakeDocker:
     def __init__(self, leftovers: str = "", network: bytes | None = None) -> None:
         self.calls: list[dict] = []
         self.leftovers = leftovers
-        # `docker network inspect --format {{.Internal}}`'s output, or None if it doesn't exist.
+        # `docker network inspect`'s output (whether it's internal, then its subnets), or None
+        # if it doesn't exist.
         self.network = network
         self.running: set[str] = set()
         self.removed: list[str] = []
@@ -91,7 +95,8 @@ class FakeDocker:
                     return Completed(1, b"", b"Error: No such network")
                 return Completed(0, self.network + b"\n", b"")
             if args[0] == "create":
-                self.network = b"true"
+                [subnet] = [a.removeprefix("--subnet=") for a in args if a.startswith("--subnet=")]
+                self.network = f"true {subnet}".encode()
             return Completed(0, b"", b"")
         if command == "run":
             if self.fail_run:
@@ -123,7 +128,7 @@ def make_broker(docker=None, settings=SETTINGS, **kwargs) -> Broker:
 
 @pytest.fixture
 def docker() -> FakeDocker:
-    return FakeDocker(network=b"true")
+    return FakeDocker(network=NETWORK)
 
 
 @pytest.fixture
@@ -160,7 +165,10 @@ def test_startup_cleans_up_and_sets_up_the_host():
         ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "label=aios.sandbox=1"],
         # Only things that look like container ids, never option-like or other output.
         ["docker", "rm", "--force", "--volumes", "abc123def4567890", "0123456789ab"],
-        ["docker", "network", "inspect", "--format", "{{.Internal}}", "aios-sandbox"],
+        [
+            "docker", "network", "inspect", "--format",
+            "{{.Internal}}{{range .IPAM.Config}} {{.Subnet}}{{end}}", "aios-sandbox",
+        ],
         [
             "docker", "network", "create", "--driver=bridge", "--internal",
             "--subnet=172.30.0.0/16", "--label", "aios.sandbox.network=1", "aios-sandbox",
@@ -183,12 +191,20 @@ def test_startup_cleans_up_and_sets_up_the_host():
 
 
 def test_startup_keeps_an_internal_network_and_refuses_any_other():
-    docker = FakeDocker(network=b"true")
+    docker = FakeDocker(network=NETWORK)
     asyncio.run(make_broker(docker).startup())
     assert not [c for c in docker.commands("network") if c[2] == "create"]
 
-    with pytest.raises(RuntimeError, match="isn't --internal"):
-        asyncio.run(make_broker(FakeDocker(network=b"false")).startup())
+    for network in [b"false 172.30.0.0/16", b""]:
+        with pytest.raises(RuntimeError, match="isn't --internal"):
+            asyncio.run(make_broker(FakeDocker(network=network)).startup())
+
+    # On any other subnet, the hosts' firewall wouldn't keep sandboxes from the host.
+    for network in [b"true 10.99.0.0/16", b"true", b"true 172.30.0.0/16 fd00::/64"]:
+        docker = FakeDocker(network=network)
+        with pytest.raises(RuntimeError, match="SANDBOX_NETWORK_SUBNET"):
+            asyncio.run(make_broker(docker).startup())
+        assert docker.commands("run") == []
 
 
 def test_startup_needs_a_token():
@@ -198,7 +214,7 @@ def test_startup_needs_a_token():
 
 
 def test_startup_skips_the_proxy_without_a_secret():
-    docker = FakeDocker(network=b"true")
+    docker = FakeDocker(network=NETWORK)
     settings = SETTINGS.model_copy(update={"sandbox_proxy_secret": SecretStr("")})
     asyncio.run(make_broker(docker, settings=settings).startup())
     assert docker.commands("run") == []
@@ -217,7 +233,7 @@ def test_startup_advertises_the_instance_ip_from_imdsv2():
 
     settings = SETTINGS.model_copy(update={"sandbox_broker_advertise_url": ""})
     http = httpx.AsyncClient(transport=httpx.MockTransport(imds))
-    broker = make_broker(FakeDocker(network=b"true"), settings=settings, imds=http)
+    broker = make_broker(FakeDocker(network=NETWORK), settings=settings, imds=http)
     asyncio.run(broker.startup())
     assert broker.endpoint == "http://10.40.11.23:8090"
     assert [r.url.path for r in requests] == ["/latest/api/token", "/latest/meta-data/local-ipv4"]
@@ -638,7 +654,7 @@ class RunnerDocker(FakeDocker):
     container that persists between calls, like the container's tmpfs /work."""
 
     def __init__(self, root: Path) -> None:
-        super().__init__(network=b"true")
+        super().__init__(network=NETWORK)
         self.root = root
         self.env: dict[str, dict[str, str]] = {}
 

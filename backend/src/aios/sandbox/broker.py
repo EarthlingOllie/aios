@@ -272,11 +272,26 @@ class Broker:
 
     async def _ensure_network(self) -> None:
         network = self.settings.sandbox_network
-        done = await self._docker("network", "inspect", "--format", "{{.Internal}}", network)
+        subnet = ipaddress.ip_network(self.settings.sandbox_network_subnet)
+        done = await self._docker(
+            "network",
+            "inspect",
+            "--format",
+            "{{.Internal}}{{range .IPAM.Config}} {{.Subnet}}{{end}}",
+            network,
+        )
         if done.returncode == 0:
+            internal, *subnets = done.stdout.decode(errors="replace").split() or [""]
             # Sandboxes rely on it having no route out.
-            if done.stdout.strip() != b"true":
+            if internal != "true":
                 raise RuntimeError(f"Docker network {network} exists but isn't --internal")
+            # And on the host's firewall, which drops traffic from this subnet only to the host
+            # (the broker, the ECS agent): on any other, sandboxes could reach them.
+            if subnets != [str(subnet)]:
+                raise RuntimeError(
+                    f"Docker network {network} exists with subnets {subnets}, not {subnet}"
+                    " (SANDBOX_NETWORK_SUBNET)"
+                )
             return
         await self._check(
             "network",
