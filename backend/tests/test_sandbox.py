@@ -185,6 +185,38 @@ def test_runner_stops_background_processes(workdir):
     assert result["duration_ms"] < 10_000
 
 
+@pytest.mark.parametrize(
+    "start",
+    [
+        # Its own session, so outside the call's process group, still holding stdout.
+        "subprocess.Popen(sleeper, start_new_session=True)",
+        # Daemonised: its parent exits, so it's orphaned as well as in a new session.
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    subprocess.Popen(sleeper)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(pid, 0)",
+    ],
+)
+def test_runner_stops_processes_that_leave_the_group(workdir, start):
+    code = (
+        "import os, subprocess, sys, time\n"
+        "sleeper = [sys.executable, '-c',"
+        ' \'import os, time; open("pid", "w").write(str(os.getpid())); time.sleep(60)\']\n'
+        f"{start}\n"
+        "while not os.path.exists('pid'): time.sleep(0.01)\n"
+    )
+    result = runner.execute(code, 10)
+    assert result["exit_code"] == 0, result["stderr"]
+    # Not held up waiting for the background process to close the output pipes.
+    assert result["duration_ms"] < 4_000
+    # Gone, and reaped, rather than left running as the sandbox user.
+    pid = int((workdir / "pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_runner_gives_the_code_a_minimal_environment(workdir, monkeypatch):
     monkeypatch.setenv("SANDBOX_TOKEN", "runner-secret")
     monkeypatch.setenv("DATABASE_URL", "postgresql://secret")

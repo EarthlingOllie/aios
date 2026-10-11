@@ -11,12 +11,14 @@ Dockerfile), so it uses the standard library only and never imports `aios`.
 
 Each call writes the code to a file and runs it as a new `python -I` process in the working
 directory (/work, which persists between calls), in its own process group, with resource
-limits and a minimal environment. The whole group is killed when the call ends or times out,
-so background processes don't outlive their call. When the runner is root, the code runs as an
-unprivileged user, so it can't read the runner's token or interfere with the runner.
+limits and a minimal environment. When the call ends or times out, everything it started is
+killed, even processes that left its group, so background processes don't outlive their call.
+When the runner is root, the code runs as an unprivileged user, so it can't read the runner's
+token or interfere with the runner.
 """
 
 import contextlib
+import ctypes
 import hmac
 import json
 import os
@@ -30,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_TIMEOUT = 300
 REQUEST_LIMIT = 1024 * 1024
+# prctl(2) option; Linux only.
+PR_SET_CHILD_SUBREAPER = 36
 
 
 def _env_int(name: str, default: int) -> int:
@@ -115,6 +119,65 @@ def _kill_group(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
+def _become_subreaper() -> None:
+    """Makes processes the code orphans (e.g. by daemonising) the runner's children, not init's.
+
+    They then stay among the runner's descendants, where `_kill_descendants` finds them.
+    """
+    with contextlib.suppress(AttributeError, OSError):
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+
+
+def _descendants() -> tuple[list[int], list[int]]:
+    """The runner's running descendants, and its children that have exited but aren't reaped."""
+    processes: dict[int, tuple[int, bool]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        # After the command, which is in parentheses and may contain spaces: state, then ppid.
+        fields = stat[stat.rfind(b")") + 2 :].split()
+        processes[int(entry)] = (int(fields[1]), fields[0] == b"Z")
+    me = os.getpid()
+    running, zombies = [], []
+    frontier = [me]
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, zombie) in processes.items():
+            if ppid != parent:
+                continue
+            if zombie:
+                if parent == me:
+                    zombies.append(pid)
+            else:
+                running.append(pid)
+                frontier.append(pid)
+    return running, zombies
+
+
+def _kill_descendants() -> None:
+    """Kills whatever the call's code left running, including in new sessions or daemonised.
+
+    One call runs at a time, so every descendant of the runner belongs to the call that just
+    ended. Repeated, because a process may fork between being found and being killed.
+    """
+    for _ in range(100):
+        running, zombies = _descendants()
+        for pid in zombies:
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, os.WNOHANG)
+        if not running and not zombies:
+            return
+        for pid in running:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+        time.sleep(0.01)
+
+
 def execute(code: str, timeout: float) -> dict:
     timeout = max(1, min(float(timeout), MAX_TIMEOUT))
     drop = os.geteuid() == 0
@@ -123,6 +186,7 @@ def execute(code: str, timeout: float) -> dict:
         f.write(code)
     os.chmod(path, 0o644)
     started = time.monotonic()
+    _become_subreaper()
     try:
         proc = subprocess.Popen(
             [sys.executable, "-I", "-c", BOOTSTRAP, json.dumps(limits(drop)), path],
@@ -142,9 +206,10 @@ def execute(code: str, timeout: float) -> dict:
         except subprocess.TimeoutExpired:
             timed_out = True
         # Also ends anything the code left running in the background, which would otherwise
-        # hold the pipes open.
+        # hold the pipes open: first its process group, then whatever left the group.
         _kill_group(proc.pid)
         proc.wait()
+        _kill_descendants()
         stdout.join(5)
         stderr.join(5)
     finally:
