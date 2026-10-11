@@ -244,9 +244,30 @@ class Server(ThreadingHTTPServer):
         self.token = token
         self.idle_seconds, self.max_seconds = idle_seconds, max_seconds
         self.started = self.last_used = time.monotonic()
+        # Requests in progress, counted from when they're accepted: the watchdog won't stop the
+        # sandbox under one it has taken, even before its handler has read it.
         self.busy = 0
         self.busy_lock = threading.Lock()
         self.exec_lock = threading.Lock()
+
+    def process_request(self, request, client_address) -> None:
+        with self.busy_lock:
+            self.busy += 1
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._finished()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._finished()
+
+    def _finished(self) -> None:
+        with self.busy_lock:
+            self.busy -= 1
 
     def expired(self) -> bool:
         now = time.monotonic()
@@ -292,15 +313,12 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError):
             return self._reply(400, {"error": "expected {code, timeout}"})
         server = self.server
-        with server.busy_lock:
-            server.busy += 1
         try:
             # One call at a time: calls share /work.
             with server.exec_lock:
                 result = execute(code, timeout)
         finally:
             with server.busy_lock:
-                server.busy -= 1
                 server.last_used = time.monotonic()
         self._reply(200, result)
 
@@ -310,9 +328,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def watch(server: Server, on_expire=lambda: os._exit(0), interval: float = 5) -> None:
     """Calls `on_expire` (by default, exits, which stops the sandbox) once the server expires."""
-    while not server.expired():
+    while True:
+        # Checked and acted on under the lock, so no request is accepted in between.
+        with server.busy_lock:
+            if server.expired():
+                on_expire()
+                return
         time.sleep(interval)
-    on_expire()
 
 
 def serve() -> None:

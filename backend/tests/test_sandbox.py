@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import time
 
 import httpx
 import pytest
@@ -293,6 +294,32 @@ def test_runner_expires_when_idle_or_too_old():
         runner.watch(server, on_expire=lambda: expired.append(True), interval=0)
         assert expired == [True]
     finally:
+        server.server_close()
+
+
+def test_runner_counts_a_request_as_soon_as_it_is_accepted():
+    # Before its handler has read it, an accepted request already keeps the sandbox from being
+    # stopped as idle, so the watchdog can't exit under it.
+    server = runner.Server(("127.0.0.1", 0), "tok", idle_seconds=60, max_seconds=600)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        server.last_used -= 61
+        with socket.create_connection(server.server_address[:2], timeout=5) as conn:
+            conn.sendall(b"POST /exec HTTP/1.1\r\n")  # Headers not finished yet.
+            for _ in range(500):
+                if server.busy:
+                    break
+                time.sleep(0.01)
+            assert server.busy == 1
+            assert not server.expired()
+        for _ in range(500):
+            if not server.busy:
+                break
+            time.sleep(0.01)
+        assert server.expired()
+    finally:
+        server.shutdown()
         server.server_close()
 
 
