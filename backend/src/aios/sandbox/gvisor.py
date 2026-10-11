@@ -87,13 +87,16 @@ class GVisorBackend:
             await asyncio.sleep(START_RETRY_DELAY * attempt)
         if resp.status_code != 201:
             raise SandboxError(_detail(resp) or f"Couldn't start a sandbox ({resp.status_code}).")
-        body = resp.json()
-        endpoint = str(body["endpoint"]).rstrip("/")
+        try:
+            body = resp.json()
+            endpoint, ref = str(body["endpoint"]).rstrip("/"), str(body["id"])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SandboxError("The sandbox service gave an invalid answer.") from exc
         if not endpoint.startswith(("http://", "https://")):
             raise SandboxError("The sandbox service gave an invalid address.")
         # The broker token isn't stored with the session: calls use the current one, so it can
         # be rotated, and it stays out of the database.
-        return SandboxHandle(ref=str(body["id"]), endpoint=endpoint, secret="")
+        return SandboxHandle(ref=ref, endpoint=endpoint, secret="")
 
     async def alive(self, handle: SandboxHandle) -> bool:
         """True if the sandbox is running, False only if its broker says it has gone. Raises
@@ -130,7 +133,10 @@ class GVisorBackend:
             raise SandboxError(
                 _detail(resp) or f"The sandbox refused the call ({resp.status_code})."
             )
-        return ExecResult.model_validate(resp.json())
+        try:
+            return ExecResult.model_validate(resp.json())
+        except ValueError as exc:  # Not JSON, or not a result (ValidationError).
+            raise SandboxError("The sandbox gave an invalid answer.") from exc
 
     async def stop(self, handle: SandboxHandle) -> None:
         try:

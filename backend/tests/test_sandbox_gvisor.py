@@ -689,6 +689,38 @@ def test_client_tries_another_host_when_one_is_full(monkeypatch):
     assert len(seen) == 1
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(201, text="not json"),
+        httpx.Response(201, json={"id": "a" * 32}),
+        httpx.Response(201, json={"endpoint": ENDPOINT}),
+        httpx.Response(201, json=["a" * 32, ENDPOINT]),
+        httpx.Response(201, json=None),
+    ],
+)
+def test_client_reports_a_malformed_start_answer(answer):
+    backend = GVisorBackend(
+        SETTINGS.model_copy(update={"sandbox_broker_url": "http://brokers.internal:8090"}),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: answer)),
+    )
+    with pytest.raises(SandboxError, match="invalid answer"):
+        asyncio.run(backend.start(SPEC))
+
+
+@pytest.mark.parametrize("answer", [{"text": "not json"}, {"json": {"exit_code": "pwned"}}])
+def test_client_reports_a_malformed_exec_answer(answer):
+    backend = GVisorBackend(
+        SETTINGS,
+        http=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, **answer))
+        ),
+    )
+    with pytest.raises(SandboxError, match="invalid answer") as error:
+        asyncio.run(backend.execute(SandboxHandle("a" * 32, ENDPOINT, ""), "1", 10))
+    assert not isinstance(error.value, SandboxGone)
+
+
 def test_client_refuses_a_proxy_token_the_broker_would(broker):
     def proxy_url(length: int) -> str:
         return f"http://sandbox:{'t' * length}@egress-proxy:3128"
