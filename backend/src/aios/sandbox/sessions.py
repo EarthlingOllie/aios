@@ -204,7 +204,9 @@ class SessionManager:
                 secret,
                 session=session_key,
                 domains=allowed_domains,
-                ttl=settings.sandbox_max_session_seconds,
+                # The sandbox's maximum lifetime counts from when it boots, which can be up to
+                # the start timeout from now, so the token must outlast both.
+                ttl=settings.sandbox_start_timeout + settings.sandbox_max_session_seconds,
             )
             proxy_url = f"http://sandbox:{token}@{settings.sandbox_proxy_address}"
         spec = SessionSpec(

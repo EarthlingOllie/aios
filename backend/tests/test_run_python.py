@@ -288,6 +288,9 @@ def test_the_proxy_token_carries_the_allowed_domains(api, backend, monkeypatch):
     grant = proxy_token.verify("s", prefix.removeprefix("http://sandbox:"))
     assert grant.session == f"agent-run-{run['id']}"
     assert grant.domains == ("api.example.com", "*.data.gov")
+    # Valid for the sandbox's whole life, which counts from when it has booted.
+    lifetime = settings.sandbox_start_timeout + settings.sandbox_max_session_seconds
+    assert grant.expires_at > time.time() + lifetime - 60
 
     # No allowed domains, no network: the sandbox gets no proxy at all.
     agent, run = python_agent(api, "Offline")
