@@ -40,7 +40,14 @@ from aios.models import (
 )
 from aios.runner import runner
 from aios.sandbox.sessions import SandboxNotConfigured, manager, run_sandboxes, stop_sandboxes
-from aios.tools import TOOLS, ToolError, build_tool, check_stored_tool, validate_tool
+from aios.tools import (
+    TOOLS,
+    ToolError,
+    build_tool,
+    check_stored_tool,
+    stored_settings,
+    validate_tool,
+)
 from aios.versioning import save_agent_version
 
 log = logging.getLogger(__name__)
@@ -645,9 +652,11 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         history=ModelMessagesTypeAdapter.validate_python(run.messages),
         metadata=trace_metadata(run),
         capabilities=build_version_tools(version),
+        # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
+        # token carries the domains the tool expects.
         sandbox_domains=next(
             (
-                t.config.get("allowed_domains", [])
+                stored_settings(t.tool_key, t.config).allowed_domains
                 for t in version.tools
                 if t.tool_key == "run_python"
             ),

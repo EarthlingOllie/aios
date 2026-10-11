@@ -13,7 +13,7 @@ from test_agents import agent_body, chat_body, make_agent, spy_run_stream
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.models import SandboxSession
+from aios.models import AgentVersionTool, SandboxSession
 from aios.runner import runner
 from aios.sandbox import proxy_token, sessions
 from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
@@ -320,6 +320,29 @@ def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
         assert api.post(url, json=chat_body("hello")).status_code == 200
     assert [s.session_key for s in backend.specs] == [f"agent-run-{run['id']}"]
     assert backend.calls == []
+
+
+def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, db, monkeypatch):
+    agent, run = python_agent(api, allowed_domains=["api.example.com"])
+    # Stored by an older version of the settings model: not in today's canonical form.
+    tool = db.scalar(
+        select(AgentVersionTool).where(
+            AgentVersionTool.agent_version_id == agent["current_version"]["id"]
+        )
+    )
+    tool.config = {"allowed_domains": ["API.Example.com."], "dropped_setting": 1}
+    db.commit()
+    prewarmed = []
+
+    async def ensure(*, run_id, allowed_domains):
+        prewarmed.append(allowed_domains)
+
+    monkeypatch.setattr(sessions.manager, "ensure", ensure)
+    model, _ = run_code("print(1)")
+    with runner.override(model=model):
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        assert api.post(url, json=chat_body("run it")).status_code == 200
+    assert prewarmed == [["api.example.com"]]
 
 
 def test_sandbox_errors_go_to_the_model(api, backend):

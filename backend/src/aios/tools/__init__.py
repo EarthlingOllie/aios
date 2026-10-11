@@ -16,6 +16,7 @@ from aios.tools.registry import (
     build_tool,
     check_stored_tool,
     register,
+    stored_settings,
     validate_tool,
 )
 
@@ -26,5 +27,6 @@ __all__ = [
     "build_tool",
     "check_stored_tool",
     "register",
+    "stored_settings",
     "validate_tool",
 ]
