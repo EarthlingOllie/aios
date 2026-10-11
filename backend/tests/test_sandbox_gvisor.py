@@ -694,6 +694,37 @@ def test_client_tries_another_host_when_one_is_full(monkeypatch):
     assert len(seen) == 1
 
 
+def test_client_stops_a_sandbox_whose_start_was_cancelled():
+    answer = asyncio.Event()
+    stopped: list[str] = []
+
+    async def brokers(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            stopped.append(str(request.url))
+            return httpx.Response(204)
+        await answer.wait()  # The broker is still starting the container.
+        return httpx.Response(201, json={"id": "a" * 32, "endpoint": ENDPOINT})
+
+    backend = GVisorBackend(
+        SETTINGS.model_copy(update={"sandbox_broker_url": "http://brokers.internal:8090"}),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(brokers)),
+    )
+
+    async def scenario():
+        start = asyncio.create_task(backend.start(SPEC))
+        await asyncio.sleep(0.01)
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        assert stopped == []
+        # The broker answers after all: the sandbox it started is stopped, not left to idle.
+        answer.set()
+        await asyncio.gather(*gvisor_module._cleanups)
+        assert stopped == [f"{ENDPOINT}/sessions/{'a' * 32}"]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "answer",
     [

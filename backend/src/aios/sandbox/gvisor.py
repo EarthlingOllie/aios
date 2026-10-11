@@ -20,6 +20,10 @@ from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHand
 
 log = logging.getLogger(__name__)
 
+# Stops of sandboxes whose start was cancelled (see `GVisorBackend.start`), kept so they aren't
+# garbage-collected before they finish.
+_cleanups: set[asyncio.Task] = set()
+
 # How long to wait past a call's own time limit before giving up on the broker (which itself
 # gives `docker exec` a little longer than the call's time limit).
 EXEC_GRACE = 30
@@ -67,6 +71,27 @@ class GVisorBackend:
                 "This tool's list of reachable domains is too long for the sandbox; ask the"
                 " agent's owner to shorten it."
             )
+        # The request runs as a task of its own, so that if this start is cancelled (e.g. the
+        # client went away) the broker's answer is still awaited, and a sandbox it started is
+        # stopped: until `start` returns, nothing else knows it exists.
+        request = asyncio.ensure_future(self._request_start(spec))
+        try:
+            return await asyncio.shield(request)
+        except asyncio.CancelledError:
+            cleanup = asyncio.ensure_future(self._stop_once_started(request))
+            _cleanups.add(cleanup)
+            cleanup.add_done_callback(_cleanups.discard)
+            raise
+
+    async def _stop_once_started(self, request: asyncio.Future[SandboxHandle]) -> None:
+        try:
+            handle = await request
+        except Exception:
+            return  # It didn't start one (or didn't say which, and the broker's reaper will).
+        log.info("stopping sandbox %s: its start was cancelled", handle.ref)
+        await self.stop(handle)
+
+    async def _request_start(self, spec: SessionSpec) -> SandboxHandle:
         for attempt in range(1, START_ATTEMPTS + 1):
             try:
                 resp = await self.http.post(
