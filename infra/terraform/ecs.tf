@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "web", "migrate"])
+  for_each          = toset(["api", "worker", "web", "migrate", "broker"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -63,11 +63,15 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # run_python: sandboxes on the gVisor hosts (sandbox.tf).
+      SANDBOX_BACKEND       = "gvisor"
+      SANDBOX_BROKER_URL    = "http://${aws_lb.sandbox.dns_name}:${local.sandbox_port}"
+      SANDBOX_PROXY_ADDRESS = "egress-proxy:3128"
     } : { name = k, value = v }
   ]
 
   backend_secrets = concat(
-    [for k in ["DATABASE_URL", "SESSION_SECRET"] :
+    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_BROKER_TOKEN", "SANDBOX_PROXY_SECRET"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
     [for k in ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],

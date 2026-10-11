@@ -166,6 +166,7 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
   thing that starts containers. Its API:
   - `POST /sessions`
   - `POST /sessions/{id}/exec`
+  - `GET /sessions/{id}` (for `alive`)
   - `DELETE /sessions/{id}`
 
   All calls need the broker's shared bearer token. The broker:
@@ -175,24 +176,30 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
     - `--cap-drop=ALL` and `no-new-privileges`
     - a non-root user
     - `--memory`, `--cpus` and `--pids-limit`
-    - the internal network only
+    - the internal network only, or `--network=none` when the run has no allowed domains
   - runs each call as `docker exec ... python /opt/sandbox/runner.py exec`, so the sandbox
     exposes no port
   - reaps idle and expired containers, removes leftovers from a previous broker on startup, and
     makes sure the internal network and the proxy container exist
 - `GVisorBackend` in the API calls the broker. A new session goes to the brokers' internal NLB,
   and the broker answers with its own address, which the session records so later calls go
-  straight to that host.
+  straight to that host. The session row doesn't store the broker token: calls use the current
+  one, so it can be rotated.
+- The broker runs from a `broker` image: the api image plus the Docker CLI (the api image has
+  no Docker CLI). It also runs the egress proxy container on its host.
 - Network on the host:
   - sandboxes join an `--internal` Docker network that has no route out
   - the egress proxy container joins both that network and the default bridge
   - the host security group allows ingress 8090 (the broker) from `app` only, and egress on 443
   - IMDSv2 is required with a hop limit of 1, so containers can't reach instance credentials
+  - the host drops traffic from the sandbox network to itself (broker, ECS agent)
 - Infra:
   - a launch template on the ECS-optimised AMI, whose user data installs a pinned `runsc` and
     registers it with Docker
   - an autoscaling group and an ECS capacity provider
-  - the broker as an ECS daemon service (EC2 launch type, host networking, Docker socket mounted)
+  - the broker as an ECS daemon service (EC2 launch type, host networking, Docker socket mounted).
+    The broker never pulls: its task definition also lists the sandbox image as a non-essential
+    container that runs nothing, so ECS pulls it onto every host for each release
   - the internal NLB, and the broker token in Secrets Manager
 - Local development: `docker compose` runs the broker. `SANDBOX_DOCKER_RUNTIME=runc` lets it
   work without gVisor installed, which is unisolated and for development only.
@@ -201,7 +208,10 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
   - we own the hosts and their patching
   - the broker holds the Docker socket, which is root on the host, so it's security-critical
     code
-  - tenants share hosts
+  - tenants share hosts, and a host's sandboxes share its internal network, so they can reach
+    each other's listening ports (per-session networks would fix that)
+  - the broker's session table is in memory: a broker restart (each deploy) removes its host's
+    sandboxes, which the session manager sees as gone
   - gVisor adds overhead to I/O-heavy code
   - DNS isn't filtered (same as Fargate)
 
@@ -235,3 +245,4 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
 | Date | Decision |
 | --- | --- |
 | 2026-10-11 | Pivot from the data-ingestion plan to a `run_python` tool, built twice (Fargate per run; EC2 + gVisor) to compare |
+| 2026-10-11 | gVisor: a `broker` image (api + Docker CLI); sandboxes without allowed domains get no network; the broker token isn't stored per session |

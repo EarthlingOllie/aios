@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.7
 # Targets: `api` (FastAPI/Uvicorn, also used for migrations and the egress proxy), `worker`
-# (Celery + Docling) and `sandbox` (runs agent-written Python, see aios.sandbox).
+# (Celery + Docling), `sandbox` (runs agent-written Python, see aios.sandbox) and `broker` (starts
+# sandboxes on a gVisor sandbox host, see aios.sandbox.broker).
 
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
+FROM docker:29.8.1-cli AS docker-cli
 
 FROM python:3.13-slim-bookworm AS base
 COPY --from=uv /uv /uvx /bin/
@@ -25,6 +27,16 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-edi
 USER app
 EXPOSE 8000
 CMD ["uvicorn", "aios.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+# ---------- broker ----------
+# The api image plus the Docker CLI. It talks to the host's Docker socket, which is mounted into
+# it, so it runs as root (the socket's group differs between hosts); the socket is root on the
+# host anyway. Also runs the egress proxy on sandbox hosts, as the `app` user.
+FROM api AS broker
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+USER root
+EXPOSE 8090
+CMD ["uvicorn", "aios.sandbox.broker:app", "--host", "0.0.0.0", "--port", "8090"]
 
 # ---------- worker ----------
 FROM base AS worker
