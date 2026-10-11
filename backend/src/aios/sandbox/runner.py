@@ -277,7 +277,13 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not hmac.compare_digest(auth.encode(), f"Bearer {self.server.token}".encode()):
             return self._reply(401, {"error": "unauthorized"})
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:
+            # A negative length would read until the client closes the connection.
+            return self._reply(400, {"error": "invalid Content-Length"})
         if length > REQUEST_LIMIT:
             return self._reply(413, {"error": "request too large"})
         try:

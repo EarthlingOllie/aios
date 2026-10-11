@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import threading
 
 import httpx
@@ -263,6 +264,15 @@ def test_runner_serve_mode(workdir):
         resp = httpx.post(f"{url}/exec", json=body, headers=auth)
         assert (resp.status_code, resp.json()["stdout"]) == (200, "served\n")
         assert httpx.post(f"{url}/exec", json={"nope": 1}, headers=auth).status_code == 400
+        # A bad length is refused, rather than dropping the connection or reading until the
+        # client closes it.
+        for length in ["-1", "abc"]:
+            with socket.create_connection(server.server_address[:2], timeout=5) as conn:
+                conn.sendall(
+                    f"POST /exec HTTP/1.1\r\nAuthorization: Bearer tok\r\n"
+                    f"Content-Length: {length}\r\n\r\n{{}}".encode()
+                )
+                assert conn.recv(100).startswith(b"HTTP/1.0 400"), length
     finally:
         server.shutdown()
         server.server_close()
