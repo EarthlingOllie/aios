@@ -392,23 +392,34 @@ def test_runner_failures_are_reported(client, docker):
     docker.exec_result = Completed(0, b'{"exit_code": "pwned"}', b"")
     assert client.post(url, json={"code": "1"}, headers=AUTH).status_code == 502
 
-    async def too_large(*args):
-        raise OutputTooLarge
-
-    docker.exec = too_large
-    assert client.post(url, json={"code": "1"}, headers=AUTH).status_code == 502
-
-    async def hangs(*args):
-        raise TimeoutError
-
-    docker.exec = hangs
-    resp = client.post(url, json={"code": "1"}, headers=AUTH)
-    assert (resp.status_code, resp.json()["detail"]) == (
-        504,
-        "The sandbox didn't finish the call in time.",
-    )
-    # The session is still usable.
+    # The session is still usable after those.
     assert client.get(f"/sessions/{session_id}", headers=AUTH).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        (TimeoutError, 504, "The sandbox didn't finish the call in time, so it was stopped."),
+        (OutputTooLarge, 502, "The sandbox's answer was too large, so the sandbox was stopped."),
+    ],
+)
+def test_a_runner_that_may_still_be_going_takes_its_sandbox_with_it(
+    client, docker, broker, error, status, detail
+):
+    # Killing the `docker exec` CLI leaves the runner going in the sandbox: the next call
+    # mustn't run beside it, in the same /work.
+    session_id = start(client)
+
+    async def killed(*args):
+        raise error
+
+    docker.exec = killed
+    resp = client.post(f"/sessions/{session_id}/exec", json={"code": "1"}, headers=AUTH)
+    assert (resp.status_code, resp.json()["detail"]) == (status, detail)
+    assert session_id not in broker.sessions
+    assert docker.removed[-1] == f"aios-sandbox-{session_id}"
+    resp = client.post(f"/sessions/{session_id}/exec", json={"code": "1"}, headers=AUTH)
+    assert resp.status_code == 404
 
 
 def test_delete_removes_the_container(client, docker, broker):

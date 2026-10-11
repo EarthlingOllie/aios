@@ -477,9 +477,22 @@ class Broker:
                 timeout=request.timeout + EXEC_GRACE,
             )
         except TimeoutError:
-            raise BrokerError(504, "The sandbox didn't finish the call in time.") from None
+            # The runner enforces the call's time limit itself, so it has hung. Timing out only
+            # kills the `docker exec` CLI: the runner (and the code) would go on in the sandbox,
+            # and the next call would run beside them in the same /work. So the sandbox goes, and
+            # the run's next call gets a fresh one.
+            log.warning("runner in %s overran its time limit; removing it", session.container)
+            await self._remove(session)
+            raise BrokerError(
+                504, "The sandbox didn't finish the call in time, so it was stopped."
+            ) from None
         except OutputTooLarge:
-            raise BrokerError(502, "The sandbox's answer was too large.") from None
+            # Killed the same way, so likewise the runner may still be going.
+            log.warning("runner in %s answered too much; removing it", session.container)
+            await self._remove(session)
+            raise BrokerError(
+                502, "The sandbox's answer was too large, so the sandbox was stopped."
+            ) from None
         if done.returncode == 0:
             try:
                 return ExecResult.model_validate_json(done.stdout).model_dump()
