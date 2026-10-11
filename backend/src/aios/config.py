@@ -55,6 +55,35 @@ class Settings(BaseSettings):
     sandbox_max_session_seconds: int = 2 * 60 * 60
     # How long to wait for a new sandbox to take calls.
     sandbox_start_timeout: int = 180
+    # SANDBOX_BACKEND=gvisor: one gVisor container per agent run, started by the broker on a
+    # sandbox host (`aios.sandbox.gvisor`, `aios.sandbox.broker`). The API starts sessions at
+    # SANDBOX_BROKER_URL (e.g. the brokers' internal load balancer), then calls the broker that
+    # answered directly. With gVisor, SANDBOX_PROXY_ADDRESS is `egress-proxy:3128`.
+    sandbox_broker_url: str = ""
+    # Shared by the API and the brokers; every broker call needs it.
+    sandbox_broker_token: SecretStr = SecretStr("")
+    # Broker only. The URL the API should use for this host's sessions. Empty = http://<the
+    # instance's private IP, from the EC2 metadata service>:SANDBOX_BROKER_PORT.
+    sandbox_broker_advertise_url: str = ""
+    sandbox_broker_port: int = 8090
+    # Broker only. The container runtime for sandboxes: `runsc` (gVisor). `runc` works without
+    # gVisor installed but doesn't isolate anything: local development only.
+    sandbox_docker_runtime: str = "runsc"
+    # Broker only. Images must already be on the host: the broker never pulls. The egress proxy
+    # runs from an image with the `aios` package (the api or broker image).
+    sandbox_image: str = "aios-sandbox:local"
+    sandbox_proxy_image: str = "aios-broker:local"
+    # Broker only. The internal (no route out) Docker network sandboxes and the proxy share.
+    sandbox_network: str = "aios-sandbox"
+    sandbox_network_subnet: str = "172.30.0.0/16"
+    # Broker only. Per sandbox: memory (MB, including the tmpfs /work and /tmp), CPUs, processes,
+    # and the size of /work and /tmp (MB). And how many sandboxes one host runs at most.
+    sandbox_memory_mb: int = 1024
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 256
+    sandbox_work_mb: int = 512
+    sandbox_tmp_mb: int = 64
+    sandbox_max_sessions: int = 50
 
     @property
     def oauth_redirect_uri(self) -> str:
