@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -56,11 +57,64 @@ def test_run_args_give_the_code_its_memory_on_top_of_the_tmpfs_files():
 
 
 def test_run_args_keep_the_proxy_token_out_of_argv():
-    url = "http://sandbox:secret-token@host.docker.internal:3128"
+    url = "http://sandbox:secret-token@aios-egress-proxy:3128"
     args = backend().run_args("aios-sandbox-x", spec(proxy_url=url))
-    assert "--network=bridge" in args
+    # Only the internal network, where the proxy is the way out: not the host, nor a bridge.
+    assert [a for a in args if a.startswith("--network")] == ["--network=aios-sandbox"]
+    assert not any(a.startswith("--add-host") for a in args)
     assert not any("secret-token" in a for a in args)
     assert args[args.index("--env") + 1] == "SANDBOX_PROXY_URL"
+
+
+def fake_network_docker(tmp_path, network: str | None) -> tuple[str, Path]:
+    """A `docker` that knows one network (`network` is its `inspect` output) and logs its argv."""
+    log = tmp_path / "calls"
+    script = tmp_path / "docker"
+    script.write_text(
+        f"""#!{sys.executable}
+import json, pathlib, sys
+log, state = pathlib.Path({str(log)!r}), pathlib.Path({str(tmp_path / "network")!r})
+with log.open("a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:3] == ["network", "create"]:
+    state.write_text("true true")
+elif sys.argv[1:3] == ["network", "inspect"]:
+    if not state.exists():
+        sys.exit(1)
+    print(state.read_text())
+"""
+    )
+    script.chmod(0o755)
+    if network is not None:
+        (tmp_path / "network").write_text(network)
+    return str(script), log
+
+
+def test_creates_the_sandbox_network_once(tmp_path):
+    docker, log = fake_network_docker(tmp_path, None)
+    b = DockerBackend(Settings(), docker=docker)
+    asyncio.run(b.ensure_network())
+    asyncio.run(b.ensure_network())
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    creates = [c for c in calls if c[:2] == ["network", "create"]]
+    assert creates == [
+        [
+            "network",
+            "create",
+            "--internal",
+            "--opt",
+            "com.docker.network.bridge.inhibit_ipv4=true",
+            "aios-sandbox",
+        ]
+    ]
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("network", ["false true", "true <no value>"])
+def test_refuses_a_sandbox_network_that_isnt_isolated(tmp_path, network):
+    docker, _ = fake_network_docker(tmp_path, network)
+    with pytest.raises(SandboxError, match="isn't isolated"):
+        asyncio.run(DockerBackend(Settings(), docker=docker).ensure_network())
 
 
 def test_missing_docker_is_a_sandbox_error():
@@ -151,6 +205,7 @@ def test_docker_cli_gets_only_what_it_needs(tmp_path, monkeypatch):
     monkeypatch.setenv("SANDBOX_PROXY_SECRET", "api-secret")
     monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker.sock")
     b = DockerBackend(Settings(), docker=str(fake))
+    b.network_ready = True  # Only `docker run` and its cleanup are under test.
     with pytest.raises(SandboxError, match="Couldn't start"):
         asyncio.run(b.start(spec(proxy_url="http://sandbox:token@host:3128")))
     calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -163,7 +218,7 @@ def test_docker_cli_gets_only_what_it_needs(tmp_path, monkeypatch):
     assert "SANDBOX_PROXY_URL" not in calls[1][1]
 
 
-def fake_docker(b: DockerBackend, exec_stderr: bytes) -> None:
+def fake_stopped_docker(b: DockerBackend, exec_stderr: bytes) -> None:
     """Makes `b`'s docker commands report a stopped container, and `docker exec` fail."""
 
     async def run(*args, **kwargs):
@@ -183,14 +238,14 @@ def fake_docker(b: DockerBackend, exec_stderr: bytes) -> None:
 )
 def test_exec_into_a_container_that_had_stopped_has_not_started(stderr):
     b = backend()
-    fake_docker(b, stderr)
+    fake_stopped_docker(b, stderr)
     with pytest.raises(SandboxNotStarted):
         asyncio.run(b.execute(SandboxHandle("aios-sandbox-x", "", ""), "print(1)", 30))
 
 
 def test_exec_that_fails_otherwise_may_have_partly_run():
     b = backend()
-    fake_docker(b, b"Killed\n")
+    fake_stopped_docker(b, b"Killed\n")
     with pytest.raises(SandboxGone) as raised:
         asyncio.run(b.execute(SandboxHandle("aios-sandbox-x", "", ""), "print(1)", 30))
     assert not isinstance(raised.value, SandboxNotStarted)

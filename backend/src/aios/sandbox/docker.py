@@ -9,11 +9,14 @@ it has gone `idle_seconds` without a call or has run for `max_seconds`, so sandb
 outlive a stopped API by long. A call never outlasts the maximum lifetime: the container stops
 under it, and the call reports the sandbox gone.
 
+A sandbox without allowed domains gets no network at all. One with allowed domains joins
+`NETWORK`, an internal network with no route out and no address for the host, where the only
+other endpoints are the egress proxy (a container attached to it and to a network with a route
+out, see the README) and the other sandboxes. So the proxy is its only way out, and it can't
+reach services on the host. Sandboxes on it can reach each other, though.
+
 It isolates far less than the Fargate or gVisor backends: the code shares the host's kernel
-(runc), and a sandbox with allowed domains joins Docker's default bridge network, which has a
-route out, so the egress proxy's allowlist only applies to code that uses the proxy (the
-runner sets HTTPS_PROXY). One without allowed domains gets no network at all. Never use it in
-production.
+(runc). Never use it in production.
 """
 
 import asyncio
@@ -55,6 +58,11 @@ WORK_MB = 512
 TMP_MB = 64
 # What `docker exec` says when the container had gone (removed, or stopped) before the exec.
 NOT_STARTED = ("No such container", "is not running")
+# The network for sandboxes with allowed domains. Created on first use if missing.
+NETWORK = "aios-sandbox"
+# Internal: no route out. No IPv4 address on the host's side of the bridge: without this, the
+# host is reachable at the network's gateway address (anything listening on all interfaces).
+NETWORK_OPTIONS = ("--internal", "--opt", "com.docker.network.bridge.inhibit_ipv4=true")
 
 
 def cli_env() -> dict[str, str]:
@@ -75,6 +83,7 @@ class DockerBackend:
         self.image = settings.sandbox_docker_image
         self.memory_mb = settings.sandbox_docker_memory_mb
         self.start_timeout = settings.sandbox_start_timeout
+        self.network_ready = False
 
     async def _run(
         self,
@@ -136,14 +145,39 @@ class DockerBackend:
             raise
         return proc.returncode or 0, stdout, stderr
 
+    async def ensure_network(self) -> None:
+        """Creates `NETWORK` if it's missing, and refuses one that isn't isolated."""
+        if self.network_ready:
+            return
+        inspect = (
+            "network",
+            "inspect",
+            "--format",
+            '{{.Internal}} {{index .Options "com.docker.network.bridge.inhibit_ipv4"}}',
+            NETWORK,
+        )
+        try:
+            code, stdout, _ = await self._run(*inspect)
+            if code:
+                # Another API process may create it at the same time: inspected again below.
+                await self._run("network", "create", *NETWORK_OPTIONS, NETWORK)
+                code, stdout, _ = await self._run(*inspect)
+        except TimeoutError:
+            raise SandboxError("Docker took too long to set up the sandbox network.") from None
+        if code:
+            raise SandboxError(f"Couldn't create the sandbox network {NETWORK}.")
+        if stdout.split() != [b"true", b"true"]:
+            log.error("docker network %s isn't internal with inhibit_ipv4; not using it", NETWORK)
+            raise SandboxError(
+                f"The sandbox network {NETWORK} isn't isolated. Remove it (`docker network rm"
+                f" {NETWORK}`) and let it be created again."
+            )
+        self.network_ready = True
+
     def run_args(self, name: str, spec: SessionSpec) -> list[str]:
         """`docker run` arguments for a session's sandbox."""
-        network = (
-            # Reaches a proxy on the host as host.docker.internal (as on Docker Desktop).
-            ["--network=bridge", "--add-host=host.docker.internal:host-gateway"]
-            if spec.proxy_url
-            else ["--network=none"]
-        )
+        # Reaches the egress proxy, and nothing else outside the sandboxes, on `NETWORK`.
+        network = [f"--network={NETWORK}"] if spec.proxy_url else ["--network=none"]
         memory = f"{self.memory_mb + WORK_MB + TMP_MB}m"
         return [
             "run",
@@ -186,6 +220,8 @@ class DockerBackend:
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         name = f"aios-sandbox-{secrets.token_hex(6)}"
+        if spec.proxy_url:
+            await self.ensure_network()
         try:
             try:
                 code, _, stderr = await self._run(

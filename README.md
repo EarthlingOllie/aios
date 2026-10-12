@@ -128,23 +128,28 @@ SANDBOX_BACKEND=docker
 ```
 
 That's enough for code with no network access. For a tool with allowed domains, also run the
-egress proxy on the host, where sandboxes reach it as `host.docker.internal`:
+egress proxy as a container on `aios-sandbox`, the internal network those sandboxes join. It
+has no route out and no address for the host, so the proxy is their only way out (the API
+creates the network if it's missing, and refuses one created without these options):
 
 ```sh
 # in backend/.env
 SANDBOX_PROXY_SECRET=any-long-random-string
-SANDBOX_PROXY_ADDRESS=host.docker.internal:3128
+SANDBOX_PROXY_ADDRESS=aios-egress-proxy:3128
 
-uv run python -m aios.sandbox.egress_proxy   # separate shell, listens on :3128
+docker compose build api   # the proxy runs from the API image
+docker network create --internal --opt com.docker.network.bridge.inhibit_ipv4=true aios-sandbox
+docker run -d --name aios-egress-proxy --network aios-sandbox \
+  --env SANDBOX_PROXY_SECRET=any-long-random-string \
+  aios-api:local python -m aios.sandbox.egress_proxy
+docker network connect bridge aios-egress-proxy   # the proxy's own way out
 ```
 
-It isolates far less than the production backends: the code shares your kernel, and a sandbox
-with allowed domains is on Docker's default bridge network, so the allowlist only binds code
-that goes through the proxy (`urllib`, `requests` and `httpx` do, via `HTTPS_PROXY`). Only run
-code you'd run yourself. `SANDBOX_DOCKER_MEMORY_MB` (default 1024) is the code's memory; files in
-`/work` (up to 512 MB) and `/tmp` (64 MB) are on top. Sandboxes are labelled `aios.sandbox`,
-stop themselves when idle, and `docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears
-any left over.
+It isolates far less than the production backends: the code shares your kernel, and sandboxes
+on `aios-sandbox` can reach each other. Only run code you'd run yourself.
+`SANDBOX_DOCKER_MEMORY_MB` (default 1024) is the code's memory; files in `/work` (up to 512 MB)
+and `/tmp` (64 MB) are on top. Sandboxes are labelled `aios.sandbox`, stop themselves when
+idle, and `docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears any left over.
 
 ### Dependency policy
 
