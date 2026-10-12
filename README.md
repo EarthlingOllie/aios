@@ -116,6 +116,34 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
 need the migrated database and skip otherwise) and `pnpm build` (frontend).
 
+### Running Python locally (`run_python`)
+
+The `docker` sandbox backend starts one container per agent run on your machine's Docker, for
+an API run with `uvicorn` as above (not inside Compose: it needs the `docker` CLI and daemon):
+
+```sh
+docker build --target sandbox -t aios-sandbox:local backend
+# in backend/.env
+SANDBOX_BACKEND=docker
+```
+
+That's enough for code with no network access. For a tool with allowed domains, also run the
+egress proxy on the host, where sandboxes reach it as `host.docker.internal`:
+
+```sh
+# in backend/.env
+SANDBOX_PROXY_SECRET=any-long-random-string
+SANDBOX_PROXY_ADDRESS=host.docker.internal:3128
+
+uv run python -m aios.sandbox.egress_proxy   # separate shell, listens on :3128
+```
+
+It isolates far less than the production backends: the code shares your kernel, and a sandbox
+with allowed domains is on Docker's default bridge network, so the allowlist only binds code
+that goes through the proxy (`urllib`, `requests` and `httpx` do, via `HTTPS_PROXY`). Only run
+code you'd run yourself. Sandboxes are labelled `aios.sandbox`, stop themselves when idle, and
+`docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears any left over.
+
 ### Dependency policy
 
 - **Python**: every dependency in `pyproject.toml` is pinned with `==` and `uv.lock` is
@@ -195,8 +223,8 @@ anything real.
   total, and a later call starts a fresh one (the model is told `/work` was reset). The code
   runs in the `sandbox` image (`backend/Dockerfile`): the runner (`aios.sandbox.runner`, stdlib
   only) and the libraries pinned in `backend/sandbox/requirements.txt`. `SANDBOX_BACKEND`
-  chooses how sandboxes are started; with none set, the tool tells the model it isn't
-  available. See `plan/run-python/plan.md`.
+  chooses how sandboxes are started (`docker` for local development, see above); with none
+  set, the tool tells the model it isn't available. See `plan/run-python/plan.md`.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
