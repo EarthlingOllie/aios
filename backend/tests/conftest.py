@@ -60,5 +60,6 @@ def workdir(monkeypatch):
         os.chmod(parent, 0o755)
         work = Path(parent) / "work"
         monkeypatch.setattr(runner, "WORKDIR", str(work))
+        monkeypatch.setattr(runner, "CALLS_FILE", str(Path(parent) / "calls"))
         runner.prepare_workdir()
         yield work

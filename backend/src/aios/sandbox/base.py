@@ -53,6 +53,10 @@ class SandboxGone(SandboxError):
     """The session's sandbox no longer exists (stopped when idle, crashed, or expired)."""
 
 
+class SandboxNotStarted(SandboxGone):
+    """The sandbox had gone before the call reached it, so none of the code ran."""
+
+
 class SandboxBackend(Protocol):
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         """Starts a sandbox and returns once it can take calls.
@@ -67,7 +71,8 @@ class SandboxBackend(Protocol):
         ...
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
-        """Runs `code` in the sandbox. Raises `SandboxGone` if it no longer exists."""
+        """Runs `code` in the sandbox. Raises `SandboxGone` if it no longer exists, and
+        `SandboxNotStarted` if it's known to have gone before the code started."""
         ...
 
     async def stop(self, handle: SandboxHandle) -> None:

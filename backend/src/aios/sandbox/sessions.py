@@ -25,6 +25,7 @@ from aios.sandbox.base import (
     SandboxError,
     SandboxGone,
     SandboxHandle,
+    SandboxNotStarted,
     SessionSpec,
 )
 
@@ -292,7 +293,14 @@ class SessionManager:
             # replaced without the code having run anywhere.
             handle, replaced = await self._ready(backend, run_id, allowed_domains)
             try:
-                result = await backend.execute(handle, code, timeout)
+                try:
+                    result = await backend.execute(handle, code, timeout)
+                except SandboxNotStarted:
+                    # It stopped after the check but before the code started (e.g. it reached
+                    # its idle or maximum lifetime just then), so the code runs in a new one.
+                    log.info("sandbox %s for run %s stopped before a call", handle.ref, run_id)
+                    handle, replaced = await self._ready(backend, run_id, allowed_domains)
+                    result = await backend.execute(handle, code, timeout)
             except SandboxGone:
                 # It stopped during the call (e.g. the code ran out of memory, or the sandbox
                 # reached its maximum lifetime), so the code may have partly run: it isn't run

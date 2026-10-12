@@ -116,6 +116,41 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
 need the migrated database and skip otherwise) and `pnpm build` (frontend).
 
+### Running Python locally (`run_python`)
+
+The `docker` sandbox backend starts one container per agent run on your machine's Docker, for
+an API run with `uvicorn` as above (not inside Compose: it needs the `docker` CLI and daemon):
+
+```sh
+docker build --target sandbox -t aios-sandbox:local backend
+# in backend/.env
+SANDBOX_BACKEND=docker
+```
+
+That's enough for code with no network access. For a tool with allowed domains, also run the
+egress proxy as a container on `aios-sandbox`, the internal network those sandboxes join. It
+has no route out and no address for the host, so the proxy is their only way out (the API
+creates the network if it's missing, and refuses one created without these options):
+
+```sh
+# in backend/.env
+SANDBOX_PROXY_SECRET=any-long-random-string
+SANDBOX_PROXY_ADDRESS=aios-egress-proxy:3128
+
+docker compose build api   # the proxy runs from the API image
+docker network create --internal --opt com.docker.network.bridge.inhibit_ipv4=true aios-sandbox
+docker run -d --name aios-egress-proxy --network aios-sandbox \
+  --env SANDBOX_PROXY_SECRET=any-long-random-string \
+  aios-api:local python -m aios.sandbox.egress_proxy
+docker network connect bridge aios-egress-proxy   # the proxy's own way out
+```
+
+It isolates far less than the production backends: the code shares your kernel, and sandboxes
+on `aios-sandbox` can reach each other. Only run code you'd run yourself.
+`SANDBOX_DOCKER_MEMORY_MB` (default 1024) is the code's memory; files in `/work` (up to 512 MB)
+and `/tmp` (64 MB) are on top. Sandboxes are labelled `aios.sandbox`, stop themselves when
+idle, and `docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears any left over.
+
 ### Dependency policy
 
 - **Python**: every dependency in `pyproject.toml` is pinned with `==` and `uv.lock` is
@@ -195,8 +230,8 @@ anything real.
   total, and a later call starts a fresh one (the model is told `/work` was reset). The code
   runs in the `sandbox` image (`backend/Dockerfile`): the runner (`aios.sandbox.runner`, stdlib
   only) and the libraries pinned in `backend/sandbox/requirements.txt`. `SANDBOX_BACKEND`
-  chooses how sandboxes are started; with none set, the tool tells the model it isn't
-  available. See `plan/run-python/plan.md`.
+  chooses how sandboxes are started (`docker` for local development, see above); with none
+  set, the tool tells the model it isn't available. See `plan/run-python/plan.md`.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
