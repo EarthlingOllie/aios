@@ -39,6 +39,8 @@ EXEC_GRACE = 30
 COMMAND_TIMEOUT = 60
 # The runner caps stdout and stderr at about 20 KB each, so a bigger answer isn't its own.
 MAX_ANSWER = 1024 * 1024
+# How much of a command's stderr is kept (only for logs).
+MAX_STDERR = 64 * 1024
 # tmpfs sizes. Files on a tmpfs count against the container's memory limit, so the limit is the
 # code's memory plus these: a full /work doesn't shrink the RAM the code gets.
 WORK_MB = 512
@@ -87,7 +89,11 @@ class DockerBackend:
         timeout: float = COMMAND_TIMEOUT,
         env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
-        """Runs `docker` with argv only (never a shell). Raises TimeoutError past `timeout`."""
+        """Runs `docker` with argv only (never a shell). Raises TimeoutError past `timeout`.
+
+        Output past MAX_ANSWER (stdout) or MAX_STDERR kills the CLI and comes back cut off at
+        one byte over the limit.
+        """
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.docker,
@@ -99,9 +105,33 @@ class DockerBackend:
             )
         except OSError as exc:
             raise SandboxError(f"Docker isn't available here ({type(exc).__name__}).") from exc
+
+        async def feed() -> None:
+            if proc.stdin is None:
+                return
+            # The CLI may exit (or be killed) before reading it all.
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                proc.stdin.write(input or b"")
+                await proc.stdin.drain()
+                proc.stdin.close()
+
+        async def read(stream: asyncio.StreamReader, limit: int) -> bytes:
+            # At most `limit` + 1 bytes, so the caller can tell output was cut off. Code in the
+            # sandbox can write to the runner's stdout, so it must not grow the API's memory.
+            data = b""
+            while len(data) <= limit and (chunk := await stream.read(limit + 1 - len(data))):
+                data += chunk
+            if len(data) > limit:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            return data
+
         try:
             async with asyncio.timeout(timeout):
-                stdout, stderr = await proc.communicate(input)
+                _, stdout, stderr = await asyncio.gather(
+                    feed(), read(proc.stdout, MAX_ANSWER), read(proc.stderr, MAX_STDERR)
+                )
+                await proc.wait()
         except BaseException:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()

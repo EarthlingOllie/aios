@@ -7,12 +7,13 @@ The tests that start containers need a Docker daemon and the sandbox image (`doc
 import asyncio
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 from aios.config import Settings
 from aios.sandbox.base import SandboxError, SandboxGone, SandboxHandle, SessionSpec
-from aios.sandbox.docker import DockerBackend
+from aios.sandbox.docker import MAX_ANSWER, DockerBackend
 
 IMAGE = "aios-sandbox:local"
 
@@ -97,6 +98,32 @@ def test_a_cancelled_call_removes_the_sandbox(monkeypatch):
 
     asyncio.run(scenario())
     assert calls == ["exec", "rm"]
+
+
+# Stands in for the CLI: echoes stdin then floods stdout without end, as code in the sandbox
+# can through the runner's stdout. `inspect` says the container is running.
+FLOODING_DOCKER = """
+import sys
+if sys.argv[1] == "inspect":
+    print("true")
+    sys.exit()
+sys.stdout.buffer.write(sys.stdin.buffer.read())
+while True:
+    sys.stdout.buffer.write(b"x" * 65536)
+"""
+
+
+def test_output_past_the_limit_is_cut_off(tmp_path):
+    fake = tmp_path / "docker"
+    fake.write_text(f"#!{sys.executable}\n{FLOODING_DOCKER}")
+    fake.chmod(0o755)
+    b = DockerBackend(Settings(), docker=str(fake))
+    code, stdout, _ = asyncio.run(b._run("exec", input=b"payload", timeout=30))
+    assert code != 0
+    assert len(stdout) == MAX_ANSWER + 1
+    assert stdout.startswith(b"payloadx")
+    with pytest.raises(SandboxError, match="couldn't run the code"):
+        asyncio.run(b.execute(SandboxHandle("x", "", ""), "print(1)", 30))
 
 
 # --- against a real Docker daemon ----------------------------------------------------------------
