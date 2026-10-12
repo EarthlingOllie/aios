@@ -213,7 +213,8 @@ class DockerBackend:
             # kills the `docker exec` CLI: the runner would go on in the sandbox beside the next
             # call, in the same /work. So the sandbox goes, and the next call gets a fresh one.
             log.warning("runner in %s overran its time limit; removing it", handle.ref)
-            await self.stop(handle)
+            with CancelScope(shield=True):
+                await self.stop(handle)
             raise SandboxGone("The sandbox didn't finish the call in time.") from None
         except BaseException:
             # E.g. the agent run was stopped mid-call. Likewise, only the CLI is killed, so the
