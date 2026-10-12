@@ -34,6 +34,15 @@ def test_run_args_isolate_the_sandbox():
     assert args[args.index("--label") + 1] == "aios.sandbox=1"
 
 
+def test_run_args_give_the_code_its_memory_on_top_of_the_tmpfs_files():
+    args = backend(sandbox_docker_memory_mb=1024).run_args("aios-sandbox-x", spec())
+    # 1024 MB for the code, plus 512 MB of /work and 64 MB of /tmp.
+    assert "--memory=1600m" in args
+    assert "--memory-swap=1600m" in args
+    assert any(a.startswith("/work:") and "size=512m" in a for a in args)
+    assert any(a.startswith("/tmp:") and "size=64m" in a for a in args)
+
+
 def test_run_args_keep_the_proxy_token_out_of_argv():
     url = "http://sandbox:secret-token@host.docker.internal:3128"
     args = backend().run_args("aios-sandbox-x", spec(proxy_url=url))

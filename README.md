@@ -141,8 +141,10 @@ uv run python -m aios.sandbox.egress_proxy   # separate shell, listens on :3128
 It isolates far less than the production backends: the code shares your kernel, and a sandbox
 with allowed domains is on Docker's default bridge network, so the allowlist only binds code
 that goes through the proxy (`urllib`, `requests` and `httpx` do, via `HTTPS_PROXY`). Only run
-code you'd run yourself. Sandboxes are labelled `aios.sandbox`, stop themselves when idle, and
-`docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears any left over.
+code you'd run yourself. `SANDBOX_DOCKER_MEMORY_MB` (default 1024) is the code's memory; files in
+`/work` (up to 512 MB) and `/tmp` (64 MB) are on top. Sandboxes are labelled `aios.sandbox`,
+stop themselves when idle, and `docker rm -f $(docker ps -q --filter label=aios.sandbox)` clears
+any left over.
 
 ### Dependency policy
 

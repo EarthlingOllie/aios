@@ -39,6 +39,10 @@ EXEC_GRACE = 30
 COMMAND_TIMEOUT = 60
 # The runner caps stdout and stderr at about 20 KB each, so a bigger answer isn't its own.
 MAX_ANSWER = 1024 * 1024
+# tmpfs sizes. Files on a tmpfs count against the container's memory limit, so the limit is the
+# code's memory plus these: a full /work doesn't shrink the RAM the code gets.
+WORK_MB = 512
+TMP_MB = 64
 
 # The container's main process. A call is a `docker exec` of the runner, so the sandbox is busy
 # while a runner process exists, and idle from when the last one ended. A call never outlasts
@@ -115,6 +119,7 @@ class DockerBackend:
             if spec.proxy_url
             else ["--network=none"]
         )
+        memory = f"{self.memory_mb + WORK_MB + TMP_MB}m"
         return [
             "run",
             "--detach",
@@ -125,14 +130,14 @@ class DockerBackend:
             *network,
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            f"/tmp:rw,noexec,nosuid,nodev,size={TMP_MB}m",
             "--tmpfs",
-            f"/work:rw,nosuid,nodev,size=512m,uid={SANDBOX_UID},gid={SANDBOX_UID},mode=700",
+            f"/work:rw,nosuid,nodev,size={WORK_MB}m,uid={SANDBOX_UID},gid={SANDBOX_UID},mode=700",
             f"--user={SANDBOX_UID}:{SANDBOX_UID}",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
-            f"--memory={self.memory_mb}m",
-            f"--memory-swap={self.memory_mb}m",
+            f"--memory={memory}",
+            f"--memory-swap={memory}",
             "--cpus=1",
             "--pids-limit=256",
             # Reaps the processes each call's code leaves behind (the runner kills them).

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # SANDBOX_BACKEND=docker: one container per agent run on this machine's Docker
     # (`aios.sandbox.docker`). Local development only: it isolates far less than the others.
     sandbox_docker_image: str = "aios-sandbox:local"
+    # The code's memory. Files in /work (up to 512 MB) and /tmp (64 MB) are on top.
     sandbox_docker_memory_mb: int = 1024
 
     @property
