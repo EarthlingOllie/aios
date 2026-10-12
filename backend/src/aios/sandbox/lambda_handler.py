@@ -197,11 +197,20 @@ def _download(url: str, work: Path, in_sync: bool) -> None:
 
 def _keep(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
     """Extracts what `tarfile`'s `data` filter allows (no paths or links out of /work, no device
-    files) and skips the rest, rather than failing the whole restore over one entry."""
+    files) and skips the rest, rather than failing the whole restore over one entry.
+
+    Files and directories keep the permissions they were saved with, which the filter would
+    otherwise change (no group or other write, no execute without the owner's, umask-default
+    directories), so a cold environment's /work matches a warm one's and packs the same bytes.
+    The code could set any of those itself; only the setuid, setgid and sticky bits are left off,
+    as `_portable` already does when saving."""
     try:
-        return tarfile.data_filter(member, path)
+        kept = tarfile.data_filter(member, path)
     except tarfile.FilterError:
         return None
+    if kept.issym():
+        return kept  # A link's own mode isn't used.
+    return kept.replace(mode=member.mode & 0o777, deep=False)
 
 
 def _unpack(archive: Path, work: Path) -> None:
@@ -246,6 +255,7 @@ def _portable(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
         return None
     info.uid = info.gid = 0
     info.uname = info.gname = ""
+    info.mode &= 0o777  # No setuid, setgid or sticky bits, which `_keep` wouldn't restore.
     return info
 
 

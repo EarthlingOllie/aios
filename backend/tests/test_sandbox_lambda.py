@@ -302,6 +302,37 @@ async def test_a_cold_environment_restores_work_from_s3(backend, lam, s3):
 
 
 @pytest.mark.anyio
+async def test_a_cold_restore_keeps_the_modes_the_code_set(backend, lam, s3):
+    handle = await backend.start(SPEC)
+    setup = (
+        "import os\n"
+        "os.mkdir('shared'); os.chmod('shared', 0o777)\n"
+        "open('shared/notes.txt', 'w').close(); os.chmod('shared/notes.txt', 0o666)\n"
+        "open('tool.sh', 'w').close(); os.chmod('tool.sh', 0o755)\n"
+        "open('secret.txt', 'w').close(); os.chmod('secret.txt', 0o4600)\n"
+    )
+    assert (await run(backend, handle, setup)).exit_code == 0
+    lam.cold()
+
+    result = await run(
+        backend,
+        handle,
+        "import os\n"
+        "for p in ['shared', 'shared/notes.txt', 'tool.sh', 'secret.txt']:\n"
+        "    print(p, oct(os.stat(p).st_mode & 0o7777))",
+    )
+    assert result.stdout.splitlines() == [
+        "shared 0o777",
+        "shared/notes.txt 0o666",
+        "tool.sh 0o755",
+        "secret.txt 0o600",  # Never a setuid bit.
+    ]
+    # The restored /work packs to the archive it came from, so it isn't uploaded again.
+    assert s3.methods(200) == ["GET"]
+    assert s3.methods(204) == ["POST"]
+
+
+@pytest.mark.anyio
 async def test_a_failed_call_leaves_work_as_it_was(backend, lam):
     handle = await backend.start(SPEC)
     await run(backend, handle, "open('n', 'w').write('1')")
