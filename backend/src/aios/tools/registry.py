@@ -68,6 +68,11 @@ def check_stored_tool(key: str, config: dict[str, Any]) -> None:
     _parse(key, config, stored=True)
 
 
+def stored_settings(key: str, config: dict[str, Any]) -> BaseModel:
+    """Stored settings parsed as `build_tool` parses them, for code that needs the same values."""
+    return _parse(key, config, stored=True)[1]
+
+
 def build_tool(key: str, config: dict[str, Any]) -> AbstractCapability[Any]:
     """Builds a tool from stored settings, which may predate its current settings model."""
     spec, parsed = _parse(key, config, stored=True)

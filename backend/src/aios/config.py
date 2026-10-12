@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     search_candidates: int = 40
     search_rrf_k: int = 60
 
+    # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
+    # model it isn't available.
+    sandbox_backend: str = ""
+    # The egress proxy as sandboxes reach it (host:port). Empty = sandboxes get no network.
+    sandbox_proxy_address: str = ""
+    # Signs the proxy tokens that carry each session's allowed domains. Shared by the API (which
+    # mints them) and the egress proxy (which checks them).
+    sandbox_proxy_secret: SecretStr = SecretStr("")
+    # A sandbox stops itself after this long without a call, or this long in total.
+    sandbox_idle_seconds: int = 15 * 60
+    sandbox_max_session_seconds: int = 2 * 60 * 60
+    # How long to wait for a new sandbox to take calls.
+    sandbox_start_timeout: int = 180
+
     @property
     def oauth_redirect_uri(self) -> str:
         return f"{self.public_url.rstrip('/')}/auth/callback"

@@ -1,0 +1,10 @@
+# Libraries agent code can use in the sandbox (see the `sandbox` target in ../Dockerfile).
+# Compile with:
+#   uv pip compile requirements.in --python-version 3.13 --generate-hashes \
+#     --exclude-newer "$(date -u -d '7 days ago' +%F)" -o requirements.txt
+httpx
+requests
+pandas
+pyarrow
+beautifulsoup4
+lxml

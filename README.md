@@ -63,11 +63,14 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     versioning.py   creating agent/skill versions, rendering instructions
     tools/          the tool library agents can be given (registry + one module per tool)
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
+    sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
+                    runner and the egress proxy
     agent.py        Pydantic AI agent + search_documents tool
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest task
-  Dockerfile        targets: api, worker
+  sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
+  Dockerfile        targets: api, worker, sandbox
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
@@ -182,6 +185,18 @@ anything real.
   search), which is billed per search; its settings cap searches per model request and can
   allow or block domains. A model without native web search fails the turn rather than running
   without it.
+- **Run Python** (`run_python`) lets an agent write and run Python in a sandbox: one per agent
+  run, started when a turn starts (so it's usually ready by the first call) and reused by every
+  call in the run, so files in `/work` carry over. The sandbox has no route to the database,
+  Redis or the app's secrets. Its only way out is the egress proxy (`aios.sandbox.egress_proxy`),
+  which allows HTTPS to the domains in the tool's settings and nothing else. The proxy token a
+  sandbox is given carries those domains, signed with `SANDBOX_PROXY_SECRET`. The sandbox
+  stops itself after `SANDBOX_IDLE_SECONDS` without a call, or `SANDBOX_MAX_SESSION_SECONDS` in
+  total, and a later call starts a fresh one (the model is told `/work` was reset). The code
+  runs in the `sandbox` image (`backend/Dockerfile`): the runner (`aios.sandbox.runner`, stdlib
+  only) and the libraries pinned in `backend/sandbox/requirements.txt`. `SANDBOX_BACKEND`
+  chooses how sandboxes are started; with none set, the tool tells the model it isn't
+  available. See `plan/run-python/plan.md`.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
