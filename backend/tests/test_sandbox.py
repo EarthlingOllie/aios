@@ -297,6 +297,40 @@ def test_runner_expires_when_idle_or_too_old():
         server.server_close()
 
 
+def test_runner_watch_sees_every_exec_call(workdir):
+    calls = runner.Calls(runner.CALLS_FILE, idle_seconds=60, max_seconds=600)
+
+    def check() -> bool:
+        with calls.checking():
+            return calls.expired()
+
+    assert not check()
+    calls.last_used -= 61
+    assert check()
+    # A call that started and ended between two checks still counts as activity.
+    with runner._call_in_progress():
+        pass
+    assert not check()
+    # So does one still running, for as long as it runs.
+    calls.last_used -= 61
+    with runner._call_in_progress():
+        assert not check()
+        calls.last_used -= 61
+        assert not check()
+    # Idle from when it ended.
+    assert not check()
+    calls.last_used -= 61
+    assert check()
+    # Never past its maximum lifetime, even mid-call.
+    calls.started -= 601
+    with runner._call_in_progress():
+        assert check()
+    expired = []
+    runner.watch(calls, on_expire=lambda: expired.append(True), interval=0)
+    assert expired == [True]
+    os.close(calls.fd)
+
+
 def test_runner_counts_a_request_as_soon_as_it_is_accepted():
     # Before its handler has read it, an accepted request already keeps the sandbox from being
     # stopped as idle, so the watchdog can't exit under it.

@@ -42,6 +42,8 @@ def test_run_args_isolate_the_sandbox():
         assert flag in args
     assert "--user=1001:1001" in args
     assert args[args.index("--label") + 1] == "aios.sandbox=1"
+    # The runner itself stops the sandbox when idle or too old.
+    assert args[-5:] == ["python", "/opt/sandbox/runner.py", "watch", "600", "3600"]
 
 
 def test_run_args_give_the_code_its_memory_on_top_of_the_tmpfs_files():

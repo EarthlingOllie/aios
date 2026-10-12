@@ -4,9 +4,10 @@ Each sandbox is a container from the sandbox image (`docker build --target sandb
 aios-sandbox:local backend`) with a read-only root filesystem, tmpfs /work and /tmp, no
 capabilities, an unprivileged user, and memory, CPU and process limits. It listens on nothing:
 each call is a `docker exec` of the runner (`runner.py exec`) with the request on stdin. Its
-main process is a watchdog that exits, which stops the container, once it has gone
-`idle_seconds` without a call or has run for `max_seconds`, so sandboxes don't outlive a
-stopped API by long.
+main process is the runner too (`runner.py watch`), which exits, stopping the container, once
+it has gone `idle_seconds` without a call or has run for `max_seconds`, so sandboxes don't
+outlive a stopped API by long. A call never outlasts the maximum lifetime: the container stops
+under it, and the call reports the sandbox gone.
 
 It isolates far less than the Fargate or gVisor backends: the code shares the host's kernel
 (runc), and a sandbox with allowed domains joins Docker's default bridge network, which has a
@@ -54,34 +55,6 @@ WORK_MB = 512
 TMP_MB = 64
 # What `docker exec` says when the container had gone (removed, or stopped) before the exec.
 NOT_STARTED = ("No such container", "is not running")
-
-# The container's main process. A call is a `docker exec` of the runner, so the sandbox is busy
-# while a runner process exists, and idle from when the last one ended. A call never outlasts
-# the maximum lifetime: the container stops under it, and the call reports the sandbox gone.
-WATCHDOG = """
-import os, sys, time
-idle, total = int(sys.argv[1]), int(sys.argv[2])
-started = last = time.monotonic()
-
-def busy():
-    for pid in os.listdir("/proc"):
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                # Whole arguments only: this script's own text mentions the runner too.
-                if b"/opt/sandbox/runner.py" in f.read().split(b"\\0"):
-                    return True
-        except OSError:
-            pass
-    return False
-
-while True:
-    now = time.monotonic()
-    if busy():
-        last = now
-    if now - last > idle or now - started > total:
-        sys.exit(0)
-    time.sleep(2)
-"""
 
 
 def cli_env() -> dict[str, str]:
@@ -175,7 +148,7 @@ class DockerBackend:
         return [
             "run",
             "--detach",
-            # Removed once the watchdog exits, so stopped sandboxes don't pile up.
+            # Removed once the watcher exits, so stopped sandboxes don't pile up.
             "--rm",
             "--name",
             name,
@@ -205,8 +178,8 @@ class DockerBackend:
             "SANDBOX_PROXY_URL",
             self.image,
             "python",
-            "-c",
-            WATCHDOG,
+            RUNNER,
+            "watch",
             str(spec.idle_seconds),
             str(spec.max_seconds),
         ]
@@ -299,5 +272,5 @@ class DockerBackend:
         try:
             await self._run("rm", "--force", "--volumes", handle.ref)
         except Exception:
-            # Best effort: the watchdog stops it when idle anyway.
+            # Best effort: the watcher stops it when idle anyway.
             log.warning("couldn't remove sandbox container %s", handle.ref, exc_info=True)

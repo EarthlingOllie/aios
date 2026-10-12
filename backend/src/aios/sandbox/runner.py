@@ -8,6 +8,10 @@ Dockerfile), so it uses the standard library only and never imports `aios`.
     python runner.py serve   an HTTP server for calls: POST /exec, GET /health (Fargate). Needs
                              SANDBOX_TOKEN; exits when idle or at its maximum lifetime, which
                              stops the sandbox
+    python runner.py watch IDLE MAX
+                             waits until no `exec` call has run for IDLE seconds, or MAX seconds
+                             have passed, then exits, which stops the sandbox (Docker's main
+                             process)
 
 Each call writes the code to a file and runs it as a new `python -I` process in the working
 directory (/work, which persists between calls), in its own process group, with resource
@@ -19,6 +23,7 @@ token or interfere with the runner.
 
 import contextlib
 import ctypes
+import fcntl
 import hmac
 import json
 import os
@@ -47,6 +52,9 @@ OUTPUT_LIMIT = _env_int("SANDBOX_OUTPUT_LIMIT", 20_000)
 MEMORY_LIMIT_MB = _env_int("SANDBOX_MEMORY_LIMIT_MB", 0)
 FILE_SIZE_LIMIT_MB = _env_int("SANDBOX_FILE_SIZE_LIMIT_MB", 1024)
 CHILD_UID = _env_int("SANDBOX_CHILD_UID", 1001)
+# Each `exec` call holds a shared lock on this file while it runs, and touches it as it starts
+# and ends, so `watch` sees every call, however short.
+CALLS_FILE = os.environ.get("SANDBOX_CALLS_FILE", "/tmp/runner-calls")
 
 
 def child_env() -> dict[str, str]:
@@ -224,6 +232,26 @@ def execute(code: str, timeout: float) -> dict:
     }
 
 
+@contextlib.contextmanager
+def _call_in_progress():
+    """Marks an `exec` call as running for `watch` (best effort: nothing may be watching)."""
+    try:
+        fd = os.open(CALLS_FILE, os.O_RDONLY | os.O_CREAT, 0o644)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        with contextlib.suppress(OSError):
+            os.utime(fd)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            os.utime(fd)
+        # Also releases the lock.
+        os.close(fd)
+
+
 def prepare_workdir() -> None:
     os.makedirs(WORKDIR, exist_ok=True)
     if os.geteuid() == 0:
@@ -233,10 +261,25 @@ def prepare_workdir() -> None:
         os.chmod(tempfile.gettempdir(), 0o1777)
 
 
-# --- serve ---------------------------------------------------------------------------------------
+# --- serve and watch -----------------------------------------------------------------------------
 
 
-class Server(ThreadingHTTPServer):
+class Lifetime:
+    """Expiry shared by `serve` and `watch`: idle too long with no call running, or too old."""
+
+    idle_seconds: int
+    max_seconds: int
+    started: float
+    last_used: float
+    busy: int
+
+    def expired(self) -> bool:
+        now = time.monotonic()
+        idle = not self.busy and now - self.last_used > self.idle_seconds
+        return idle or now - self.started > self.max_seconds
+
+
+class Server(Lifetime, ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, token: str, idle_seconds: int, max_seconds: int) -> None:
@@ -269,10 +312,40 @@ class Server(ThreadingHTTPServer):
         with self.busy_lock:
             self.busy -= 1
 
-    def expired(self) -> bool:
-        now = time.monotonic()
-        idle = not self.busy and now - self.last_used > self.idle_seconds
-        return idle or now - self.started > self.max_seconds
+    def checking(self):
+        return self.busy_lock
+
+
+class Calls(Lifetime):
+    """The `exec` calls made in this sandbox, as `watch` sees them through `CALLS_FILE`."""
+
+    def __init__(self, path: str, idle_seconds: int, max_seconds: int) -> None:
+        self.idle_seconds, self.max_seconds = idle_seconds, max_seconds
+        self.started = self.last_used = time.monotonic()
+        self.busy = 0
+        self.fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+        self.mtime = os.fstat(self.fd).st_mtime_ns
+
+    @contextlib.contextmanager
+    def checking(self):
+        """Holds the file's lock while `watch` decides, so no call starts in between."""
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.busy = 1
+            locked = False
+        else:
+            self.busy = 0
+            locked = True
+        try:
+            # Touched since the last check: a call ran in between, however briefly.
+            mtime = os.fstat(self.fd).st_mtime_ns
+            if self.busy or mtime != self.mtime:
+                self.mtime, self.last_used = mtime, time.monotonic()
+            yield
+        finally:
+            if locked:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -326,11 +399,11 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"runner: {format % args}\n")
 
 
-def watch(server: Server, on_expire=lambda: os._exit(0), interval: float = 5) -> None:
+def watch(server: Server | Calls, on_expire=lambda: os._exit(0), interval: float = 5) -> None:
     """Calls `on_expire` (by default, exits, which stops the sandbox) once the server expires."""
     while True:
-        # Checked and acted on under the lock, so no request is accepted in between.
-        with server.busy_lock:
+        # Checked and acted on under the lock, so no request or call is accepted in between.
+        with server.checking():
             if server.expired():
                 on_expire()
                 return
@@ -357,11 +430,15 @@ def main() -> None:
     if mode == "exec":
         request = json.load(sys.stdin)
         prepare_workdir()
-        json.dump(execute(str(request["code"]), float(request.get("timeout", 60))), sys.stdout)
+        with _call_in_progress():
+            result = execute(str(request["code"]), float(request.get("timeout", 60)))
+        json.dump(result, sys.stdout)
     elif mode == "serve":
         serve()
+    elif mode == "watch" and len(sys.argv) == 4:
+        watch(Calls(CALLS_FILE, int(sys.argv[2]), int(sys.argv[3])), interval=1)
     else:
-        raise SystemExit("usage: runner.py exec|serve")
+        raise SystemExit("usage: runner.py exec|serve|watch IDLE MAX")
 
 
 if __name__ == "__main__":
