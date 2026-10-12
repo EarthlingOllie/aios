@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import { History, Pencil, Trash2 } from "lucide-react";
-import Markdown from "react-markdown";
 
 import {
   DetailPage,
@@ -14,6 +13,8 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { MarkdownView } from "@/components/Markdown";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,9 +51,6 @@ export function SkillsIndex() {
   return <Placeholder>Select a skill, or create a new one.</Placeholder>;
 }
 
-const markdownClass =
-  "prose-sm rounded-md border p-4 leading-relaxed [&_code]:text-sm [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5";
-
 function SkillContent({ version }: { version: SkillVersion }) {
   return (
     <>
@@ -63,9 +61,7 @@ function SkillContent({ version }: { version: SkillVersion }) {
       </Section>
       <Section title="Instructions">
         {version.content ? (
-          <div className={markdownClass}>
-            <Markdown>{version.content}</Markdown>
-          </div>
+          <MarkdownView className="rounded-md border p-4">{version.content}</MarkdownView>
         ) : (
           <p className="text-muted-foreground text-sm">No instructions.</p>
         )}
@@ -314,10 +310,11 @@ export function SkillForm() {
           />
         </Field>
         <Field label="Instructions" htmlFor="skill-content" hint="Markdown is supported.">
-          <Textarea
+          <MarkdownEditor
             id="skill-content"
             rows={14}
             className="font-mono text-sm"
+            previewClassName="max-h-[32rem]"
             value={form.content}
             onChange={(e) => set({ content: e.target.value })}
             placeholder={"1. Group changes by area.\n2. Lead with user-visible changes.\n…"}

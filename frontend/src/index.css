@@ -81,3 +81,74 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+/* Rendered markdown (chat messages, editor previews). Preflight strips element styles, so
+   restore the ones markdown relies on. */
+@layer components {
+  .markdown {
+    @apply text-sm leading-relaxed break-words;
+  }
+  .markdown > :first-child {
+    @apply mt-0;
+  }
+  .markdown > :last-child {
+    @apply mb-0;
+  }
+  .markdown :is(p, ul, ol, blockquote, pre, table) {
+    @apply my-2;
+  }
+  .markdown h1 {
+    @apply mt-4 mb-2 text-xl font-semibold;
+  }
+  .markdown h2 {
+    @apply mt-4 mb-2 text-lg font-semibold;
+  }
+  .markdown :is(h3, h4, h5, h6) {
+    @apply mt-3 mb-1.5 font-semibold;
+  }
+  .markdown ul {
+    @apply list-disc pl-5;
+  }
+  .markdown ol {
+    @apply list-decimal pl-5;
+  }
+  .markdown li > :is(ul, ol) {
+    @apply my-0;
+  }
+  .markdown li:has(> input[type="checkbox"]) {
+    @apply list-none;
+  }
+  .markdown ul:has(> li > input[type="checkbox"]) {
+    @apply pl-1;
+  }
+  .markdown input[type="checkbox"] {
+    @apply mr-1.5 align-middle;
+  }
+  .markdown a {
+    @apply underline underline-offset-2;
+  }
+  .markdown blockquote {
+    @apply text-muted-foreground border-l-2 pl-3;
+  }
+  .markdown code {
+    @apply bg-muted rounded px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .markdown pre {
+    @apply bg-muted overflow-x-auto rounded-md p-3;
+  }
+  .markdown pre code {
+    @apply bg-transparent p-0;
+  }
+  .markdown table {
+    @apply block w-max max-w-full overflow-x-auto border-collapse;
+  }
+  .markdown :is(th, td) {
+    @apply border px-2 py-1 text-left;
+  }
+  .markdown th {
+    @apply bg-muted font-medium;
+  }
+  .markdown hr {
+    @apply my-4;
+  }
+}

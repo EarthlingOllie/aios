@@ -3,12 +3,12 @@ import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, ArrowUp, Brain, Square, Trash2, Wrench } from "lucide-react";
-import Markdown from "react-markdown";
 
 import { ErrorBanner, formatDate, Placeholder, useLoad, type ListContext } from "@/components/crud";
+import { MarkdownView } from "@/components/Markdown";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { api, describeError, type ModelMessage, type Run } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -158,20 +158,22 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
           submit();
         }}
       >
-        <div className="relative">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="Message this agent…"
-            className="max-h-48 resize-none pr-12"
-            rows={2}
-          />
+        <MarkdownEditor
+          id="run-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="Message this agent…"
+          aria-label="Message"
+          className="max-h-48 resize-none pr-12"
+          previewClassName="max-h-48 pr-12"
+          rows={2}
+        >
           {busy ? (
             <Button type="button" size="icon" className="absolute right-2 bottom-2 size-8" onClick={stop}>
               <Square />
@@ -181,14 +183,11 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
               <ArrowUp />
             </Button>
           )}
-        </div>
+        </MarkdownEditor>
       </form>
     </div>
   );
 }
-
-const markdownClass =
-  "prose-sm leading-relaxed [&_code]:text-sm [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5";
 
 function MessageView({ message }: { message: UIMessage }) {
   return (
@@ -200,11 +199,7 @@ function MessageView({ message }: { message: UIMessage }) {
     >
       {message.parts.map((part, i) => {
         if (part.type === "text") {
-          return (
-            <div key={i} className={markdownClass}>
-              <Markdown>{part.text}</Markdown>
-            </div>
-          );
+          return <MarkdownView key={i}>{part.text}</MarkdownView>;
         }
         if (part.type === "reasoning") {
           return (
