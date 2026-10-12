@@ -255,7 +255,7 @@ class DockerBackend:
         detail = stderr.decode(errors="replace").strip()
         if not await self.alive(handle):
             if status and any(m in detail for m in NOT_STARTED):
-                # The watchdog stopped it between the caller's check and the exec (idle or too
+                # The watcher stopped it between the caller's check and the exec (idle or too
                 # old), so the runner never started.
                 raise SandboxNotStarted("The sandbox had stopped before the call.")
             raise SandboxGone("The sandbox has stopped.")
