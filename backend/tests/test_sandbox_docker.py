@@ -49,6 +49,23 @@ def test_missing_docker_is_a_sandbox_error():
     assert asyncio.run(b.alive(SandboxHandle("x", "", ""))) is False
 
 
+def test_a_bad_answer_is_logged_with_its_cause(monkeypatch, caplog):
+    b = backend()
+
+    async def run(*args, **kwargs):
+        return 0, b"not json", b""
+
+    async def alive(handle):
+        return True
+
+    monkeypatch.setattr(b, "_run", run)
+    monkeypatch.setattr(b, "alive", alive)
+    with pytest.raises(SandboxError, match="couldn't run the code"):
+        asyncio.run(b.execute(SandboxHandle("aios-sandbox-x", "", ""), "print(1)", 30))
+    assert "runner failed in aios-sandbox-x (exit 0, 8 bytes of output): " in caplog.text
+    assert "b''" not in caplog.text
+
+
 # --- against a real Docker daemon ----------------------------------------------------------------
 
 

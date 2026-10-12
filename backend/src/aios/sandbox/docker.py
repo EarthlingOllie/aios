@@ -217,7 +217,14 @@ class DockerBackend:
                 pass
         if not await self.alive(handle):
             raise SandboxGone("The sandbox has stopped.")
-        log.warning("runner failed in %s: %s", handle.ref, stderr[:500])
+        detail = stderr.decode(errors="replace").strip()
+        log.warning(
+            "runner failed in %s (exit %d, %d bytes of output): %s",
+            handle.ref,
+            status,
+            len(stdout),
+            detail[:500],
+        )
         raise SandboxError("The sandbox couldn't run the code.")
 
     async def stop(self, handle: SandboxHandle) -> None:
