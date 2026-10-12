@@ -13,6 +13,10 @@ locals {
   # Built from the name rather than read from the function, which needs the role that refers to it.
   sandbox_function_name = "${var.name}-sandbox"
   sandbox_function_arn  = "arn:aws:lambda:${var.region}:${local.account_id}:function:${local.sandbox_function_name}"
+  # How long a session (and its /work) lasts, idle or not: nothing runs between calls, so only its
+  # proxy token, which is valid this long, ends it. The other backends' 2-hour default suits
+  # sandboxes that keep running; here a conversation can go on for a day.
+  sandbox_max_session_seconds = 24 * 60 * 60
   # How sandboxes reach the egress proxy (Cloud Map DNS), and how the API tells them to.
   proxy_address = "${aws_service_discovery_service.proxy.name}.${aws_service_discovery_private_dns_namespace.main.name}:3128"
 }
@@ -157,8 +161,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "sandbox_work" {
   }
 }
 
-# A session lasts at most SANDBOX_MAX_SESSION_SECONDS (2 hours by default), and the API deletes
-# its /work when it replaces it or its run is deleted. This catches whatever that misses.
+# A session lasts at most local.sandbox_max_session_seconds, and the API deletes its /work when it
+# replaces it or its run is deleted. This catches whatever that misses, a day after the longest
+# session could have ended, so it never removes a live session's /work.
 resource "aws_s3_bucket_lifecycle_configuration" "sandbox_work" {
   bucket = aws_s3_bucket.sandbox_work.id
   rule {
@@ -166,7 +171,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "sandbox_work" {
     status = "Enabled"
     filter {}
     expiration {
-      days = 2
+      days = ceil(local.sandbox_max_session_seconds / 86400) + 1
     }
     abort_incomplete_multipart_upload {
       days_after_initiation = 1

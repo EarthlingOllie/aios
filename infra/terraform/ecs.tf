@@ -72,6 +72,8 @@ locals {
       SANDBOX_LAMBDA_FUNCTION = aws_lambda_function.sandbox.function_name
       SANDBOX_WORK_BUCKET     = aws_s3_bucket.sandbox_work.bucket
       SANDBOX_PROXY_ADDRESS   = local.proxy_address
+      # Idling doesn't end a Lambda session, only its proxy token's lifetime (sandbox.tf).
+      SANDBOX_MAX_SESSION_SECONDS = tostring(local.sandbox_max_session_seconds)
     } : { name = k, value = v }
   ]
 

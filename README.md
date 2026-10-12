@@ -168,11 +168,12 @@ image (the sandbox image plus Lambda's runtime client and `aios.sandbox.lambda_h
 - **/work**: kept in S3 between calls (one gzipped tar per session, in a bucket only the API's
   role can use), through a GET and a size-capped POST that the API presigns for each call. A
   warm environment keeps /work locally and only checks it's current (a conditional GET on its
-  MD5); a cold one restores it. A call is saved only if /work changed and is within
-  `SANDBOX_WORK_LIMIT_MB` (512 MB unpacked). A call that fails (out of memory, out of time) or
-  can't be saved leaves /work as it was before that call, rather than losing it. Unlike the
-  other backends, idling doesn't reset /work: only the session's maximum lifetime does
-  (`SANDBOX_MAX_SESSION_SECONDS`, when its proxy token expires).
+  MD5); a cold one, or one whose /work may not match, restores it in full, emptying the rest of
+  /tmp first. A call is saved only if /work changed (judged from its files' stats) and is
+  within `SANDBOX_WORK_LIMIT_MB` (512 MB unpacked). A call that fails (out of memory, out of
+  time) or can't be saved leaves /work as it was last saved, rather than losing it. Unlike the
+  other backends, idling doesn't reset /work: only the session's maximum lifetime does, when its
+  proxy token expires (`SANDBOX_MAX_SESSION_SECONDS`, which Terraform sets to 24 hours here).
 - **Network**: the function's network interfaces are in subnets of their own whose route table
   has no default route. Its security group admits nothing (Lambda delivers invocations itself)
   and only lets it out to the egress proxy (3128) and the S3 gateway endpoint, whose policy only

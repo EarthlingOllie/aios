@@ -28,7 +28,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from aios.config import Settings
-from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.base import ExecResult, SandboxError, SandboxHandle, SessionSpec
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +174,12 @@ class LambdaBackend:
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
         if not await self.alive(handle):
-            raise SandboxGone("The sandbox has reached its time limit.")
+            # Not SandboxGone, which the session manager reports as stopping partway through the
+            # code: this is checked before anything runs.
+            raise SandboxError(
+                "The sandbox reached its time limit before this code ran, so it wasn't run. The"
+                " next call starts a new sandbox, without the files in /work."
+            )
         key, ttl = work_key(handle.ref), timeout + URL_GRACE
 
         def presign() -> tuple[str, dict]:

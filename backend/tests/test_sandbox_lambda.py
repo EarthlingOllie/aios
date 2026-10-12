@@ -9,6 +9,7 @@ import base64
 import email.parser
 import email.policy
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -200,6 +201,8 @@ def scratch(monkeypatch):
     with tempfile.TemporaryDirectory() as parent:
         os.chmod(parent, 0o755)
         monkeypatch.setattr(tempfile, "tempdir", parent)
+        # The handler empties its scratch directory: never the real /tmp.
+        monkeypatch.setattr(lambda_handler, "_scratch", lambda: Path(parent))
         monkeypatch.setattr(runner, "WORKDIR", str(Path(parent) / "work"))
         monkeypatch.setattr(lambda_handler, "_state", lambda_handler._State())
         yield Path(parent)
@@ -369,6 +372,108 @@ async def test_code_that_removes_or_replaces_work_leaves_an_empty_one(
     assert result.stdout == "[]\n"
 
 
+@pytest.mark.anyio
+async def test_a_full_restore_clears_the_rest_of_tmp(backend, s3):
+    handle = await backend.start(SPEC)
+    await run(backend, handle, "open('a', 'w').write('1')")
+
+    # Junk outside /work (`..` is /tmp in the image), and a save that fails: the next call
+    # restores /work in full, which first empties /tmp, so junk filling it can't wedge the session.
+    s3.refuse_posts = True
+    result = await run(backend, handle, "open('../junk', 'w').write('x'); open('b', 'w')")
+    assert "may not have been kept" in result.stderr
+    s3.refuse_posts = False
+
+    result = await run(
+        backend, handle, "import os; print(sorted(os.listdir()), os.path.exists('../junk'))"
+    )
+    assert result.stdout == "['a'] False\n"
+
+
+@pytest.mark.anyio
+async def test_tmp_outside_work_lasts_while_the_environment_is_in_step(backend, s3):
+    handle = await backend.start(SPEC)
+    # Nothing saved yet, and /work untouched: the next call's 404 changes nothing.
+    await run(backend, handle, "open('../scratch', 'w').write('1')")
+    result = await run(backend, handle, "print(open('../scratch').read())")
+    assert result.stdout == "1\n"
+    assert s3.methods(204) == []
+
+
+@pytest.mark.anyio
+async def test_any_save_failure_leaves_work_as_last_saved(backend, monkeypatch, s3):
+    handle = await backend.start(SPEC)
+    await run(backend, handle, "open('a', 'w').write('1')")
+
+    def broken(*args):
+        raise http.client.IncompleteRead(b"")
+
+    post = lambda_handler._post
+    monkeypatch.setattr(lambda_handler, "_post", broken)
+    result = await run(backend, handle, "open('a', 'w').write('2')")
+    assert "/work couldn't be saved (IncompleteRead)" in result.stderr
+    # Only this patch: undo() would also undo the fixture that keeps the handler off the real /tmp.
+    monkeypatch.setattr(lambda_handler, "_post", post)
+
+    # The same warm environment doesn't trust its /work: it restores the saved one in full.
+    result = await run(backend, handle, "print(open('a').read())")
+    assert result.stdout == "1\n"
+    assert s3.methods(200) == ["GET"]
+
+
+@pytest.mark.anyio
+async def test_any_restore_failure_means_the_code_didnt_run(backend, lam, monkeypatch):
+    handle = await backend.start(SPEC)
+    await run(backend, handle, "open('a', 'w').write('1')")
+    lam.cold()
+
+    def broken(*args):
+        raise http.client.IncompleteRead(b"")
+
+    unpack = lambda_handler._unpack
+    monkeypatch.setattr(lambda_handler, "_unpack", broken)
+    with pytest.raises(SandboxError) as caught:
+        await run(backend, handle, "open('ran', 'w')")
+    assert str(caught.value) == "Couldn't restore /work (IncompleteRead), so the code wasn't run."
+    monkeypatch.setattr(lambda_handler, "_unpack", unpack)
+
+    result = await run(backend, handle, "import os; print(sorted(os.listdir()))")
+    assert result.stdout == "['a']\n"
+
+
+@pytest.mark.anyio
+async def test_an_unchanged_work_isnt_packed_or_uploaded_again(backend, lam, monkeypatch, s3):
+    handle = await backend.start(SPEC)
+    # A mode the restore changes (it drops group and other write).
+    await run(backend, handle, "import os; open('a', 'w').write('1'); os.chmod('a', 0o666)")
+    lam.cold()
+    await run(backend, handle, "print(1)")
+    assert s3.methods(204) == ["POST"]
+
+    packed = []
+    original = lambda_handler._pack
+    monkeypatch.setattr(lambda_handler, "_pack", lambda *a: packed.append(a) or original(*a))
+    await run(backend, handle, "print(open('a').read())")
+    await run(backend, handle, "import os; os.utime('a')")  # Any change is noticed.
+    assert len(packed) == 1
+    assert s3.methods(204) == ["POST", "POST"]
+
+
+@pytest.mark.anyio
+async def test_a_work_over_a_lowered_limit_can_still_be_restored(s3, lam, clock):
+    backend = make_backend(s3, lam, clock)
+    handle = await backend.start(SPEC)
+    await run(backend, handle, "open('big', 'wb').write(b'x' * 2_000_000); open('small', 'w')")
+    lam.cold()
+
+    lowered = make_backend(s3, lam, clock, sandbox_work_limit_mb=1)
+    result = await run(lowered, handle, "import os; print(sorted(os.listdir())); os.remove('big')")
+    assert (result.stdout, result.stderr) == ("['big', 'small']\n", "")
+    lam.cold()
+    result = await run(lowered, handle, "import os; print(sorted(os.listdir()))")
+    assert result.stdout == "['small']\n"
+
+
 def _archive(entries: list[tuple[tarfile.TarInfo, bytes]]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -439,8 +544,10 @@ async def test_a_session_ends_at_its_maximum_lifetime(backend, clock, s3):
 
     clock.now += 1
     assert not await backend.alive(handle)
-    with pytest.raises(SandboxGone):
+    # Checked before anything runs, so the model isn't told the code may have partly run.
+    with pytest.raises(SandboxError, match="before this code ran, so it wasn't run") as caught:
         await run(backend, handle, "print(3)")
+    assert not isinstance(caught.value, SandboxGone)
 
     await backend.stop(handle)
     assert work_key(handle.ref) not in s3.objects
