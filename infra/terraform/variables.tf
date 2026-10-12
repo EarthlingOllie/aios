@@ -50,12 +50,6 @@ variable "run_services" {
   default     = true
 }
 
-variable "sandbox_env" {
-  description = "false = leave the run_python sandbox settings (SANDBOX_BACKEND=lambda and the rest) out of the api/worker/migrate environment. infra/deploy.sh uses it on the preparation apply while the services still run a release from before the Lambda backend, whose get_backend rejects SANDBOX_BACKEND=lambda."
-  type        = bool
-  default     = true
-}
-
 variable "llm_model" {
   type    = string
   default = "anthropic:claude-sonnet-5-5"
