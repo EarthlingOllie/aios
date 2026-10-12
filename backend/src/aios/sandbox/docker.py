@@ -25,7 +25,14 @@ import secrets
 from anyio import CancelScope
 
 from aios.config import Settings
-from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.base import (
+    ExecResult,
+    SandboxError,
+    SandboxGone,
+    SandboxHandle,
+    SandboxNotStarted,
+    SessionSpec,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +52,8 @@ MAX_STDERR = 64 * 1024
 # code's memory plus these: a full /work doesn't shrink the RAM the code gets.
 WORK_MB = 512
 TMP_MB = 64
+# What `docker exec` says when the container had gone (removed, or stopped) before the exec.
+NOT_STARTED = ("No such container", "is not running")
 
 # The container's main process. A call is a `docker exec` of the runner, so the sandbox is busy
 # while a runner process exists, and idle from when the last one ended. A call never outlasts
@@ -270,9 +279,13 @@ class DockerBackend:
                 return ExecResult.model_validate_json(stdout)
             except ValueError:
                 pass
-        if not await self.alive(handle):
-            raise SandboxGone("The sandbox has stopped.")
         detail = stderr.decode(errors="replace").strip()
+        if not await self.alive(handle):
+            if status and any(m in detail for m in NOT_STARTED):
+                # The watchdog stopped it between the caller's check and the exec (idle or too
+                # old), so the runner never started.
+                raise SandboxNotStarted("The sandbox had stopped before the call.")
+            raise SandboxGone("The sandbox has stopped.")
         log.warning(
             "runner failed in %s (exit %d, %d bytes of output): %s",
             handle.ref,

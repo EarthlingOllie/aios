@@ -13,7 +13,15 @@ import sys
 import pytest
 
 from aios.config import Settings
-from aios.sandbox.base import SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox import sessions
+from aios.sandbox.base import (
+    ExecResult,
+    SandboxError,
+    SandboxGone,
+    SandboxHandle,
+    SandboxNotStarted,
+    SessionSpec,
+)
 from aios.sandbox.docker import MAX_ANSWER, DockerBackend
 
 IMAGE = "aios-sandbox:local"
@@ -151,6 +159,78 @@ def test_docker_cli_gets_only_what_it_needs(tmp_path, monkeypatch):
         assert env["DOCKER_HOST"] == "unix:///run/docker.sock"
     assert calls[0][1]["SANDBOX_PROXY_URL"] == "http://sandbox:token@host:3128"
     assert "SANDBOX_PROXY_URL" not in calls[1][1]
+
+
+def fake_docker(b: DockerBackend, exec_stderr: bytes) -> None:
+    """Makes `b`'s docker commands report a stopped container, and `docker exec` fail."""
+
+    async def run(*args, **kwargs):
+        if args[0] == "inspect":
+            return 0, b"false\n", b""
+        return 1, b"", exec_stderr
+
+    b._run = run
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"Error response from daemon: No such container: aios-sandbox-x\n",
+        b"Error response from daemon: container 0123abcd is not running\n",
+    ],
+)
+def test_exec_into_a_container_that_had_stopped_has_not_started(stderr):
+    b = backend()
+    fake_docker(b, stderr)
+    with pytest.raises(SandboxNotStarted):
+        asyncio.run(b.execute(SandboxHandle("aios-sandbox-x", "", ""), "print(1)", 30))
+
+
+def test_exec_that_fails_otherwise_may_have_partly_run():
+    b = backend()
+    fake_docker(b, b"Killed\n")
+    with pytest.raises(SandboxGone) as raised:
+        asyncio.run(b.execute(SandboxHandle("aios-sandbox-x", "", ""), "print(1)", 30))
+    assert not isinstance(raised.value, SandboxNotStarted)
+
+
+def test_a_call_into_a_sandbox_that_stopped_after_the_check_runs_in_a_new_one(monkeypatch):
+    # The run's sandbox looks alive, then has gone by the time the call reaches it.
+    rows = {1: (SandboxHandle("sandbox-1", "", ""), False)}
+    calls = []
+
+    class Backend:
+        async def start(self, spec):
+            return SandboxHandle("sandbox-2", "", "")
+
+        async def alive(self, handle):
+            return handle.ref != "sandbox-1" or not calls
+
+        async def execute(self, handle, code, timeout):
+            calls.append(handle.ref)
+            if handle.ref == "sandbox-1":
+                raise SandboxNotStarted("stopped")
+            return ExecResult(
+                exit_code=0, stdout="", stderr="", timed_out=False, truncated=False, duration_ms=1
+            )
+
+        async def stop(self, handle):
+            pass
+
+    def save(run_id, handle, *, replaced, previous):
+        rows[run_id] = (handle, replaced)
+        return True
+
+    monkeypatch.setattr(sessions, "get_backend", lambda: Backend())
+    monkeypatch.setattr(sessions, "_load", lambda run_id: rows.get(run_id, (None, False)))
+    monkeypatch.setattr(sessions, "_save", save)
+    monkeypatch.setattr(sessions, "_touch", lambda run_id: None)
+    outcome = asyncio.run(
+        sessions.SessionManager().run(run_id=1, code="print(1)", timeout=30, allowed_domains=[])
+    )
+    assert calls == ["sandbox-1", "sandbox-2"]
+    assert outcome.restarted
+    assert rows[1][0].ref == "sandbox-2"
 
 
 # --- against a real Docker daemon ----------------------------------------------------------------
