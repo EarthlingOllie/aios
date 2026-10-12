@@ -210,6 +210,12 @@ class DockerBackend:
             log.warning("runner in %s overran its time limit; removing it", handle.ref)
             await self.stop(handle)
             raise SandboxGone("The sandbox didn't finish the call in time.") from None
+        except BaseException:
+            # E.g. the agent run was stopped mid-call. Likewise, only the CLI is killed, so the
+            # sandbox goes (shielded, so a cancelled call still removes it).
+            with CancelScope(shield=True):
+                await self.stop(handle)
+            raise
         if status == 0 and len(stdout) <= MAX_ANSWER:
             try:
                 return ExecResult.model_validate_json(stdout)

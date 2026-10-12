@@ -66,6 +66,30 @@ def test_a_bad_answer_is_logged_with_its_cause(monkeypatch, caplog):
     assert "b''" not in caplog.text
 
 
+def test_a_cancelled_call_removes_the_sandbox(monkeypatch):
+    # Cancelling only kills the `docker exec` CLI, so the runner would go on in the sandbox.
+    b = backend()
+    calls = []
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        if args[0] == "exec":
+            await asyncio.Event().wait()
+        return 0, b"", b""
+
+    monkeypatch.setattr(b, "_run", fake_run)
+
+    async def scenario():
+        call = asyncio.create_task(b.execute(SandboxHandle("x", "", ""), "print(1)", 30))
+        await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+    asyncio.run(scenario())
+    assert calls == ["exec", "rm"]
+
+
 # --- against a real Docker daemon ----------------------------------------------------------------
 
 
