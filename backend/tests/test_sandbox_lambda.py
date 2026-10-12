@@ -506,6 +506,9 @@ def test_needs_a_function_and_a_bucket():
 
 def test_real_clients_never_retry_an_invocation(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-2")
+    # Presigning needs credentials, though nothing is sent.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     backend = LambdaBackend(settings())
     assert backend.lam.meta.config.retries["total_max_attempts"] == 1
     assert backend.lam.meta.config.read_timeout >= 15 * 60
