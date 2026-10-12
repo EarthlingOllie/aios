@@ -1,0 +1,6 @@
+# The Lambda runtime interface client, for the `sandbox-lambda` target in ../Dockerfile only (it
+# lets the sandbox image take Lambda invocations; agent code doesn't need it). Compile with:
+#   uv pip compile lambda-requirements.in --python-version 3.13 \
+#     --python-platform x86_64-manylinux_2_28 --generate-hashes \
+#     --exclude-newer "$(date -u -d '7 days ago' +%F)" -o lambda-requirements.txt
+awslambdaric

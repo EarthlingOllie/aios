@@ -16,12 +16,13 @@ ability to write and run Python, with:
 - egress only to the domains listed in the tool's settings
 - CPU, memory, time and output limits
 
-Two implementations are built so they can be compared, each on its own branch:
+Three implementations are built so they can be compared, each on its own branch:
 
 | Branch | Isolation | Session start |
 | --- | --- | --- |
 | `claude/run-python-fargate` | One Fargate task (Firecracker microVM) per agent run | Tens of seconds, hidden by pre-warming when a turn starts |
 | `claude/run-python-gvisor` | One gVisor (`runsc`) container per agent run, on EC2 hosts we run | Under a second |
+| `claude/blissful-rubin-6pkuag` | One Lambda invocation per call, each session its own tenant; `/work` kept in S3 | Nothing to start; a cold call takes a few seconds |
 
 Both share everything above the backend: the tool, the session model, the in-sandbox runner,
 the sandbox image and the egress proxy. Only how a sandbox is started, reached and stopped differs.
@@ -205,6 +206,44 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
   - gVisor adds overhead to I/O-heavy code
   - DNS isn't filtered (same as Fargate)
 
+## Branch 3: Lambda, one invocation per call
+
+- `LambdaBackend` (`aios/sandbox/aws_lambda.py`):
+  - `start`: makes a session id and expiry (now + `SANDBOX_MAX_SESSION_SECONDS`), and invokes the
+    function once with `{"ping": true}` to warm an environment for it. The handle is the id, the
+    expiry, and the proxy URL as the secret (so `sandbox_sessions.secret` becomes `text`,
+    migration 0005).
+  - `alive`: whether the session is before its expiry. Nothing runs between calls, so idling
+    doesn't end it.
+  - `execute`: presigns a GET and a size-capped POST for the session's
+    `sessions/<id>/work.tar.gz`, then invokes the function synchronously with the code, the proxy
+    URL and those URLs, with `TenantId` set to the session. Never retried, so code can't run
+    twice. A function error (out of memory or time) is a `SandboxError`, not `SandboxGone`:
+    `/work` is as it was before the call.
+  - `stop`: deletes the session's `/work`.
+- The handler (`aios/sandbox/lambda_handler.py`, stdlib only, next to the runner in the
+  `sandbox-lambda` image): restores `/work` unless this environment already has its latest copy
+  (a conditional GET on its MD5), runs the code with the runner, and saves `/work` if it changed
+  and is within the limit. `/work` is a link to `/tmp/work`, Lambda's only writable path. An
+  environment that last served another session empties `/tmp` first.
+- Function: the `sandbox-lambda` image, tenant isolation (`PER_TENANT`), in subnets with no
+  default route, 2 GB memory, 2 GB `/tmp`, a 420 s timeout.
+- Network: a security group with no ingress, and egress to the egress proxy and the S3 gateway
+  endpoint only. The endpoint allows only sessions' `/work`, and the bucket refuses access from
+  anywhere else. No interface endpoints: Lambda pulls the image and ships logs itself.
+- IAM: the function's role has the VPC-access managed policy, which Lambda uses itself, and
+  denies everything to calls carrying `lambda:SourceFunctionArn` (calls from the code). The
+  API's task role can invoke the function and use the bucket's `sessions/` objects.
+- Local development: none; the tests run the handler and runner for real against a fake Lambda
+  and a fake S3.
+- Known limits:
+  - each call restores and saves `/work`, which costs time on a cold environment or a big change
+  - cold starts per tenant, after a few idle minutes
+  - tenant environments are capped at 2,500 per 1,000 concurrency
+  - DNS isn't filtered (same as Fargate)
+  - the code runs as the handler's user, so it can read its own call's presigned URLs and proxy
+    token, or answer the local runtime API itself; tenant isolation keeps that to its session
+
 ## Testing
 
 - Shared, runs in CI:
@@ -218,8 +257,10 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
 - Fargate: the backend against a stubbed ECS client and a mocked runner HTTP API.
 - gVisor: the broker against a fake Docker CLI (checking the exact `docker run` flags), and the
   API's broker client against the broker app in-process.
-- Not covered by CI: real Fargate, real `runsc` and Terraform applies (`terraform validate`
-  only).
+- Lambda: the backend with the real handler and runner, against a fake Lambda (one simulated
+  environment per tenant) and a fake S3 server taking boto3's presigned GETs and POSTs.
+- Not covered by CI: real Fargate, real `runsc`, real Lambda and Terraform applies
+  (`terraform validate` only).
 
 ## Out of scope (for now)
 
@@ -235,3 +276,4 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
 | Date | Decision |
 | --- | --- |
 | 2026-10-11 | Pivot from the data-ingestion plan to a `run_python` tool, built twice (Fargate per run; EC2 + gVisor) to compare |
+| 2026-10-12 | Add a third candidate, Lambda: one invocation per call with tenant isolation per session, `/work` kept in S3 through presigned URLs |

@@ -21,6 +21,10 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 echo "==> Building and pushing images ($TAG)"
 docker buildx build --platform linux/amd64 --target api -t "$(repo api):$TAG" --push "$ROOT/backend"
 docker buildx build --platform linux/amd64 --target worker -t "$(repo worker):$TAG" --push "$ROOT/backend"
+# The sandbox Lambda function's image. Lambda takes a single-platform image manifest only, not the
+# index buildx makes when it adds provenance attestations.
+docker buildx build --platform linux/amd64 --target sandbox-lambda --provenance=false \
+  -t "$(repo sandbox):$TAG" --push "$ROOT/backend"
 docker buildx build --platform linux/amd64 -t "$(repo web):$TAG" --push "$ROOT/frontend"
 
 # Full apply (network, NAT, IAM, RDS, secrets, ...) so everything the migration needs
@@ -44,7 +48,7 @@ if resources.get("aws_ecs_service.this[\"api\"]", {}).get("desired_count"):
     print(json.loads(api["container_definitions"])[0]["image"].rsplit(":", 1)[1])
 ' || true)"
 if [[ -n "$CURRENT_TAG" ]]; then
-  echo "==> Applying infrastructure (services stay on $CURRENT_TAG; migration uses $TAG)"
+  echo "==> Applying infrastructure (services stay on $CURRENT_TAG; migration, sandbox function and egress proxy use $TAG)"
   PREP_VARS=(-var "image_tag=$CURRENT_TAG")
 else
   echo "==> First deploy: applying infrastructure with services scaled to zero"

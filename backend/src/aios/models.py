@@ -285,9 +285,10 @@ class SandboxSession(Base):
     )
     # The backend's id for the sandbox (a task ARN, a broker session id).
     ref: Mapped[str] = mapped_column(String(512))
-    # Where exec calls go, and the bearer token they need.
+    # Where exec calls go, and the bearer token they need (on Lambda, the session's expiry and its
+    # proxy URL, whose token grows with the allowed domains).
     endpoint: Mapped[str] = mapped_column(String(512))
-    secret: Mapped[str] = mapped_column(String(255))
+    secret: Mapped[str] = mapped_column(Text)
     # This sandbox replaced one that had gone, and no call has run since: the next call's result
     # tells the model that /work was reset.
     replaced: Mapped[bool] = mapped_column(server_default=text("false"))

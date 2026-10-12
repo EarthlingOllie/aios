@@ -69,8 +69,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest task
-  sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
-  Dockerfile        targets: api, worker, sandbox
+  sandbox/          the sandbox image's pinned libraries (requirements.in/.txt), and the Lambda
+                    runtime client (lambda-requirements.in/.txt)
+  Dockerfile        targets: api, worker, sandbox, sandbox-lambda
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
@@ -153,6 +154,57 @@ in one region (`var.region`). RDS and Valkey sit in private subnets and only acc
 from the app security group. Without `certificate_arn` the site is served over plain HTTP on
 the ALB hostname and session cookies aren't marked `Secure`. Set a domain and certificate for
 anything real.
+
+### Sandboxes on Lambda (`run_python`)
+
+On AWS, `SANDBOX_BACKEND=lambda` (`aios.sandbox.aws_lambda`, `infra/terraform/sandbox.tf`): each
+`run_python` call is one invocation of the sandbox function, which runs the `sandbox-lambda`
+image (the sandbox image plus Lambda's runtime client and `aios.sandbox.lambda_handler`).
+
+- **Sessions**: a run's sandbox session is an id and an expiry, with nothing running between
+  calls, so an idle run costs nothing. Each session is invoked as its own Lambda tenant (tenant
+  isolation mode), so an execution environment, its own Firecracker microVM, only ever serves
+  one session. Starting a session invokes the function once to warm an environment for it.
+- **/work**: kept in S3 between calls (one gzipped tar per session, in a bucket only the API's
+  role can use), through a GET and a size-capped POST that the API presigns for each call. A
+  warm environment keeps /work locally and only checks it's current (a conditional GET on its
+  MD5); a cold one, or one whose /work may not match, restores it in full, emptying the rest of
+  /tmp first. A call is saved only if /work changed (judged from its files' stats) and is
+  within `SANDBOX_WORK_LIMIT_MB` (512 MB unpacked). A call that fails (out of memory, out of
+  time) or can't be saved leaves /work as it was last saved, rather than losing it. Unlike the
+  other backends, idling doesn't reset /work: only the session's maximum lifetime does, when its
+  proxy token expires (`SANDBOX_MAX_SESSION_SECONDS`, which Terraform sets to 24 hours here).
+- **Network**: the function's network interfaces are in subnets of their own whose route table
+  has no default route. Its security group admits nothing (Lambda delivers invocations itself)
+  and only lets it out to the egress proxy (3128) and the S3 gateway endpoint, whose policy only
+  allows sessions' /work. The bucket refuses reads and writes that don't come through that
+  endpoint. Lambda pulls the image and ships logs itself, so no interface endpoints are needed.
+  RDS and Valkey don't admit sandboxes. The proxy is an ECS service (`egress-proxy`, API image)
+  found at `proxy.<name>.internal` through Cloud Map.
+- **IAM**: a Lambda function always has a role, and its credentials are in the environment,
+  where the code can read them. Lambda uses the role itself to manage the function's network
+  interfaces and ship its logs; everything else is denied to calls from inside the function
+  (`lambda:SourceFunctionArn`), so the credentials are of no use to the code. The API's task role
+  may invoke only the sandbox function and use only the bucket's `sessions/` objects.
+- **Locally** there's no sandbox: leave `SANDBOX_BACKEND` unset and the tool tells the model it
+  isn't available. The tests run the handler and runner for real against a fake Lambda and S3.
+
+Known limits:
+
+- Each call restores and saves /work, which adds time that grows with /work's size when the
+  call lands on a cold environment, and with how much changed when it lands on a warm one.
+- Environments start cold after a few idle minutes, and per tenant, so most sessions' first call
+  and calls after a pause pay Lambda's cold start (a few seconds for this image, unmeasured).
+- Lambda limits how many tenant environments exist at once (2,500 per 1,000 of the function's
+  concurrency) and how many calls run at once (the account's concurrency, 1,000 by default;
+  `sandbox_function.reserved_concurrency` can cap it).
+- DNS lookups through the VPC resolver aren't filtered, so sandbox code can leak data in the
+  names it looks up. DNS Firewall rule groups apply to a whole VPC, which the API, worker and
+  proxy share, so closing this means a VPC of the sandboxes' own.
+- The code runs as the same user as the handler, so it can interfere with it: read the call's
+  presigned URLs and proxy token, or answer Lambda's local runtime API itself. Tenant isolation
+  is what keeps that to its own session (its own /work and allowed domains): it can only be set
+  when the function is created, and the API always invokes with the session as the tenant.
 
 ## Notes and trade-offs
 

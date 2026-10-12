@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Targets: `api` (FastAPI/Uvicorn, also used for migrations and the egress proxy), `worker`
-# (Celery + Docling) and `sandbox` (runs agent-written Python, see aios.sandbox).
+# (Celery + Docling), `sandbox` (runs agent-written Python, see aios.sandbox) and `sandbox-lambda`
+# (the sandbox as a Lambda function).
 
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 
@@ -70,3 +71,24 @@ RUN useradd --uid 1001 --no-create-home --home-dir /work sandbox \
 COPY src/aios/sandbox/runner.py /opt/sandbox/runner.py
 WORKDIR /work
 CMD ["python", "/opt/sandbox/runner.py", "serve"]
+
+# ---------- sandbox-lambda ----------
+# The sandbox as a Lambda function (SANDBOX_BACKEND=lambda, see aios.sandbox.aws_lambda): the
+# sandbox image plus Lambda's runtime interface client and the handler, which runs each
+# invocation's code with the same runner. Lambda's filesystem is read-only apart from /tmp, so
+# /work is a link to /tmp/work, and the handler keeps it in S3 between calls. Lambda runs the
+# image as a user of its own, never root.
+FROM sandbox AS sandbox-lambda
+COPY --from=uv /uv /bin/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=sandbox/lambda-requirements.txt,target=/tmp/lambda-requirements.txt \
+    uv pip install --system --require-hashes -r /tmp/lambda-requirements.txt \
+    && rm /bin/uv \
+    && rm -rf /work && ln -s /tmp/work /work
+COPY src/aios/sandbox/lambda_handler.py /opt/sandbox/lambda_handler.py
+ENV SANDBOX_WORKDIR=/tmp/work
+# The handler module is found from here, next to runner.py.
+WORKDIR /opt/sandbox
+USER sandbox
+ENTRYPOINT ["python", "-m", "awslambdaric"]
+CMD ["lambda_handler.handler"]

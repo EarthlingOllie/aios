@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "web", "migrate"])
+  for_each          = toset(["api", "worker", "web", "migrate", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -47,7 +47,10 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# Runtime role for the containers themselves (no AWS API access needed yet).
+# Runtime role for the api, worker, web and migrate containers. Its only permissions are for
+# running sandboxes (sandbox.tf): invoking the sandbox function and keeping each session's /work
+# in S3, which the API does for the run_python tool. The sandbox function and the egress proxy
+# don't get it.
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -63,11 +66,19 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # run_python: one Lambda invocation per call, /work kept in S3 (sandbox.tf).
+      AWS_REGION              = var.region
+      SANDBOX_BACKEND         = "lambda"
+      SANDBOX_LAMBDA_FUNCTION = aws_lambda_function.sandbox.function_name
+      SANDBOX_WORK_BUCKET     = aws_s3_bucket.sandbox_work.bucket
+      SANDBOX_PROXY_ADDRESS   = local.proxy_address
+      # Idling doesn't end a Lambda session, only its proxy token's lifetime (sandbox.tf).
+      SANDBOX_MAX_SESSION_SECONDS = tostring(local.sandbox_max_session_seconds)
     } : { name = k, value = v }
   ]
 
   backend_secrets = concat(
-    [for k in ["DATABASE_URL", "SESSION_SECRET"] :
+    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
     [for k in ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
