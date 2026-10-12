@@ -75,6 +75,18 @@ while True:
 """
 
 
+def cli_env() -> dict[str, str]:
+    """The environment the docker CLI runs with: only what it needs to find itself and the
+    daemon, not the API's secrets, which its plugins and credential helpers would see too.
+    XDG_RUNTIME_DIR holds rootless Docker's socket. No HTTP(S)_PROXY: the CLI talks to a local
+    daemon, and the sandbox never pulls (`--pull=never`)."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in ("PATH", "HOME", "XDG_RUNTIME_DIR") or key.startswith("DOCKER_")
+    }
+
+
 class DockerBackend:
     def __init__(self, settings: Settings, *, docker: str = "docker") -> None:
         self.docker = docker
@@ -89,7 +101,8 @@ class DockerBackend:
         timeout: float = COMMAND_TIMEOUT,
         env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
-        """Runs `docker` with argv only (never a shell). Raises TimeoutError past `timeout`.
+        """Runs `docker` with argv only (never a shell), in `cli_env()` plus `env`. Raises
+        TimeoutError past `timeout`.
 
         Output past MAX_ANSWER (stdout) or MAX_STDERR kills the CLI and comes back cut off at
         one byte over the limit.
@@ -101,7 +114,7 @@ class DockerBackend:
                 stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env={**cli_env(), **(env or {})},
             )
         except OSError as exc:
             raise SandboxError(f"Docker isn't available here ({type(exc).__name__}).") from exc
@@ -196,7 +209,7 @@ class DockerBackend:
                 code, _, stderr = await self._run(
                     *self.run_args(name, spec),
                     timeout=self.start_timeout,
-                    env={**os.environ, "SANDBOX_PROXY_URL": spec.proxy_url},
+                    env={"SANDBOX_PROXY_URL": spec.proxy_url},
                 )
             except TimeoutError:
                 raise SandboxError("The sandbox took too long to start.") from None

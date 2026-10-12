@@ -5,6 +5,7 @@ The tests that start containers need a Docker daemon and the sandbox image (`doc
 """
 
 import asyncio
+import json
 import shutil
 import subprocess
 import sys
@@ -124,6 +125,32 @@ def test_output_past_the_limit_is_cut_off(tmp_path):
     assert stdout.startswith(b"payloadx")
     with pytest.raises(SandboxError, match="couldn't run the code"):
         asyncio.run(b.execute(SandboxHandle("x", "", ""), "print(1)", 30))
+
+
+def test_docker_cli_gets_only_what_it_needs(tmp_path, monkeypatch):
+    # A stand-in `docker` that logs its command and environment, and fails.
+    log = tmp_path / "calls.jsonl"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        f"with open({str(log)!r}, 'a') as f:\n"
+        "    f.write(json.dumps([sys.argv[1], dict(os.environ)]) + '\\n')\n"
+        "sys.exit(1)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("SANDBOX_PROXY_SECRET", "api-secret")
+    monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker.sock")
+    b = DockerBackend(Settings(), docker=str(fake))
+    with pytest.raises(SandboxError, match="Couldn't start"):
+        asyncio.run(b.start(spec(proxy_url="http://sandbox:token@host:3128")))
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    # `docker run`, then the cleanup's `docker rm`.
+    assert [command for command, _ in calls] == ["run", "rm"]
+    for _, env in calls:
+        assert "SANDBOX_PROXY_SECRET" not in env
+        assert env["DOCKER_HOST"] == "unix:///run/docker.sock"
+    assert calls[0][1]["SANDBOX_PROXY_URL"] == "http://sandbox:token@host:3128"
+    assert "SANDBOX_PROXY_URL" not in calls[1][1]
 
 
 # --- against a real Docker daemon ----------------------------------------------------------------
