@@ -31,7 +31,9 @@ docker buildx build --platform linux/amd64 -t "$(repo web):$TAG" --push "$ROOT/f
 # exists, but with the services still pinned to the release that is running now:
 # only the migrate task gets the new image. On a fresh stack nothing is running yet,
 # so the services are created (or kept) at zero tasks until the schema exists.
-CURRENT_TAG="$(tf show -json 2>/dev/null | python3 -c '
+# The services' sandbox settings stay as they are too: a release from before the Lambda backend
+# rejects SANDBOX_BACKEND=lambda, so the settings only arrive together with the new image.
+read -r CURRENT_TAG CURRENT_SANDBOX_ENV <<<"$(tf show -json 2>/dev/null | python3 -c '
 import json, sys
 try:
     state = json.load(sys.stdin)
@@ -44,12 +46,13 @@ resources = {
 # Only a stack whose services are actually running counts: after a first deploy that failed
 # at the migration they exist at zero tasks and must stay there until a migration succeeds.
 if resources.get("aws_ecs_service.this[\"api\"]", {}).get("desired_count"):
-    api = resources["aws_ecs_task_definition.api"]
-    print(json.loads(api["container_definitions"])[0]["image"].rsplit(":", 1)[1])
+    api = json.loads(resources["aws_ecs_task_definition.api"]["container_definitions"])[0]
+    sandbox_env = any(e["name"] == "SANDBOX_BACKEND" for e in api.get("environment") or [])
+    print(api["image"].rsplit(":", 1)[1], str(sandbox_env).lower())
 ' || true)"
 if [[ -n "$CURRENT_TAG" ]]; then
   echo "==> Applying infrastructure (services stay on $CURRENT_TAG; migration, sandbox function and egress proxy use $TAG)"
-  PREP_VARS=(-var "image_tag=$CURRENT_TAG")
+  PREP_VARS=(-var "image_tag=$CURRENT_TAG" -var "sandbox_env=$CURRENT_SANDBOX_ENV")
 else
   echo "==> First deploy: applying infrastructure with services scaled to zero"
   PREP_VARS=(-var "image_tag=$TAG" -var "run_services=false")
