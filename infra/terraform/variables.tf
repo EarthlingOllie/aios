@@ -33,7 +33,7 @@ variable "certificate_arn" {
 }
 
 variable "image_tag" {
-  description = "Tag of the api/worker/web images in ECR to run."
+  description = "Tag of the api/worker/web/sandbox images in ECR to run."
   type        = string
   default     = "latest"
 }
@@ -108,4 +108,28 @@ variable "worker" {
   description = "Docling is CPU/RAM hungry; give workers room."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
+}
+
+# --- run_python sandboxes (sandbox.tf) ---
+variable "sandbox_function" {
+  description = <<-EOT
+    The sandbox Lambda function, invoked once per run_python call. memory (MB) also sets its CPU
+    share (1769 MB = one vCPU). timeout (s) must cover the tool's longest time limit (300) plus
+    restoring and saving /work. ephemeral_storage (MB) is /tmp, which holds /work (up to the API's
+    SANDBOX_WORK_LIMIT_MB, 512 by default), its archive and the code's own temporary files.
+    reserved_concurrency caps how many calls run at once (-1: no cap, sharing the account's pool).
+  EOT
+  type = object({
+    memory               = optional(number, 2048)
+    timeout              = optional(number, 420)
+    ephemeral_storage    = optional(number, 2048)
+    reserved_concurrency = optional(number, -1)
+  })
+  default = {}
+}
+
+variable "egress_proxy" {
+  description = "The sandboxes' only way out. Two tasks, so one can fail or be replaced."
+  type        = object({ cpu = number, memory = number, count = number })
+  default     = { cpu = 256, memory = 512, count = 2 }
 }

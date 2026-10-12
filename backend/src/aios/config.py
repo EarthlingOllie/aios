@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     sandbox_max_session_seconds: int = 2 * 60 * 60
     # How long to wait for a new sandbox to take calls.
     sandbox_start_timeout: int = 180
+    # SANDBOX_BACKEND=lambda (aios.sandbox.aws_lambda): the sandbox function, and the S3 bucket
+    # that keeps each session's /work between calls.
+    sandbox_lambda_function: str = ""
+    sandbox_work_bucket: str = ""
+    # The most a session's /work may hold, unpacked. A call that leaves more isn't saved.
+    sandbox_work_limit_mb: int = 512
 
     @property
     def oauth_redirect_uri(self) -> str:

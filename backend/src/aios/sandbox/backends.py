@@ -10,4 +10,8 @@ def get_backend() -> SandboxBackend | None:
     name = get_settings().sandbox_backend
     if not name:
         return None
+    if name == "lambda":
+        from aios.sandbox.aws_lambda import LambdaBackend
+
+        return LambdaBackend(get_settings())
     raise SandboxError(f"Unknown sandbox backend: {name}")
