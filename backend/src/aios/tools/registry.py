@@ -2,8 +2,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ValidationError
-from pydantic_ai.capabilities import AbstractCapability
+
+# What a tool gives a run: LangChain tools the agent calls, or provider-run (server) tools, given
+# to the model as their provider's tool definition (see `aios.runner.server_tools`).
+AgentTool = BaseTool | dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -16,9 +20,8 @@ class ToolSpec[C: BaseModel]:
     # Per-agent settings. Every field needs a default: the defaults are the tool's settings when
     # it's first attached, and its JSON schema drives the settings form.
     config_model: type[C]
-    # Builds what the run is given. Function tools can be wrapped as
-    # `pydantic_ai.capabilities.Toolset(FunctionToolset([...]))`.
-    build: Callable[[C], AbstractCapability[Any]]
+    # Builds what the run is given.
+    build: Callable[[C], list[AgentTool]]
 
 
 TOOLS: dict[str, ToolSpec] = {}
@@ -73,7 +76,7 @@ def stored_settings(key: str, config: dict[str, Any]) -> BaseModel:
     return _parse(key, config, stored=True)[1]
 
 
-def build_tool(key: str, config: dict[str, Any]) -> AbstractCapability[Any]:
+def build_tool(key: str, config: dict[str, Any]) -> list[AgentTool]:
     """Builds a tool from stored settings, which may predate its current settings model."""
     spec, parsed = _parse(key, config, stored=True)
     return spec.build(parsed)

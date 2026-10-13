@@ -1,20 +1,20 @@
 import asyncio
 import json
 import threading
+from dataclasses import dataclass
 
+import psycopg
 import pytest
-from pydantic_ai import Agent as PydanticAgent
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.models.function import FunctionModel
-from pydantic_ai.models.test import TestModel
-from starlette.requests import Request
+from fake_model import ToolCall, model, replies, use_model
 
+from aios import checkpoints, ui_stream
+from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.auth import current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
 from aios.models import Agent, User
-from aios.runner import runner
+from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
 
@@ -26,16 +26,23 @@ def chat_body(text: str) -> dict:
     }
 
 
-def spy_run_stream(monkeypatch) -> dict:
-    """Record the keyword arguments the chat endpoint runs the agent with."""
+def spy_run(monkeypatch) -> dict:
+    """Record what the chat endpoint runs the agent with: its trace metadata and context."""
     seen = {}
-    run_stream = agents_api.VercelAIAdapter.run_stream
+    load = agents_api.load_chat_context
 
-    def spy(self, **kwargs):
-        seen.update(kwargs)
-        return run_stream(self, **kwargs)
+    def spy_load(*args):
+        ctx = load(*args)
+        seen["metadata"] = ctx.metadata
+        return ctx
 
-    monkeypatch.setattr(agents_api.VercelAIAdapter, "run_stream", spy)
+    @dataclass
+    class SpyDeps(ChatDeps):
+        def __post_init__(self):
+            seen["deps"] = ChatDeps(user_id=self.user_id, run_id=self.run_id)
+
+    monkeypatch.setattr(agents_api, "load_chat_context", spy_load)
+    monkeypatch.setattr(agents_api, "ChatDeps", SpyDeps)
     return seen
 
 
@@ -168,8 +175,8 @@ def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     assert '<skill name="Haiku">' in agent["current_version"]["instructions"]
     assert api.put(url, json=agent_body(agent)).json()["current_version"]["version"] == 1
 
-    seen = spy_run_stream(monkeypatch)
-    with runner.override(model=TestModel(custom_output_text="ok")):
+    seen = spy_run(monkeypatch)
+    with use_model(replies("ok")):
         resp = api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi"))
     assert resp.status_code == 200
     assert seen["metadata"]["skill_versions"][0]["name"] == "Haiku"
@@ -265,21 +272,35 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     # Editing the agent mid-run doesn't affect the run.
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, base_prompt="Be rude."))
 
-    seen = spy_run_stream(monkeypatch)
-    with runner.override(model=TestModel(custom_output_text="arr")):
+    seen = spy_run(monkeypatch)
+    sent = []
+
+    async def script(messages, info):
+        sent.append(messages)
+        yield "arr"
+
+    with use_model(model(script)):
         first = api.post(f"{url}/chat", json=chat_body("hello there"))
         second = api.post(f"{url}/chat", json=chat_body("again"))
     assert first.status_code == second.status_code == 200
     assert text_deltas(second) == "arr"
     assert seen["metadata"]["agent_version"] == 1
     assert seen["metadata"]["skill_versions"][0]["name"] == "Pirate"
+    assert seen["metadata"]["langfuse_session_id"] == f"agent-run-{run['id']}"
 
     detail = api.get(url).json()
     assert detail["title"] == "hello there"
     assert (detail["message_count"], detail["agent_version"]) == (4, 1)
-    # The second turn was sent only its own message; history came from the database.
+    # The second turn was sent only its own message; history came from the run's thread.
     assert [m["role"] for m in detail["ui_messages"]] == ["user", "assistant", "user", "assistant"]
-    instructions = detail["messages"][-2]["instructions"]
+    assert [m["type"] for m in detail["messages"]] == ["human", "ai", "human", "ai"]
+    assert [(m.type, m.content) for m in sent[1]][1:] == [
+        ("human", "hello there"),
+        ("ai", "arr"),
+        ("human", "again"),
+    ]
+    # The model is given the pinned version's instructions.
+    instructions = sent[1][0].content
     assert instructions.startswith("Be nice.")
     assert "Talk like pirates." in instructions
 
@@ -292,44 +313,90 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     assert api.get(url).status_code == 404
 
 
-def test_reply_messages_leave_out_the_saved_request():
-    agent = PydanticAgent(TestModel(custom_output_text="arr"))
-    first = agent.run_sync("hello")
-    history = [*first.all_messages(), ModelRequest(parts=[UserPromptPart("again")])]
-    second = agent.run_sync(message_history=history, run_id="turn")
-    reply = agents_api.reply_messages(second.all_messages(), "turn")
-    assert [type(m) for m in reply] == [ModelResponse]
-    assert reply[0].parts[0].content == "arr"
-    assert agents_api.reply_messages(first.all_messages(), "turn") == []
-
-
-def test_concurrent_turns_on_a_run_are_both_kept(api, monkeypatch):
+def test_blank_message_is_rejected_before_it_reaches_the_thread(api):
     agent = make_agent(api, "Bot")
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     url = f"/api/agents/{agent['id']}/runs/{run['id']}"
-    run_stream = agents_api.VercelAIAdapter.run_stream
-    other_turn = [
-        ModelRequest(parts=[UserPromptPart("from the other tab")]),
-        ModelResponse(parts=[TextPart("ok")]),
+
+    assert api.post(f"{url}/chat", json=chat_body("  ")).status_code == 422
+    with use_model(replies("hi")):
+        assert text_deltas(api.post(f"{url}/chat", json=chat_body("hello"))) == "hi"
+    assert [m["type"] for m in api.get(url).json()["messages"]] == ["human", "ai"]
+
+
+async def consume(response) -> str:
+    return "".join([chunk async for chunk in response.body_iterator])
+
+
+def test_concurrent_turns_on_a_run_take_turns(api, user):
+    """Two tabs: the second turn waits for the first, and builds on all of it."""
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
+    sent = {}
+
+    async def script(messages, info):
+        prompt = messages[-1].content
+        sent[prompt] = [m.content for m in messages[1:]]
+        if prompt == "from this tab":
+            await asyncio.sleep(0.5)
+        yield f"re: {prompt}"
+
+    async def two_tabs():
+        async def turn(text, delay):
+            await asyncio.sleep(delay)
+            with SessionLocal() as db:
+                response = await agents_api.run_chat(
+                    agent["id"], run["id"], chat_body(text), user, db
+                )
+            return await consume(response)
+
+        return await asyncio.gather(turn("from this tab", 0), turn("from the other tab", 0.1))
+
+    with use_model(model(script)):
+        asyncio.run(two_tabs())
+
+    assert sent["from the other tab"] == [
+        "from this tab",
+        "re: from this tab",
+        "from the other tab",
     ]
+    assert stored_turns(api, url) == [
+        ("user", "from this tab"),
+        ("assistant", "re: from this tab"),
+        ("user", "from the other tab"),
+        ("assistant", "re: from the other tab"),
+    ]
+    assert api.get(url).json()["message_count"] == 4
 
-    def other_tab_finishes_first(self, **kwargs):
-        # This request has already loaded the (empty) history and saved its own message;
-        # another turn lands meanwhile.
-        agents_api._append_run_messages(run["id"], other_turn)
-        return run_stream(self, **kwargs)
 
-    monkeypatch.setattr(agents_api.VercelAIAdapter, "run_stream", other_tab_finishes_first)
-    with runner.override(model=TestModel(custom_output_text="arr")):
-        assert api.post(f"{url}/chat", json=chat_body("from this tab")).status_code == 200
+def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
+    """The deletion waits for the turn, which would otherwise write the thread back."""
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
+    started = asyncio.Event()
 
-    detail = api.get(url).json()
-    assert detail["message_count"] == 4
-    assert detail["title"] == "from this tab"
-    # Nothing is lost: this turn's message was saved before the model was called, and its
-    # reply is appended after whatever landed in the meantime.
-    texts = [p["text"] for m in detail["ui_messages"] for p in m["parts"] if p["type"] == "text"]
-    assert texts == ["from this tab", "from the other tab", "ok", "arr"]
+    async def script(messages, info):
+        started.set()
+        await asyncio.sleep(0.5)
+        yield "still going"
+
+    async def delete_mid_turn():
+        with SessionLocal() as db:
+            response = await agents_api.run_chat(
+                agent["id"], run["id"], chat_body("hello"), user, db
+            )
+        turn = asyncio.create_task(consume(response))
+        await started.wait()
+        resp = await asyncio.to_thread(api.delete, url)
+        await turn
+        return resp
+
+    with use_model(model(script)):
+        assert asyncio.run(delete_mid_turn()).status_code == 204
+
+    assert checkpoints.history(run["id"]) == []
 
 
 def on_event_loop() -> bool:
@@ -340,9 +407,10 @@ def on_event_loop() -> bool:
     return True
 
 
-def test_chat_releases_request_session_before_streaming(client, monkeypatch):
+def test_chat_releases_request_session_before_streaming(client, db, monkeypatch):
     """DB work runs off the event loop, and the request's session is closed before the stream."""
     events = []
+    checkpoints.delete_threads([1])
 
     def fake_db():
         events.append("db opened")
@@ -351,34 +419,39 @@ def test_chat_releases_request_session_before_streaming(client, monkeypatch):
 
     def fake_load(db, user_id, agent_id, run_id):
         events.append(("load on loop", on_event_loop()))
-        return agents_api.ChatContext(model=None, instructions="Hi.", history=[], metadata={})
+        return agents_api.ChatContext(model=None, instructions="Hi.", metadata={})
 
-    def fake_save(run_id, messages):
-        events.append(("save on loop", on_event_loop()))
+    def fake_start(run_id, prompt):
+        events.append(("title on loop", on_event_loop()))
 
-    async def stream(messages, info):
+    def fake_end(run_id, count):
+        events.append(("count on loop", on_event_loop(), count))
+
+    async def script(messages, info):
         events.append("model")
         yield "arr"
 
     monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
-    monkeypatch.setattr(agents_api, "_append_run_messages", fake_save)
+    monkeypatch.setattr(agents_api, "_start_turn", fake_start)
+    monkeypatch.setattr(agents_api, "_end_turn", fake_end)
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
     app.dependency_overrides[get_db] = fake_db
     try:
-        with runner.override(model=FunctionModel(stream_function=stream)):
+        with use_model(model(script)):
             resp = client.post("/api/agents/1/runs/1/chat", json=chat_body("hello"))
     finally:
         app.dependency_overrides.clear()
+        checkpoints.delete_threads([1])
 
     assert resp.status_code == 200
     assert text_deltas(resp) == "arr"
     assert events == [
         "db opened",
         ("load on loop", False),
-        ("save on loop", False),  # the user's message, before the model is called
+        ("title on loop", False),
         "db closed",
         "model",
-        ("save on loop", False),  # the reply
+        ("count on loop", False, 2),
     ]
 
 
@@ -401,7 +474,7 @@ def test_failed_turn_keeps_the_users_message_and_partial_reply(api):
         yield "half an "
         raise RuntimeError("model fell over")
 
-    with runner.override(model=FunctionModel(stream_function=fails_midway)):
+    with use_model(model(fails_midway)):
         resp = api.post(f"{url}/chat", json=chat_body("hello"))
     assert resp.status_code == 200
     assert '"type":"error"' in resp.text
@@ -416,12 +489,28 @@ def test_failed_turn_keeps_the_users_message_and_partial_reply(api):
         seen.extend(messages)
         yield "ok"
 
-    with runner.override(model=FunctionModel(stream_function=records_history)):
+    with use_model(model(records_history)):
         assert api.post(f"{url}/chat", json=chat_body("again")).status_code == 200
-    prompts = [p.content for m in seen for p in m.parts if isinstance(p, UserPromptPart)]
-    assert prompts == ["hello", "again"]
-    assert any(isinstance(p, TextPart) and p.content == "half an " for m in seen for p in m.parts)
+    assert [(m.type, m.content) for m in seen[1:]] == [
+        ("human", "hello"),
+        ("ai", "half an "),
+        ("human", "again"),
+    ]
     assert stored_turns(api, url)[-2:] == [("user", "again"), ("assistant", "ok")]
+    assert api.get(url).json()["message_count"] == 4
+
+
+def test_database_error_text_isnt_sent_to_the_client(api, monkeypatch):
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    async def connect(*args, **kwargs):
+        raise psycopg.OperationalError('connection to server at "10.0.0.5" failed for user "aios"')
+
+    monkeypatch.setattr(checkpoints.AsyncConnection, "connect", connect)
+    resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hello"))
+    assert '"errorText":"Database error"' in resp.text
+    assert "10.0.0.5" not in resp.text
 
 
 def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
@@ -429,21 +518,6 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
     agent = make_agent(api, "Bot")
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     url = f"/api/agents/{agent['id']}/runs/{run['id']}"
-    body = json.dumps(chat_body("stop me")).encode()
-
-    async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": url,
-            "query_string": b"",
-            "headers": [(b"content-type", b"application/json")],
-        },
-        receive,
-    )
 
     async def slow(messages, info):
         yield "partial "
@@ -451,7 +525,7 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
         yield "never sent"
 
     async def stop_after_first_text():
-        response = await agents_api.run_chat(agent["id"], run["id"], request, user, db)
+        response = await agents_api.run_chat(agent["id"], run["id"], chat_body("stop me"), user, db)
         got_text = asyncio.Event()
 
         async def consume():
@@ -465,7 +539,108 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    with runner.override(model=FunctionModel(stream_function=slow)):
+    with use_model(model(slow)):
         asyncio.run(stop_after_first_text())
 
     assert stored_turns(api, url) == [("user", "stop me"), ("assistant", "partial ")]
+
+
+def stop_during_searches(
+    api, user, db, monkeypatch, events: list, queries=("slow", "quick")
+) -> str:
+    """Run a turn whose model makes a search for each of `queries` at once, and drop its
+    response once a result is streamed (a "slow" search is still running). Returns the run's
+    URL."""
+    agent = make_agent(api, "Bot")
+    tool = {"key": "hybrid_search", "config": {}}
+    api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    async def search(owner_id, query, limit):
+        if query == "slow":
+            events.append("search started")
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                events.append("search stopped")
+                raise
+        return [{"source": f"{query}.md", "headings": [], "text": query}]
+
+    async def script(messages, info):
+        for query in queries:
+            yield ToolCall("search_documents", {"query": query}, id=f"call-{query}")
+
+    monkeypatch.setattr(hybrid_search, "document_search_results", search)
+    # The chunks themselves, rather than a response streaming them.
+    monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
+
+    async def drop_while_searching():
+        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("find"), user, db)
+        async for chunk in chunks:
+            if chunk["type"] == "tool-output-available":
+                break
+        await chunks.aclose()
+
+    with use_model(model(script)):
+        asyncio.run(drop_while_searching())
+    return f"/api/agents/{agent['id']}/runs/{run['id']}"
+
+
+def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, db, monkeypatch):
+    """The server can drop the response while it's waiting on the client rather than the agent,
+    which closes the stream rather than cancelling it. The agent's tool calls must still stop
+    before the turn is recorded, or one could answer a call the record says went unanswered."""
+    record_turn = agents_api._record_turn
+    events = []
+
+    async def spy_record_turn(*args, **kwargs):
+        events.append("turn recorded")
+        await record_turn(*args, **kwargs)
+
+    monkeypatch.setattr(agents_api, "_record_turn", spy_record_turn)
+    stop_during_searches(api, user, db, monkeypatch, events)
+    assert events == ["search started", "search stopped", "turn recorded"]
+
+
+def test_turn_stopped_during_parallel_tool_calls_keeps_their_results(api, user, db, monkeypatch):
+    """The quick search finished in the step the turn stopped in, so its result was only a
+    pending write: it's kept along with the slow one's, and the next turn is sent both."""
+    url = stop_during_searches(api, user, db, monkeypatch, [])
+
+    messages = api.get(url).json()["messages"]
+    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
+        ("human", None, None),
+        ("ai", None, None),
+        ("tool", "call-quick", "success"),
+        ("tool", "call-slow", "error"),
+    ]
+
+    seen = []
+
+    async def records_history(messages, info):
+        seen.extend(messages)
+        yield "ok"
+
+    monkeypatch.undo()  # a response again
+    with use_model(model(records_history)):
+        assert api.post(f"{url}/chat", json=chat_body("again")).status_code == 200
+    assert [(m.type, getattr(m, "tool_call_id", None)) for m in seen[1:]] == [
+        ("human", None),
+        ("ai", None),
+        ("tool", "call-quick"),
+        ("tool", "call-slow"),
+        ("human", None),
+    ]
+
+
+def test_turn_stopped_once_its_tool_calls_finished_keeps_their_results(api, user, db, monkeypatch):
+    """Both searches finished, but the turn stopped before their step was checkpointed."""
+    url = stop_during_searches(api, user, db, monkeypatch, [], queries=("one", "two"))
+
+    messages = api.get(url).json()["messages"]
+    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
+        ("human", None, None),
+        ("ai", None, None),
+        ("tool", "call-one", "success"),
+        ("tool", "call-two", "success"),
+    ]

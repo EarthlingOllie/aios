@@ -174,19 +174,29 @@ export type RunSummary = {
   updated_at: string;
 };
 
-/** A Pydantic AI `ModelRequest` / `ModelResponse`, as stored for the run. */
+/** A content block of a model response (Anthropic's format), e.g. text, thinking or web search. */
+export type ContentBlock = { type: string } & Record<string, unknown>;
+
+/** A LangChain message, as stored in the run's LangGraph thread. */
 export type ModelMessage = {
-  kind: "request" | "response";
-  parts: ({ part_kind: string } & Record<string, unknown>)[];
-  timestamp?: string;
-  instructions?: string | null;
-  model_name?: string | null;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  type: "human" | "ai" | "tool" | "system";
+  id?: string | null;
+  content: string | (string | ContentBlock)[];
+  /** AI messages: the tool calls the agent runs. */
+  tool_calls?: { id: string; name: string; args: unknown }[];
+  /** Tool messages: the call they answer, and whether it failed. */
+  tool_call_id?: string;
+  name?: string | null;
+  status?: "success" | "error";
+  usage_metadata?: { input_tokens?: number; output_tokens?: number } | null;
+  response_metadata?: { model_name?: string; stop_reason?: string };
 };
 
 export type Run = RunSummary & {
   ui_messages: UIMessage[];
   messages: ModelMessage[];
+  /** The pinned version's instructions: the system prompt of every model call. */
+  instructions: string;
 };
 
 // Same-origin requests: the browser attaches the session cookie automatically.

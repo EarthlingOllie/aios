@@ -1,10 +1,11 @@
+import json
+
+from langchain.tools import ToolRuntime, tool
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_ai import FunctionToolset, RunContext
-from pydantic_ai.capabilities import Toolset
 
 from aios.agent import ChatDeps
 from aios.search import document_search_results
-from aios.tools.registry import ToolSpec, register
+from aios.tools.registry import AgentTool, ToolSpec, register
 
 
 class HybridSearchConfig(BaseModel):
@@ -21,10 +22,11 @@ class HybridSearchConfig(BaseModel):
     )
 
 
-def build(config: HybridSearchConfig) -> Toolset[ChatDeps]:
+def build(config: HybridSearchConfig) -> list[AgentTool]:
     # The same retrieval as the documents chat's `search_documents` tool, scoped to the documents
-    # of the user running the agent (the run's deps).
-    async def search_documents(ctx: RunContext[ChatDeps], query: str) -> list[dict]:
+    # of the user running the agent (the run's context).
+    @tool(parse_docstring=True)
+    async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         """Search the user's uploaded documents with hybrid (semantic + keyword) retrieval.
 
         Each result has the passage's text, its source filename (cite it as [filename]) and the
@@ -33,11 +35,13 @@ def build(config: HybridSearchConfig) -> Toolset[ChatDeps]:
         Args:
             query: A natural-language search query.
         """
-        return await document_search_results(
-            owner_id=ctx.deps.user_id, query=query, limit=config.max_results
+        results = await document_search_results(
+            owner_id=runtime.context.user_id, query=query, limit=config.max_results
         )
+        # As JSON text: LangChain would pass a list through as content blocks.
+        return json.dumps(results)
 
-    return Toolset(FunctionToolset([search_documents]))
+    return [search_documents]
 
 
 register(

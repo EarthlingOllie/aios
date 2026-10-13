@@ -1,9 +1,12 @@
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic_ai.capabilities import WebSearch
 
-from aios.tools.registry import ToolSpec, register
+from aios.tools.registry import AgentTool, ToolSpec, register
+
+# Stands in for the web search tool's versioned type until the run's model is known (see
+# `aios.runner.server_tools`).
+WEB_SEARCH = "web_search"
 
 # What Anthropic accepts: a bare hostname, optionally followed by a path (where `*` is allowed),
 # with no scheme or port. Anything else fails every request the agent makes, so it's rejected
@@ -63,14 +66,15 @@ class WebSearchConfig(BaseModel):
         return self
 
 
-def build(config: WebSearchConfig) -> WebSearch:
+def build(config: WebSearchConfig) -> list[AgentTool]:
     # The provider's native search (Anthropic's server-side web search tool); a model without
     # one fails the turn rather than silently running without search.
-    return WebSearch(
-        max_uses=config.max_uses,
-        allowed_domains=config.allowed_domains or None,
-        blocked_domains=config.blocked_domains or None,
-    )
+    tool = {"type": WEB_SEARCH, "name": "web_search", "max_uses": config.max_uses}
+    if config.allowed_domains:
+        tool["allowed_domains"] = config.allowed_domains
+    if config.blocked_domains:
+        tool["blocked_domains"] = config.blocked_domains
+    return [tool]
 
 
 register(
