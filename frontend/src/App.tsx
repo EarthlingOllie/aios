@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useMatch } from "react-router";
-import { Bot, LogOut, MessageSquare, Sparkles } from "lucide-react";
+import {
+  Bot,
+  CalendarClock,
+  ChartLine,
+  LogOut,
+  MessageSquare,
+  Search,
+  Settings,
+  Sparkles,
+} from "lucide-react";
 
 import { Chat } from "@/components/Chat";
 import { Documents } from "@/components/Documents";
@@ -23,6 +32,7 @@ import {
   SkillsSection,
   SkillVersionPage,
 } from "@/pages/Skills";
+import { StubPage } from "@/pages/Stub";
 
 type AuthState =
   | { status: "loading" }
@@ -87,16 +97,43 @@ export default function App() {
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
+        {navItems.map(
+          ({ to, label, icon, stub }) =>
+            stub && (
+              <Route
+                key={to}
+                path={to.slice(1)}
+                element={<StubPage title={label} icon={icon} description={stub} />}
+              />
+            ),
+        )}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   );
 }
 
+// Items with a `stub` description are routed to a placeholder page until they're built.
 const navItems = [
+  {
+    to: "/search",
+    label: "Search",
+    icon: Search,
+    end: false,
+    stub: "Search across your chats, agents, skills and documents.",
+  },
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
+  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
+  {
+    to: "/insights",
+    label: "Insights",
+    icon: ChartLine,
+    end: false,
+    stub: "See how your agents are used and how they perform.",
+  },
+  { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
@@ -109,7 +146,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         end={end}
         className={({ isActive }) =>
           cn(
-            "hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+            "hover:bg-accent flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm",
             isActive ? "bg-accent font-medium" : "text-muted-foreground",
             className,
           )
@@ -138,7 +175,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           </div>
         )}
       </aside>
-      <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
+      <nav className="flex items-center gap-1 overflow-x-auto border-b px-2 py-1.5 md:hidden">
         {nav("")}
         <Button variant="ghost" size="icon" className="ml-auto" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
@@ -146,7 +183,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       </nav>
       <main className="min-h-0">
         {/* Kept mounted (just hidden) off the chat route, so an in-progress conversation
-            and any streaming reply survive a trip to Agents or Skills. */}
+            and any streaming reply survive a trip to another section. */}
         <div className={cn("h-full", !onChat && "hidden")}>
           <Chat />
         </div>
