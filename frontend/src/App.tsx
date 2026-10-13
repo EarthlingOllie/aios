@@ -179,9 +179,10 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           </div>
         )}
       </aside>
-      <nav className="flex items-center gap-1 overflow-x-auto border-b px-2 py-1.5 md:hidden">
-        {nav("shrink-0")}
-        <Button variant="ghost" size="icon" className="ml-auto" aria-label="Sign out" onClick={onSignOut}>
+      <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
+        {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
         </Button>
       </nav>
