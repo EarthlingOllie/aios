@@ -18,6 +18,20 @@ export type DocumentInfo = {
   created_at: string;
 };
 
+/** A passage found by the hybrid (semantic + keyword) document search. */
+export type SearchHit = {
+  chunk_id: number;
+  document_id: number;
+  filename: string;
+  text: string;
+  meta: { headings?: string[]; pages?: number[] };
+  /** Reciprocal Rank Fusion score: higher is better. */
+  score: number;
+  /** The passage's rank in each branch, or null if that branch didn't find it. */
+  semantic_rank: number | null;
+  lexical_rank: number | null;
+};
+
 export type SkillSummary = {
   id: number;
   name: string;
@@ -224,6 +238,8 @@ export const api = {
     body.append("file", file);
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
+  search: (q: string, limit: number) =>
+    request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
   listSkills: () => request<SkillSummary[]>("/api/skills"),
   getSkill: (id: number) => request<Skill>(`/api/skills/${id}`),

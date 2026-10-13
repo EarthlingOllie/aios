@@ -26,6 +26,7 @@ import {
   AgentVersionPage,
 } from "@/pages/Agents";
 import { RunPage } from "@/pages/Run";
+import { SearchPage } from "@/pages/Search";
 import {
   SkillDetail,
   SkillForm,
@@ -90,6 +91,7 @@ export default function App() {
           <Route path=":skillId/edit" element={<SkillForm />} />
           <Route path=":skillId/versions/:version" element={<SkillVersionPage />} />
         </Route>
+        <Route path="search" element={<SearchPage />} />
         <Route path="agents" element={<AgentsSection />}>
           <Route index element={<AgentsIndex />} />
           <Route path="new" element={<AgentForm />} />
@@ -119,13 +121,7 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  {
-    to: "/search",
-    label: "Search",
-    icon: Search,
-    end: false,
-    stub: "Search across your chats, agents, skills and documents.",
-  },
+  { to: "/search", label: "Search", icon: Search, end: false },
   {
     to: "/insights",
     label: "Insights",
