@@ -134,5 +134,7 @@ def test_chat_rejects_a_malformed_body(client):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
     try:
         assert client.post("/api/chat", json={"messages": []}).status_code == 422
+        blank = {"messages": [{"id": "m", "role": "user", "parts": [{"type": "text", "text": ""}]}]}
+        assert client.post("/api/chat", json=blank).status_code == 422
     finally:
         app.dependency_overrides.clear()

@@ -311,6 +311,17 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     assert api.get(url).status_code == 404
 
 
+def test_blank_message_is_rejected_before_it_reaches_the_thread(api):
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
+
+    assert api.post(f"{url}/chat", json=chat_body("  ")).status_code == 422
+    with use_model(replies("hi")):
+        assert text_deltas(api.post(f"{url}/chat", json=chat_body("hello"))) == "hi"
+    assert [m["type"] for m in api.get(url).json()["messages"]] == ["human", "ai"]
+
+
 async def consume(response) -> str:
     return "".join([chunk async for chunk in response.body_iterator])
 

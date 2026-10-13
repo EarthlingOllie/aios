@@ -92,8 +92,13 @@ def human_message(message: UIMessage) -> HumanMessage:
 
     It gets a new id: in a LangGraph thread, a message with an id already there replaces that
     message, and the client's id mustn't be able to rewrite history.
+
+    Rejected when blank: the model provider would refuse it, and a run's thread would keep it.
     """
-    return HumanMessage(_text(message), id=str(uuid4()))
+    text = _text(message)
+    if not text.strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a message with text")
+    return HumanMessage(text, id=str(uuid4()))
 
 
 def to_langchain(messages: list[UIMessage]) -> list[BaseMessage]:
