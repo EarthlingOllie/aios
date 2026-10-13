@@ -88,7 +88,10 @@ export function SearchPage() {
                 value={limit}
                 onChange={(e) => {
                   const n = Number(e.target.value);
-                  if (query) search({ q: query, limit: n });
+                  // Search for what's in the box, so the results match it; if it's been cleared,
+                  // re-run the shown query, and with neither just remember the count.
+                  const q = draft.trim() || query;
+                  if (q) search({ q, limit: n });
                   else setParams({ limit: String(n) });
                 }}
                 className="border-input dark:bg-input/30 h-8 rounded-md border bg-transparent px-2 text-sm"
