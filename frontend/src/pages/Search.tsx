@@ -8,6 +8,7 @@ import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, type SearchHit } from "@/lib/api";
+import { stripMarkdown } from "@/lib/markdown";
 
 // The result counts offered. GET /api/search takes any count from 1 to 50: the first here is its
 // default (so it's left out of the URL), the last its maximum.
@@ -33,15 +34,20 @@ export function SearchPage() {
   // Bumped to run the search already shown again. A new loader makes useLoad drop the old hits
   // and error, so a re-run shows as loading and a failed one doesn't leave stale results up.
   const [run, setRun] = useState(0);
+  // The URL keeps the query as typed, so it round-trips to the editor; the search gets plain text.
   const { data: hits, error } = useLoad(
-    useCallback(() => (query ? api.search(query, limit) : Promise.resolve(null)), [query, limit, run]),
+    useCallback(() => {
+      const text = stripMarkdown(query);
+      return text ? api.search(text, limit) : Promise.resolve(null);
+    }, [query, limit, run]),
   );
   const loading = Boolean(query) && hits === undefined && !error;
 
   function search(next: { q?: string; limit?: number }) {
     const q = (next.q ?? draft).trim();
     const n = next.limit ?? limit;
-    if (!q) return;
+    // Nothing to search once the formatting is gone (e.g. only a list marker).
+    if (!stripMarkdown(q)) return;
     // Submitting the search already shown doesn't change the URL, so run it again explicitly.
     if (q === query && n === limit) setRun((r) => r + 1);
     else setParams({ q, ...(n !== limits[0] && { limit: String(n) }) });
@@ -91,7 +97,7 @@ export function SearchPage() {
                   const n = Number(e.target.value);
                   // Search for what's in the box, so the results match it; if it's been cleared,
                   // re-run the shown query, and with neither just remember the count.
-                  const q = draft.trim() || query;
+                  const q = stripMarkdown(draft) ? draft.trim() : query;
                   if (q) search({ q, limit: n });
                   else setParams({ limit: String(n) });
                 }}
@@ -107,7 +113,7 @@ export function SearchPage() {
             <span className="text-muted-foreground ml-auto text-xs max-sm:hidden">
               Enter to search, Shift+Enter for a new line
             </span>
-            <Button type="submit" disabled={!draft.trim() || loading} className="max-sm:ml-auto">
+            <Button type="submit" disabled={!stripMarkdown(draft) || loading} className="max-sm:ml-auto">
               <SearchIcon />
               {loading ? "Searching…" : "Search"}
             </Button>
