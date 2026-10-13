@@ -1,7 +1,8 @@
 """Agent run history, kept by LangGraph's Postgres checkpointer: one thread per run.
 
 The checkpointer's tables live in their own schema (`langgraph`), which LangGraph creates and
-migrates itself (`setup`); Alembic manages the `public` schema only and doesn't see them.
+migrates itself (`setup`); Alembic manages the `public` schema only and doesn't see them,
+except that downgrading past 0005 drops the schema along with the runs its threads belong to.
 """
 
 from collections.abc import AsyncIterator, Iterator

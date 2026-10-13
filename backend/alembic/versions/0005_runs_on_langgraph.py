@@ -45,4 +45,4 @@ def downgrade() -> None:
     )
     # The checkpointer's threads are keyed by run id, so they must go with the runs: a later
     # run that reuses an id (after downgrading past `agent_runs`) would otherwise inherit one.
-    op.execute("DROP SCHEMA IF EXISTS langgraph CASCADE")
+    op.execute("DROP SCHEMA IF EXISTS langgraph CASCADE")  # `aios.checkpoints.SCHEMA`

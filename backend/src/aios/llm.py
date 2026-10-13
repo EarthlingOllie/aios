@@ -9,6 +9,8 @@ from aios.config import get_settings
 # get the basic variant. Anthropic's model names, without the "anthropic:" prefix.
 _DYNAMIC_WEB_SEARCH = (
     "claude-fable-5",
+    "claude-mythos-5",
+    "claude-mythos-preview",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
