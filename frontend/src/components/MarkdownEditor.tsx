@@ -228,7 +228,11 @@ export function MarkdownEditor({
   );
 }
 
-const listItem = /^(\s*)(?:([-*+] (?:\[[ xX]\] )?)|(\d+)([.)]) )/;
+// Ordered markers are capped at 3 digits (CommonMark allows 9) so a line opening with a year,
+// like "1999. It began", isn't taken for a list; lists past item 999 just stop auto-numbering.
+const listItem = /^(\s*)(?:([-*+] (?:\[[ xX]\] )?)|(\d{1,3})([.)]) )/;
+// "* * *", "- - -", "***": a horizontal rule, not a list item.
+const thematicBreak = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
 /**
  * On Enter inside a list item, start the next item ("- ", "- [ ] ", "2. "); on an empty item,
@@ -240,7 +244,7 @@ function continueList(textarea: HTMLTextAreaElement): boolean {
   const lineStart = value.lastIndexOf("\n", start - 1) + 1;
   const line = value.slice(lineStart, start);
   const match = listItem.exec(line);
-  if (!match) return false;
+  if (!match || thematicBreak.test(line)) return false;
   const [marker, indent, bullet, number, delimiter] = match;
   if (line.length === marker.length) {
     textarea.setSelectionRange(lineStart, start);
