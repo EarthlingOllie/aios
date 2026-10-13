@@ -144,6 +144,20 @@ function Results({ query, hits }: { query: string; hits: SearchHit[] | null | un
   );
 }
 
+/**
+ * "p. 3", "pp. 3–5" or "pp. 3–4, 17": consecutive pages collapse into a range, gaps stay visible.
+ * Ingest stores a chunk's pages sorted and deduplicated.
+ */
+function formatPages(pages: number[]) {
+  const runs: string[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    const start = pages[i];
+    while (pages[i + 1] === pages[i] + 1) i++;
+    runs.push(start === pages[i] ? `${start}` : `${start}–${pages[i]}`);
+  }
+  return `${pages.length === 1 ? "p." : "pp."} ${runs.join(", ")}`;
+}
+
 function Hit({ hit }: { hit: SearchHit }) {
   const headings = hit.meta.headings ?? [];
   const pages = hit.meta.pages ?? [];
@@ -156,7 +170,7 @@ function Hit({ hit }: { hit: SearchHit }) {
           <span className="truncate text-sm font-medium">{hit.filename}</span>
           {pages.length > 0 && (
             <span className="text-muted-foreground shrink-0 text-xs">
-              {pages.length === 1 ? `p. ${pages[0]}` : `pp. ${pages[0]}–${pages[pages.length - 1]}`}
+              {formatPages(pages)}
             </span>
           )}
         </div>
