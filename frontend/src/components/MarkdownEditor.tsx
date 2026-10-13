@@ -236,7 +236,8 @@ const thematicBreak = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
 /**
  * On Enter inside a list item, start the next item ("- ", "- [ ] ", "2. "); on an empty item,
- * end the list instead. Returns whether it handled the key.
+ * end the list instead. With text after the caret the item is split, never treated as empty.
+ * Returns whether it handled the key.
  */
 function continueList(textarea: HTMLTextAreaElement): boolean {
   const { value, selectionStart: start, selectionEnd: end } = textarea;
@@ -246,7 +247,9 @@ function continueList(textarea: HTMLTextAreaElement): boolean {
   const match = listItem.exec(line);
   if (!match || thematicBreak.test(line)) return false;
   const [marker, indent, bullet, number, delimiter] = match;
-  if (line.length === marker.length) {
+  const lineEnd = value.indexOf("\n", start);
+  const rest = value.slice(start, lineEnd < 0 ? undefined : lineEnd);
+  if (line.length === marker.length && !rest) {
     textarea.setSelectionRange(lineStart, start);
     return insertText(textarea, "");
   }
