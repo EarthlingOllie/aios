@@ -16,7 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
 import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
 import {
@@ -542,12 +542,13 @@ export function AgentForm() {
         <Field
           label="Base prompt"
           htmlFor="agent-prompt"
-          hint="The agent's core instructions. Attached skills are appended after it."
+          hint="The agent's core instructions, in markdown. Attached skills are appended after it."
         >
-          <Textarea
+          <MarkdownEditor
             id="agent-prompt"
             rows={10}
             className="font-mono text-sm"
+            previewClassName="max-h-[32rem]"
             value={form.base_prompt}
             onChange={(e) => set({ base_prompt: e.target.value })}
             placeholder="You are a support engineer. Classify each ticket…"
