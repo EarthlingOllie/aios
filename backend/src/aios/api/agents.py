@@ -633,19 +633,27 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])
     last = messages[-1] if messages else None
-    if isinstance(last, AIMessage) and last.tool_calls:
-        answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
-        stopped = [
-            ToolMessage(
-                "The turn ended before this tool call finished.",
-                tool_call_id=call["id"],
-                name=call["name"],
-                status="error",
-            )
-            for call in last.tool_calls
-            if call["id"] not in answered
-        ]
-        await agent.aupdate_state(config, {"messages": stopped}, as_node="tools")
+    # The model's last message, and the results of its tool calls so far.
+    i = len(messages)
+    while i and isinstance(messages[i - 1], ToolMessage):
+        i -= 1
+    calls, results = (messages[i - 1] if i else None), messages[i:]
+    answered = {m.tool_call_id for m in results}
+    stopped = [
+        ToolMessage(
+            "The turn ended before this tool call finished.",
+            tool_call_id=call["id"],
+            name=call["name"],
+            status="error",
+        )
+        for call in (calls.tool_calls if isinstance(calls, AIMessage) else [])
+        if call["id"] not in answered
+    ]
+    if stopped:
+        # The results of calls that finished are only pending writes of the step the turn ended
+        # in, which the update's checkpoint doesn't carry over, so they're written again with it
+        # (by id, so one that was already checkpointed isn't repeated).
+        await agent.aupdate_state(config, {"messages": [*results, *stopped]}, as_node="tools")
     elif partial is not None and isinstance(last, HumanMessage | ToolMessage):
         await agent.aupdate_state(config, {"messages": [partial]}, as_node="model")
 

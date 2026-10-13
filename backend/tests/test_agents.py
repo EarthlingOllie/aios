@@ -545,15 +545,13 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
     assert stored_turns(api, url) == [("user", "stop me"), ("assistant", "partial ")]
 
 
-def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, db, monkeypatch):
-    """The server can drop the response while it's waiting on the client rather than the agent,
-    which closes the stream rather than cancelling it. The agent's tool calls must still stop
-    before the turn is recorded, or one could answer a call the record says went unanswered."""
+def stop_during_searches(api, user, db, monkeypatch, events: list) -> str:
+    """Run a turn whose model searches twice at once, and drop its response once the quick
+    search's result is streamed, while the slow one runs. Returns the run's URL."""
     agent = make_agent(api, "Bot")
     tool = {"key": "hybrid_search", "config": {}}
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
-    events = []
 
     async def search(owner_id, query, limit):
         if query == "slow":
@@ -563,21 +561,13 @@ def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, d
             except asyncio.CancelledError:
                 events.append("search stopped")
                 raise
-        return []
+        return [{"source": f"{query}.md", "headings": [], "text": query}]
 
     async def script(messages, info):
-        # The quick search's result is streamed while the slow one runs.
-        yield ToolCall("search_documents", {"query": "slow"})
-        yield ToolCall("search_documents", {"query": "quick"})
-
-    record_turn = agents_api._record_turn
-
-    async def spy_record_turn(*args, **kwargs):
-        events.append("turn recorded")
-        await record_turn(*args, **kwargs)
+        yield ToolCall("search_documents", {"query": "slow"}, id="call-slow")
+        yield ToolCall("search_documents", {"query": "quick"}, id="call-quick")
 
     monkeypatch.setattr(hybrid_search, "document_search_results", search)
-    monkeypatch.setattr(agents_api, "_record_turn", spy_record_turn)
     # The chunks themselves, rather than a response streaming them.
     monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
 
@@ -590,5 +580,51 @@ def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, d
 
     with use_model(model(script)):
         asyncio.run(drop_while_searching())
+    return f"/api/agents/{agent['id']}/runs/{run['id']}"
 
+
+def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, db, monkeypatch):
+    """The server can drop the response while it's waiting on the client rather than the agent,
+    which closes the stream rather than cancelling it. The agent's tool calls must still stop
+    before the turn is recorded, or one could answer a call the record says went unanswered."""
+    record_turn = agents_api._record_turn
+    events = []
+
+    async def spy_record_turn(*args, **kwargs):
+        events.append("turn recorded")
+        await record_turn(*args, **kwargs)
+
+    monkeypatch.setattr(agents_api, "_record_turn", spy_record_turn)
+    stop_during_searches(api, user, db, monkeypatch, events)
     assert events == ["search started", "search stopped", "turn recorded"]
+
+
+def test_turn_stopped_during_parallel_tool_calls_keeps_their_results(api, user, db, monkeypatch):
+    """The quick search finished in the step the turn stopped in, so its result was only a
+    pending write: it's kept along with the slow one's, and the next turn is sent both."""
+    url = stop_during_searches(api, user, db, monkeypatch, [])
+
+    messages = api.get(url).json()["messages"]
+    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
+        ("human", None, None),
+        ("ai", None, None),
+        ("tool", "call-quick", "success"),
+        ("tool", "call-slow", "error"),
+    ]
+
+    seen = []
+
+    async def records_history(messages, info):
+        seen.extend(messages)
+        yield "ok"
+
+    monkeypatch.undo()  # a response again
+    with use_model(model(records_history)):
+        assert api.post(f"{url}/chat", json=chat_body("again")).status_code == 200
+    assert [(m.type, getattr(m, "tool_call_id", None)) for m in seen[1:]] == [
+        ("human", None),
+        ("ai", None),
+        ("tool", "call-quick"),
+        ("tool", "call-slow"),
+        ("human", None),
+    ]
