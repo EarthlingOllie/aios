@@ -8,9 +8,9 @@ You can also define your own **agents** (a base prompt plus a set of **skills**,
 reusable instructions, and **tools** from a built-in library: web search, and document search,
 the same hybrid search as the documents chat, over the documents of the user running the agent)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
-between, and shows each passage with how the semantic and keyword branches ranked it. Each conversation with an agent is saved as a **run**, whose page shows the conversation
-and an event log: model requests and responses, tool calls, the instructions sent and token
-usage.
+between, and shows each passage with how the semantic and keyword branches ranked it. Each conversation with an agent is saved as a **run**, whose page shows the
+conversation and an event log: model requests and responses, tool calls, the instructions sent
+and token usage.
 
 Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
 chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
