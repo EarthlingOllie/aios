@@ -29,8 +29,11 @@ export function SearchPage() {
     setDraft(query);
   }
 
-  const { data: hits, error, reload } = useLoad(
-    useCallback(() => (query ? api.search(query, limit) : Promise.resolve(null)), [query, limit]),
+  // Bumped to run the search already shown again. A new loader makes useLoad drop the old hits
+  // and error, so a re-run shows as loading and a failed one doesn't leave stale results up.
+  const [run, setRun] = useState(0);
+  const { data: hits, error } = useLoad(
+    useCallback(() => (query ? api.search(query, limit) : Promise.resolve(null)), [query, limit, run]),
   );
   const loading = Boolean(query) && hits === undefined && !error;
 
@@ -39,7 +42,7 @@ export function SearchPage() {
     const n = next.limit ?? limit;
     if (!q) return;
     // Submitting the search already shown doesn't change the URL, so run it again explicitly.
-    if (q === query && n === limit) reload();
+    if (q === query && n === limit) setRun((r) => r + 1);
     else setParams({ q, ...(n !== limits[0] && { limit: String(n) }) });
   }
 
