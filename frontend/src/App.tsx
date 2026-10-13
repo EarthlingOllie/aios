@@ -146,7 +146,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         end={end}
         className={({ isActive }) =>
           cn(
-            "hover:bg-accent flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+            "hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-sm",
             isActive ? "bg-accent font-medium" : "text-muted-foreground",
             className,
           )
@@ -176,7 +176,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         )}
       </aside>
       <nav className="flex items-center gap-1 overflow-x-auto border-b px-2 py-1.5 md:hidden">
-        {nav("")}
+        {nav("shrink-0")}
         <Button variant="ghost" size="icon" className="ml-auto" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
         </Button>
