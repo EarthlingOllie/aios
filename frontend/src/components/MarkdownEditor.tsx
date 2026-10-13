@@ -1,4 +1,4 @@
-import { useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from "react";
 import "@github/markdown-toolbar-element";
 import {
   Bold,
@@ -109,6 +109,18 @@ export function MarkdownEditor({
   // The preview takes the textarea's height, so toggling doesn't make the page jump. A fixed
   // height (not min-height) lets previewClassName's max-height cap it and the preview scroll.
   const [height, setHeight] = useState<number>();
+  const lastValue = useRef(value);
+
+  // When the caller clears the text while it's previewed (e.g. after sending a message), go back
+  // to Write and focus it for the next one. Previewing an already empty editor stays put. A layout
+  // effect, so the textarea is shown again before the focus runs.
+  useLayoutEffect(() => {
+    if (preview && lastValue.current && !value) {
+      setPreview(false);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+    lastValue.current = value;
+  }, [value, preview]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
