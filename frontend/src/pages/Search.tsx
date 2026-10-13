@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, type SearchHit } from "@/lib/api";
 
-// The bounds GET /api/search accepts.
+// The result counts offered. GET /api/search takes any count from 1 to 50: the first here is its
+// default (so it's left out of the URL), the last its maximum.
 const limits = [8, 20, 50];
 
 /**
