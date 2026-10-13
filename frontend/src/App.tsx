@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useMatch } from "react-router";
-import { Bot, LogOut, MessageSquare, Sparkles } from "lucide-react";
+import {
+  Bot,
+  CalendarClock,
+  ChartLine,
+  LogOut,
+  MessageSquare,
+  Search,
+  Settings,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 
 import { Chat } from "@/components/Chat";
 import { Documents } from "@/components/Documents";
@@ -23,6 +33,7 @@ import {
   SkillsSection,
   SkillVersionPage,
 } from "@/pages/Skills";
+import { StubPage } from "@/pages/Stub";
 
 type AuthState =
   | { status: "loading" }
@@ -87,16 +98,46 @@ export default function App() {
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
+        {navItems
+          .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
+          .map(({ to, label, icon, stub }) => (
+            <Route key={to} path={to} element={<StubPage title={label} icon={icon} description={stub} />} />
+          ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   );
 }
 
-const navItems = [
+type NavItem = {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  end: boolean;
+  /** When set, the item is routed to a placeholder page with this description until it's built. */
+  stub?: string;
+};
+
+const navItems: NavItem[] = [
+  {
+    to: "/search",
+    label: "Search",
+    icon: Search,
+    end: false,
+    stub: "Search across your chats, agents, skills and documents.",
+  },
+  {
+    to: "/insights",
+    label: "Insights",
+    icon: ChartLine,
+    end: false,
+    stub: "See how your agents are used and how they perform.",
+  },
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
+  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
+  { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
@@ -139,14 +180,15 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         )}
       </aside>
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
-        {nav("")}
-        <Button variant="ghost" size="icon" className="ml-auto" aria-label="Sign out" onClick={onSignOut}>
+        {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
         </Button>
       </nav>
       <main className="min-h-0">
         {/* Kept mounted (just hidden) off the chat route, so an in-progress conversation
-            and any streaming reply survive a trip to Agents or Skills. */}
+            and any streaming reply survive a trip to another section. */}
         <div className={cn("h-full", !onChat && "hidden")}>
           <Chat />
         </div>
