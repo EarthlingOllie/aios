@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { ArrowLeft, ArrowUp, Brain, Square, Trash2, Wrench } from "lucide-react";
+import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, useLoad, type ListContext } from "@/components/crud";
+import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type ModelMessage, type Run } from "@/lib/api";
@@ -151,40 +151,15 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
           <div ref={bottomRef} />
         </div>
       </div>
-      <form
-        className="mx-auto w-full max-w-3xl px-4 pb-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <MarkdownEditor
-          id="run-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Message this agent…"
-          aria-label="Message"
-          className="max-h-48 resize-none pr-12"
-          previewClassName="max-h-48 pr-12"
-          rows={2}
-        >
-          {busy ? (
-            <Button type="button" size="icon" className="absolute right-2 bottom-2 size-8" onClick={stop}>
-              <Square />
-            </Button>
-          ) : (
-            <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={!input.trim()}>
-              <ArrowUp />
-            </Button>
-          )}
-        </MarkdownEditor>
-      </form>
+      <ChatComposer
+        id="run-input"
+        placeholder="Message this agent…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }

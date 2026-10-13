@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { ArrowUp, Search, Square } from "lucide-react";
+import { Search } from "lucide-react";
 
+import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
-import { MarkdownEditor } from "@/components/MarkdownEditor";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const transport = new DefaultChatTransport({ api: "/api/chat", credentials: "same-origin" });
@@ -72,40 +71,15 @@ export function Chat() {
           <div ref={bottomRef} />
         </div>
       </div>
-      <form
-        className="mx-auto w-full max-w-3xl px-4 pb-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <MarkdownEditor
-          id="chat-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Message aios…"
-          aria-label="Message"
-          className="max-h-48 resize-none pr-12"
-          previewClassName="max-h-48 pr-12"
-          rows={2}
-        >
-          {busy ? (
-            <Button type="button" size="icon" className="absolute right-2 bottom-2 size-8" onClick={stop}>
-              <Square />
-            </Button>
-          ) : (
-            <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={!input.trim()}>
-              <ArrowUp />
-            </Button>
-          )}
-        </MarkdownEditor>
-      </form>
+      <ChatComposer
+        id="chat-input"
+        placeholder="Message aios…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }
