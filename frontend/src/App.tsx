@@ -99,7 +99,7 @@ export default function App() {
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
         {navItems
-          .filter((item): item is typeof item & { stub: string } => Boolean(item.stub))
+          .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
             <Route key={to} path={to} element={<StubPage title={label} icon={icon} description={stub} />} />
           ))}
