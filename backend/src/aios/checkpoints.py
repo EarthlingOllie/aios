@@ -103,13 +103,20 @@ def history(run_id: int) -> list[BaseMessage]:
 
 
 def delete_threads(run_ids: list[int]) -> None:
-    """Delete the runs' checkpoints. They aren't tied to `agent_runs`, so they don't cascade."""
+    """Delete the runs' checkpoints. They aren't tied to `agent_runs`, so they don't cascade.
+
+    Each under the run's turn lock: a turn still running would write the thread back.
+    """
     if not run_ids:
         return
     with _sync_saver() as saver:
         try:
             for run_id in run_ids:
-                saver.delete_thread(thread_id(run_id))
+                saver.conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))
+                try:
+                    saver.delete_thread(thread_id(run_id))
+                finally:
+                    saver.conn.execute("SELECT pg_advisory_unlock(%s, %s)", (_TURN_LOCK, run_id))
         except UndefinedTable:
             pass
 

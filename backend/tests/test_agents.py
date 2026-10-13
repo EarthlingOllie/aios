@@ -357,6 +357,35 @@ def test_concurrent_turns_on_a_run_take_turns(api, user):
     assert api.get(url).json()["message_count"] == 4
 
 
+def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
+    """The deletion waits for the turn, which would otherwise write the thread back."""
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
+    started = asyncio.Event()
+
+    async def script(messages, info):
+        started.set()
+        await asyncio.sleep(0.5)
+        yield "still going"
+
+    async def delete_mid_turn():
+        with SessionLocal() as db:
+            response = await agents_api.run_chat(
+                agent["id"], run["id"], chat_body("hello"), user, db
+            )
+        turn = asyncio.create_task(consume(response))
+        await started.wait()
+        resp = await asyncio.to_thread(api.delete, url)
+        await turn
+        return resp
+
+    with use_model(model(script)):
+        assert asyncio.run(delete_mid_turn()).status_code == 204
+
+    assert checkpoints.history(run["id"]) == []
+
+
 def on_event_loop() -> bool:
     try:
         asyncio.get_running_loop()
