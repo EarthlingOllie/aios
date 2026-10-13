@@ -70,7 +70,8 @@ export function SearchPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                search({});
+                // Like the disabled button: don't start another search while one is running.
+                if (!loading) search({});
               }
             }}
             placeholder="Describe what you're looking for, or use keywords, quoted phrases and -exclusions…"
