@@ -545,9 +545,12 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
     assert stored_turns(api, url) == [("user", "stop me"), ("assistant", "partial ")]
 
 
-def stop_during_searches(api, user, db, monkeypatch, events: list) -> str:
-    """Run a turn whose model searches twice at once, and drop its response once the quick
-    search's result is streamed, while the slow one runs. Returns the run's URL."""
+def stop_during_searches(
+    api, user, db, monkeypatch, events: list, queries=("slow", "quick")
+) -> str:
+    """Run a turn whose model makes a search for each of `queries` at once, and drop its
+    response once a result is streamed (a "slow" search is still running). Returns the run's
+    URL."""
     agent = make_agent(api, "Bot")
     tool = {"key": "hybrid_search", "config": {}}
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
@@ -564,8 +567,8 @@ def stop_during_searches(api, user, db, monkeypatch, events: list) -> str:
         return [{"source": f"{query}.md", "headings": [], "text": query}]
 
     async def script(messages, info):
-        yield ToolCall("search_documents", {"query": "slow"}, id="call-slow")
-        yield ToolCall("search_documents", {"query": "quick"}, id="call-quick")
+        for query in queries:
+            yield ToolCall("search_documents", {"query": query}, id=f"call-{query}")
 
     monkeypatch.setattr(hybrid_search, "document_search_results", search)
     # The chunks themselves, rather than a response streaming them.
@@ -627,4 +630,17 @@ def test_turn_stopped_during_parallel_tool_calls_keeps_their_results(api, user, 
         ("tool", "call-quick"),
         ("tool", "call-slow"),
         ("human", None),
+    ]
+
+
+def test_turn_stopped_once_its_tool_calls_finished_keeps_their_results(api, user, db, monkeypatch):
+    """Both searches finished, but the turn stopped before their step was checkpointed."""
+    url = stop_during_searches(api, user, db, monkeypatch, [], queries=("one", "two"))
+
+    messages = api.get(url).json()["messages"]
+    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
+        ("human", None, None),
+        ("ai", None, None),
+        ("tool", "call-one", "success"),
+        ("tool", "call-two", "success"),
     ]

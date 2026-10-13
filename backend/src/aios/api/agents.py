@@ -627,7 +627,7 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
     """Record a turn that failed or was stopped, so the next turn sees what the user saw.
 
     The user's message is already in the thread (it's checkpointed before the model is called).
-    What's added: the reply's text so far, or, if it stopped while tools were running, a result
+    What's added: the reply's text so far, and, if it stopped while tools were running, a result
     for each call still waiting for one (a call without a result can't be sent to the model).
     """
     state = await agent.aget_state(config)
@@ -649,12 +649,16 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
         for call in (calls.tool_calls if isinstance(calls, AIMessage) else [])
         if call["id"] not in answered
     ]
-    if stopped:
-        # The results of calls that finished are only pending writes of the step the turn ended
-        # in, which the update's checkpoint doesn't carry over, so they're written again with it
-        # (by id, so one that was already checkpointed isn't repeated).
-        await agent.aupdate_state(config, {"messages": [*results, *stopped]}, as_node="tools")
-    elif partial is not None and isinstance(last, HumanMessage | ToolMessage):
+    if isinstance(calls, AIMessage) and calls.tool_calls:
+        # Written even if every call has a result: the model's message and the results can be
+        # only pending writes of the step the turn ended in, which an update's checkpoint doesn't
+        # carry over. By id, so those already checkpointed aren't repeated.
+        await agent.aupdate_state(
+            config, {"messages": [calls, *results, *stopped]}, as_node="tools"
+        )
+    # A reply to the user's message or to tool results: its message isn't in the state until the
+    # model has finished it.
+    if partial is not None and isinstance(last, HumanMessage | ToolMessage):
         await agent.aupdate_state(config, {"messages": [partial]}, as_node="model")
 
 
