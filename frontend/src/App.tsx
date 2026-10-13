@@ -122,10 +122,6 @@ const navItems = [
     end: false,
     stub: "Search across your chats, agents, skills and documents.",
   },
-  { to: "/", label: "Chat", icon: MessageSquare, end: true },
-  { to: "/agents", label: "Agents", icon: Bot, end: false },
-  { to: "/skills", label: "Skills", icon: Sparkles, end: false },
-  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
   {
     to: "/insights",
     label: "Insights",
@@ -133,6 +129,10 @@ const navItems = [
     end: false,
     stub: "See how your agents are used and how they perform.",
   },
+  { to: "/", label: "Chat", icon: MessageSquare, end: true },
+  { to: "/agents", label: "Agents", icon: Bot, end: false },
+  { to: "/skills", label: "Skills", icon: Sparkles, end: false },
+  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
   { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];
 
