@@ -5,15 +5,16 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
-from fake_model import model, replies, use_model
+from fake_model import ToolCall, model, replies, use_model
 
-from aios import checkpoints
+from aios import checkpoints, ui_stream
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.auth import current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
 from aios.models import Agent, User
+from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
 
@@ -542,3 +543,52 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
         asyncio.run(stop_after_first_text())
 
     assert stored_turns(api, url) == [("user", "stop me"), ("assistant", "partial ")]
+
+
+def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, db, monkeypatch):
+    """The server can drop the response while it's waiting on the client rather than the agent,
+    which closes the stream rather than cancelling it. The agent's tool calls must still stop
+    before the turn is recorded, or one could answer a call the record says went unanswered."""
+    agent = make_agent(api, "Bot")
+    tool = {"key": "hybrid_search", "config": {}}
+    api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    events = []
+
+    async def search(owner_id, query, limit):
+        if query == "slow":
+            events.append("search started")
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                events.append("search stopped")
+                raise
+        return []
+
+    async def script(messages, info):
+        # The quick search's result is streamed while the slow one runs.
+        yield ToolCall("search_documents", {"query": "slow"})
+        yield ToolCall("search_documents", {"query": "quick"})
+
+    record_turn = agents_api._record_turn
+
+    async def spy_record_turn(*args, **kwargs):
+        events.append("turn recorded")
+        await record_turn(*args, **kwargs)
+
+    monkeypatch.setattr(hybrid_search, "document_search_results", search)
+    monkeypatch.setattr(agents_api, "_record_turn", spy_record_turn)
+    # The chunks themselves, rather than a response streaming them.
+    monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
+
+    async def drop_while_searching():
+        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("find"), user, db)
+        async for chunk in chunks:
+            if chunk["type"] == "tool-output-available":
+                break
+        await chunks.aclose()
+
+    with use_model(model(script)):
+        asyncio.run(drop_while_searching())
+
+    assert events == ["search started", "search stopped", "turn recorded"]

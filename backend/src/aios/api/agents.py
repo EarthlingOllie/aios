@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -724,18 +725,23 @@ async def run_chat(agent_id: int, run_id: int, body: dict, user: CurrentUser, db
                     checkpointer=saver,
                 )
                 finished = False
+                # Closed however the turn ends, which cancels the graph's running tasks (e.g. a
+                # tool call) before the turn is recorded: a stopped turn's response can be
+                # dropped while this waits at a `yield`, which doesn't close the stream itself.
+                events = agent.astream(
+                    {"messages": [prompt]},
+                    config,
+                    context=ChatDeps(user_id=user.id, run_id=run_id),
+                    stream_mode=["messages", "updates"],
+                    # Checkpoint each step before the next starts, so the user's message is
+                    # saved before the model is called.
+                    durability="sync",
+                )
                 try:
-                    async for mode, data in agent.astream(
-                        {"messages": [prompt]},
-                        config,
-                        context=ChatDeps(user_id=user.id, run_id=run_id),
-                        stream_mode=["messages", "updates"],
-                        # Checkpoint each step before the next starts, so the user's message
-                        # is saved before the model is called.
-                        durability="sync",
-                    ):
-                        for chunk in ui.feed(mode, data):
-                            yield chunk
+                    async with aclosing(events):
+                        async for mode, data in events:
+                            for chunk in ui.feed(mode, data):
+                                yield chunk
                     finished = True
                 except Exception as exc:
                     log.exception("agent run %s failed", run_id)
