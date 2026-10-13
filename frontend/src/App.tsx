@@ -98,16 +98,11 @@ export default function App() {
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
-        {navItems.map(
-          ({ to, label, icon, stub }) =>
-            stub && (
-              <Route
-                key={to}
-                path={to.slice(1)}
-                element={<StubPage title={label} icon={icon} description={stub} />}
-              />
-            ),
-        )}
+        {navItems
+          .filter((item): item is typeof item & { stub: string } => Boolean(item.stub))
+          .map(({ to, label, icon, stub }) => (
+            <Route key={to} path={to} element={<StubPage title={label} icon={icon} description={stub} />} />
+          ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
