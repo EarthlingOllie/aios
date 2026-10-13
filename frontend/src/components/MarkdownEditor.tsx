@@ -105,7 +105,8 @@ export function MarkdownEditor({
   const toolbarRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState(false);
-  // The preview keeps the textarea's height, so toggling doesn't make the page jump.
+  // The preview takes the textarea's height, so toggling doesn't make the page jump. A fixed
+  // height (not min-height) lets previewClassName's max-height cap it and the preview scroll.
   const [height, setHeight] = useState<number>();
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -198,7 +199,7 @@ export function MarkdownEditor({
       {preview && (
         <div
           className={cn("overflow-y-auto px-3 py-2", previewClassName)}
-          style={{ minHeight: height }}
+          style={{ height }}
           data-testid="markdown-preview"
         >
           {value.trim() ? (
