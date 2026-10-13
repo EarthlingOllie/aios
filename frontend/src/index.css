@@ -109,8 +109,9 @@
   .markdown ul {
     @apply list-disc pl-5;
   }
+  /* Room for three-digit markers ("100."), which otherwise overflow the left edge and clip. */
   .markdown ol {
-    @apply list-decimal pl-5;
+    @apply list-decimal pl-8;
   }
   .markdown li > :is(ul, ol) {
     @apply my-0;

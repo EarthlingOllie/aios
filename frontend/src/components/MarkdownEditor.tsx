@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 // The md-* elements are defined by @github/markdown-toolbar-element. Each applies its formatting
 // to the <markdown-toolbar>'s `for` textarea with execCommand("insertText"), so the change fires
 // a normal input event (React's onChange) and stays on the browser's undo stack.
-type ElementProps = { children?: ReactNode; className?: string; title?: string };
+type ElementProps = { children?: ReactNode; className?: string; title?: string; role?: string };
 declare module "react" {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
@@ -167,6 +167,9 @@ export function MarkdownEditor({
                   key={label}
                   // md-header's default level is 3; prompts read better with ## sections.
                   {...(Tag === "md-header" ? { level: "2" } : {})}
+                  // The md-* subclasses override connectedCallback without calling super, so the
+                  // base class never adds this role and screen readers announce plain text.
+                  role="button"
                   title={key ? `${label} (${mod}${key.toUpperCase()})` : label}
                   className={cn(
                     "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded outline-none focus-visible:ring-2",
