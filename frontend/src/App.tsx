@@ -9,6 +9,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  type LucideIcon,
 } from "lucide-react";
 
 import { Chat } from "@/components/Chat";
@@ -113,8 +114,16 @@ export default function App() {
   );
 }
 
-// Items with a `stub` description are routed to a placeholder page until they're built.
-const navItems = [
+type NavItem = {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  end: boolean;
+  /** When set, the item is routed to a placeholder page with this description until it's built. */
+  stub?: string;
+};
+
+const navItems: NavItem[] = [
   {
     to: "/search",
     label: "Search",
