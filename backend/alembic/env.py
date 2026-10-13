@@ -10,6 +10,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# The app's tables, in the `public` schema. LangGraph's checkpointer keeps its own tables in the
+# `langgraph` schema and migrates them itself (`aios.checkpoints.setup`); autogenerate only
+# compares the default schema, so it doesn't see them.
 target_metadata = Base.metadata
 
 

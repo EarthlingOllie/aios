@@ -214,7 +214,7 @@ class AgentVersion(Base):
     agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"))
     version: Mapped[int] = mapped_column(Integer)
     base_prompt: Mapped[str] = mapped_column(Text)
-    # Pydantic AI model name; null means the deployment default (settings.llm_model).
+    # LangChain "provider:model" name; null means the deployment default (settings.llm_model).
     model: Mapped[str | None] = mapped_column(String(255))
     # The exact instructions sent to the model, rendered once when the version is created.
     instructions: Mapped[str] = mapped_column(Text)
@@ -251,7 +251,8 @@ class AgentVersionTool(Base):
 
 
 class AgentRun(Base):
-    """One conversation with an agent; `messages` is the full Pydantic AI message history."""
+    """One conversation with an agent. Its history is the LangGraph thread `agent-run-<id>`
+    (`aios.checkpoints`)."""
 
     __tablename__ = "agent_runs"
 
@@ -262,9 +263,8 @@ class AgentRun(Base):
         ForeignKey("agent_versions.id", ondelete="CASCADE"), index=True
     )
     title: Mapped[str | None] = mapped_column(String(255))
-    # Serialized with pydantic_ai.messages.ModelMessagesTypeAdapter (requests, responses,
-    # tool calls/returns, instructions and usage), so it can be replayed into the next turn.
-    messages: Mapped[list] = mapped_column(JSONB, server_default="[]")
+    # Messages in the thread as of its last turn, for listing runs without loading history.
+    message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

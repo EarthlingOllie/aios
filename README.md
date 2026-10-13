@@ -1,16 +1,18 @@
 # aios
 
 Chat with your documents. Upload files, they're parsed and chunked with Docling, embedded with
-Voyage, and stored in Postgres/pgvector. Chat uses a Pydantic AI agent (Anthropic) that calls a
-hybrid search tool (vector + full-text, fused with Reciprocal Rank Fusion).
+Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain's
+`create_agent`, on Anthropic) that calls a hybrid search tool (vector + full-text, fused with
+Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
 reusable instructions, and **tools** from a built-in library: web search, and document search,
 the same hybrid search as the documents chat, over the documents of the user running the agent)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. Each
-conversation with an agent is saved as a **run**, whose page shows the conversation and an event
-log: model requests and responses, tool calls, the instructions sent and token usage.
+conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
+conversation and an event log: messages, model responses, tool calls and results, the
+instructions sent and token usage.
 
 Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
 chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
@@ -28,16 +30,17 @@ the model's behaviour:
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are soft-deleted (old agent versions still reference their versions), and can't be
   deleted while an agent's current version uses them.
-- Each run passes `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the
-  tools with their settings as Pydantic AI run metadata, and `agent-run-<id>` as the
-  conversation id. These reach OpenTelemetry spans once instrumentation is set up (e.g. for
-  Langfuse).
+- Each run is traced to Langfuse when it's configured (see [Tracing](#tracing)), with
+  `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
+  settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
+  session.
 
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
 api ──enqueue──▶ Redis ──▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
-api, worker ──▶ Postgres 17 + pgvector
+api, worker ──▶ Postgres 17 + pgvector (agent run history: LangGraph checkpoints, `langgraph` schema)
+api ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
 | Layer | Stack |
@@ -46,7 +49,8 @@ api, worker ──▶ Postgres 17 + pgvector
 | Auth | Authlib GitHub OAuth; Starlette `SessionMiddleware` (itsdangerous-signed cookie) holds the OAuth state, then the user id |
 | Frontend | React + TypeScript, Vite, pnpm (`minimumReleaseAge: 10080` = 7 days), Tailwind v4 + shadcn/ui, Vercel AI SDK `useChat`, react-markdown + remark-gfm; markdown editing via `@github/markdown-toolbar-element` on plain textareas |
 | Retrieval | pgvector HNSW (cosine) + Postgres FTS (`tsvector`, GIN), RRF (k=60) |
-| Inference | Pydantic AI agent (`anthropic:claude-sonnet-5-5`) streaming via its Vercel AI adapter; Pydantic AI `Embedder` (`voyageai:voyage-4`, 1024-d); Docling `HybridChunker` |
+| Inference | LangGraph agents (LangChain `create_agent`, `anthropic:claude-sonnet-5-5` via `langchain-anthropic`), streamed to the UI by our own Vercel AI SDK adapter (`ui_stream.py`); LangGraph Postgres checkpointer for run history; `langchain-voyageai` embeddings (`voyageai:voyage-4`, 1024-d); Docling `HybridChunker` |
+| Tracing | Langfuse (open source, self-hosted) via its LangChain callback handler |
 | Infra | Docker Compose locally; Terraform on AWS: VPC, ECS Fargate, ALB, RDS Postgres, ElastiCache (Valkey), ECR, Secrets Manager |
 
 ## Layout
@@ -60,13 +64,17 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/documents.py upload/list/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
-    runner.py       the Pydantic AI agent that runs user-defined agents
+    runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
+    checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
+    ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
+    llm.py          the chat model (LangChain "provider:model" names)
+    tracing.py      Langfuse callbacks and trace metadata
     versioning.py   creating agent/skill versions, rendering instructions
     tools/          the tool library agents can be given (registry + one module per tool)
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
                     runner and the egress proxy
-    agent.py        Pydantic AI agent + search_documents tool
+    agent.py        the documents chat's agent + search_documents tool, and the run context
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest task
@@ -127,7 +135,10 @@ need the migrated database and skip otherwise) and `pnpm build` (frontend).
 
 ### Changing models
 
-`LLM_MODEL` and `EMBEDDING_MODEL` take any Pydantic AI model string. The vector column is
+`LLM_MODEL` takes any LangChain `init_chat_model` string ("provider:model"; other providers need
+their `langchain-*` package). The tools and the UI stream adapter expect Anthropic's content
+format, and web search is Anthropic's server-side tool, whose version is picked from the model
+name (`llm.web_search_type`). `EMBEDDING_MODEL` is `voyageai:<model>`. The vector column is
 `vector(1024)` (`EMBEDDING_DIM` in `models.py`), and embeddings are requested at that size, so
 `EMBEDDING_MODEL` must support 1024-dimension output. To use a different size, change
 `EMBEDDING_DIM`, add a migration that changes the column size, then re-ingest documents.
@@ -168,13 +179,26 @@ anything real.
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
   (Settings → Resources).
 - Document chat history is client-side (`useChat` sends the conversation each turn). It isn't
-  saved yet. Agent runs are different: the server stores each run's full Pydantic AI message
-  history (`agent_runs.messages`, JSONB), the client sends only its new message, and the server
-  replays the stored history into the next turn.
+  saved yet. Agent runs are different: each run is a LangGraph thread (`agent-run-<id>`) kept by
+  the Postgres checkpointer, the client sends only its new message, and the agent continues
+  from the thread's latest checkpoint. The user's message is checkpointed before the model is
+  called; if a turn fails or is stopped, the reply's text so far (or an error result for each
+  tool call that hadn't finished) is added to the thread, so the next turn sees what the user
+  saw. Turns of the same run are serialized by a Postgres advisory lock: a second tab's turn
+  waits for the first, then builds on it. `agent_runs` keeps a message count and title for
+  listings.
+- **The checkpointer's tables are LangGraph's, not Alembic's.** They live in the `langgraph`
+  schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
+  first time a process runs a turn. Alembic only compares the `public` schema, so `alembic
+  check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
+  keys, so this is done explicitly). The API's database role needs to be able to create that
+  schema.
 - **Tools are code, not data.** Each lives in `backend/src/aios/tools/`, registered under a stable
   key with a Pydantic settings model (every field has a default, and its JSON schema drives the
   settings form). An agent version stores which tools it has and their validated settings
-  (`agent_version_tools`); each run builds them and passes them to Pydantic AI as capabilities.
+  (`agent_version_tools`); each run builds them (LangChain tools, or provider tool definitions
+  for server-side tools) and gives them to the agent. Tools read the user and run from the
+  run's LangGraph context (`ToolRuntime[ChatDeps]`).
   To add a tool, write a module that calls `register(ToolSpec(...))` and import it in
   `aios/tools/__init__.py`. Never rename a key: old versions reference it. If a tool's behaviour
   changes in a way old versions shouldn't get, register it under a new key. A version whose tool
@@ -202,4 +226,19 @@ anything real.
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
   descriptions, and give the agent a tool to load a skill's full instructions.
-- Agents have no tools yet; the run UI and event log already render tool calls and returns.
+
+## Tracing
+
+Agent runs and the documents chat are traced to [Langfuse](https://langfuse.com) (open source,
+self-hostable) through its LangChain callback handler, when both keys are set:
+
+```sh
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://langfuse.example.com   # your instance; default http://localhost:3000
+LANGFUSE_ENVIRONMENT=production                  # optional
+```
+
+Each trace carries the user id, the run's thread id as the Langfuse session, tags for the agent
+and version, and the run metadata above. With no keys, nothing is traced. Traces are sent in the
+background and flushed when the API shuts down.

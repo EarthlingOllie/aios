@@ -1,23 +1,19 @@
-import json
 from dataclasses import replace
 
 import pytest
+from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from pydantic_ai import ModelRequest, ToolReturnPart
-from pydantic_ai.capabilities import WebSearch
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
-from pydantic_ai.native_tools import WebSearchTool
-from test_agents import agent_body, chat_body, make_agent, spy_run_stream, text_deltas
+from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
 from test_search import unit
 
-from aios import search
+from aios import llm, search
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.models import Agent, Chunk, Document, DocumentStatus, User
-from aios.runner import runner
+from aios.runner import server_tools
 from aios.tools import TOOLS, ToolSpec, register
 from aios.tools.hybrid_search import HybridSearchConfig
-from aios.tools.web_search import WebSearchConfig
+from aios.tools.web_search import WEB_SEARCH, WebSearchConfig
 from aios.versioning import config_hash, save_agent_version
 
 WEB = {"key": "web_search", "config": {}}
@@ -174,8 +170,8 @@ def test_stored_settings_survive_settings_model_changes(api, monkeypatch):
     )
 
 
-def drifted_build(config: DriftedWebSearchConfig) -> WebSearch:
-    return WebSearch(allowed_domains=config.allowed_domains or None)
+def drifted_build(config: DriftedWebSearchConfig) -> list:
+    return [{"type": WEB_SEARCH, "name": "web_search", "allowed_domains": config.allowed_domains}]
 
 
 def test_stored_settings_load_like_a_run_loads_them(api, monkeypatch):
@@ -241,23 +237,44 @@ def test_run_is_given_its_versions_tools(api, monkeypatch):
     # Removing the tool from the agent doesn't take it away from a run already pinned to v2.
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[]))
 
-    seen = spy_run_stream(monkeypatch)
+    seen = spy_run(monkeypatch)
     native_tools = []
 
-    async def model(messages, info: AgentInfo):
-        native_tools.extend(info.model_request_parameters.native_tools)
+    async def script(messages, info):
+        native_tools.extend(info.server_tools)
         yield "ok"
 
-    with runner.override(model=FunctionModel(stream_function=model)):
+    with use_model(model(script)):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("search")).status_code == 200
+    # Anthropic's server-side web search, in the version the default model supports.
     assert native_tools == [
-        WebSearchTool(max_uses=3, allowed_domains=["python.org"], blocked_domains=None)
+        {
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "max_uses": 3,
+            "allowed_domains": ["python.org"],
+        }
     ]
     assert seen["metadata"]["tools"] == [
         {
             "key": "web_search",
             "config": {"max_uses": 3, "allowed_domains": ["python.org"], "blocked_domains": []},
+        }
+    ]
+
+
+def test_web_search_version_follows_the_model():
+    assert llm.web_search_type("anthropic:claude-sonnet-5-5") == "web_search_20260209"
+    assert llm.web_search_type("anthropic:claude-opus-4-6") == "web_search_20260209"
+    assert llm.web_search_type("anthropic:claude-haiku-4-5") == "web_search_20250305"
+    tools = TOOLS["web_search"].build(WebSearchConfig(blocked_domains=["a.com"]))
+    assert server_tools(tools, "anthropic:claude-haiku-4-5") == [
+        {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+            "blocked_domains": ["a.com"],
         }
     ]
 
@@ -328,23 +345,16 @@ def search_once(query: str):
     """A model that searches once with `query`, then replies with what came back."""
     seen = {}
 
-    async def model(messages, info: AgentInfo):
-        returns = [
-            p
-            for m in messages
-            if isinstance(m, ModelRequest)
-            for p in m.parts
-            if isinstance(p, ToolReturnPart)
-        ]
-        if not returns:
-            seen["tools"] = [t.name for t in info.function_tools]
-            seen["description"] = info.function_tools[0].description
-            yield {0: DeltaToolCall("search_documents", json.dumps({"query": query}))}
+    async def script(messages, info):
+        if returns := last_tool_results(messages):
+            seen["results"] = tool_output(returns[0])
+            yield f"found {len(seen['results'])}"
         else:
-            seen["results"] = returns[0].content
-            yield f"found {len(returns[0].content)}"
+            seen["tools"] = list(info.tools)
+            seen["description"] = info.tools["search_documents"].description
+            yield ToolCall("search_documents", {"query": query})
 
-    return FunctionModel(stream_function=model), seen
+    return model(script), seen
 
 
 def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, monkeypatch):
@@ -360,9 +370,9 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
     agent = api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool])).json()
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
 
-    spy = spy_run_stream(monkeypatch)
-    model, seen = search_once("zebrafish")
-    with runner.override(model=model):
+    spy = spy_run(monkeypatch)
+    fake, seen = search_once("zebrafish")
+    with use_model(fake):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         resp = api.post(url, json=chat_body("what about zebrafish?"))
     assert resp.status_code == 200
@@ -377,15 +387,12 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
     ]
     assert text_deltas(resp) == "found 2"
     # The tool call and its results are saved with the run.
-    parts = [
-        p
-        for m in api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()["messages"]
-        for p in m["parts"]
-    ]
-    assert [p["part_kind"] for p in parts if p["part_kind"].startswith("tool")] == [
-        "tool-call",
-        "tool-return",
-    ]
+    detail = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
+    assert [m["type"] for m in detail["messages"]] == ["human", "ai", "tool", "ai"]
+    assert detail["messages"][1]["tool_calls"][0]["name"] == "search_documents"
+    tool_part = next(p for p in detail["ui_messages"][1]["parts"] if p["type"].startswith("tool-"))
+    assert (tool_part["type"], tool_part["state"]) == ("tool-search_documents", "output-available")
+    assert tool_part["output"] == seen["results"]
 
 
 def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
@@ -395,8 +402,8 @@ def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
     tools = [{"key": "hybrid_search", "config": {}}]
     agent = api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools)).json()
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
-    model, seen = search_once("  ")
-    with runner.override(model=model):
+    fake, seen = search_once("  ")
+    with use_model(fake):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert text_deltas(api.post(url, json=chat_body("hi"))) == "found 0"
     assert seen["results"] == []
