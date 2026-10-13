@@ -41,7 +41,8 @@ declare module "react" {
   }
 }
 
-const mod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const mod = isMac ? "⌘" : "Ctrl+";
 
 type ButtonTag = Extract<keyof React.JSX.IntrinsicElements, `md-${string}`>;
 
@@ -49,7 +50,7 @@ type Action = {
   tag: ButtonTag;
   label: string;
   icon: LucideIcon;
-  /** Ctrl/⌘ + this key applies the action from the textarea. */
+  /** ⌘ (Mac) or Ctrl (elsewhere) + this key applies the action from the textarea. */
   key?: string;
   /** Less common; hidden on narrow screens so the toolbar fits. */
   secondary?: boolean;
@@ -111,7 +112,8 @@ export function MarkdownEditor({
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
-    const tag = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && shortcuts.get(e.key.toLowerCase());
+    // Only ⌘ on a Mac: there Ctrl+B/E/K are the standard text-editing keys (back, end of line, kill).
+    const tag = (isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey && shortcuts.get(e.key.toLowerCase());
     if (tag) {
       e.preventDefault();
       toolbarRef.current?.querySelector<HTMLElement>(tag)?.click();
