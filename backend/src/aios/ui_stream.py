@@ -16,6 +16,8 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Literal
 from uuid import uuid4
 
+import psycopg
+import sqlalchemy.exc
 from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import (
@@ -277,7 +279,13 @@ class UIStream:
     def error(self, exc: BaseException) -> Iterator[Chunk]:
         yield from self._close_part()
         self.finish_reason = "error"
-        yield {"type": "error", "errorText": str(exc) or exc.__class__.__name__}
+        # A database error's text names the server and user (and SQLAlchemy's, the statement),
+        # so it stays in the log. Others, mostly the model's, are shown as they are.
+        if isinstance(exc, psycopg.Error | sqlalchemy.exc.SQLAlchemyError):
+            text = "Database error"
+        else:
+            text = str(exc) or exc.__class__.__name__
+        yield {"type": "error", "errorText": text}
 
     def finish(self) -> Iterator[Chunk]:
         yield from self._close_part()

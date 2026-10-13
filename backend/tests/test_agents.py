@@ -3,6 +3,7 @@ import json
 import threading
 from dataclasses import dataclass
 
+import psycopg
 import pytest
 from fake_model import model, replies, use_model
 
@@ -496,6 +497,19 @@ def test_failed_turn_keeps_the_users_message_and_partial_reply(api):
     ]
     assert stored_turns(api, url)[-2:] == [("user", "again"), ("assistant", "ok")]
     assert api.get(url).json()["message_count"] == 4
+
+
+def test_database_error_text_isnt_sent_to_the_client(api, monkeypatch):
+    agent = make_agent(api, "Bot")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    async def connect(*args, **kwargs):
+        raise psycopg.OperationalError('connection to server at "10.0.0.5" failed for user "aios"')
+
+    monkeypatch.setattr(checkpoints.AsyncConnection, "connect", connect)
+    resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hello"))
+    assert '"errorText":"Database error"' in resp.text
+    assert "10.0.0.5" not in resp.text
 
 
 def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
