@@ -235,26 +235,48 @@ const listItem = /^(\s*)(?:([-*+] (?:\[[ xX]\] )?)|(\d{1,3})([.)]) )/;
 const thematicBreak = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
 /**
- * On Enter inside a list item, start the next item ("- ", "- [ ] ", "2. "); on an empty item,
- * end the list instead. With text after the caret the item is split, never treated as empty.
+ * On Enter inside a list item, start the next item ("- ", "- [ ] ", "2. "), splitting it if text
+ * follows the caret. On an empty item, outdent it one level if nested, else end the list.
  * Returns whether it handled the key.
  */
 function continueList(textarea: HTMLTextAreaElement): boolean {
   const { value, selectionStart: start, selectionEnd: end } = textarea;
   if (start !== end) return false;
   const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const newline = value.indexOf("\n", start);
+  const lineEnd = newline < 0 ? value.length : newline;
   const line = value.slice(lineStart, start);
   const match = listItem.exec(line);
-  if (!match || thematicBreak.test(line)) return false;
+  if (!match || thematicBreak.test(value.slice(lineStart, lineEnd))) return false;
   const [marker, indent, bullet, number, delimiter] = match;
-  const lineEnd = value.indexOf("\n", start);
-  const rest = value.slice(start, lineEnd < 0 ? undefined : lineEnd);
-  if (line.length === marker.length && !rest) {
+  if (line.length === marker.length && start === lineEnd) {
+    if (indent) {
+      // Nested: step out to the parent item's indent, keeping the marker (as GitHub does).
+      const parent = parentIndent(value.slice(0, lineStart).split("\n").reverse(), indent.length);
+      textarea.setSelectionRange(lineStart, lineStart + indent.length);
+      insertText(textarea, parent);
+      const caret = start - indent.length + parent.length;
+      textarea.setSelectionRange(caret, caret);
+      return true;
+    }
     textarea.setSelectionRange(lineStart, start);
     return insertText(textarea, "");
   }
   const next = bullet ? bullet.replace(/\[[xX]\]/, "[ ]") : `${Number(number) + 1}${delimiter} `;
   return insertText(textarea, `\n${indent}${next}`);
+}
+
+/**
+ * The indent of the nearest earlier item less indented than `depth`, searching back through
+ * `lines` (nearest first) until an unindented line of plain text, which ends the list.
+ */
+function parentIndent(lines: string[], depth: number): string {
+  for (const line of lines) {
+    const item = listItem.exec(line);
+    if (item && item[1].length < depth) return item[1];
+    if (!item && /^\S/.test(line)) break;
+  }
+  return "";
 }
 
 /** Replaces the selection like typing would: firing input and keeping native undo. */
