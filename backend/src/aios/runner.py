@@ -5,7 +5,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from aios import llm
 from aios.agent import ChatDeps
-from aios.tools import AgentTool
+from aios.models import AgentVersion
+from aios.tools import AgentTool, build_tool
 from aios.tools.web_search import WEB_SEARCH
 
 
@@ -17,6 +18,17 @@ def server_tools(tools: list[AgentTool], model: str | None) -> list[AgentTool]:
         else t
         for t in tools
     ]
+
+
+def version_tools(version: AgentVersion) -> list[AgentTool]:
+    """The version's tools, built from their stored settings. Raises `ToolError` if one can't be
+    (see `aios.tools.build_tool`)."""
+    return [tool for t in version.tools for tool in build_tool(t.tool_key, t.config)]
+
+
+def run_title(text: str) -> str | None:
+    """A run's title, from its first message."""
+    return " ".join(text.split())[:120] or None
 
 
 def build_agent(

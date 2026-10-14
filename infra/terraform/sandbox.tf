@@ -303,7 +303,7 @@ resource "aws_ecs_task_definition" "sandbox" {
   }])
 }
 
-# --- IAM: the API starts and stops sandboxes ---
+# --- IAM: the API and the workflow worker start and stop sandboxes ---
 
 data "aws_iam_policy_document" "sandboxes" {
   # Only the sandbox task definition (any revision), only in this cluster.

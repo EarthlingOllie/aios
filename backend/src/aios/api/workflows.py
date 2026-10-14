@@ -2,24 +2,39 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
+from aios import checkpoints
 from aios.api.skills import lock_live, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
+    AgentRun,
     AgentVersion,
     Workflow,
     WorkflowNode,
     WorkflowNodeKind,
+    WorkflowRun,
+    WorkflowRunStatus,
+    WorkflowRunStep,
+    WorkflowStepStatus,
     WorkflowVersion,
 )
+from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.versioning import NodeSpec, save_workflow_version
-from aios.workflows import GraphError, validate_graph
+from aios.worker import run_workflow_task
+from aios.workflows import (
+    GraphError,
+    RunError,
+    alive,
+    fail_stopped_runs,
+    load_graph,
+    validate_graph,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -509,3 +524,199 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
     )
     db.commit()
     return workflow_out(db, workflow)
+
+
+# --- Runs ---------------------------------------------------------------------------------------
+
+
+class WorkflowRunIn(BaseModel):
+    # Given to the nodes with no incoming edge, as the user's message to an agent.
+    input: str = Field(min_length=1, pattern=r"\S")
+
+
+class WorkflowRunSummary(BaseModel):
+    id: int
+    workflow_id: int
+    workflow_version_id: int
+    workflow_version: int
+    status: WorkflowRunStatus
+    input: str
+    output: str | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class WorkflowRunStepOut(BaseModel):
+    id: int
+    # Node keys from the run's workflow down to this node.
+    path: list[str]
+    kind: WorkflowNodeKind
+    status: WorkflowStepStatus
+    input: str
+    output: str | None
+    error: str | None
+    # An agent node's conversation, on the agent's run page; None for workflow nodes, and once
+    # the agent run has been deleted (with its agent).
+    agent_id: int | None
+    agent_run_id: int | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class WorkflowRunOut(WorkflowRunSummary):
+    # The pinned version's graph.
+    version: WorkflowVersionOut
+    # In the order they started.
+    steps: list[WorkflowRunStepOut]
+
+
+def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
+    workflow = get_owned_workflow(db, user_id, workflow_id)
+    run = db.get(WorkflowRun, run_id)
+    if run is None or run.workflow_id != workflow.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return run
+
+
+def workflow_run_summary_query():
+    return select(
+        WorkflowRun.id,
+        WorkflowRun.workflow_id,
+        WorkflowRun.workflow_version_id,
+        WorkflowVersion.version.label("workflow_version"),
+        WorkflowRun.status,
+        WorkflowRun.input,
+        WorkflowRun.output,
+        WorkflowRun.error,
+        WorkflowRun.created_at,
+        WorkflowRun.started_at,
+        WorkflowRun.finished_at,
+    ).join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+
+
+def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
+    row = db.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
+    return WorkflowRunSummary.model_validate(row, from_attributes=True)
+
+
+@router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
+def list_workflow_runs(workflow_id: DbId, user: CurrentUser, db: DB):
+    workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Its worker died: shown failed rather than running for ever (see `get_workflow_run`).
+    fail_stopped_runs(db, WorkflowRun.workflow_id == workflow.id)
+    rows = db.execute(
+        workflow_run_summary_query()
+        .where(WorkflowRun.workflow_id == workflow.id)
+        .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
+    ).all()
+    return [WorkflowRunSummary.model_validate(row, from_attributes=True) for row in rows]
+
+
+@router.post(
+    "/workflows/{workflow_id}/runs",
+    response_model=WorkflowRunSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUser, db: DB):
+    """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
+    workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Keeps a concurrent delete from leaving a run started on a workflow that's gone.
+    if not lock_live(db, Workflow, [workflow.id], read=True):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    version = workflow.current_version
+    if not version.nodes:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "This workflow has no nodes")
+    # Checked now, at every depth, so a version that can't run doesn't leave a run that fails.
+    try:
+        load_graph(db, version.id)
+    except RunError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    # Pin the version: later edits to the workflow don't change this run.
+    run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, input=body.input)
+    db.add(run)
+    db.commit()
+    try:
+        run_workflow_task.delay(run.id)
+    except Exception as exc:
+        # Nothing would ever pick up a committed-but-unqueued run; drop it so the client can
+        # simply retry without leaving one stuck in `queued`.
+        db.delete(run)
+        db.commit()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Could not queue the run; please try again shortly.",
+        ) from exc
+    return workflow_run_summary(db, run.id)
+
+
+@router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunOut)
+def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
+    run = get_owned_workflow_run(db, user.id, workflow_id, run_id)
+    # A run whose worker died is failed when it's read: its task may never come round again to
+    # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
+    # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
+    # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
+    fail_stopped_runs(db, WorkflowRun.id == run.id)
+    summary = workflow_run_summary(db, run.id)
+    steps = db.execute(
+        select(WorkflowRunStep, AgentRun.agent_id)
+        .outerjoin(AgentRun, AgentRun.id == WorkflowRunStep.agent_run_id)
+        .where(WorkflowRunStep.run_id == run.id)
+        .order_by(WorkflowRunStep.id)
+    ).all()
+    return WorkflowRunOut(
+        **summary.model_dump(),
+        version=version_out(load_version(db, summary.workflow_version_id)),
+        steps=[
+            WorkflowRunStepOut(
+                id=step.id,
+                path=step.path,
+                kind=step.kind,
+                status=step.status,
+                input=step.input,
+                output=step.output,
+                error=step.error,
+                agent_id=agent_id,
+                agent_run_id=step.agent_run_id,
+                started_at=step.started_at,
+                finished_at=step.finished_at,
+            )
+            for step, agent_id in steps
+        ],
+    )
+
+
+@router.delete("/workflows/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_workflow_run(
+    workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
+) -> None:
+    """Delete the run, and the agent runs its agent nodes held their conversations in."""
+    run = get_owned_workflow_run(db, user.id, workflow_id, run_id)
+    # Locked before its agent runs are read: a node starting meanwhile records its step and
+    # agent run in one transaction, which waits for this lock, so it's either seen here or
+    # fails once the run has gone (`aios.workflows._start_step`).
+    still_going = db.scalar(select(alive()).where(WorkflowRun.id == run.id).with_for_update())
+    # Its agent turns would carry on regardless, and their checkpoints can only be deleted once
+    # they end. A queued run can go: the worker won't start a run that's gone (`_claim`); so can
+    # one whose worker died, whose heartbeat has stopped.
+    if still_going:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This run is still going; wait for it to finish."
+        )
+    agent_run_ids = list(
+        db.scalars(
+            select(WorkflowRunStep.agent_run_id).where(
+                WorkflowRunStep.run_id == run.id, WorkflowRunStep.agent_run_id.is_not(None)
+            )
+        )
+    )
+    sandboxes = run_sandboxes(db, agent_run_ids)
+    db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
+    db.delete(run)  # and its steps
+    db.commit()
+    # As for an agent's runs: their checkpoints don't cascade, and their sandboxes would run on.
+    background.add_task(checkpoints.delete_threads, agent_run_ids)
+    if sandboxes:
+        background.add_task(stop_sandboxes, sandboxes)

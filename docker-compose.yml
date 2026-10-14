@@ -76,6 +76,26 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Workflow runs, on their own queue so ingests don't wait behind them (see aios.worker).
+  # They need no Docling, so this reuses the api image.
+  workflow-worker:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "workflows", "--loglevel=INFO", "--concurrency=2"]
+    # Its agent nodes run run_python too, so it uses the same sandbox as the api.
+    environment:
+      <<: *backend-env
+      SANDBOX_BACKEND: dev
+      SANDBOX_DEV_URL: http://sandbox:8080
+      SANDBOX_DEV_TOKEN: dev-sandbox-token
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      sandbox:
+        condition: service_started
+
   # The run_python sandbox for local development (SANDBOX_BACKEND=dev): one long-lived runner
   # shared by every agent run, with no network restrictions (it can reach db and redis).
   # Unisolated, so never expose it beyond localhost. Port 8081 is for an API run outside

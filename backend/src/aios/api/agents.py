@@ -30,7 +30,7 @@ from aios.models import (
     WorkflowNode,
     agent_version_skills,
 )
-from aios.runner import build_agent
+from aios.runner import build_agent, run_title, version_tools
 from aios.sandbox.sessions import (
     SandboxNotConfigured,
     manager,
@@ -42,7 +42,6 @@ from aios.tools import (
     TOOLS,
     AgentTool,
     ToolError,
-    build_tool,
     check_stored_tool,
     stored_settings,
     validate_tool,
@@ -511,7 +510,7 @@ def build_version_tools(
 ) -> list[AgentTool]:
     """The version's tools, built from their stored settings; a 409 if one can't be."""
     try:
-        return [tool for t in version.tools for tool in build_tool(t.tool_key, t.config)]
+        return version_tools(version)
     except ToolError as exc:
         # E.g. the tool has since left the library, or its settings model now rejects a value.
         raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
@@ -578,16 +577,8 @@ def trace_metadata(run: AgentRun, user_id: int) -> dict[str, Any]:
         session_id=checkpoints.thread_id(run.id),
         user_id=user_id,
         tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
-        agent_id=run.agent_id,
-        agent_name=run.agent.name,
-        agent_version=version.version,
-        agent_version_id=version.id,
         agent_run_id=run.id,
-        skill_versions=[
-            {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
-            for sv in version.skills
-        ],
-        tools=[{"key": t.tool_key, "config": t.config} for t in version.tools],
+        **tracing.agent_version_metadata(version),
     )
 
 
@@ -634,7 +625,7 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
 
 def _start_turn(run_id: int, prompt: str) -> None:
     """Title an untitled run after its first message."""
-    title = " ".join(prompt.split())[:120] or None
+    title = run_title(prompt)
     with SessionLocal() as db:
         db.execute(
             update(AgentRun)
