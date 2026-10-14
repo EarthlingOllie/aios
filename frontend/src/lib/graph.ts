@@ -38,25 +38,31 @@ export function layoutGraph(
   const g = new graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 32, ranksep: 64 });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const key of keys) g.setNode(key, { width: NODE_WIDTH, height: NODE_HEIGHT });
+  // dagre keeps nodes in plain objects, so a key like `__proto__` would break it: it's given each
+  // node's index instead.
+  const ids = new Map(keys.map((key, i) => [key, String(i)]));
+  for (const id of ids.values()) g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT });
   for (const { source, target } of edges) {
-    if (g.hasNode(source) && g.hasNode(target)) g.setEdge(source, target);
+    const [s, t] = [ids.get(source), ids.get(target)];
+    if (s !== undefined && t !== undefined) g.setEdge(s, t);
   }
   layout(g);
   // dagre gives centres; positions are top-left corners.
   const auto = (key: string): Position => {
-    const { x, y } = g.node(key);
+    const { x, y } = g.node(ids.get(key)!);
     return { x: x - NODE_WIDTH / 2, y: y - NODE_HEIGHT / 2 };
   };
 
-  const shift: Record<string, Position> = {};
+  // A Map, and `Object.hasOwn` for saved positions, so keys like `constructor` aren't taken for
+  // what every object inherits.
+  const shift = new Map<string, Position>();
   for (const key of keys) {
-    if (saved[key]) {
+    if (Object.hasOwn(saved, key)) {
       const a = auto(key);
-      shift[key] = { x: saved[key].x - a.x, y: saved[key].y - a.y };
+      shift.set(key, { x: saved[key].x - a.x, y: saved[key].y - a.y });
     }
   }
-  const savedShifts = Object.values(shift);
+  const savedShifts = [...shift.values()];
   const fallback =
     savedShifts.length === 0
       ? { x: 0, y: 0 }
@@ -66,19 +72,19 @@ export function layoutGraph(
         };
   // Unplaced nodes take a placed neighbour's shift. Repeated until nothing changes, so a chain of
   // new nodes follows the placed node it hangs off, whatever order the keys are in.
-  let pending = keys.filter((key) => !(key in shift));
+  let pending = keys.filter((key) => !shift.has(key));
   while (pending.length) {
     const before = pending.length;
     pending = pending.filter((key) => {
       const neighbour =
-        edges.find((e) => e.target === key && e.source in shift)?.source ??
-        edges.find((e) => e.source === key && e.target in shift)?.target;
+        edges.find((e) => e.target === key && shift.has(e.source))?.source ??
+        edges.find((e) => e.source === key && shift.has(e.target))?.target;
       if (neighbour === undefined) return true;
-      shift[key] = shift[neighbour];
+      shift.set(key, shift.get(neighbour)!);
       return false;
     });
     if (pending.length === before) {
-      for (const key of pending) shift[key] = fallback;
+      for (const key of pending) shift.set(key, fallback);
       break;
     }
   }
@@ -86,7 +92,8 @@ export function layoutGraph(
   return Object.fromEntries(
     keys.map((key) => {
       const a = auto(key);
-      return [key, { x: a.x + shift[key].x, y: a.y + shift[key].y }];
+      const s = shift.get(key)!;
+      return [key, { x: a.x + s.x, y: a.y + s.y }];
     }),
   );
 }

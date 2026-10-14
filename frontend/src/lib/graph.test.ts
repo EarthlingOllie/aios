@@ -38,6 +38,26 @@ describe("layoutGraph", () => {
     expect(Object.keys(pos)).toEqual(["a"]);
   });
 
+  it("handles keys that are also names of built-in object properties", () => {
+    const keys = ["__proto__", "constructor", "toString", "valueOf"];
+    const chain = [
+      { source: "__proto__", target: "constructor" },
+      { source: "constructor", target: "toString" },
+      { source: "toString", target: "valueOf" },
+    ];
+    // Parsed, as it comes from the API: a literal `__proto__` key would set the prototype.
+    const saved = JSON.parse('{"__proto__": {"x": 500, "y": 40}}');
+    const pos = layoutGraph(keys, chain, saved);
+    expect(Object.keys(pos)).toEqual(keys);
+    const [proto, ctor, toString, valueOf] = keys.map((key) => pos[key]);
+    expect(proto).toEqual({ x: 500, y: 40 });
+    // The rest follow it, each after the one before.
+    expect(ctor.x).toBeGreaterThanOrEqual(500 + NODE_WIDTH);
+    expect(toString.x).toBeGreaterThan(ctor.x);
+    expect(valueOf.x).toBeGreaterThan(toString.x);
+    expect([ctor.y, toString.y, valueOf.y].every(Number.isFinite)).toBe(true);
+  });
+
   it("returns an empty layout for an empty graph", () => {
     expect(layoutGraph([], [], {})).toEqual({});
   });
