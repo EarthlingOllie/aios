@@ -176,11 +176,14 @@ export function WorkflowCanvas({
   // React Flow re-adopts (and re-renders) every node and edge it's handed as a new object, so
   // only build new ones when what they show changes, not on every render of the page around us.
   // So too for selecting: only what's selected (or deselected) is built anew.
+  // Each node's size is given, as it's fixed: React Flow hides a node it's handed without one
+  // until it has measured it again, and one handed over just as it's first measured stays hidden.
   const unselectedNodes = useMemo<CardNode[]>(
     () =>
       nodes.map((node) => ({
         id: node.key,
         type: "workflowNode",
+        measured: { width: NODE_WIDTH, height: NODE_HEIGHT },
         position: positions[node.key],
         data: { node, start: starts.has(node.key), editing: isEditing },
         draggable: isEditing,

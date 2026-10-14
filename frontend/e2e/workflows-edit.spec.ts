@@ -1,3 +1,5 @@
+// For the scripts that run in the page.
+/// <reference lib="dom" />
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { fakeApi, type FakeApi } from "./fake-api";
@@ -730,4 +732,70 @@ test("won't update a node to a version that runs this workflow", async ({ page }
   // Other nodes can still be updated.
   await node(page, "research").click();
   await expect(inspector(page).getByRole("button", { name: "Update to v2" })).toBeEnabled();
+});
+
+test("shows the nodes when the graph changes just as they're first measured", async ({ page }) => {
+  // React Flow hides a node until it has measured it, which a ResizeObserver does once the node
+  // is drawn. Here the page holds those measurements back, then hands them over in the commit
+  // that replaces the graph's nodes, before React Flow has taken the new nodes in: as happened,
+  // now and then, to a busy browser loading the workflow twice (as StrictMode does).
+  await page.addInitScript(() => {
+    const held: (() => void)[] = [];
+    let holding = true;
+    window.ResizeObserver = class extends ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        super((entries, observer) => {
+          if (holding) held.push(() => callback(entries, observer));
+          else callback(entries, observer);
+        });
+      }
+    };
+    // React tells React DevTools of each commit as it's made.
+    let armed = false;
+    Object.assign(window, {
+      measureOnNextCommit: () => (armed = true),
+      __REACT_DEVTOOLS_GLOBAL_HOOK__: {
+        supportsFiber: true,
+        renderers: new Map(),
+        inject: () => 1,
+        onCommitFiberRoot: () => {
+          if (!armed) return;
+          armed = false;
+          holding = false;
+          for (const measure of held.splice(0)) measure();
+        },
+        onCommitFiberUnmount: () => {},
+        onPostCommitFiberRoot: () => {},
+        checkDCE: () => {},
+      },
+    });
+  });
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  // The second load of the workflow waits until the first has been drawn.
+  let loads = 0;
+  let loadAgain!: () => void;
+  const again = new Promise<void>((resolve) => (loadAgain = resolve));
+  await page.route(`**/api/workflows/${report.id}`, async (route) => {
+    if (++loads === 2) await again;
+    await route.fallback();
+  });
+  const lists = ["agents", "workflows"].map((list) =>
+    page.waitForResponse((r) => new URL(r.url()).pathname === `/api/${list}`),
+  );
+  await page.goto(`/workflows/${report.id}/edit`);
+  await Promise.all(lists);
+  await expect(node(page, "write")).toBeAttached();
+  await expect.poll(() => loads).toBe(2);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  // Not measured yet: the edge has no handles to run between.
+  await expect(edge(page, "research", "write")).toHaveCount(0);
+
+  await page.evaluate(() =>
+    (window as unknown as { measureOnNextCommit(): void }).measureOnNextCommit(),
+  );
+  loadAgain();
+  await expect(node(page, "research")).toBeVisible();
+  await expect(node(page, "write")).toBeVisible();
+  await expect(edge(page, "research", "write")).toBeAttached();
 });
