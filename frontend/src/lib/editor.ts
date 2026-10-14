@@ -42,6 +42,16 @@ export function fromVersion(
   };
 }
 
+/**
+ * The draft laid out afresh, every node where the layout puts it. Adding or removing a node or an
+ * edge does this, so the graph keeps reading left to right in the order it runs (rather than,
+ * say, a new node staying wherever it was first put); positions dragged by hand are reset then.
+ */
+function relaid(draft: Draft): Draft {
+  const keys = draft.nodes.map((n) => n.key);
+  return { ...draft, positions: layoutGraph(keys, draft.edges, {}) };
+}
+
 /** Why `key` can't name a node (`others` are the other nodes' keys), or null if it can. */
 export function keyError(key: string, others: string[]): string | null {
   if (!KEY_PATTERN.test(key)) return "Use 1-64 letters, digits, '-' or '_'.";
@@ -104,25 +114,20 @@ function pin(target: Target): Omit<WorkflowNode, "key"> {
   };
 }
 
-export function addNode(draft: Draft, target: Target, position: NodePosition): Draft {
+export function addNode(draft: Draft, target: Target): Draft {
   const key = newKey(
     target,
     draft.nodes.map((n) => n.key),
   );
-  return {
-    ...draft,
-    nodes: [...draft.nodes, { key, ...pin(target) }],
-    positions: { ...draft.positions, [key]: position },
-  };
+  return relaid({ ...draft, nodes: [...draft.nodes, { key, ...pin(target) }] });
 }
 
 export function removeNode(draft: Draft, key: string): Draft {
-  const { [key]: _removed, ...positions } = draft.positions;
-  return {
+  return relaid({
     nodes: draft.nodes.filter((n) => n.key !== key),
     edges: draft.edges.filter((e) => e.source !== key && e.target !== key),
-    positions,
-  };
+    positions: {},
+  });
 }
 
 /** Renames a node's key, in its edges and position too. Check it with `keyError` first. */
@@ -172,14 +177,14 @@ export function canConnect(draft: Draft, source: string, target: string): string
 
 export function connect(draft: Draft, source: string, target: string): Draft {
   if (canConnect(draft, source, target)) return draft;
-  return { ...draft, edges: [...draft.edges, { source, target }] };
+  return relaid({ ...draft, edges: [...draft.edges, { source, target }] });
 }
 
 export function removeEdge(draft: Draft, source: string, target: string): Draft {
-  return {
+  return relaid({
     ...draft,
     edges: draft.edges.filter((e) => !(e.source === source && e.target === target)),
-  };
+  });
 }
 
 /** Moves nodes, all at once, e.g. the several selected nodes in one drag. */

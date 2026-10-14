@@ -121,6 +121,8 @@ test("connects nodes by dragging from one handle to another", async ({ page }) =
   const api = await fakeApi(page);
   const { report } = seed(api);
   await page.goto(`/workflows/${report.id}/edit`);
+  // With research selected, so the new node isn't put right of write to begin with.
+  await node(page, "research").click();
   await addNode(page, "Critic");
   const from = (await node(page, "write").locator(".react-flow__handle-right").boundingBox())!;
   const to = (await node(page, "critic").locator(".react-flow__handle-left").boundingBox())!;
@@ -129,6 +131,64 @@ test("connects nodes by dragging from one handle to another", async ({ page }) =
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 10 });
   await page.mouse.up();
   await expect(edge(page, "write", "critic")).toBeAttached();
+  // The graph is laid out again, so the new edge runs left to right.
+  const x = async (key: string) => (await node(page, key).boundingBox())!.x;
+  expect(await x("critic")).toBeGreaterThan(await x("write"));
+});
+
+test("lays the graph out again in edge order when edges change", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { researcher, writer, critic, review } = seed(api);
+  api.addAgent("Editor");
+  const publisher = api.addAgent("Publisher");
+  const weekly = api.addWorkflow(
+    "Weekly report",
+    [
+      { key: "research", agent: researcher },
+      { key: "draft", agent: writer },
+      { key: "fact_check", agent: critic },
+      { key: "review", workflow: review },
+      { key: "publish", agent: publisher },
+    ],
+    [
+      ["research", "draft"],
+      ["research", "fact_check"],
+      ["draft", "review"],
+      ["fact_check", "review"],
+      ["review", "publish"],
+    ],
+  );
+  await page.goto(`/workflows/${weekly.id}/edit`);
+  await addNode(page, "Editor");
+  await inspector(page).getByLabel("Key").fill("final_edit");
+  await inspector(page).getByLabel("Key").press("Enter");
+  await connectInInspector(page, "review", "final_edit");
+  await connectInInspector(page, "final_edit", "publish");
+  await edge(page, "review", "publish").dispatchEvent("click");
+  await inspector(page).getByRole("button", { name: "Remove edge" }).click();
+
+  // Each node is drawn right of what leads to it, and the whole graph is in view.
+  const left = async (key: string) => (await node(page, key).boundingBox())!.x;
+  const inOrder = async () => {
+    expect(await left("review")).toBeGreaterThan(await left("draft"));
+    expect(await left("final_edit")).toBeGreaterThan(await left("review"));
+    expect(await left("publish")).toBeGreaterThan(await left("final_edit"));
+  };
+  await inOrder();
+  const canvas = (await page.locator(".react-flow").boundingBox())!;
+  for (const key of ["research", "final_edit", "publish"]) {
+    const box = (await node(page, key).boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(canvas.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(canvas.x + canvas.width);
+  }
+
+  // What's saved is that layout, so the workflow reads the same once saved.
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(node(page, "final_edit")).toBeVisible();
+  await inOrder();
+  expect(weekly.layout.final_edit.x).toBeGreaterThan(weekly.layout.review.x);
+  expect(weekly.layout.publish.x).toBeGreaterThan(weekly.layout.final_edit.x);
 });
 
 test("selects one node at a time, even with Shift held", async ({ page }) => {

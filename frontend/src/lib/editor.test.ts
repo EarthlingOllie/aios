@@ -18,6 +18,7 @@ import {
   type Draft,
   type Target,
 } from "@/lib/editor";
+import { layoutGraph, NODE_HEIGHT, NODE_WIDTH } from "@/lib/graph";
 
 const writer: Target = { kind: "agent", id: 1, name: "Writer", version: 2, version_id: 12 };
 const review: Target = { kind: "workflow", id: 7, name: "Peer review", version: 1, version_id: 70 };
@@ -87,8 +88,8 @@ describe("keyError", () => {
 });
 
 describe("addNode", () => {
-  it("adds a node keyed after its target's name, at the given position", () => {
-    const draft = addNode(chain, writer, { x: 9, y: 9 });
+  it("adds a node keyed after its target's name", () => {
+    const draft = addNode(chain, writer);
     const added = draft.nodes.at(-1)!;
     expect(added).toMatchObject({
       key: "writer",
@@ -98,15 +99,64 @@ describe("addNode", () => {
       version: 2,
       latest_version: 2,
     });
-    expect(draft.positions.writer).toEqual({ x: 9, y: 9 });
+    expect(draft.positions.writer).toBeDefined();
     // Keys stay unique.
-    expect(addNode(draft, writer, { x: 0, y: 0 }).nodes.at(-1)!.key).toBe("writer-2");
-    expect(addNode(chain, review, { x: 0, y: 0 }).nodes.at(-1)!.key).toBe("peer-review");
+    expect(addNode(draft, writer).nodes.at(-1)!.key).toBe("writer-2");
+    expect(addNode(chain, review).nodes.at(-1)!.key).toBe("peer-review");
   });
 
   it("falls back to the kind when a name has nothing usable for a key", () => {
     const odd = { ...writer, name: "✨✨" };
-    expect(addNode(chain, odd, { x: 0, y: 0 }).nodes.at(-1)!.key).toBe("agent");
+    expect(addNode(chain, odd).nodes.at(-1)!.key).toBe("agent");
+  });
+});
+
+describe("laying out again", () => {
+  // The chain, with b dragged up and to the far right, past c.
+  const dragged = moveNodes(chain, { b: { x: 900, y: -200 } });
+  const fresh = ({ nodes, edges }: Draft) =>
+    layoutGraph(
+      nodes.map((n) => n.key),
+      edges,
+      {},
+    );
+  const leftToRight = (d: Draft, keys: string[]) =>
+    keys.slice(1).forEach((key, i) => {
+      expect(d.positions[key].x).toBeGreaterThan(d.positions[keys[i]].x);
+    });
+
+  it("happens when an edge is added or removed, resetting dragged positions", () => {
+    // a → b → c, then writer added and put between b and c.
+    const added = addNode(dragged, writer);
+    const between = removeEdge(connect(connect(added, "b", "writer"), "writer", "c"), "b", "c");
+    expect(between.positions).toEqual(fresh(between));
+    leftToRight(between, ["a", "b", "writer", "c"]);
+    expect(removeEdge(dragged, "a", "b").positions).toEqual(fresh(removeEdge(dragged, "a", "b")));
+  });
+
+  it("happens when a node is added or removed", () => {
+    const added = addNode(dragged, writer);
+    expect(added.positions).toEqual(fresh(added));
+    // An unconnected node gets a place of its own, overlapping none.
+    const { writer: spot, ...rest } = added.positions;
+    for (const p of Object.values(rest)) {
+      expect(Math.abs(p.x - spot.x) >= NODE_WIDTH || Math.abs(p.y - spot.y) >= NODE_HEIGHT).toBe(
+        true,
+      );
+    }
+    const removed = removeNode(dragged, "c");
+    expect(removed.positions).toEqual(fresh(removed));
+  });
+
+  it("doesn't happen when nodes are moved, renamed or pointed elsewhere", () => {
+    expect(renameNode(dragged, "a", "start").positions.start).toEqual(chain.positions.a);
+    expect(retarget(dragged, "b", review).positions).toBe(dragged.positions);
+    expect(updateToLatest(dragged, "b").positions).toBe(dragged.positions);
+    expect(dragged.positions.b).toEqual({ x: 900, y: -200 });
+  });
+
+  it("doesn't happen when an edge is refused", () => {
+    expect(connect(dragged, "c", "a")).toBe(dragged);
   });
 });
 

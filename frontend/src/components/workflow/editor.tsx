@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector, Row } from "@/components/workflow/inspector";
-import type { NodePosition, WorkflowNode } from "@/lib/api";
+import type { WorkflowNode } from "@/lib/api";
 import {
   addNode,
   canConnect,
@@ -21,7 +21,6 @@ import {
   type Draft,
   type Target,
 } from "@/lib/editor";
-import { NODE_HEIGHT, NODE_WIDTH } from "@/lib/graph";
 import { cn } from "@/lib/utils";
 
 const selectClass = "border-input w-full rounded-md border bg-transparent px-2 py-1.5 text-sm";
@@ -49,25 +48,6 @@ function TargetOptions({ targets }: { targets: Target[] }) {
   );
 }
 
-/**
- * Where a new node goes: to the right of the selected node, or of the rightmost one, moved down
- * until it doesn't overlap another node.
- */
-function freeSpot(draft: Draft, near: string | undefined): NodePosition {
-  const placed = Object.values(draft.positions);
-  if (placed.length === 0) return { x: 0, y: 0 };
-  const from =
-    (near ? draft.positions[near] : undefined) ??
-    placed.reduce((right, p) => (p.x > right.x ? p : right), placed[0]);
-  const spot = { x: from.x + NODE_WIDTH + 64, y: from.y };
-  const overlaps = () =>
-    placed.some(
-      (p) => Math.abs(p.x - spot.x) < NODE_WIDTH && Math.abs(p.y - spot.y) < NODE_HEIGHT + 16,
-    );
-  while (overlaps()) spot.y += NODE_HEIGHT + 32;
-  return spot;
-}
-
 /** The graph being edited: the canvas, a picker for adding nodes, and an editable inspector. */
 export function GraphEditor({
   draft,
@@ -81,12 +61,11 @@ export function GraphEditor({
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [adding, setAdding] = useState("");
-  const selectedKey = selection?.type === "node" ? selection.key : undefined;
 
   const onAdd = () => {
     const target = targets?.find((t) => targetValue(t) === adding);
     if (!target) return;
-    const next = addNode(draft, target, freeSpot(draft, selectedKey));
+    const next = addNode(draft, target);
     onChange(next);
     setSelection({ type: "node", key: next.nodes.at(-1)!.key });
   };

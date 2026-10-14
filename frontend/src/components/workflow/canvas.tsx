@@ -1,4 +1,12 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Background,
   Controls,
@@ -11,6 +19,8 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type Viewport,
+  useReactFlow,
 } from "@xyflow/react";
 import { Bot, Workflow as WorkflowIcon } from "lucide-react";
 
@@ -18,7 +28,14 @@ import "@xyflow/react/dist/style.css";
 
 import { Badge } from "@/components/ui/badge";
 import type { NodePosition, WorkflowEdge, WorkflowNode } from "@/lib/api";
-import { fitGraph, layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
+import {
+  fitGraph,
+  layoutGraph,
+  MIN_EDITING_ZOOM,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  startKeys,
+} from "@/lib/graph";
 import { cn } from "@/lib/utils";
 
 /** What's selected on the canvas, shown in the inspector. */
@@ -91,6 +108,18 @@ function withSelected<T extends { id: string }>(items: T[], id: string | undefin
   return items.map((item) => (item.id === id ? { ...item, selected: true } : item));
 }
 
+/** Moves the view to `viewport` whenever it changes after the first render. */
+function FitOnChange({ viewport }: { viewport: Viewport }) {
+  const { setViewport } = useReactFlow();
+  const shown = useRef(viewport);
+  useEffect(() => {
+    if (viewport === shown.current) return;
+    shown.current = viewport;
+    void setViewport(viewport);
+  }, [viewport, setViewport]);
+  return null;
+}
+
 /** What the canvas does with edits, when it's editable. */
 export type CanvasEditing = {
   /** New positions by node key: dragging a selection moves several nodes at once. */
@@ -136,6 +165,13 @@ export function WorkflowCanvas({
     [isEditing, keys, edges, layout],
   );
   const starts = useMemo(() => new Set(startKeys(keys, edges)), [keys, edges]);
+  // Adding or removing a node or an edge lays the graph out again (see `lib/editor`), which can
+  // move nodes out of view, so the canvas is sized and the view placed again then: when the nodes
+  // and edges change, by node index, so renaming a key or dragging a node doesn't move the view.
+  const shape = useMemo(() => {
+    const index = new Map(keys.map((key, i) => [key, i]));
+    return `${keys.length}:${edges.map((e) => `${index.get(e.source)}>${index.get(e.target)}`)}`;
+  }, [keys, edges]);
 
   // React Flow re-adopts (and re-renders) every node and edge it's handed as a new object, so
   // only build new ones when what they show changes, not on every render of the page around us.
@@ -214,16 +250,22 @@ export function WorkflowCanvas({
   );
 
   // The canvas is sized, and the graph placed on it, once its width is known (before it's first
-  // drawn), and not again as nodes are dragged about.
+  // drawn), and not again as nodes are dragged about; while editing, again when its shape changes.
   const ref = useRef<HTMLDivElement>(null);
-  const [fit, setFit] = useState<ReturnType<typeof fitGraph>>();
+  const [fit, setFit] = useState<ReturnType<typeof fitGraph> & { shape: string }>();
   useLayoutEffect(() => {
-    if (!fit) setFit(fitGraph(Object.values(positions), ref.current!.clientWidth));
-  }, [fit, positions]);
+    if (fit && (!isEditing || fit.shape === shape)) return;
+    const minZoom = isEditing ? MIN_EDITING_ZOOM : undefined;
+    setFit({ ...fitGraph(Object.values(positions), ref.current!.clientWidth, minZoom), shape });
+  }, [fit, isEditing, shape, positions]);
   if (!fit) return <div ref={ref} className={cn("rounded-md border", className)} />;
 
   return (
-    <div className={cn("relative rounded-md border", className)} style={{ height: fit.height }}>
+    <div
+      ref={ref}
+      className={cn("relative rounded-md border", className)}
+      style={{ height: fit.height }}
+    >
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
@@ -248,6 +290,7 @@ export function WorkflowCanvas({
       >
         <Background />
         <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
+        {editing && <FitOnChange viewport={fit.viewport} />}
       </ReactFlow>
       {children}
     </div>
