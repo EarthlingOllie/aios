@@ -5,6 +5,14 @@ import { fakeApi, type FakeApi } from "./fake-api";
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
   page.locator(`.react-flow__edge[data-id="${source}->${target}"]`);
+async function clickEdge(page: Page, source: string, target: string) {
+  const from = (await node(page, source).boundingBox())!;
+  const to = (await node(page, target).boundingBox())!;
+  await page.mouse.click(
+    (from.x + from.width + to.x) / 2,
+    (from.y + from.height / 2 + to.y + to.height / 2) / 2,
+  );
+}
 const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
 
 function seed(api: FakeApi) {
@@ -166,6 +174,54 @@ test("a poll that changes nothing leaves the graph as it was", async ({ page }) 
   await page.waitForResponse((r) => r.url().endsWith(`/runs/${run.id}`) && ++polls === 3);
   const changes = await page.evaluate(() => (globalThis as unknown as Browser).canvasChanges);
   expect(changes).toEqual([]);
+});
+
+test("a selected node or edge keeps its run's colour, drawn thicker", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  const run = api.addRun(report, {
+    steps: [
+      { path: ["research"], status: "succeeded" },
+      { path: ["write"], status: "succeeded" },
+      { path: ["review"], kind: "workflow", status: "running" },
+    ],
+  });
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(node(page, "review")).toHaveAttribute("data-state", "running");
+  await expect(edge(page, "research", "write")).toHaveAttribute("data-state", "taken");
+  const path = edge(page, "research", "write").locator(".react-flow__edge-path");
+  const card = node(page, "review").locator("> div");
+  // (The browser's globals, as the e2e tests are type-checked without the DOM's.)
+  type Browser = { getComputedStyle: (el: unknown) => Record<string, string> };
+  const css = (el: typeof path, property: string) =>
+    el.evaluate(
+      (el, property) => (globalThis as unknown as Browser).getComputedStyle(el)[property],
+      property,
+    );
+  const look = async () => ({
+    stroke: await css(path, "stroke"),
+    strokeWidth: parseFloat(await css(path, "strokeWidth")),
+    border: await css(card, "borderColor"),
+    borderWidth: parseFloat(await css(card, "borderWidth")),
+    // The colours of the card's shadows, its ring's among them.
+    shadows: (await css(card, "boxShadow")).match(/okl(?:ab|ch)\([^)]*\)/g)?.join(" "),
+  });
+  const before = await look();
+
+  await clickEdge(page, "research", "write");
+  await expect(edge(page, "research", "write")).toHaveClass(/selected/);
+  const edgeSelected = await look();
+  expect(edgeSelected.stroke).toBe(before.stroke);
+  expect(edgeSelected.strokeWidth).toBeGreaterThan(before.strokeWidth);
+
+  await card.click();
+  await expect(node(page, "review")).toHaveClass(/selected/);
+  const nodeSelected = await look();
+  expect(nodeSelected.border).toBe(before.border);
+  expect(nodeSelected.borderWidth).toBeGreaterThan(before.borderWidth);
+  expect(nodeSelected.shadows).toBe(before.shadows);
+  // And the edge, no longer selected, is drawn as it was.
+  expect(nodeSelected.strokeWidth).toBe(before.strokeWidth);
 });
 
 test("a node's step shows its input, output and conversation", async ({ page }) => {

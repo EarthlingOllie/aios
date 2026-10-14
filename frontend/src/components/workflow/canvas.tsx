@@ -59,7 +59,7 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
       className={cn(
         "bg-card text-card-foreground flex flex-col justify-center gap-1 rounded-lg border px-3 py-2 shadow-xs",
         state && stateClass[state],
-        selected && "ring-ring ring-2",
+        selected && (state ? selectedStateClass[state] : "ring-ring ring-2"),
       )}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
     >
@@ -93,6 +93,15 @@ const stateClass: Record<NodeState, string> = {
   "not-run": "opacity-40 border-dashed",
 };
 
+// Selected, a node on a run keeps its state's colours: its outline and ring are drawn thicker.
+const selectedStateClass: Record<NodeState, string> = {
+  running: "border-2 ring-6",
+  succeeded: "border-2 ring-4 ring-emerald-500/25",
+  failed: "border-2 ring-4",
+  waiting: "border-2 ring-ring ring-2",
+  "not-run": "border-2 ring-ring ring-2",
+};
+
 const edgeStyle: Record<EdgeState, { stroke?: string; strokeWidth?: number; opacity?: number }> = {
   live: { stroke: "var(--color-sky-500)", strokeWidth: 2 },
   taken: { stroke: "var(--color-emerald-500)", strokeWidth: 2 },
@@ -103,10 +112,18 @@ const edgeStyle: Record<EdgeState, { stroke?: string; strokeWidth?: number; opac
 // attributes are valid on any element, but object literals aren't checked as JSX props are.)
 const dataState = (state: string) => ({ "data-state": state }) as Record<string, string>;
 
-// A selected edge stands out as a selected node does: drawn thicker, in the foreground colour,
-// arrowhead included. (Markers are sized in stroke widths: this keeps it in proportion.)
-const selectedEdgeStyle = { stroke: "var(--foreground)", strokeWidth: 2.5 };
-const selectedMarker = { color: selectedEdgeStyle.stroke, width: 7.5, height: 7.5 };
+/** `e` as it stands out when selected, as a selected node does: drawn thicker, arrowhead included,
+ * in its run's colour if it has one, else the foreground's, and fully even if the run didn't take
+ * it. (Markers are sized in stroke widths: this keeps the arrowhead in proportion.) */
+function selectedEdge(e: Edge): Edge {
+  const stroke = e.style?.stroke ?? "var(--foreground)";
+  const strokeWidth = Number(e.style?.strokeWidth ?? 1) + 1.5;
+  return {
+    ...e,
+    style: { ...e.style, stroke, strokeWidth, opacity: 1 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 7.5, height: 7.5 },
+  };
+}
 
 const nodeTypes = { workflowNode: NodeCard };
 // For the controls' button: the whole graph, however small that makes it.
@@ -237,24 +254,15 @@ export function WorkflowCanvas({
     [edges, runKey],
   );
   const selectedNode = selection?.type === "node" ? selection.key : undefined;
-  const selectedEdge = selection?.type === "edge" ? edgeId(selection) : undefined;
+  const selectedEdgeId = selection?.type === "edge" ? edgeId(selection) : undefined;
   const flowNodes = useMemo(
     () => withSelected(unselectedNodes, selectedNode),
     [unselectedNodes, selectedNode],
   );
   const flowEdges = useMemo(
     () =>
-      withSelected(unselectedEdges, selectedEdge).map((e) =>
-        e.selected
-          ? {
-              ...e,
-              // Over a run's colours too, and fully drawn even if the run didn't take it.
-              style: { ...e.style, ...selectedEdgeStyle, opacity: 1 },
-              markerEnd: { type: MarkerType.ArrowClosed, ...selectedMarker },
-            }
-          : e,
-      ),
-    [unselectedEdges, selectedEdge],
+      withSelected(unselectedEdges, selectedEdgeId).map((e) => (e.selected ? selectedEdge(e) : e)),
+    [unselectedEdges, selectedEdgeId],
   );
 
   const onNodeClick = useStableCallback((_: unknown, n: CardNode) =>
