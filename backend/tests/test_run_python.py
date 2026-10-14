@@ -38,6 +38,7 @@ class FakeBackend:
         # Pass the alive check, then stop before the call reaches them (e.g. at the idle limit).
         self.vanishing: set[str] = set()
         self.fail_start = False
+        self.restricts_network = True
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         if self.fail_start:
@@ -345,6 +346,16 @@ def test_allowed_domains_without_a_proxy_are_an_error(api, backend):
     seen = chat(api, agent, run, "import httpx")
     assert "Network access for the sandbox isn't set up" in seen["result"]["error"]
     assert backend.specs == []
+
+
+def test_allowed_domains_need_no_proxy_on_a_backend_with_open_network(api, backend):
+    # E.g. the dev backend under docker compose: its runner can already reach anything, so no
+    # proxy is configured and the sandbox starts without one.
+    backend.restricts_network = False
+    agent, run = python_agent(api, allowed_domains=["api.github.com"])
+    seen = chat(api, agent, run, "import httpx")
+    assert seen["result"]["stdout"] == "ran in sandbox-1\n"
+    assert backend.specs[0].proxy_url == ""
 
 
 def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):

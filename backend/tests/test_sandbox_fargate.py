@@ -320,6 +320,8 @@ def test_dev_backend_shares_one_runner():
     settings = Settings(sandbox_dev_url="http://sandbox:8080/", sandbox_dev_token="dev")
     runner = FakeRunner()
     backend = DevBackend(settings, runner=runner.client())
+    # The runner's network is open, so allowed domains don't need SANDBOX_PROXY_* set.
+    assert backend.restricts_network is False
     handle = asyncio.run(backend.start(SPEC))
     assert handle == SandboxHandle("dev", "http://sandbox:8080", "dev")
     assert asyncio.run(backend.execute(handle, "print(4)", 5)).stdout == "4\n"

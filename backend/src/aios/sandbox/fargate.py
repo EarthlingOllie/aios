@@ -99,6 +99,8 @@ def _private_ip(task: dict[str, Any]) -> str | None:
 
 
 class FargateBackend:
+    restricts_network = True
+
     def __init__(
         self,
         settings: Settings,
@@ -236,6 +238,8 @@ class FargateBackend:
 class DevBackend:
     """Local development only: every run shares one long-lived runner (docker compose's
     `sandbox` service), with no isolation between runs and unrestricted network access."""
+
+    restricts_network = False
 
     def __init__(self, settings: Settings, *, runner: RunnerClient | None = None) -> None:
         self.endpoint = settings.sandbox_dev_url.rstrip("/")

@@ -205,7 +205,10 @@ class SessionManager:
         session_key = f"agent-run-{run_id}"
         proxy_url = ""
         secret = settings.sandbox_proxy_secret.get_secret_value()
-        if allowed_domains and not (settings.sandbox_proxy_address and secret):
+        # A backend whose sandboxes already have unrestricted network (the dev one) needs no
+        # proxy: the allowed domains are reachable anyway.
+        needs_proxy = bool(allowed_domains) and backend.restricts_network
+        if needs_proxy and not (settings.sandbox_proxy_address and secret):
             # Not started without a proxy: the model is told these domains are reachable.
             log.error(
                 "run %s's sandbox needs network access, but SANDBOX_PROXY_ADDRESS or"
@@ -216,7 +219,7 @@ class SessionManager:
                 "Network access for the sandbox isn't set up on this server, so the allowed"
                 " domains can't be reached. Ask the server's administrator to set it up."
             )
-        if allowed_domains:
+        if needs_proxy:
             token = proxy_token.mint(
                 secret,
                 session=session_key,
