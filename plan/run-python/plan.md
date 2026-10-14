@@ -133,7 +133,7 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
 ## Branch 1: Fargate, one task per agent run
 
 - `FargateBackend`:
-  - `start`: `ecs:RunTask` on the sandbox task definition in the private subnets, with
+  - `start`: `ecs:RunTask` on the sandbox task definition in the sandbox subnets, with
     environment overrides for the session's runner token, proxy URL and lifetimes; then waits
     for `RUNNING`, reads the task's private IP and polls `/health`
   - `execute`: `POST http://<ip>:8080/exec` with the bearer token
@@ -143,7 +143,13 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
   - read-only root filesystem, with task-local volumes for `/work` and `/tmp`
   - 0.5 vCPU and 1 GB by default
 - Network:
-  - security group `sandbox`: ingress 8080 from `app` only; egress only to `egress-proxy:3128`
+  - sandbox subnets of their own, whose route table has no default route (no NAT), so a wrong
+    security group rule still gives them no way out
+  - VPC endpoints so Fargate can pull the image and ship logs from those subnets: interface
+    endpoints for `ecr.api`, `ecr.dkr` and `logs` (only this account's credentials), and an S3
+    gateway endpoint on the sandbox route table that only allows ECR's layer bucket
+  - security group `sandbox`: ingress 8080 from `app` only; egress only to `egress-proxy:3128`,
+    and 443 to the endpoints
   - `db` and `redis` don't admit `sandbox`
   - the proxy runs as a Fargate service (`egress-proxy`), found at `proxy.<name>.internal`
     through Cloud Map; its security group allows ingress from `sandbox` and egress on 443
@@ -157,6 +163,7 @@ the sandbox image and the egress proxy. Only how a sandbox is started, reached a
   - start time (pre-warming hides most of it)
   - `ecs:RunTask` rate limits and one subnet IP per sandbox
   - the runner token is visible to anyone with `ecs:DescribeTasks` in the account
+  - the interface endpoints cost about $45 a month (3 endpoints in 2 AZs)
   - DNS lookups through the VPC resolver aren't filtered (a possible exfiltration channel;
     Route 53 DNS Firewall is the fix)
 
