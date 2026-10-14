@@ -412,6 +412,81 @@ test("leaving the page with changes asks first", async ({ page }) => {
   expect((await dialog).type()).toBe("beforeunload");
 });
 
+test("leaving for another page with changes asks first, and stays if you say no", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await page.getByLabel("Description").fill("Changed");
+  const messages: string[] = [];
+  page.once("dialog", (dialog) => {
+    messages.push(dialog.message());
+    void dialog.dismiss();
+  });
+  await page.getByRole("link", { name: "Agents" }).click();
+  await expect.poll(() => messages).toEqual(["Discard your unsaved changes?"]);
+  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page.getByLabel("Description")).toHaveValue("Changed");
+
+  // Saying yes leaves, and asks only the once.
+  page.on("dialog", (dialog) => {
+    messages.push(dialog.message());
+    void dialog.accept();
+  });
+  await page.getByRole("link", { name: "Report" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  expect(messages).toHaveLength(2);
+  expect(api.writes).toEqual([]);
+});
+
+test("leaving for another page without changes doesn't ask", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  let asked = false;
+  page.on("dialog", (dialog) => {
+    asked = true;
+    void dialog.accept();
+  });
+  await page.getByRole("link", { name: "Agents" }).click();
+  await expect(page).toHaveURL("/agents");
+  expect(asked).toBe(false);
+});
+
+test("going back with changes asks first", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}`);
+  await page.getByRole("link", { name: "Edit" }).click();
+  await node(page, "research").click();
+  await page.keyboard.press("Delete");
+  page.once("dialog", (dialog) => void dialog.dismiss());
+  await page.goBack();
+  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(node(page, "research")).toHaveCount(0);
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.goBack();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(node(page, "research")).toBeVisible();
+});
+
+test("cancel with changes asks only once", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await page.getByLabel("Description").fill("Changed");
+  let asked = 0;
+  page.on("dialog", (dialog) => {
+    asked++;
+    void dialog.accept();
+  });
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  expect(asked).toBe(1);
+});
+
 test("while editing, what a node runs opens in a new tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useBlocker, useNavigate, useOutletContext, useParams } from "react-router";
 import { Pencil, Trash2 } from "lucide-react";
 
 import {
@@ -298,19 +298,27 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   );
 
   const dirty = !!meta && !!draft && JSON.stringify(toInput(draft, meta)) !== loaded;
-  // Closing or reloading the tab asks first. Navigating within the app can't be blocked without a
-  // data router, so Cancel asks itself and the inspector opens what a node runs in a new tab.
+  // Set once saved or cancelled (which asks itself), so leaving then doesn't ask (again).
+  const done = useRef(false);
+  // Closing or reloading the tab asks first, and so does leaving within the app.
   useEffect(() => {
     if (!dirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+  const blocker = useBlocker(() => dirty && !done.current);
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    if (window.confirm("Discard your unsaved changes?")) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
 
   if (!meta || !draft) return error ? <Placeholder>{error}</Placeholder> : null;
   const set = (patch: Partial<typeof meta>) => setMeta({ ...meta, ...patch });
   const back = () => {
     if (dirty && !window.confirm("Discard your unsaved changes?")) return;
+    done.current = true;
     navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
   };
 
@@ -324,6 +332,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
       const saved =
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
       await reloadList();
+      done.current = true;
       navigate(`/workflows/${saved.id}`);
     } catch (err) {
       setError(describeError(err));
