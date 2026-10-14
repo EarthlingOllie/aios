@@ -2,7 +2,8 @@
  * How a workflow run went, node by node: what the run page draws on the graph.
  *
  * A step exists only once its node has started (`plan/workflow-editor/runs-api.md`), so a node
- * without one is waiting while the run is active, and never ran once it has ended.
+ * without one is waiting while the run is active, and never ran once it has ended, or once any
+ * node of the run has failed (no more nodes start then, though those running finish).
  */
 import type { WorkflowEdge, WorkflowRunStatus, WorkflowRunStep } from "@/lib/api";
 import { edgeId } from "@/lib/graph";
@@ -28,10 +29,11 @@ export function nodeStates(
   prefix: string[],
   active: boolean,
 ): Record<string, NodeState> {
+  const starting = active && !steps.some((s) => s.status === "failed");
   return Object.fromEntries(
     keys.map((key) => [
       key,
-      stepAt(steps, [...prefix, key])?.status ?? (active ? "waiting" : "not-run"),
+      stepAt(steps, [...prefix, key])?.status ?? (starting ? "waiting" : "not-run"),
     ]),
   );
 }

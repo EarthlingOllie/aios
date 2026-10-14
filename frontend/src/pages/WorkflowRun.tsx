@@ -24,7 +24,7 @@ import {
   type WorkflowRunStep,
   type WorkflowVersion,
 } from "@/lib/api";
-import { edgeStates, isActive, nodeStates, stepAt } from "@/lib/runs";
+import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
 
 /** How often a run that's still going is re-read. */
 const POLL_MS = 1000;
@@ -82,6 +82,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const prefix = opened.map((l) => l.key!);
   const keys = level.version.nodes.map((n) => n.key);
   const active = isActive(r.status);
+  const states = nodeStates(keys, r.steps, prefix, active);
 
   const goTo = (depth: number) => {
     setOpened(opened.slice(0, depth));
@@ -199,7 +200,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
               selection={selection}
               onSelect={setSelection}
               run={{
-                nodes: nodeStates(keys, r.steps, prefix, active),
+                nodes: states,
                 edges: edgeStates(level.version.edges, r.steps, prefix),
               }}
             />
@@ -212,7 +213,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
                 <StepDetails
                   node={selected}
                   step={stepAt(r.steps, [...prefix, selected.key])}
-                  active={active}
+                  state={states[selected.key]}
                   onOpen={() => open(selected)}
                 />
               )}
@@ -244,12 +245,12 @@ function TextBlock({ label, children }: { label: string; children: ReactNode }) 
 function StepDetails({
   node,
   step,
-  active,
+  state,
   onOpen,
 }: {
   node: WorkflowNode;
   step: WorkflowRunStep | undefined;
-  active: boolean;
+  state: NodeState;
   onOpen: () => void;
 }) {
   return (
@@ -258,7 +259,7 @@ function StepDetails({
         <span className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
           In this run
         </span>
-        <StateBadge state={step?.status ?? (active ? "waiting" : "not-run")} />
+        <StateBadge state={state} />
       </div>
       {step ? (
         <>
@@ -279,7 +280,7 @@ function StepDetails({
         </>
       ) : (
         <p className="text-muted-foreground text-sm">
-          {active
+          {state === "waiting"
             ? "Waiting: it starts once every node before it has succeeded."
             : "Didn't run: a node before it failed, or the run stopped first."}
         </p>

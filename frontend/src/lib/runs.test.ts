@@ -58,6 +58,24 @@ describe("nodeStates", () => {
     });
   });
 
+  it("marks nodes not run as soon as any node of the run fails, though it's still going", () => {
+    // Once a node fails, no more nodes start anywhere in the run; those running finish.
+    const branches = ["a", "b", "after-a", "after-b"];
+    const steps = [step(["a"], "failed"), step(["b"], "running")];
+    expect(nodeStates(branches, steps, [], true)).toEqual({
+      a: "failed",
+      b: "running",
+      "after-a": "not-run",
+      "after-b": "not-run",
+    });
+    // Also when the failure was inside a subworkflow.
+    const nested = [step(["review"], "running"), step(["review", "critic"], "failed")];
+    expect(nodeStates(["review", "publish"], nested, [], true)).toEqual({
+      review: "running",
+      publish: "not-run",
+    });
+  });
+
   it("looks only at steps directly inside the given path", () => {
     const steps = [step(["review"], "running"), step(["review", "critic"], "succeeded")];
     expect(nodeStates(["critic"], steps, ["review"], true)).toEqual({ critic: "succeeded" });
