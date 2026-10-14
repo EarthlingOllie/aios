@@ -167,6 +167,21 @@ test("version history opens an old version's graph, which can be restored", asyn
   await expect(page.getByText("Restored from v1")).toBeVisible();
 });
 
+test("a version page whose workflow fails to load says why", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = await seed(api);
+  // Registered after the fake API's route, so it's tried first.
+  await page.route(`**/api/workflows/${report.id}`, (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Workflow store unavailable" }),
+    }),
+  );
+  await page.goto(`/workflows/${report.id}/versions/1`);
+  await expect(page.getByText("Workflow store unavailable")).toBeVisible();
+});
+
 test("deleting a workflow that another runs is refused with the reason", async ({ page }) => {
   const api = await fakeApi(page);
   const { review } = await seed(api);

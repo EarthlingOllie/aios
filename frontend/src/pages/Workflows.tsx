@@ -159,7 +159,8 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
   const [error, setError] = useState<string>();
 
-  if (version.error) return <Placeholder>{version.error}</Placeholder>;
+  const loadError = version.error ?? workflow.error;
+  if (loadError) return <Placeholder>{loadError}</Placeholder>;
   if (!version.data || !workflow.data) return null;
   const v = version.data;
   const isCurrent = workflow.data.current_version.version === v.version;
