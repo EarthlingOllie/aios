@@ -79,6 +79,11 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
   await page.getByRole("link", { name: "Edit" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
   await expect(page.getByLabel("Name")).toHaveValue("Report");
+  await expect(
+    page.getByText(
+      "Changing nodes or edges (including a node's key) creates v2; renaming the workflow or moving nodes doesn't.",
+    ),
+  ).toBeVisible();
 
   // Rename a node's key: its edges follow.
   await node(page, "write").click();

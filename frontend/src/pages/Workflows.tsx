@@ -308,7 +308,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
       title={id === undefined ? "New workflow" : "Edit workflow"}
       subtitle={
         editing !== undefined &&
-        `Editing v${editing}. Changing nodes or edges creates v${editing + 1}; renaming and moving nodes don't.`
+        `Editing v${editing}. Changing nodes or edges (including a node's key) creates v${editing + 1}; renaming the workflow or moving nodes doesn't.`
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
