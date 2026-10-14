@@ -6,8 +6,8 @@ Dockerfile), so it uses the standard library only and never imports `aios`.
     python runner.py exec    one call: reads {"code", "timeout"} as JSON on stdin and writes the
                              result as JSON on stdout (the gVisor broker runs it via docker exec)
     python runner.py serve   an HTTP server for calls: POST /exec, GET /health (Fargate). Needs
-                             SANDBOX_TOKEN, which both check; exits when idle or at its maximum
-                             lifetime, which stops the sandbox
+                             SANDBOX_TOKEN, which /exec requires and /health refuses if wrong;
+                             exits when idle or at its maximum lifetime, which stops the sandbox
 
 Each call writes the code to a file and runs it as a new `python -I` process in the working
 directory (/work, which persists between calls), in its own process group, with resource
@@ -293,9 +293,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path != "/health":
             return self._reply(404, {"error": "not found"})
-        # Checked here too, so the API can tell its own sandbox from another session's that
-        # now has the same address.
-        if not self._authorized():
+        # With no token it's a plain liveness check. A wrong token is refused, so the API can
+        # tell its own sandbox from another session's that now has the same address.
+        if "Authorization" in self.headers and not self._authorized():
             return self._reply(401, {"error": "unauthorized"})
         self._reply(200, {"ok": True})
 

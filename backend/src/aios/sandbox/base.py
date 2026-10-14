@@ -58,9 +58,9 @@ class SandboxNotReached(SandboxGone):
 
 
 class SandboxBackend(Protocol):
-    # Whether the sandbox's only way out is the proxy URL it's started with. False for the dev
-    # backend, whose runner has unrestricted network, so it needs no proxy for allowed domains.
-    restricts_network: bool
+    # A backend may also set `restricts_network = False` when its sandboxes have unrestricted
+    # network (the dev one), so they need no proxy for allowed domains. Without it, a backend
+    # is assumed to make the proxy URL it's started with the sandbox's only way out.
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         """Starts a sandbox and returns once it can take calls.

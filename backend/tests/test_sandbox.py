@@ -256,7 +256,9 @@ def test_runner_serve_mode(workdir):
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        assert httpx.get(f"{url}/health").status_code == 401
+        # No token is a plain liveness check (an API from before the token check still works
+        # mid-rollout); a wrong one is another session's sandbox at the address.
+        assert httpx.get(f"{url}/health").status_code == 200
         nope = {"Authorization": "Bearer nope"}
         assert httpx.get(f"{url}/health", headers=nope).status_code == 401
         ok = httpx.get(f"{url}/health", headers={"Authorization": "Bearer tok"})

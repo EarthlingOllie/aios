@@ -274,8 +274,9 @@ def test_a_stopped_task_is_gone(ecs):
     with pytest.raises(SandboxNotReached, match="didn't run"):
         asyncio.run(backend.execute(handle, "1", 5))
     assert not asyncio.run(backend.alive(handle))
+    # Another session's runner has the address and refused the call, so it didn't run here.
     backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner(status=401).client())
-    with pytest.raises(SandboxGone):
+    with pytest.raises(SandboxNotReached, match="didn't run"):
         asyncio.run(backend.execute(handle, "1", 5))
     backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner(status=500).client())
     with pytest.raises(SandboxError, match="refused the call"):
@@ -339,6 +340,21 @@ def test_dev_backend_reports_a_rejected_token_as_misconfigured():
     with pytest.raises(SandboxError, match="SANDBOX_DEV_TOKEN") as excinfo:
         asyncio.run(backend.execute(handle, "1", 5))
     assert not isinstance(excinfo.value, SandboxGone)
+
+
+def test_dev_backend_names_a_wrong_token_when_it_starts(workdir):
+    # The runner is up but holds a different token: that's SANDBOX_DEV_TOKEN, not a runner
+    # that isn't running.
+    server = runner_module.Server(("127.0.0.1", 0), "right", idle_seconds=60, max_seconds=600)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+    settings = Settings(sandbox_dev_url=endpoint, sandbox_dev_token="wrong")
+    try:
+        with pytest.raises(SandboxError, match="SANDBOX_DEV_TOKEN"):
+            asyncio.run(DevBackend(settings, runner=RunnerClient()).start(SPEC))
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_the_runner_client_against_a_real_runner(workdir):

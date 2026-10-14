@@ -21,7 +21,6 @@ from aios.config import Settings
 from aios.sandbox.base import (
     ExecResult,
     SandboxError,
-    SandboxGone,
     SandboxHandle,
     SandboxNotReached,
     SessionSpec,
@@ -34,9 +33,9 @@ RUNNER_PORT = 8080
 EXEC_GRACE = 30
 
 
-class Unauthorized(SandboxGone):
+class Unauthorized(SandboxNotReached):
     """The runner rejected the call's token. For a Fargate task that means another session's
-    sandbox now has the address, so ours has stopped."""
+    sandbox now has the address, so ours had stopped and the code didn't run."""
 
 
 class RunnerClient:
@@ -45,15 +44,13 @@ class RunnerClient:
     def __init__(self, http: httpx.AsyncClient | None = None) -> None:
         self.http = http or httpx.AsyncClient()
 
-    async def healthy(self, endpoint: str, token: str, timeout: float = 3) -> bool:
-        """Whether the runner at `endpoint` is up and holds `token`. Another session's
-        runner can get the address once ours stops, and it refuses our token."""
+    async def healthy(self, endpoint: str, token: str | None, timeout: float = 3) -> bool:
+        """Whether the runner at `endpoint` is up and holds `token` (or just up, if None).
+        Another session's runner can get the address once ours stops, and it refuses our
+        token."""
+        headers = {} if token is None else {"Authorization": f"Bearer {token}"}
         try:
-            resp = await self.http.get(
-                f"{endpoint}/health",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=timeout,
-            )
+            resp = await self.http.get(f"{endpoint}/health", headers=headers, timeout=timeout)
         except httpx.HTTPError:
             return False
         return resp.status_code == 200
@@ -80,8 +77,8 @@ class RunnerClient:
         except httpx.HTTPError as exc:
             raise SandboxError("The sandbox didn't respond.") from exc
         if resp.status_code == 401:
-            # Another session's sandbox now has the address: ours has stopped.
-            raise Unauthorized("The sandbox has stopped.")
+            # Another session's sandbox now has the address: ours had stopped.
+            raise Unauthorized("The sandbox had stopped, so the code didn't run.")
         if resp.status_code != 200:
             raise SandboxError(f"The sandbox refused the call ({resp.status_code}).")
         try:
@@ -235,6 +232,13 @@ class FargateBackend:
             log.warning("couldn't stop sandbox task %s", handle.ref, exc_info=True)
 
 
+def _wrong_dev_token(endpoint: str) -> SandboxError:
+    return SandboxError(
+        f"The dev sandbox at {endpoint} rejected SANDBOX_DEV_TOKEN: set it to the runner's"
+        " SANDBOX_TOKEN."
+    )
+
+
 class DevBackend:
     """Local development only: every run shares one long-lived runner (docker compose's
     `sandbox` service), with no isolation between runs and unrestricted network access."""
@@ -248,6 +252,8 @@ class DevBackend:
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         if not await self.runner.healthy(self.endpoint, self.token):
+            if await self.runner.healthy(self.endpoint, None):
+                raise _wrong_dev_token(self.endpoint)
             raise SandboxError(f"The dev sandbox at {self.endpoint} isn't running.")
         return SandboxHandle("dev", self.endpoint, self.token)
 
@@ -259,10 +265,7 @@ class DevBackend:
             return await self.runner.execute(handle, code, timeout)
         except Unauthorized:
             # The shared runner is still up; its token just isn't ours.
-            raise SandboxError(
-                f"The dev sandbox at {self.endpoint} rejected SANDBOX_DEV_TOKEN: set it to the"
-                " runner's SANDBOX_TOKEN."
-            ) from None
+            raise _wrong_dev_token(self.endpoint) from None
 
     async def stop(self, handle: SandboxHandle) -> None:
         pass
