@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { endKeys, layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
+import { layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
 
 const edges = [
   { source: "a", target: "b" },
@@ -9,10 +9,9 @@ const edges = [
   { source: "c", target: "d" },
 ];
 
-describe("startKeys / endKeys", () => {
-  it("finds nodes with no incoming or no outgoing edge, in node order", () => {
+describe("startKeys", () => {
+  it("finds nodes with no incoming edge, in node order", () => {
     expect(startKeys(["d", "a", "b", "c", "lone"], edges)).toEqual(["a", "lone"]);
-    expect(endKeys(["d", "a", "b", "c", "lone"], edges)).toEqual(["d", "lone"]);
   });
 });
 

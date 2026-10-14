@@ -12,12 +12,6 @@ export function startKeys(keys: string[], edges: WorkflowEdge[]): string[] {
   return keys.filter((key) => !targets.has(key));
 }
 
-/** Nodes with no outgoing edge, in node order: their outputs are the workflow's output. */
-export function endKeys(keys: string[], edges: WorkflowEdge[]): string[] {
-  const sources = new Set(edges.map((e) => e.source));
-  return keys.filter((key) => !sources.has(key));
-}
-
 /**
  * Positions for every node: its saved one if it has one, otherwise a left-to-right layered
  * layout (dagre).

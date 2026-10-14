@@ -26,10 +26,6 @@ export type Selection =
 
 export const edgeId = (e: WorkflowEdge) => `${e.source}->${e.target}`;
 
-export function sameSelection(a: Selection | null, b: Selection | null) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
 type CardData = { node: WorkflowNode; start: boolean };
 type CardNode = Node<CardData, "workflowNode">;
 
