@@ -42,8 +42,8 @@ from aios.models import (
     WorkflowStepStatus,
     WorkflowVersion,
 )
-from aios.runner import build_agent
-from aios.tools import AgentTool, ToolError, build_tool
+from aios.runner import build_agent, run_title, version_tools
+from aios.tools import AgentTool, ToolError
 from aios.ui_stream import error_text
 
 log = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def load_graph(db: Session, version_id: int, loaded: dict[int, Graph] | None = N
         if agent.deleted_at is not None:
             raise RunError(f"Agent {agent.name} v{pinned.version} can't run: it has been deleted")
         try:
-            tools = [tool for t in pinned.tools for tool in build_tool(t.tool_key, t.config)]
+            tools = version_tools(pinned)
         except ToolError as exc:
             raise RunError(f"Agent {agent.name} v{pinned.version} can't run: {exc}") from exc
         agent_node = AgentNode(
@@ -278,7 +278,7 @@ def _start_step(
                 agent_id=node.agent.agent_id,
                 agent_version_id=node.agent.agent_version_id,
                 # Titled after its message, like a run after its first turn.
-                title=" ".join(text.split())[:120] or None,
+                title=run_title(text),
             )
             db.add(agent_run)
             db.flush()
