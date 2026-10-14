@@ -603,3 +603,25 @@ def test_agent_summaries_carry_the_current_version_id(api):
     agent = make_agent(api, "pinnable")
     [summary] = [a for a in api.get("/api/agents").json() if a["id"] == agent["id"]]
     assert summary["version_id"] == agent["current_version"]["id"]
+
+
+def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
+    a = make_agent(api, "layout-race-a")
+    b = make_agent(api, "layout-race-b")
+    nodes = [agent_node("a", a), agent_node("b", b)]
+    layout = {"a": {"x": 0, "y": 0}, "b": {"x": 1, "y": 1}}
+    wf = make_workflow(api, "racy layout", nodes)
+    api.put(f"/api/workflows/{wf['id']}", json=workflow_body("racy layout", nodes, layout=layout))
+
+    with SessionLocal() as session:
+        # A save that has locked the workflow and moved node a, but not committed yet.
+        assert lock_live(session, Workflow, [wf["id"]])
+        session.get(Workflow, wf["id"]).layout = layout | {"a": {"x": 50, "y": 50}}
+        body = workflow_body("racy layout", nodes[:1])
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{wf['id']}", json=body))
+        assert saver.is_alive(), "save should block on the row lock"
+        session.commit()
+
+    saver.join(timeout=10)
+    # The waiting save prunes the layout it finds once locked, not the one it read before.
+    assert result["resp"].json()["layout"] == {"a": {"x": 50, "y": 50}}

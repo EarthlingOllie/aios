@@ -415,6 +415,8 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
     workflow = get_owned_workflow(db, user.id, workflow_id)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
     lock_new_graph(db, nodes, workflow)
+    # Another save may have changed the layout while we waited for the lock; prune that one.
+    db.refresh(workflow, ["layout"])
     workflow.name = body.name
     workflow.description = body.description
     apply_layout(workflow, body)
