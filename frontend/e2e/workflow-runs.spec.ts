@@ -206,3 +206,22 @@ test("lists a workflow's runs and deletes one", async ({ page }) => {
   await expect(page.getByRole("list", { name: "Runs" }).getByRole("listitem")).toHaveCount(1);
   expect(listReads).toEqual([]);
 });
+
+test("still shows a run whose workflow fails to load, and says why", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  const run = api.addRun(report, { status: "succeeded", input: "Look into it", output: "Done" });
+  // Registered after the fake API's route, so it's tried first; the run itself still loads.
+  await page.route(`**/api/workflows/${report.id}`, (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Workflow store unavailable" }),
+    }),
+  );
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(page.getByRole("alert")).toContainText("Workflow store unavailable");
+  await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
+  await expect(page.getByText("Look into it")).toBeVisible();
+  await expect(node(page, "research")).toBeVisible();
+});

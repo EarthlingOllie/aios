@@ -72,10 +72,13 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   }, [status, run.data, reload]);
 
   if (run.error) return <Placeholder>{run.error}</Placeholder>;
-  if (!run.data || !workflow.data) return null;
+  // The run carries its own graph; the workflow only gives its name and layout, so the run is
+  // still shown, laid out afresh, if it fails to load.
+  if (!run.data || (!workflow.data && !workflow.error)) return null;
   const r = run.data;
+  const name = workflow.data?.name ?? `Workflow ${id}`;
   const levels: Level[] = [
-    { key: null, name: workflow.data.name, version: r.version, layout: workflow.data.layout },
+    { key: null, name, version: r.version, layout: workflow.data?.layout ?? {} },
     ...opened,
   ];
   const level = levels[levels.length - 1];
@@ -126,7 +129,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       title={
         <span className="flex flex-wrap items-center gap-2">
           <Link to={`/workflows/${id}`} className="hover:underline">
-            {workflow.data.name}
+            {name}
           </Link>
           <span className="text-muted-foreground font-normal">run #{r.id}</span>
           <VersionBadge version={r.workflow_version} />
@@ -155,6 +158,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       }
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
       {r.error && (
         <div
           role="alert"
