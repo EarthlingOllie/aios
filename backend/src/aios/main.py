@@ -2,8 +2,9 @@ import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -44,11 +45,11 @@ def create_app() -> FastAPI:
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         # FastAPI's own handler, except that a non-finite number in an error's echoed input
         # (JSON's 1e309 parses to infinity) is sent as a string: JSON has no way to write it,
-        # so it would turn the 422 into a 500.
-        detail = jsonable_encoder(
+        # so it would turn the 422 into a 500. The body is left out for the same reason.
+        errors = jsonable_encoder(
             exc.errors(), custom_encoder={float: lambda f: f if math.isfinite(f) else str(f)}
         )
-        return JSONResponse({"detail": detail}, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        return await request_validation_exception_handler(request, RequestValidationError(errors))
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
