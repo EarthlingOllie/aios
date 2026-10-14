@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ChevronRight, MessageSquare, Trash2, Workflow as WorkflowIcon } from "lucide-react";
 
@@ -9,12 +9,13 @@ import {
   Placeholder,
   Section,
   useLoad,
+  usePoll,
 } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector } from "@/components/workflow/inspector";
-import { RunStatusBadge, StateBadge } from "@/components/workflow/status";
+import { RunStatusBadge, StateBadge, statusLabel } from "@/components/workflow/status";
 import {
   api,
   describeError,
@@ -25,9 +26,6 @@ import {
   type WorkflowVersion,
 } from "@/lib/api";
 import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
-
-/** How often a run that's still going is re-read. */
-export const POLL_MS = 1000;
 
 function duration(from: string, to: string | null) {
   const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
@@ -62,22 +60,8 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState<string>();
 
-  // Follow a run that's still going: re-read it shortly after each read, failed or not.
-  const status = run.data?.status;
-  const { reload } = run;
-  useEffect(() => {
-    if (!status || !isActive(status)) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = () => {
-      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
-    };
-    poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [status, reload]);
+  // Follow a run that's still going.
+  usePoll(!!run.data && isActive(run.data.status), run.reload);
 
   // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
@@ -150,7 +134,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
           ? `Started ${formatDate(r.started_at)} · ${duration(r.started_at, r.finished_at)}`
           : r.finished_at
             ? // E.g. its worker died while it was still queued.
-              `${runLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
+              `${statusLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
             : `Queued ${formatDate(r.created_at)}`
       }
       actions={

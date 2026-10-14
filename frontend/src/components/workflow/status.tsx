@@ -4,7 +4,7 @@ import type { NodeState } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 // How a run, and each node it reaches, reads: one set of words and colours for both.
-const label: Record<WorkflowRunStatus | NodeState, string> = {
+export const statusLabel: Record<WorkflowRunStatus | NodeState, string> = {
   queued: "Queued",
   running: "Running",
   succeeded: "Succeeded",
@@ -32,7 +32,7 @@ export function StateBadge({ state }: { state: NodeState }) {
           <span className="relative inline-flex size-1.5 rounded-full bg-sky-500" />
         </span>
       )}
-      {label[state]}
+      {statusLabel[state]}
     </Badge>
   );
 }
@@ -47,7 +47,7 @@ export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus
       className={cn(status === "running" && runningClass)}
       {...props}
     >
-      {label[status]}
+      {statusLabel[status]}
     </Badge>
   );
 }

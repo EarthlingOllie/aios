@@ -288,6 +288,19 @@ test("the runs list follows a live run until nothing is going", async ({ page })
   const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
   await expect(latest).toContainText("Running");
 
+  // A failed re-read doesn't stop it following the run.
+  let failures = 2;
+  await page.route(`**/api/workflows/${report.id}/runs`, (route) =>
+    failures-- > 0
+      ? route.fulfill({
+          status: 502,
+          contentType: "application/json",
+          body: '{"detail":"Bad Gateway"}',
+        })
+      : route.fallback(),
+  );
+  await expect.poll(() => failures).toBeLessThan(0);
+
   // The worker finishes the run; the list catches up without a reload.
   Object.assign(live, { status: "succeeded", output: "done", finished_at: "2026-10-14T09:02:00Z" });
   await expect(latest).toContainText("Succeeded");
