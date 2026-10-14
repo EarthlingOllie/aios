@@ -169,6 +169,8 @@ def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
         .options(
             agent_version.selectinload(AgentVersion.agent),
             agent_version.selectinload(AgentVersion.tools),
+            # For each agent node's trace metadata (`tracing.agent_version_metadata`).
+            agent_version.selectinload(AgentVersion.skills),
             selectinload(WorkflowVersion.edges),
         )
         .execution_options(populate_existing=True)
