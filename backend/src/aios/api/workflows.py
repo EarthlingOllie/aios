@@ -8,11 +8,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios.api.skills import lock_live, unique_name
+from aios.api.triggers import delete_triggers
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
     AgentVersion,
+    Trigger,
     Workflow,
     WorkflowNode,
     WorkflowNodeKind,
@@ -418,6 +420,7 @@ def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
             f"Remove this workflow from these workflows first: {', '.join(used_by)}.",
         )
     # Soft delete: older versions of other workflows may still pin this one's versions.
+    delete_triggers(db, Trigger.workflow_id == workflow.id)
     workflow.deleted_at = func.now()
     db.commit()
 

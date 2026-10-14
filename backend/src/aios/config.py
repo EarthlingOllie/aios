@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     sandbox_dev_url: str = "http://localhost:8081"
     sandbox_dev_token: str = ""
 
+    # Schedules (`aios.scheduler`): each API process polls for due ones this often. Replicas share
+    # the work safely (each schedule is claimed by one), so turning it off is only needed to keep
+    # a process from running agents, e.g. one serving requests that must stay light.
+    scheduler_enabled: bool = True
+    scheduler_interval_seconds: float = 15
+
     @property
     def oauth_redirect_uri(self) -> str:
         return f"{self.public_url.rstrip('/')}/auth/callback"

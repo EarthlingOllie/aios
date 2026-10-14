@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -5,15 +6,22 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
-from aios import auth, tracing
-from aios.api import agents, chat, documents, skills, tools, workflows
+from aios import auth, scheduler, tracing
+from aios.api import agents, chat, documents, skills, tools, triggers, workflows
 from aios.config import get_settings
 from aios.db import engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    loop = None
+    if settings.scheduler_enabled:
+        loop = asyncio.create_task(scheduler.run_forever(settings.scheduler_interval_seconds))
     yield
+    if loop is not None:
+        loop.cancel()
+        await asyncio.gather(loop, return_exceptions=True)
     tracing.flush()
 
 
@@ -35,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(tools.router)
     app.include_router(workflows.router)
+    app.include_router(triggers.router)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
