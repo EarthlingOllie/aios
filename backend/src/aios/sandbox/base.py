@@ -53,7 +53,15 @@ class SandboxGone(SandboxError):
     """The session's sandbox no longer exists (stopped when idle, crashed, or expired)."""
 
 
+class SandboxNotReached(SandboxGone):
+    """The sandbox had gone before the call reached it, so the code didn't run."""
+
+
 class SandboxBackend(Protocol):
+    # A backend may also set `restricts_network = False` when its sandboxes have unrestricted
+    # network (the dev one), so they need no proxy for allowed domains. Without it, a backend
+    # is assumed to make the proxy URL it's started with the sandbox's only way out.
+
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         """Starts a sandbox and returns once it can take calls.
 
@@ -67,7 +75,8 @@ class SandboxBackend(Protocol):
         ...
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
-        """Runs `code` in the sandbox. Raises `SandboxGone` if it no longer exists."""
+        """Runs `code` in the sandbox. Raises `SandboxGone` if it no longer exists:
+        `SandboxNotReached` when the call never reached it, so the code didn't run."""
         ...
 
     async def stop(self, handle: SandboxHandle) -> None:

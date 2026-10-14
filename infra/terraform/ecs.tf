@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "workflow-worker", "web", "migrate"])
+  for_each          = toset(["api", "worker", "workflow-worker", "web", "migrate", "sandbox", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -47,9 +47,20 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# Runtime role for the containers themselves (no AWS API access needed yet).
+# Runtime role for the worker, web and migrate containers. It has no permissions: they make no
+# AWS calls (their secrets come in through the execution role).
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+# Runtime role for the api and workflow-worker containers. Its only permissions are for starting
+# and stopping sandboxes (sandbox.tf), for the run_python tool. Agent runs execute in the API
+# process, and a workflow's agent nodes in the workflow worker, so only those need them; the
+# ingest worker, which parses untrusted uploads, can't start or stop tasks. The sandbox and egress
+# proxy tasks have no task role at all.
+resource "aws_iam_role" "api" {
+  name               = "${var.name}-ecs-api"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
@@ -63,11 +74,18 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # run_python: one Fargate task per agent run (sandbox.tf).
+      SANDBOX_BACKEND         = "fargate"
+      SANDBOX_CLUSTER         = aws_ecs_cluster.main.name
+      SANDBOX_TASK_DEFINITION = aws_ecs_task_definition.sandbox.family
+      SANDBOX_SUBNETS         = join(",", aws_subnet.sandbox[*].id)
+      SANDBOX_SECURITY_GROUPS = aws_security_group.sandbox.id
+      SANDBOX_PROXY_ADDRESS   = local.proxy_address
     } : { name = k, value = v }
   ]
 
   backend_secrets = concat(
-    [for k in ["DATABASE_URL", "SESSION_SECRET"] :
+    [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
     [for k in ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
@@ -95,7 +113,7 @@ resource "aws_ecs_task_definition" "api" {
   cpu                      = var.api.cpu
   memory                   = var.api.memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = aws_iam_role.api.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -174,7 +192,7 @@ resource "aws_ecs_task_definition" "workflow_worker" {
   cpu                      = var.workflow_worker.cpu
   memory                   = var.workflow_worker.memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = aws_iam_role.api.arn
 
   runtime_platform {
     operating_system_family = "LINUX"

@@ -14,7 +14,14 @@ from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.models import AgentVersionTool, SandboxSession
 from aios.sandbox import proxy_token, sessions
-from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.base import (
+    ExecResult,
+    SandboxError,
+    SandboxGone,
+    SandboxHandle,
+    SandboxNotReached,
+    SessionSpec,
+)
 from aios.tools import TOOLS
 from aios.tools.run_python import RunPythonConfig
 
@@ -25,6 +32,8 @@ class FakeBackend:
         self.calls: list[tuple[str, str, int]] = []
         self.stopped: list[str] = []
         self.gone: set[str] = set()
+        # Pass the alive check, then stop before the call reaches them (e.g. at the idle limit).
+        self.vanishing: set[str] = set()
         self.fail_start = False
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
@@ -40,6 +49,9 @@ class FakeBackend:
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
         if handle.ref in self.gone:
             raise SandboxGone("stopped")
+        if handle.ref in self.vanishing:
+            self.gone.add(handle.ref)
+            raise SandboxNotReached("unreachable")
         self.calls.append((handle.ref, code, timeout))
         if "crash" in code:
             # Takes the sandbox down partway through, like running out of memory.
@@ -196,6 +208,33 @@ def test_code_is_not_run_twice_when_the_sandbox_stops_during_a_call(api, backend
     assert seen["result"]["sandbox_restarted"] is True
 
 
+def test_code_runs_in_a_new_sandbox_when_the_call_never_reached_the_old_one(
+    api, backend, monkeypatch
+):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    chat(api, agent, run, "open('f', 'w')")
+    # Alive when checked, stopped by the time the call connects: the code never ran there.
+    backend.vanishing.add("sandbox-1")
+    seen = chat(api, agent, run, "print(1)")
+    assert seen["result"]["stdout"] == "ran in sandbox-2\n"
+    assert seen["result"]["sandbox_restarted"] is True
+    assert [ref for ref, _, _ in backend.calls] == ["sandbox-1", "sandbox-2"]
+    assert backend.stopped == ["sandbox-1"]
+
+
+def test_code_is_retried_once_when_calls_never_reach_the_sandbox(api, backend, monkeypatch):
+    monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
+    agent, run = python_agent(api)
+    backend.vanishing.update({"sandbox-1", "sandbox-2"})
+    seen = chat(api, agent, run, "print(1)")
+    assert seen["result"]["error"] == "unreachable"  # Not "may have partly run".
+    assert len(backend.specs) == 2
+    assert backend.calls == []
+    # The next call starts another.
+    assert chat(api, agent, run, "print(1)")["result"]["stdout"] == "ran in sandbox-3\n"
+
+
 def test_a_sandbox_another_replica_records_first_is_used(api, backend, monkeypatch):
     monkeypatch.setattr(sessions.manager, "ensure", noop_ensure)
     agent, run = python_agent(api)
@@ -301,6 +340,17 @@ def test_allowed_domains_without_a_proxy_are_an_error(api, backend):
     seen = chat(api, agent, run, "import httpx")
     assert "Network access for the sandbox isn't set up" in seen["result"]["error"]
     assert backend.specs == []
+
+
+def test_allowed_domains_need_no_proxy_on_a_backend_with_open_network(api, backend):
+    # E.g. the dev backend under docker compose: its runner can already reach anything, so no
+    # proxy is configured and the sandbox starts without one. Backends that don't say so (like
+    # FakeBackend in the other tests) are assumed to restrict it, and need the proxy.
+    backend.restricts_network = False
+    agent, run = python_agent(api, allowed_domains=["api.github.com"])
+    seen = chat(api, agent, run, "import httpx")
+    assert seen["result"]["stdout"] == "ran in sandbox-1\n"
+    assert backend.specs[0].proxy_url == ""
 
 
 def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):

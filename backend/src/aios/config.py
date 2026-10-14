@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     sandbox_max_session_seconds: int = 2 * 60 * 60
     # How long to wait for a new sandbox to take calls.
     sandbox_start_timeout: int = 180
+    # SANDBOX_BACKEND=fargate: one Fargate task per agent run (`aios.sandbox.fargate`). Subnets
+    # and security groups are comma-separated.
+    sandbox_cluster: str = ""
+    sandbox_task_definition: str = ""
+    sandbox_subnets: str = ""
+    sandbox_security_groups: str = ""
+    sandbox_container: str = "sandbox"
+    # SANDBOX_BACKEND=dev: one shared runner for local development, e.g. docker compose's
+    # `sandbox` service. Unisolated: never use it in production.
+    sandbox_dev_url: str = "http://localhost:8081"
+    sandbox_dev_token: str = ""
 
     @property
     def oauth_redirect_uri(self) -> str:
