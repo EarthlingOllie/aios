@@ -133,9 +133,15 @@ class WorkflowOut(BaseModel):
     layout: dict[str, NodePosition]
 
 
-def get_owned_workflow(db: Session, user_id: int, workflow_id: int) -> Workflow:
+def get_owned_workflow(
+    db: Session, user_id: int, workflow_id: int, *, deleted_ok: bool = False
+) -> Workflow:
     workflow = db.get(Workflow, workflow_id)
-    if workflow is None or workflow.owner_id != user_id or workflow.deleted_at is not None:
+    if (
+        workflow is None
+        or workflow.owner_id != user_id
+        or (workflow.deleted_at is not None and not deleted_ok)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return workflow
 
@@ -533,7 +539,9 @@ def list_workflow_versions(workflow_id: DbId, user: CurrentUser, db: DB):
 
 @router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
 def get_workflow_version_detail(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Also once the workflow is deleted: older versions of other workflows, and their past runs,
+    # still pin its versions, and a run's subworkflow is shown from the one it pinned.
+    workflow = get_owned_workflow(db, user.id, workflow_id, deleted_ok=True)
     return version_out(load_version(db, get_workflow_version(db, workflow, number).id))
 
 

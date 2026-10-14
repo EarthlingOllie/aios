@@ -6,6 +6,9 @@ import type { NodePosition, WorkflowEdge } from "@/lib/api";
 export const NODE_WIDTH = 200;
 export const NODE_HEIGHT = 64;
 
+/** An edge's id on the canvas, and its key in a run's edge states. */
+export const edgeId = (e: WorkflowEdge) => `${e.source}->${e.target}`;
+
 /** Nodes with no incoming edge, in node order: where a run starts. */
 export function startKeys(keys: string[], edges: WorkflowEdge[]): string[] {
   const targets = new Set(edges.map((e) => e.target));

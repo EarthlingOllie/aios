@@ -48,6 +48,29 @@ export function useLoad<T>(fn: () => Promise<T>) {
   return { data, error, reload };
 }
 
+/** How often something that's still going (a workflow run, say) is re-read. */
+export const POLL_MS = 1000;
+
+/**
+ * While `active`, calls `reload` again `POLL_MS` after each call settles, failed or not, so one
+ * failed read doesn't stop the polling.
+ */
+export function usePoll(active: boolean, reload: () => Promise<unknown>) {
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => {
+      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
+    };
+    poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [active, reload]);
+}
+
 /** Passed to the detail routes so they can refresh the list after a change. */
 export type ListContext = { reloadList: () => Promise<void> };
 

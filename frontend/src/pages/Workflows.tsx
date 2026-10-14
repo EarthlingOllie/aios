@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useBlocker, useNavigate, useOutletContext, useParams } from "react-router";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Play, Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -11,17 +11,21 @@ import {
   Placeholder,
   Section,
   useLoad,
+  usePoll,
   type ListContext,
 } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
+import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
+import { isActive } from "@/lib/runs";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -111,7 +115,14 @@ function WorkflowDetailView({ id }: { id: number }) {
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const versions = useLoad(useCallback(() => api.listWorkflowVersions(id), [id]));
+  const runs = useLoad(useCallback(() => api.listWorkflowRuns(id), [id]));
   const [actionError, setActionError] = useState<string>();
+  // The input for a new run, while the form for one is open.
+  const [runInput, setRunInput] = useState<string>();
+  const [starting, setStarting] = useState(false);
+
+  // Keep the list's statuses current while any run is still going, as the run page does.
+  usePoll(!!runs.data?.some((r) => isActive(r.status)), runs.reload);
 
   if (workflow.error) return <Placeholder>{workflow.error}</Placeholder>;
   if (!workflow.data) return null;
@@ -130,6 +141,20 @@ function WorkflowDetailView({ id }: { id: number }) {
     }
   };
 
+  const onStartRun = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStarting(true);
+    setActionError(undefined);
+    try {
+      const run = await api.createWorkflowRun(id, runInput!);
+      navigate(`runs/${run.id}`);
+    } catch (err) {
+      setActionError(describeError(err));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <DetailPage
       wide
@@ -141,6 +166,14 @@ function WorkflowDetailView({ id }: { id: number }) {
       subtitle={w.description || `Updated ${formatDate(w.updated_at)}`}
       actions={
         <>
+          <Button
+            size="sm"
+            onClick={() => setRunInput(runInput === undefined ? "" : undefined)}
+            disabled={current.nodes.length === 0}
+          >
+            <Play />
+            Run
+          </Button>
           <Button asChild variant="outline" size="sm">
             <Link to="edit">
               <Pencil />
@@ -154,6 +187,32 @@ function WorkflowDetailView({ id }: { id: number }) {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {runInput !== undefined && (
+        <form className="flex flex-col gap-2 rounded-md border p-4" onSubmit={onStartRun}>
+          <label htmlFor="run-input" className="text-sm font-medium">
+            Input
+          </label>
+          <Textarea
+            id="run-input"
+            rows={3}
+            autoFocus
+            value={runInput}
+            onChange={(e) => setRunInput(e.target.value)}
+            placeholder="What the first nodes are asked to do"
+          />
+          <p className="text-muted-foreground text-xs">
+            Given to each start node; every other node gets the outputs of the nodes before it.
+          </p>
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" disabled={starting || !runInput.trim()}>
+              Start run
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setRunInput(undefined)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
       <Section title="Graph">
         {/* Keyed so the selection resets when the graph changes under it. */}
         <GraphView
@@ -162,6 +221,33 @@ function WorkflowDetailView({ id }: { id: number }) {
           layout={w.layout}
           editHref={`/workflows/${id}/edit`}
         />
+      </Section>
+      <Section title="Runs">
+        {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
+        {runs.data?.length === 0 && (
+          <p className="text-muted-foreground text-sm">No runs yet. Start one to watch it go.</p>
+        )}
+        {!!runs.data?.length && (
+          <ul aria-label="Runs" className="divide-y rounded-md border">
+            {runs.data.map((run) => (
+              <li key={run.id}>
+                <Link
+                  to={`runs/${run.id}`}
+                  className="hover:bg-accent flex items-center gap-3 px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">{run.input}</span>
+                    <span className="text-muted-foreground block text-xs">
+                      {formatDate(run.created_at)}
+                    </span>
+                  </span>
+                  <VersionBadge version={run.workflow_version} />
+                  <RunStatusBadge status={run.status} />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </Section>
       <Section title="Version history">
         <VersionHistory

@@ -34,6 +34,35 @@ type WorkflowRow = {
   updated_at: string;
 };
 
+type RunStatus = "queued" | "running" | "succeeded" | "failed";
+type StepStatus = "running" | "succeeded" | "failed";
+export type StepRow = {
+  id: number;
+  path: string[];
+  kind: Kind;
+  status: StepStatus;
+  input: string;
+  output: string | null;
+  error: string | null;
+  agent_id: number | null;
+  agent_run_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+};
+export type RunRow = {
+  id: number;
+  workflow_id: number;
+  workflow_version_id: number;
+  status: RunStatus;
+  input: string;
+  output: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  steps: StepRow[];
+};
+
 const NOW = "2026-10-14T09:00:00Z";
 
 export class FakeApi {
@@ -43,6 +72,7 @@ export class FakeApi {
   agentVersions = new Map<number, [number, number]>();
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
+  runs = new Map<number, RunRow>();
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -109,6 +139,92 @@ export class FakeApi {
     const vid = this.id();
     agent.versions.push(vid);
     this.agentVersions.set(vid, [agent.id, agent.versions.length]);
+  }
+
+  /** A run of the workflow's current version; steps take their kind from the graph. */
+  addRun(
+    workflow: WorkflowRow,
+    run: Partial<Omit<RunRow, "steps">> & { steps?: (Partial<StepRow> & { path: string[] })[] },
+  ): RunRow {
+    const row: RunRow = {
+      id: this.id(),
+      workflow_id: workflow.id,
+      workflow_version_id: workflow.versions.at(-1)!,
+      status: "running",
+      input: "Write the weekly report",
+      output: null,
+      error: null,
+      created_at: NOW,
+      started_at: NOW,
+      finished_at: null,
+      ...run,
+      steps: [],
+    };
+    for (const step of run.steps ?? []) this.addStep(row, step);
+    this.runs.set(row.id, row);
+    return row;
+  }
+
+  /** Starts (or, given a status, records) a step of a run, as the worker would. */
+  addStep(run: RunRow, step: Partial<StepRow> & { path: string[] }): StepRow {
+    const row: StepRow = {
+      id: this.id(),
+      kind: "agent",
+      status: "running",
+      input: run.input,
+      output: null,
+      error: null,
+      agent_id: null,
+      agent_run_id: null,
+      started_at: NOW,
+      finished_at: null,
+      ...step,
+    };
+    run.steps.push(row);
+    return row;
+  }
+
+  /**
+   * Moves a run on by one beat, as the worker would: a queued run starts; the steps running
+   * finish; the nodes whose predecessors have all succeeded start; and once nothing is left to
+   * run, the run succeeds with the last output. Top-level nodes only, each as one step.
+   */
+  advance(run: RunRow) {
+    const version = this.workflowVersions.get(run.workflow_version_id)!;
+    const top = (key: string) => run.steps.find((s) => s.path.length === 1 && s.path[0] === key);
+    if (run.status === "queued") Object.assign(run, { status: "running", started_at: NOW });
+    for (const step of run.steps) {
+      if (step.status !== "running") continue;
+      Object.assign(step, {
+        status: "succeeded",
+        output: `${step.path.at(-1)} done`,
+        finished_at: NOW,
+      });
+    }
+    const ready = version.nodes.filter(
+      (n) =>
+        !top(n.key) &&
+        version.edges
+          .filter((e) => e.target === n.key)
+          .every((e) => top(e.source)?.status === "succeeded"),
+    );
+    for (const n of ready) {
+      const inputs = version.edges
+        .filter((e) => e.target === n.key)
+        .map((e) => top(e.source)!.output);
+      this.addStep(run, {
+        path: [n.key],
+        kind: n.kind,
+        input: inputs.length ? inputs.join("\n") : run.input,
+      });
+    }
+    if (!ready.length) {
+      Object.assign(run, {
+        status: "succeeded",
+        output: run.steps.at(-1)?.output ?? null,
+        finished_at: NOW,
+      });
+    }
   }
 
   current(workflow: WorkflowRow) {
@@ -288,8 +404,10 @@ export class FakeApi {
     }
     if ((m = path.match(/^\/api\/workflows\/(\d+)(\/.*)?$/))) {
       const workflow = this.workflows.get(Number(m[1]));
-      if (!workflow || workflow.deleted) return fail(404, "Not Found");
       const rest = m[2] ?? "";
+      // A deleted workflow's versions stay readable: runs and other versions still pin them.
+      const pinned = method === "GET" && /^\/versions\/\d+$/.test(rest);
+      if (!workflow || (workflow.deleted && !pinned)) return fail(404, "Not Found");
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
         // In the server's order: the version, then the graph, then (as the save commits) the name.
@@ -328,6 +446,40 @@ export class FakeApi {
         workflow.deleted = true;
         return reply(204);
       }
+      if (rest === "/runs" && method === "GET") {
+        return reply(
+          200,
+          [...this.runs.values()]
+            .filter((r) => r.workflow_id === workflow.id)
+            .reverse()
+            .map((r) => this.runSummary(r)),
+        );
+      }
+      if (rest === "/runs" && method === "POST") {
+        if (!body?.input?.trim()) return fail(422, "input: String should match pattern");
+        if (this.current(workflow).nodes.length === 0) {
+          return fail(422, "This workflow has no nodes to run");
+        }
+        const run = this.addRun(workflow, {
+          status: "queued",
+          input: body.input,
+          started_at: null,
+        });
+        return reply(201, this.runSummary(run));
+      }
+      if ((m = rest.match(/^\/runs\/(\d+)$/))) {
+        const run = this.runs.get(Number(m[1]));
+        if (!run || run.workflow_id !== workflow.id) return fail(404, "Not Found");
+        if (method === "DELETE") {
+          this.runs.delete(run.id);
+          return reply(204);
+        }
+        return reply(200, {
+          ...this.runSummary(run),
+          version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
+          steps: run.steps,
+        });
+      }
       if (rest === "/versions") {
         return reply(
           200,
@@ -353,6 +505,13 @@ export class FakeApi {
       }
     }
     return fail(404, `fake API: no route for ${method} ${path}`);
+  }
+
+  private runSummary({ steps: _steps, ...run }: RunRow) {
+    return {
+      ...run,
+      workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,
+    };
   }
 
   private applyLayout(workflow: WorkflowRow, body: { nodes: NodeIn[]; layout?: unknown }) {

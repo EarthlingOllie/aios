@@ -274,6 +274,46 @@ export type WorkflowInput = {
   base_version?: number;
 };
 
+export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type WorkflowRunSummary = {
+  id: number;
+  workflow_id: number;
+  workflow_version_id: number;
+  workflow_version: number;
+  status: WorkflowRunStatus;
+  input: string;
+  output: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+/** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
+export type WorkflowRunStep = {
+  id: number;
+  /** Node keys from the run's workflow down to this node. */
+  path: string[];
+  kind: WorkflowNodeKind;
+  status: "running" | "succeeded" | "failed";
+  input: string;
+  output: string | null;
+  error: string | null;
+  /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
+  agent_id: number | null;
+  agent_run_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type WorkflowRun = WorkflowRunSummary & {
+  /** The pinned version's graph. */
+  version: WorkflowVersion;
+  /** In the order they started. */
+  steps: WorkflowRunStep[];
+};
+
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -367,8 +407,16 @@ export const api = {
   deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
   listWorkflowVersions: (id: number) =>
     request<WorkflowVersionSummary[]>(`/api/workflows/${id}/versions`),
+  // Also a deleted workflow's versions, which a past run's subworkflow node still pins.
   getWorkflowVersion: (id: number, version: number) =>
     request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`),
   restoreWorkflowVersion: (id: number, version: number) =>
     request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
+  listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`/api/workflows/${id}/runs`),
+  getWorkflowRun: (id: number, runId: number) =>
+    request<WorkflowRun>(`/api/workflows/${id}/runs/${runId}`),
+  createWorkflowRun: (id: number, input: string) =>
+    request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
+  deleteWorkflowRun: (id: number, runId: number) =>
+    request<void>(`/api/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
 };
