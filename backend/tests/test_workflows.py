@@ -240,6 +240,25 @@ def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
     assert resp.json()["current_version"]["version"] == 4
 
 
+def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
+    huge = 2**31  # one past Postgres INTEGER
+    workflow = make_workflow(api, "bounded")
+    for kind in ("agent", "workflow"):
+        nodes = [{"key": "a", "kind": kind, "version_id": huge}]
+        assert api.post("/api/workflows", json=workflow_body("huge", nodes)).status_code == 422
+        url = f"/api/workflows/{workflow['id']}"
+        assert api.put(url, json=workflow_body("bounded", nodes)).status_code == 422
+    for url in [
+        f"/api/workflows/{huge}",
+        f"/api/workflows/{huge}/versions",
+        f"/api/workflows/{workflow['id']}/versions/{huge}",
+    ]:
+        assert api.get(url).status_code == 422, url
+    assert api.delete(f"/api/workflows/{huge}").status_code == 422
+    assert api.post(f"/api/workflows/{workflow['id']}/versions/{huge}/restore").status_code == 422
+    assert api.get(f"/api/workflows/{huge - 1}").status_code == 404
+
+
 def test_invalid_workflows_are_rejected(api, db):
     from aios.models import Agent, User
     from aios.versioning import save_agent_version

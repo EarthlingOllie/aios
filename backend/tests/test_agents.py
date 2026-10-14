@@ -262,6 +262,31 @@ def test_other_users_cannot_see_agents(api, client, db):
         db.commit()
 
 
+def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
+    huge = 2**31  # one past Postgres INTEGER
+    agent = make_agent(api, "Bounded")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    skill = make_skill(api, "Bounded skill")
+    for url in [
+        f"/api/agents/{huge}",
+        f"/api/agents/{huge}/versions",
+        f"/api/agents/{agent['id']}/versions/{huge}",
+        f"/api/agents/{agent['id']}/runs/{huge}",
+        f"/api/agents/{agent['id']}/runs/{-huge - 1}",
+        f"/api/skills/{huge}",
+        f"/api/skills/{skill['id']}/versions/{huge}",
+    ]:
+        assert api.get(url).status_code == 422, url
+    assert api.delete(f"/api/documents/{huge}").status_code == 422
+    assert api.post(f"/api/agents/{agent['id']}/runs/{huge}/chat", json={}).status_code == 422
+    body = agent_body(agent, skill_version_ids=[huge])
+    assert api.post("/api/agents", json={**body, "name": "Huge"}).status_code == 422
+    assert api.put(f"/api/agents/{agent['id']}", json=body).status_code == 422
+    # The largest INTEGER is valid; it just names nothing.
+    assert api.get(f"/api/agents/{huge - 1}").status_code == 404
+    assert api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code == 200
+
+
 def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     skill = make_skill(api, "Pirate", "Talk like pirates.")
     agent = make_agent(api, "Bot", "Be nice.", [skill])

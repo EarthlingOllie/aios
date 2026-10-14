@@ -19,7 +19,7 @@ from aios.agent import ChatDeps
 from aios.api.skills import lock_live_skills, unique_name
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
-from aios.db import DB, SessionLocal
+from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
@@ -66,7 +66,7 @@ class AgentIn(BaseModel):
     base_prompt: str = ""
     # Specific skill versions, in order. The UI keeps already-attached skills on their pinned
     # version and adds new ones at their latest; updating a skill is an explicit change.
-    skill_version_ids: list[int] = []
+    skill_version_ids: list[DbId] = []
     # Tools from the library (GET /api/tools), in order, each with its settings.
     tools: list[AgentToolIn] = []
     # Optional "what changed", stored on the new version if one is created.
@@ -359,12 +359,12 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}", response_model=AgentOut)
-def get_agent(agent_id: int, user: CurrentUser, db: DB):
+def get_agent(agent_id: DbId, user: CurrentUser, db: DB):
     return agent_out(get_owned_agent(db, user.id, agent_id))
 
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
-def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
+def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
     agent = get_owned_agent(db, user.id, agent_id)
     tools = resolve_tools(body.tools, agent.current_version)
@@ -387,7 +387,7 @@ def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
+def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
     # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
     agent = get_owned_agent(db, user.id, agent_id)
     # Workflow versions pin its versions, which would go with it (ON DELETE CASCADE): refuse.
@@ -416,7 +416,7 @@ def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: Backgroun
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
-def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
+def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     run_count = (
         select(func.count(AgentRun.id))
@@ -443,12 +443,12 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
-def get_agent_version_detail(agent_id: int, number: int, user: CurrentUser, db: DB):
+def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
     return version_out(get_agent_version(db, get_owned_agent(db, user.id, agent_id), number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
-def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB):
+def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
     """Make an old version's config current again, as a new version (numbers only go up)."""
     agent = get_owned_agent(db, user.id, agent_id)
     old = get_agent_version(db, agent, number)
@@ -502,7 +502,7 @@ def build_version_tools(
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
-def list_runs(agent_id: int, user: CurrentUser, db: DB):
+def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     rows = db.execute(
         run_summary_query()
@@ -515,7 +515,7 @@ def list_runs(agent_id: int, user: CurrentUser, db: DB):
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: int, user: CurrentUser, db: DB):
+def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
@@ -528,7 +528,7 @@ def create_run(agent_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
-def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
+def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     history = checkpoints.history(run.id)
@@ -542,7 +542,7 @@ def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
 
 @router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_run(
-    agent_id: int, run_id: int, user: CurrentUser, db: DB, background: BackgroundTasks
+    agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
 ) -> None:
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
@@ -708,7 +708,7 @@ def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
-async def run_chat(agent_id: int, run_id: int, body: dict, user: CurrentUser, db: DB):
+async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the run's
     LangGraph thread.
 

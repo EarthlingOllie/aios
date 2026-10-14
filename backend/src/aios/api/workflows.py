@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, aliased
 
 from aios.api.skills import unique_name
 from aios.auth import CurrentUser
-from aios.db import DB
+from aios.db import DB, DbId
 from aios.models import (
     Agent,
     AgentVersion,
@@ -28,7 +28,7 @@ class WorkflowNodeIn(BaseModel):
     kind: WorkflowNodeKind
     # The agent version or workflow version the node runs. Pinned, like an agent's skills: a
     # newer version of the agent or subworkflow is taken by saving the workflow with it.
-    version_id: int
+    version_id: DbId
 
 
 class WorkflowEdgeIn(BaseModel):
@@ -297,12 +297,12 @@ def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowOut)
-def get_workflow(workflow_id: int, user: CurrentUser, db: DB):
+def get_workflow(workflow_id: DbId, user: CurrentUser, db: DB):
     return workflow_out(get_owned_workflow(db, user.id, workflow_id))
 
 
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
-def update_workflow(workflow_id: int, body: WorkflowIn, user: CurrentUser, db: DB):
+def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: DB):
     """Rename/describe the workflow; a changed graph creates a new version."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
@@ -317,7 +317,7 @@ def update_workflow(workflow_id: int, body: WorkflowIn, user: CurrentUser, db: D
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_workflow(workflow_id: int, user: CurrentUser, db: DB) -> None:
+def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
     workflow = get_owned_workflow(db, user.id, workflow_id)
     used_by = workflows_using(
         db,
@@ -337,7 +337,7 @@ def delete_workflow(workflow_id: int, user: CurrentUser, db: DB) -> None:
 
 
 @router.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionSummary])
-def list_workflow_versions(workflow_id: int, user: CurrentUser, db: DB):
+def list_workflow_versions(workflow_id: DbId, user: CurrentUser, db: DB):
     workflow = get_owned_workflow(db, user.id, workflow_id)
     rows = db.execute(
         select(WorkflowVersion, node_count(WorkflowVersion.id))
@@ -353,13 +353,13 @@ def list_workflow_versions(workflow_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
-def get_workflow_version_detail(workflow_id: int, number: int, user: CurrentUser, db: DB):
+def get_workflow_version_detail(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
     workflow = get_owned_workflow(db, user.id, workflow_id)
     return version_out(get_workflow_version(db, workflow, number))
 
 
 @router.post("/workflows/{workflow_id}/versions/{number}/restore", response_model=WorkflowOut)
-def restore_workflow_version(workflow_id: int, number: int, user: CurrentUser, db: DB):
+def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
     """Make an old version's graph current again, as a new version (numbers only go up)."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
     old = get_workflow_version(db, workflow, number)
