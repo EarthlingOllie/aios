@@ -177,6 +177,69 @@ def test_workflows_nest_as_subgraphs(api):
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
 
 
+def test_a_workflow_cant_contain_itself_through_other_workflows(api):
+    agent = make_agent(api, "solo")
+    a = make_workflow(api, "a", [agent_node("only", agent)])
+    b = make_workflow(api, "b", [workflow_node("run_a", a)])
+    c = make_workflow(api, "c", [workflow_node("run_b", b)])
+    # Pinning workflows that don't lead back is fine, even reaching one along two paths.
+    d = make_workflow(api, "d", [workflow_node("b", b), workflow_node("c", c)])
+
+    # a v2 -> b v1 -> a v1, and a v2 -> d v1 -> c v1 -> b v1 -> a v1: both refused, naming the
+    # workflows a was pinned through.
+    for nodes, through in [
+        ([workflow_node("run_b", b)], "b"),
+        ([workflow_node("run_c", c)], "c"),
+        ([agent_node("first", agent), workflow_node("run_d", d)], "d"),
+        ([workflow_node("run_b", b), workflow_node("run_d", d)], "b, d"),
+    ]:
+        resp = api.put(f"/api/workflows/{a['id']}", json=workflow_body("a", nodes))
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "even through another workflow" in detail
+        assert detail.endswith(f": {through} runs it")
+    assert api.get(f"/api/workflows/{a['id']}").json()["current_version"]["version"] == 1
+
+    # Taking a newer version of a workflow that doesn't contain a is still fine.
+    resp = api.put(f"/api/workflows/{b['id']}", json=workflow_body("b", [agent_node("x", agent)]))
+    assert resp.status_code == 200
+    resp = api.put(
+        f"/api/workflows/{a['id']}", json=workflow_body("a", [workflow_node("run_b", resp.json())])
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
+    """Versions saved before nesting was checked through other workflows can't be restored."""
+    from aios.models import Workflow, WorkflowNodeKind
+    from aios.versioning import NodeSpec, save_workflow_version
+
+    agent = make_agent(api, "solo")
+    inner = make_workflow(api, "inner", [agent_node("only", agent)])
+    outer = make_workflow(api, "outer", [workflow_node("run_inner", inner)])
+    # inner v2 -> outer v1 -> inner v1, written directly as the old check would have allowed.
+    save_workflow_version(
+        db,
+        db.get(Workflow, inner["id"]),
+        nodes=[NodeSpec("run_outer", WorkflowNodeKind.workflow, outer["current_version"]["id"])],
+        edges=[],
+        note=None,
+        user_id=user.id,
+    )
+    db.commit()
+    resp = api.put(
+        f"/api/workflows/{inner['id']}", json=workflow_body("inner", [agent_node("x", agent)])
+    )
+    assert resp.json()["current_version"]["version"] == 3
+
+    resp = api.post(f"/api/workflows/{inner['id']}/versions/2/restore")
+    assert resp.status_code == 422
+    assert "even through another workflow: outer runs it" in resp.json()["detail"]
+    # Restoring a version that doesn't contain it still works.
+    resp = api.post(f"/api/workflows/{inner['id']}/versions/1/restore")
+    assert resp.json()["current_version"]["version"] == 4
+
+
 def test_invalid_workflows_are_rejected(api, db):
     from aios.models import Agent, User
     from aios.versioning import save_agent_version

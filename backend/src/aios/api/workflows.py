@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from aios.api.skills import unique_name
 from aios.auth import CurrentUser
@@ -116,6 +116,49 @@ def get_workflow_version(db: Session, workflow: Workflow, number: int) -> Workfl
     return version
 
 
+def refuse_self_containment(db: Session, workflow: Workflow, version_ids: set[int]) -> None:
+    """Refuse pinning these workflow versions in `workflow` if any of them is, or runs at any
+    depth, a version of `workflow` itself.
+
+    One recursive query walks down the pins, remembering which directly pinned workflow each
+    reached version came through, so the error can name it. Pins only point at versions that
+    existed when they were saved, so the walk always ends; UNION drops repeats, so a version
+    reachable along many paths is expanded once per directly pinned workflow."""
+    if not version_ids:
+        return
+    pinned = aliased(WorkflowVersion)
+    reach = (
+        select(
+            WorkflowVersion.id.label("version_id"),
+            WorkflowVersion.workflow_id.label("workflow_id"),
+            WorkflowVersion.workflow_id.label("via_id"),
+        )
+        .where(WorkflowVersion.id.in_(version_ids))
+        .cte("reach", recursive=True)
+    )
+    reach = reach.union(
+        select(pinned.id, pinned.workflow_id, reach.c.via_id)
+        .join(WorkflowNode, WorkflowNode.workflow_version_id == reach.c.version_id)
+        .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
+        .where(reach.c.workflow_id != workflow.id)
+    )
+    via = db.execute(
+        select(Workflow.id, Workflow.name)
+        .join(reach, reach.c.via_id == Workflow.id)
+        .where(reach.c.workflow_id == workflow.id)
+        .distinct()
+        .order_by(Workflow.name)
+    ).all()
+    if not via:
+        return
+    if any(workflow_id == workflow.id for workflow_id, _ in via):
+        detail = "A workflow can't contain itself"
+    else:
+        names = ", ".join(name for _, name in via)
+        detail = f"A workflow can't contain itself, even through another workflow: {names} runs it"
+    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
+
+
 def resolve_graph(
     db: Session, user_id: int, body: WorkflowIn, workflow: Workflow | None = None
 ) -> tuple[list[NodeSpec], list[tuple[str, str]]]:
@@ -147,10 +190,8 @@ def resolve_graph(
     }
     if set(found_workflows) != workflow_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown workflow version")
-    if workflow is not None and workflow.id in found_workflows.values():
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "A workflow can't contain itself"
-        )
+    if workflow is not None:
+        refuse_self_containment(db, workflow, workflow_ids)
     return [NodeSpec(n.key, n.kind, n.version_id) for n in body.nodes], edges
 
 
@@ -327,6 +368,11 @@ def restore_workflow_version(workflow_id: int, number: int, user: CurrentUser, d
         NodeSpec(n.key, n.kind, n.agent_version_id or n.subworkflow_version_id) for n in old.nodes
     ]
     edges = [(e.source, e.target) for e in old.edges]
+    # The old version passed this check when saved and pins never change, so this only refuses
+    # versions saved before the check covered nesting through other workflows.
+    refuse_self_containment(
+        db, workflow, {n.subworkflow_version_id for n in old.nodes if n.subworkflow_version_id}
+    )
     save_workflow_version(
         db,
         workflow,
