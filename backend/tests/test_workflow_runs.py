@@ -16,6 +16,7 @@ from test_workflows import (
 from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
+from aios.config import get_settings
 from aios.main import app
 from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStep
 from aios.tools import TOOLS
@@ -540,3 +541,26 @@ def test_progress_is_visible_while_the_run_goes(api, queued):
     # The conversation can be opened while it's going.
     assert during["steps"][1]["agent_run_id"] is not None
     assert api.get(url).json()["status"] == "succeeded"
+
+
+def test_a_run_that_takes_too_long_is_stopped(api, queued, monkeypatch):
+    monkeypatch.setattr(get_settings(), "workflow_run_time_limit", 0.5)
+    a = agents(api, "slow", "after")
+    wf = make_workflow(
+        api,
+        "sluggish",
+        [agent_node("slow", a["slow"]), agent_node("after", a["after"])],
+        [("slow", "after")],
+    )
+    started = start(api, wf)
+
+    async def script(messages, info):
+        await asyncio.sleep(60)
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["output"]) == ("failed", None)
+    assert out["error"].startswith("The run took longer than")
+    assert [s["path"] for s in out["steps"]] == [["slow"]]

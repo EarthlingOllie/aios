@@ -9,7 +9,7 @@ from aios.db import SessionLocal
 settings = get_settings()
 
 # The longest any task can hold its message: the larger hard limit.
-_longest_task = max(settings.ingest_time_limit, settings.workflow_run_time_limit) + 60
+_longest_task = max(settings.ingest_time_limit + 60, settings.workflow_run_time_limit + 120)
 
 # Fire-and-forget tasks: no result backend; progress lives on the documents and workflow_runs
 # tables.
@@ -41,19 +41,19 @@ def ingest_document_task(document_id: int) -> None:
 
 @celery_app.task(
     name="aios.run_workflow",
-    soft_time_limit=settings.workflow_run_time_limit,
-    time_limit=settings.workflow_run_time_limit + 60,
+    # A run times itself (`execute_run`); these are backstops, should its event loop be stuck.
+    soft_time_limit=settings.workflow_run_time_limit + 60,
+    time_limit=settings.workflow_run_time_limit + 120,
 )
 def run_workflow_task(run_id: int) -> None:
     from aios import tracing
-    from aios.workflows import execute_run, fail_run
+    from aios.workflows import execute_run, fail_run, time_limit_error
 
     try:
         # Only a queued run starts, so a redelivered message doesn't run it twice.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
-        minutes = settings.workflow_run_time_limit // 60
-        fail_run(run_id, f"The run took longer than {minutes} minutes, so it was stopped.")
+        fail_run(run_id, time_limit_error())
     finally:
         # A worker has no app shutdown to flush traces on (see `aios.main`).
         tracing.flush()

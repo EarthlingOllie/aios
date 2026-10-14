@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, selectinload
 from aios import checkpoints, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
+from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -314,6 +315,11 @@ def _finish_run(
         db.commit()
 
 
+def time_limit_error() -> str:
+    minutes = get_settings().workflow_run_time_limit // 60
+    return f"The run took longer than {minutes} minutes, so it was stopped."
+
+
 def fail_run(run_id: int, error: str) -> None:
     """Fail a run that couldn't finish, e.g. one stopped for taking too long."""
     _finish_run(run_id, WorkflowRunStatus.failed, None, error)
@@ -509,10 +515,15 @@ async def execute_run(run_id: int) -> None:
         return
     run, version_id, text = claimed
     try:
-        # Loaded again rather than trusted from when the run was started: e.g. a tool may have
-        # left the library since.
-        graph = await asyncio.to_thread(_load, version_id)
-        output = await _run_graph(run, graph, (), text)
+        # Timed here rather than by Celery's soft limit, whose exception can land inside a node
+        # and fail it like any other error.
+        async with asyncio.timeout(get_settings().workflow_run_time_limit):
+            # Loaded again rather than trusted from when the run was started: e.g. a tool may
+            # have left the library since.
+            graph = await asyncio.to_thread(_load, version_id)
+            output = await _run_graph(run, graph, (), text)
+    except TimeoutError:
+        await asyncio.to_thread(fail_run, run_id, time_limit_error())
     except StepFailed as exc:
         error = run.error or exc.error
         where = "/".join(run.failed_path)

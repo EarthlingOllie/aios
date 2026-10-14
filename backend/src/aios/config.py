@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 50 * 1024 * 1024
     # Per-attempt budget for converting + embedding one document (Celery soft time limit).
     ingest_time_limit: int = 30 * 60
-    # Budget for a whole workflow run, every node at every depth (Celery soft time limit).
+    # Budget for a whole workflow run, every node at every depth (`aios.workflows.execute_run`).
     workflow_run_time_limit: int = 2 * 60 * 60
 
     # Hybrid search.
