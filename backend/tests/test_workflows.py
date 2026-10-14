@@ -1,9 +1,16 @@
+import threading
 from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import event
+from fastapi import HTTPException
+from sqlalchemy import event, func
+from sqlalchemy.exc import IntegrityError
 
-from aios.db import engine
+from aios.api import workflows as workflows_api
+from aios.api.skills import lock_live, unique_name
+from aios.db import SessionLocal, engine
+from aios.models import Agent, Workflow, WorkflowNodeKind
+from aios.versioning import NodeSpec, save_workflow_version
 from aios.workflows import GraphError, validate_graph
 
 
@@ -168,17 +175,25 @@ def test_workflows_nest_as_subgraphs(api):
     assert resp.status_code == 422
     assert "itself" in resp.json()["detail"]
 
-    # Nor can a workflow or agent still run by another workflow be deleted.
+    # Nor can a workflow or agent that a live workflow's current version runs be deleted.
     resp = api.delete(f"/api/workflows/{inner['id']}")
     assert resp.status_code == 409
-    assert "outer" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Remove this workflow from these workflows first: outer."
     resp = api.delete(f"/api/agents/{agent['id']}")
     assert resp.status_code == 409
-    assert "inner" in resp.json()["detail"] and "outer" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Remove this agent from these workflows first: inner, outer."
 
+    # A deleted workflow no longer counts as running anything, though its versions still pin
+    # them. Deleting it first frees inner, and then inner frees the agent.
     assert api.delete(f"/api/workflows/{outer['id']}").status_code == 204
+    resp = api.delete(f"/api/agents/{agent['id']}")
+    assert resp.json()["detail"] == "Remove this agent from these workflows first: inner."
     assert api.delete(f"/api/workflows/{inner['id']}").status_code == 204
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
+    assert api.get("/api/workflows").json() == []
+    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions/1"):
+        assert api.get(url).status_code == 404
+    assert api.delete(f"/api/workflows/{outer['id']}").status_code == 404
 
 
 def test_a_workflow_cant_contain_itself_through_other_workflows(api):
@@ -336,3 +351,195 @@ def test_workflow_responses_take_a_fixed_number_of_queries(api):
         return counts
 
     assert query_counts(3) == query_counts(30)
+
+
+def test_only_current_versions_block_deletion(api):
+    researcher = make_agent(api, "Researcher")
+    writer = make_agent(api, "Writer")
+    report = make_workflow(
+        api,
+        "Research report",
+        [agent_node("research", researcher), agent_node("write", writer)],
+        [("research", "write")],
+    )
+    outer = make_workflow(
+        api,
+        "Outer",
+        [agent_node("first", researcher), workflow_node("then", report)],
+        [("first", "then")],
+    )
+    resp = api.delete(f"/api/agents/{researcher['id']}")
+    assert resp.status_code == 409
+    assert resp.json()["detail"].endswith(": Outer, Research report.")
+
+    # Take the researcher out of both workflows' current versions, and the report out of
+    # Outer's: only their history uses them now.
+    report_url, outer_url = f"/api/workflows/{report['id']}", f"/api/workflows/{outer['id']}"
+    resp = api.put(report_url, json=workflow_body("Research report", [agent_node("w", writer)]))
+    assert resp.json()["current_version"]["version"] == 2
+    resp = api.put(outer_url, json=workflow_body("Outer", [agent_node("w", writer)]))
+    assert resp.json()["current_version"]["version"] == 2
+    assert api.delete(f"/api/agents/{researcher['id']}").status_code == 204
+    assert api.delete(report_url).status_code == 204
+
+    # History stays readable: the old nodes show what they ran, with no latest version.
+    old = api.get(f"{outer_url}/versions/1").json()["nodes"]
+    assert [(n["name"], n["version"], n["latest_version"]) for n in old] == [
+        ("Researcher", 1, None),
+        ("Research report", 1, None),
+    ]
+    assert api.get(f"/api/agents/{researcher['id']}").status_code == 404
+    assert [a["name"] for a in api.get("/api/agents").json()] == ["Writer"]
+    assert [w["name"] for w in api.get("/api/workflows").json()] == ["Outer"]
+
+    # But it can't be restored, nor can a deleted agent's or workflow's versions be saved.
+    resp = api.post(f"{outer_url}/versions/1/restore")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "That version runs an agent and a workflow that has since been deleted."
+    )
+    assert api.get(outer_url).json()["current_version"]["version"] == 2
+    for node, message in (
+        (agent_node("r", researcher), "Unknown agent version"),
+        (workflow_node("r", report), "Unknown workflow version"),
+    ):
+        resp = api.put(outer_url, json=workflow_body("Outer", [node]))
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == message
+        resp = api.post("/api/workflows", json=workflow_body("New", [node]))
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == message
+
+    # The names are free again, but only among live rows: a live name still clashes.
+    make_agent(api, "Researcher")
+    make_workflow(api, "Research report")
+    resp = api.put(outer_url, json=workflow_body("Research report"))
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "You already have a workflow with that name."
+
+
+def test_restoring_a_version_whose_targets_are_live_still_works(api):
+    agent = make_agent(api, "Solo")
+    other = make_agent(api, "Other")
+    wf = make_workflow(api, "Flow", [agent_node("a", agent)])
+    api.put(f"/api/workflows/{wf['id']}", json=workflow_body("Flow", [agent_node("b", other)]))
+    resp = api.post(f"/api/workflows/{wf['id']}/versions/1/restore")
+    assert resp.status_code == 200
+    assert resp.json()["current_version"]["nodes"][0]["name"] == "Solo"
+    # And now the agent is in use again.
+    assert api.delete(f"/api/agents/{agent['id']}").status_code == 409
+
+
+def test_unique_name_only_maps_the_name_index(db, user):
+    """Any other integrity error, e.g. a pin of a version that doesn't exist, isn't a name clash."""
+    workflow = Workflow(owner_id=user.id, name="Broken")
+    db.add(workflow)
+    index = workflows_api.WORKFLOW_NAME_INDEX
+    with pytest.raises(IntegrityError, match="agent_version_id"), unique_name(db, "a", index):
+        save_workflow_version(
+            db,
+            workflow,
+            nodes=[NodeSpec("x", WorkflowNodeKind.agent, 2**31 - 1)],
+            edges=[],
+            note=None,
+            user_id=user.id,
+        )
+        db.commit()  # the deferred foreign key fails here
+    db.rollback()
+
+    db.add(Workflow(owner_id=user.id, name="Taken"))
+    db.commit()
+    with pytest.raises(HTTPException) as caught, unique_name(db, "a workflow", index):
+        db.add(Workflow(owner_id=user.id, name="Taken"))
+        db.commit()
+    assert caught.value.status_code == 409
+
+
+def run_in_thread(call) -> tuple[threading.Thread, dict]:
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(resp=call()))
+    thread.start()
+    thread.join(timeout=0.5)
+    return thread, result
+
+
+def held_save(session, user, workflow_id: int, nodes: list[dict]):
+    """A workflow save that has checked and locked its graph, but not committed yet."""
+    workflow = session.get(Workflow, workflow_id)
+    body = workflows_api.WorkflowIn(**workflow_body(workflow.name, nodes))
+    specs, edges = workflows_api.resolve_graph(session, user.id, body, workflow)
+    workflows_api.lock_new_graph(session, specs, workflow)
+    return lambda: save_workflow_version(
+        session, workflow, nodes=specs, edges=edges, note=None, user_id=user.id
+    )
+
+
+def deletable(api, kind: str) -> tuple[dict, dict]:
+    """An agent, or a workflow, to delete; and a node that runs it."""
+    agent = make_agent(api, "Racy")
+    if kind == "agent":
+        return agent, agent_node("t", agent)
+    inner = make_workflow(api, "Inner", [agent_node("a", agent)])
+    return inner, workflow_node("t", inner)
+
+
+@pytest.mark.parametrize("kind", ["agent", "workflow"])
+def test_delete_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
+    target, node = deletable(api, kind)
+    flow = make_workflow(api, "Flow")
+    url = f"/api/{kind}s/{target['id']}"
+
+    with SessionLocal() as session:
+        save = held_save(session, user, flow["id"], [node])
+        deleter, result = run_in_thread(lambda: api.delete(url))
+        assert deleter.is_alive(), "delete should block on the row lock"
+        save()
+        session.commit()
+
+    deleter.join(timeout=10)
+    # The delete saw the save once it got the lock, so the workflow never runs a deleted target.
+    assert result["resp"].status_code == 409
+    assert result["resp"].json()["detail"].endswith(": Flow.")
+    assert api.get(url).status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["agent", "workflow"])
+def test_save_waits_for_an_in_flight_delete_of_what_it_runs(api, kind):
+    target, node = deletable(api, kind)
+    flow = make_workflow(api, "Flow")
+    model = Agent if kind == "agent" else Workflow
+
+    with SessionLocal() as session:
+        # A delete that has locked the row and found it unused, but not committed yet.
+        assert lock_live(session, model, [target["id"]])
+        session.get(model, target["id"]).deleted_at = func.now()
+        saver, result = run_in_thread(
+            lambda: api.put(f"/api/workflows/{flow['id']}", json=workflow_body("Flow", [node]))
+        )
+        assert saver.is_alive(), "save should block on the row lock"
+        session.commit()
+
+    saver.join(timeout=10)
+    # A clean refusal, not a foreign key error at commit or a pin of a deleted target.
+    assert result["resp"].status_code == 422
+    assert result["resp"].json()["detail"] == f"Unknown {kind} version"
+    assert api.get(f"/api/workflows/{flow['id']}").json()["current_version"]["nodes"] == []
+
+
+def test_saves_of_workflows_that_run_each_other_lock_in_one_order(api, user):
+    """Each save locks every workflow it involves in id order, so they queue, not deadlock."""
+    agent = make_agent(api, "Solo")
+    first = make_workflow(api, "First", [agent_node("a", agent)])
+    second = make_workflow(api, "Second", [agent_node("a", agent)])
+
+    with SessionLocal() as session:
+        # Saving Second to run First locks both workflows, First (the lower id) first.
+        save = held_save(session, user, second["id"], [workflow_node("f", first)])
+        body = workflow_body("First", [agent_node("b", agent)])
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{first['id']}", json=body))
+        assert saver.is_alive(), "the other save should queue behind this one"
+        save()
+        session.commit()
+
+    saver.join(timeout=10)
+    assert result["resp"].status_code == 200

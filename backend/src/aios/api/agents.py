@@ -11,12 +11,12 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, tracing, ui_stream
 from aios.agent import ChatDeps
-from aios.api.skills import lock_live_skills, unique_name
+from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
 from aios.db import DB, DbId, SessionLocal
@@ -52,6 +52,8 @@ from aios.versioning import save_agent_version
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
+
+AGENT_NAME_INDEX = "uq_agents_owner_id_name_live"
 
 
 class AgentToolIn(BaseModel):
@@ -157,9 +159,15 @@ class RunOut(RunSummary):
 
 def get_owned_agent(db: Session, user_id: int, agent_id: int) -> Agent:
     agent = db.get(Agent, agent_id)
-    if agent is None or agent.owner_id != user_id:
+    if agent is None or agent.owner_id != user_id or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
+
+
+def lock_live_agent(db: Session, agent: Agent, *, read: bool = False) -> None:
+    """Row-lock the agent until commit (see `lock_live`); a 404 if it was deleted meanwhile."""
+    if not lock_live(db, Agent, [agent.id], read=read):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
 def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
@@ -320,7 +328,7 @@ def list_agents(user: CurrentUser, db: DB):
             run_count,
         )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
-        .where(Agent.owner_id == user.id)
+        .where(Agent.owner_id == user.id, Agent.deleted_at.is_(None))
         .order_by(Agent.name)
     ).all()
     return [
@@ -344,7 +352,7 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent = Agent(owner_id=user.id, name=body.name, description=body.description)
     db.add(agent)
-    with unique_name(db, "an agent"):
+    with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
             agent,
@@ -369,9 +377,10 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     tools = resolve_tools(body.tools, agent.current_version)
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
+    lock_live_agent(db, agent)
     agent.name = body.name
     agent.description = body.description
-    with unique_name(db, "an agent"):
+    with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
             agent,
@@ -388,9 +397,10 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
-    # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
     agent = get_owned_agent(db, user.id, agent_id)
-    # Workflow versions pin its versions, which would go with it (ON DELETE CASCADE): refuse.
+    # Hold the row lock across the usage check and the delete; workflow saves that run the agent
+    # take it too (`aios.api.workflows.lock_graph`), and so does starting a run.
+    lock_live_agent(db, agent)
     used_by = workflows_using(
         db,
         WorkflowNode.agent_version_id.in_(
@@ -400,13 +410,14 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     if used_by:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"These workflows run this agent as a step: {', '.join(used_by)}.",
+            f"Remove this agent from these workflows first: {', '.join(used_by)}.",
         )
+    # Soft delete: older workflow versions may still pin its versions, so the agent and its
+    # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
-    agent.current_version_id = None  # break the agents <-> agent_versions cycle first
-    db.flush()
-    db.delete(agent)
+    db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
+    agent.deleted_at = func.now()
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
@@ -460,6 +471,7 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
         raise HTTPException(
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
         )
+    lock_live_agent(db, agent)
     save_agent_version(
         db,
         agent,
@@ -517,6 +529,8 @@ def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
 )
 def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
+    # Keeps a concurrent delete from missing this run, which would be left behind.
+    lock_live_agent(db, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.

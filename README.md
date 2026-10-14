@@ -49,7 +49,13 @@ versioned and nested, not run yet. They're versioned like agents (`workflows`,
 - A workflow can't contain itself, directly or through other workflows at any depth: none of the
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
-- An agent or workflow can't be deleted while any workflow version runs it.
+- Agents and workflows are soft-deleted too: older workflow versions keep pinning their versions,
+  and stay readable (a node whose agent or workflow is gone shows no latest version). One can't
+  be deleted while a live workflow's current version runs it; older versions don't count, but
+  restoring one that runs something since deleted is refused. Deleting an agent still deletes
+  its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
+- Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
+  delete can't race a save that starts using what it deletes.
 
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)

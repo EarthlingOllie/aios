@@ -192,6 +192,8 @@ class Agent(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", use_alter=True, name="fk_agents_current_version_id")
     )
+    # Soft delete: workflow versions pin agent versions, so those must outlive the agent.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -204,7 +206,16 @@ class Agent(Base):
         back_populates="agent", cascade="all, delete-orphan", passive_deletes=True
     )
 
-    __table_args__ = (UniqueConstraint("owner_id", "name"),)
+    __table_args__ = (
+        # Names are unique among live agents, so a deleted agent's name can be reused.
+        Index(
+            "uq_agents_owner_id_name_live",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class AgentVersion(Base):
@@ -322,6 +333,8 @@ class Workflow(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("workflow_versions.id", use_alter=True, name="fk_workflows_current_version_id")
     )
+    # Soft delete: other workflows' versions pin its versions, so those must outlive it.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -331,7 +344,16 @@ class Workflow(Base):
         foreign_keys=[current_version_id], post_update=True
     )
 
-    __table_args__ = (UniqueConstraint("owner_id", "name"),)
+    __table_args__ = (
+        # Names are unique among live workflows, so a deleted workflow's name can be reused.
+        Index(
+            "uq_workflows_owner_id_name_live",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class WorkflowVersion(Base):
@@ -375,9 +397,10 @@ class WorkflowNode(Base):
     kind: Mapped[WorkflowNodeKind] = mapped_column(
         Enum(WorkflowNodeKind, name="workflow_node_kind")
     )
-    # Exactly one of these is set, matching `kind`. No ON DELETE: deleting an agent or workflow
-    # that a workflow version runs is refused (see the delete endpoints). Checked at commit, so
-    # deleting a user, which cascades to their agents and workflows alike, can take both.
+    # Exactly one of these is set, matching `kind`. No ON DELETE: agents and workflows are
+    # soft-deleted, so the versions a node pins are never deleted by the API. Only deleting a
+    # user removes them, cascading to their agents and workflows alike, so the check is deferred
+    # to commit: by then the nodes pinning them have gone too, whatever order the cascades ran in.
     agent_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", deferrable=True, initially="DEFERRED"), index=True
     )

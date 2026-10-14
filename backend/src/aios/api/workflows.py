@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios.api.skills import unique_name
+from aios.api.skills import lock_live, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
@@ -21,6 +22,8 @@ from aios.versioning import NodeSpec, save_workflow_version
 from aios.workflows import GraphError, validate_graph
 
 router = APIRouter(prefix="/api")
+
+WORKFLOW_NAME_INDEX = "uq_workflows_owner_id_name_live"
 
 
 class WorkflowNodeIn(BaseModel):
@@ -53,8 +56,9 @@ class WorkflowNodeOut(BaseModel):
     target_id: int
     name: str
     version: int
-    latest_version: int
-    latest_version_id: int
+    # The agent's or workflow's current version, or None if it has since been deleted.
+    latest_version: int | None
+    latest_version_id: int | None
 
 
 class WorkflowEdgeOut(BaseModel):
@@ -100,7 +104,7 @@ class WorkflowOut(BaseModel):
 
 def get_owned_workflow(db: Session, user_id: int, workflow_id: int) -> Workflow:
     workflow = db.get(Workflow, workflow_id)
-    if workflow is None or workflow.owner_id != user_id:
+    if workflow is None or workflow.owner_id != user_id or workflow.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return workflow
 
@@ -195,6 +199,57 @@ def resolve_graph(
     return [NodeSpec(n.key, n.kind, n.version_id) for n in body.nodes], edges
 
 
+def lock_graph(
+    db: Session, nodes: Sequence[NodeSpec], workflow: Workflow | None
+) -> set[WorkflowNodeKind]:
+    """Row-lock what saving `workflow` with these nodes depends on; return the node kinds whose
+    agent or workflow has been deleted.
+
+    Locks the agents the nodes run, then the workflows they run together with `workflow` itself
+    (unless it's new), so a concurrent delete of any of them waits for this save's commit and
+    then sees the usage, or commits first and is seen here. All the workflows are locked in one
+    id-ordered pass, so two saves of workflows that run each other can't deadlock; see
+    `lock_live` for the lock order. A 404 if `workflow` itself has been deleted meanwhile.
+    """
+    agent_ids = set(
+        db.scalars(
+            select(AgentVersion.agent_id).where(
+                AgentVersion.id.in_(
+                    [n.version_id for n in nodes if n.kind == WorkflowNodeKind.agent]
+                )
+            )
+        )
+    )
+    workflow_ids = set(
+        db.scalars(
+            select(WorkflowVersion.workflow_id).where(
+                WorkflowVersion.id.in_(
+                    [n.version_id for n in nodes if n.kind == WorkflowNodeKind.workflow]
+                )
+            )
+        )
+    )
+    own = {workflow.id} if workflow is not None and workflow.id is not None else set()
+    deleted = set()
+    if lock_live(db, Agent, agent_ids) != agent_ids:
+        deleted.add(WorkflowNodeKind.agent)
+    live = lock_live(db, Workflow, workflow_ids | own)
+    if own - live:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if workflow_ids - live:
+        deleted.add(WorkflowNodeKind.workflow)
+    return deleted
+
+
+def lock_new_graph(db: Session, nodes: Sequence[NodeSpec], workflow: Workflow | None) -> None:
+    """`lock_graph` for a graph from the request: a deleted target is an unknown version."""
+    deleted = lock_graph(db, nodes, workflow)
+    if WorkflowNodeKind.agent in deleted:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown agent version")
+    if WorkflowNodeKind.workflow in deleted:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown workflow version")
+
+
 def load_version(db: Session, version_id: int) -> WorkflowVersion:
     """A version with everything `version_out` reads, in a fixed number of queries however many
     nodes it has."""
@@ -225,6 +280,7 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
     else:
         pinned = node.subworkflow_version
         target = pinned.workflow
+    latest = target.current_version if target.deleted_at is None else None
     return WorkflowNodeOut(
         key=node.key,
         kind=node.kind,
@@ -232,8 +288,8 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
         target_id=target.id,
         name=target.name,
         version=pinned.version,
-        latest_version=target.current_version.version,
-        latest_version_id=target.current_version.id,
+        latest_version=latest.version if latest else None,
+        latest_version_id=latest.id if latest else None,
     )
 
 
@@ -269,13 +325,16 @@ def node_count(version_id) -> Any:
 
 
 def workflows_using(db: Session, condition) -> list[str]:
-    """Names of the workflows with a version that has a node matching `condition`."""
+    """Names of the live workflows whose current version has a node matching `condition`.
+
+    Older versions don't count: they keep pinning the versions of a deleted agent or workflow,
+    which outlive it (soft delete), and restoring them is refused.
+    """
     return list(
         db.scalars(
             select(Workflow.name)
-            .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
-            .join(WorkflowNode, WorkflowNode.workflow_version_id == WorkflowVersion.id)
-            .where(condition)
+            .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
+            .where(Workflow.deleted_at.is_(None), condition)
             .distinct()
             .order_by(Workflow.name)
         )
@@ -289,7 +348,7 @@ def list_workflows(user: CurrentUser, db: DB):
             Workflow, WorkflowVersion.version, WorkflowVersion.id, node_count(WorkflowVersion.id)
         )
         .join(WorkflowVersion, WorkflowVersion.id == Workflow.current_version_id)
-        .where(Workflow.owner_id == user.id)
+        .where(Workflow.owner_id == user.id, Workflow.deleted_at.is_(None))
         .order_by(Workflow.name)
     ).all()
     return [
@@ -309,9 +368,10 @@ def list_workflows(user: CurrentUser, db: DB):
 @router.post("/workflows", response_model=WorkflowOut, status_code=status.HTTP_201_CREATED)
 def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
     nodes, edges = resolve_graph(db, user.id, body)
+    lock_new_graph(db, nodes, None)
     workflow = Workflow(owner_id=user.id, name=body.name, description=body.description)
     db.add(workflow)
-    with unique_name(db, "a workflow"):
+    with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
             db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
@@ -329,9 +389,10 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
     """Rename/describe the workflow; a changed graph creates a new version."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
+    lock_new_graph(db, nodes, workflow)
     workflow.name = body.name
     workflow.description = body.description
-    with unique_name(db, "a workflow"):
+    with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
             db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
@@ -342,6 +403,9 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
     workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Hold the row lock across the usage check and the delete; workflow saves take it too.
+    if not lock_live(db, Workflow, [workflow.id]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     used_by = workflows_using(
         db,
         WorkflowNode.subworkflow_version_id.in_(
@@ -351,11 +415,10 @@ def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
     if used_by:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"These workflows run this one as a step: {', '.join(used_by)}.",
+            f"Remove this workflow from these workflows first: {', '.join(used_by)}.",
         )
-    workflow.current_version_id = None  # break the workflows <-> workflow_versions cycle first
-    db.flush()
-    db.delete(workflow)
+    # Soft delete: older versions of other workflows may still pin this one's versions.
+    workflow.deleted_at = func.now()
     db.commit()
 
 
@@ -386,7 +449,8 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
     """Make an old version's graph current again, as a new version (numbers only go up)."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
     old = get_workflow_version(db, workflow, number)
-    # The versions its nodes pin still exist: deleting an agent or workflow in use is refused.
+    # The versions its nodes pin still exist (deletes are soft), but the agents and workflows
+    # they belong to may not be live any more.
     nodes = [
         NodeSpec(n.key, n.kind, n.agent_version_id or n.subworkflow_version_id) for n in old.nodes
     ]
@@ -396,6 +460,14 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
     refuse_self_containment(
         db, workflow, {n.subworkflow_version_id for n in old.nodes if n.subworkflow_version_id}
     )
+    deleted = lock_graph(db, nodes, workflow)
+    if deleted:
+        what = " and ".join(
+            f"{'an' if kind == WorkflowNodeKind.agent else 'a'} {kind}" for kind in sorted(deleted)
+        )
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"That version runs {what} that has since been deleted."
+        )
     save_workflow_version(
         db,
         workflow,
