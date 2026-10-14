@@ -184,6 +184,49 @@ export class FakeApi {
     return row;
   }
 
+  /**
+   * Moves a run on by one beat, as the worker would: a queued run starts; the steps running
+   * finish; the nodes whose predecessors have all succeeded start; and once nothing is left to
+   * run, the run succeeds with the last output. Top-level nodes only, each as one step.
+   */
+  advance(run: RunRow) {
+    const version = this.workflowVersions.get(run.workflow_version_id)!;
+    const top = (key: string) => run.steps.find((s) => s.path.length === 1 && s.path[0] === key);
+    if (run.status === "queued") Object.assign(run, { status: "running", started_at: NOW });
+    for (const step of run.steps) {
+      if (step.status !== "running") continue;
+      Object.assign(step, {
+        status: "succeeded",
+        output: `${step.path.at(-1)} done`,
+        finished_at: NOW,
+      });
+    }
+    const ready = version.nodes.filter(
+      (n) =>
+        !top(n.key) &&
+        version.edges
+          .filter((e) => e.target === n.key)
+          .every((e) => top(e.source)?.status === "succeeded"),
+    );
+    for (const n of ready) {
+      const inputs = version.edges
+        .filter((e) => e.target === n.key)
+        .map((e) => top(e.source)!.output);
+      this.addStep(run, {
+        path: [n.key],
+        kind: n.kind,
+        input: inputs.length ? inputs.join("\n") : run.input,
+      });
+    }
+    if (!ready.length) {
+      Object.assign(run, {
+        status: "succeeded",
+        output: run.steps.at(-1)?.output ?? null,
+        finished_at: NOW,
+      });
+    }
+  }
+
   current(workflow: WorkflowRow) {
     return this.workflowVersions.get(workflow.versions.at(-1)!)!;
   }
