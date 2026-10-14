@@ -23,7 +23,6 @@ import {
   type Target,
 } from "@/lib/editor";
 
-const selectClass = "border-input w-full rounded-md border bg-transparent px-2 py-1.5 text-sm";
 const targetValue = (t: { kind: string; id: number }) => `${t.kind}:${t.id}`;
 
 /** The agents and workflows a node can run, grouped by kind; those it can't, shown disabled. */
@@ -234,6 +233,10 @@ function NodeControls({
         .map((n) => [n.key, canConnect({ nodes, edges, positions: {} }, node.key, n.key)] as const),
     [nodes, edges, node.key],
   );
+  // Only the nodes it can lead to; why the others can't is listed below the picker.
+  const connectable = refusals
+    .filter(([, refusal]) => refusal === null)
+    .map(([key]) => ({ value: key, label: key }));
   const current = targetValue({ kind: node.kind, id: node.target_id });
   // Whether its latest version would make this workflow contain itself, as far as the list says.
   const listed = targets.find((t) => targetValue(t) === current);
@@ -283,21 +286,14 @@ function NodeControls({
           Connect to
         </label>
         <div className="flex gap-2">
-          <select
+          <Select
             id="node-connect"
-            className={selectClass}
+            className="min-w-0 flex-1"
             value={to}
-            onChange={(e) => setTo(e.target.value)}
-          >
-            <option value="">Choose a node…</option>
-            {refusals
-              .filter(([, refusal]) => refusal === null)
-              .map(([key]) => (
-                <option key={key} value={key}>
-                  {key}
-                </option>
-              ))}
-          </select>
+            onChange={setTo}
+            groups={[{ label: "Nodes", options: connectable }]}
+            placeholder={connectable.length ? "Choose a node…" : "Nothing to connect to"}
+          />
           <Button
             type="button"
             size="sm"

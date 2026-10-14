@@ -95,6 +95,12 @@ test("clicking a node shows what it runs", async ({ page }) => {
     /\/workflows\/\d+$/,
   );
   await expect(panel).toContainText("Workflow");
+
+  // It opens in this tab: there's nothing unsaved here to lose.
+  await expect(panel.getByRole("link", { name: "Review" })).not.toHaveAttribute("target", /.*/);
+  await panel.getByRole("link", { name: "Review" }).click();
+  await expect(page).toHaveURL(/\/workflows\/\d+$/);
+  await expect(page).not.toHaveURL(`/workflows/${report.id}`);
 });
 
 test("a node whose target was deleted names it without a link", async ({ page }) => {
