@@ -13,7 +13,13 @@ from botocore.stub import ANY, Stubber
 
 from aios.config import Settings
 from aios.sandbox import runner as runner_module
-from aios.sandbox.base import SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.base import (
+    SandboxError,
+    SandboxGone,
+    SandboxHandle,
+    SandboxNotReached,
+    SessionSpec,
+)
 from aios.sandbox.fargate import DevBackend, FargateBackend, RunnerClient
 
 ARN = "arn:aws:ecs:us-east-1:123456789012:task/aios/abc123"
@@ -253,7 +259,8 @@ def test_a_stopped_task_is_gone(ecs):
     runner = FakeRunner()
     runner.down = True
     backend = FargateBackend(SETTINGS, ecs=client, runner=runner.client())
-    with pytest.raises(SandboxGone):
+    # The call never reached it, so the code didn't run.
+    with pytest.raises(SandboxNotReached, match="didn't run"):
         asyncio.run(backend.execute(handle, "1", 5))
     assert not asyncio.run(backend.alive(handle))
     backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner(status=401).client())

@@ -18,7 +18,14 @@ from anyio import CancelScope, to_thread
 from botocore.exceptions import BotoCoreError, ClientError
 
 from aios.config import Settings
-from aios.sandbox.base import ExecResult, SandboxError, SandboxGone, SandboxHandle, SessionSpec
+from aios.sandbox.base import (
+    ExecResult,
+    SandboxError,
+    SandboxGone,
+    SandboxHandle,
+    SandboxNotReached,
+    SessionSpec,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +62,8 @@ class RunnerClient:
                 timeout=httpx.Timeout(timeout + EXEC_GRACE, connect=5),
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            raise SandboxGone("The sandbox has stopped.") from exc
+            # No connection, so the request was never sent.
+            raise SandboxNotReached("The sandbox had stopped, so the code didn't run.") from exc
         except httpx.HTTPError as exc:
             raise SandboxError("The sandbox didn't respond.") from exc
         if resp.status_code == 401:
