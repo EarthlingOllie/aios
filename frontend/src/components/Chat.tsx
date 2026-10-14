@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { ArrowUp, Search, Square } from "lucide-react";
-import Markdown from "react-markdown";
+import { Search } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ChatComposer } from "@/components/ChatComposer";
+import { MarkdownView } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 
 const transport = new DefaultChatTransport({ api: "/api/chat", credentials: "same-origin" });
@@ -48,9 +47,7 @@ export function Chat() {
               {message.parts.map((part, i) => {
                 if (part.type === "text") {
                   return (
-                    <div key={i} className="prose-sm leading-relaxed [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-x-auto [&_code]:text-sm">
-                      <Markdown>{part.text}</Markdown>
-                    </div>
+                    <MarkdownView key={i}>{part.text}</MarkdownView>
                   );
                 }
                 if (part.type.startsWith("tool-")) {
@@ -74,38 +71,15 @@ export function Chat() {
           <div ref={bottomRef} />
         </div>
       </div>
-      <form
-        className="mx-auto w-full max-w-3xl px-4 pb-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <div className="relative">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="Message aios…"
-            className="max-h-48 resize-none pr-12"
-            rows={2}
-          />
-          {busy ? (
-            <Button type="button" size="icon" className="absolute right-2 bottom-2 size-8" onClick={stop}>
-              <Square />
-            </Button>
-          ) : (
-            <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={!input.trim()}>
-              <ArrowUp />
-            </Button>
-          )}
-        </div>
-      </form>
+      <ChatComposer
+        id="chat-input"
+        placeholder="Message aios…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }

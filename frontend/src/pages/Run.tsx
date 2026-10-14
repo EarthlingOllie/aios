@@ -2,14 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { ArrowLeft, ArrowUp, Brain, Square, Trash2, Wrench } from "lucide-react";
-import Markdown from "react-markdown";
+import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, useLoad, type ListContext } from "@/components/crud";
+import { ChatComposer } from "@/components/ChatComposer";
+import { MarkdownView } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { api, describeError, type ModelMessage, type Run } from "@/lib/api";
+import { api, describeError, type ContentBlock, type ModelMessage, type Run } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Tab = "conversation" | "events";
@@ -94,7 +94,7 @@ export function RunPage() {
       </div>
       {tab === "events" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <EventLog messages={run.data.messages} />
+          <EventLog messages={run.data.messages} instructions={run.data.instructions} />
         </div>
       )}
     </div>
@@ -151,44 +151,18 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
           <div ref={bottomRef} />
         </div>
       </div>
-      <form
-        className="mx-auto w-full max-w-3xl px-4 pb-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <div className="relative">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="Message this agent…"
-            className="max-h-48 resize-none pr-12"
-            rows={2}
-          />
-          {busy ? (
-            <Button type="button" size="icon" className="absolute right-2 bottom-2 size-8" onClick={stop}>
-              <Square />
-            </Button>
-          ) : (
-            <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={!input.trim()}>
-              <ArrowUp />
-            </Button>
-          )}
-        </div>
-      </form>
+      <ChatComposer
+        id="run-input"
+        placeholder="Message this agent…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }
-
-const markdownClass =
-  "prose-sm leading-relaxed [&_code]:text-sm [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_ul]:list-disc [&_ul]:pl-5";
 
 function MessageView({ message }: { message: UIMessage }) {
   return (
@@ -200,11 +174,7 @@ function MessageView({ message }: { message: UIMessage }) {
     >
       {message.parts.map((part, i) => {
         if (part.type === "text") {
-          return (
-            <div key={i} className={markdownClass}>
-              <Markdown>{part.text}</Markdown>
-            </div>
-          );
+          return <MarkdownView key={i}>{part.text}</MarkdownView>;
         }
         if (part.type === "reasoning") {
           return (
@@ -286,28 +256,41 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-// --- Event log: the stored Pydantic AI history, request by request ------------------------------
+// --- Event log: the stored LangGraph history, message by message ------------------------------
 
-function EventLog({ messages }: { messages: ModelMessage[] }) {
+const KIND_LABEL: Record<ModelMessage["type"], string> = {
+  human: "User",
+  ai: "Model",
+  tool: "Tool result",
+  system: "System",
+};
+
+function blocks(message: ModelMessage): ContentBlock[] {
+  if (typeof message.content === "string") {
+    return message.content ? [{ type: "text", text: message.content }] : [];
+  }
+  return message.content.map((b) => (typeof b === "string" ? { type: "text", text: b } : b));
+}
+
+function EventLog({ messages, instructions }: { messages: ModelMessage[]; instructions: string }) {
   if (messages.length === 0) return <Placeholder>Nothing has happened in this run yet.</Placeholder>;
 
-  const responses = messages.filter((m) => m.kind === "response");
-  // Native tools (e.g. web search) are run by the model provider and stored as builtin-tool-*.
-  const toolCalls = responses
-    .flatMap((m) => m.parts)
-    .filter((p) => p.part_kind === "tool-call" || p.part_kind === "builtin-tool-call");
+  const responses = messages.filter((m) => m.type === "ai");
+  // Provider-run tools (e.g. web search) are content blocks of the response, not tool calls.
+  const toolCalls = responses.reduce(
+    (n, m) =>
+      n + (m.tool_calls?.length ?? 0) + blocks(m).filter((b) => b.type === "server_tool_use").length,
+    0,
+  );
   const tokens = (key: "input_tokens" | "output_tokens") =>
-    responses.reduce((sum, m) => sum + (m.usage?.[key] ?? 0), 0);
-
-  // Instructions are attached to every request; only show them when they change.
-  let lastInstructions: string | null | undefined;
+    responses.reduce((sum, m) => sum + (m.usage_metadata?.[key] ?? 0), 0);
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
           ["Model calls", responses.length],
-          ["Tool calls", toolCalls.length],
+          ["Tool calls", toolCalls],
           ["Input tokens", tokens("input_tokens")],
           ["Output tokens", tokens("output_tokens")],
         ].map(([label, value]) => (
@@ -317,97 +300,104 @@ function EventLog({ messages }: { messages: ModelMessage[] }) {
           </div>
         ))}
       </dl>
+      {instructions && (
+        <details className="rounded-md border px-3 py-2 text-xs">
+          <summary className="text-muted-foreground cursor-pointer">
+            Instructions (sent with every model call)
+          </summary>
+          <pre className="bg-muted/50 mt-1 max-h-64 overflow-auto rounded p-2 whitespace-pre-wrap">
+            {instructions}
+          </pre>
+        </details>
+      )}
       <ol className="flex flex-col gap-3">
-        {messages.map((message, i) => {
-          const showInstructions =
-            message.kind === "request" &&
-            !!message.instructions &&
-            message.instructions !== lastInstructions;
-          if (message.kind === "request") lastInstructions = message.instructions;
-          return (
-            <li key={i} className="rounded-md border">
-              <div className="bg-muted/40 flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs">
-                <Badge variant={message.kind === "request" ? "outline" : "secondary"}>
-                  {message.kind === "request" ? "Request" : "Response"}
-                </Badge>
-                {message.model_name && <span className="font-mono">{message.model_name}</span>}
-                {message.kind === "response" && message.usage && (
-                  <span className="text-muted-foreground">
-                    {message.usage.input_tokens ?? 0} in / {message.usage.output_tokens ?? 0} out
-                  </span>
-                )}
-                {message.timestamp && (
-                  <span className="text-muted-foreground ml-auto">
-                    {new Date(message.timestamp).toLocaleTimeString()}
-                  </span>
-                )}
-              </div>
-              <div className="flex flex-col gap-2 p-3">
-                {showInstructions && (
-                  <details className="text-xs">
-                    <summary className="text-muted-foreground cursor-pointer">Instructions</summary>
-                    <pre className="bg-muted/50 mt-1 max-h-64 overflow-auto rounded p-2 whitespace-pre-wrap">
-                      {message.instructions}
-                    </pre>
-                  </details>
-                )}
-                {message.parts.map((part, j) => (
-                  <EventPart key={j} part={part} />
-                ))}
-              </div>
-            </li>
-          );
-        })}
+        {messages.map((message, i) => (
+          <li key={message.id ?? i} className="rounded-md border">
+            <div className="bg-muted/40 flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs">
+              <Badge variant={message.type === "ai" ? "secondary" : "outline"}>
+                {KIND_LABEL[message.type] ?? message.type}
+              </Badge>
+              {message.response_metadata?.model_name && (
+                <span className="font-mono">{message.response_metadata.model_name}</span>
+              )}
+              {message.type === "ai" && message.usage_metadata && (
+                <span className="text-muted-foreground">
+                  {message.usage_metadata.input_tokens ?? 0} in /{" "}
+                  {message.usage_metadata.output_tokens ?? 0} out
+                </span>
+              )}
+              {message.response_metadata?.stop_reason && (
+                <span className="text-muted-foreground ml-auto">
+                  {message.response_metadata.stop_reason}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-2 p-3">
+              <MessageEvents message={message} />
+            </div>
+          </li>
+        ))}
       </ol>
     </div>
   );
 }
 
-function EventPart({ part }: { part: ModelMessage["parts"][number] }) {
-  const p = part as Record<string, unknown> & { part_kind: string };
-  switch (p.part_kind) {
-    case "user-prompt":
-    case "system-prompt":
+function MessageEvents({ message }: { message: ModelMessage }) {
+  if (message.type === "tool") {
+    return (
+      <ToolCall
+        name={message.name ?? "tool"}
+        state={message.status === "error" ? "failed" : "return"}
+        failed={message.status === "error"}
+        input={undefined}
+        output={parseArgs(message.content)}
+      />
+    );
+  }
+  return (
+    <>
+      {blocks(message).map((block, j) => (
+        <EventBlock key={j} block={block} />
+      ))}
+      {message.tool_calls?.map((call) => (
+        <ToolCall key={call.id} name={call.name} state="call" input={call.args} output={undefined} />
+      ))}
+    </>
+  );
+}
+
+function EventBlock({ block }: { block: ContentBlock }) {
+  const b = block as ContentBlock & Record<string, unknown>;
+  switch (b.type) {
     case "text":
     case "thinking":
       return (
         <div className="text-sm">
-          <div className="text-muted-foreground mb-0.5 text-xs">{p.part_kind}</div>
-          <p className="whitespace-pre-wrap">
-            {typeof p.content === "string" ? p.content : JSON.stringify(p.content)}
-          </p>
+          <div className="text-muted-foreground mb-0.5 text-xs">{b.type}</div>
+          <p className="whitespace-pre-wrap">{String(b.type === "text" ? b.text : b.thinking)}</p>
         </div>
       );
-    case "tool-call":
-    case "builtin-tool-call":
-      return (
-        <ToolCall name={String(p.tool_name)} state="call" input={parseArgs(p.args)} output={undefined} />
-      );
-    case "tool-return":
-    case "builtin-tool-return":
-      return (
-        <ToolCall
-          name={String(p.tool_name)}
-          state={p.outcome === "failed" ? "failed" : "return"}
-          failed={p.outcome === "failed"}
-          input={undefined}
-          output={p.content}
-        />
-      );
-    case "retry-prompt":
-      return (
-        <ToolCall
-          name={String(p.tool_name ?? "retry")}
-          state="retry"
-          failed
-          input={undefined}
-          output={p.content}
-        />
-      );
+    // Shown from the message's tool calls instead.
+    case "tool_use":
+      return null;
+    case "server_tool_use":
+      return <ToolCall name={String(b.name)} state="call" input={b.input} output={undefined} />;
     default:
+      if (b.type.endsWith("_tool_result")) {
+        const failed = !!(b.content && typeof b.content === "object" && "error_code" in b.content);
+        return (
+          <ToolCall
+            name={b.type.replace(/_tool_result$/, "")}
+            state={failed ? "failed" : "return"}
+            failed={failed}
+            input={undefined}
+            output={b.content}
+          />
+        );
+      }
       return (
         <pre className="bg-muted/50 overflow-auto rounded p-2 text-xs">
-          {JSON.stringify(p, null, 2)}
+          {JSON.stringify(b, null, 2)}
         </pre>
       );
   }

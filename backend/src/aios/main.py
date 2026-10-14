@@ -1,16 +1,25 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
-from aios import auth
-from aios.api import agents, chat, documents, skills, tools
+from aios import auth, tracing
+from aios.api import agents, chat, documents, skills, tools, workflows
 from aios.config import get_settings
 from aios.db import engine
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    tracing.flush()
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="aios")
+    app = FastAPI(title="aios", lifespan=lifespan)
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.session_secret.get_secret_value(),
@@ -25,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(agents.router)
     app.include_router(tools.router)
+    app.include_router(workflows.router)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

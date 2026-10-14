@@ -1,4 +1,4 @@
-"""Creates the immutable versions behind agents and skills.
+"""Creates the immutable versions behind agents, skills and workflows.
 
 Saving only creates a version when the behaviour-affecting config changed (compared by hash), so
 no-op saves and agent renames don't bump the version. A skill's name is rendered into agent
@@ -12,6 +12,7 @@ import html
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, insert, select
@@ -23,6 +24,11 @@ from aios.models import (
     AgentVersionTool,
     Skill,
     SkillVersion,
+    Workflow,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowNodeKind,
+    WorkflowVersion,
     agent_version_skills,
 )
 
@@ -63,7 +69,7 @@ def render_skill_block(name: str, description: str, content: str) -> str:
 
 
 def _lock_current_version_id(
-    db: Session, model: type[Agent] | type[Skill], row_id: int
+    db: Session, model: type[Agent] | type[Skill] | type[Workflow], row_id: int
 ) -> int | None:
     """Locks the parent row and returns its committed current_version_id.
 
@@ -176,4 +182,81 @@ def save_agent_version(
     db.expire(version, ["skills"])
     agent.current_version = version
     agent.updated_at = func.now()
+    return version
+
+
+@dataclass(frozen=True)
+class NodeSpec:
+    """A workflow node to save: its key, and the agent or workflow version it pins."""
+
+    key: str
+    kind: WorkflowNodeKind
+    version_id: int
+
+
+def save_workflow_version(
+    db: Session,
+    workflow: Workflow,
+    *,
+    nodes: Sequence[NodeSpec],
+    edges: Sequence[tuple[str, str]],
+    note: str | None,
+    user_id: int,
+) -> WorkflowVersion:
+    """`nodes` and `edges` are already validated (`aios.workflows.validate_graph`).
+
+    The hash covers the graph, not the order it was sent in: nodes are sorted by key (unique
+    within a graph) and edges by (source, target), so listing them differently is a no-op save.
+    The stored `position`s keep the order of the version that was created; a pure reorder
+    creates no version, so it isn't stored either.
+    """
+    digest = config_hash(
+        {
+            "nodes": sorted(
+                ({"key": n.key, "kind": n.kind, "version_id": n.version_id} for n in nodes),
+                key=lambda n: n["key"],
+            ),
+            "edges": sorted([source, target] for source, target in edges),
+        }
+    )
+    db.flush()  # assigns workflow.id for a new workflow
+    # Compare against the current version only once the lock is held (see save_skill_version).
+    current_id = _lock_current_version_id(db, Workflow, workflow.id)
+    current = db.get(WorkflowVersion, current_id) if current_id is not None else None
+    if current is not None and current.config_hash == digest:
+        db.refresh(workflow, ["current_version_id", "current_version"])
+        return current
+    number = db.scalar(
+        select(func.coalesce(func.max(WorkflowVersion.version), 0)).where(
+            WorkflowVersion.workflow_id == workflow.id
+        )
+    )
+    version = WorkflowVersion(
+        workflow=workflow,
+        version=number + 1,
+        config_hash=digest,
+        note=note,
+        created_by=user_id,
+        nodes=[
+            WorkflowNode(
+                key=n.key,
+                kind=n.kind,
+                agent_version_id=n.version_id if n.kind == WorkflowNodeKind.agent else None,
+                subworkflow_version_id=(
+                    n.version_id if n.kind == WorkflowNodeKind.workflow else None
+                ),
+                position=i,
+            )
+            for i, n in enumerate(nodes)
+        ],
+    )
+    db.add(version)
+    # Edges reference nodes, and the ORM doesn't know to insert the nodes first.
+    db.flush()
+    version.edges = [
+        WorkflowEdge(source=source, target=target, position=i)
+        for i, (source, target) in enumerate(edges)
+    ]
+    workflow.current_version = version
+    workflow.updated_at = func.now()
     return version

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
-from aios.db import DB
+from aios.db import DB, DbId
 from aios.models import Chunk, Document, DocumentStatus
 from aios.search import hybrid_search
 from aios.worker import ingest_document_task
@@ -109,7 +109,7 @@ def upload_document(file: UploadFile, user: CurrentUser, db: DB):
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: int, user: CurrentUser, db: DB) -> None:
+def delete_document(document_id: DbId, user: CurrentUser, db: DB) -> None:
     doc = db.get(Document, document_id)
     if doc is None or doc.owner_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

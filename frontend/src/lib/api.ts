@@ -18,6 +18,20 @@ export type DocumentInfo = {
   created_at: string;
 };
 
+/** A passage found by the hybrid (semantic + keyword) document search. */
+export type SearchHit = {
+  chunk_id: number;
+  document_id: number;
+  filename: string;
+  text: string;
+  meta: { headings?: string[]; pages?: number[] };
+  /** Reciprocal Rank Fusion score: higher is better. */
+  score: number;
+  /** The passage's rank in each branch, or null if that branch didn't find it. */
+  semantic_rank: number | null;
+  lexical_rank: number | null;
+};
+
 export type SkillSummary = {
   id: number;
   name: string;
@@ -160,19 +174,29 @@ export type RunSummary = {
   updated_at: string;
 };
 
-/** A Pydantic AI `ModelRequest` / `ModelResponse`, as stored for the run. */
+/** A content block of a model response (Anthropic's format), e.g. text, thinking or web search. */
+export type ContentBlock = { type: string } & Record<string, unknown>;
+
+/** A LangChain message, as stored in the run's LangGraph thread. */
 export type ModelMessage = {
-  kind: "request" | "response";
-  parts: ({ part_kind: string } & Record<string, unknown>)[];
-  timestamp?: string;
-  instructions?: string | null;
-  model_name?: string | null;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  type: "human" | "ai" | "tool" | "system";
+  id?: string | null;
+  content: string | (string | ContentBlock)[];
+  /** AI messages: the tool calls the agent runs. */
+  tool_calls?: { id: string; name: string; args: unknown }[];
+  /** Tool messages: the call they answer, and whether it failed. */
+  tool_call_id?: string;
+  name?: string | null;
+  status?: "success" | "error";
+  usage_metadata?: { input_tokens?: number; output_tokens?: number } | null;
+  response_metadata?: { model_name?: string; stop_reason?: string };
 };
 
 export type Run = RunSummary & {
   ui_messages: UIMessage[];
   messages: ModelMessage[];
+  /** The pinned version's instructions: the system prompt of every model call. */
+  instructions: string;
 };
 
 // Same-origin requests: the browser attaches the session cookie automatically.
@@ -224,6 +248,8 @@ export const api = {
     body.append("file", file);
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
+  search: (q: string, limit: number) =>
+    request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
   listSkills: () => request<SkillSummary[]>("/api/skills"),
   getSkill: (id: number) => request<Skill>(`/api/skills/${id}`),

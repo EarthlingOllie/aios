@@ -1,21 +1,18 @@
 """The `run_python` tool, run through agent runs against a fake sandbox backend."""
 
 import asyncio
-import json
 import time
 from datetime import timedelta
 
 import pytest
+from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 from pydantic import ValidationError
-from pydantic_ai import ToolReturnPart
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from sqlalchemy import select
-from test_agents import agent_body, chat_body, make_agent, spy_run_stream
+from test_agents import agent_body, chat_body, make_agent, spy_run
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.models import AgentVersionTool, SandboxSession
-from aios.runner import runner
 from aios.sandbox import proxy_token, sessions
 from aios.sandbox.base import (
     ExecResult,
@@ -88,18 +85,16 @@ def run_code(code: str):
     """A model that calls `run_python` once with `code`, then replies with what came back."""
     seen = {}
 
-    async def model(messages, info: AgentInfo):
+    async def script(messages, info):
         # This turn's tool result, if the tool has been called in it.
-        last = messages[-1]
-        returns = [p for p in last.parts if isinstance(p, ToolReturnPart)]
-        if not returns:
-            seen["description"] = info.function_tools[0].description
-            yield {0: DeltaToolCall("run_python", json.dumps({"code": code}))}
-        else:
-            seen["result"] = returns[0].content
+        if returns := last_tool_results(messages):
+            seen["result"] = tool_output(returns[0])
             yield "done"
+        else:
+            seen["description"] = info.tools["run_python"].description
+            yield ToolCall("run_python", {"code": code})
 
-    return FunctionModel(stream_function=model), seen
+    return model(script), seen
 
 
 def python_agent(api, name: str = "Coder", **config) -> tuple[dict, dict]:
@@ -111,8 +106,8 @@ def python_agent(api, name: str = "Coder", **config) -> tuple[dict, dict]:
 
 
 def chat(api, agent, run, code: str) -> dict:
-    model, seen = run_code(code)
-    with runner.override(model=model):
+    fake, seen = run_code(code)
+    with use_model(fake):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("run it")).status_code == 200
     return seen
@@ -141,7 +136,7 @@ def test_run_python_is_in_the_catalog(api):
 
 def test_one_sandbox_per_run(api, backend, db, monkeypatch):
     agent, run = python_agent(api, timeout_seconds=30)
-    spy = spy_run_stream(monkeypatch)
+    spy = spy_run(monkeypatch)
     seen = chat(api, agent, run, "print('hi')")
     assert spy["deps"] == ChatDeps(user_id=spy["deps"].user_id, run_id=run["id"])
     assert seen["result"] == {
@@ -361,7 +356,7 @@ def test_allowed_domains_need_no_proxy_on_a_backend_with_open_network(api, backe
 def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
     agent, run = python_agent(api)
 
-    async def model(messages, info: AgentInfo):
+    async def script(messages, info):
         # Replies without calling the tool, once the background start has happened.
         for _ in range(500):
             if backend.specs:
@@ -369,7 +364,7 @@ def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
             await asyncio.sleep(0.01)
         yield "no code needed"
 
-    with runner.override(model=FunctionModel(stream_function=model)):
+    with use_model(model(script)):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("hello")).status_code == 200
     assert [s.session_key for s in backend.specs] == [f"agent-run-{run['id']}"]
@@ -392,8 +387,8 @@ def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, db, m
         prewarmed.append(allowed_domains)
 
     monkeypatch.setattr(sessions.manager, "ensure", ensure)
-    model, _ = run_code("print(1)")
-    with runner.override(model=model):
+    fake, _ = run_code("print(1)")
+    with use_model(fake):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("run it")).status_code == 200
     assert prewarmed == [["api.example.com"]]
@@ -408,8 +403,7 @@ def test_later_turns_prewarm_only_while_the_run_uses_its_sandbox(api, backend, d
     monkeypatch.setattr(sessions.manager, "ensure", ensure)
 
     def reply(run):
-        model = FunctionModel(stream_function=lambda messages, info: _say("no code needed"))
-        with runner.override(model=model):
+        with use_model(replies("no code needed")):
             url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
             assert api.post(url, json=chat_body("hello")).status_code == 200
 
@@ -432,10 +426,6 @@ def test_later_turns_prewarm_only_while_the_run_uses_its_sandbox(api, backend, d
     assert prewarmed == []
 
 
-async def _say(text: str):
-    yield text
-
-
 def test_sandbox_errors_go_to_the_model(api, backend):
     agent, run = python_agent(api)
     backend.fail_start = True
@@ -451,13 +441,12 @@ def test_without_a_backend_the_tool_says_so(api, monkeypatch):
 
 
 def test_only_agent_runs_have_a_sandbox(backend):
-    build = TOOLS["run_python"].build(RunPythonConfig())
-    tool = build.toolset.tools["run_python"]
+    [tool] = TOOLS["run_python"].build(RunPythonConfig())
 
-    class Ctx:
-        deps = ChatDeps(user_id=1)
+    class Runtime:
+        context = ChatDeps(user_id=1)
 
-    assert asyncio.run(tool.function(Ctx(), "print(1)")) == {
+    assert asyncio.run(tool.coroutine("print(1)", Runtime())) == {
         "error": "Running Python is only available in agent runs."
     }
     assert backend.specs == []

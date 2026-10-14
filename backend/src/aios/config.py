@@ -22,13 +22,19 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: SecretStr = SecretStr("")
 
-    # Inference. Model strings are Pydantic AI "provider:model" names; API keys
+    # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
     llm_model: str = "anthropic:claude-sonnet-5-5"
     # The model must be able to output models.EMBEDDING_DIM (1024) dimensions; that size is
     # fixed by the vector column, so a model with a different size needs a migration too.
     embedding_model: str = "voyageai:voyage-4"
     embedding_batch_size: int = 64
+
+    # Tracing agent runs to Langfuse (`aios.tracing`). Off unless both keys are set.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: SecretStr = SecretStr("")
+    langfuse_base_url: str = "http://localhost:3000"
+    langfuse_environment: str = ""
 
     # Docling HybridChunker.
     chunk_tokenizer: str = "sentence-transformers/all-MiniLM-L6-v2"
