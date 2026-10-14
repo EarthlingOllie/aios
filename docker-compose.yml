@@ -85,7 +85,9 @@ services:
       context: ./backend
       target: sandbox
     read_only: true
-    tmpfs: [/tmp, /work]
+    # Docker mounts tmpfs noexec,nosuid,nodev unless told otherwise; Fargate's task volumes
+    # allow exec, so code that writes and runs (or loads) files there works the same here.
+    tmpfs: ["/tmp:exec", "/work:exec"]
     # The same capabilities as on Fargate (infra/terraform/sandbox.tf).
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, KILL]
