@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
+import {
+  fitGraph,
+  layoutGraph,
+  MAX_CANVAS_HEIGHT,
+  MIN_CANVAS_HEIGHT,
+  MIN_ZOOM,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  startKeys,
+} from "@/lib/graph";
 
 const edges = [
   { source: "a", target: "b" },
@@ -59,5 +68,37 @@ describe("layoutGraph", () => {
 
   it("returns an empty layout for an empty graph", () => {
     expect(layoutGraph([], [], {})).toEqual({});
+  });
+});
+
+describe("fitGraph", () => {
+  const row = (n: number) => Array.from({ length: n }, (_, i) => ({ x: i * 264, y: 0 }));
+  const column = (n: number) => Array.from({ length: n }, (_, i) => ({ x: 0, y: i * 96 }));
+
+  it("centres a small graph at its own size, on the shortest canvas", () => {
+    const { height, viewport } = fitGraph([{ x: 100, y: 50 }], 800);
+    expect(height).toBe(MIN_CANVAS_HEIGHT);
+    expect(viewport.zoom).toBe(1);
+    expect(viewport.x + 100).toBe((800 - NODE_WIDTH) / 2);
+    expect(viewport.y + 50).toBe((MIN_CANVAS_HEIGHT - NODE_HEIGHT) / 2);
+  });
+
+  it("shrinks a wide graph to fit, but not past legible, then starts it at the left", () => {
+    expect(fitGraph(row(3), 700).viewport.zoom).toBeCloseTo((700 - 64) / (2 * 264 + NODE_WIDTH));
+    const { viewport } = fitGraph(row(10), 800);
+    expect(viewport.zoom).toBe(MIN_ZOOM);
+    expect(viewport.x).toBe(32);
+  });
+
+  it("makes the canvas as tall as a tall graph, up to a limit, then starts it at the top", () => {
+    expect(fitGraph(column(5), 800).height).toBe(4 * 96 + NODE_HEIGHT + 64);
+    const { height, viewport } = fitGraph(column(20), 800);
+    expect(height).toBe(MAX_CANVAS_HEIGHT);
+    expect(viewport.zoom).toBe(MIN_ZOOM);
+    expect(viewport.y).toBe(32);
+  });
+
+  it("has a canvas to add nodes to when there are none", () => {
+    expect(fitGraph([], 800).height).toBe(MIN_CANVAS_HEIGHT);
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Background,
   Controls,
@@ -16,7 +16,7 @@ import "@xyflow/react/dist/style.css";
 
 import { Badge } from "@/components/ui/badge";
 import type { NodePosition, WorkflowEdge, WorkflowNode } from "@/lib/api";
-import { layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
+import { fitGraph, layoutGraph, NODE_HEIGHT, NODE_WIDTH, startKeys } from "@/lib/graph";
 import { cn } from "@/lib/utils";
 
 /** What's selected on the canvas, shown in the inspector. */
@@ -69,6 +69,7 @@ const selectedEdgeStyle = { stroke: "var(--foreground)", strokeWidth: 2.5 };
 const selectedMarker = { color: selectedEdgeStyle.stroke, width: 7.5, height: 7.5 };
 
 const nodeTypes = { workflowNode: NodeCard };
+// For the controls' button: the whole graph, however small that makes it.
 const fitViewOptions = { padding: 0.2, maxZoom: 1 };
 const proOptions = { hideAttribution: true };
 
@@ -164,15 +165,23 @@ export function WorkflowCanvas({
   );
   const onPaneClick = useStableCallback(() => onSelect(null));
 
+  // The canvas is sized, and the graph placed on it, once its width is known (before it's first
+  // drawn), and not again as nodes are dragged about.
+  const ref = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState<ReturnType<typeof fitGraph>>();
+  useLayoutEffect(() => {
+    if (!fit) setFit(fitGraph(Object.values(positions), ref.current!.clientWidth));
+  }, [fit, positions]);
+  if (!fit) return <div ref={ref} className={cn("rounded-md border", className)} />;
+
   return (
-    <div className={cn("relative h-[28rem] rounded-md border", className)}>
+    <div className={cn("relative rounded-md border", className)} style={{ height: fit.height }}>
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={nodeTypes}
         colorMode="system"
-        fitView
-        fitViewOptions={fitViewOptions}
+        defaultViewport={fit.viewport}
         nodesConnectable={false}
         nodesDraggable={false}
         elementsSelectable
@@ -182,7 +191,7 @@ export function WorkflowCanvas({
         proOptions={proOptions}
       >
         <Background />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
       </ReactFlow>
       {children}
     </div>

@@ -88,3 +88,41 @@ export function layoutGraph(
     }),
   );
 }
+
+// How a graph is first shown: never so small its labels can't be read (a wider graph is panned
+// instead, from where it starts), never blown up past its size, on a canvas only as tall as that
+// needs, within limits.
+export const MIN_ZOOM = 0.8;
+const MAX_ZOOM = 1;
+const PADDING = 32;
+export const MIN_CANVAS_HEIGHT = 288;
+export const MAX_CANVAS_HEIGHT = 640;
+
+/** The canvas height and viewport to first show nodes at these positions on a canvas this wide. */
+export function fitGraph(
+  positions: NodePosition[],
+  width: number,
+): { height: number; viewport: { x: number; y: number; zoom: number } } {
+  if (positions.length === 0) {
+    return { height: MIN_CANVAS_HEIGHT, viewport: { x: 0, y: 0, zoom: MAX_ZOOM } };
+  }
+  const left = Math.min(...positions.map((p) => p.x));
+  const top = Math.min(...positions.map((p) => p.y));
+  const graphWidth = Math.max(...positions.map((p) => p.x)) + NODE_WIDTH - left;
+  const graphHeight = Math.max(...positions.map((p) => p.y)) + NODE_HEIGHT - top;
+  const fit = (room: number, size: number) => (room - 2 * PADDING) / size;
+  const clamp = (zoom: number) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+  let zoom = clamp(fit(width, graphWidth));
+  const height = Math.max(
+    MIN_CANVAS_HEIGHT,
+    Math.min(MAX_CANVAS_HEIGHT, graphHeight * zoom + 2 * PADDING),
+  );
+  zoom = clamp(Math.min(zoom, fit(height, graphHeight)));
+  // Centred where it fits; otherwise from its left (where it starts) or top edge.
+  const offset = (room: number, size: number, start: number) =>
+    Math.max(PADDING, (room - size * zoom) / 2) - start * zoom;
+  return {
+    height,
+    viewport: { x: offset(width, graphWidth, left), y: offset(height, graphHeight, top), zoom },
+  };
+}

@@ -156,6 +156,28 @@ test("saved positions are used for the layout", async ({ page }) => {
   expect(second.x).toBeLessThan(first.x);
 });
 
+test("a graph too wide to fit is shown legibly from where it starts, to be panned", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const api = await fakeApi(page);
+  const a = api.addAgent("A");
+  const keys = ["one", "two", "three", "four", "five"];
+  const wf = api.addWorkflow(
+    "Long",
+    keys.map((key) => ({ key, agent: a })),
+    keys.slice(1).map((key, i) => [keys[i], key]),
+  );
+  await page.goto(`/workflows/${wf.id}`);
+  // Drawn at no less than 80% of its size: its text is still readable.
+  const first = (await node(page, "one").boundingBox())!;
+  expect(first.width).toBeGreaterThanOrEqual(160);
+  // The start is in view; the canvas isn't much taller than the row of nodes.
+  const canvas = (await page.locator(".react-flow").boundingBox())!;
+  expect(first.x).toBeGreaterThan(canvas.x);
+  expect(canvas.height).toBeLessThan(320);
+});
+
 test("an empty workflow says so", async ({ page }) => {
   const api = await fakeApi(page);
   const wf = api.addWorkflow("Empty");
