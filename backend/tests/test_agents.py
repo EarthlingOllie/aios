@@ -255,8 +255,15 @@ def test_agent_delete_is_soft_and_takes_its_runs(api, db):
     run = api.post(f"{url}/runs").json()
 
     assert api.delete(url).status_code == 204
-    for gone in (url, f"{url}/versions", f"{url}/versions/1", f"{url}/runs/{run['id']}"):
+    for gone in (url, f"{url}/versions", f"{url}/runs/{run['id']}"):
         assert api.get(gone).status_code == 404
+    # Its versions are still there to read, though, as a deleted workflow's are: older workflow
+    # versions, and their past runs, pin them.
+    old = api.get(f"{url}/versions/1")
+    assert old.status_code == 200
+    assert old.json()["version"] == 1
+    assert [s["skill_id"] for s in old.json()["skills"]] == [skill["id"]]
+    assert api.get(f"{url}/versions/2").status_code == 404
     assert api.put(url, json=agent_body(agent)).status_code == 404
     assert api.post(f"{url}/runs").status_code == 404
     assert api.delete(url).status_code == 404
@@ -306,6 +313,23 @@ def test_other_users_cannot_see_agents(api, client, db):
         assert client.get(f"/api/agents/{agent['id']}/versions").status_code == 404
         assert client.post(f"/api/agents/{agent['id']}/runs").status_code == 404
         assert client.get("/api/agents").json() == []
+    finally:
+        db.delete(other)
+        db.commit()
+
+
+def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
+    agent = make_agent(api, "Mine")
+    url = f"/api/agents/{agent['id']}"
+    assert api.delete(url).status_code == 204
+    assert api.get(f"{url}/versions/1").status_code == 200
+    other = User(github_id=-2, login="other")
+    db.add(other)
+    db.commit()
+    try:
+        app.dependency_overrides[current_user] = lambda: other
+        for gone in (url, f"{url}/versions", f"{url}/versions/1"):
+            assert client.get(gone).status_code == 404
     finally:
         db.delete(other)
         db.commit()

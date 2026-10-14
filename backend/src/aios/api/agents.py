@@ -158,9 +158,13 @@ class RunOut(RunSummary):
     instructions: str
 
 
-def get_owned_agent(db: Session, user_id: int, agent_id: int) -> Agent:
+def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
     agent = db.get(Agent, agent_id)
-    if agent is None or agent.owner_id != user_id or agent.deleted_at is not None:
+    if (
+        agent is None
+        or agent.owner_id != user_id
+        or (agent.deleted_at is not None and not deleted_ok)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
 
@@ -458,7 +462,10 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
 def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
-    return version_out(get_agent_version(db, get_owned_agent(db, user.id, agent_id), number))
+    # Also once the agent is deleted: workflow versions, and their past runs, still pin its
+    # versions, as they do a deleted workflow's.
+    agent = get_owned_agent(db, user.id, agent_id, deleted_ok=True)
+    return version_out(get_agent_version(db, agent, number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
