@@ -70,9 +70,14 @@ function NodeDetails({ node, edges }: { node: WorkflowNode; edges: WorkflowEdge[
         </Row>
         <Row label="Runs">
           <span className="flex flex-wrap items-center gap-2">
-            <Link to={href} className="font-medium hover:underline">
-              {node.name}
-            </Link>
+            {/* A deleted target's page is gone, so it's named without a link. */}
+            {node.latest_version === null ? (
+              <span className="font-medium">{node.name}</span>
+            ) : (
+              <Link to={href} className="font-medium hover:underline">
+                {node.name}
+              </Link>
+            )}
             <VersionBadge version={node.version} />
             {node.latest_version === null ? (
               <Badge variant="destructive">deleted</Badge>

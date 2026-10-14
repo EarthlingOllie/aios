@@ -97,6 +97,20 @@ test("clicking a node shows what it runs", async ({ page }) => {
   await expect(panel).toContainText("Workflow");
 });
 
+test("a node whose target was deleted names it without a link", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report, review } = await seed(api);
+  review.deleted = true;
+  await page.goto(`/workflows/${report.id}`);
+
+  await node(page, "review").click();
+  const panel = inspector(page);
+  await expect(panel).toContainText("Review");
+  await expect(panel).toContainText("deleted");
+  // Its page is gone, so there's nothing to link to.
+  await expect(panel.getByRole("link", { name: "Review" })).toHaveCount(0);
+});
+
 test("clicking an edge shows what passes along it", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
