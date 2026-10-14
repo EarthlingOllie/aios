@@ -120,6 +120,30 @@ test("a live run survives failed re-reads and keeps following", async ({ page })
   await expect(page.getByText("Couldn't refresh this run")).toBeHidden();
 });
 
+test("a poll that changes nothing leaves the graph as it was", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  const run = api.addRun(report, { steps: [{ path: ["research"], status: "running" }] });
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(node(page, "research")).toHaveAttribute("data-state", "running");
+  // What React Flow hands the node's card: the canvas builds a new one only when what the node
+  // shows changes (and lays the graph out again when the graph does), so a poll shouldn't.
+  const shown = () =>
+    node(page, "research").evaluateHandle((el) => {
+      type Fiber = { type: unknown; memoizedProps?: { data?: unknown }; child?: Fiber };
+      const fiber = Object.entries(el).find(([k]) => k.startsWith("__reactFiber$"))![1] as Fiber;
+      let f = fiber.child;
+      while (f && !(typeof f.type === "function" && f.memoizedProps?.data)) f = f.child;
+      return f!.memoizedProps!.data;
+    });
+  const before = await shown();
+  let polls = 0;
+  // Each poll is set off by the last one's render, so by the third the first two have rendered.
+  await page.waitForResponse((r) => r.url().endsWith(`/runs/${run.id}`) && ++polls === 3);
+  const same = await page.evaluate(([a, b]) => a === b, [before, await shown()]);
+  expect(same).toBe(true);
+});
+
 test("a node's step shows its input, output and conversation", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, researcher } = seed(api);

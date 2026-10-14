@@ -27,6 +27,9 @@ import {
 } from "@/lib/api";
 import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
 
+// The layout to use when the workflow's own can't be read: one object, so it's not new each render.
+const noLayout: Record<string, NodePosition> = {};
+
 function duration(from: string, to: string | null) {
   const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
@@ -59,6 +62,10 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const [opened, setOpened] = useState<Level[]>([]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState<string>();
+  // A version never changes, so keep the first copy read: the fresh one in each poll would have
+  // the canvas lay out and redraw the whole graph every second.
+  const [version, setVersion] = useState<WorkflowVersion>();
+  if (run.data && run.data.version.id !== version?.id) setVersion(run.data.version);
 
   // Follow a run that's still going.
   usePoll(!!run.data && isActive(run.data.status), run.reload);
@@ -67,11 +74,11 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
   // The run carries its own graph; the workflow only gives its name and layout, so the run is
   // still shown, laid out afresh, if it fails to load.
-  if (!run.data || (!workflow.data && !workflow.error)) return null;
+  if (!run.data || (!workflow.data && !workflow.error) || !version) return null;
   const r = run.data;
   const name = workflow.data?.name ?? `Workflow ${id}`;
   const levels: Level[] = [
-    { key: null, name, version: r.version, layout: workflow.data?.layout ?? {} },
+    { key: null, name, version, layout: workflow.data?.layout ?? noLayout },
     ...opened,
   ];
   const level = levels[levels.length - 1];
