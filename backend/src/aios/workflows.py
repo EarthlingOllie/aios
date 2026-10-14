@@ -331,26 +331,36 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
     return state, version_id, text
 
 
-def _beat(run_id: int) -> None:
+def _beat(run_id: int) -> bool:
+    """Refresh the run's heartbeat; False if it isn't running any more (ended or deleted)."""
     with SessionLocal() as db:
-        # A no-op once the run has ended or been deleted.
-        db.execute(
+        beat = db.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
             .values(heartbeat_at=func.now())
         )
         db.commit()
+        return beat.rowcount > 0
 
 
-async def _heartbeat(run_id: int) -> None:
-    """Refresh the run's heartbeat until cancelled, when the run ends."""
+async def _heartbeat(run_id: int, run: asyncio.Task) -> None:
+    """Refresh the run's heartbeat until cancelled, when the run ends.
+
+    Cancels `run` if the run has ended without it: failed as stopped because a beat was late
+    (`fail_stopped_runs`), or deleted. Nobody will see the rest of its turns.
+    """
     while True:
         await asyncio.sleep(HEARTBEAT_SECONDS)
         try:
-            await asyncio.to_thread(_beat, run_id)
+            alive = await asyncio.to_thread(_beat, run_id)
         except Exception:
             # The run goes on; it only counts as stopped after several missed beats.
             log.exception("workflow run %s: couldn't record its heartbeat", run_id)
+            continue
+        if not alive:
+            log.warning("workflow run %s ended elsewhere; stopping it", run_id)
+            run.cancel()
+            return
 
 
 def _load(version_id: int) -> Graph:
@@ -605,16 +615,23 @@ async def execute_run(run_id: int) -> None:
 
     Called by the worker (`aios.worker.run_workflow_task`). Does nothing unless the run is
     queued, so a task delivered twice runs it once; a run left running by a worker that died
-    is failed instead (see `_claim`). Its heartbeat is refreshed until it ends.
+    is failed instead (see `_claim`). Its heartbeat is refreshed until it ends, and stops it if
+    it has ended elsewhere meanwhile.
     """
     claimed = await asyncio.to_thread(_claim, run_id)
     if claimed is None:
         return
-    heartbeat = asyncio.create_task(_heartbeat(run_id))
+    run = asyncio.create_task(_execute(run_id, *claimed))
+    heartbeat = asyncio.create_task(_heartbeat(run_id, run))
     try:
-        await _execute(run_id, *claimed)
+        await run
+    except asyncio.CancelledError:
+        # Stopped by its heartbeat; propagate any other cancellation (e.g. of this coroutine).
+        if not heartbeat.done() or heartbeat.cancelled():
+            raise
     finally:
         heartbeat.cancel()
+        run.cancel()
 
 
 async def _execute(run_id: int, run: RunState, version_id: int, text: str) -> None:

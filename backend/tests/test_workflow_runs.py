@@ -801,7 +801,9 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     with use_model(model(script)):
         asyncio.run(execute_run(started["id"]))
     # The other branch's next node isn't tried once the first found the run gone.
-    assert tried == ["start", "left", "right", "left2"]
+    # (left and right start together, so in either order.)
+    assert tried[0] == "start" and sorted(tried[1:3]) == ["left", "right"]
+    assert tried[3:] == ["left2"]
     assert api.get(url).status_code == 404
     # Not logged as a failure: the user deleted it.
     assert not [r for r in caplog.records if r.levelname == "ERROR"]
@@ -872,3 +874,34 @@ def test_runs_go_to_their_own_queue():
     assert queue("aios.ingest_document") == "celery"
     timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
     assert timeout < get_settings().workflow_run_time_limit
+
+
+def test_a_run_ended_elsewhere_stops_its_worker(api, queued, monkeypatch):
+    """A run failed while it goes (its read found the worker stale) or deleted stops at its next
+    heartbeat, rather than spending turns nobody will see."""
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
+    a = agents(api, "slow", "after")
+    wf = make_workflow(
+        api,
+        "flow",
+        [agent_node("slow", a["slow"]), agent_node("after", a["after"])],
+        [("slow", "after")],
+    )
+    started = start(api, wf)
+
+    async def script(messages, info):
+        if messages[0].content == "slow":
+            await asyncio.to_thread(fail_run, started["id"], "Stopped elsewhere")
+            await asyncio.sleep(30)
+        yield "done"
+
+    async def timed():
+        async with asyncio.timeout(5):
+            await execute_run(started["id"])
+
+    with use_model(model(script)):
+        asyncio.run(timed())
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["error"]) == ("failed", "Stopped elsewhere")
+    assert [s["path"] for s in out["steps"]] == [["slow"]]
+    assert out["steps"][0]["status"] == "failed"
