@@ -33,7 +33,7 @@ variable "certificate_arn" {
 }
 
 variable "image_tag" {
-  description = "Tag of the api/worker/web images in ECR to run."
+  description = "Tag of the api/worker/web/sandbox images in ECR to run."
   type        = string
   default     = "latest"
 }
@@ -108,4 +108,17 @@ variable "worker" {
   description = "Docling is CPU/RAM hungry; give workers room."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
+}
+
+# --- run_python sandboxes (sandbox.tf) ---
+variable "sandbox" {
+  description = "Size of each sandbox: one Fargate task per agent run that uses run_python."
+  type        = object({ cpu = number, memory = number })
+  default     = { cpu = 512, memory = 1024 }
+}
+
+variable "egress_proxy" {
+  description = "The sandboxes' only way out. Two tasks, so one can fail or be replaced."
+  type        = object({ cpu = number, memory = number, count = number })
+  default     = { cpu = 256, memory = 512, count = 2 }
 }

@@ -6,8 +6,8 @@ Dockerfile), so it uses the standard library only and never imports `aios`.
     python runner.py exec    one call: reads {"code", "timeout"} as JSON on stdin and writes the
                              result as JSON on stdout (the gVisor broker runs it via docker exec)
     python runner.py serve   an HTTP server for calls: POST /exec, GET /health (Fargate). Needs
-                             SANDBOX_TOKEN; exits when idle or at its maximum lifetime, which
-                             stops the sandbox
+                             SANDBOX_TOKEN, which /exec requires and /health refuses if wrong;
+                             exits when idle or at its maximum lifetime, which stops the sandbox
 
 Each call writes the code to a file and runs it as a new `python -I` process in the working
 directory (/work, which persists between calls), in its own process group, with resource
@@ -286,17 +286,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _authorized(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        return hmac.compare_digest(auth.encode(), f"Bearer {self.server.token}".encode())
+
     def do_GET(self) -> None:
-        if self.path == "/health":
-            self._reply(200, {"ok": True})
-        else:
-            self._reply(404, {"error": "not found"})
+        if self.path != "/health":
+            return self._reply(404, {"error": "not found"})
+        # With no token it's a plain liveness check. A wrong token is refused, so the API can
+        # tell its own sandbox from another session's that now has the same address.
+        if "Authorization" in self.headers and not self._authorized():
+            return self._reply(401, {"error": "unauthorized"})
+        self._reply(200, {"ok": True})
 
     def do_POST(self) -> None:
         if self.path != "/exec":
             return self._reply(404, {"error": "not found"})
-        auth = self.headers.get("Authorization", "")
-        if not hmac.compare_digest(auth.encode(), f"Bearer {self.server.token}".encode()):
+        if not self._authorized():
             return self._reply(401, {"error": "unauthorized"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
