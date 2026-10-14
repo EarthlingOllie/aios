@@ -4,7 +4,14 @@ import pytest
 import test_agents
 from fake_model import model, replies, use_model
 from test_agents import agent_body, chat_body, make_skill, spy_run
-from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
+from test_workflows import (
+    agent_node,
+    count_queries,
+    make_agent,
+    make_workflow,
+    workflow_body,
+    workflow_node,
+)
 
 from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
@@ -381,6 +388,29 @@ def test_a_workflow_that_cant_run_isnt_started(api, queued, monkeypatch):
     )
     assert api.get(f"/api/workflows/{outer['id']}/runs").json() == []
     assert queued == []
+
+
+def test_starting_a_run_takes_a_fixed_number_of_queries(api, queued):
+    """Checking every version a run will run doesn't cost queries per node, agent or depth."""
+    searchers = []
+    for i in range(6):
+        searcher = make_agent(api, f"searcher {i}")
+        tools = [{"key": "web_search", "config": {}}]
+        body = {"name": f"searcher {i}", "tools": tools}
+        searchers.append(api.put(f"/api/agents/{searcher['id']}", json=body).json())
+
+    def start_queries(n: int) -> int:
+        # n agents side by side, under n workflows nested one in the next.
+        workflow = make_workflow(
+            api, f"inner {n}", [agent_node(f"a{i}", a) for i, a in enumerate(searchers[:n])]
+        )
+        for depth in range(n):
+            workflow = make_workflow(api, f"wf {n} {depth}", [workflow_node("w", workflow)])
+        with count_queries() as statements:
+            start(api, workflow)
+        return len(statements)
+
+    assert start_queries(1) == start_queries(6)
 
 
 def test_a_run_that_cant_be_queued_isnt_left_behind(api, monkeypatch):

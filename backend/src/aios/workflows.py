@@ -25,7 +25,7 @@ from typing import Any
 from anyio import CancelScope
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from aios import checkpoints, tracing
 from aios.agent import ChatDeps
@@ -34,7 +34,9 @@ from aios.db import SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
+    AgentVersion,
     Workflow,
+    WorkflowNode,
     WorkflowNodeKind,
     WorkflowRun,
     WorkflowRunStatus,
@@ -138,21 +140,60 @@ class Graph:
     targets: dict[str, list[str]]
 
 
-def load_graph(db: Session, version_id: int, loaded: dict[int, Graph] | None = None) -> Graph:
+def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
+    """Load a workflow version and every version it runs, at any depth, with what `load_graph`
+    reads, in a fixed number of queries however many nodes, agents and levels it has.
+
+    One recursive query finds the versions (pins only point at older versions, so the walk ends),
+    then eager loads fetch their nodes, edges, agent versions, agents and tools. Rows already in
+    the session are refreshed rather than skipped, so none of them lazy-loads per node later.
+    (Safe here, unlike in `aios.api.workflows.load_version`: each row is reached by one path.)
+    Keep the returned rows referenced while reading them: the session only holds rows weakly.
+    """
+    reach = (
+        select(WorkflowVersion.id.label("id"))
+        .where(WorkflowVersion.id == version_id)
+        .cte("reach", recursive=True)
+    )
+    reach = reach.union(
+        select(WorkflowNode.subworkflow_version_id)
+        .join(reach, WorkflowNode.workflow_version_id == reach.c.id)
+        .where(WorkflowNode.subworkflow_version_id.is_not(None))
+    )
+    agent_version = selectinload(WorkflowVersion.nodes).selectinload(WorkflowNode.agent_version)
+    versions = db.scalars(
+        select(WorkflowVersion)
+        .where(WorkflowVersion.id.in_(select(reach.c.id)))
+        .options(
+            agent_version.selectinload(AgentVersion.agent),
+            agent_version.selectinload(AgentVersion.tools),
+            selectinload(WorkflowVersion.edges),
+        )
+        .execution_options(populate_existing=True)
+    )
+    return {version.id: version for version in versions}
+
+
+def load_graph(db: Session, version_id: int) -> Graph:
     """A workflow version and every version it runs, at any depth, ready to run.
 
     Raises `RunError` if an agent version can't run: its agent has been deleted (an older version
     of a subworkflow can still pin it), or one of its tools can't be built from its stored
     settings (see `aios.tools.build_tool`). A version pinned by several nodes is loaded once.
     """
-    loaded = {} if loaded is None else loaded
+    return _build_graph(prefetch_graph(db, version_id), version_id, {})
+
+
+def _build_graph(
+    versions: dict[int, WorkflowVersion], version_id: int, loaded: dict[int, Graph]
+) -> Graph:
     if version_id in loaded:
         return loaded[version_id]
-    version = db.get(WorkflowVersion, version_id)
+    version = versions[version_id]
     nodes = []
     for node in version.nodes:
         if node.kind == WorkflowNodeKind.workflow:
-            graph = load_graph(db, node.subworkflow_version_id, loaded)
+            graph = _build_graph(versions, node.subworkflow_version_id, loaded)
             nodes.append(Node(node.key, node.kind, graph=graph))
             continue
         pinned = node.agent_version
