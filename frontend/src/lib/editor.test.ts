@@ -8,7 +8,7 @@ import {
   findCycle,
   fromVersion,
   keyError,
-  moveNode,
+  moveNodes,
   removeEdge,
   removeNode,
   renameNode,
@@ -155,12 +155,13 @@ describe("connect", () => {
   });
 });
 
-describe("removeEdge / moveNode", () => {
+describe("removeEdge / moveNodes", () => {
   it("removes one edge", () => {
     expect(removeEdge(chain, "a", "b").edges).toEqual([{ source: "b", target: "c" }]);
   });
-  it("moves a node", () => {
-    expect(moveNode(chain, "a", { x: 1, y: 2 }).positions.a).toEqual({ x: 1, y: 2 });
+  it("moves several nodes at once, leaving the rest", () => {
+    const moved = moveNodes(chain, { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
+    expect(moved.positions).toEqual({ ...chain.positions, a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
   });
 });
 

@@ -183,8 +183,9 @@ export function removeEdge(draft: Draft, source: string, target: string): Draft 
   };
 }
 
-export function moveNode(draft: Draft, key: string, position: NodePosition): Draft {
-  return { ...draft, positions: { ...draft.positions, [key]: position } };
+/** Moves nodes, all at once, e.g. the several selected nodes in one drag. */
+export function moveNodes(draft: Draft, positions: Record<string, NodePosition>): Draft {
+  return { ...draft, positions: { ...draft.positions, ...positions } };
 }
 
 /** The save request for the draft, with every node's position as the layout. */

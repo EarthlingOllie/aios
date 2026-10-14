@@ -12,7 +12,7 @@ import {
   canConnect,
   connect,
   keyError,
-  moveNode,
+  moveNodes,
   removeEdge,
   removeNode,
   renameNode,
@@ -138,7 +138,7 @@ export function GraphEditor({
             selection={selection}
             onSelect={setSelection}
             editing={{
-              onMove: (key, position) => onChange(moveNode(draft, key, position)),
+              onMove: (positions) => onChange(moveNodes(draft, positions)),
               onConnect: (source, target) => onChange(connect(draft, source, target)),
               canConnect: (source, target) => canConnect(draft, source, target) === null,
               onDelete,
