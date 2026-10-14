@@ -218,12 +218,15 @@ export function WorkflowCanvas({
   // only build new ones when what they show changes, not on every render of the page around us.
   // So too for selecting: only what's selected (or deselected) is built anew. A run's states are
   // rebuilt by each poll, so they're compared by what they say.
+  // Each node's size is given, as it's fixed: React Flow hides a node it's handed without one
+  // until it has measured it again, and one handed over just as it's first measured stays hidden.
   const runKey = run && JSON.stringify(run);
   const unselectedNodes = useMemo<CardNode[]>(
     () =>
       nodes.map((node) => ({
         id: node.key,
         type: "workflowNode",
+        measured: { width: NODE_WIDTH, height: NODE_HEIGHT },
         position: positions[node.key],
         data: {
           node,
