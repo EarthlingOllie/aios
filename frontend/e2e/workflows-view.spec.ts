@@ -213,6 +213,85 @@ test("version history opens an old version's graph, which can be restored", asyn
   await expect(page.getByText("Restored from v1")).toBeVisible();
 });
 
+/** Holds restore requests until `release` is called, counting them. */
+async function holdRestores(page: Page) {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const restores = { count: 0, release };
+  await page.route("**/api/workflows/*/versions/*/restore", async (route) => {
+    restores.count++;
+    await held;
+    await route.fallback();
+  });
+  return restores;
+}
+
+test("restoring a version sends one request, however often it's clicked", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = await seed(api);
+  api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
+  const restores = await holdRestores(page);
+  await page.goto(`/workflows/${report.id}/versions/1`);
+
+  await page.getByRole("button", { name: "Restore this version" }).dblclick();
+  await expect.poll(() => restores.count).toBeGreaterThan(0);
+  restores.release();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  expect(restores.count).toBe(1);
+  expect(api.writes.filter(([method]) => method === "POST")).toHaveLength(1);
+});
+
+test("the restore button shows that the restore is running", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = await seed(api);
+  api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
+  const restores = await holdRestores(page);
+  await page.goto(`/workflows/${report.id}/versions/1`);
+
+  await page.getByRole("button", { name: "Restore this version" }).click();
+  const restoring = page.getByRole("button", { name: "Restoring…" });
+  await expect(restoring).toBeDisabled();
+  restores.release();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+});
+
+test("a failed restore can be retried", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = await seed(api);
+  api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
+  let failures = 1;
+  await page.route("**/api/workflows/*/versions/*/restore", (route) =>
+    failures-- > 0
+      ? route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "Restore failed" }),
+        })
+      : route.fallback(),
+  );
+  await page.goto(`/workflows/${report.id}/versions/1`);
+
+  await page.getByRole("button", { name: "Restore this version" }).click();
+  await expect(page.getByText("Restore failed")).toBeVisible();
+  await page.getByRole("button", { name: "Restore this version" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page.getByText("Restored from v1")).toBeVisible();
+});
+
+test("version history that fails to load says why", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = await seed(api);
+  await page.route(`**/api/workflows/${report.id}/versions`, (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Version store unavailable" }),
+    }),
+  );
+  await page.goto(`/workflows/${report.id}`);
+  await expect(page.getByText("Version store unavailable")).toBeVisible();
+});
+
 test("a version page whose workflow fails to load says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);

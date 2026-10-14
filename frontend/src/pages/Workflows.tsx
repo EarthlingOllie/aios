@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { History, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -16,7 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { VersionBadge, VersionHistory } from "@/components/versions";
+import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector } from "@/components/workflow/inspector";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
@@ -139,6 +139,7 @@ function WorkflowDetailView({ id }: { id: number }) {
       <Section title="Version history">
         <VersionHistory
           versions={versions.data}
+          error={versions.error}
           current={current.version}
           href={(v) => `/workflows/${id}/versions/${v}`}
           detail={(v) => {
@@ -193,14 +194,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
-      actions={
-        !isCurrent && (
-          <Button size="sm" variant="outline" onClick={onRestore}>
-            <History />
-            Restore this version
-          </Button>
-        )
-      }
+      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <Section title="Graph">
