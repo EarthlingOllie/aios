@@ -116,6 +116,8 @@ class AgentNode:
     model: str | None
     instructions: str
     tools: list[AgentTool]
+    # The version's part of its runs' trace metadata (see `tracing.agent_version_metadata`).
+    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,7 @@ def load_graph(db: Session, version_id: int, loaded: dict[int, Graph] | None = N
             model=pinned.model,
             instructions=pinned.instructions,
             tools=tools,
+            metadata=tracing.agent_version_metadata(pinned),
         )
         nodes.append(Node(node.key, node.kind, agent=agent_node))
     sources: dict[str, list[str]] = {node.key: [] for node in nodes}
@@ -311,7 +314,7 @@ def _finish_step(
 def trace_metadata(
     run: RunState, agent: AgentNode, agent_run_id: int, path: tuple[str, ...]
 ) -> dict[str, Any]:
-    """Attached to an agent node's trace (Langfuse), like an agent run's, plus the workflow's."""
+    """Attached to an agent node's trace (Langfuse): an agent run's, plus the workflow's."""
     return tracing.trace_metadata(
         session_id=checkpoints.thread_id(agent_run_id),
         user_id=run.user_id,
@@ -320,11 +323,8 @@ def trace_metadata(
             f"agent-version:{agent.agent_version}",
             f"workflow:{run.workflow_name}",
         ],
-        agent_id=agent.agent_id,
-        agent_name=agent.agent_name,
-        agent_version=agent.agent_version,
-        agent_version_id=agent.agent_version_id,
         agent_run_id=agent_run_id,
+        **agent.metadata,
         workflow_id=run.workflow_id,
         workflow_name=run.workflow_name,
         workflow_version=run.workflow_version,

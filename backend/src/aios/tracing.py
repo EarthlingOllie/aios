@@ -8,6 +8,7 @@ from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
 from aios.config import get_settings
+from aios.models import AgentVersion
 
 
 @lru_cache
@@ -40,6 +41,22 @@ def trace_metadata(
     if session_id:
         out["langfuse_session_id"] = session_id
     return out
+
+
+def agent_version_metadata(version: AgentVersion) -> dict[str, Any]:
+    """The agent version's part of a run's metadata: the same whether the run is a chat or a
+    workflow's agent node, so filters on e.g. its skills or tools find both."""
+    return {
+        "agent_id": version.agent_id,
+        "agent_name": version.agent.name,
+        "agent_version": version.version,
+        "agent_version_id": version.id,
+        "skill_versions": [
+            {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
+            for sv in version.skills
+        ],
+        "tools": [{"key": t.tool_key, "config": t.config} for t in version.tools],
+    }
 
 
 def flush() -> None:

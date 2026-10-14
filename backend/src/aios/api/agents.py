@@ -577,16 +577,8 @@ def trace_metadata(run: AgentRun, user_id: int) -> dict[str, Any]:
         session_id=checkpoints.thread_id(run.id),
         user_id=user_id,
         tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
-        agent_id=run.agent_id,
-        agent_name=run.agent.name,
-        agent_version=version.version,
-        agent_version_id=version.id,
         agent_run_id=run.id,
-        skill_versions=[
-            {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
-            for sv in version.skills
-        ],
-        tools=[{"key": t.tool_key, "config": t.config} for t in version.tools],
+        **tracing.agent_version_metadata(version),
     )
 
 

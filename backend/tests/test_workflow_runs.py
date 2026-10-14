@@ -1,10 +1,12 @@
 import asyncio
 
 import pytest
-from fake_model import model, use_model
+import test_agents
+from fake_model import model, replies, use_model
+from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
 
-from aios import checkpoints
+from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.main import app
@@ -231,6 +233,41 @@ def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch)
     assert out["status"] == "failed"
     assert "Unknown tool: web_search" in out["error"]
     assert out["steps"] == []
+
+
+def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, queued, monkeypatch):
+    poet = test_agents.make_agent(api, "Poet", "Write.", [make_skill(api, "Haiku", "5-7-5")])
+    url = f"/api/agents/{poet['id']}"
+    tools = [{"key": "web_search", "config": {}}]
+    poet = api.put(url, json=agent_body(poet, tools=tools)).json()
+    wf = make_workflow(api, "poems", [agent_node("p", poet)])
+    traced = []
+    trace = workflows.trace_metadata
+    monkeypatch.setattr(
+        workflows, "trace_metadata", lambda *a: traced.append(trace(*a)) or traced[-1]
+    )
+    out = run(api, queued, wf)
+    (node,) = traced
+
+    # The same as a chat turn of the agent's version, so filters on e.g. tools or skills find
+    # both, plus where in which workflow run it ran.
+    seen = spy_run(monkeypatch)
+    chat = api.post(f"{url}/runs").json()
+    with use_model(replies("ok")):
+        assert api.post(f"{url}/runs/{chat['id']}/chat", json=chat_body("hi")).status_code == 200
+    agent_run_id = out["steps"][0]["agent_run_id"]
+    assert node == seen["metadata"] | {
+        "langfuse_session_id": checkpoints.thread_id(agent_run_id),
+        "langfuse_tags": [*seen["metadata"]["langfuse_tags"], "workflow:poems"],
+        "agent_run_id": agent_run_id,
+        "workflow_id": wf["id"],
+        "workflow_name": "poems",
+        "workflow_version": 1,
+        "workflow_run_id": out["id"],
+        "workflow_path": ["p"],
+    }
+    assert node["skill_versions"][0]["name"] == "Haiku"
+    assert node["tools"][0]["key"] == "web_search"
 
 
 def test_get_shows_the_pinned_version_and_runs_list_newest_first(api, queued):
