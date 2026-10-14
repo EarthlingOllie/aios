@@ -57,8 +57,8 @@ the UI is a placeholder so far). They're versioned like agents (`workflows`,
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
-  starts. The worker runs it (`aios.run_workflow`, a Celery task with its own time limit,
-  `WORKFLOW_RUN_TIME_LIMIT`). A node starts once all its predecessors have succeeded, so
+  starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the `workflows`
+  queue, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`). A node starts once all its predecessors have succeeded, so
   independent branches run at the same time; start nodes get the run's input, other nodes their
   predecessors' outputs in edge order, joined with a blank line. An agent node is a new agent
   run of its pinned version, given its input as the user's message, and outputs the final reply,
@@ -76,8 +76,8 @@ the UI is a placeholder so far). They're versioned like agents (`workflows`,
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
-api ──enqueue──▶ Redis ──▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings;
-                                   workflow runs)
+api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
+                         └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
 api, worker ──▶ Postgres 17 + pgvector (agent run history: LangGraph checkpoints, `langgraph` schema)
 api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
@@ -124,7 +124,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
-docker-compose.yml  db, redis, migrate, api, worker, web
+docker-compose.yml  db, redis, migrate, api, worker, workflow-worker, web
 ```
 
 ## Prerequisites
@@ -157,6 +157,7 @@ uv sync --extra ingest   # drop --extra ingest if you're not running the worker
 uv run alembic upgrade head
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
+uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
 
 cd frontend
 pnpm install

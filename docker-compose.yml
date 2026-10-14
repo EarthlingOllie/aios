@@ -68,6 +68,18 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Workflow runs, on their own queue so ingests don't wait behind them (see aios.worker).
+  # They need no Docling, so this reuses the api image.
+  workflow-worker:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "workflows", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   web:
     build: ./frontend
     volumes:

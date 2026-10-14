@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "web", "migrate"])
+  for_each          = toset(["api", "worker", "workflow-worker", "web", "migrate"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -166,6 +166,35 @@ resource "aws_ecs_task_definition" "worker" {
   }])
 }
 
+# Workflow runs, on their own queue (see aios.worker). API image: they need no Docling.
+resource "aws_ecs_task_definition" "workflow_worker" {
+  family                   = "${var.name}-workflow-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.workflow_worker.cpu
+  memory                   = var.workflow_worker.memory
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name      = "workflow-worker"
+    image     = local.image.api
+    essential = true
+    command = [
+      "celery", "-A", "aios.worker", "worker", "-Q", "workflows", "--loglevel=INFO",
+      "--concurrency=${var.workflow_worker.concurrency}",
+    ]
+    environment      = local.backend_env
+    secrets          = local.backend_secrets
+    logConfiguration = local.log_config["workflow-worker"]
+  }])
+}
+
 resource "aws_ecs_task_definition" "web" {
   family                   = "${var.name}-web"
   requires_compatibilities = ["FARGATE"]
@@ -188,9 +217,10 @@ resource "aws_ecs_task_definition" "web" {
 
 locals {
   services = {
-    api    = { task = aws_ecs_task_definition.api.arn, count = var.api.count, port = 8000, tg = aws_lb_target_group.api.arn }
-    web    = { task = aws_ecs_task_definition.web.arn, count = var.web.count, port = 80, tg = aws_lb_target_group.web.arn }
-    worker = { task = aws_ecs_task_definition.worker.arn, count = var.worker.count, port = null, tg = null }
+    api             = { task = aws_ecs_task_definition.api.arn, count = var.api.count, port = 8000, tg = aws_lb_target_group.api.arn }
+    web             = { task = aws_ecs_task_definition.web.arn, count = var.web.count, port = 80, tg = aws_lb_target_group.web.arn }
+    worker          = { task = aws_ecs_task_definition.worker.arn, count = var.worker.count, port = null, tg = null }
+    workflow-worker = { task = aws_ecs_task_definition.workflow_worker.arn, count = var.workflow_worker.count, port = null, tg = null }
   }
 }
 

@@ -710,3 +710,18 @@ def test_a_queued_run_can_be_deleted_and_then_never_starts(api, queued):
     with use_model(echo()):
         asyncio.run(execute_run(started["id"]))
     assert api.get(f"/api/workflows/{wf['id']}/runs").json() == []
+
+
+def test_runs_go_to_their_own_queue():
+    # So a run can't hold up ingests: its own worker takes it, and the redelivery timeout (which
+    # a run needn't fit in, since a redelivered run doesn't start again) stays ingest's.
+    from aios.config import get_settings
+    from aios.worker import celery_app
+
+    def queue(task: str) -> str:
+        return celery_app.amqp.router.route({}, task)["queue"].name
+
+    assert queue("aios.run_workflow") == "workflows"
+    assert queue("aios.ingest_document") == "celery"
+    timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
+    assert timeout < get_settings().workflow_run_time_limit

@@ -8,9 +8,6 @@ from aios.db import SessionLocal
 
 settings = get_settings()
 
-# The longest any task can hold its message: the larger hard limit.
-_longest_task = max(settings.ingest_time_limit + 60, settings.workflow_run_time_limit + 120)
-
 # Fire-and-forget tasks: no result backend; progress lives on the documents and workflow_runs
 # tables.
 celery_app = Celery("aios", broker=settings.redis_url)
@@ -27,7 +24,11 @@ celery_app.conf.update(
     # its own run. Otherwise a slow doc is ingested twice at once.
     task_soft_time_limit=settings.ingest_time_limit,
     task_time_limit=settings.ingest_time_limit + 60,
-    broker_transport_options={"visibility_timeout": 2 * _longest_task + 600},
+    broker_transport_options={"visibility_timeout": 2 * (settings.ingest_time_limit + 60) + 600},
+    # Runs take hours, so they get their own queue and worker (`-Q workflows`): an ingest never
+    # waits behind one. The timeout above is broker-wide and shorter than a run, which is fine:
+    # a redelivered run doesn't start again (see `aios.workflows.execute_run`).
+    task_routes={"aios.run_workflow": {"queue": "workflows"}},
 )
 
 

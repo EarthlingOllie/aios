@@ -109,3 +109,9 @@ variable "worker" {
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
 }
+
+variable "workflow_worker" {
+  description = "Runs workflows (mostly waiting on the model), on their own queue so ingests don't wait behind them."
+  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
+  default     = { cpu = 512, memory = 2048, count = 1, concurrency = 2 }
+}
