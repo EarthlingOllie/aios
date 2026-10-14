@@ -294,6 +294,17 @@ def test_dev_backend_shares_one_runner():
         asyncio.run(backend.start(SPEC))
 
 
+def test_dev_backend_reports_a_rejected_token_as_misconfigured():
+    # The shared dev runner is still up: a 401 means SANDBOX_DEV_TOKEN doesn't match it, not
+    # that the sandbox stopped mid-call.
+    settings = Settings(sandbox_dev_url="http://sandbox:8080", sandbox_dev_token="")
+    backend = DevBackend(settings, runner=FakeRunner(status=401).client())
+    handle = asyncio.run(backend.start(SPEC))
+    with pytest.raises(SandboxError, match="SANDBOX_DEV_TOKEN") as excinfo:
+        asyncio.run(backend.execute(handle, "1", 5))
+    assert not isinstance(excinfo.value, SandboxGone)
+
+
 def test_the_runner_client_against_a_real_runner(workdir):
     # The same HTTP path a Fargate task serves, with the real runner behind it.
     server = runner_module.Server(("127.0.0.1", 0), "dev", idle_seconds=60, max_seconds=600)
