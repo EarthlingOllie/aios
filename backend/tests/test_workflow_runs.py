@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from datetime import timedelta
 
 import pytest
@@ -714,6 +716,36 @@ def test_a_heartbeat_that_cant_be_written_doesnt_stop_the_run(api, queued, monke
     # Logged, not fatal: a run outlives a blip, and fails only once beats have been missed long
     # enough (`aios.workflows.STALE_AFTER`).
     assert any("heartbeat" in r.getMessage() for r in caplog.records)
+
+
+def test_a_run_keeps_its_heartbeat_while_its_event_loop_is_busy(api, queued, monkeypatch):
+    # A node can hold the worker's event loop for longer than a run takes to go stale (a long
+    # blocking call, CPU-bound work); the worker is still alive and will finish it.
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.1)
+    monkeypatch.setattr(workflows, "STALE_AFTER", timedelta(seconds=0.5))
+    a = agents(api, "busy")
+    wf = make_workflow(api, "flow", [agent_node("busy", a["busy"])])
+    started = start(api, wf)
+    url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
+    seen = []
+
+    def read_later():
+        time.sleep(1.0)
+        # Reading it fails it if its heartbeat has gone stale (`fail_stopped_runs`).
+        seen.append(api.get(url).json()["status"])
+
+    async def script(messages, info):
+        reader = threading.Thread(target=read_later)
+        reader.start()
+        time.sleep(1.5)  # Blocks the event loop, three times as long as the run's lease.
+        reader.join()
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    assert seen == ["running"]
+    out = api.get(url).json()
+    assert (out["status"], out["output"], out["error"]) == ("succeeded", "done", None)
 
 
 def run_status(run_id: int) -> WorkflowRunStatus:

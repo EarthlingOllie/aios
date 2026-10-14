@@ -20,7 +20,8 @@ inspection UI (PR 5). Both sides build against this document; change it here fir
 - The run's output is the outputs of the top-level sink nodes, joined like a subgraph's.
 - A run whose worker stopped mid-run (crash, restart) is reported `failed`, within a couple of
   minutes, with the error "The worker stopped while running this, so it couldn't finish."; its
-  steps still running are failed too.
+  steps still running are failed too. One whose worker is alive but busy (a node blocking it for
+  minutes) isn't: liveness doesn't depend on the worker staying responsive.
 
 ## Statuses
 

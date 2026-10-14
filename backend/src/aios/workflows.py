@@ -15,14 +15,17 @@ watched as it goes. Once a node fails, no more nodes start; those already runnin
 run fails with the first error.
 
 While a worker runs a run, it refreshes the run's heartbeat (`heartbeat_at`) every
-`HEARTBEAT_SECONDS`. A run is alive while it's running with a recent heartbeat (`alive`); one
+`HEARTBEAT_SECONDS`, from a thread of its own, so a node that holds the event loop doesn't stop
+it (`_Heartbeat`). A run is alive while it's running with a recent heartbeat (`alive`); one
 running without, whose worker died (killed, OOM, restarted), is failed when its task comes round
 again or when it's read (`fail_stopped_runs`), and can be deleted.
 """
 
 import asyncio
+import contextlib
 import logging
 import re
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -261,8 +264,9 @@ class RunState:
 
 
 # How often a worker refreshes the heartbeat of the run it's running, and how long without one
-# until the run counts as stopped: a few missed beats, so a slow write or a busy event loop
-# doesn't fail a live run.
+# until the run counts as stopped: a few missed beats, so a slow write doesn't fail a live run.
+# (The beats are off the event loop, so a busy one doesn't delay them; a worker whose loop is
+# stuck for good keeps beating until Celery's hard time limit kills it, see `aios.worker`.)
 HEARTBEAT_SECONDS = 30.0
 STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
 
@@ -343,24 +347,54 @@ def _beat(run_id: int) -> bool:
         return beat.rowcount > 0
 
 
-async def _heartbeat(run_id: int, run: asyncio.Task) -> None:
-    """Refresh the run's heartbeat until cancelled, when the run ends.
+class _Heartbeat:
+    """Refreshes a run's heartbeat on a thread of its own until stopped, when the run ends.
 
-    Cancels `run` if the run has ended without it: failed as stopped because a beat was late
-    (`fail_stopped_runs`), or deleted. Nobody will see the rest of its turns.
+    Not on the event loop, so a node that holds the loop (a long blocking call, CPU-bound work)
+    doesn't let a live run go stale. Cancels `run`, on its loop, if the run has ended without it:
+    failed as stopped because a beat was late (`fail_stopped_runs`), or deleted. Nobody will see
+    the rest of its turns.
     """
-    while True:
-        await asyncio.sleep(HEARTBEAT_SECONDS)
-        try:
-            alive = await asyncio.to_thread(_beat, run_id)
-        except Exception:
-            # The run goes on; it only counts as stopped after several missed beats.
-            log.exception("workflow run %s: couldn't record its heartbeat", run_id)
-            continue
-        if not alive:
-            log.warning("workflow run %s ended elsewhere; stopping it", run_id)
-            run.cancel()
+
+    def __init__(self, run_id: int, run: asyncio.Task) -> None:
+        self.run_id = run_id
+        self.run = run
+        self.loop = asyncio.get_running_loop()
+        self.stopping = threading.Event()
+        # Whether it stopped the run: set on the loop, so only once the run has been cancelled.
+        self.stopped_run = False
+        self.thread = threading.Thread(
+            target=self._beat_until_stopped, name=f"workflow-run-{run_id}-heartbeat", daemon=True
+        )
+        self.thread.start()
+
+    def _beat_until_stopped(self) -> None:
+        while not self.stopping.wait(HEARTBEAT_SECONDS):
+            try:
+                alive = _beat(self.run_id)
+            except Exception:
+                # The run goes on; it only counts as stopped after several missed beats.
+                log.exception("workflow run %s: couldn't record its heartbeat", self.run_id)
+                continue
+            if not alive:
+                # Also once the run has just finished itself; then by the time this is called on
+                # the loop it's done or being stopped, or it's cancelled after its result was
+                # written, which changes nothing. If the loop has closed, the run is over.
+                with contextlib.suppress(RuntimeError):
+                    self.loop.call_soon_threadsafe(self._stop_run)
+                return
+
+    def _stop_run(self) -> None:
+        if self.stopping.is_set() or self.run.done():
             return
+        log.warning("workflow run %s ended elsewhere; stopping it", self.run_id)
+        self.stopped_run = True
+        self.run.cancel()
+
+    async def stop(self) -> None:
+        """Stop beating, and wait for a beat underway: none comes once the run has ended."""
+        self.stopping.set()
+        await asyncio.to_thread(self.thread.join)
 
 
 def _load(version_id: int) -> Graph:
@@ -622,16 +656,16 @@ async def execute_run(run_id: int) -> None:
     if claimed is None:
         return
     run = asyncio.create_task(_execute(run_id, *claimed))
-    heartbeat = asyncio.create_task(_heartbeat(run_id, run))
+    heartbeat = _Heartbeat(run_id, run)
     try:
         await run
     except asyncio.CancelledError:
         # Stopped by its heartbeat; propagate any other cancellation (e.g. of this coroutine).
-        if not heartbeat.done() or heartbeat.cancelled():
+        if not heartbeat.stopped_run:
             raise
     finally:
-        heartbeat.cancel()
         run.cancel()
+        await heartbeat.stop()
 
 
 async def _execute(run_id: int, run: RunState, version_id: int, text: str) -> None:
