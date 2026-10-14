@@ -497,6 +497,9 @@ class WorkflowRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Refreshed by the worker while it runs the run, so a run whose worker died can be told from
+    # one still going (`aios.workflows.alive`).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     workflow_version: Mapped[WorkflowVersion] = relationship()
 

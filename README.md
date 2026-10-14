@@ -58,17 +58,19 @@ the UI is a placeholder so far). They're versioned like agents (`workflows`,
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
   starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the `workflows`
-  queue, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`). A node starts once all its predecessors have succeeded, so
-  independent branches run at the same time; start nodes get the run's input, other nodes their
-  predecessors' outputs in edge order, joined with a blank line. An agent node is a new agent
-  run of its pinned version, given its input as the user's message, and outputs the final reply,
-  so its conversation opens on the run page like any other. A workflow node runs its pinned
-  version's graph with its input, and outputs its sink nodes' outputs (in node order); so does
-  the run. Each node records a step (`workflow_run_steps`, with the path of node keys down to it)
-  when it starts and finishes, committed as it goes, so the run can be watched while it's going.
-  Once a node fails nothing else starts, and the run fails with the first error. Each agent node
-  is traced like an agent run, with the workflow, its version, the run and the node's path added
-  to the metadata.
+  queue, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`),
+  refreshing its heartbeat (`heartbeat_at`) as it goes; a run whose heartbeat has stopped (its
+  worker died) is failed when it's next read or its task comes round again. A node starts once
+  all its predecessors have succeeded, so independent branches run at the same time; start nodes
+  get the run's input, other nodes their predecessors' outputs in edge order, joined with a blank
+  line. An agent node is a new agent run of its pinned version, given its input as the user's
+  message, and outputs the final reply, so its conversation opens on the run page like any other.
+  A workflow node runs its pinned version's graph with its input, and outputs its sink nodes'
+  outputs (in node order); so does the run. Each node records a step (`workflow_run_steps`, with
+  the path of node keys down to it) when it starts and finishes, committed as it goes, so the run
+  can be watched while it's going. Once a node fails nothing else starts, and the run fails with
+  the first error. Each agent node is traced like an agent run, with the workflow, its version,
+  the run and the node's path added to the metadata.
 - Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a tool
   that has left the library, or an agent that has since been deleted), or if it has no nodes.
   Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the database.

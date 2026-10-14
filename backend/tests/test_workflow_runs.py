@@ -603,19 +603,157 @@ def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued,
     url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
     assert api.get(url).json()["status"] == "running"
 
-    # The message wasn't acked, so the task comes round again: rather than leave the run
-    # running forever, it fails it, and the step that was cut off.
+    # The message wasn't acked, so the task comes round again. Straight away (the worker was
+    # lost), its heartbeat is still fresh: it could be a live run's, so it's left alone.
     with use_model(echo()):
         asyncio.run(execute_run(started["id"]))
+    assert run_status(started["id"]) == WorkflowRunStatus.running
+
+    # Once the heartbeat has stopped, the run can't be going: rather than leave it running
+    # forever, it fails, and the step that was cut off.
+    age_heartbeat(started["id"])
+    with use_model(echo()):
+        asyncio.run(execute_run(started["id"]))
+    assert run_status(started["id"]) == WorkflowRunStatus.failed
     out = api.get(url).json()
-    assert (out["status"], out["output"]) == ("failed", None)
-    assert "worker stopped" in out["error"]
+    assert (out["status"], out["output"], out["error"]) == (
+        "failed",
+        None,
+        workflows.WORKER_STOPPED,
+    )
     assert out["finished_at"]
     assert [(s["path"], s["status"]) for s in out["steps"]] == [
         (["one"], "succeeded"),
         (["two"], "failed"),
     ]
-    assert out["steps"][1]["error"] == out["error"] and out["steps"][1]["finished_at"]
+    assert out["steps"][1]["error"] == "The run stopped before this step finished."
+    assert out["steps"][1]["finished_at"]
+
+
+def test_a_live_run_isnt_failed_when_its_task_is_redelivered(api, queued):
+    # Its message can come round again while it's going, e.g. once the broker's visibility
+    # timeout, shorter than a run can take, has passed.
+    a = agents(api, "slow")
+    wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
+    started = start(api, wf)
+    seen = []
+
+    async def script(messages, info):
+        await asyncio.to_thread(execute_redelivered, started["id"])
+        seen.append(run_status(started["id"]))
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    assert seen == [WorkflowRunStatus.running]
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["output"]) == ("succeeded", "done")
+
+
+def test_a_run_whose_worker_stopped_is_shown_failed(api, queued):
+    # A lost worker's task is redelivered straight away, while its heartbeat is still fresh, so
+    # it's left running; reading it once the heartbeat has stopped fails it instead.
+    a = agents(api, "solo")
+    wf = make_workflow(api, "flow", [agent_node("solo", a["solo"])])
+    listed, got = start(api, wf), start(api, wf)
+    for run_id in (listed["id"], got["id"]):
+        abandon(run_id)
+    url = f"/api/workflows/{wf['id']}/runs"
+
+    by_id = {r["id"]: r for r in api.get(url).json()}
+    assert (by_id[listed["id"]]["status"], by_id[listed["id"]]["error"]) == (
+        "failed",
+        workflows.WORKER_STOPPED,
+    )
+    assert by_id[listed["id"]]["finished_at"]
+    out = api.get(f"{url}/{got['id']}").json()
+    assert (out["status"], out["error"]) == ("failed", workflows.WORKER_STOPPED)
+    assert [(s["status"], s["error"]) for s in out["steps"]] == [
+        ("failed", "The run stopped before this step finished.")
+    ]
+
+
+def test_a_run_refreshes_its_heartbeat_while_it_goes(api, queued, monkeypatch):
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
+    a = agents(api, "slow")
+    wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
+    started = start(api, wf)
+    beats = []
+
+    async def script(messages, info):
+        for _ in range(2):
+            beats.append(await asyncio.to_thread(heartbeat, started["id"]))
+            await asyncio.sleep(0.5)
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    first, second = beats
+    assert first is not None and second > first
+
+
+def test_a_heartbeat_that_cant_be_written_doesnt_stop_the_run(api, queued, monkeypatch, caplog):
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
+
+    def broken(run_id: int) -> None:
+        raise ConnectionError("db is down")
+
+    monkeypatch.setattr(workflows, "_beat", broken)
+    a = agents(api, "slow")
+    wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
+
+    async def script(messages, info):
+        await asyncio.sleep(0.3)
+        yield "done"
+
+    started = start(api, wf)
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert out["status"] == "succeeded"
+    # Logged, not fatal: a run outlives a blip, and fails only once beats have been missed long
+    # enough (`aios.workflows.STALE_AFTER`).
+    assert any("heartbeat" in r.getMessage() for r in caplog.records)
+
+
+def run_status(run_id: int) -> WorkflowRunStatus:
+    """As stored, without reading it through the API (which fails a run whose worker stopped)."""
+    with SessionLocal() as db:
+        return db.get(WorkflowRun, run_id).status
+
+
+def heartbeat(run_id: int):
+    with SessionLocal() as db:
+        return db.get(WorkflowRun, run_id).heartbeat_at
+
+
+def age_heartbeat(run_id: int) -> None:
+    """As if its worker had stopped beating a day ago."""
+    with SessionLocal() as db:
+        db.execute(
+            update(WorkflowRun)
+            .where(WorkflowRun.id == run_id)
+            .values(heartbeat_at=func.now() - timedelta(days=1))
+        )
+        db.commit()
+
+
+def abandon(run_id: int) -> None:
+    """A queued run as a worker that died a day into it, mid-node, leaves it."""
+    with SessionLocal() as db:
+        db.execute(
+            update(WorkflowRun)
+            .where(WorkflowRun.id == run_id)
+            .values(status=WorkflowRunStatus.running, started_at=func.now() - timedelta(days=1))
+        )
+        db.add(WorkflowRunStep(run_id=run_id, path=["solo"], kind="agent", input="x"))
+        db.commit()
+    age_heartbeat(run_id)
+
+
+def execute_redelivered(run_id: int) -> None:
+    """The run's task, delivered again to another worker."""
+    asyncio.run(execute_run(run_id))
 
 
 def delete_run(run_id: int) -> None:
@@ -691,15 +829,23 @@ def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
     assert api.get(url).json()["status"] == "succeeded"
     assert api.delete(url).status_code == 204
 
-    # One its worker died on, long past its time limit, can go.
+    # However long a run has been going, it can't go while its worker is beating; once that
+    # has stopped (the worker died), it can.
     stuck = start(api, wf)
     db.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == stuck["id"])
-        .values(status=WorkflowRunStatus.running, started_at=func.now() - timedelta(days=1))
+        .values(
+            status=WorkflowRunStatus.running,
+            started_at=func.now() - timedelta(days=1),
+            heartbeat_at=func.now(),
+        )
     )
     db.commit()
-    assert api.delete(f"/api/workflows/{wf['id']}/runs/{stuck['id']}").status_code == 204
+    stuck_url = f"/api/workflows/{wf['id']}/runs/{stuck['id']}"
+    assert api.delete(stuck_url).status_code == 409
+    age_heartbeat(stuck["id"])
+    assert api.delete(stuck_url).status_code == 204
 
 
 def test_a_queued_run_can_be_deleted_and_then_never_starts(api, queued):
@@ -713,8 +859,9 @@ def test_a_queued_run_can_be_deleted_and_then_never_starts(api, queued):
 
 
 def test_runs_go_to_their_own_queue():
-    # So a run can't hold up ingests: its own worker takes it, and the redelivery timeout (which
-    # a run needn't fit in, since a redelivered run doesn't start again) stays ingest's.
+    # So a run can't hold up ingests: its own worker takes it, and the redelivery timeout stays
+    # ingest's. A run needn't fit in it: a redelivered run doesn't start again, and is failed
+    # only once its heartbeat has stopped.
     from aios.config import get_settings
     from aios.worker import celery_app
 

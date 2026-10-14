@@ -1,16 +1,15 @@
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import checkpoints
 from aios.api.skills import lock_live, unique_name
 from aios.auth import CurrentUser
-from aios.config import get_settings
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
@@ -28,7 +27,14 @@ from aios.models import (
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.versioning import NodeSpec, save_workflow_version
 from aios.worker import run_workflow_task
-from aios.workflows import GraphError, RunError, load_graph, validate_graph
+from aios.workflows import (
+    GraphError,
+    RunError,
+    alive,
+    fail_stopped_runs,
+    load_graph,
+    validate_graph,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -598,6 +604,8 @@ def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
 def list_workflow_runs(workflow_id: DbId, user: CurrentUser, db: DB):
     workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Its worker died: shown failed rather than running for ever (see `get_workflow_run`).
+    fail_stopped_runs(db, WorkflowRun.workflow_id == workflow.id)
     rows = db.execute(
         workflow_run_summary_query()
         .where(WorkflowRun.workflow_id == workflow.id)
@@ -646,6 +654,11 @@ def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUse
 @router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunOut)
 def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_workflow_run(db, user.id, workflow_id, run_id)
+    # A run whose worker died is failed when it's read: its task may never come round again to
+    # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
+    # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
+    # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
+    fail_stopped_runs(db, WorkflowRun.id == run.id)
     summary = workflow_run_summary(db, run.id)
     steps = db.execute(
         select(WorkflowRunStep, AgentRun.agent_id)
@@ -684,20 +697,10 @@ def delete_workflow_run(
     # Locked before its agent runs are read: a node starting meanwhile records its step and
     # agent run in one transaction, which waits for this lock, so it's either seen here or
     # fails once the run has gone (`aios.workflows._start_step`).
-    still_going = db.scalar(
-        select(
-            and_(
-                WorkflowRun.status == WorkflowRunStatus.running,
-                # Unless its worker died: one past its time limit (`aios.worker`) never ends.
-                WorkflowRun.started_at
-                > func.now() - timedelta(seconds=get_settings().workflow_run_time_limit + 60),
-            )
-        )
-        .where(WorkflowRun.id == run.id)
-        .with_for_update()
-    )
+    still_going = db.scalar(select(alive()).where(WorkflowRun.id == run.id).with_for_update())
     # Its agent turns would carry on regardless, and their checkpoints can only be deleted once
-    # they end. A queued run can go: the worker won't start a run that's gone (`_claim`).
+    # they end. A queued run can go: the worker won't start a run that's gone (`_claim`); so can
+    # one whose worker died, whose heartbeat has stopped.
     if still_going:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "This run is still going; wait for it to finish."

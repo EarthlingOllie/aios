@@ -27,7 +27,8 @@ celery_app.conf.update(
     broker_transport_options={"visibility_timeout": 2 * (settings.ingest_time_limit + 60) + 600},
     # Runs take hours, so they get their own queue and worker (`-Q workflows`): an ingest never
     # waits behind one. The timeout above is broker-wide and shorter than a run, which is fine:
-    # a redelivered run doesn't start again (see `aios.workflows.execute_run`).
+    # a redelivered run doesn't start again, and is only failed if its heartbeat has stopped
+    # (see `aios.workflows._claim`).
     task_routes={"aios.run_workflow": {"queue": "workflows"}},
 )
 
@@ -52,7 +53,7 @@ def run_workflow_task(run_id: int) -> None:
 
     try:
         # Only a queued run starts, so a redelivered message doesn't run it twice; one left
-        # running by a worker that died is failed instead.
+        # running by a worker that died (its heartbeat stopped) is failed instead.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
         fail_run(run_id, time_limit_error())

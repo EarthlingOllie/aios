@@ -18,6 +18,9 @@ inspection UI (PR 5). Both sides build against this document; change it here fir
 - If a node fails, nothing downstream of it runs (those steps are never created). Branches
   already running are allowed to finish. The run then fails with the first error.
 - The run's output is the outputs of the top-level sink nodes, joined like a subgraph's.
+- A run whose worker stopped mid-run (crash, restart) is reported `failed`, within a couple of
+  minutes, with the error "The worker stopped while running this, so it couldn't finish."; its
+  steps still running are failed too.
 
 ## Statuses
 
@@ -40,8 +43,8 @@ version whose tools left the library). 422 if the workflow has no nodes.
 the run's status is `queued` or `running`.
 
 `DELETE /api/workflows/{id}/runs/{run_id}` → 204. Also deletes the agent runs its steps created.
-409 while the run is `running` (a queued one can be deleted), so the UI should disable delete
-until it finishes.
+409 while the run is `running` (a queued one can be deleted, and so can one whose worker
+stopped), so the UI should disable delete until it finishes.
 
 ```ts
 type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";

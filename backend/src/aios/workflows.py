@@ -13,6 +13,11 @@ outputs its sink nodes' outputs (those with no outgoing edge), in node order. Ea
 step (`workflow_run_steps`) when it starts and finishes, in its own transaction, so the run can be
 watched as it goes. Once a node fails, no more nodes start; those already running finish, and the
 run fails with the first error.
+
+While a worker runs a run, it refreshes the run's heartbeat (`heartbeat_at`) every
+`HEARTBEAT_SECONDS`. A run is alive while it's running with a recent heartbeat (`alive`); one
+running without, whose worker died (killed, OOM, restarted), is failed when its task comes round
+again or when it's read (`fail_stopped_runs`), and can be deleted.
 """
 
 import asyncio
@@ -20,11 +25,12 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from anyio import CancelScope
 from langchain_core.messages import HumanMessage
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, and_, false, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -254,8 +260,36 @@ class RunState:
     failed_path: tuple[str, ...] = ()
 
 
-# Why a run is failed when its task comes round again while it's running.
+# How often a worker refreshes the heartbeat of the run it's running, and how long without one
+# until the run counts as stopped: a few missed beats, so a slow write or a busy event loop
+# doesn't fail a live run.
+HEARTBEAT_SECONDS = 30.0
+STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
+
+# Why a run is failed once it's found running without a live worker.
 WORKER_STOPPED = "The worker stopped while running this, so it couldn't finish."
+
+
+def alive() -> ColumnElement[bool]:
+    """Whether a run is still going: running, with a worker that has beaten lately. Never null,
+    so it can be negated: a running run that isn't alive has lost its worker."""
+    return and_(
+        WorkflowRun.status == WorkflowRunStatus.running,
+        func.coalesce(WorkflowRun.heartbeat_at > func.now() - STALE_AFTER, false()),
+    )
+
+
+def fail_stopped_runs(db: Session, *where: ColumnElement[bool]) -> None:
+    """Fail the runs matching `where` that are running but not alive (see `alive`), and their
+    steps that were cut off; commits."""
+    _end_runs(
+        db,
+        [*where, WorkflowRun.status == WorkflowRunStatus.running, ~alive()],
+        WorkflowRunStatus.failed,
+        None,
+        WORKER_STOPPED,
+    )
+    db.commit()
 
 
 def _claim(run_id: int) -> tuple[RunState, int, str] | None:
@@ -263,41 +297,22 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
     queued (deleted, or already started).
 
     A run is queued once, and its task acked only when it ends, so a run found running was
-    started by a delivery whose worker died without finishing it (a hard time limit, OOM kill,
-    restart): the broker hands the task out again. That run can't go on from where it stopped,
-    so it fails, with the steps that were cut off. The broker's visibility timeout outlasts any
-    delivery's hard limit (see `aios.worker`), so this isn't a live run's duplicate.
+    started by an earlier delivery. If that's still going (its heartbeat is fresh), this one
+    leaves it be: the broker redelivers a message it's held longer than its visibility timeout
+    (see `aios.worker`), which a run can outlast. If not, its worker died without finishing it
+    (a hard time limit, OOM kill, restart); it can't go on from where it stopped, so it fails.
     """
     with SessionLocal() as db:
         row = db.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.queued)
-            .values(status=WorkflowRunStatus.running, started_at=func.now())
+            .values(
+                status=WorkflowRunStatus.running, started_at=func.now(), heartbeat_at=func.now()
+            )
             .returning(WorkflowRun.workflow_version_id, WorkflowRun.input)
         ).one_or_none()
         if row is None:
-            abandoned = db.execute(
-                update(WorkflowRun)
-                .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
-                .values(
-                    status=WorkflowRunStatus.failed, error=WORKER_STOPPED, finished_at=func.now()
-                )
-                .returning(WorkflowRun.id)
-            ).one_or_none()
-            if abandoned is not None:
-                db.execute(
-                    update(WorkflowRunStep)
-                    .where(
-                        WorkflowRunStep.run_id == run_id,
-                        WorkflowRunStep.status == WorkflowStepStatus.running,
-                    )
-                    .values(
-                        status=WorkflowStepStatus.failed,
-                        error=WORKER_STOPPED,
-                        finished_at=func.now(),
-                    )
-                )
-                db.commit()
+            fail_stopped_runs(db, WorkflowRun.id == run_id)
             return None
         version_id, text = row
         workflow, version = db.execute(
@@ -316,9 +331,66 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
     return state, version_id, text
 
 
+def _beat(run_id: int) -> None:
+    with SessionLocal() as db:
+        # A no-op once the run has ended or been deleted.
+        db.execute(
+            update(WorkflowRun)
+            .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
+            .values(heartbeat_at=func.now())
+        )
+        db.commit()
+
+
+async def _heartbeat(run_id: int) -> None:
+    """Refresh the run's heartbeat until cancelled, when the run ends."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            await asyncio.to_thread(_beat, run_id)
+        except Exception:
+            # The run goes on; it only counts as stopped after several missed beats.
+            log.exception("workflow run %s: couldn't record its heartbeat", run_id)
+
+
 def _load(version_id: int) -> Graph:
     with SessionLocal() as db:
         return load_graph(db, version_id)
+
+
+def _end_runs(
+    db: Session,
+    where: Sequence[ColumnElement[bool]],
+    status: WorkflowRunStatus,
+    output: str | None,
+    error: str | None,
+) -> None:
+    """End the runs matching `where` that haven't ended, and fail their steps still running."""
+    ended = db.scalars(
+        update(WorkflowRun)
+        .where(
+            *where,
+            WorkflowRun.status.in_([WorkflowRunStatus.queued, WorkflowRunStatus.running]),
+        )
+        .values(status=status, output=output, error=error, finished_at=func.now())
+        .returning(WorkflowRun.id)
+    ).all()
+    if not ended:
+        return
+    # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
+    # they never recorded their own end.
+    db.execute(
+        update(WorkflowRunStep)
+        .where(
+            WorkflowRunStep.run_id.in_(ended),
+            WorkflowRunStep.status == WorkflowStepStatus.running,
+        )
+        .values(
+            status=WorkflowStepStatus.failed,
+            error="The run stopped before this step finished.",
+            finished_at=func.now(),
+        )
+    )
 
 
 def _finish_run(
@@ -326,28 +398,7 @@ def _finish_run(
 ) -> None:
     with SessionLocal() as db:
         # A no-op if the run was deleted meanwhile, or has already finished.
-        db.execute(
-            update(WorkflowRun)
-            .where(
-                WorkflowRun.id == run_id,
-                WorkflowRun.status.in_([WorkflowRunStatus.queued, WorkflowRunStatus.running]),
-            )
-            .values(status=status, output=output, error=error, finished_at=func.now())
-        )
-        # Steps whose nodes were stopped with the run, e.g. when it took too long: they never
-        # recorded their own end.
-        db.execute(
-            update(WorkflowRunStep)
-            .where(
-                WorkflowRunStep.run_id == run_id,
-                WorkflowRunStep.status == WorkflowStepStatus.running,
-            )
-            .values(
-                status=WorkflowStepStatus.failed,
-                error="The run stopped before this step finished.",
-                finished_at=func.now(),
-            )
-        )
+        _end_runs(db, [WorkflowRun.id == run_id], status, output, error)
         db.commit()
 
 
@@ -554,12 +605,19 @@ async def execute_run(run_id: int) -> None:
 
     Called by the worker (`aios.worker.run_workflow_task`). Does nothing unless the run is
     queued, so a task delivered twice runs it once; a run left running by a worker that died
-    is failed instead (see `_claim`).
+    is failed instead (see `_claim`). Its heartbeat is refreshed until it ends.
     """
     claimed = await asyncio.to_thread(_claim, run_id)
     if claimed is None:
         return
-    run, version_id, text = claimed
+    heartbeat = asyncio.create_task(_heartbeat(run_id))
+    try:
+        await _execute(run_id, *claimed)
+    finally:
+        heartbeat.cancel()
+
+
+async def _execute(run_id: int, run: RunState, version_id: int, text: str) -> None:
     try:
         # Timed here rather than by Celery's soft limit, whose exception can land inside a node
         # and fail it like any other error.

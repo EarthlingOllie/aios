@@ -2,7 +2,8 @@
 
 Running a workflow: a run pins the workflow version it started on, and records a step for each
 node as it starts, at any depth. An agent node's step points at the agent run holding its
-conversation.
+conversation. A run's worker refreshes its heartbeat while it runs it, so a run left behind by a
+worker that died can be told from one still going.
 
 Revision ID: 0009
 Revises: 0008
@@ -44,6 +45,7 @@ def upgrade() -> None:
         ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["workflow_id"], ["workflows.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(
             ["workflow_version_id"], ["workflow_versions.id"], ondelete="CASCADE"
