@@ -441,7 +441,8 @@ async def _run_node(run: RunState, node: Node, path: tuple[str, ...], text: str)
 async def _run_graph(run: RunState, graph: Graph, path: tuple[str, ...], text: str) -> str:
     """Run a graph's nodes, each once its predecessors have succeeded; its sinks' outputs.
 
-    Raises the first of its nodes' failures, once the nodes already running have finished.
+    Raises the first of its nodes' failures, once the nodes already running have finished, or
+    `StepFailed` if a failure elsewhere in the run stopped some of them from starting.
     """
     outputs: dict[str, str] = {}
     waiting = {key: len(sources) for key, sources in graph.sources.items()}
@@ -477,6 +478,9 @@ async def _run_graph(run: RunState, graph: Graph, path: tuple[str, ...], text: s
             task.cancel()
     if failures:
         raise failures[0]
+    if len(outputs) < len(graph.nodes):
+        # A node elsewhere in the run failed, so some of these never started.
+        raise StepFailed("Stopped: another node failed")
     return join_outputs([outputs[n.key] for n in graph.nodes if not graph.targets[n.key]])
 
 

@@ -225,6 +225,44 @@ def test_a_failing_node_fails_the_run_and_nothing_downstream_starts(api, queued)
     assert set(by_path) == {"start", "sub", "sub/boom", "side"}
 
 
+def test_a_subworkflow_stopped_by_another_branchs_failure_fails_cleanly(api, queued):
+    a = agents(api, "boom", "slow", "after")
+    inner = make_workflow(
+        api,
+        "inner",
+        [agent_node("slow", a["slow"]), agent_node("after", a["after"])],
+        [("slow", "after")],
+    )
+    wf = make_workflow(api, "racing", [agent_node("boom", a["boom"]), workflow_node("sub", inner)])
+    started = start(api, wf)
+    url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
+
+    async def script(messages, info):
+        name = messages[0].content
+        if name == "boom":
+            raise RuntimeError("boom broke")
+        if name == "slow":
+            # Finishes only once boom's failure has been recorded, so `after` never starts.
+            for _ in range(500):
+                out = await asyncio.to_thread(lambda: api.get(url).json())
+                if steps(out).get("boom", {}).get("status") == "failed":
+                    break
+                await asyncio.sleep(0.01)
+        yield f"{name}({messages[-1].content})"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    out = api.get(url).json()
+    assert (out["status"], out["error"]) == ("failed", "boom: boom broke")
+    by_path = steps(out)
+    assert by_path["sub/slow"]["status"] == "succeeded"
+    assert (by_path["sub"]["status"], by_path["sub"]["error"]) == (
+        "failed",
+        "Stopped: another node failed",
+    )
+    assert set(by_path) == {"boom", "sub", "sub/slow"}
+
+
 def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch):
     searcher = make_agent(api, "searcher")
     searcher = api.put(
