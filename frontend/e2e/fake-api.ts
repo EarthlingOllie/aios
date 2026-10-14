@@ -265,11 +265,12 @@ export class FakeApi {
       );
     }
     if (path === "/api/workflows" && method === "POST") {
+      // The server checks the graph first; the name only clashes when the save commits.
+      const error = this.check(body);
+      if (error) return fail(422, error);
       if (this.live().some((w) => w.name === body.name)) {
         return fail(409, "You already have a workflow with that name");
       }
-      const error = this.check(body);
-      if (error) return fail(422, error);
       const workflow: WorkflowRow = {
         id: this.id(),
         name: body.name,
@@ -291,6 +292,7 @@ export class FakeApi {
       const rest = m[2] ?? "";
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
+        // In the server's order: the version, then the graph, then (as the save commits) the name.
         const now = workflow.versions.length;
         if (body.base_version != null && body.base_version !== now) {
           return fail(
@@ -298,11 +300,11 @@ export class FakeApi {
             `This workflow has changed since you started editing (now v${now}). Reload to see the changes.`,
           );
         }
+        const error = this.check(body, workflow);
+        if (error) return fail(422, error);
         if (this.live().some((w) => w.name === body.name && w !== workflow)) {
           return fail(409, "You already have a workflow with that name");
         }
-        const error = this.check(body, workflow);
-        if (error) return fail(422, error);
         workflow.name = body.name;
         workflow.description = body.description ?? "";
         this.applyLayout(workflow, body);

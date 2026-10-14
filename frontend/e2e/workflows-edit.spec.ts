@@ -416,6 +416,20 @@ test("refuses to overwrite a version saved since the editor loaded", async ({ pa
   expect(api.writes.at(-1)![2]).toMatchObject({ base_version: 1 });
 });
 
+test("reports a stale version before a taken name", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  api.addWorkflow("Taken");
+  await page.goto(`/workflows/${report.id}/edit`);
+  await expect(page.getByText("Editing v1.")).toBeVisible();
+  await page.getByLabel("Name").fill("Taken");
+  api.addWorkflowVersion(report, (v) => v.edges.splice(0));
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "This workflow has changed since you started editing (now v2)",
+  );
+});
+
 test("cancel discards the changes", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
