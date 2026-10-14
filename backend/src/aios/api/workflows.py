@@ -68,6 +68,9 @@ class WorkflowIn(BaseModel):
     layout: dict[str, NodePosition] | None = None
     # Optional "what changed", stored on the new version if one is created.
     note: str | None = None
+    # The version number the edit started from: if the workflow has moved on since, the save is
+    # refused rather than overwriting that version. None saves regardless.
+    base_version: int | None = None
 
 
 class WorkflowNodeOut(BaseModel):
@@ -113,6 +116,9 @@ class WorkflowSummary(BaseModel):
     version_id: int
     node_count: int
     updated_at: datetime
+    # The workflows whose versions its current version runs, at any depth: another workflow
+    # can't run this one if it's among them (`refuse_self_containment`).
+    contains: list[int]
 
 
 class WorkflowOut(BaseModel):
@@ -380,6 +386,28 @@ def workflows_using(db: Session, condition) -> list[str]:
     )
 
 
+def contained_workflows(db: Session, user_id: int) -> dict[int, set[int]]:
+    """For each of the user's live workflows, the workflows its current version runs, at any
+    depth, in one recursive query (and so ending, as in `refuse_self_containment`)."""
+    pinned = aliased(WorkflowVersion)
+    reach = (
+        select(Workflow.id.label("root_id"), pinned.id.label("version_id"), pinned.workflow_id)
+        .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
+        .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
+        .where(Workflow.owner_id == user_id, Workflow.deleted_at.is_(None))
+        .cte("reach", recursive=True)
+    )
+    reach = reach.union(
+        select(reach.c.root_id, pinned.id, pinned.workflow_id)
+        .join(WorkflowNode, WorkflowNode.workflow_version_id == reach.c.version_id)
+        .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
+    )
+    contained: dict[int, set[int]] = {}
+    for root_id, workflow_id in db.execute(select(reach.c.root_id, reach.c.workflow_id).distinct()):
+        contained.setdefault(root_id, set()).add(workflow_id)
+    return contained
+
+
 @router.get("/workflows", response_model=list[WorkflowSummary])
 def list_workflows(user: CurrentUser, db: DB):
     rows = db.execute(
@@ -390,6 +418,7 @@ def list_workflows(user: CurrentUser, db: DB):
         .where(Workflow.owner_id == user.id, Workflow.deleted_at.is_(None))
         .order_by(Workflow.name)
     ).all()
+    contained = contained_workflows(db, user.id)
     return [
         WorkflowSummary(
             id=w.id,
@@ -399,6 +428,7 @@ def list_workflows(user: CurrentUser, db: DB):
             version_id=version_id,
             node_count=nodes,
             updated_at=w.updated_at,
+            contains=sorted(contained.get(w.id, ())),
         )
         for w, version, version_id, nodes in rows
     ]
@@ -424,14 +454,34 @@ def get_workflow(workflow_id: DbId, user: CurrentUser, db: DB):
     return workflow_out(db, get_owned_workflow(db, user.id, workflow_id))
 
 
+def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None) -> None:
+    """Refuse a save of an edit that started from a version that is no longer current."""
+    if base_version is None:
+        return
+    current = db.scalar(
+        select(WorkflowVersion.version).where(WorkflowVersion.id == workflow.current_version_id)
+    )
+    if current != base_version:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This workflow has changed since you started editing (now v{current}). "
+            "Reload to see the changes.",
+        )
+
+
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
 def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: DB):
     """Rename/describe the workflow; a changed graph creates a new version."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Before checking the graph: an edit of an older version may be invalid only because of what
+    # has changed since, and reloading is what fixes it.
+    refuse_stale_edit(db, workflow, body.base_version)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
     lock_new_graph(db, nodes, workflow)
-    # Another save may have changed the layout while we waited for the lock; prune that one.
-    db.refresh(workflow, ["layout"])
+    # Another save may have changed the layout, or made a new version, while we waited for the
+    # lock; prune that layout, and compare against that version.
+    db.refresh(workflow, ["layout", "current_version_id"])
+    refuse_stale_edit(db, workflow, body.base_version)
     workflow.name = body.name
     workflow.description = body.description
     apply_layout(workflow, body)

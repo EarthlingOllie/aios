@@ -4,7 +4,8 @@ import type { Page, Route } from "@playwright/test";
  * An in-memory stand-in for the backend's agents and workflows API, enough for the browser
  * tests: it keeps state across requests, so a test can save and see the result, and follows
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
- * versions that must exist, a workflow can't contain itself).
+ * versions that must exist, a workflow can't contain itself, a save based on an older version
+ * is refused).
  */
 
 type Kind = "agent" | "workflow";
@@ -187,6 +188,17 @@ export class FakeApi {
     };
   }
 
+  /** The workflows whose versions `version` runs, at any depth. */
+  private contains(version: WorkflowVersionRow, found = new Set<number>()) {
+    for (const n of version.nodes) {
+      if (n.kind !== "workflow") continue;
+      const pinned = this.workflowVersions.get(n.version_id)!;
+      found.add(pinned.workflow_id);
+      this.contains(pinned, found);
+    }
+    return found;
+  }
+
   private live() {
     return [...this.workflows.values()]
       .filter((w) => !w.deleted)
@@ -248,15 +260,17 @@ export class FakeApi {
           version_id: w.versions.at(-1),
           node_count: this.current(w).nodes.length,
           updated_at: w.updated_at,
+          contains: [...this.contains(this.current(w))],
         })),
       );
     }
     if (path === "/api/workflows" && method === "POST") {
+      // The server checks the graph first; the name only clashes when the save commits.
+      const error = this.check(body);
+      if (error) return fail(422, error);
       if (this.live().some((w) => w.name === body.name)) {
         return fail(409, "You already have a workflow with that name");
       }
-      const error = this.check(body);
-      if (error) return fail(422, error);
       const workflow: WorkflowRow = {
         id: this.id(),
         name: body.name,
@@ -278,8 +292,19 @@ export class FakeApi {
       const rest = m[2] ?? "";
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
+        // In the server's order: the version, then the graph, then (as the save commits) the name.
+        const now = workflow.versions.length;
+        if (body.base_version != null && body.base_version !== now) {
+          return fail(
+            409,
+            `This workflow has changed since you started editing (now v${now}). Reload to see the changes.`,
+          );
+        }
         const error = this.check(body, workflow);
         if (error) return fail(422, error);
+        if (this.live().some((w) => w.name === body.name && w !== workflow)) {
+          return fail(409, "You already have a workflow with that name");
+        }
         workflow.name = body.name;
         workflow.description = body.description ?? "";
         this.applyLayout(workflow, body);
@@ -353,6 +378,9 @@ export class FakeApi {
         const v = this.workflowVersions.get(n.version_id);
         if (!v) return "Unknown workflow version";
         if (workflow && v.workflow_id === workflow.id) return "A workflow can't contain itself";
+        if (workflow && this.contains(v).has(workflow.id)) {
+          return "A workflow can't contain itself, even through another workflow";
+        }
       }
     }
     return null;

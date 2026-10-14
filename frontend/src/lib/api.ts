@@ -247,6 +247,8 @@ export type WorkflowSummary = {
   version_id: number;
   node_count: number;
   updated_at: string;
+  /** The workflows its current version runs, at any depth; none of them can run this one. */
+  contains: number[];
 };
 
 export type Workflow = {
@@ -268,6 +270,8 @@ export type WorkflowInput = {
   /** Omitted: keep the saved layout. */
   layout?: Record<string, NodePosition>;
   note?: string;
+  /** The version the edit started from; a 409 if the workflow has moved on. Omitted: no check. */
+  base_version?: number;
 };
 
 // Same-origin requests: the browser attaches the session cookie automatically.

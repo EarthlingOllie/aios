@@ -37,7 +37,9 @@ the model's behaviour:
 
 **Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
-an edge shows its configuration. They're versioned like agents (`workflows`,
+an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
+them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
+make a cycle before you save. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version

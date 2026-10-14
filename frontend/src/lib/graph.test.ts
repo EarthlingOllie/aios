@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   fitGraph,
+  MIN_EDITING_ZOOM,
   layoutGraph,
   MAX_CANVAS_HEIGHT,
   MIN_CANVAS_HEIGHT,
@@ -88,6 +89,13 @@ describe("fitGraph", () => {
     const { viewport } = fitGraph(row(10), 800);
     expect(viewport.zoom).toBe(MIN_ZOOM);
     expect(viewport.x).toBe(32);
+  });
+
+  it("shrinks further when told to, e.g. to keep a graph being edited in view", () => {
+    const width = 800;
+    const zoom = (width - 64) / (5 * 264 + NODE_WIDTH);
+    expect(fitGraph(row(6), width).viewport.zoom).toBe(MIN_ZOOM);
+    expect(fitGraph(row(6), width, MIN_EDITING_ZOOM).viewport.zoom).toBeCloseTo(zoom);
   });
 
   it("makes the canvas as tall as a tall graph, up to a limit, then starts it at the top", () => {

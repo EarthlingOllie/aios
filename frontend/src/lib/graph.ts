@@ -93,6 +93,8 @@ export function layoutGraph(
 // instead, from where it starts), never blown up past its size, on a canvas only as tall as that
 // needs, within limits.
 export const MIN_ZOOM = 0.8;
+/** While editing the whole graph is kept in view, to drag between any two nodes: smaller, then. */
+export const MIN_EDITING_ZOOM = 0.4;
 const MAX_ZOOM = 1;
 const PADDING = 32;
 export const MIN_CANVAS_HEIGHT = 288;
@@ -102,6 +104,7 @@ export const MAX_CANVAS_HEIGHT = 640;
 export function fitGraph(
   positions: NodePosition[],
   width: number,
+  minZoom = MIN_ZOOM,
 ): { height: number; viewport: { x: number; y: number; zoom: number } } {
   if (positions.length === 0) {
     return { height: MIN_CANVAS_HEIGHT, viewport: { x: 0, y: 0, zoom: MAX_ZOOM } };
@@ -111,7 +114,7 @@ export function fitGraph(
   const graphWidth = Math.max(...positions.map((p) => p.x)) + NODE_WIDTH - left;
   const graphHeight = Math.max(...positions.map((p) => p.y)) + NODE_HEIGHT - top;
   const fit = (room: number, size: number) => (room - 2 * PADDING) / size;
-  const clamp = (zoom: number) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+  const clamp = (zoom: number) => Math.max(minZoom, Math.min(MAX_ZOOM, zoom));
   let zoom = clamp(fit(width, graphWidth));
   const height = Math.max(
     MIN_CANVAS_HEIGHT,

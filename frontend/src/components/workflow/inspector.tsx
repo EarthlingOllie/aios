@@ -12,11 +12,17 @@ export function Inspector({
   nodes,
   edges,
   selection,
+  editNode,
+  editEdge,
   children,
 }: {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   selection: Selection | null;
+  /** In the editor: a field for the node's key, in place of showing it, and its controls. */
+  editNode?: (node: WorkflowNode) => { key: ReactNode; controls: ReactNode };
+  /** In the editor: the edge's controls. */
+  editEdge?: (edge: WorkflowEdge) => ReactNode;
   /** Extra content for the selection, e.g. a run's step. */
   children?: ReactNode;
 }) {
@@ -31,18 +37,22 @@ export function Inspector({
       className="flex min-w-0 flex-col gap-4 rounded-md border p-4 text-sm"
     >
       {node ? (
-        <NodeDetails node={node} edges={edges} />
+        <NodeDetails node={node} edges={edges} edit={editNode?.(node)} />
       ) : edge ? (
-        <EdgeDetails edge={edge} edges={edges} />
+        <EdgeDetails edge={edge} edges={edges} controls={editEdge?.(edge)} />
       ) : (
-        <p className="text-muted-foreground">Select a node or an edge to see its configuration.</p>
+        <p className="text-muted-foreground">
+          Select a node or an edge to see its configuration.
+          {editNode &&
+            " Drag from a node's right edge to another node's left edge to connect them."}
+        </p>
       )}
       {children}
     </aside>
   );
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+export function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
       <dt className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
@@ -53,7 +63,15 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function NodeDetails({ node, edges }: { node: WorkflowNode; edges: WorkflowEdge[] }) {
+function NodeDetails({
+  node,
+  edges,
+  edit,
+}: {
+  node: WorkflowNode;
+  edges: WorkflowEdge[];
+  edit?: { key: ReactNode; controls: ReactNode };
+}) {
   const Icon = node.kind === "agent" ? Bot : WorkflowIcon;
   const href = node.kind === "agent" ? `/agents/${node.target_id}` : `/workflows/${node.target_id}`;
   const before = edges.filter((e) => e.target === node.key).map((e) => e.source);
@@ -65,9 +83,13 @@ function NodeDetails({ node, edges }: { node: WorkflowNode; edges: WorkflowEdge[
         <span className="font-semibold">{node.kind === "agent" ? "Agent" : "Workflow"} node</span>
       </header>
       <dl className="flex flex-col gap-3">
-        <Row label="Key">
-          <span className="font-mono">{node.key}</span>
-        </Row>
+        {edit ? (
+          edit.key
+        ) : (
+          <Row label="Key">
+            <span className="font-mono">{node.key}</span>
+          </Row>
+        )}
         <Row label="Runs">
           <span className="flex flex-wrap items-center gap-2">
             {/* A deleted target's page is gone, so it's named without a link. */}
@@ -99,11 +121,20 @@ function NodeDetails({ node, edges }: { node: WorkflowNode; edges: WorkflowEdge[
             : `Then ${listing(after)}.`}
         </Row>
       </dl>
+      {edit?.controls}
     </>
   );
 }
 
-function EdgeDetails({ edge, edges }: { edge: WorkflowEdge; edges: WorkflowEdge[] }) {
+function EdgeDetails({
+  edge,
+  edges,
+  controls,
+}: {
+  edge: WorkflowEdge;
+  edges: WorkflowEdge[];
+  controls?: ReactNode;
+}) {
   const others = edges
     .filter((e) => e.target === edge.target && e.source !== edge.source)
     .map((e) => e.source);
@@ -125,6 +156,7 @@ function EdgeDetails({ edge, edges }: { edge: WorkflowEdge; edges: WorkflowEdge[
             ` ${edge.target} also waits for ${listing(others)}, and gets their outputs too.`}
         </Row>
       </dl>
+      {controls}
     </>
   );
 }
