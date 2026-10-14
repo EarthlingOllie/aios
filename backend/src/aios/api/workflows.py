@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
@@ -39,11 +39,18 @@ class WorkflowEdgeIn(BaseModel):
     target: str
 
 
+class NodePosition(BaseModel):
+    x: FiniteFloat
+    y: FiniteFloat
+
+
 class WorkflowIn(BaseModel):
     name: str = Field(min_length=1, max_length=255, pattern=r"\S")
     description: str = ""
     nodes: list[WorkflowNodeIn] = []
     edges: list[WorkflowEdgeIn] = []
+    # Where the editor draws each node, by key. Not versioned; None keeps the saved layout.
+    layout: dict[str, NodePosition] | None = None
     # Optional "what changed", stored on the new version if one is created.
     note: str | None = None
 
@@ -100,6 +107,9 @@ class WorkflowOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     current_version: WorkflowVersionOut
+    # Positions by node key, for the current version's nodes as of the last save that sent
+    # them; older versions' nodes may be missing, and the editor lays those out itself.
+    layout: dict[str, NodePosition]
 
 
 def get_owned_workflow(db: Session, user_id: int, workflow_id: int) -> Workflow:
@@ -312,7 +322,21 @@ def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
         current_version=version_out(load_version(db, workflow.current_version_id)),
+        layout=workflow.layout,
     )
+
+
+def apply_layout(workflow: Workflow, body: WorkflowIn) -> None:
+    """Store the request's layout, if it sent one, and keep only the graph's nodes in it."""
+    layout = (
+        workflow.layout
+        if body.layout is None
+        else {key: p.model_dump() for key, p in body.layout.items()}
+    )
+    keys = {n.key for n in body.nodes}
+    pruned = {key: p for key, p in layout.items() if key in keys}
+    if pruned != workflow.layout:
+        workflow.layout = pruned
 
 
 def node_count(version_id) -> Any:
@@ -369,7 +393,8 @@ def list_workflows(user: CurrentUser, db: DB):
 def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
     nodes, edges = resolve_graph(db, user.id, body)
     lock_new_graph(db, nodes, None)
-    workflow = Workflow(owner_id=user.id, name=body.name, description=body.description)
+    workflow = Workflow(owner_id=user.id, name=body.name, description=body.description, layout={})
+    apply_layout(workflow, body)
     db.add(workflow)
     with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
@@ -390,8 +415,11 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
     workflow = get_owned_workflow(db, user.id, workflow_id)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
     lock_new_graph(db, nodes, workflow)
+    # Another save may have changed the layout while we waited for the lock; prune that one.
+    db.refresh(workflow, ["layout"])
     workflow.name = body.name
     workflow.description = body.description
+    apply_layout(workflow, body)
     with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
             db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
@@ -468,6 +496,9 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"That version runs {what} that has since been deleted."
         )
+    # Keep the positions of the nodes it shares with the current graph, and drop the rest.
+    keys = {n.key for n in old.nodes}
+    workflow.layout = {key: p for key, p in workflow.layout.items() if key in keys}
     save_workflow_version(
         db,
         workflow,

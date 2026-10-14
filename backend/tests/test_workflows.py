@@ -1,3 +1,4 @@
+import json
 import threading
 from contextlib import contextmanager
 
@@ -543,3 +544,94 @@ def test_saves_of_workflows_that_run_each_other_lock_in_one_order(api, user):
 
     saver.join(timeout=10)
     assert result["resp"].status_code == 200
+
+
+def test_layout_is_saved_with_the_workflow_but_not_versioned(api):
+    a = make_agent(api, "layout-a")
+    b = make_agent(api, "layout-b")
+    nodes = [agent_node("a", a), agent_node("b", b)]
+    layout = {"a": {"x": 0, "y": 0}, "b": {"x": 120.5, "y": -40}}
+    wf = make_workflow(api, "laid out", nodes, [("a", "b")])
+    assert wf["layout"] == {}
+
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes, [("a", "b")], layout=layout),
+    )
+    assert resp.status_code == 200, resp.text
+    # Moving nodes is like renaming: it changes the workflow, not its graph.
+    assert resp.json()["current_version"]["version"] == 1
+    assert resp.json()["layout"] == layout
+    assert api.get(f"/api/workflows/{wf['id']}").json()["layout"] == layout
+
+    # Leaving the layout out keeps it, but positions of nodes no longer in the graph are dropped,
+    # whether they were saved before or sent now.
+    resp = api.put(
+        f"/api/workflows/{wf['id']}", json=workflow_body("laid out", nodes, [("a", "b")])
+    )
+    assert resp.json()["layout"] == layout
+    resp = api.put(f"/api/workflows/{wf['id']}", json=workflow_body("laid out", nodes[:1]))
+    assert resp.json()["current_version"]["version"] == 2
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes[:1], layout=layout | {"gone": {"x": 1, "y": 1}}),
+    )
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+
+    # Restoring a version without b drops b's position too.
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes, [("a", "b")], layout=layout),
+    )
+    assert (resp.json()["current_version"]["version"], resp.json()["layout"]) == (3, layout)
+    resp = api.post(f"/api/workflows/{wf['id']}/versions/2/restore")
+    assert resp.json()["current_version"]["version"] == 4
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+
+
+def test_layout_on_create_and_invalid_positions(api):
+    a = make_agent(api, "layout-c")
+    resp = api.post(
+        "/api/workflows",
+        json=workflow_body("created", [agent_node("a", a)], layout={"a": {"x": 5, "y": 6}}),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["layout"] == {"a": {"x": 5, "y": 6}}
+    body = json.dumps(workflow_body("bad", [agent_node("a", a)], layout={"a": {"x": 0, "y": 0}}))
+    # 1e309 is JSON for a number that only fits a float as infinity.
+    for bad in ['{"x": 1}', '{"x": "inf", "y": 0}', '{"x": 1e309, "y": 0}']:
+        resp = api.post(
+            "/api/workflows",
+            content=body.replace('{"x": 0, "y": 0}', bad),
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 422, bad
+
+
+def test_agent_summaries_carry_the_current_version_id(api):
+    agent = make_agent(api, "pinnable")
+    [summary] = [a for a in api.get("/api/agents").json() if a["id"] == agent["id"]]
+    assert summary["version_id"] == agent["current_version"]["id"]
+
+
+def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
+    a = make_agent(api, "layout-race-a")
+    b = make_agent(api, "layout-race-b")
+    nodes = [agent_node("a", a), agent_node("b", b)]
+    layout = {"a": {"x": 0, "y": 0}, "b": {"x": 1, "y": 1}}
+    wf = make_workflow(api, "racy layout", nodes)
+    api.put(f"/api/workflows/{wf['id']}", json=workflow_body("racy layout", nodes, layout=layout))
+
+    with SessionLocal() as session:
+        # A save that has locked the workflow and moved node a, but not committed yet.
+        assert lock_live(session, Workflow, [wf["id"]])
+        session.get(Workflow, wf["id"]).layout = layout | {"a": {"x": 50, "y": 50}}
+        body = workflow_body("racy layout", nodes[:1])
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{wf['id']}", json=body))
+        assert saver.is_alive(), "save should block on the row lock"
+        session.commit()
+
+    saver.join(timeout=10)
+    # The waiting save prunes the layout it finds once locked, not the one it read before.
+    assert result["resp"].json()["layout"] == {"a": {"x": 50, "y": 50}}
