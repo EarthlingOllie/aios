@@ -137,6 +137,8 @@ export type AgentSummary = {
   name: string;
   description: string;
   version: number;
+  /** The current version's id, which a workflow node pins to run the agent. */
+  version_id: number;
   skill_count: number;
   tool_count: number;
   run_count: number;
@@ -197,6 +199,75 @@ export type Run = RunSummary & {
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
   instructions: string;
+};
+
+export type WorkflowNodeKind = "agent" | "workflow";
+
+/** Where the editor draws a node: its top-left corner. */
+export type NodePosition = { x: number; y: number };
+
+export type WorkflowNode = {
+  key: string;
+  kind: WorkflowNodeKind;
+  /** The agent version or workflow version the node runs. */
+  version_id: number;
+  /** The agent or workflow that version belongs to. */
+  target_id: number;
+  name: string;
+  version: number;
+  /** The agent's or workflow's current version; null if it has since been deleted. */
+  latest_version: number | null;
+  latest_version_id: number | null;
+};
+
+export type WorkflowEdge = { source: string; target: string };
+
+export type WorkflowVersionSummary = {
+  id: number;
+  version: number;
+  note: string | null;
+  created_at: string;
+  node_count: number;
+};
+
+export type WorkflowVersion = {
+  id: number;
+  version: number;
+  note: string | null;
+  created_at: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
+export type WorkflowSummary = {
+  id: number;
+  name: string;
+  description: string;
+  version: number;
+  version_id: number;
+  node_count: number;
+  updated_at: string;
+};
+
+export type Workflow = {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  current_version: WorkflowVersion;
+  /** Saved positions by node key; nodes without one are laid out automatically. */
+  layout: Record<string, NodePosition>;
+};
+
+export type WorkflowInput = {
+  name: string;
+  description: string;
+  nodes: { key: string; kind: WorkflowNodeKind; version_id: number }[];
+  edges: WorkflowEdge[];
+  /** Omitted: keep the saved layout. */
+  layout?: Record<string, NodePosition>;
+  note?: string;
 };
 
 // Same-origin requests: the browser attaches the session cookie automatically.
@@ -283,4 +354,17 @@ export const api = {
     request<RunSummary>(`/api/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`/api/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
+  listWorkflows: () => request<WorkflowSummary[]>("/api/workflows"),
+  getWorkflow: (id: number) => request<Workflow>(`/api/workflows/${id}`),
+  createWorkflow: (body: WorkflowInput) =>
+    request<Workflow>("/api/workflows", json("POST", body)),
+  updateWorkflow: (id: number, body: WorkflowInput) =>
+    request<Workflow>(`/api/workflows/${id}`, json("PUT", body)),
+  deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
+  listWorkflowVersions: (id: number) =>
+    request<WorkflowVersionSummary[]>(`/api/workflows/${id}/versions`),
+  getWorkflowVersion: (id: number, version: number) =>
+    request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`),
+  restoreWorkflowVersion: (id: number, version: number) =>
+    request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
 };

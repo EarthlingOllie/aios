@@ -167,7 +167,10 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise) and `pnpm build` (frontend).
+need the migrated database and skip otherwise) and `pnpm build && pnpm test && pnpm test:e2e`
+(frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
+need no backend. Run `pnpm exec playwright install chromium` once first, or point
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
 
 ### Dependency policy
 
