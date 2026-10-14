@@ -46,8 +46,9 @@ versioned and nested, not run yet. They're versioned like agents (`workflows`,
 - Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming
   and no-op saves don't. Editing an agent doesn't change any workflow: the node reports its
   latest version, and taking it is a new workflow version. Restore works as for agents.
-- A workflow can't contain itself. Nodes can only pin versions that already exist, so nesting is
-  always finite.
+- A workflow can't contain itself, directly or through other workflows at any depth: none of the
+  versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
+  versions that already exist, so nesting is always finite.
 - An agent or workflow can't be deleted while any workflow version runs it.
 
 ```
