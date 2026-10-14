@@ -245,6 +245,8 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const { reloadList } = useOutletContext<ListContext>();
   const [meta, setMeta] = useState<{ name: string; description: string; note: string }>();
   const [draft, setDraft] = useState<Draft>();
+  // What was loaded, as a save request, to tell whether there are changes to lose.
+  const [loaded, setLoaded] = useState<string>();
   // The version being edited, if any.
   const [editing, setEditing] = useState<number>();
   const [error, setError] = useState<string>();
@@ -254,15 +256,21 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const loadError = agents.error ?? workflows.error;
 
   useEffect(() => {
+    const load = (meta: { name: string; description: string; note: string }, draft: Draft) => {
+      setMeta(meta);
+      setDraft(draft);
+      setLoaded(JSON.stringify(toInput(draft, meta)));
+    };
     if (id === undefined) {
-      setMeta({ name: "", description: "", note: "" });
-      setDraft({ nodes: [], edges: [], positions: {} });
+      load({ name: "", description: "", note: "" }, { nodes: [], edges: [], positions: {} });
       return;
     }
     api.getWorkflow(id).then(
       (w) => {
-        setMeta({ name: w.name, description: w.description, note: "" });
-        setDraft(fromVersion(w.current_version, w.layout));
+        load(
+          { name: w.name, description: w.description, note: "" },
+          fromVersion(w.current_version, w.layout),
+        );
         setEditing(w.current_version.version);
       },
       (err) => setError(describeError(err)),
@@ -282,9 +290,22 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
     [agents.data, workflows.data, id],
   );
 
+  const dirty = !!meta && !!draft && JSON.stringify(toInput(draft, meta)) !== loaded;
+  // Closing or reloading the tab asks first. Navigating within the app can't be blocked without a
+  // data router, so Cancel asks itself and the inspector opens what a node runs in a new tab.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   if (!meta || !draft) return error ? <Placeholder>{error}</Placeholder> : null;
   const set = (patch: Partial<typeof meta>) => setMeta({ ...meta, ...patch });
-  const back = () => navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
+  const back = () => {
+    if (dirty && !window.confirm("Discard your unsaved changes?")) return;
+    navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
+  };
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();

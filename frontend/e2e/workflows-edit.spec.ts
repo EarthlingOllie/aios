@@ -294,6 +294,10 @@ test("cancel discards the changes", async ({ page }) => {
   await page.getByRole("link", { name: "Edit" }).click();
   await node(page, "research").click();
   await page.keyboard.press("Delete");
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("Discard");
+    void dialog.accept();
+  });
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}`);
   await expect(node(page, "research")).toBeVisible();
@@ -329,4 +333,59 @@ test("says why there's nothing to add when agents fail to load", async ({ page }
   );
   await page.goto(`/workflows/${report.id}/edit`);
   await expect(page.getByRole("alert")).toContainText("Couldn't load agents and workflows: boom");
+});
+
+test("cancel asks before discarding changes, and stays if you say no", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await page.getByLabel("Description").fill("Changed");
+  let asked = false;
+  page.once("dialog", (dialog) => {
+    asked = true;
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "Cancel" }).click();
+  expect(asked).toBe(true);
+  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page.getByLabel("Description")).toHaveValue("Changed");
+});
+
+test("cancel without changes doesn't ask", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  // Changing something and changing it back leaves nothing to lose.
+  await page.getByLabel("Description").fill("Changed");
+  await page.getByLabel("Description").fill("");
+  let asked = false;
+  page.on("dialog", (dialog) => {
+    asked = true;
+    void dialog.accept();
+  });
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  expect(asked).toBe(false);
+});
+
+test("leaving the page with changes asks first", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "research").click();
+  await page.keyboard.press("Delete");
+  const dialog = page.waitForEvent("dialog");
+  await page.close({ runBeforeUnload: true });
+  expect((await dialog).type()).toBe("beforeunload");
+});
+
+test("while editing, what a node runs opens in a new tab", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "research").click();
+  await expect(inspector(page).getByRole("link", { name: "Researcher" })).toHaveAttribute(
+    "target",
+    "_blank",
+  );
 });
