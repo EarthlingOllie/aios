@@ -132,9 +132,11 @@ export function GraphEditor({
                   }}
                 />
               ),
+              // Keyed by place, not key, so renaming the node on the key field's blur doesn't
+              // remount the buttons mid-click (renames keep a node's place; removals deselect it).
               controls: (
                 <NodeControls
-                  key={node.key}
+                  key={draft.nodes.indexOf(node)}
                   node={node}
                   draft={draft}
                   targets={targets ?? []}

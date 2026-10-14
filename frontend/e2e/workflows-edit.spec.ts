@@ -296,6 +296,22 @@ test("rejects an invalid or duplicate key", async ({ page }) => {
   await key.press("Enter");
   await expect(inspector(page)).toContainText("already used");
   await expect(node(page, "write")).toBeVisible();
+  // Selecting another node shows its key, not the rejected one.
+  await node(page, "research").click();
+  await expect(key).toHaveValue("research");
+});
+
+test("a button clicked straight after typing a key acts on the renamed node", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "write").click();
+  await inspector(page).getByLabel("Key").fill("draft");
+  // Blurring the field renames the node between the button's mousedown and its click.
+  await inspector(page).getByRole("button", { name: "Remove node" }).click();
+  await expect(node(page, "draft")).toHaveCount(0);
+  await expect(node(page, "write")).toHaveCount(0);
+  await expect(node(page, "research")).toBeVisible();
 });
 
 test("takes a newer version of what a node runs", async ({ page }) => {
