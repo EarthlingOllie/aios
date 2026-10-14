@@ -1,15 +1,16 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import checkpoints
 from aios.api.skills import lock_live, unique_name
 from aios.auth import CurrentUser
+from aios.config import get_settings
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
@@ -683,7 +684,24 @@ def delete_workflow_run(
     # Locked before its agent runs are read: a node starting meanwhile records its step and
     # agent run in one transaction, which waits for this lock, so it's either seen here or
     # fails once the run has gone (`aios.workflows._start_step`).
-    db.execute(select(WorkflowRun.id).where(WorkflowRun.id == run.id).with_for_update())
+    still_going = db.scalar(
+        select(
+            and_(
+                WorkflowRun.status == WorkflowRunStatus.running,
+                # Unless its worker died: one past its time limit (`aios.worker`) never ends.
+                WorkflowRun.started_at
+                > func.now() - timedelta(seconds=get_settings().workflow_run_time_limit + 60),
+            )
+        )
+        .where(WorkflowRun.id == run.id)
+        .with_for_update()
+    )
+    # Its agent turns would carry on regardless, and their checkpoints can only be deleted once
+    # they end. A queued run can go: the worker won't start a run that's gone (`_claim`).
+    if still_going:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This run is still going; wait for it to finish."
+        )
     agent_run_ids = list(
         db.scalars(
             select(WorkflowRunStep.agent_run_id).where(

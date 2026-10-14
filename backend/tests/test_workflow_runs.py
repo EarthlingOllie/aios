@@ -1,9 +1,10 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 import test_agents
 from fake_model import model, replies, use_model
-from sqlalchemy import delete
+from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
     agent_node,
@@ -20,7 +21,7 @@ from aios.auth import current_user
 from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStep
+from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
 from aios.tools import TOOLS
 from aios.workflows import execute_run, fail_run
 
@@ -666,3 +667,46 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     assert api.get(url).status_code == 404
     # Not logged as a failure: the user deleted it.
     assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
+    a = agents(api, "slow")
+    wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
+    started = start(api, wf)
+    url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
+    refused = []
+
+    async def script(messages, info):
+        # Its agent turns would carry on without it.
+        refused.append(await asyncio.to_thread(lambda: api.delete(url)))
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    (resp,) = refused
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409,
+        "This run is still going; wait for it to finish.",
+    )
+    assert api.get(url).json()["status"] == "succeeded"
+    assert api.delete(url).status_code == 204
+
+    # One its worker died on, long past its time limit, can go.
+    stuck = start(api, wf)
+    db.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == stuck["id"])
+        .values(status=WorkflowRunStatus.running, started_at=func.now() - timedelta(days=1))
+    )
+    db.commit()
+    assert api.delete(f"/api/workflows/{wf['id']}/runs/{stuck['id']}").status_code == 204
+
+
+def test_a_queued_run_can_be_deleted_and_then_never_starts(api, queued):
+    a = agents(api, "solo")
+    wf = make_workflow(api, "flow", [agent_node("solo", a["solo"])])
+    started = start(api, wf)
+    assert api.delete(f"/api/workflows/{wf['id']}/runs/{started['id']}").status_code == 204
+    with use_model(echo()):
+        asyncio.run(execute_run(started["id"]))
+    assert api.get(f"/api/workflows/{wf['id']}/runs").json() == []

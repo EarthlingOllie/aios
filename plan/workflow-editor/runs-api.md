@@ -40,6 +40,8 @@ version whose tools left the library). 422 if the workflow has no nodes.
 the run's status is `queued` or `running`.
 
 `DELETE /api/workflows/{id}/runs/{run_id}` → 204. Also deletes the agent runs its steps created.
+409 while the run is `running` (a queued one can be deleted), so the UI should disable delete
+until it finishes.
 
 ```ts
 type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
