@@ -25,6 +25,7 @@ from aios.sandbox.base import (
     SandboxError,
     SandboxGone,
     SandboxHandle,
+    SandboxNotReached,
     SessionSpec,
 )
 
@@ -204,7 +205,11 @@ class SessionManager:
         session_key = f"agent-run-{run_id}"
         proxy_url = ""
         secret = settings.sandbox_proxy_secret.get_secret_value()
-        if allowed_domains and not (settings.sandbox_proxy_address and secret):
+        # A backend whose sandboxes already have unrestricted network (the dev one) needs no
+        # proxy: the allowed domains are reachable anyway. Any backend that doesn't say so is
+        # assumed to restrict it, so a missing proxy still fails closed.
+        needs_proxy = bool(allowed_domains) and getattr(backend, "restricts_network", True)
+        if needs_proxy and not (settings.sandbox_proxy_address and secret):
             # Not started without a proxy: the model is told these domains are reachable.
             log.error(
                 "run %s's sandbox needs network access, but SANDBOX_PROXY_ADDRESS or"
@@ -215,7 +220,7 @@ class SessionManager:
                 "Network access for the sandbox isn't set up on this server, so the allowed"
                 " domains can't be reached. Ask the server's administrator to set it up."
             )
-        if allowed_domains:
+        if needs_proxy:
             token = proxy_token.mint(
                 secret,
                 session=session_key,
@@ -292,7 +297,18 @@ class SessionManager:
             # replaced without the code having run anywhere.
             handle, replaced = await self._ready(backend, run_id, allowed_domains)
             try:
-                result = await backend.execute(handle, code, timeout)
+                try:
+                    result = await backend.execute(handle, code, timeout)
+                except SandboxNotReached:
+                    # It stopped between that check and the call (e.g. at its idle limit), so
+                    # the code didn't run: run it once in a new one.
+                    log.info("sandbox %s for run %s stopped before a call", handle.ref, run_id)
+                    handle, replaced = await self._start(
+                        backend, run_id, allowed_domains, previous=handle, replaced=True
+                    )
+                    result = await backend.execute(handle, code, timeout)
+            except SandboxNotReached:
+                raise
             except SandboxGone:
                 # It stopped during the call (e.g. the code ran out of memory, or the sandbox
                 # reached its maximum lifetime), so the code may have partly run: it isn't run

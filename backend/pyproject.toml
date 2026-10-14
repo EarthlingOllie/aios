@@ -21,6 +21,7 @@ dependencies = [
     "langchain-voyageai==0.4.1",
     "langgraph-checkpoint-postgres==3.1.2",
     "langfuse==4.16.0",
+    "boto3==1.43.108",
 ]
 
 [project.optional-dependencies]
