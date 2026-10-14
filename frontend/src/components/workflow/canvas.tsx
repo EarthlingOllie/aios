@@ -68,6 +68,7 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
 }
 
 const nodeTypes = { workflowNode: NodeCard };
+const fitViewOptions = { padding: 0.2, maxZoom: 1 };
 
 /** A workflow version's graph, laid out left to right in the order it runs. */
 export function WorkflowCanvas({
@@ -93,23 +94,35 @@ export function WorkflowCanvas({
   const positions = useMemo(() => layoutGraph(keys, edges, layout), [keys, edges, layout]);
   const starts = useMemo(() => new Set(startKeys(keys, edges)), [keys, edges]);
 
-  const flowNodes: CardNode[] = nodes.map((node) => ({
-    id: node.key,
-    type: "workflowNode",
-    position: positions[node.key],
-    data: { node, start: starts.has(node.key) },
-    selected: selection?.type === "node" && selection.key === node.key,
-    draggable: false,
-    connectable: false,
-  }));
-  const flowEdges: Edge[] = edges.map((e) => ({
-    id: edgeId(e),
-    source: e.source,
-    target: e.target,
-    markerEnd: { type: MarkerType.ArrowClosed },
-    selected:
-      selection?.type === "edge" && selection.source === e.source && selection.target === e.target,
-  }));
+  // React Flow re-adopts (and re-renders) every node and edge it's handed as a new object, so
+  // only build new ones when what they show changes, not on every render of the page around us.
+  const flowNodes = useMemo<CardNode[]>(
+    () =>
+      nodes.map((node) => ({
+        id: node.key,
+        type: "workflowNode",
+        position: positions[node.key],
+        data: { node, start: starts.has(node.key) },
+        selected: selection?.type === "node" && selection.key === node.key,
+        draggable: false,
+        connectable: false,
+      })),
+    [nodes, positions, starts, selection],
+  );
+  const flowEdges = useMemo<Edge[]>(
+    () =>
+      edges.map((e) => ({
+        id: edgeId(e),
+        source: e.source,
+        target: e.target,
+        markerEnd: { type: MarkerType.ArrowClosed },
+        selected:
+          selection?.type === "edge" &&
+          selection.source === e.source &&
+          selection.target === e.target,
+      })),
+    [edges, selection],
+  );
 
   return (
     <div className={cn("relative h-[28rem] rounded-md border", className)}>
@@ -119,7 +132,7 @@ export function WorkflowCanvas({
         nodeTypes={nodeTypes}
         colorMode="system"
         fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+        fitViewOptions={fitViewOptions}
         nodesConnectable={false}
         nodesDraggable={false}
         elementsSelectable
