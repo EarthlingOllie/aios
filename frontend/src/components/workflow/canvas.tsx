@@ -285,16 +285,22 @@ export function WorkflowCanvas({
   const isValidConnection = useStableCallback(
     ({ source, target }: Edge | Connection) => !!editing?.canConnect(source, target),
   );
-  const onDelete = useStableCallback(
-    ({ nodes: deleted, edges: deletedEdges }: { nodes: CardNode[]; edges: Edge[] }) => {
-      // Deleting a node takes its edges with it, so it's reported alone.
-      if (deleted.length) editing?.onDelete({ type: "node", key: deleted[0].id });
-      else if (deletedEdges.length) {
-        const [e] = deletedEdges;
-        editing?.onDelete({ type: "edge", source: e.source, target: e.target });
-      }
-    },
-  );
+  // React Flow's own delete key listens on the whole page, and only spares text fields: on any
+  // other control (a button, our select) it would delete what's selected. So it's handled here,
+  // on the node or edge that has focus (which clicking it gives it).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!editing || !deleteKeys.includes(e.key)) return;
+    const focused = (e.target as Element).closest(".react-flow__node, .react-flow__edge");
+    const id = focused?.getAttribute("data-id");
+    if (!id) return;
+    e.preventDefault();
+    if (focused!.classList.contains("react-flow__node"))
+      editing.onDelete({ type: "node", key: id });
+    else {
+      const edge = edges.find((edge) => edgeId(edge) === id);
+      if (edge) editing.onDelete({ type: "edge", source: edge.source, target: edge.target });
+    }
+  };
 
   // The canvas is sized, and the graph placed on it, once its width is known (before it's first
   // drawn), and not again as nodes are dragged about; while editing, again when its shape changes.
@@ -312,6 +318,7 @@ export function WorkflowCanvas({
       ref={ref}
       className={cn("relative rounded-md border", className)}
       style={{ height: fit.height }}
+      onKeyDown={onKeyDown}
     >
       <ReactFlow
         nodes={flowNodes}
@@ -325,11 +332,10 @@ export function WorkflowCanvas({
         // One thing is selected at a time (`selection`): no Shift-click or box selection.
         multiSelectionKeyCode={null}
         selectionKeyCode={null}
-        deleteKeyCode={isEditing ? deleteKeys : null}
+        deleteKeyCode={null}
         onNodesChange={onNodesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
-        onDelete={onDelete}
         onNodeClick={onNodeClick}
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}

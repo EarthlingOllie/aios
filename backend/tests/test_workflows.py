@@ -686,6 +686,21 @@ def test_a_save_based_on_an_older_version_is_refused(api):
     assert resp.json()["current_version"]["version"] == 3
 
 
+def test_a_stale_save_is_refused_as_stale_even_if_its_graph_is_now_invalid(api):
+    a = make_agent(api, "stale-invalid")
+    sub = make_workflow(api, "stale-sub", [agent_node("a", a)])
+    wf = make_workflow(api, "stale-outer", [workflow_node("s", sub)])
+    url = f"/api/workflows/{wf['id']}"
+    # Another tab drops the subworkflow and deletes it while this one is still editing v1.
+    api.put(url, json=workflow_body("stale-outer", [agent_node("a", a)], base_version=1))
+    assert api.delete(f"/api/workflows/{sub['id']}").status_code == 204
+
+    nodes = [workflow_node("s", sub), agent_node("a", a)]
+    resp = api.put(url, json=workflow_body("stale-outer", nodes, base_version=1))
+    assert resp.status_code == 409
+    assert "(now v2)" in resp.json()["detail"]
+
+
 def test_the_base_version_is_checked_once_locked(api, user):
     agent = make_agent(api, "Solo")
     wf = make_workflow(api, "Flow", [agent_node("a", agent)])
