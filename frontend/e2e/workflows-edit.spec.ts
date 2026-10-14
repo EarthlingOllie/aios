@@ -219,6 +219,23 @@ test("selects one node at a time, even with Shift held", async ({ page }) => {
   await expect(node(page, "write")).toBeVisible();
 });
 
+test("Delete and Backspace delete only while the canvas has focus", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "research").click();
+  await inspector(page).getByLabel("Runs").focus();
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Delete");
+  await expect(node(page, "research")).toBeVisible();
+  await edge(page, "research", "write").focus();
+  await page.keyboard.press("Backspace");
+  await expect(edge(page, "research", "write")).toHaveCount(0);
+  await node(page, "research").focus();
+  await page.keyboard.press("Delete");
+  await expect(node(page, "research")).toHaveCount(0);
+});
+
 test("refuses an edge that would make a cycle, and says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
@@ -279,6 +296,22 @@ test("rejects an invalid or duplicate key", async ({ page }) => {
   await key.press("Enter");
   await expect(inspector(page)).toContainText("already used");
   await expect(node(page, "write")).toBeVisible();
+  // Selecting another node shows its key, not the rejected one.
+  await node(page, "research").click();
+  await expect(key).toHaveValue("research");
+});
+
+test("a button clicked straight after typing a key acts on the renamed node", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "write").click();
+  await inspector(page).getByLabel("Key").fill("draft");
+  // Blurring the field renames the node between the button's mousedown and its click.
+  await inspector(page).getByRole("button", { name: "Remove node" }).click();
+  await expect(node(page, "draft")).toHaveCount(0);
+  await expect(node(page, "write")).toHaveCount(0);
+  await expect(node(page, "research")).toBeVisible();
 });
 
 test("takes a newer version of what a node runs", async ({ page }) => {
@@ -381,6 +414,20 @@ test("refuses to overwrite a version saved since the editor loaded", async ({ pa
   await expect(node(page, "research")).toHaveCount(0);
   expect(report.versions).toHaveLength(2);
   expect(api.writes.at(-1)![2]).toMatchObject({ base_version: 1 });
+});
+
+test("reports a stale version before a taken name", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  api.addWorkflow("Taken");
+  await page.goto(`/workflows/${report.id}/edit`);
+  await expect(page.getByText("Editing v1.")).toBeVisible();
+  await page.getByLabel("Name").fill("Taken");
+  api.addWorkflowVersion(report, (v) => v.edges.splice(0));
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "This workflow has changed since you started editing (now v2)",
+  );
 });
 
 test("cancel discards the changes", async ({ page }) => {
@@ -517,9 +564,7 @@ test("leaving for another page without changes doesn't ask", async ({ page }) =>
   expect(asked).toBe(false);
 });
 
-test("following what a node runs without changes goes there in the same tab", async ({
-  page,
-}) => {
+test("following what a node runs without changes goes there in the same tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, writer } = seed(api);
   await page.goto(`/workflows/${report.id}/edit`);

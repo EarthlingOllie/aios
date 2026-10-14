@@ -454,25 +454,34 @@ def get_workflow(workflow_id: DbId, user: CurrentUser, db: DB):
     return workflow_out(db, get_owned_workflow(db, user.id, workflow_id))
 
 
+def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None) -> None:
+    """Refuse a save of an edit that started from a version that is no longer current."""
+    if base_version is None:
+        return
+    current = db.scalar(
+        select(WorkflowVersion.version).where(WorkflowVersion.id == workflow.current_version_id)
+    )
+    if current != base_version:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This workflow has changed since you started editing (now v{current}). "
+            "Reload to see the changes.",
+        )
+
+
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
 def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: DB):
     """Rename/describe the workflow; a changed graph creates a new version."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
+    # Before checking the graph: an edit of an older version may be invalid only because of what
+    # has changed since, and reloading is what fixes it.
+    refuse_stale_edit(db, workflow, body.base_version)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
     lock_new_graph(db, nodes, workflow)
     # Another save may have changed the layout, or made a new version, while we waited for the
     # lock; prune that layout, and compare against that version.
     db.refresh(workflow, ["layout", "current_version_id"])
-    if body.base_version is not None:
-        current = db.scalar(
-            select(WorkflowVersion.version).where(WorkflowVersion.id == workflow.current_version_id)
-        )
-        if current != body.base_version:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"This workflow has changed since you started editing (now v{current}). "
-                "Reload to see the changes.",
-            )
+    refuse_stale_edit(db, workflow, body.base_version)
     workflow.name = body.name
     workflow.description = body.description
     apply_layout(workflow, body)
