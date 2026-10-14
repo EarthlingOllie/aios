@@ -155,7 +155,7 @@ def refuse_self_containment(db: Session, workflow: Workflow, version_ids: set[in
         detail = "A workflow can't contain itself"
     else:
         names = ", ".join(name for _, name in via)
-        detail = f"A workflow can't contain itself, even through another workflow: {names} runs it"
+        detail = f"A workflow can't contain itself, even through another workflow (via {names})"
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
 
 

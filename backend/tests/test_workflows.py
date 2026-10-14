@@ -197,7 +197,7 @@ def test_a_workflow_cant_contain_itself_through_other_workflows(api):
         assert resp.status_code == 422, resp.text
         detail = resp.json()["detail"]
         assert "even through another workflow" in detail
-        assert detail.endswith(f": {through} runs it")
+        assert detail.endswith(f"(via {through})")
     assert api.get(f"/api/workflows/{a['id']}").json()["current_version"]["version"] == 1
 
     # Taking a newer version of a workflow that doesn't contain a is still fine.
@@ -234,7 +234,7 @@ def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
 
     resp = api.post(f"/api/workflows/{inner['id']}/versions/2/restore")
     assert resp.status_code == 422
-    assert "even through another workflow: outer runs it" in resp.json()["detail"]
+    assert "even through another workflow (via outer)" in resp.json()["detail"]
     # Restoring a version that doesn't contain it still works.
     resp = api.post(f"/api/workflows/{inner['id']}/versions/1/restore")
     assert resp.json()["current_version"]["version"] == 4
