@@ -5,6 +5,7 @@
  * without one is waiting while the run is active, and never ran once it has ended.
  */
 import type { WorkflowEdge, WorkflowRunStatus, WorkflowRunStep } from "@/lib/api";
+import { edgeId } from "@/lib/graph";
 
 export type NodeState = WorkflowRunStep["status"] | "waiting" | "not-run";
 /** taken: its source's output went along it. live: and its target is running now. */
@@ -47,7 +48,7 @@ export function edgeStates(
       const target = stepAt(steps, [...prefix, e.target]);
       const state: EdgeState =
         source?.status !== "succeeded" ? "idle" : target?.status === "running" ? "live" : "taken";
-      return [`${e.source}->${e.target}`, state];
+      return [edgeId(e), state];
     }),
   );
 }
