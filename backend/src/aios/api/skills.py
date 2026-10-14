@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
-from aios.db import DB
+from aios.db import DB, DbId
 from aios.models import Agent, AgentVersion, Skill, SkillVersion, agent_version_skills
 from aios.versioning import save_skill_version
 
@@ -180,12 +180,12 @@ def create_skill(body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.get("/skills/{skill_id}", response_model=SkillOut)
-def get_skill(skill_id: int, user: CurrentUser, db: DB):
+def get_skill(skill_id: DbId, user: CurrentUser, db: DB):
     return skill_out(db, get_owned_skill(db, user.id, skill_id))
 
 
 @router.put("/skills/{skill_id}", response_model=SkillOut)
-def update_skill(skill_id: int, body: SkillIn, user: CurrentUser, db: DB):
+def update_skill(skill_id: DbId, body: SkillIn, user: CurrentUser, db: DB):
     skill = get_owned_skill(db, user.id, skill_id)
     skill.name = body.name
     with unique_name(db, "a skill"):
@@ -202,7 +202,7 @@ def update_skill(skill_id: int, body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_skill(skill_id: int, user: CurrentUser, db: DB) -> None:
+def delete_skill(skill_id: DbId, user: CurrentUser, db: DB) -> None:
     skill = get_owned_skill(db, user.id, skill_id)
     # Hold the row lock across the usage check and the delete; agent saves take it too.
     if not lock_live_skills(db, [skill.id]):
@@ -219,7 +219,7 @@ def delete_skill(skill_id: int, user: CurrentUser, db: DB) -> None:
 
 
 @router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])
-def list_skill_versions(skill_id: int, user: CurrentUser, db: DB):
+def list_skill_versions(skill_id: DbId, user: CurrentUser, db: DB):
     skill = get_owned_skill(db, user.id, skill_id)
     return db.scalars(
         select(SkillVersion)
@@ -229,12 +229,12 @@ def list_skill_versions(skill_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
-def get_skill_version_detail(skill_id: int, number: int, user: CurrentUser, db: DB):
+def get_skill_version_detail(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
     return get_skill_version(db, get_owned_skill(db, user.id, skill_id), number)
 
 
 @router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)
-def restore_skill_version(skill_id: int, number: int, user: CurrentUser, db: DB):
+def restore_skill_version(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
     """Make an old version's content current again, as a new version."""
     skill = get_owned_skill(db, user.id, skill_id)
     old = get_skill_version(db, skill, number)
