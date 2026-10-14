@@ -230,17 +230,6 @@ test("moving several selected nodes at once moves them all", async ({ page }) =>
   expect(report.layout.write.y).toBe(report.layout.research.y);
 });
 
-test("the workflow itself isn't offered as a node", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
-  const options = page.getByLabel("Add node").locator("option");
-  await expect(options.filter({ hasText: "Review" })).toHaveCount(1);
-  const labels = await options.allTextContents();
-  expect(labels).toContain("Review");
-  expect(labels).not.toContain("Report");
-});
-
 test("with no agents, says so and links to creating one", async ({ page }) => {
   const api = await fakeApi(page);
   // Other workflows can still be added, but there's no agent to add.
@@ -388,4 +377,17 @@ test("while editing, what a node runs opens in a new tab", async ({ page }) => {
     "target",
     "_blank",
   );
+});
+
+test("neither the workflow itself nor one that runs it is offered as a node", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  const middle = api.addWorkflow("Middle", [{ key: "report", workflow: report }]);
+  api.addWorkflow("Outer", [{ key: "middle", workflow: middle }]);
+  await page.goto(`/workflows/${report.id}/edit`);
+  const options = page.getByLabel("Add node").locator("option");
+  await expect(options.filter({ hasText: "Review" })).toHaveCount(1);
+  const labels = await options.allTextContents();
+  expect(labels).toContain("Review");
+  for (const name of ["Report", "Middle", "Outer"]) expect(labels).not.toContain(name);
 });

@@ -116,6 +116,9 @@ class WorkflowSummary(BaseModel):
     version_id: int
     node_count: int
     updated_at: datetime
+    # The workflows whose versions its current version runs, at any depth: another workflow
+    # can't run this one if it's among them (`refuse_self_containment`).
+    contains: list[int]
 
 
 class WorkflowOut(BaseModel):
@@ -383,6 +386,28 @@ def workflows_using(db: Session, condition) -> list[str]:
     )
 
 
+def contained_workflows(db: Session, user_id: int) -> dict[int, set[int]]:
+    """For each of the user's live workflows, the workflows its current version runs, at any
+    depth, in one recursive query (and so ending, as in `refuse_self_containment`)."""
+    pinned = aliased(WorkflowVersion)
+    reach = (
+        select(Workflow.id.label("root_id"), pinned.id.label("version_id"), pinned.workflow_id)
+        .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
+        .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
+        .where(Workflow.owner_id == user_id, Workflow.deleted_at.is_(None))
+        .cte("reach", recursive=True)
+    )
+    reach = reach.union(
+        select(reach.c.root_id, pinned.id, pinned.workflow_id)
+        .join(WorkflowNode, WorkflowNode.workflow_version_id == reach.c.version_id)
+        .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
+    )
+    contained: dict[int, set[int]] = {}
+    for root_id, workflow_id in db.execute(select(reach.c.root_id, reach.c.workflow_id).distinct()):
+        contained.setdefault(root_id, set()).add(workflow_id)
+    return contained
+
+
 @router.get("/workflows", response_model=list[WorkflowSummary])
 def list_workflows(user: CurrentUser, db: DB):
     rows = db.execute(
@@ -393,6 +418,7 @@ def list_workflows(user: CurrentUser, db: DB):
         .where(Workflow.owner_id == user.id, Workflow.deleted_at.is_(None))
         .order_by(Workflow.name)
     ).all()
+    contained = contained_workflows(db, user.id)
     return [
         WorkflowSummary(
             id=w.id,
@@ -402,6 +428,7 @@ def list_workflows(user: CurrentUser, db: DB):
             version_id=version_id,
             node_count=nodes,
             updated_at=w.updated_at,
+            contains=sorted(contained.get(w.id, ())),
         )
         for w, version, version_id, nodes in rows
     ]

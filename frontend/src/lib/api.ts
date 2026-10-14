@@ -247,6 +247,8 @@ export type WorkflowSummary = {
   version_id: number;
   node_count: number;
   updated_at: string;
+  /** The workflows its current version runs, at any depth; none of them can run this one. */
+  contains: number[];
 };
 
 export type Workflow = {

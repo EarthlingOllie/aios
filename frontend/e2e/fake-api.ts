@@ -188,6 +188,17 @@ export class FakeApi {
     };
   }
 
+  /** The workflows whose versions `version` runs, at any depth. */
+  private contains(version: WorkflowVersionRow, found = new Set<number>()) {
+    for (const n of version.nodes) {
+      if (n.kind !== "workflow") continue;
+      const pinned = this.workflowVersions.get(n.version_id)!;
+      found.add(pinned.workflow_id);
+      this.contains(pinned, found);
+    }
+    return found;
+  }
+
   private live() {
     return [...this.workflows.values()]
       .filter((w) => !w.deleted)
@@ -249,6 +260,7 @@ export class FakeApi {
           version_id: w.versions.at(-1),
           node_count: this.current(w).nodes.length,
           updated_at: w.updated_at,
+          contains: [...this.contains(this.current(w))],
         })),
       );
     }

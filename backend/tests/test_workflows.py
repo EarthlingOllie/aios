@@ -229,6 +229,29 @@ def test_a_workflow_cant_contain_itself_through_other_workflows(api):
     assert resp.status_code == 200, resp.text
 
 
+def test_workflow_list_says_what_each_contains(api):
+    """`contains` is what saving another workflow with a node running this one's current version
+    would be checked against: the workflows whose versions it pins, at any depth."""
+    agent = make_agent(api, "solo")
+    a = make_workflow(api, "a", [agent_node("only", agent)])
+    b = make_workflow(api, "b", [workflow_node("run_a", a)])
+    c = make_workflow(api, "c", [workflow_node("run_b", b)])
+    make_workflow(api, "d", [workflow_node("b", b), workflow_node("c", c)])
+
+    def contains() -> dict[str, list[str]]:
+        listed = api.get("/api/workflows").json()
+        names = {w["id"]: w["name"] for w in listed}
+        return {w["name"]: sorted(names[i] for i in w["contains"]) for w in listed}
+
+    assert contains() == {"a": [], "b": ["a"], "c": ["a", "b"], "d": ["a", "b", "c"]}
+    # b's new version runs only the agent, but c and d still pin its old one, which runs a.
+    resp = api.put(f"/api/workflows/{b['id']}", json=workflow_body("b", [agent_node("x", agent)]))
+    assert resp.status_code == 200
+    assert contains() == {"a": [], "b": [], "c": ["a", "b"], "d": ["a", "b", "c"]}
+    resp = api.put(f"/api/workflows/{a['id']}", json=workflow_body("a", [workflow_node("c", c)]))
+    assert resp.status_code == 422
+
+
 def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
     """Versions saved before nesting was checked through other workflows can't be restored."""
     from aios.models import Workflow, WorkflowNodeKind
@@ -341,6 +364,7 @@ def test_workflow_responses_take_a_fixed_number_of_queries(api):
                 f"/api/workflows/{wf}", json=workflow_body(f"wf {n}", nodes[:-1])
             ),
             "get": lambda: api.get(f"/api/workflows/{wf}"),
+            "list": lambda: api.get("/api/workflows"),
             "version": lambda: api.get(f"/api/workflows/{wf}/versions/1"),
             "restore": lambda: api.post(f"/api/workflows/{wf}/versions/1/restore"),
         }
