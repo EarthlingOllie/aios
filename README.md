@@ -35,8 +35,9 @@ the model's behaviour:
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
 
-**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`;
-the UI is a placeholder so far). They're versioned like agents (`workflows`,
+**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
+The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
+an edge shows its configuration. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
