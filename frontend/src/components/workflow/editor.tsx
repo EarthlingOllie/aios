@@ -207,7 +207,12 @@ function KeyField({
         className="font-mono"
         value={value}
         aria-invalid={!!error}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          const next = e.target.value;
+          setValue(next);
+          // So the form won't submit, dropping the edit, while the key is invalid.
+          e.target.setCustomValidity((next !== node.key && keyError(next, others)) || "");
+        }}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") {

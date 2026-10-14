@@ -241,3 +241,24 @@ test("cancel discards the changes", async ({ page }) => {
   await expect(node(page, "research")).toBeVisible();
   expect(api.writes).toEqual([]);
 });
+
+test("won't save while a node's key is invalid", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "write").click();
+  const key = inspector(page).getByLabel("Key");
+  await key.fill("research");
+  await key.press("Enter");
+  await expect(inspector(page)).toContainText("already used by another node");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+
+  // Once it's fixed, the edit is saved, and only then.
+  await key.fill("draft");
+  await key.press("Enter");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  expect(api.writes).toHaveLength(1);
+  expect(api.current(report).nodes.map((n) => n.key)).toEqual(["research", "draft"]);
+});
