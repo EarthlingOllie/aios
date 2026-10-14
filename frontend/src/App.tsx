@@ -36,6 +36,13 @@ import {
   SkillVersionPage,
 } from "@/pages/Skills";
 import { StubPage } from "@/pages/Stub";
+import {
+  NewWorkflowForm,
+  WorkflowDetail,
+  WorkflowsIndex,
+  WorkflowsSection,
+  WorkflowVersionPage,
+} from "@/pages/Workflows";
 
 type AuthState =
   | { status: "loading" }
@@ -101,6 +108,12 @@ export default function App() {
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
         </Route>
+        <Route path="workflows" element={<WorkflowsSection />}>
+          <Route index element={<WorkflowsIndex />} />
+          <Route path="new" element={<NewWorkflowForm />} />
+          <Route path=":workflowId" element={<WorkflowDetail />} />
+          <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
+        </Route>
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
@@ -133,13 +146,7 @@ const navItems: NavItem[] = [
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
-  {
-    to: "/workflows",
-    label: "Workflows",
-    icon: Workflow,
-    end: false,
-    stub: "Chain your agents into graphs, and reuse workflows inside other workflows.",
-  },
+  { to: "/workflows", label: "Workflows", icon: Workflow, end: false },
   { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
   { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];

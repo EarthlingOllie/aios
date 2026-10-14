@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { History, Pencil, Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -19,7 +19,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
+import {
+  CompareVersions,
+  RestoreButton,
+  VersionBadge,
+  VersionHistory,
+} from "@/components/versions";
 import { api, describeError, type SkillInput, type SkillVersion } from "@/lib/api";
 
 export function SkillsSection() {
@@ -144,6 +149,7 @@ export function SkillDetail() {
       <Section title="Version history">
         <VersionHistory
           versions={versions.data}
+          error={versions.error}
           current={current.version}
           href={(v) => `/skills/${id}/versions/${v}`}
         />
@@ -208,20 +214,14 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
-      actions={
-        !isCurrent && (
-          <Button size="sm" variant="outline" onClick={onRestore}>
-            <History />
-            Restore this version
-          </Button>
-        )
-      }
+      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <SkillContent version={v} />
       <Section title="Changes">
         <CompareVersions
           versions={older}
+          error={versions.error}
           base={baseVersion}
           onBaseChange={setBase}
           before={before.data ? asText(before.data) : undefined}

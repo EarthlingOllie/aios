@@ -35,8 +35,9 @@ the model's behaviour:
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
 
-**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`;
-the UI is a placeholder so far). They're versioned like agents (`workflows`,
+**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
+The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
+an edge shows its configuration. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
@@ -170,7 +171,10 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise) and `pnpm build` (frontend).
+need the migrated database and skip otherwise) and `pnpm build && pnpm test && pnpm test:e2e`
+(frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
+need no backend. Run `pnpm exec playwright install chromium` once first, or point
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
 
 ### Dependency policy
 

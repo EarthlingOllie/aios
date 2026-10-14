@@ -122,15 +122,20 @@ export function DetailPage({
   title,
   subtitle,
   actions,
+  wide,
   children,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  /** Use more of the width, e.g. for a graph. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6 md:px-8">
+    <div
+      className={cn("mx-auto flex flex-col gap-6 px-4 py-6 md:px-8", wide ? "max-w-6xl" : "max-w-3xl")}
+    >
       <header className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <h2 className="text-xl font-semibold break-words">{title}</h2>

@@ -20,3 +20,7 @@ dist/
 *.tfstate
 *.tfstate.*
 crash.log
+
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
