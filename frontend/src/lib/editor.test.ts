@@ -63,6 +63,17 @@ describe("findCycle", () => {
       "a",
     ]);
   });
+  it("follows every edge out of a node, and only edges between the given keys", () => {
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "a", target: "c" },
+      { source: "c", target: "a" },
+      { source: "x", target: "b" },
+      { source: "b", target: "x" },
+    ];
+    expect(findCycle(["a", "b", "c"], edges)).toEqual(["a", "c", "a"]);
+    expect(findCycle(["a", "b"], edges)).toBeNull();
+  });
 });
 
 describe("keyError", () => {
@@ -159,9 +170,12 @@ describe("removeEdge / moveNodes", () => {
   it("removes one edge", () => {
     expect(removeEdge(chain, "a", "b").edges).toEqual([{ source: "b", target: "c" }]);
   });
-  it("moves several nodes at once, leaving the rest", () => {
+  it("moves several nodes at once, leaving the rest and the nodes and edges as they were", () => {
     const moved = moveNodes(chain, { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
     expect(moved.positions).toEqual({ ...chain.positions, a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
+    // The editor only works out what a node can connect to again when these change.
+    expect(moved.nodes).toBe(chain.nodes);
+    expect(moved.edges).toBe(chain.edges);
   });
 });
 

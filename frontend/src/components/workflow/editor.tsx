@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowUpCircle, Plus, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 
@@ -253,8 +253,15 @@ function NodeControls({
   onRemove: () => void;
 }) {
   const [to, setTo] = useState("");
-  const others = draft.nodes.filter((n) => n.key !== node.key).map((n) => n.key);
-  const refusals = others.map((key) => [key, canConnect(draft, node.key, key)] as const);
+  // Dragging changes only the positions, re-rendering on every frame; skip the cycle checks then.
+  const { nodes, edges } = draft;
+  const refusals = useMemo(
+    () =>
+      nodes
+        .filter((n) => n.key !== node.key)
+        .map((n) => [n.key, canConnect({ nodes, edges, positions: {} }, node.key, n.key)] as const),
+    [nodes, edges, node.key],
+  );
   const current = targetValue({ kind: node.kind, id: node.target_id });
   return (
     <div className="flex flex-col gap-3 border-t pt-3">

@@ -51,9 +51,8 @@ export function keyError(key: string, others: string[]): string | null {
 
 /** A cycle the edges make, as the keys around it with the first repeated at the end; or null. */
 export function findCycle(keys: string[], edges: WorkflowEdge[]): string[] | null {
-  const next = new Map(
-    keys.map((k) => [k, edges.filter((e) => e.source === k).map((e) => e.target)]),
-  );
+  const next = new Map(keys.map((k) => [k, [] as string[]]));
+  for (const e of edges) next.get(e.source)?.push(e.target);
   // Depth-first search; a node still on the stack reached again closes a cycle.
   const state = new Map<string, "open" | "done">();
   const stack: string[] = [];
