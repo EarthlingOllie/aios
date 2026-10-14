@@ -207,6 +207,28 @@ test("shows the server's reason when a save is refused", async ({ page }) => {
   await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
 });
 
+test("refuses to overwrite a version saved since the editor loaded", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report, critic } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await expect(page.getByText("Editing v1.")).toBeVisible();
+  await node(page, "research").click();
+  await page.keyboard.press("Delete");
+  // Meanwhile, another tab saves v2.
+  api.addWorkflowVersion(report, (v) => {
+    v.nodes.push({ key: "critic", kind: "agent", version_id: critic.versions[0] });
+  });
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "This workflow has changed since you started editing (now v2)",
+  );
+  // The draft is kept, and v2 isn't overwritten.
+  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(node(page, "research")).toHaveCount(0);
+  expect(report.versions).toHaveLength(2);
+  expect(api.writes.at(-1)![2]).toMatchObject({ base_version: 1 });
+});
+
 test("cancel discards the changes", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);

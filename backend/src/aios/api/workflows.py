@@ -68,6 +68,9 @@ class WorkflowIn(BaseModel):
     layout: dict[str, NodePosition] | None = None
     # Optional "what changed", stored on the new version if one is created.
     note: str | None = None
+    # The version number the edit started from: if the workflow has moved on since, the save is
+    # refused rather than overwriting that version. None saves regardless.
+    base_version: int | None = None
 
 
 class WorkflowNodeOut(BaseModel):
@@ -430,8 +433,19 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
     workflow = get_owned_workflow(db, user.id, workflow_id)
     nodes, edges = resolve_graph(db, user.id, body, workflow)
     lock_new_graph(db, nodes, workflow)
-    # Another save may have changed the layout while we waited for the lock; prune that one.
-    db.refresh(workflow, ["layout"])
+    # Another save may have changed the layout, or made a new version, while we waited for the
+    # lock; prune that layout, and compare against that version.
+    db.refresh(workflow, ["layout", "current_version_id"])
+    if body.base_version is not None:
+        current = db.scalar(
+            select(WorkflowVersion.version).where(WorkflowVersion.id == workflow.current_version_id)
+        )
+        if current != body.base_version:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"This workflow has changed since you started editing (now v{current}). "
+                "Reload to see the changes.",
+            )
     workflow.name = body.name
     workflow.description = body.description
     apply_layout(workflow, body)

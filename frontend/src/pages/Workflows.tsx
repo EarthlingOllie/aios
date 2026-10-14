@@ -289,7 +289,8 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
     e.preventDefault();
     setSaving(true);
     setError(undefined);
-    const body = toInput(draft!, meta!);
+    // Refused if someone saved another version meanwhile, rather than silently overwriting it.
+    const body = { ...toInput(draft!, meta!), base_version: editing };
     try {
       const saved =
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);

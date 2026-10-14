@@ -635,3 +635,42 @@ def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
     saver.join(timeout=10)
     # The waiting save prunes the layout it finds once locked, not the one it read before.
     assert result["resp"].json()["layout"] == {"a": {"x": 50, "y": 50}}
+
+
+def test_a_save_based_on_an_older_version_is_refused(api):
+    a = make_agent(api, "stale-a")
+    b = make_agent(api, "stale-b")
+    wf = make_workflow(api, "stale", [agent_node("a", a)])
+    url = f"/api/workflows/{wf['id']}"
+    # Another tab saves v2 while this one is still editing v1.
+    resp = api.put(url, json=workflow_body("stale", [agent_node("b", b)], base_version=1))
+    assert resp.json()["current_version"]["version"] == 2
+
+    resp = api.put(url, json=workflow_body("stale", [agent_node("a", a)], base_version=1))
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "This workflow has changed since you started editing (now v2). Reload to see the changes."
+    )
+    assert [n["key"] for n in api.get(url).json()["current_version"]["nodes"]] == ["b"]
+
+    # Without a base version the save goes ahead as before.
+    resp = api.put(url, json=workflow_body("stale", [agent_node("a", a)]))
+    assert resp.json()["current_version"]["version"] == 3
+
+
+def test_the_base_version_is_checked_once_locked(api, user):
+    agent = make_agent(api, "Solo")
+    wf = make_workflow(api, "Flow", [agent_node("a", agent)])
+
+    with SessionLocal() as session:
+        # A save of v2 that has locked the workflow, but not committed yet.
+        save = held_save(session, user, wf["id"], [agent_node("b", agent)])
+        body = workflow_body("Flow", [agent_node("c", agent)], base_version=1)
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{wf['id']}", json=body))
+        assert saver.is_alive(), "save should block on the row lock"
+        save()
+        session.commit()
+
+    saver.join(timeout=10)
+    assert result["resp"].status_code == 409
+    assert "(now v2)" in result["resp"].json()["detail"]

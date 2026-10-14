@@ -4,7 +4,8 @@ import type { Page, Route } from "@playwright/test";
  * An in-memory stand-in for the backend's agents and workflows API, enough for the browser
  * tests: it keeps state across requests, so a test can save and see the result, and follows
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
- * versions that must exist, a workflow can't contain itself).
+ * versions that must exist, a workflow can't contain itself, a save based on an older version
+ * is refused).
  */
 
 type Kind = "agent" | "workflow";
@@ -283,6 +284,13 @@ export class FakeApi {
         }
         const error = this.check(body, workflow);
         if (error) return fail(422, error);
+        const now = workflow.versions.length;
+        if (body.base_version != null && body.base_version !== now) {
+          return fail(
+            409,
+            `This workflow has changed since you started editing (now v${now}). Reload to see the changes.`,
+          );
+        }
         workflow.name = body.name;
         workflow.description = body.description ?? "";
         this.applyLayout(workflow, body);
