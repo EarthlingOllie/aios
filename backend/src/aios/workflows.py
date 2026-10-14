@@ -12,7 +12,7 @@ graph (`aios.runner`) and a workflow node as its own compiled graph, added as a 
 import re
 from collections.abc import Sequence
 
-KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class GraphError(ValueError):
@@ -22,7 +22,7 @@ class GraphError(ValueError):
 def validate_graph(keys: Sequence[str], edges: Sequence[tuple[str, str]]) -> None:
     """Checks node keys are valid and unique, and edges join existing nodes without a cycle."""
     for key in keys:
-        if not KEY_PATTERN.match(key):
+        if not KEY_PATTERN.fullmatch(key):
             raise GraphError(f"Invalid node key {key!r}: use 1-64 letters, digits, '-' or '_'.")
     if len(set(keys)) != len(keys):
         raise GraphError("Each node key can be used only once")

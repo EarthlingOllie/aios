@@ -38,6 +38,11 @@ def test_validate_graph():
         validate_graph(["a", "a"], [])
     with pytest.raises(GraphError, match="Invalid node key"):
         validate_graph(["a b"], [])
+    validate_graph(["a" * 64], [])
+    # `$` would also match before a trailing newline, letting these through.
+    for key in ["", "step\n", "a" * 64 + "\n", "a" * 65]:
+        with pytest.raises(GraphError, match="Invalid node key"):
+            validate_graph([key], [])
     with pytest.raises(GraphError, match="unknown node"):
         validate_graph(["a"], [("a", "b")])
     with pytest.raises(GraphError, match="itself"):
@@ -149,6 +154,7 @@ def test_invalid_workflows_are_rejected(api, db):
             ([{"key": "x", "kind": "workflow", "version_id": 0}], [], "workflow version"),
             ([agent_node("a", agent), agent_node("b", agent)], [("a", "b"), ("b", "a")], "cycle"),
             ([agent_node("a", agent)], [("a", "missing")], "unknown node"),
+            ([agent_node("a" * 64 + "\n", agent)], [], "Invalid node key"),
         ]
         for nodes, edges, message in cases:
             resp = api.post("/api/workflows", json=workflow_body("bad", nodes, edges))
