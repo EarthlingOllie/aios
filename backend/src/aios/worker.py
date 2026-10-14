@@ -44,6 +44,8 @@ def ingest_document_task(document_id: int) -> None:
 @celery_app.task(
     name="aios.run_workflow",
     # A run times itself (`execute_run`); these are backstops, should its event loop be stuck.
+    # The run itself is failed long before (`workflow_run_no_progress_limit`); these free the
+    # worker process if its loop never comes back.
     soft_time_limit=settings.workflow_run_time_limit + 60,
     time_limit=settings.workflow_run_time_limit + 120,
 )
