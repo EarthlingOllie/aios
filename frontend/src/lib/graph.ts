@@ -1,22 +1,19 @@
 import { graphlib, layout } from "@dagrejs/dagre";
 
-/** Where a node is drawn: its top-left corner, in graph coordinates. */
-export type Position = { x: number; y: number };
-
-export type GraphEdge = { source: string; target: string };
+import type { NodePosition, WorkflowEdge } from "@/lib/api";
 
 // Every node is drawn at the same size, so layouts don't depend on rendering.
 export const NODE_WIDTH = 200;
 export const NODE_HEIGHT = 64;
 
 /** Nodes with no incoming edge, in node order: where a run starts. */
-export function startKeys(keys: string[], edges: GraphEdge[]): string[] {
+export function startKeys(keys: string[], edges: WorkflowEdge[]): string[] {
   const targets = new Set(edges.map((e) => e.target));
   return keys.filter((key) => !targets.has(key));
 }
 
 /** Nodes with no outgoing edge, in node order: their outputs are the workflow's output. */
-export function endKeys(keys: string[], edges: GraphEdge[]): string[] {
+export function endKeys(keys: string[], edges: WorkflowEdge[]): string[] {
   const sources = new Set(edges.map((e) => e.source));
   return keys.filter((key) => !sources.has(key));
 }
@@ -31,9 +28,9 @@ export function endKeys(keys: string[], edges: GraphEdge[]): string[] {
  */
 export function layoutGraph(
   keys: string[],
-  edges: GraphEdge[],
-  saved: Record<string, Position>,
-): Record<string, Position> {
+  edges: WorkflowEdge[],
+  saved: Record<string, NodePosition>,
+): Record<string, NodePosition> {
   if (keys.length === 0) return {};
   const g = new graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 32, ranksep: 64 });
@@ -48,14 +45,14 @@ export function layoutGraph(
   }
   layout(g);
   // dagre gives centres; positions are top-left corners.
-  const auto = (key: string): Position => {
+  const auto = (key: string): NodePosition => {
     const { x, y } = g.node(ids.get(key)!);
     return { x: x - NODE_WIDTH / 2, y: y - NODE_HEIGHT / 2 };
   };
 
   // A Map, and `Object.hasOwn` for saved positions, so keys like `constructor` aren't taken for
   // what every object inherits.
-  const shift = new Map<string, Position>();
+  const shift = new Map<string, NodePosition>();
   for (const key of keys) {
     if (Object.hasOwn(saved, key)) {
       const a = auto(key);
