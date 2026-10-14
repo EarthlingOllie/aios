@@ -136,7 +136,10 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       subtitle={
         r.started_at
           ? `Started ${formatDate(r.started_at)} · ${duration(r.started_at, r.finished_at)}`
-          : `Queued ${formatDate(r.created_at)}`
+          : r.finished_at
+            ? // E.g. its worker died while it was still queued.
+              `${runLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
+            : `Queued ${formatDate(r.created_at)}`
       }
       actions={
         <Button

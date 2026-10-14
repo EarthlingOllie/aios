@@ -143,6 +143,22 @@ test("a failed run shows the error, where it happened, and what didn't run", asy
   await expect(inspector(page)).toContainText("The model is overloaded");
 });
 
+test("a run that failed before it started says so, not that it's queued", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  // Its worker died while it was still queued.
+  const run = api.addRun(report, {
+    status: "failed",
+    error: "The run's worker stopped.",
+    started_at: null,
+    finished_at: "2026-10-14T09:05:00Z",
+  });
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(page.getByTestId("run-status")).toHaveText("Failed");
+  await expect(page.getByText(/^Failed before it started · /)).toBeVisible();
+  await expect(page.getByText(/^Queued /)).toHaveCount(0);
+});
+
 test("opens a subworkflow's graph with its own steps", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
