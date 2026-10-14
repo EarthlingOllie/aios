@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from aios import checkpoints, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live_skills, unique_name
+from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
 from aios.db import DB, SessionLocal
 from aios.models import (
@@ -26,6 +27,7 @@ from aios.models import (
     AgentVersionTool,
     Skill,
     SkillVersion,
+    WorkflowNode,
     agent_version_skills,
 )
 from aios.runner import build_agent
@@ -388,6 +390,18 @@ def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
 def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
     # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
     agent = get_owned_agent(db, user.id, agent_id)
+    # Workflow versions pin its versions, which would go with it (ON DELETE CASCADE): refuse.
+    used_by = workflows_using(
+        db,
+        WorkflowNode.agent_version_id.in_(
+            select(AgentVersion.id).where(AgentVersion.agent_id == agent.id)
+        ),
+    )
+    if used_by:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"These workflows run this agent as a step: {', '.join(used_by)}.",
+        )
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     agent.current_version_id = None  # break the agents <-> agent_versions cycle first
