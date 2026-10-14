@@ -192,8 +192,12 @@ def test_workflows_nest_as_subgraphs(api):
     assert api.delete(f"/api/workflows/{inner['id']}").status_code == 204
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
     assert api.get("/api/workflows").json() == []
-    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions/1"):
+    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions"):
         assert api.get(url).status_code == 404
+    # Its versions are still there to read, though: past runs pin them, and a run's
+    # subworkflow is opened from the version it ran.
+    old = api.get(f"/api/workflows/{inner['id']}/versions/1").json()
+    assert [n["key"] for n in old["nodes"]] == ["only"]
     assert api.delete(f"/api/workflows/{outer['id']}").status_code == 404
 
 

@@ -211,6 +211,26 @@ test("opens a subworkflow's graph with its own steps", async ({ page }) => {
   await expect(node(page, "research")).toBeVisible();
 });
 
+test("opens a subworkflow that has since been deleted", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { review, report } = seed(api);
+  const run = api.addRun(report, {
+    status: "succeeded",
+    steps: [
+      { path: ["review"], kind: "workflow", status: "succeeded" },
+      { path: ["review", "critic"], status: "succeeded", output: "Looks good" },
+    ],
+  });
+  // As if Report had since dropped it: the run still pins the version it ran.
+  review.deleted = true;
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await node(page, "review").click();
+  await inspector(page).getByRole("button", { name: "Open subworkflow" }).click();
+  await expect(node(page, "critic")).toHaveAttribute("data-state", "succeeded");
+  await node(page, "critic").click();
+  await expect(inspector(page)).toContainText("Looks good");
+});
+
 test("lists a workflow's runs and deletes one", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);

@@ -407,6 +407,7 @@ export const api = {
   deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
   listWorkflowVersions: (id: number) =>
     request<WorkflowVersionSummary[]>(`/api/workflows/${id}/versions`),
+  // Also a deleted workflow's versions, which a past run's subworkflow node still pins.
   getWorkflowVersion: (id: number, version: number) =>
     request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`),
   restoreWorkflowVersion: (id: number, version: number) =>

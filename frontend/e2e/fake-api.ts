@@ -360,8 +360,10 @@ export class FakeApi {
     }
     if ((m = path.match(/^\/api\/workflows\/(\d+)(\/.*)?$/))) {
       const workflow = this.workflows.get(Number(m[1]));
-      if (!workflow || workflow.deleted) return fail(404, "Not Found");
       const rest = m[2] ?? "";
+      // A deleted workflow's versions stay readable: runs and other versions still pin them.
+      const pinned = method === "GET" && /^\/versions\/\d+$/.test(rest);
+      if (!workflow || (workflow.deleted && !pinned)) return fail(404, "Not Found");
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
         if (this.live().some((w) => w.name === body.name && w !== workflow)) {

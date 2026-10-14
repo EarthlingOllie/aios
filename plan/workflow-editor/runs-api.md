@@ -47,6 +47,11 @@ the run's status is `queued` or `running`.
 409 while the run is `running` (a queued one can be deleted, and so can one whose worker
 stopped), so the UI should disable delete until it finishes.
 
+A workflow node's subgraph is `GET /api/workflows/{target_id}/versions/{version}`, the version
+the node pins. Unlike the endpoints above, it still serves a version once its workflow has been
+deleted (the workflow itself and its version list then 404), so a past run's subworkflow can
+still be opened.
+
 ```ts
 type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
 type WorkflowStepStatus = "running" | "succeeded" | "failed";
