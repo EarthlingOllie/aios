@@ -62,16 +62,25 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState<string>();
 
-  // Follow a run that's still going: re-read it shortly after each read.
+  // Follow a run that's still going: re-read it shortly after each read, failed or not.
   const status = run.data?.status;
   const { reload } = run;
   useEffect(() => {
     if (!status || !isActive(status)) return;
-    const timer = setTimeout(reload, POLL_MS);
-    return () => clearTimeout(timer);
-  }, [status, run.data, reload]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => {
+      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
+    };
+    poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [status, reload]);
 
-  if (run.error) return <Placeholder>{run.error}</Placeholder>;
+  // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
+  if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
   // The run carries its own graph; the workflow only gives its name and layout, so the run is
   // still shown, laid out afresh, if it fails to load.
   if (!run.data || (!workflow.data && !workflow.error)) return null;
@@ -159,6 +168,11 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
+      {run.error && (
+        <p role="status" className="text-muted-foreground text-sm">
+          Couldn't refresh this run ({run.error}). Trying again…
+        </p>
+      )}
       {r.error && (
         <div
           role="alert"

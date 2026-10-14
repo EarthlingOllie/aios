@@ -91,6 +91,35 @@ test("shows where a live run is, and follows it to the end", async ({ page }) =>
   await expect(node(page, "review")).toHaveAttribute("data-state", "succeeded");
 });
 
+test("a live run survives failed re-reads and keeps following", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  const run = api.addRun(report, { steps: [{ path: ["research"], status: "running" }] });
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(node(page, "research")).toHaveAttribute("data-state", "running");
+
+  // A couple of re-reads fail (say, mid-deploy): what was shown stays, with a note.
+  let failures = 2;
+  await page.route(`**/api/workflows/${report.id}/runs/${run.id}`, (route) =>
+    failures-- > 0
+      ? route.fulfill({
+          status: 502,
+          contentType: "application/json",
+          body: '{"detail":"Bad Gateway"}',
+        })
+      : route.fallback(),
+  );
+  await expect(page.getByText("Couldn't refresh this run")).toBeVisible();
+  await expect(node(page, "research")).toHaveAttribute("data-state", "running");
+
+  // Once they get through again, the page carries on following the run.
+  Object.assign(run.steps[0], { status: "succeeded", output: "Sources" });
+  Object.assign(run, { status: "succeeded", output: "Done", finished_at: "2026-10-14T09:02:00Z" });
+  await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
+  await expect(node(page, "research")).toHaveAttribute("data-state", "succeeded");
+  await expect(page.getByText("Couldn't refresh this run")).toBeHidden();
+});
+
 test("a node's step shows its input, output and conversation", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, researcher } = seed(api);
