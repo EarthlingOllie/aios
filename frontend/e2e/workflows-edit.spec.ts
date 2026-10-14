@@ -196,6 +196,19 @@ test("the workflow itself isn't offered as a node", async ({ page }) => {
   expect(labels).not.toContain("Report");
 });
 
+test("with no agents, says so and links to creating one", async ({ page }) => {
+  const api = await fakeApi(page);
+  // Other workflows can still be added, but there's no agent to add.
+  api.addWorkflow("Review");
+  await page.goto("/workflows/new");
+  await expect(page.getByLabel("Add node").locator("option")).toContainText(["Review"]);
+  await expect(page.getByText("You have no agents yet.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
+    "href",
+    "/agents/new",
+  );
+});
+
 test("shows the server's reason when a save is refused", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);

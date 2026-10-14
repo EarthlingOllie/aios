@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowUpCircle, Plus, Trash2 } from "lucide-react";
+import { Link } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,7 +111,7 @@ export function GraphEditor({
           onChange={(e) => setAdding(e.target.value)}
         >
           <option value="" disabled>
-            {targets?.length === 0 ? "You have no agents yet" : "Choose an agent or workflow…"}
+            {targets?.length === 0 ? "Nothing to add yet" : "Choose an agent or workflow…"}
           </option>
           <TargetOptions targets={targets ?? []} />
         </select>
@@ -118,6 +119,15 @@ export function GraphEditor({
           <Plus />
           Add
         </Button>
+        {targets && !targets.some((t) => t.kind === "agent") && (
+          <p className="text-muted-foreground text-sm">
+            You have no agents yet.{" "}
+            <Link to="/agents/new" className="underline">
+              Create one
+            </Link>
+            .
+          </p>
+        )}
       </div>
       <div className="@container">
         <div className="grid gap-4 @4xl:grid-cols-[1fr_18rem]">
