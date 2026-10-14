@@ -219,6 +219,23 @@ test("selects one node at a time, even with Shift held", async ({ page }) => {
   await expect(node(page, "write")).toBeVisible();
 });
 
+test("Delete and Backspace delete only while the canvas has focus", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "research").click();
+  await inspector(page).getByLabel("Runs").focus();
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Delete");
+  await expect(node(page, "research")).toBeVisible();
+  await edge(page, "research", "write").focus();
+  await page.keyboard.press("Backspace");
+  await expect(edge(page, "research", "write")).toHaveCount(0);
+  await node(page, "research").focus();
+  await page.keyboard.press("Delete");
+  await expect(node(page, "research")).toHaveCount(0);
+});
+
 test("refuses an edge that would make a cycle, and says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
@@ -517,9 +534,7 @@ test("leaving for another page without changes doesn't ask", async ({ page }) =>
   expect(asked).toBe(false);
 });
 
-test("following what a node runs without changes goes there in the same tab", async ({
-  page,
-}) => {
+test("following what a node runs without changes goes there in the same tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, writer } = seed(api);
   await page.goto(`/workflows/${report.id}/edit`);
