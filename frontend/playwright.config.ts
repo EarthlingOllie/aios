@@ -1,8 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // The browser tests run the app against an in-memory fake of the API (e2e/fake-api.ts), so
-// they need no backend, database or sign-in.
-const port = 5174;
+// they need no backend, database or sign-in. E2E_PORT moves the dev server, e.g. to run two
+// checkouts at once.
+const port = Number(process.env.E2E_PORT) || 5174;
 
 export default defineConfig({
   testDir: "e2e",
