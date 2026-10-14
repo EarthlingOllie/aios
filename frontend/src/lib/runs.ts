@@ -9,7 +9,7 @@ import type { WorkflowEdge, WorkflowRunStatus, WorkflowRunStep } from "@/lib/api
 import { edgeId } from "@/lib/graph";
 
 export type NodeState = WorkflowRunStep["status"] | "waiting" | "not-run";
-/** taken: its source's output went along it. live: and its target is running now. */
+/** taken: its source succeeded and its target started. live: and the target is running now. */
 export type EdgeState = "taken" | "live" | "idle";
 
 export const isActive = (status: WorkflowRunStatus) => status === "queued" || status === "running";
@@ -48,8 +48,14 @@ export function edgeStates(
     edges.map((e) => {
       const source = stepAt(steps, [...prefix, e.source]);
       const target = stepAt(steps, [...prefix, e.target]);
+      // Taken only once the target has started: a succeeded source alone doesn't mean its output
+      // went anywhere (the target may be waiting on, or blocked by, another predecessor).
       const state: EdgeState =
-        source?.status !== "succeeded" ? "idle" : target?.status === "running" ? "live" : "taken";
+        source?.status !== "succeeded" || !target
+          ? "idle"
+          : target.status === "running"
+            ? "live"
+            : "taken";
       return [edgeId(e), state];
     }),
   );

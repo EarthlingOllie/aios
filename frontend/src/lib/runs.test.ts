@@ -99,4 +99,17 @@ describe("edgeStates", () => {
       "write->review": "taken",
     });
   });
+
+  it("leaves an edge idle while its target hasn't started, even if its source succeeded", () => {
+    // A->C and B->C: A succeeded but B failed, so C never ran and nothing went along A->C.
+    const join = [
+      { source: "a", target: "c" },
+      { source: "b", target: "c" },
+    ];
+    const steps = [step(["a"], "succeeded"), step(["b"], "failed")];
+    expect(edgeStates(join, steps, [])).toEqual({ "a->c": "idle", "b->c": "idle" });
+    // Likewise while C is still waiting on B.
+    const waiting = [step(["a"], "succeeded"), step(["b"], "running")];
+    expect(edgeStates(join, waiting, [])).toEqual({ "a->c": "idle", "b->c": "idle" });
+  });
 });
