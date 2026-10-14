@@ -131,6 +131,28 @@ test("connects nodes by dragging from one handle to another", async ({ page }) =
   await expect(edge(page, "write", "critic")).toBeAttached();
 });
 
+test("selects one node at a time, even with Shift held", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  await node(page, "research").click();
+  await node(page, "write").click({ modifiers: ["Shift"] });
+  // Dragging a box over the canvas doesn't select (or cover) the nodes inside it.
+  const pane = (await page.locator(".react-flow__pane").boundingBox())!;
+  await page.keyboard.down("Shift");
+  await page.mouse.move(pane.x + 2, pane.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(pane.x + pane.width - 2, pane.y + pane.height - 2, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await page.getByRole("button", { name: "Fit View" }).click();
+  await node(page, "research").click();
+  await expect(inspector(page).getByLabel("Key")).toHaveValue("research");
+  await page.keyboard.press("Delete");
+  await expect(node(page, "research")).toHaveCount(0);
+  await expect(node(page, "write")).toBeVisible();
+});
+
 test("refuses an edge that would make a cycle, and says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
