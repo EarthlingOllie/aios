@@ -18,7 +18,10 @@ While a worker runs a run, it refreshes the run's heartbeat (`heartbeat_at`) eve
 `HEARTBEAT_SECONDS`, from a thread of its own, so a node that holds the event loop doesn't stop
 it (`_Heartbeat`). A run is alive while it's running with a recent heartbeat (`alive`); one
 running without, whose worker died (killed, OOM, restarted), is failed when its task comes round
-again or when it's read (`fail_stopped_runs`), and can be deleted.
+again or when it's read (`fail_stopped_runs`), and can be deleted. The same thread fails a run
+whose worker's event loop has made no progress for `workflow_run_no_progress_limit` (stuck in a
+blocking call, a deadlock), and stops it if the loop frees up; a node awaiting a slow call keeps
+the loop free, so it isn't failed.
 """
 
 import asyncio
@@ -26,6 +29,7 @@ import contextlib
 import logging
 import re
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -265,8 +269,8 @@ class RunState:
 
 # How often a worker refreshes the heartbeat of the run it's running, and how long without one
 # until the run counts as stopped: a few missed beats, so a slow write doesn't fail a live run.
-# (The beats are off the event loop, so a busy one doesn't delay them; a worker whose loop is
-# stuck for good keeps beating until Celery's hard time limit kills it, see `aios.worker`.)
+# (The beats are off the event loop, so a busy one doesn't delay them. One stuck for good is
+# caught by the heartbeat too: see `_Heartbeat` and `Settings.workflow_run_no_progress_limit`.)
 HEARTBEAT_SECONDS = 30.0
 STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
 
@@ -354,12 +358,22 @@ class _Heartbeat:
     doesn't let a live run go stale. Cancels `run`, on its loop, if the run has ended without it:
     failed as stopped because a beat was late (`fail_stopped_runs`), or deleted. Nobody will see
     the rest of its turns.
+
+    It also watches the loop make progress: each beat hands the loop a callback that notes when
+    it ran (`_progressed`), which it only does once the loop is free. A node awaiting a slow model
+    or tool call leaves the loop free, so it keeps progressing however long it waits. If none has
+    run for `workflow_run_no_progress_limit`, the loop is stuck (a blocking call that doesn't
+    return, a deadlock) and so is the run: it fails the run with `no_progress_error`, stops
+    beating, and cancels the run once the loop is free again. (A loop that never is keeps its
+    worker until Celery's hard time limit, see `aios.worker`, but the run has ended.)
     """
 
     def __init__(self, run_id: int, run: asyncio.Task) -> None:
         self.run_id = run_id
         self.run = run
         self.loop = asyncio.get_running_loop()
+        # When the loop last ran a callback this handed it (`time.monotonic`).
+        self.progressed_at = time.monotonic()
         self.stopping = threading.Event()
         # Whether it stopped the run: set on the loop, so only once the run has been cancelled.
         self.stopped_run = False
@@ -369,7 +383,14 @@ class _Heartbeat:
         self.thread.start()
 
     def _beat_until_stopped(self) -> None:
+        limit = get_settings().workflow_run_no_progress_limit
         while not self.stopping.wait(HEARTBEAT_SECONDS):
+            if time.monotonic() - self.progressed_at > limit:
+                self._fail_stuck_run()
+                return
+            # If the loop has closed, the run is over (and this is being stopped).
+            with contextlib.suppress(RuntimeError):
+                self.loop.call_soon_threadsafe(self._progressed)
             try:
                 alive = _beat(self.run_id)
             except Exception:
@@ -383,6 +404,23 @@ class _Heartbeat:
                 with contextlib.suppress(RuntimeError):
                     self.loop.call_soon_threadsafe(self._stop_run)
                 return
+
+    def _progressed(self) -> None:
+        self.progressed_at = time.monotonic()
+
+    def _fail_stuck_run(self) -> None:
+        log.error(
+            "workflow run %s: its event loop has made no progress for %ss; failing it",
+            self.run_id,
+            get_settings().workflow_run_no_progress_limit,
+        )
+        try:
+            fail_run(self.run_id, no_progress_error())
+        except Exception:
+            # Without beats, it's failed as stopped once it's read (`fail_stopped_runs`).
+            log.exception("workflow run %s: couldn't record that it's stuck", self.run_id)
+        with contextlib.suppress(RuntimeError):
+            self.loop.call_soon_threadsafe(self._stop_run)
 
     def _stop_run(self) -> None:
         if self.stopping.is_set() or self.run.done():
@@ -451,6 +489,12 @@ def time_limit_error() -> str:
     return f"The run took longer than {minutes} minutes, so it was stopped."
 
 
+def no_progress_error() -> str:
+    limit = get_settings().workflow_run_no_progress_limit
+    took = f"{limit // 60:g} minutes" if limit >= 120 else f"{limit:g} seconds"
+    return f"The run made no progress for {took}: something held up its worker, so it was stopped."
+
+
 def fail_run(run_id: int, error: str) -> None:
     """Fail a run that couldn't finish, e.g. one stopped for taking too long."""
     _finish_run(run_id, WorkflowRunStatus.failed, None, error)
@@ -501,9 +545,13 @@ def _finish_step(
     step_id: int, status: WorkflowStepStatus, output: str | None, error: str | None
 ) -> None:
     with SessionLocal() as db:
+        # Not once the run has ended without it (`_end_runs`), e.g. its node finished after the
+        # run was failed for making no progress: the step stays failed with the run.
         db.execute(
             update(WorkflowRunStep)
-            .where(WorkflowRunStep.id == step_id)
+            .where(
+                WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
+            )
             .values(status=status, output=output, error=error, finished_at=func.now())
         )
         db.commit()

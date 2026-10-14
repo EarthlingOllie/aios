@@ -20,8 +20,16 @@ inspection UI (PR 5). Both sides build against this document; change it here fir
 - The run's output is the outputs of the top-level sink nodes, joined like a subgraph's.
 - A run whose worker stopped mid-run (crash, restart) is reported `failed`, within a couple of
   minutes, with the error "The worker stopped while running this, so it couldn't finish."; its
-  steps still running are failed too. One whose worker is alive but busy (a node blocking it for
-  minutes) isn't: liveness doesn't depend on the worker staying responsive.
+  steps still running are failed too. One whose worker is alive but busy isn't: a node awaiting a
+  slow model or tool call, however long, or one holding the worker's event loop for a minute or
+  two (a blocking call, CPU-bound work).
+- A run whose worker's event loop has made no progress for `WORKFLOW_RUN_NO_PROGRESS_LIMIT`
+  seconds (default 5 minutes; stuck in a blocking call that doesn't return, a deadlock) is
+  reported `failed` within a heartbeat (30s) of that, with the error "The run made no progress
+  for 5 minutes: something held up its worker, so it was stopped."; its steps still running are
+  failed too, and stay failed. The worker stops the run as soon as its loop is free again. The
+  worker's heartbeat thread hands the loop a callback each beat and checks when one last ran, so
+  only a loop that can't run anything counts as stuck; no column records progress.
 
 ## Statuses
 
