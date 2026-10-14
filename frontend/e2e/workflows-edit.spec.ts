@@ -273,6 +273,33 @@ test("moving nodes saves the layout without a new version", async ({ page }) => 
   expect(report.layout.research.y).toBeGreaterThan(report.layout.write.y + 100);
 });
 
+test("brings a new node into view", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { researcher } = seed(api);
+  const agents = ["One", "Two", "Three", "Four", "Five"].map((name) => api.addAgent(name));
+  const chain = api.addWorkflow(
+    "Chain",
+    agents.map((agent, i) => ({ key: `n${i}`, agent })),
+    agents.slice(1).map((_, i) => [`n${i}`, `n${i + 1}`] as [string, string]),
+  );
+  await page.setViewportSize({ width: 1440, height: 1500 });
+  await page.goto(`/workflows/${chain.id}/edit`);
+  await expect(node(page, "n4")).toBeVisible();
+  await addNode(page, researcher.name);
+  const pane = (await page.locator(".react-flow").boundingBox())!;
+  await expect
+    .poll(async () => {
+      const box = (await node(page, "researcher").boundingBox())!;
+      return (
+        box.x >= pane.x &&
+        box.y >= pane.y &&
+        box.x + box.width <= pane.x + pane.width &&
+        box.y + box.height <= pane.y + pane.height
+      );
+    })
+    .toBe(true);
+});
+
 test("with no agents, says so and links to creating one", async ({ page }) => {
   const api = await fakeApi(page);
   // Other workflows can still be added, but there's no agent to add.
