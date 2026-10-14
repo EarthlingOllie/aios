@@ -36,6 +36,7 @@ import {
   SkillVersionPage,
 } from "@/pages/Skills";
 import { StubPage } from "@/pages/Stub";
+import { WorkflowRunPage } from "@/pages/WorkflowRun";
 import {
   WorkflowDetail,
   WorkflowEditorPage,
@@ -113,6 +114,7 @@ export default function App() {
           <Route path="new" element={<WorkflowEditorPage />} />
           <Route path=":workflowId" element={<WorkflowDetail />} />
           <Route path=":workflowId/edit" element={<WorkflowEditorPage />} />
+          <Route path=":workflowId/runs/:runId" element={<WorkflowRunPage />} />
           <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
         </Route>
         {navItems

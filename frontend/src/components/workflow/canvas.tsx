@@ -27,8 +27,10 @@ import { Bot, Workflow as WorkflowIcon } from "lucide-react";
 import "@xyflow/react/dist/style.css";
 
 import { Badge } from "@/components/ui/badge";
+import { StateBadge } from "@/components/workflow/status";
 import type { NodePosition, WorkflowEdge, WorkflowNode } from "@/lib/api";
 import {
+  edgeId,
   fitGraph,
   layoutGraph,
   MIN_EDITING_ZOOM,
@@ -36,6 +38,7 @@ import {
   NODE_WIDTH,
   startKeys,
 } from "@/lib/graph";
+import type { EdgeState, NodeState } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 /** What's selected on the canvas, shown in the inspector. */
@@ -43,20 +46,19 @@ export type Selection =
   | { type: "node"; key: string }
   | { type: "edge"; source: string; target: string };
 
-export const edgeId = (e: WorkflowEdge) => `${e.source}->${e.target}`;
-
-type CardData = { node: WorkflowNode; start: boolean; editing: boolean };
+type CardData = { node: WorkflowNode; start: boolean; editing: boolean; state?: NodeState };
 type CardNode = Node<CardData, "workflowNode">;
 
 /** A node: what it runs (an agent or a workflow), at which version, under its key. */
 function NodeCard({ data, selected }: NodeProps<CardNode>) {
-  const { node, start, editing } = data;
+  const { node, start, editing, state } = data;
   const Icon = node.kind === "agent" ? Bot : WorkflowIcon;
   const update = node.latest_version !== null && node.latest_version > node.version;
   return (
     <div
       className={cn(
         "bg-card text-card-foreground flex flex-col justify-center gap-1 rounded-lg border px-3 py-2 shadow-xs",
+        state && stateClass[state],
         selected && "ring-ring ring-2",
       )}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
@@ -72,15 +74,34 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
       <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
         <span className="sr-only">{node.kind === "agent" ? "Agent" : "Workflow"}</span>
         <span className="min-w-0 flex-1 truncate font-mono">{node.key}</span>
-        {start && <Badge variant="secondary">Start</Badge>}
-        {node.kind === "workflow" && <Badge variant="secondary">Workflow</Badge>}
-        {update && <Badge variant="outline">v{node.latest_version} available</Badge>}
-        {node.latest_version === null && <Badge variant="destructive">deleted</Badge>}
+        {state ? <StateBadge state={state} /> : start && <Badge variant="secondary">Start</Badge>}
+        {!state && node.kind === "workflow" && <Badge variant="secondary">Workflow</Badge>}
+        {!state && update && <Badge variant="outline">v{node.latest_version} available</Badge>}
+        {!state && node.latest_version === null && <Badge variant="destructive">deleted</Badge>}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={editing} />
     </div>
   );
 }
+
+// A run's progress on its nodes: where it's been, where it is, and what it never reached.
+const stateClass: Record<NodeState, string> = {
+  running: "border-sky-500 ring-4 ring-sky-500/25",
+  succeeded: "border-emerald-500",
+  failed: "border-red-500 ring-2 ring-red-500/30",
+  waiting: "opacity-60 border-dashed",
+  "not-run": "opacity-40 border-dashed",
+};
+
+const edgeStyle: Record<EdgeState, { stroke?: string; strokeWidth?: number; opacity?: number }> = {
+  live: { stroke: "var(--color-sky-500)", strokeWidth: 2 },
+  taken: { stroke: "var(--color-emerald-500)", strokeWidth: 2 },
+  idle: { opacity: 0.4 },
+};
+
+// For tests and styling: the state as an attribute of the node's or edge's element. (`data-*`
+// attributes are valid on any element, but object literals aren't checked as JSX props are.)
+const dataState = (state: string) => ({ "data-state": state }) as Record<string, string>;
 
 // A selected edge stands out as a selected node does: drawn thicker, in the foreground colour,
 // arrowhead included. (Markers are sized in stroke widths: this keeps it in proportion.)
@@ -143,6 +164,7 @@ export function WorkflowCanvas({
   selection,
   onSelect,
   editing,
+  run,
   className,
   children,
 }: {
@@ -153,6 +175,8 @@ export function WorkflowCanvas({
   selection: Selection | null;
   onSelect: (selection: Selection | null) => void;
   editing?: CanvasEditing;
+  /** A run's progress, drawn on the graph: each node's state, and each edge's by edge id. */
+  run?: { nodes: Record<string, NodeState>; edges: Record<string, EdgeState> };
   className?: string;
   /** Overlaid on the canvas, e.g. a legend. */
   children?: ReactNode;
@@ -175,28 +199,42 @@ export function WorkflowCanvas({
 
   // React Flow re-adopts (and re-renders) every node and edge it's handed as a new object, so
   // only build new ones when what they show changes, not on every render of the page around us.
-  // So too for selecting: only what's selected (or deselected) is built anew.
+  // So too for selecting: only what's selected (or deselected) is built anew. A run's states are
+  // rebuilt by each poll, so they're compared by what they say.
+  const runKey = run && JSON.stringify(run);
   const unselectedNodes = useMemo<CardNode[]>(
     () =>
       nodes.map((node) => ({
         id: node.key,
         type: "workflowNode",
         position: positions[node.key],
-        data: { node, start: starts.has(node.key), editing: isEditing },
+        data: {
+          node,
+          start: starts.has(node.key),
+          editing: isEditing,
+          state: run?.nodes[node.key],
+        },
+        domAttributes: run ? dataState(run.nodes[node.key]) : undefined,
         draggable: isEditing,
         connectable: isEditing,
       })),
-    [nodes, positions, starts, isEditing],
+    [nodes, positions, starts, isEditing, runKey],
   );
   const unselectedEdges = useMemo<Edge[]>(
     () =>
-      edges.map((e) => ({
-        id: edgeId(e),
-        source: e.source,
-        target: e.target,
-        markerEnd: { type: MarkerType.ArrowClosed },
-      })),
-    [edges],
+      edges.map((e) => {
+        const state = run?.edges[edgeId(e)];
+        return {
+          id: edgeId(e),
+          source: e.source,
+          target: e.target,
+          markerEnd: { type: MarkerType.ArrowClosed, color: state && edgeStyle[state].stroke },
+          animated: state === "live",
+          style: state && edgeStyle[state],
+          domAttributes: state ? dataState(state) : undefined,
+        };
+      }),
+    [edges, runKey],
   );
   const selectedNode = selection?.type === "node" ? selection.key : undefined;
   const selectedEdge = selection?.type === "edge" ? edgeId(selection) : undefined;
@@ -210,7 +248,8 @@ export function WorkflowCanvas({
         e.selected
           ? {
               ...e,
-              style: { ...e.style, ...selectedEdgeStyle },
+              // Over a run's colours too, and fully drawn even if the run didn't take it.
+              style: { ...e.style, ...selectedEdgeStyle, opacity: 1 },
               markerEnd: { type: MarkerType.ArrowClosed, ...selectedMarker },
             }
           : e,

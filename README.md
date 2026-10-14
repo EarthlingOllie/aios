@@ -39,7 +39,10 @@ the model's behaviour:
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
 an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
 them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
-make a cycle before you save. They're versioned like agents (`workflows`,
+make a cycle before you save. Runs are started from the workflow's page; a run's page draws the
+path it took on the graph (which nodes succeeded, failed or never ran, and the edges their
+outputs went along) and, while it's going, polls to show where it is now. Clicking a node shows
+its step's input, output and conversation, and a subworkflow node opens its own graph. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
