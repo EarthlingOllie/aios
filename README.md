@@ -35,6 +35,28 @@ the model's behaviour:
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
 
+**Workflows** graph agents together, and can run other workflows as subgraphs. Only their
+definition exists so far (`/api/workflows`; the UI is a placeholder): they can be built,
+versioned and nested, not run yet. They're versioned like agents (`workflows`,
+`workflow_versions`):
+
+- A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
+  or one workflow version by id, and edges (`workflow_edges`) between node keys. Nodes with no
+  incoming edge are where the workflow starts.
+- Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming
+  and no-op saves don't. Editing an agent doesn't change any workflow: the node reports its
+  latest version, and taking it is a new workflow version. Restore works as for agents.
+- A workflow can't contain itself, directly or through other workflows at any depth: none of the
+  versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
+  versions that already exist, so nesting is always finite.
+- Agents and workflows are soft-deleted too: older workflow versions keep pinning their versions,
+  and stay readable (a node whose agent or workflow is gone shows no latest version). One can't
+  be deleted while a live workflow's current version runs it; older versions don't count, but
+  restoring one that runs something since deleted is refused. Deleting an agent still deletes
+  its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
+- Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
+  delete can't race a save that starts using what it deletes.
+
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
@@ -64,12 +86,14 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/documents.py upload/list/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+    api/workflows.py CRUD /api/workflows, versions and restore
+    workflows.py    workflow graph validation (and, later, running them)
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
     llm.py          the chat model (LangChain "provider:model" names)
     tracing.py      Langfuse callbacks and trace metadata
-    versioning.py   creating agent/skill versions, rendering instructions
+    versioning.py   creating agent/skill/workflow versions, rendering instructions
     tools/          the tool library agents can be given (registry + one module per tool)
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox

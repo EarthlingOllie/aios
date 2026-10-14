@@ -9,8 +9,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
-from aios.db import DB
-from aios.models import Agent, AgentVersion, Skill, SkillVersion, agent_version_skills
+from aios.db import DB, DbId
+from aios.models import (
+    Agent,
+    AgentVersion,
+    Skill,
+    SkillVersion,
+    Workflow,
+    agent_version_skills,
+)
 from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
@@ -47,7 +54,7 @@ class SkillVersionOut(SkillVersionSummary):
 
 
 class SkillUsage(BaseModel):
-    """An agent whose current version uses some version of this skill."""
+    """A live agent whose current version uses some version of this skill."""
 
     agent_id: int
     agent_name: str
@@ -71,25 +78,47 @@ def get_owned_skill(db: Session, user_id: int, skill_id: int) -> Skill:
     return skill
 
 
-def lock_live_skills(db: Session, skill_ids: Iterable[int]) -> set[int]:
-    """Row-lock these skills (FOR UPDATE, in id order) and return the ids still live.
+def lock_live(
+    db: Session,
+    model: type[Skill] | type[Agent] | type[Workflow],
+    ids: Iterable[int],
+    *,
+    read: bool = False,
+) -> set[int]:
+    """Row-lock these skills, agents or workflows (in id order) and return the ids still live.
 
-    Attaching a skill to an agent and deleting the skill both take this lock, so a delete can't
-    slip in between an agent save's liveness check and its commit. Lock order is always skills
-    (ascending id) before the agent row that save_agent_version locks; nothing locks the other
-    way round, so the two paths can't deadlock.
+    Saving something that depends on a row (an agent attaching a skill, a workflow running an
+    agent or another workflow) and deleting that row both take this lock, so a delete can't slip
+    in between the save's liveness check and its commit: it either waits for the save (and then
+    sees the usage) or wins, and the save sees the row is gone. A row deleted while we waited for
+    its lock isn't returned: the lock's re-check reads the committed `deleted_at`.
+
+    `read` takes a share lock instead, for something that only needs the row to stay live (e.g.
+    starting a run). Locks are FOR UPDATE otherwise, so a delete and a save taking the same row
+    wait for each other.
+
+    Lock order, to avoid deadlocks: skills, then agents, then workflows, each in ascending id.
+    An agent save locks its skills, then the agent row (here, then again in save_agent_version);
+    a workflow save locks the agents it runs, then the workflows it runs together with itself
+    (`aios.api.workflows.lock_graph`), then its own row again in save_workflow_version. A delete
+    locks only the row it deletes. Nothing locks in the other order.
     """
-    ids = sorted(set(skill_ids))
+    ids = sorted(set(ids))
     if not ids:
         return set()
     return set(
         db.scalars(
-            select(Skill.id)
-            .where(Skill.id.in_(ids), Skill.deleted_at.is_(None))
-            .order_by(Skill.id)
-            .with_for_update()
+            select(model.id)
+            .where(model.id.in_(ids), model.deleted_at.is_(None))
+            .order_by(model.id)
+            .with_for_update(read=read)
         )
     )
+
+
+def lock_live_skills(db: Session, skill_ids: Iterable[int]) -> set[int]:
+    """Row-lock these skills and return the ids still live (see `lock_live`)."""
+    return lock_live(db, Skill, skill_ids)
 
 
 def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
@@ -104,11 +133,17 @@ def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
 
 
 @contextmanager
-def unique_name(db: Session, what: str) -> Iterator[None]:
-    """Turn an (owner_id, name) unique violation inside the block into a 409."""
+def unique_name(db: Session, what: str, index: str) -> Iterator[None]:
+    """Turn a violation of the live-name unique index `index` inside the block into a 409.
+
+    Any other integrity error is a bug, not a name clash, and propagates.
+    """
     try:
         yield
     except IntegrityError as exc:
+        diag = getattr(exc.orig, "diag", None)
+        if getattr(diag, "constraint_name", None) != index:
+            raise
         db.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"You already have {what} with that name."
@@ -121,7 +156,7 @@ def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
         .join(agent_version_skills, agent_version_skills.c.agent_version_id == AgentVersion.id)
         .join(SkillVersion, SkillVersion.id == agent_version_skills.c.skill_version_id)
-        .where(SkillVersion.skill_id == skill_id)
+        .where(SkillVersion.skill_id == skill_id, Agent.deleted_at.is_(None))
         .order_by(Agent.name)
     ).all()
     return [
@@ -166,7 +201,7 @@ def list_skills(user: CurrentUser, db: DB):
 def create_skill(body: SkillIn, user: CurrentUser, db: DB):
     skill = Skill(owner_id=user.id, name=body.name)
     db.add(skill)
-    with unique_name(db, "a skill"):
+    with unique_name(db, "a skill", "uq_skills_owner_id_name_live"):
         save_skill_version(
             db,
             skill,
@@ -180,15 +215,15 @@ def create_skill(body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.get("/skills/{skill_id}", response_model=SkillOut)
-def get_skill(skill_id: int, user: CurrentUser, db: DB):
+def get_skill(skill_id: DbId, user: CurrentUser, db: DB):
     return skill_out(db, get_owned_skill(db, user.id, skill_id))
 
 
 @router.put("/skills/{skill_id}", response_model=SkillOut)
-def update_skill(skill_id: int, body: SkillIn, user: CurrentUser, db: DB):
+def update_skill(skill_id: DbId, body: SkillIn, user: CurrentUser, db: DB):
     skill = get_owned_skill(db, user.id, skill_id)
     skill.name = body.name
-    with unique_name(db, "a skill"):
+    with unique_name(db, "a skill", "uq_skills_owner_id_name_live"):
         save_skill_version(
             db,
             skill,
@@ -202,7 +237,7 @@ def update_skill(skill_id: int, body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_skill(skill_id: int, user: CurrentUser, db: DB) -> None:
+def delete_skill(skill_id: DbId, user: CurrentUser, db: DB) -> None:
     skill = get_owned_skill(db, user.id, skill_id)
     # Hold the row lock across the usage check and the delete; agent saves take it too.
     if not lock_live_skills(db, [skill.id]):
@@ -219,7 +254,7 @@ def delete_skill(skill_id: int, user: CurrentUser, db: DB) -> None:
 
 
 @router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])
-def list_skill_versions(skill_id: int, user: CurrentUser, db: DB):
+def list_skill_versions(skill_id: DbId, user: CurrentUser, db: DB):
     skill = get_owned_skill(db, user.id, skill_id)
     return db.scalars(
         select(SkillVersion)
@@ -229,12 +264,12 @@ def list_skill_versions(skill_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
-def get_skill_version_detail(skill_id: int, number: int, user: CurrentUser, db: DB):
+def get_skill_version_detail(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
     return get_skill_version(db, get_owned_skill(db, user.id, skill_id), number)
 
 
 @router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)
-def restore_skill_version(skill_id: int, number: int, user: CurrentUser, db: DB):
+def restore_skill_version(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
     """Make an old version's content current again, as a new version."""
     skill = get_owned_skill(db, user.id, skill_id)
     old = get_skill_version(db, skill, number)

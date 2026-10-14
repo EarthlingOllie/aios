@@ -9,6 +9,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -132,6 +133,13 @@ const navItems: NavItem[] = [
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
+  {
+    to: "/workflows",
+    label: "Workflows",
+    icon: Workflow,
+    end: false,
+    stub: "Chain your agents into graphs, and reuse workflows inside other workflows.",
+  },
   { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
   { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];

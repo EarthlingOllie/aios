@@ -6,14 +6,16 @@ from dataclasses import dataclass
 import psycopg
 import pytest
 from fake_model import ToolCall, model, replies, use_model
+from sqlalchemy import func
 
 from aios import checkpoints, ui_stream
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
+from aios.api.skills import lock_live
 from aios.auth import current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Agent, User
+from aios.models import Agent, AgentRun, User
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
@@ -246,6 +248,53 @@ def test_skill_delete_waits_for_in_flight_attach(api, user):
     assert api.get(f"/api/skills/{skill['id']}").status_code == 200
 
 
+def test_agent_delete_is_soft_and_takes_its_runs(api, db):
+    skill = make_skill(api, "Pirate", "Arr.")
+    agent = make_agent(api, "Bot", skills=[skill])
+    url = f"/api/agents/{agent['id']}"
+    run = api.post(f"{url}/runs").json()
+
+    assert api.delete(url).status_code == 204
+    for gone in (url, f"{url}/versions", f"{url}/versions/1", f"{url}/runs/{run['id']}"):
+        assert api.get(gone).status_code == 404
+    assert api.put(url, json=agent_body(agent)).status_code == 404
+    assert api.post(f"{url}/runs").status_code == 404
+    assert api.delete(url).status_code == 404
+    assert api.get("/api/agents").json() == []
+    # The row and its versions stay (workflow versions may pin them); its runs don't.
+    row = db.get(Agent, agent["id"])
+    assert row.deleted_at is not None and row.current_version.version == 1
+    assert db.get(AgentRun, run["id"]) is None
+
+    # A deleted agent doesn't hold on to the skills its current version used, nor its name.
+    assert api.delete(f"/api/skills/{skill['id']}").status_code == 204
+    assert make_agent(api, "Bot")["name"] == "Bot"
+    resp = api.post("/api/agents", json={"name": "Bot"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "You already have an agent with that name."
+
+
+def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
+    agent = make_agent(api, "Bot")
+    result = {}
+
+    with SessionLocal() as session:
+        # A delete that has locked the agent and found it unused, but not committed yet.
+        assert lock_live(session, Agent, [agent["id"]])
+        session.get(Agent, agent["id"]).deleted_at = func.now()
+        starter = threading.Thread(
+            target=lambda: result.update(resp=api.post(f"/api/agents/{agent['id']}/runs"))
+        )
+        starter.start()
+        starter.join(timeout=0.5)
+        assert starter.is_alive(), "starting a run should block on the agent row lock"
+        session.commit()
+
+    starter.join(timeout=10)
+    # Not a run left behind on a deleted agent, which its delete would have missed.
+    assert result["resp"].status_code == 404
+
+
 def test_other_users_cannot_see_agents(api, client, db):
     agent = make_agent(api, "Mine")
     other = User(github_id=-2, login="other")
@@ -260,6 +309,31 @@ def test_other_users_cannot_see_agents(api, client, db):
     finally:
         db.delete(other)
         db.commit()
+
+
+def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
+    huge = 2**31  # one past Postgres INTEGER
+    agent = make_agent(api, "Bounded")
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    skill = make_skill(api, "Bounded skill")
+    for url in [
+        f"/api/agents/{huge}",
+        f"/api/agents/{huge}/versions",
+        f"/api/agents/{agent['id']}/versions/{huge}",
+        f"/api/agents/{agent['id']}/runs/{huge}",
+        f"/api/agents/{agent['id']}/runs/{-huge - 1}",
+        f"/api/skills/{huge}",
+        f"/api/skills/{skill['id']}/versions/{huge}",
+    ]:
+        assert api.get(url).status_code == 422, url
+    assert api.delete(f"/api/documents/{huge}").status_code == 422
+    assert api.post(f"/api/agents/{agent['id']}/runs/{huge}/chat", json={}).status_code == 422
+    body = agent_body(agent, skill_version_ids=[huge])
+    assert api.post("/api/agents", json={**body, "name": "Huge"}).status_code == 422
+    assert api.put(f"/api/agents/{agent['id']}", json=body).status_code == 422
+    # The largest INTEGER is valid; it just names nothing.
+    assert api.get(f"/api/agents/{huge - 1}").status_code == 404
+    assert api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code == 200
 
 
 def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):

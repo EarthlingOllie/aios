@@ -11,14 +11,15 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, tracing, ui_stream
 from aios.agent import ChatDeps
-from aios.api.skills import lock_live_skills, unique_name
+from aios.api.skills import lock_live, lock_live_skills, unique_name
+from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
-from aios.db import DB, SessionLocal
+from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
@@ -26,6 +27,7 @@ from aios.models import (
     AgentVersionTool,
     Skill,
     SkillVersion,
+    WorkflowNode,
     agent_version_skills,
 )
 from aios.runner import build_agent
@@ -51,6 +53,8 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
+AGENT_NAME_INDEX = "uq_agents_owner_id_name_live"
+
 
 class AgentToolIn(BaseModel):
     key: str
@@ -64,7 +68,7 @@ class AgentIn(BaseModel):
     base_prompt: str = ""
     # Specific skill versions, in order. The UI keeps already-attached skills on their pinned
     # version and adds new ones at their latest; updating a skill is an explicit change.
-    skill_version_ids: list[int] = []
+    skill_version_ids: list[DbId] = []
     # Tools from the library (GET /api/tools), in order, each with its settings.
     tools: list[AgentToolIn] = []
     # Optional "what changed", stored on the new version if one is created.
@@ -155,9 +159,15 @@ class RunOut(RunSummary):
 
 def get_owned_agent(db: Session, user_id: int, agent_id: int) -> Agent:
     agent = db.get(Agent, agent_id)
-    if agent is None or agent.owner_id != user_id:
+    if agent is None or agent.owner_id != user_id or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
+
+
+def lock_live_agent(db: Session, agent: Agent, *, read: bool = False) -> None:
+    """Row-lock the agent until commit (see `lock_live`); a 404 if it was deleted meanwhile."""
+    if not lock_live(db, Agent, [agent.id], read=read):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
 def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
@@ -318,7 +328,7 @@ def list_agents(user: CurrentUser, db: DB):
             run_count,
         )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
-        .where(Agent.owner_id == user.id)
+        .where(Agent.owner_id == user.id, Agent.deleted_at.is_(None))
         .order_by(Agent.name)
     ).all()
     return [
@@ -342,7 +352,7 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
     agent = Agent(owner_id=user.id, name=body.name, description=body.description)
     db.add(agent)
-    with unique_name(db, "an agent"):
+    with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
             agent,
@@ -357,19 +367,20 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}", response_model=AgentOut)
-def get_agent(agent_id: int, user: CurrentUser, db: DB):
+def get_agent(agent_id: DbId, user: CurrentUser, db: DB):
     return agent_out(get_owned_agent(db, user.id, agent_id))
 
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
-def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
+def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
     agent = get_owned_agent(db, user.id, agent_id)
     tools = resolve_tools(body.tools, agent.current_version)
     skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
+    lock_live_agent(db, agent)
     agent.name = body.name
     agent.description = body.description
-    with unique_name(db, "an agent"):
+    with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
             agent,
@@ -385,14 +396,28 @@ def update_agent(agent_id: int, body: AgentIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
-    # Versions and runs belong to the agent and go with it (ON DELETE CASCADE).
+def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
     agent = get_owned_agent(db, user.id, agent_id)
+    # Hold the row lock across the usage check and the delete; workflow saves that run the agent
+    # take it too (`aios.api.workflows.lock_graph`), and so does starting a run.
+    lock_live_agent(db, agent)
+    used_by = workflows_using(
+        db,
+        WorkflowNode.agent_version_id.in_(
+            select(AgentVersion.id).where(AgentVersion.agent_id == agent.id)
+        ),
+    )
+    if used_by:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Remove this agent from these workflows first: {', '.join(used_by)}.",
+        )
+    # Soft delete: older workflow versions may still pin its versions, so the agent and its
+    # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
-    agent.current_version_id = None  # break the agents <-> agent_versions cycle first
-    db.flush()
-    db.delete(agent)
+    db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
+    agent.deleted_at = func.now()
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
@@ -402,7 +427,7 @@ def delete_agent(agent_id: int, user: CurrentUser, db: DB, background: Backgroun
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
-def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
+def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     run_count = (
         select(func.count(AgentRun.id))
@@ -429,12 +454,12 @@ def list_agent_versions(agent_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
-def get_agent_version_detail(agent_id: int, number: int, user: CurrentUser, db: DB):
+def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
     return version_out(get_agent_version(db, get_owned_agent(db, user.id, agent_id), number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
-def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB):
+def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
     """Make an old version's config current again, as a new version (numbers only go up)."""
     agent = get_owned_agent(db, user.id, agent_id)
     old = get_agent_version(db, agent, number)
@@ -446,6 +471,7 @@ def restore_agent_version(agent_id: int, number: int, user: CurrentUser, db: DB)
         raise HTTPException(
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
         )
+    lock_live_agent(db, agent)
     save_agent_version(
         db,
         agent,
@@ -488,7 +514,7 @@ def build_version_tools(
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
-def list_runs(agent_id: int, user: CurrentUser, db: DB):
+def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
     rows = db.execute(
         run_summary_query()
@@ -501,8 +527,10 @@ def list_runs(agent_id: int, user: CurrentUser, db: DB):
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: int, user: CurrentUser, db: DB):
+def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
+    # Keeps a concurrent delete from missing this run, which would be left behind.
+    lock_live_agent(db, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
@@ -514,7 +542,7 @@ def create_run(agent_id: int, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
-def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
+def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     history = checkpoints.history(run.id)
@@ -528,7 +556,7 @@ def get_run(agent_id: int, run_id: int, user: CurrentUser, db: DB):
 
 @router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_run(
-    agent_id: int, run_id: int, user: CurrentUser, db: DB, background: BackgroundTasks
+    agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
 ) -> None:
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
@@ -694,7 +722,7 @@ def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
-async def run_chat(agent_id: int, run_id: int, body: dict, user: CurrentUser, db: DB):
+async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the run's
     LangGraph thread.
 

@@ -4,11 +4,13 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Column,
     Computed,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -190,6 +192,8 @@ class Agent(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", use_alter=True, name="fk_agents_current_version_id")
     )
+    # Soft delete: workflow versions pin agent versions, so those must outlive the agent.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -202,7 +206,16 @@ class Agent(Base):
         back_populates="agent", cascade="all, delete-orphan", passive_deletes=True
     )
 
-    __table_args__ = (UniqueConstraint("owner_id", "name"),)
+    __table_args__ = (
+        # Names are unique among live agents, so a deleted agent's name can be reused.
+        Index(
+            "uq_agents_owner_id_name_live",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class AgentVersion(Base):
@@ -294,4 +307,145 @@ class SandboxSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# Workflows graph agents together, and can nest other workflows as subgraphs. They're versioned
+# like agents: an identity row plus immutable versions, and each version pins the exact agent and
+# workflow versions its nodes run. A version can only pin versions that already exist, so nesting
+# is always finite: no workflow version can contain itself, however deep.
+
+
+class WorkflowNodeKind(enum.StrEnum):
+    agent = "agent"
+    workflow = "workflow"
+
+
+class Workflow(Base):
+    """A workflow's identity. Its graph lives on WorkflowVersion."""
+
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, server_default="")
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_versions.id", use_alter=True, name="fk_workflows_current_version_id")
+    )
+    # Soft delete: other workflows' versions pin its versions, so those must outlive it.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    current_version: Mapped["WorkflowVersion | None"] = relationship(
+        foreign_keys=[current_version_id], post_update=True
+    )
+
+    __table_args__ = (
+        # Names are unique among live workflows, so a deleted workflow's name can be reused.
+        Index(
+            "uq_workflows_owner_id_name_live",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
+class WorkflowVersion(Base):
+    """An immutable snapshot of a workflow's graph: its nodes and the edges between them."""
+
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(Integer)
+    config_hash: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    workflow: Mapped[Workflow] = relationship(foreign_keys=[workflow_id])
+    nodes: Mapped[list["WorkflowNode"]] = relationship(
+        order_by="WorkflowNode.position",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="WorkflowNode.workflow_version_id",
+    )
+    edges: Mapped[list["WorkflowEdge"]] = relationship(
+        order_by="WorkflowEdge.position", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (UniqueConstraint("workflow_id", "version"),)
+
+
+class WorkflowNode(Base):
+    """A step in a workflow version: a pinned agent version, or a pinned workflow version run as
+    a subgraph."""
+
+    __tablename__ = "workflow_nodes"
+
+    workflow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_versions.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Names the node within its version; edges refer to nodes by key.
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[WorkflowNodeKind] = mapped_column(
+        Enum(WorkflowNodeKind, name="workflow_node_kind")
+    )
+    # Exactly one of these is set, matching `kind`. No ON DELETE: agents and workflows are
+    # soft-deleted, so the versions a node pins are never deleted by the API. Only deleting a
+    # user removes them, cascading to their agents and workflows alike, so the check is deferred
+    # to commit: by then the nodes pinning them have gone too, whatever order the cascades ran in.
+    agent_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_versions.id", deferrable=True, initially="DEFERRED"), index=True
+    )
+    subworkflow_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_versions.id", deferrable=True, initially="DEFERRED"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+
+    agent_version: Mapped[AgentVersion | None] = relationship()
+    subworkflow_version: Mapped[WorkflowVersion | None] = relationship(
+        foreign_keys=[subworkflow_version_id]
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'agent' AND agent_version_id IS NOT NULL AND subworkflow_version_id IS NULL)"
+            " OR (kind = 'workflow' AND subworkflow_version_id IS NOT NULL"
+            " AND agent_version_id IS NULL)",
+            name="ck_workflow_nodes_target",
+        ),
+    )
+
+
+class WorkflowEdge(Base):
+    """Control passes from `source` to `target` (node keys in the same version) when `source`
+    finishes. Nodes with no incoming edge are where the workflow starts."""
+
+    __tablename__ = "workflow_edges"
+
+    workflow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_versions.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workflow_version_id", "source"],
+            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_version_id", "target"],
+            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
+            ondelete="CASCADE",
+        ),
     )

@@ -6,7 +6,7 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from aios import auth, tracing
-from aios.api import agents, chat, documents, skills, tools
+from aios.api import agents, chat, documents, skills, tools, workflows
 from aios.config import get_settings
 from aios.db import engine
 
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(agents.router)
     app.include_router(tools.router)
+    app.include_router(workflows.router)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
