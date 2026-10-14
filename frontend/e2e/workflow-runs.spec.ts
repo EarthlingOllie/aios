@@ -254,3 +254,26 @@ test("still shows a run whose workflow fails to load, and says why", async ({ pa
   await expect(page.getByText("Look into it")).toBeVisible();
   await expect(node(page, "research")).toBeVisible();
 });
+
+test("the runs list follows a live run until nothing is going", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  api.addRun(report, { status: "succeeded", input: "First run", output: "ok" });
+  const live = api.addRun(report, { status: "running", input: "Second run" });
+  let reads = 0;
+  page.on("request", (r) => {
+    if (r.method() === "GET" && r.url().endsWith(`/workflows/${report.id}/runs`)) reads++;
+  });
+  await page.goto(`/workflows/${report.id}`);
+  const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
+  await expect(latest).toContainText("Running");
+
+  // The worker finishes the run; the list catches up without a reload.
+  Object.assign(live, { status: "succeeded", output: "done", finished_at: "2026-10-14T09:02:00Z" });
+  await expect(latest).toContainText("Succeeded");
+
+  // With nothing left going, it stops asking.
+  const settled = reads;
+  await page.waitForTimeout(2500);
+  expect(reads).toBe(settled);
+});

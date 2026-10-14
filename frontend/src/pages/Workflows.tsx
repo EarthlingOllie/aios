@@ -24,6 +24,8 @@ import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
+import { isActive } from "@/lib/runs";
+import { POLL_MS } from "@/pages/WorkflowRun";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -118,6 +120,15 @@ function WorkflowDetailView({ id }: { id: number }) {
   // The input for a new run, while the form for one is open.
   const [runInput, setRunInput] = useState<string>();
   const [starting, setStarting] = useState(false);
+
+  // Keep the list's statuses current while any run is still going, as the run page does.
+  const anyActive = !!runs.data?.some((r) => isActive(r.status));
+  const reloadRuns = runs.reload;
+  useEffect(() => {
+    if (!anyActive) return;
+    const timer = setTimeout(reloadRuns, POLL_MS);
+    return () => clearTimeout(timer);
+  }, [anyActive, runs.data, reloadRuns]);
 
   if (workflow.error) return <Placeholder>{workflow.error}</Placeholder>;
   if (!workflow.data) return null;

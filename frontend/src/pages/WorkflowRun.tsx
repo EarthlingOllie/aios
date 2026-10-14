@@ -27,7 +27,7 @@ import {
 import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
 
 /** How often a run that's still going is re-read. */
-const POLL_MS = 1000;
+export const POLL_MS = 1000;
 
 function duration(from: string, to: string | null) {
   const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
