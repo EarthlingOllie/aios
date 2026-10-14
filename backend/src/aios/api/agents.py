@@ -122,6 +122,8 @@ class AgentSummary(BaseModel):
     name: str
     description: str
     version: int
+    # The current version's id, which a workflow node pins to run this agent.
+    version_id: int
     skill_count: int
     tool_count: int
     run_count: int
@@ -323,6 +325,7 @@ def list_agents(user: CurrentUser, db: DB):
         select(
             Agent,
             AgentVersion.version,
+            AgentVersion.id,
             skill_count(AgentVersion.id),
             tool_count(AgentVersion.id),
             run_count,
@@ -337,12 +340,13 @@ def list_agents(user: CurrentUser, db: DB):
             name=a.name,
             description=a.description,
             version=version,
+            version_id=version_id,
             skill_count=skills,
             tool_count=tools,
             run_count=runs,
             updated_at=a.updated_at,
         )
-        for a, version, skills, tools, runs in rows
+        for a, version, version_id, skills, tools, runs in rows
     ]
 
 

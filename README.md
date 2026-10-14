@@ -43,8 +43,9 @@ versioned and nested, not run yet. They're versioned like agents (`workflows`,
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
   or one workflow version by id, and edges (`workflow_edges`) between node keys. Nodes with no
   incoming edge are where the workflow starts.
-- Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming
-  and no-op saves don't. Editing an agent doesn't change any workflow: the node reports its
+- Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming,
+  moving nodes in the editor (the workflow's `layout`, positions by node key) and no-op saves
+  don't. Editing an agent doesn't change any workflow: the node reports its
   latest version, and taking it is a new workflow version. Restore works as for agents.
 - A workflow can't contain itself, directly or through other workflows at any depth: none of the
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin

@@ -333,6 +333,9 @@ class Workflow(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("workflow_versions.id", use_alter=True, name="fk_workflows_current_version_id")
     )
+    # Where the editor draws each node, by node key: {"key": {"x": 0, "y": 0}}. Presentation
+    # only, like the name, so it isn't versioned; nodes without a position are laid out for you.
+    layout: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     # Soft delete: other workflows' versions pin its versions, so those must outlive it.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
