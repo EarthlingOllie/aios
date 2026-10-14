@@ -334,7 +334,7 @@ def apply_layout(workflow: Workflow, body: WorkflowIn) -> None:
         else {key: p.model_dump() for key, p in body.layout.items()}
     )
     keys = {n.key for n in body.nodes}
-    pruned = {key: p for key, p in (layout or {}).items() if key in keys}
+    pruned = {key: p for key, p in layout.items() if key in keys}
     if pruned != workflow.layout:
         workflow.layout = pruned
 
