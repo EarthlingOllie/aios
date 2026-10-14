@@ -376,6 +376,9 @@ export class FakeApi {
         const v = this.workflowVersions.get(n.version_id);
         if (!v) return "Unknown workflow version";
         if (workflow && v.workflow_id === workflow.id) return "A workflow can't contain itself";
+        if (workflow && this.contains(v).has(workflow.id)) {
+          return "A workflow can't contain itself, even through another workflow";
+        }
       }
     }
     return null;

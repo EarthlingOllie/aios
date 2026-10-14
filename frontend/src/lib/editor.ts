@@ -25,6 +25,8 @@ export type Target = {
   name: string;
   version: number;
   version_id: number;
+  /** Why this workflow can't run it at that version, if it can't: it's this one, or runs it. */
+  unavailable?: "Current workflow" | "Runs this workflow";
 };
 
 const KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;

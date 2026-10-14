@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { fakeApi, type FakeApi } from "./fake-api";
 
@@ -7,8 +7,14 @@ const edge = (page: Page, source: string, target: string) =>
   page.locator(`.react-flow__edge[data-id="${source}->${target}"]`);
 const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
 
+/** Opens a picker of agents and workflows and chooses one. */
+async function choose(page: Page, picker: Locator, name: string) {
+  await picker.click();
+  await page.getByRole("option", { name, exact: true }).click();
+}
+
 async function addNode(page: Page, name: string) {
-  await page.getByLabel("Add node").selectOption({ label: name });
+  await choose(page, page.getByLabel("Add node"), name);
   await page.getByRole("button", { name: "Add", exact: true }).click();
 }
 
@@ -94,7 +100,7 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
   await expect(edge(page, "research", "draft")).toBeAttached();
 
   // Point it at another agent.
-  await inspector(page).getByLabel("Runs").selectOption({ label: "Critic" });
+  await choose(page, inspector(page).getByLabel("Runs"), "Critic");
   await expect(node(page, "draft")).toContainText("Critic");
 
   // Remove the edge, then the other node with the keyboard.
@@ -272,7 +278,8 @@ test("with no agents, says so and links to creating one", async ({ page }) => {
   // Other workflows can still be added, but there's no agent to add.
   api.addWorkflow("Review");
   await page.goto("/workflows/new");
-  await expect(page.getByLabel("Add node").locator("option")).toContainText(["Review"]);
+  await page.getByLabel("Add node").click();
+  await expect(page.getByRole("option")).toHaveText(["Review"]);
   await expect(page.getByText("You have no agents yet.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
     "href",
@@ -416,15 +423,86 @@ test("while editing, what a node runs opens in a new tab", async ({ page }) => {
   );
 });
 
-test("neither the workflow itself nor one that runs it is offered as a node", async ({ page }) => {
+test("the workflow itself and ones that run it are shown but can't be added", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
   const middle = api.addWorkflow("Middle", [{ key: "report", workflow: report }]);
   api.addWorkflow("Outer", [{ key: "middle", workflow: middle }]);
   await page.goto(`/workflows/${report.id}/edit`);
-  const options = page.getByLabel("Add node").locator("option");
-  await expect(options.filter({ hasText: "Review" })).toHaveCount(1);
-  const labels = await options.allTextContents();
-  expect(labels).toContain("Review");
-  for (const name of ["Report", "Middle", "Outer"]) expect(labels).not.toContain(name);
+  const picker = page.getByLabel("Add node");
+  await picker.click();
+  const options = page.getByRole("listbox").getByRole("option");
+  await expect(options).toHaveText([
+    "Researcher",
+    "Writer",
+    "Critic",
+    "MiddleRuns this workflow",
+    "OuterRuns this workflow",
+    "ReportCurrent workflow",
+    "Review",
+  ]);
+  const option = (name: string) => page.getByRole("option", { name, exact: true });
+  await expect(option("Report")).toHaveAttribute("aria-disabled", "true");
+  await expect(option("Report")).toHaveAccessibleDescription("Current workflow");
+  await expect(option("Middle")).toHaveAccessibleDescription("Runs this workflow");
+  await expect(option("Review")).not.toHaveAttribute("aria-disabled", "true");
+
+  // Choosing one does nothing; the list stays open for another choice.
+  await option("Outer").click({ force: true });
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await expect(picker).toHaveText("Choose an agent or workflow…");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add", exact: true })).toBeDisabled();
+});
+
+test("the picker can be used with the keyboard", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.goto(`/workflows/${report.id}/edit`);
+  const picker = page.getByLabel("Add node");
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  const active = async () =>
+    page.locator(`#${await picker.getAttribute("aria-activedescendant")}`).textContent();
+  expect(await active()).toBe("Researcher");
+  // The current workflow can be reached, so it's announced, but not chosen.
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowUp");
+  expect(await active()).toBe("ReportCurrent workflow");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(picker).toHaveText("Review");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(node(page, "review")).toBeVisible();
+});
+
+test("won't update a node to a version that runs this workflow", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { researcher, review } = seed(api);
+  const report = api.addWorkflow("Summary", [
+    { key: "research", agent: researcher },
+    { key: "review", workflow: review },
+  ]);
+  // Review's v2 runs a workflow that runs this one.
+  const outer = api.addWorkflow("Outer", [{ key: "summary", workflow: report }]);
+  api.addWorkflowVersion(review, (v) => {
+    v.nodes.push({ key: "outer", kind: "workflow", version_id: outer.versions[0] });
+  });
+  api.bumpAgent(researcher);
+  await page.goto(`/workflows/${report.id}/edit`);
+
+  await node(page, "review").click();
+  const update = inspector(page).getByRole("button", { name: "Update to v2" });
+  await expect(update).toBeDisabled();
+  await expect(update).toHaveAccessibleDescription(
+    "Can't update: v2 runs this workflow, which would make a loop.",
+  );
+  // Other nodes can still be updated.
+  await node(page, "research").click();
+  await expect(inspector(page).getByRole("button", { name: "Update to v2" })).toBeEnabled();
 });

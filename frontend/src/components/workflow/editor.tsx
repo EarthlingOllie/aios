@@ -4,6 +4,7 @@ import { Link } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, type SelectGroup } from "@/components/ui/select";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector, Row } from "@/components/workflow/inspector";
 import type { WorkflowNode } from "@/lib/api";
@@ -21,32 +22,23 @@ import {
   type Draft,
   type Target,
 } from "@/lib/editor";
-import { cn } from "@/lib/utils";
 
 const selectClass = "border-input w-full rounded-md border bg-transparent px-2 py-1.5 text-sm";
 const targetValue = (t: { kind: string; id: number }) => `${t.kind}:${t.id}`;
 
-/** The agents and workflows a node can run, grouped by kind, as `<option>`s. */
-function TargetOptions({ targets }: { targets: Target[] }) {
-  return (
-    <>
-      {(["agent", "workflow"] as const).map((kind) => {
-        const of = targets.filter((t) => t.kind === kind);
-        return (
-          of.length > 0 && (
-            <optgroup key={kind} label={kind === "agent" ? "Agents" : "Workflows"}>
-              {of.map((t) => (
-                <option key={targetValue(t)} value={targetValue(t)}>
-                  {t.name}
-                </option>
-              ))}
-            </optgroup>
-          )
-        );
-      })}
-    </>
-  );
-}
+/** The agents and workflows a node can run, grouped by kind; those it can't, shown disabled. */
+const targetGroups = (targets: Target[]): SelectGroup[] =>
+  (["agent", "workflow"] as const).map((kind) => ({
+    label: kind === "agent" ? "Agents" : "Workflows",
+    options: targets
+      .filter((t) => t.kind === kind)
+      .map((t) => ({
+        value: targetValue(t),
+        label: t.name,
+        disabled: !!t.unavailable,
+        badge: t.unavailable,
+      })),
+  }));
 
 /** The graph being edited: the canvas, a picker for adding nodes, and an editable inspector. */
 export function GraphEditor({
@@ -56,7 +48,7 @@ export function GraphEditor({
 }: {
   draft: Draft;
   onChange: (draft: Draft) => void;
-  /** What nodes can run: the user's agents, and their workflows other than this one. */
+  /** What nodes can run: the user's agents and workflows, with why some workflows can't. */
   targets: Target[] | undefined;
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -64,7 +56,7 @@ export function GraphEditor({
 
   const onAdd = () => {
     const target = targets?.find((t) => targetValue(t) === adding);
-    if (!target) return;
+    if (!target || target.unavailable) return;
     const next = addNode(draft, target);
     onChange(next);
     setSelection({ type: "node", key: next.nodes.at(-1)!.key });
@@ -83,17 +75,18 @@ export function GraphEditor({
         <label htmlFor="add-node" className="text-sm font-medium">
           Add node
         </label>
-        <select
+        <Select
           id="add-node"
-          className={cn(selectClass, "w-auto min-w-56")}
+          className="min-w-56"
           value={adding}
-          onChange={(e) => setAdding(e.target.value)}
-        >
-          <option value="" disabled>
-            {targets?.length === 0 ? "Nothing to add yet" : "Choose an agent or workflow…"}
-          </option>
-          <TargetOptions targets={targets ?? []} />
-        </select>
+          onChange={setAdding}
+          groups={targetGroups(targets ?? [])}
+          placeholder={
+            targets?.every((t) => t.unavailable)
+              ? "Nothing to add yet"
+              : "Choose an agent or workflow…"
+          }
+        />
         <Button type="button" size="sm" variant="outline" onClick={onAdd} disabled={!adding}>
           <Plus />
           Add
@@ -242,40 +235,48 @@ function NodeControls({
     [nodes, edges, node.key],
   );
   const current = targetValue({ kind: node.kind, id: node.target_id });
+  // Whether its latest version would make this workflow contain itself, as far as the list says.
+  const listed = targets.find((t) => targetValue(t) === current);
+  const loop = listed?.version_id === node.latest_version_id ? listed.unavailable : undefined;
   return (
     <div className="flex flex-col gap-3 border-t pt-3">
       <div className="flex flex-col gap-1">
         <label htmlFor="node-target" className="text-xs font-medium">
           Runs
         </label>
-        <select
+        <Select
           id="node-target"
-          className={selectClass}
           value={current}
-          onChange={(e) => {
-            const target = targets.find((t) => targetValue(t) === e.target.value);
-            if (target) onChange(retarget(draft, node.key, target));
+          onChange={(value) => {
+            const target = targets.find((t) => targetValue(t) === value);
+            if (target && !target.unavailable) onChange(retarget(draft, node.key, target));
           }}
-        >
-          {/* What it runs may have been deleted since, or be this workflow's own older version. */}
-          {!targets.some((t) => targetValue(t) === current) && (
-            <option value={current} disabled>
-              {node.name}
-            </option>
-          )}
-          <TargetOptions targets={targets} />
-        </select>
+          groups={targetGroups(targets)}
+          // What it runs may have been deleted since.
+          placeholder={node.name}
+        />
       </div>
       {node.latest_version !== null && node.latest_version > node.version && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => onChange(updateToLatest(draft, node.key))}
-        >
-          <ArrowUpCircle />
-          Update to v{node.latest_version}
-        </Button>
+        <div className="flex flex-col gap-1">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!!loop}
+            aria-describedby={loop ? "node-update-refusal" : undefined}
+            onClick={() => onChange(updateToLatest(draft, node.key))}
+          >
+            <ArrowUpCircle />
+            Update to v{node.latest_version}
+          </Button>
+          {loop && (
+            <span id="node-update-refusal" className="text-muted-foreground text-xs">
+              {loop === "Current workflow"
+                ? "Can't update: this node runs this workflow itself."
+                : `Can't update: v${node.latest_version} runs this workflow, which would make a loop.`}
+            </span>
+          )}
+        </div>
       )}
       <div className="flex flex-col gap-1">
         <label htmlFor="node-connect" className="text-xs font-medium">

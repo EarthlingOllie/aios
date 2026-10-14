@@ -283,9 +283,16 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
       workflows.data && [
         ...agents.data.map((a) => ({ kind: "agent" as const, ...pick(a) })),
         // A workflow can't contain itself, even through another workflow.
-        ...workflows.data
-          .filter((w) => id === undefined || (w.id !== id && !w.contains.includes(id)))
-          .map((w) => ({ kind: "workflow" as const, ...pick(w) })),
+        ...workflows.data.map((w) => ({
+          kind: "workflow" as const,
+          ...pick(w),
+          unavailable:
+            w.id === id
+              ? ("Current workflow" as const)
+              : id !== undefined && w.contains.includes(id)
+                ? ("Runs this workflow" as const)
+                : undefined,
+        })),
       ],
     [agents.data, workflows.data, id],
   );
