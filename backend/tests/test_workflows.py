@@ -47,8 +47,21 @@ def test_validate_graph():
         validate_graph(["a"], [("a", "b")])
     with pytest.raises(GraphError, match="itself"):
         validate_graph(["a"], [("a", "a")])
-    with pytest.raises(GraphError, match="cycle through: b, c"):
+    with pytest.raises(GraphError, match="cycle: b → c → b$"):
         validate_graph(["a", "b", "c"], [("a", "b"), ("b", "c"), ("c", "b")])
+
+
+def test_validate_graph_reports_only_nodes_on_a_cycle() -> None:
+    # d is downstream of the cycle, so it never runs out of incoming edges, but isn't on it.
+    with pytest.raises(GraphError, match="cycle: b → c → b$"):
+        validate_graph(["a", "b", "c", "d"], [("b", "c"), ("c", "b"), ("c", "d")])
+    with pytest.raises(GraphError, match="cycle: c → b → c$"):
+        validate_graph(["d", "c", "b"], [("b", "c"), ("c", "b"), ("c", "d")])
+    # Two disjoint cycles: one concrete cycle is named, not a mix of both.
+    with pytest.raises(GraphError, match="cycle: a → b → a$"):
+        validate_graph(["a", "b", "x", "y"], [("a", "b"), ("b", "a"), ("x", "y"), ("y", "x")])
+    with pytest.raises(GraphError, match="cycle: a → b → c → a$"):
+        validate_graph(["a", "b", "c", "e"], [("a", "b"), ("b", "c"), ("c", "a"), ("e", "a")])
 
 
 def test_workflow_graphs_agents_and_is_versioned(api):

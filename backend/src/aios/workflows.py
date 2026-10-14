@@ -37,7 +37,7 @@ def validate_graph(keys: Sequence[str], edges: Sequence[tuple[str, str]]) -> Non
         if source == target:
             raise GraphError(f"Node {source!r} can't lead to itself")
         successors[source].append(target)
-    # Kahn's algorithm: whatever never runs out of incoming edges is on a cycle.
+    # Kahn's algorithm: whatever never runs out of incoming edges is on or downstream of a cycle.
     incoming = {key: 0 for key in keys}
     for _, target in edges:
         incoming[target] += 1
@@ -51,5 +51,11 @@ def validate_graph(keys: Sequence[str], edges: Sequence[tuple[str, str]]) -> Non
             if incoming[target] == 0:
                 ready.append(target)
     if seen != len(keys):
-        cycle = sorted(key for key, n in incoming.items() if n > 0)
-        raise GraphError(f"The graph has a cycle through: {', '.join(cycle)}")
+        # Each leftover node still has a leftover predecessor, so walking back through
+        # them from any one must come round to a node already visited: that's a cycle.
+        back = {target: source for source, target in edges if incoming[source] and incoming[target]}
+        path = [next(key for key in keys if incoming[key])]
+        while path[-1] not in path[:-1]:
+            path.append(back[path[-1]])
+        cycle = path[path.index(path[-1]) :][::-1]
+        raise GraphError(f"The graph has a cycle: {' → '.join(cycle)}")
