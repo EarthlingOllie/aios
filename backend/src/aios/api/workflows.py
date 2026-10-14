@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios.api.skills import unique_name
 from aios.auth import CurrentUser
@@ -195,6 +195,29 @@ def resolve_graph(
     return [NodeSpec(n.key, n.kind, n.version_id) for n in body.nodes], edges
 
 
+def load_version(db: Session, version_id: int) -> WorkflowVersion:
+    """A version with everything `version_out` reads, in a fixed number of queries however many
+    nodes it has."""
+    # Eager loads skip what's already loaded, as rows are after a save, so start from a clean
+    # slate. (Not populate_existing: a row reached twice, like a pinned version that is also its
+    # agent's current one, would be reset the second time and lazy-load again.)
+    db.expire_all()
+    nodes = selectinload(WorkflowVersion.nodes)
+    return db.scalars(
+        select(WorkflowVersion)
+        .where(WorkflowVersion.id == version_id)
+        .options(
+            nodes.selectinload(WorkflowNode.agent_version)
+            .selectinload(AgentVersion.agent)
+            .selectinload(Agent.current_version),
+            nodes.selectinload(WorkflowNode.subworkflow_version)
+            .selectinload(WorkflowVersion.workflow)
+            .selectinload(Workflow.current_version),
+            selectinload(WorkflowVersion.edges),
+        )
+    ).one()
+
+
 def node_out(node: WorkflowNode) -> WorkflowNodeOut:
     if node.kind == WorkflowNodeKind.agent:
         pinned: Any = node.agent_version
@@ -225,14 +248,14 @@ def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
     )
 
 
-def workflow_out(workflow: Workflow) -> WorkflowOut:
+def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
     return WorkflowOut(
         id=workflow.id,
         name=workflow.name,
         description=workflow.description,
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
-        current_version=version_out(workflow.current_version),
+        current_version=version_out(load_version(db, workflow.current_version_id)),
     )
 
 
@@ -293,12 +316,12 @@ def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
             db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
         db.commit()
-    return workflow_out(workflow)
+    return workflow_out(db, workflow)
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowOut)
 def get_workflow(workflow_id: DbId, user: CurrentUser, db: DB):
-    return workflow_out(get_owned_workflow(db, user.id, workflow_id))
+    return workflow_out(db, get_owned_workflow(db, user.id, workflow_id))
 
 
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
@@ -313,7 +336,7 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
             db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
         db.commit()
-    return workflow_out(workflow)
+    return workflow_out(db, workflow)
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -355,7 +378,7 @@ def list_workflow_versions(workflow_id: DbId, user: CurrentUser, db: DB):
 @router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
 def get_workflow_version_detail(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
     workflow = get_owned_workflow(db, user.id, workflow_id)
-    return version_out(get_workflow_version(db, workflow, number))
+    return version_out(load_version(db, get_workflow_version(db, workflow, number).id))
 
 
 @router.post("/workflows/{workflow_id}/versions/{number}/restore", response_model=WorkflowOut)
@@ -382,4 +405,4 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
         user_id=user.id,
     )
     db.commit()
-    return workflow_out(workflow)
+    return workflow_out(db, workflow)

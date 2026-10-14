@@ -1,5 +1,9 @@
-import pytest
+from contextlib import contextmanager
 
+import pytest
+from sqlalchemy import event
+
+from aios.db import engine
 from aios.workflows import GraphError, validate_graph
 
 
@@ -290,3 +294,45 @@ def test_invalid_workflows_are_rejected(api, db):
     finally:
         db.delete(other)
         db.commit()
+
+
+@contextmanager
+def count_queries():
+    statements = []
+
+    def record(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+
+def test_workflow_responses_take_a_fixed_number_of_queries(api):
+    """Loading a graph for a response doesn't cost queries per node."""
+    agents = [make_agent(api, f"agent {i}") for i in range(15)]
+    subs = [make_workflow(api, f"sub {i}") for i in range(15)]
+
+    def query_counts(n: int) -> dict[str, int]:
+        nodes = [agent_node(f"a{i}", a) for i, a in enumerate(agents[: n // 2])]
+        nodes += [workflow_node(f"w{i}", w) for i, w in enumerate(subs[: n - n // 2])]
+        with count_queries() as create:
+            wf = api.post("/api/workflows", json=workflow_body(f"wf {n}", nodes)).json()["id"]
+        requests = {
+            "update": lambda: api.put(
+                f"/api/workflows/{wf}", json=workflow_body(f"wf {n}", nodes[:-1])
+            ),
+            "get": lambda: api.get(f"/api/workflows/{wf}"),
+            "version": lambda: api.get(f"/api/workflows/{wf}/versions/1"),
+            "restore": lambda: api.post(f"/api/workflows/{wf}/versions/1/restore"),
+        }
+        counts = {"create": len(create)}
+        for name, request in requests.items():
+            with count_queries() as statements:
+                assert request().status_code == 200
+            counts[name] = len(statements)
+        return counts
+
+    assert query_counts(3) == query_counts(30)
