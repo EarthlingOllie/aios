@@ -3,7 +3,6 @@ import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import {
   ArrowUpCircle,
   CalendarClock,
-  History,
   MessageSquare,
   Pencil,
   Play,
@@ -27,7 +26,12 @@ import { Input } from "@/components/ui/input";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { TargetSchedules } from "@/components/schedules";
 import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
-import { CompareVersions, VersionBadge, VersionHistory } from "@/components/versions";
+import {
+  CompareVersions,
+  RestoreButton,
+  VersionBadge,
+  VersionHistory,
+} from "@/components/versions";
 import {
   api,
   describeError,
@@ -319,6 +323,7 @@ export function AgentDetail() {
       <Section title="Version history">
         <VersionHistory
           versions={versions.data}
+          error={versions.error}
           current={current.version}
           href={(v) => `/agents/${id}/versions/${v}`}
           detail={(v) => {
@@ -392,14 +397,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
-      actions={
-        !isCurrent && (
-          <Button size="sm" variant="outline" onClick={onRestore}>
-            <History />
-            Restore this version
-          </Button>
-        )
-      }
+      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <Section title="Skills">
@@ -420,6 +418,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
       <Section title="Changes to the instructions">
         <CompareVersions
           versions={older}
+          error={versions.error}
           base={baseVersion}
           onBaseChange={setBase}
           before={before.data?.instructions}

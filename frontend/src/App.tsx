@@ -37,7 +37,14 @@ import {
   SkillVersionPage,
 } from "@/pages/Skills";
 import { StubPage } from "@/pages/Stub";
-import { WorkflowDetail, WorkflowsIndex, WorkflowsSection } from "@/pages/Workflows";
+import { WorkflowRunPage } from "@/pages/WorkflowRun";
+import {
+  WorkflowDetail,
+  WorkflowEditorPage,
+  WorkflowsIndex,
+  WorkflowsSection,
+  WorkflowVersionPage,
+} from "@/pages/Workflows";
 
 type AuthState =
   | { status: "loading" }
@@ -105,7 +112,11 @@ export default function App() {
         </Route>
         <Route path="workflows" element={<WorkflowsSection />}>
           <Route index element={<WorkflowsIndex />} />
+          <Route path="new" element={<WorkflowEditorPage />} />
           <Route path=":workflowId" element={<WorkflowDetail />} />
+          <Route path=":workflowId/edit" element={<WorkflowEditorPage />} />
+          <Route path=":workflowId/runs/:runId" element={<WorkflowRunPage />} />
+          <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
         {navItems

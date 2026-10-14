@@ -1,7 +1,10 @@
+import { useRef, useState } from "react";
 import { Link } from "react-router";
+import { History } from "lucide-react";
 
 import { formatDate } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { diffLines } from "@/lib/diff";
 import { cn } from "@/lib/utils";
 
@@ -13,17 +16,45 @@ export function VersionBadge({ version, className }: { version: number; classNam
   );
 }
 
+/** "Restore this version", disabled while `onRestore` runs so a double click restores once. */
+export function RestoreButton({ onRestore }: { onRestore: () => Promise<void> }) {
+  const [restoring, setRestoring] = useState(false);
+  // State only updates on the next render; this also stops a click that lands before then.
+  const inFlight = useRef(false);
+  async function onClick() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setRestoring(true);
+    try {
+      await onRestore();
+    } finally {
+      inFlight.current = false;
+      setRestoring(false);
+    }
+  }
+  return (
+    <Button size="sm" variant="outline" onClick={onClick} disabled={restoring}>
+      <History />
+      {restoring ? "Restoring…" : "Restore this version"}
+    </Button>
+  );
+}
+
 export function VersionHistory({
   versions,
+  error,
   current,
   href,
   detail,
 }: {
   versions: { version: number; note: string | null; created_at: string }[] | undefined;
+  /** Why the versions couldn't be loaded, if they couldn't. */
+  error?: string;
   current: number;
   href: (version: number) => string;
   detail?: (version: number) => string | undefined;
 }) {
+  if (error) return <p className="text-destructive text-sm">{error}</p>;
   if (!versions) return null;
   return (
     <ol className="divide-y rounded-md border">
@@ -78,17 +109,21 @@ export function TextDiff({ before, after }: { before: string; after: string }) {
 /** "Compare with" picker plus the diff; `versions` are the candidate base versions. */
 export function CompareVersions({
   versions,
+  error,
   base,
   onBaseChange,
   before,
   after,
 }: {
   versions: number[];
+  /** Why the versions couldn't be loaded, if they couldn't. */
+  error?: string;
   base: number | undefined;
   onBaseChange: (version: number) => void;
   before: string | undefined;
   after: string;
 }) {
+  if (error) return <p className="text-destructive text-sm">{error}</p>;
   if (versions.length === 0) {
     return <p className="text-muted-foreground text-sm">This is the first version.</p>;
   }

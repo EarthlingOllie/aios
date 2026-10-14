@@ -1,3 +1,4 @@
+import json
 import threading
 from contextlib import contextmanager
 
@@ -191,8 +192,12 @@ def test_workflows_nest_as_subgraphs(api):
     assert api.delete(f"/api/workflows/{inner['id']}").status_code == 204
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
     assert api.get("/api/workflows").json() == []
-    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions/1"):
+    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions"):
         assert api.get(url).status_code == 404
+    # Its versions are still there to read, though: past runs pin them, and a run's
+    # subworkflow is opened from the version it ran.
+    old = api.get(f"/api/workflows/{inner['id']}/versions/1").json()
+    assert [n["key"] for n in old["nodes"]] == ["only"]
     assert api.delete(f"/api/workflows/{outer['id']}").status_code == 404
 
 
@@ -226,6 +231,29 @@ def test_a_workflow_cant_contain_itself_through_other_workflows(api):
         f"/api/workflows/{a['id']}", json=workflow_body("a", [workflow_node("run_b", resp.json())])
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_workflow_list_says_what_each_contains(api):
+    """`contains` is what saving another workflow with a node running this one's current version
+    would be checked against: the workflows whose versions it pins, at any depth."""
+    agent = make_agent(api, "solo")
+    a = make_workflow(api, "a", [agent_node("only", agent)])
+    b = make_workflow(api, "b", [workflow_node("run_a", a)])
+    c = make_workflow(api, "c", [workflow_node("run_b", b)])
+    make_workflow(api, "d", [workflow_node("b", b), workflow_node("c", c)])
+
+    def contains() -> dict[str, list[str]]:
+        listed = api.get("/api/workflows").json()
+        names = {w["id"]: w["name"] for w in listed}
+        return {w["name"]: sorted(names[i] for i in w["contains"]) for w in listed}
+
+    assert contains() == {"a": [], "b": ["a"], "c": ["a", "b"], "d": ["a", "b", "c"]}
+    # b's new version runs only the agent, but c and d still pin its old one, which runs a.
+    resp = api.put(f"/api/workflows/{b['id']}", json=workflow_body("b", [agent_node("x", agent)]))
+    assert resp.status_code == 200
+    assert contains() == {"a": [], "b": [], "c": ["a", "b"], "d": ["a", "b", "c"]}
+    resp = api.put(f"/api/workflows/{a['id']}", json=workflow_body("a", [workflow_node("c", c)]))
+    assert resp.status_code == 422
 
 
 def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
@@ -340,6 +368,7 @@ def test_workflow_responses_take_a_fixed_number_of_queries(api):
                 f"/api/workflows/{wf}", json=workflow_body(f"wf {n}", nodes[:-1])
             ),
             "get": lambda: api.get(f"/api/workflows/{wf}"),
+            "list": lambda: api.get("/api/workflows"),
             "version": lambda: api.get(f"/api/workflows/{wf}/versions/1"),
             "restore": lambda: api.post(f"/api/workflows/{wf}/versions/1/restore"),
         }
@@ -543,3 +572,148 @@ def test_saves_of_workflows_that_run_each_other_lock_in_one_order(api, user):
 
     saver.join(timeout=10)
     assert result["resp"].status_code == 200
+
+
+def test_layout_is_saved_with_the_workflow_but_not_versioned(api):
+    a = make_agent(api, "layout-a")
+    b = make_agent(api, "layout-b")
+    nodes = [agent_node("a", a), agent_node("b", b)]
+    layout = {"a": {"x": 0, "y": 0}, "b": {"x": 120.5, "y": -40}}
+    wf = make_workflow(api, "laid out", nodes, [("a", "b")])
+    assert wf["layout"] == {}
+
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes, [("a", "b")], layout=layout),
+    )
+    assert resp.status_code == 200, resp.text
+    # Moving nodes is like renaming: it changes the workflow, not its graph.
+    assert resp.json()["current_version"]["version"] == 1
+    assert resp.json()["layout"] == layout
+    assert api.get(f"/api/workflows/{wf['id']}").json()["layout"] == layout
+
+    # Leaving the layout out keeps it, but positions of nodes no longer in the graph are dropped,
+    # whether they were saved before or sent now.
+    resp = api.put(
+        f"/api/workflows/{wf['id']}", json=workflow_body("laid out", nodes, [("a", "b")])
+    )
+    assert resp.json()["layout"] == layout
+    resp = api.put(f"/api/workflows/{wf['id']}", json=workflow_body("laid out", nodes[:1]))
+    assert resp.json()["current_version"]["version"] == 2
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes[:1], layout=layout | {"gone": {"x": 1, "y": 1}}),
+    )
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+
+    # Restoring a version without b drops b's position too.
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes, [("a", "b")], layout=layout),
+    )
+    assert (resp.json()["current_version"]["version"], resp.json()["layout"]) == (3, layout)
+    resp = api.post(f"/api/workflows/{wf['id']}/versions/2/restore")
+    assert resp.json()["current_version"]["version"] == 4
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+
+
+def test_layout_on_create_and_invalid_positions(api):
+    a = make_agent(api, "layout-c")
+    resp = api.post(
+        "/api/workflows",
+        json=workflow_body("created", [agent_node("a", a)], layout={"a": {"x": 5, "y": 6}}),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["layout"] == {"a": {"x": 5, "y": 6}}
+    body = json.dumps(workflow_body("bad", [agent_node("a", a)], layout={"a": {"x": 0, "y": 0}}))
+    # 1e309 is JSON for a number that only fits a float as infinity.
+    for bad in ['{"x": 1}', '{"x": "inf", "y": 0}', '{"x": 1e309, "y": 0}']:
+        resp = api.post(
+            "/api/workflows",
+            content=body.replace('{"x": 0, "y": 0}', bad),
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 422, bad
+
+
+def test_agent_summaries_carry_the_current_version_id(api):
+    agent = make_agent(api, "pinnable")
+    [summary] = [a for a in api.get("/api/agents").json() if a["id"] == agent["id"]]
+    assert summary["version_id"] == agent["current_version"]["id"]
+
+
+def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
+    a = make_agent(api, "layout-race-a")
+    b = make_agent(api, "layout-race-b")
+    nodes = [agent_node("a", a), agent_node("b", b)]
+    layout = {"a": {"x": 0, "y": 0}, "b": {"x": 1, "y": 1}}
+    wf = make_workflow(api, "racy layout", nodes)
+    api.put(f"/api/workflows/{wf['id']}", json=workflow_body("racy layout", nodes, layout=layout))
+
+    with SessionLocal() as session:
+        # A save that has locked the workflow and moved node a, but not committed yet.
+        assert lock_live(session, Workflow, [wf["id"]])
+        session.get(Workflow, wf["id"]).layout = layout | {"a": {"x": 50, "y": 50}}
+        body = workflow_body("racy layout", nodes[:1])
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{wf['id']}", json=body))
+        assert saver.is_alive(), "save should block on the row lock"
+        session.commit()
+
+    saver.join(timeout=10)
+    # The waiting save prunes the layout it finds once locked, not the one it read before.
+    assert result["resp"].json()["layout"] == {"a": {"x": 50, "y": 50}}
+
+
+def test_a_save_based_on_an_older_version_is_refused(api):
+    a = make_agent(api, "stale-a")
+    b = make_agent(api, "stale-b")
+    wf = make_workflow(api, "stale", [agent_node("a", a)])
+    url = f"/api/workflows/{wf['id']}"
+    # Another tab saves v2 while this one is still editing v1.
+    resp = api.put(url, json=workflow_body("stale", [agent_node("b", b)], base_version=1))
+    assert resp.json()["current_version"]["version"] == 2
+
+    resp = api.put(url, json=workflow_body("stale", [agent_node("a", a)], base_version=1))
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "This workflow has changed since you started editing (now v2). Reload to see the changes."
+    )
+    assert [n["key"] for n in api.get(url).json()["current_version"]["nodes"]] == ["b"]
+
+    # Without a base version the save goes ahead as before.
+    resp = api.put(url, json=workflow_body("stale", [agent_node("a", a)]))
+    assert resp.json()["current_version"]["version"] == 3
+
+
+def test_a_stale_save_is_refused_as_stale_even_if_its_graph_is_now_invalid(api):
+    a = make_agent(api, "stale-invalid")
+    sub = make_workflow(api, "stale-sub", [agent_node("a", a)])
+    wf = make_workflow(api, "stale-outer", [workflow_node("s", sub)])
+    url = f"/api/workflows/{wf['id']}"
+    # Another tab drops the subworkflow and deletes it while this one is still editing v1.
+    api.put(url, json=workflow_body("stale-outer", [agent_node("a", a)], base_version=1))
+    assert api.delete(f"/api/workflows/{sub['id']}").status_code == 204
+
+    nodes = [workflow_node("s", sub), agent_node("a", a)]
+    resp = api.put(url, json=workflow_body("stale-outer", nodes, base_version=1))
+    assert resp.status_code == 409
+    assert "(now v2)" in resp.json()["detail"]
+
+
+def test_the_base_version_is_checked_once_locked(api, user):
+    agent = make_agent(api, "Solo")
+    wf = make_workflow(api, "Flow", [agent_node("a", agent)])
+
+    with SessionLocal() as session:
+        # A save of v2 that has locked the workflow, but not committed yet.
+        save = held_save(session, user, wf["id"], [agent_node("b", agent)])
+        body = workflow_body("Flow", [agent_node("c", agent)], base_version=1)
+        saver, result = run_in_thread(lambda: api.put(f"/api/workflows/{wf['id']}", json=body))
+        assert saver.is_alive(), "save should block on the row lock"
+        save()
+        session.commit()
+
+    saver.join(timeout=10)
+    assert result["resp"].status_code == 409
+    assert "(now v2)" in result["resp"].json()["detail"]

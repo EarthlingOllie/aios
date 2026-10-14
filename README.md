@@ -35,16 +35,22 @@ the model's behaviour:
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
 
-**Workflows** graph agents together, and can run other workflows as subgraphs. Only their
-definition exists so far (`/api/workflows`; the UI lists them and shows their steps and
-schedules, but can't edit them): they can be built, versioned and nested, not run yet. They're versioned like agents (`workflows`,
+**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
+The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
+an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
+them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
+make a cycle before you save. Runs are started from the workflow's page; a run's page draws the
+path it took on the graph (which nodes succeeded, failed or never ran, and the edges their
+outputs went along) and, while it's going, polls to show where it is now. Clicking a node shows
+its step's input, output and conversation, and a subworkflow node opens its own graph. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
   or one workflow version by id, and edges (`workflow_edges`) between node keys. Nodes with no
   incoming edge are where the workflow starts.
-- Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming
-  and no-op saves don't. Editing an agent doesn't change any workflow: the node reports its
+- Changing the graph (nodes, edges, or which version a node pins) creates a new version; renaming,
+  moving nodes in the editor (the workflow's `layout`, positions by node key) and no-op saves
+  don't. Editing an agent doesn't change any workflow: the node reports its
   latest version, and taking it is a new workflow version. Restore works as for agents.
 - A workflow can't contain itself, directly or through other workflows at any depth: none of the
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
@@ -56,6 +62,27 @@ schedules, but can't edit them): they can be built, versioned and nested, not ru
   its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
+- A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
+  starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the `workflows`
+  queue, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`),
+  refreshing its heartbeat (`heartbeat_at`) as it goes; a run whose heartbeat has stopped (its
+  worker died) is failed when it's next read or its task comes round again, and one whose
+  worker's event loop has made no progress for `WORKFLOW_RUN_NO_PROGRESS_LIMIT` (5 minutes; stuck
+  in a blocking call) is failed by the worker itself, while a node awaiting a slow model or tool
+  call isn't. A node starts once
+  all its predecessors have succeeded, so independent branches run at the same time; start nodes
+  get the run's input, other nodes their predecessors' outputs in edge order, joined with a blank
+  line. An agent node is a new agent run of its pinned version, given its input as the user's
+  message, and outputs the final reply, so its conversation opens on the run page like any other.
+  A workflow node runs its pinned version's graph with its input, and outputs its sink nodes'
+  outputs (in node order); so does the run. Each node records a step (`workflow_run_steps`, with
+  the path of node keys down to it) when it starts and finishes, committed as it goes, so the run
+  can be watched while it's going. Once a node fails nothing else starts, and the run fails with
+  the first error. Each agent node is traced like an agent run, with the workflow, its version,
+  the run and the node's path added to the metadata.
+- Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a tool
+  that has left the library, or an agent that has since been deleted), or if it has no nodes.
+  Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the database.
 
 **Triggers** start agents and workflows without a user in the loop. Each has a kind, and the
 first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@weekly`,
@@ -82,9 +109,10 @@ does the same for its own (`/api/triggers`).
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
-api ──enqueue──▶ Redis ──▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
+api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
+                         └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
 api, worker ──▶ Postgres 17 + pgvector (agent run history: LangGraph checkpoints, `langgraph` schema)
-api ──traces──▶ Langfuse (optional, self-hosted)
+api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
 | Layer | Stack |
@@ -108,11 +136,11 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/documents.py upload/list/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
-    api/workflows.py CRUD /api/workflows, versions and restore
+    api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     scheduler.py    fires due schedules (runs in each API process)
     cron.py         cron expressions in a timezone (cronsim)
-    workflows.py    workflow graph validation (and, later, running them)
+    workflows.py    workflow graph validation, and running workflows
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -126,13 +154,13 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
-    worker.py       Celery app + ingest task
+    worker.py       Celery app + ingest and workflow run tasks
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
   Dockerfile        targets: api, worker, sandbox
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
-docker-compose.yml  db, redis, migrate, api, worker, web, sandbox
+docker-compose.yml  db, redis, migrate, api, worker, workflow-worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -165,6 +193,7 @@ uv sync --extra ingest   # drop --extra ingest if you're not running the worker
 uv run alembic upgrade head
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
+uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
 
 cd frontend
 pnpm install
@@ -172,7 +201,10 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise) and `pnpm build` (frontend).
+need the migrated database and skip otherwise) and `pnpm build && pnpm test && pnpm test:e2e`
+(frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
+need no backend. Run `pnpm exec playwright install chromium` once first, or point
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
 
 ### Dependency policy
 

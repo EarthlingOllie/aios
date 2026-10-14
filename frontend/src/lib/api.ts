@@ -137,6 +137,8 @@ export type AgentSummary = {
   name: string;
   description: string;
   version: number;
+  /** The current version's id, which a workflow node pins to run the agent. */
+  version_id: number;
   skill_count: number;
   tool_count: number;
   run_count: number;
@@ -201,6 +203,44 @@ export type Run = RunSummary & {
   instructions: string;
 };
 
+export type WorkflowNodeKind = "agent" | "workflow";
+
+/** Where the editor draws a node: its top-left corner. */
+export type NodePosition = { x: number; y: number };
+
+export type WorkflowNode = {
+  key: string;
+  kind: WorkflowNodeKind;
+  /** The agent version or workflow version the node runs. */
+  version_id: number;
+  /** The agent or workflow that version belongs to. */
+  target_id: number;
+  name: string;
+  version: number;
+  /** The agent's or workflow's current version; null if it has since been deleted. */
+  latest_version: number | null;
+  latest_version_id: number | null;
+};
+
+export type WorkflowEdge = { source: string; target: string };
+
+export type WorkflowVersionSummary = {
+  id: number;
+  version: number;
+  note: string | null;
+  created_at: string;
+  node_count: number;
+};
+
+export type WorkflowVersion = {
+  id: number;
+  version: number;
+  note: string | null;
+  created_at: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
 export type WorkflowSummary = {
   id: number;
   name: string;
@@ -209,18 +249,8 @@ export type WorkflowSummary = {
   version_id: number;
   node_count: number;
   updated_at: string;
-};
-
-export type WorkflowNode = {
-  key: string;
-  kind: "agent" | "workflow";
-  version_id: number;
-  /** The agent or workflow the pinned version belongs to. */
-  target_id: number;
-  name: string;
-  version: number;
-  latest_version: number | null;
-  latest_version_id: number | null;
+  /** The workflows its current version runs, at any depth; none of them can run this one. */
+  contains: number[];
 };
 
 export type Workflow = {
@@ -229,14 +259,61 @@ export type Workflow = {
   description: string;
   created_at: string;
   updated_at: string;
-  current_version: {
-    id: number;
-    version: number;
-    note: string | null;
-    created_at: string;
-    nodes: WorkflowNode[];
-    edges: { source: string; target: string }[];
-  };
+  current_version: WorkflowVersion;
+  /** Saved positions by node key; nodes without one are laid out automatically. */
+  layout: Record<string, NodePosition>;
+};
+
+export type WorkflowInput = {
+  name: string;
+  description: string;
+  nodes: { key: string; kind: WorkflowNodeKind; version_id: number }[];
+  edges: WorkflowEdge[];
+  /** Omitted: keep the saved layout. */
+  layout?: Record<string, NodePosition>;
+  note?: string;
+  /** The version the edit started from; a 409 if the workflow has moved on. Omitted: no check. */
+  base_version?: number;
+};
+
+export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type WorkflowRunSummary = {
+  id: number;
+  workflow_id: number;
+  workflow_version_id: number;
+  workflow_version: number;
+  status: WorkflowRunStatus;
+  input: string;
+  output: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+/** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
+export type WorkflowRunStep = {
+  id: number;
+  /** Node keys from the run's workflow down to this node. */
+  path: string[];
+  kind: WorkflowNodeKind;
+  status: "running" | "succeeded" | "failed";
+  input: string;
+  output: string | null;
+  error: string | null;
+  /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
+  agent_id: number | null;
+  agent_run_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type WorkflowRun = WorkflowRunSummary & {
+  /** The pinned version's graph. */
+  version: WorkflowVersion;
+  /** In the order they started. */
+  steps: WorkflowRunStep[];
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
@@ -362,10 +439,27 @@ export const api = {
     request<RunSummary>(`/api/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`/api/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
-
   listWorkflows: () => request<WorkflowSummary[]>("/api/workflows"),
   getWorkflow: (id: number) => request<Workflow>(`/api/workflows/${id}`),
+  createWorkflow: (body: WorkflowInput) =>
+    request<Workflow>("/api/workflows", json("POST", body)),
+  updateWorkflow: (id: number, body: WorkflowInput) =>
+    request<Workflow>(`/api/workflows/${id}`, json("PUT", body)),
   deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
+  listWorkflowVersions: (id: number) =>
+    request<WorkflowVersionSummary[]>(`/api/workflows/${id}/versions`),
+  // Also a deleted workflow's versions, which a past run's subworkflow node still pins.
+  getWorkflowVersion: (id: number, version: number) =>
+    request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`),
+  restoreWorkflowVersion: (id: number, version: number) =>
+    request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
+  listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`/api/workflows/${id}/runs`),
+  getWorkflowRun: (id: number, runId: number) =>
+    request<WorkflowRun>(`/api/workflows/${id}/runs/${runId}`),
+  createWorkflowRun: (id: number, input: string) =>
+    request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
+  deleteWorkflowRun: (id: number, runId: number) =>
+    request<void>(`/api/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
 
   listTriggers: (target?: { kind: TriggerTargetKind; id: number }) =>
     request<Trigger[]>(

@@ -32,7 +32,7 @@ from aios.models import (
     WorkflowNode,
     agent_version_skills,
 )
-from aios.runner import build_agent
+from aios.runner import build_agent, run_title, version_tools
 from aios.sandbox.sessions import (
     SandboxNotConfigured,
     manager,
@@ -44,7 +44,6 @@ from aios.tools import (
     TOOLS,
     AgentTool,
     ToolError,
-    build_tool,
     check_stored_tool,
     stored_settings,
     validate_tool,
@@ -124,6 +123,8 @@ class AgentSummary(BaseModel):
     name: str
     description: str
     version: int
+    # The current version's id, which a workflow node pins to run this agent.
+    version_id: int
     skill_count: int
     tool_count: int
     run_count: int
@@ -161,9 +162,13 @@ class RunOut(RunSummary):
     instructions: str
 
 
-def get_owned_agent(db: Session, user_id: int, agent_id: int) -> Agent:
+def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
     agent = db.get(Agent, agent_id)
-    if agent is None or agent.owner_id != user_id or agent.deleted_at is not None:
+    if (
+        agent is None
+        or agent.owner_id != user_id
+        or (agent.deleted_at is not None and not deleted_ok)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
 
@@ -327,6 +332,7 @@ def list_agents(user: CurrentUser, db: DB):
         select(
             Agent,
             AgentVersion.version,
+            AgentVersion.id,
             skill_count(AgentVersion.id),
             tool_count(AgentVersion.id),
             run_count,
@@ -341,12 +347,13 @@ def list_agents(user: CurrentUser, db: DB):
             name=a.name,
             description=a.description,
             version=version,
+            version_id=version_id,
             skill_count=skills,
             tool_count=tools,
             run_count=runs,
             updated_at=a.updated_at,
         )
-        for a, version, skills, tools, runs in rows
+        for a, version, version_id, skills, tools, runs in rows
     ]
 
 
@@ -460,7 +467,10 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
 def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
-    return version_out(get_agent_version(db, get_owned_agent(db, user.id, agent_id), number))
+    # Also once the agent is deleted: workflow versions, and their past runs, still pin its
+    # versions, as they do a deleted workflow's.
+    agent = get_owned_agent(db, user.id, agent_id, deleted_ok=True)
+    return version_out(get_agent_version(db, agent, number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
@@ -513,7 +523,7 @@ def build_version_tools(
 ) -> list[AgentTool]:
     """The version's tools, built from their stored settings; a 409 if one can't be."""
     try:
-        return [tool for t in version.tools for tool in build_tool(t.tool_key, t.config)]
+        return version_tools(version)
     except ToolError as exc:
         # E.g. the tool has since left the library, or its settings model now rejects a value.
         raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
@@ -580,16 +590,8 @@ def trace_metadata(run: AgentRun, user_id: int) -> dict[str, Any]:
         session_id=checkpoints.thread_id(run.id),
         user_id=user_id,
         tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
-        agent_id=run.agent_id,
-        agent_name=run.agent.name,
-        agent_version=version.version,
-        agent_version_id=version.id,
         agent_run_id=run.id,
-        skill_versions=[
-            {"skill_id": sv.skill_id, "name": sv.name, "version": sv.version, "id": sv.id}
-            for sv in version.skills
-        ],
-        tools=[{"key": t.tool_key, "config": t.config} for t in version.tools],
+        **tracing.agent_version_metadata(version),
     )
 
 
@@ -636,7 +638,7 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
 
 def _start_turn(run_id: int, prompt: str) -> None:
     """Title an untitled run after its first message."""
-    title = " ".join(prompt.split())[:120] or None
+    title = run_title(prompt)
     with SessionLocal() as db:
         db.execute(
             update(AgentRun)

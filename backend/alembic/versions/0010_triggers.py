@@ -4,8 +4,8 @@ Triggers start agents and workflows without a user in the loop. The first kind i
 cron expression in a timezone, polled by the API's scheduler (`aios.scheduler`). Runs record the
 trigger that started them.
 
-Revision ID: 0008
-Revises: 0007
+Revision ID: 0010
+Revises: 0009
 Create Date: 2026-10-14 21:08:23.546987
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0008"
-down_revision: str | None = "0007"
+revision: str = "0010"
+down_revision: str | None = "0009"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

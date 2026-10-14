@@ -48,6 +48,29 @@ export function useLoad<T>(fn: () => Promise<T>) {
   return { data, error, reload };
 }
 
+/** How often something that's still going (a workflow run, say) is re-read. */
+export const POLL_MS = 1000;
+
+/**
+ * While `active`, calls `reload` again `POLL_MS` after each call settles, failed or not, so one
+ * failed read doesn't stop the polling.
+ */
+export function usePoll(active: boolean, reload: () => Promise<unknown>) {
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => {
+      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
+    };
+    poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [active, reload]);
+}
+
 /** Passed to the detail routes so they can refresh the list after a change. */
 export type ListContext = { reloadList: () => Promise<void> };
 
@@ -60,7 +83,6 @@ export function MasterDetail<T extends { id: number }>({
   empty,
   renderItem,
   reloadList,
-  canCreate = true,
 }: {
   title: string;
   basePath: string;
@@ -69,8 +91,6 @@ export function MasterDetail<T extends { id: number }>({
   empty: string;
   renderItem: (item: T) => ReactNode;
   reloadList: () => Promise<void>;
-  /** Whether to offer a "New" button (linking to `${basePath}/new`). */
-  canCreate?: boolean;
 }) {
   // On small screens show either the list or the detail, not both.
   const atIndex = useMatch(basePath) !== null;
@@ -79,14 +99,12 @@ export function MasterDetail<T extends { id: number }>({
       <section className={cn("min-h-0 flex-col border-r", atIndex ? "flex" : "hidden md:flex")}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h1 className="text-base font-semibold">{title}</h1>
-          {canCreate && (
-            <Button asChild size="sm">
-              <NavLink to={`${basePath}/new`}>
-                <Plus />
-                New
-              </NavLink>
-            </Button>
-          )}
+          <Button asChild size="sm">
+            <NavLink to={`${basePath}/new`}>
+              <Plus />
+              New
+            </NavLink>
+          </Button>
         </div>
         {error && <p className="text-destructive px-4 py-2 text-sm">{error}</p>}
         <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
@@ -127,15 +145,20 @@ export function DetailPage({
   title,
   subtitle,
   actions,
+  wide,
   children,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  /** Use more of the width, e.g. for a graph. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6 md:px-8">
+    <div
+      className={cn("mx-auto flex flex-col gap-6 px-4 py-6 md:px-8", wide ? "max-w-6xl" : "max-w-3xl")}
+    >
       <header className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <h2 className="text-xl font-semibold break-words">{title}</h2>
