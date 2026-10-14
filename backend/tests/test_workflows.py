@@ -114,6 +114,36 @@ def test_workflow_graphs_agents_and_is_versioned(api):
     assert [(w["name"], w["version"], w["node_count"]) for w in listed] == [("report v2", 3, 2)]
 
 
+def test_reordering_nodes_or_edges_is_a_no_op_save(api):
+    a, b, c = (make_agent(api, name) for name in ("a", "b", "c"))
+    nodes = [agent_node("a", a), agent_node("b", b), agent_node("c", c)]
+    edges = [("a", "b"), ("a", "c"), ("b", "c")]
+    inner = make_workflow(api, "inner", nodes, edges)
+    outer = make_workflow(api, "outer", [workflow_node("sub", inner)])
+
+    def save(nodes, edges) -> dict:
+        resp = api.put(f"/api/workflows/{inner['id']}", json=workflow_body("inner", nodes, edges))
+        assert resp.status_code == 200, resp.text
+        return resp.json()["current_version"]
+
+    for reordered in (
+        save(nodes[::-1], edges),
+        save(nodes, edges[::-1]),
+        save([nodes[1], nodes[2], nodes[0]], [edges[2], edges[0], edges[1]]),
+    ):
+        # Same version, still shown in the order it was first saved in.
+        assert reordered["version"] == 1
+        assert [n["key"] for n in reordered["nodes"]] == ["a", "b", "c"]
+        assert [(e["source"], e["target"]) for e in reordered["edges"]] == edges
+
+    # So a workflow nesting it isn't told there's a newer version.
+    node = api.get(f"/api/workflows/{outer['id']}").json()["current_version"]["nodes"][0]
+    assert (node["version"], node["latest_version"]) == (1, 1)
+
+    # An actual change to the edges still creates one.
+    assert save(nodes, edges[:2])["version"] == 2
+
+
 def test_workflows_nest_as_subgraphs(api):
     agent = make_agent(api, "solo")
     inner = make_workflow(api, "inner", [agent_node("only", agent)])

@@ -203,11 +203,20 @@ def save_workflow_version(
     note: str | None,
     user_id: int,
 ) -> WorkflowVersion:
-    """`nodes` and `edges` are already validated (`aios.workflows.validate_graph`)."""
+    """`nodes` and `edges` are already validated (`aios.workflows.validate_graph`).
+
+    The hash covers the graph, not the order it was sent in: nodes are sorted by key (unique
+    within a graph) and edges by (source, target), so listing them differently is a no-op save.
+    The stored `position`s keep the order of the version that was created; a pure reorder
+    creates no version, so it isn't stored either.
+    """
     digest = config_hash(
         {
-            "nodes": [{"key": n.key, "kind": n.kind, "version_id": n.version_id} for n in nodes],
-            "edges": [list(e) for e in edges],
+            "nodes": sorted(
+                ({"key": n.key, "kind": n.kind, "version_id": n.version_id} for n in nodes),
+                key=lambda n: n["key"],
+            ),
+            "edges": sorted([source, target] for source, target in edges),
         }
     )
     db.flush()  # assigns workflow.id for a new workflow
