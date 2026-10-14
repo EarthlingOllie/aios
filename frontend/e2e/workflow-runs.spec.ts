@@ -178,8 +178,15 @@ test("lists a workflow's runs and deletes one", async ({ page }) => {
   await expect(runs.getByRole("listitem").first()).toContainText("Failed");
   await runs.getByRole("link", { name: /Second run/ }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}/runs/${second.id}`);
+  // The workflows list shows nothing about runs, so deleting one leaves it be.
+  const listReads: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "GET" && new URL(r.url()).pathname === "/api/workflows")
+      listReads.push(r.url());
+  });
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete run" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}`);
   await expect(page.getByRole("list", { name: "Runs" }).getByRole("listitem")).toHaveCount(1);
+  expect(listReads).toEqual([]);
 });

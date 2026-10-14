@@ -21,9 +21,9 @@ import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versio
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
+import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
-import { RunStatusBadge } from "@/pages/WorkflowRun";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 

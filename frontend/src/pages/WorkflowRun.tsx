@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { ChevronRight, MessageSquare, Trash2, Workflow as WorkflowIcon } from "lucide-react";
 
 import {
@@ -9,49 +9,25 @@ import {
   Placeholder,
   Section,
   useLoad,
-  type ListContext,
 } from "@/components/crud";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { VersionBadge } from "@/components/versions";
-import { StateBadge, WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
+import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector } from "@/components/workflow/inspector";
+import { RunStatusBadge, StateBadge } from "@/components/workflow/status";
 import {
   api,
   describeError,
   type NodePosition,
   type WorkflowNode,
   type WorkflowRun,
-  type WorkflowRunStatus,
   type WorkflowRunStep,
   type WorkflowVersion,
 } from "@/lib/api";
 import { edgeStates, isActive, nodeStates, stepAt } from "@/lib/runs";
-import { cn } from "@/lib/utils";
 
 /** How often a run that's still going is re-read. */
 const POLL_MS = 1000;
-
-const runLabel: Record<WorkflowRunStatus, string> = {
-  queued: "Queued",
-  running: "Running",
-  succeeded: "Succeeded",
-  failed: "Failed",
-};
-
-export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus } & object) {
-  return (
-    <Badge
-      variant={
-        status === "failed" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
-      }
-      className={cn(status === "running" && "border-sky-500 text-sky-700 dark:text-sky-300")}
-      {...props}
-    >
-      {runLabel[status]}
-    </Badge>
-  );
-}
 
 function duration(from: string, to: string | null) {
   const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
@@ -79,7 +55,6 @@ export function WorkflowRunPage() {
 
 function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const navigate = useNavigate();
-  const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const run = useLoad(useCallback(() => api.getWorkflowRun(id, runId), [id, runId]));
   // The subworkflows opened below the run's workflow, outermost first.
@@ -133,7 +108,6 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     if (!window.confirm("Delete this run, and the agent conversations it started?")) return;
     try {
       await api.deleteWorkflowRun(id, runId);
-      await reloadList();
       navigate(`/workflows/${id}`);
     } catch (err) {
       setError(describeError(err));
