@@ -291,11 +291,6 @@ export class FakeApi {
       const rest = m[2] ?? "";
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
-        if (this.live().some((w) => w.name === body.name && w !== workflow)) {
-          return fail(409, "You already have a workflow with that name");
-        }
-        const error = this.check(body, workflow);
-        if (error) return fail(422, error);
         const now = workflow.versions.length;
         if (body.base_version != null && body.base_version !== now) {
           return fail(
@@ -303,6 +298,11 @@ export class FakeApi {
             `This workflow has changed since you started editing (now v${now}). Reload to see the changes.`,
           );
         }
+        if (this.live().some((w) => w.name === body.name && w !== workflow)) {
+          return fail(409, "You already have a workflow with that name");
+        }
+        const error = this.check(body, workflow);
+        if (error) return fail(422, error);
         workflow.name = body.name;
         workflow.description = body.description ?? "";
         this.applyLayout(workflow, body);
