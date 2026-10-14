@@ -3,6 +3,7 @@ import asyncio
 import pytest
 import test_agents
 from fake_model import model, replies, use_model
+from sqlalchemy import delete
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
     agent_node,
@@ -17,6 +18,7 @@ from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.config import get_settings
+from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStep
 from aios.tools import TOOLS
@@ -613,3 +615,54 @@ def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued,
         (["two"], "failed"),
     ]
     assert out["steps"][1]["error"] == out["error"] and out["steps"][1]["finished_at"]
+
+
+def delete_run(run_id: int) -> None:
+    with SessionLocal() as db:
+        db.execute(delete(WorkflowRun).where(WorkflowRun.id == run_id))
+        db.commit()
+
+
+def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, monkeypatch):
+    a = agents(api, "start", "left", "right", "after")
+    wf = make_workflow(
+        api,
+        "doomed",
+        [
+            agent_node("start", a["start"]),
+            agent_node("left", a["left"]),
+            agent_node("right", a["right"]),
+            agent_node("left2", a["after"]),
+            agent_node("right2", a["after"]),
+        ],
+        [("start", "left"), ("start", "right"), ("left", "left2"), ("right", "right2")],
+    )
+    started = start(api, wf)
+    url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
+    tried = []
+    start_step = workflows._start_step
+
+    def trying(run_id, path, node, text):
+        tried.append("/".join(path))
+        return start_step(run_id, path, node, text)
+
+    monkeypatch.setattr(workflows, "_start_step", trying)
+
+    async def script(messages, info):
+        name = messages[0].content
+        if name == "left":
+            # As deleting it does, less its agent runs: the API's delete would wait for this
+            # turn to end before it returned (`checkpoints.delete_threads`).
+            await asyncio.to_thread(delete_run, started["id"])
+        if name == "right":
+            # Still going once the other branch has found the run gone.
+            await asyncio.sleep(0.5)
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    # The other branch's next node isn't tried once the first found the run gone.
+    assert tried == ["start", "left", "right", "left2"]
+    assert api.get(url).status_code == 404
+    # Not logged as a failure: the user deleted it.
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

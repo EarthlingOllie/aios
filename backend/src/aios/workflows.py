@@ -25,6 +25,7 @@ from typing import Any
 from anyio import CancelScope
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from aios import checkpoints, tracing
@@ -230,7 +231,7 @@ def join_outputs(outputs: Sequence[str]) -> str:
 
 
 class StepFailed(Exception):
-    """A node failed, and its step has been recorded as failed with `error`."""
+    """A node failed, and its step (if it got one) has been recorded as failed with `error`."""
 
     def __init__(self, error: str) -> None:
         super().__init__(error)
@@ -366,7 +367,7 @@ def _start_step(
 
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
-    agent run, or wins and this fails, leaving no agent run behind.
+    agent run, or wins and this fails (a `RunError`), leaving no agent run behind.
     """
     with SessionLocal() as db:
         agent_run_id = None
@@ -389,7 +390,13 @@ def _start_step(
             agent_run_id=agent_run_id,
         )
         db.add(step)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            if db.get(WorkflowRun, run_id) is None:
+                raise RunError("The run has been deleted") from None
+            raise
         return step.id, agent_run_id
 
 
@@ -467,8 +474,9 @@ async def _run_agent(
 
 async def _run_node(run: RunState, node: Node, path: tuple[str, ...], text: str) -> str:
     """Run a node, recording its step; its output, or `StepFailed`."""
-    step_id, agent_run_id = await asyncio.to_thread(_start_step, run.id, path, node, text)
+    step_id = None
     try:
+        step_id, agent_run_id = await asyncio.to_thread(_start_step, run.id, path, node, text)
         if node.graph is not None:
             output = await _run_graph(run, node.graph, path, text)
         elif agent_run_id is None:
@@ -485,7 +493,9 @@ async def _run_node(run: RunState, node: Node, path: tuple[str, ...], text: str)
             error = error_text(exc)
             if run.error is None:
                 run.error, run.failed_path = error, path
-        await asyncio.to_thread(_finish_step, step_id, WorkflowStepStatus.failed, None, error)
+        # None if the step couldn't be recorded (e.g. the run has been deleted).
+        if step_id is not None:
+            await asyncio.to_thread(_finish_step, step_id, WorkflowStepStatus.failed, None, error)
         raise StepFailed(error) from exc
     await asyncio.to_thread(_finish_step, step_id, WorkflowStepStatus.succeeded, output, None)
     return output
