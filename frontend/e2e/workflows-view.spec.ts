@@ -122,9 +122,19 @@ test("clicking an edge shows what passes along it", async ({ page }) => {
   await expect(panel).toContainText("research → write");
   await expect(panel).toContainText("When research finishes, its output is passed to write");
 
+  // The selected edge stands out from the rest: drawn thicker, with its own arrowhead.
+  const path = (source: string, target: string) =>
+    edge(page, source, target).locator(".react-flow__edge-path");
+  await expect(path("research", "write")).toHaveCSS("stroke-width", "2.5px");
+  await expect(path("write", "review")).toHaveCSS("stroke-width", "1px");
+  const marker = (source: string, target: string) =>
+    path(source, target).getAttribute("marker-end");
+  expect(await marker("research", "write")).not.toEqual(await marker("write", "review"));
+
   // Clicking the empty canvas clears the selection.
   await page.locator(".react-flow__pane").click({ position: { x: 5, y: 5 } });
   await expect(panel).toContainText("Select a node or an edge");
+  await expect(path("research", "write")).toHaveCSS("stroke-width", "1px");
 });
 
 test("saved positions are used for the layout", async ({ page }) => {

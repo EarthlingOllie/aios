@@ -63,6 +63,11 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
   );
 }
 
+// A selected edge stands out as a selected node does: drawn thicker, in the foreground colour,
+// arrowhead included. (Markers are sized in stroke widths: this keeps it in proportion.)
+const selectedEdge = { stroke: "var(--foreground)", strokeWidth: 2.5 };
+const selectedMarker = { color: selectedEdge.stroke, width: 7.5, height: 7.5 };
+
 const nodeTypes = { workflowNode: NodeCard };
 const fitViewOptions = { padding: 0.2, maxZoom: 1 };
 
@@ -107,16 +112,20 @@ export function WorkflowCanvas({
   );
   const flowEdges = useMemo<Edge[]>(
     () =>
-      edges.map((e) => ({
-        id: edgeId(e),
-        source: e.source,
-        target: e.target,
-        markerEnd: { type: MarkerType.ArrowClosed },
-        selected:
+      edges.map((e) => {
+        const selected =
           selection?.type === "edge" &&
           selection.source === e.source &&
-          selection.target === e.target,
-      })),
+          selection.target === e.target;
+        return {
+          id: edgeId(e),
+          source: e.source,
+          target: e.target,
+          markerEnd: { type: MarkerType.ArrowClosed, ...(selected && selectedMarker) },
+          style: selected ? selectedEdge : undefined,
+          selected,
+        };
+      }),
     [edges, selection],
   );
 
