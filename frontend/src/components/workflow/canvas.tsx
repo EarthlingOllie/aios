@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   Background,
   Controls,
@@ -65,11 +65,27 @@ function NodeCard({ data, selected }: NodeProps<CardNode>) {
 
 // A selected edge stands out as a selected node does: drawn thicker, in the foreground colour,
 // arrowhead included. (Markers are sized in stroke widths: this keeps it in proportion.)
-const selectedEdge = { stroke: "var(--foreground)", strokeWidth: 2.5 };
-const selectedMarker = { color: selectedEdge.stroke, width: 7.5, height: 7.5 };
+const selectedEdgeStyle = { stroke: "var(--foreground)", strokeWidth: 2.5 };
+const selectedMarker = { color: selectedEdgeStyle.stroke, width: 7.5, height: 7.5 };
 
 const nodeTypes = { workflowNode: NodeCard };
 const fitViewOptions = { padding: 0.2, maxZoom: 1 };
+const proOptions = { hideAttribution: true };
+
+/** `fn` as a function that stays the same across renders but always calls the latest `fn`, so
+ * React Flow, which re-renders every node and edge when a handler changes, keeps them. */
+function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R) {
+  const latest = useRef(fn);
+  useLayoutEffect(() => {
+    latest.current = fn;
+  });
+  return useCallback((...args: A) => latest.current(...args), []);
+}
+
+/** `items` with the one whose id is `id` marked selected, reusing the rest as they are. */
+function withSelected<T extends { id: string }>(items: T[], id: string | undefined) {
+  return items.map((item) => (item.id === id ? { ...item, selected: true } : item));
+}
 
 /** A workflow version's graph, laid out left to right in the order it runs. */
 export function WorkflowCanvas({
@@ -97,37 +113,56 @@ export function WorkflowCanvas({
 
   // React Flow re-adopts (and re-renders) every node and edge it's handed as a new object, so
   // only build new ones when what they show changes, not on every render of the page around us.
-  const flowNodes = useMemo<CardNode[]>(
+  // So too for selecting: only what's selected (or deselected) is built anew.
+  const unselectedNodes = useMemo<CardNode[]>(
     () =>
       nodes.map((node) => ({
         id: node.key,
         type: "workflowNode",
         position: positions[node.key],
         data: { node, start: starts.has(node.key) },
-        selected: selection?.type === "node" && selection.key === node.key,
         draggable: false,
         connectable: false,
       })),
-    [nodes, positions, starts, selection],
+    [nodes, positions, starts],
   );
-  const flowEdges = useMemo<Edge[]>(
+  const unselectedEdges = useMemo<Edge[]>(
     () =>
-      edges.map((e) => {
-        const selected =
-          selection?.type === "edge" &&
-          selection.source === e.source &&
-          selection.target === e.target;
-        return {
-          id: edgeId(e),
-          source: e.source,
-          target: e.target,
-          markerEnd: { type: MarkerType.ArrowClosed, ...(selected && selectedMarker) },
-          style: selected ? selectedEdge : undefined,
-          selected,
-        };
-      }),
-    [edges, selection],
+      edges.map((e) => ({
+        id: edgeId(e),
+        source: e.source,
+        target: e.target,
+        markerEnd: { type: MarkerType.ArrowClosed },
+      })),
+    [edges],
   );
+  const selectedNode = selection?.type === "node" ? selection.key : undefined;
+  const selectedEdge = selection?.type === "edge" ? edgeId(selection) : undefined;
+  const flowNodes = useMemo(
+    () => withSelected(unselectedNodes, selectedNode),
+    [unselectedNodes, selectedNode],
+  );
+  const flowEdges = useMemo(
+    () =>
+      withSelected(unselectedEdges, selectedEdge).map((e) =>
+        e.selected
+          ? {
+              ...e,
+              style: { ...e.style, ...selectedEdgeStyle },
+              markerEnd: { type: MarkerType.ArrowClosed, ...selectedMarker },
+            }
+          : e,
+      ),
+    [unselectedEdges, selectedEdge],
+  );
+
+  const onNodeClick = useStableCallback((_: unknown, n: CardNode) =>
+    onSelect({ type: "node", key: n.id }),
+  );
+  const onEdgeClick = useStableCallback((_: unknown, e: Edge) =>
+    onSelect({ type: "edge", source: e.source, target: e.target }),
+  );
+  const onPaneClick = useStableCallback(() => onSelect(null));
 
   return (
     <div className={cn("relative h-[28rem] rounded-md border", className)}>
@@ -141,10 +176,10 @@ export function WorkflowCanvas({
         nodesConnectable={false}
         nodesDraggable={false}
         elementsSelectable
-        onNodeClick={(_, n) => onSelect({ type: "node", key: n.id })}
-        onEdgeClick={(_, e) => onSelect({ type: "edge", source: e.source, target: e.target })}
-        onPaneClick={() => onSelect(null)}
-        proOptions={{ hideAttribution: true }}
+        onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
+        onPaneClick={onPaneClick}
+        proOptions={proOptions}
       >
         <Background />
         <Controls showInteractive={false} />
