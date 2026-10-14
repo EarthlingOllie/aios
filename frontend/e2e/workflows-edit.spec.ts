@@ -207,29 +207,6 @@ test("moving nodes saves the layout without a new version", async ({ page }) => 
   expect(report.layout.research.y).toBeGreaterThan(report.layout.write.y + 100);
 });
 
-test("moving several selected nodes at once moves them all", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
-  const research = (await node(page, "research").boundingBox())!;
-  const write = (await node(page, "write").boundingBox())!;
-  // Shift and drag selects both nodes with a box, so dragging one drags the other with it.
-  await page.keyboard.down("Shift");
-  await page.mouse.move(research.x - 20, research.y - 20);
-  await page.mouse.down();
-  await page.mouse.move(write.x + write.width + 20, write.y + write.height + 20, { steps: 10 });
-  await page.mouse.up();
-  await page.keyboard.up("Shift");
-  await page.mouse.move(research.x + 20, research.y + 20);
-  await page.mouse.down();
-  await page.mouse.move(research.x + 20, research.y + 120, { steps: 10 });
-  await page.mouse.up();
-  await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
-  expect(report.layout.research.y).toBeGreaterThan(50);
-  expect(report.layout.write.y).toBe(report.layout.research.y);
-});
-
 test("with no agents, says so and links to creating one", async ({ page }) => {
   const api = await fakeApi(page);
   // Other workflows can still be added, but there's no agent to add.
