@@ -145,6 +145,8 @@ test("connects nodes by dragging from one handle to another", async ({ page }) =
 });
 
 test("lays the graph out again in edge order when edges change", async ({ page }) => {
+  // The longest test here: under load it runs close to the default timeout.
+  test.slow();
   const api = await fakeApi(page);
   const { researcher, writer, critic, review } = seed(api);
   api.addAgent("Editor");
@@ -193,8 +195,10 @@ test("lays the graph out again in edge order when edges change", async ({ page }
   // What's saved is that layout, so the workflow reads the same once saved.
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(page.getByRole("button", { name: "Save changes" })).toBeHidden();
   await expect(node(page, "final_edit")).toBeVisible();
-  await inOrder();
+  // The view may still be drawing the saved graph, so a node can be replaced while it's measured.
+  await expect(inOrder).toPass();
   expect(weekly.layout.final_edit.x).toBeGreaterThan(weekly.layout.review.x);
   expect(weekly.layout.publish.x).toBeGreaterThan(weekly.layout.final_edit.x);
 });
