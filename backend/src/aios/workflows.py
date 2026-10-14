@@ -251,9 +251,20 @@ class RunState:
     failed_path: tuple[str, ...] = ()
 
 
+# Why a run is failed when its task comes round again while it's running.
+WORKER_STOPPED = "The worker stopped while running this, so it couldn't finish."
+
+
 def _claim(run_id: int) -> tuple[RunState, int, str] | None:
     """Mark a queued run running; return it, its version id and its input. None if it isn't
-    queued (already started, e.g. a redelivered task, or deleted)."""
+    queued (deleted, or already started).
+
+    A run is queued once, and its task acked only when it ends, so a run found running was
+    started by a delivery whose worker died without finishing it (a hard time limit, OOM kill,
+    restart): the broker hands the task out again. That run can't go on from where it stopped,
+    so it fails, with the steps that were cut off. The broker's visibility timeout outlasts any
+    delivery's hard limit (see `aios.worker`), so this isn't a live run's duplicate.
+    """
     with SessionLocal() as db:
         row = db.execute(
             update(WorkflowRun)
@@ -262,6 +273,28 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
             .returning(WorkflowRun.workflow_version_id, WorkflowRun.input)
         ).one_or_none()
         if row is None:
+            abandoned = db.execute(
+                update(WorkflowRun)
+                .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
+                .values(
+                    status=WorkflowRunStatus.failed, error=WORKER_STOPPED, finished_at=func.now()
+                )
+                .returning(WorkflowRun.id)
+            ).one_or_none()
+            if abandoned is not None:
+                db.execute(
+                    update(WorkflowRunStep)
+                    .where(
+                        WorkflowRunStep.run_id == run_id,
+                        WorkflowRunStep.status == WorkflowStepStatus.running,
+                    )
+                    .values(
+                        status=WorkflowStepStatus.failed,
+                        error=WORKER_STOPPED,
+                        finished_at=func.now(),
+                    )
+                )
+                db.commit()
             return None
         version_id, text = row
         workflow, version = db.execute(
@@ -508,7 +541,8 @@ async def execute_run(run_id: int) -> None:
     """Run a queued workflow run to the end, recording its steps and then its result.
 
     Called by the worker (`aios.worker.run_workflow_task`). Does nothing unless the run is
-    queued, so a task delivered twice runs it once.
+    queued, so a task delivered twice runs it once; a run left running by a worker that died
+    is failed instead (see `_claim`).
     """
     claimed = await asyncio.to_thread(_claim, run_id)
     if claimed is None:

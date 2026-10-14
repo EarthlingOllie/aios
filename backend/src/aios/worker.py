@@ -50,7 +50,8 @@ def run_workflow_task(run_id: int) -> None:
     from aios.workflows import execute_run, fail_run, time_limit_error
 
     try:
-        # Only a queued run starts, so a redelivered message doesn't run it twice.
+        # Only a queued run starts, so a redelivered message doesn't run it twice; one left
+        # running by a worker that died is failed instead.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
         fail_run(run_id, time_limit_error())

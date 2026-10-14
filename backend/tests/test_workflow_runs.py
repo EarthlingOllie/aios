@@ -564,3 +564,52 @@ def test_a_run_that_takes_too_long_is_stopped(api, queued, monkeypatch):
     assert (out["status"], out["output"]) == ("failed", None)
     assert out["error"].startswith("The run took longer than")
     assert [s["path"] for s in out["steps"]] == [["slow"]]
+
+
+def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued, monkeypatch):
+    a = agents(api, "first", "second")
+    wf = make_workflow(
+        api,
+        "chain",
+        [agent_node("one", a["first"]), agent_node("two", a["second"])],
+        [("one", "two")],
+    )
+    started = start(api, wf)
+
+    class WorkerDied(BaseException):
+        """Stands in for the worker being killed: nothing gets to record what happened."""
+
+    dying = []
+    finish_step = workflows._finish_step
+
+    def finish_or_die(*args) -> None:
+        if dying:
+            raise WorkerDied
+        finish_step(*args)
+
+    async def script(messages, info):
+        if messages[0].content == "second":
+            dying.append(True)
+        yield "done"
+
+    # Killed while node two is running.
+    monkeypatch.setattr(workflows, "_finish_step", finish_or_die)
+    with use_model(model(script)), pytest.raises(WorkerDied):
+        asyncio.run(execute_run(started["id"]))
+    dying.clear()
+    url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
+    assert api.get(url).json()["status"] == "running"
+
+    # The message wasn't acked, so the task comes round again: rather than leave the run
+    # running forever, it fails it, and the step that was cut off.
+    with use_model(echo()):
+        asyncio.run(execute_run(started["id"]))
+    out = api.get(url).json()
+    assert (out["status"], out["output"]) == ("failed", None)
+    assert "worker stopped" in out["error"]
+    assert out["finished_at"]
+    assert [(s["path"], s["status"]) for s in out["steps"]] == [
+        (["one"], "succeeded"),
+        (["two"], "failed"),
+    ]
+    assert out["steps"][1]["error"] == out["error"] and out["steps"][1]["finished_at"]
