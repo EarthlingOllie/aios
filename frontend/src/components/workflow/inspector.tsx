@@ -92,17 +92,11 @@ function NodeDetails({
         )}
         <Row label="Runs">
           <span className="flex flex-wrap items-center gap-2">
-            {/* A deleted target's page is gone, so it's named without a link. In the editor the
-                link opens a new tab, so following it doesn't lose the draft. */}
+            {/* A deleted target's page is gone, so it's named without a link. */}
             {node.latest_version === null ? (
               <span className="font-medium">{node.name}</span>
             ) : (
-              <Link
-                to={href}
-                target={edit ? "_blank" : undefined}
-                rel={edit ? "noreferrer" : undefined}
-                className="font-medium hover:underline"
-              >
+              <Link to={href} className="font-medium hover:underline">
                 {node.name}
               </Link>
             )}
