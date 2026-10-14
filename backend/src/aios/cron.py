@@ -61,10 +61,8 @@ def _sim(expr: str, tz: str, after: datetime) -> CronSim:
 
 def next_runs(expr: str, tz: str, after: datetime, count: int) -> list[datetime]:
     """The next `count` times the schedule fires strictly after `after`, in UTC."""
-    try:
-        return [t.astimezone(UTC) for t in islice(_sim(expr, tz, after), count)]
-    except StopIteration as exc:  # pragma: no cover - cronsim rejects never-firing expressions
-        raise CronError("Invalid schedule: it never runs") from exc
+    # cronsim rejects expressions that never fire (e.g. "0 0 30 2 *") when parsing them.
+    return [t.astimezone(UTC) for t in islice(_sim(expr, tz, after), count)]
 
 
 def next_run(expr: str, tz: str, after: datetime) -> datetime:

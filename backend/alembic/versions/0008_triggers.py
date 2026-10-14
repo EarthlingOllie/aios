@@ -58,7 +58,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL) OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
+            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL)"
+            " OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
             name="ck_triggers_target",
         ),
         sa.CheckConstraint(

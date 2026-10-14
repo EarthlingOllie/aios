@@ -170,6 +170,8 @@ export type RunSummary = {
   agent_version: number;
   title: string | null;
   message_count: number;
+  /** The trigger (e.g. a schedule) that started the run, if one did and it still exists. */
+  trigger_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -198,6 +200,83 @@ export type Run = RunSummary & {
   /** The pinned version's instructions: the system prompt of every model call. */
   instructions: string;
 };
+
+export type WorkflowSummary = {
+  id: number;
+  name: string;
+  description: string;
+  version: number;
+  version_id: number;
+  node_count: number;
+  updated_at: string;
+};
+
+export type WorkflowNode = {
+  key: string;
+  kind: "agent" | "workflow";
+  version_id: number;
+  /** The agent or workflow the pinned version belongs to. */
+  target_id: number;
+  name: string;
+  version: number;
+  latest_version: number | null;
+  latest_version_id: number | null;
+};
+
+export type Workflow = {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  current_version: {
+    id: number;
+    version: number;
+    note: string | null;
+    created_at: string;
+    nodes: WorkflowNode[];
+    edges: { source: string; target: string }[];
+  };
+};
+
+export type TriggerTargetKind = "agent" | "workflow";
+export type TriggerStatus = "running" | "succeeded" | "failed";
+
+/** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
+export type Trigger = {
+  id: number;
+  kind: "schedule";
+  target_kind: TriggerTargetKind;
+  target_id: number;
+  target_name: string;
+  enabled: boolean;
+  /** The message an agent's run starts with. */
+  input: string;
+  cron: string;
+  /** The cron expression in plain English. */
+  description: string;
+  timezone: string;
+  /** Null while disabled. */
+  next_run_at: string | null;
+  last_fired_at: string | null;
+  last_status: TriggerStatus | null;
+  last_error: string | null;
+  last_run_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TriggerInput = {
+  kind: "schedule";
+  target_kind: TriggerTargetKind;
+  target_id: number;
+  enabled: boolean;
+  input: string;
+  cron: string;
+  timezone: string;
+};
+
+export type SchedulePreview = { description: string; next_runs: string[] };
 
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -283,4 +362,22 @@ export const api = {
     request<RunSummary>(`/api/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`/api/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
+
+  listWorkflows: () => request<WorkflowSummary[]>("/api/workflows"),
+  getWorkflow: (id: number) => request<Workflow>(`/api/workflows/${id}`),
+  deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
+
+  listTriggers: (target?: { kind: TriggerTargetKind; id: number }) =>
+    request<Trigger[]>(
+      "/api/triggers" +
+        (target ? `?${new URLSearchParams({ target_kind: target.kind, target_id: String(target.id) })}` : ""),
+    ),
+  getTrigger: (id: number) => request<Trigger>(`/api/triggers/${id}`),
+  createTrigger: (body: TriggerInput) => request<Trigger>("/api/triggers", json("POST", body)),
+  updateTrigger: (id: number, body: TriggerInput) =>
+    request<Trigger>(`/api/triggers/${id}`, json("PUT", body)),
+  deleteTrigger: (id: number) => request<void>(`/api/triggers/${id}`, { method: "DELETE" }),
+  previewSchedule: (cron: string, timezone: string) =>
+    request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
+  listTimezones: () => request<string[]>("/api/triggers/timezones"),
 };

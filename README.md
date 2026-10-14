@@ -36,8 +36,8 @@ the model's behaviour:
   session.
 
 **Workflows** graph agents together, and can run other workflows as subgraphs. Only their
-definition exists so far (`/api/workflows`; the UI is a placeholder): they can be built,
-versioned and nested, not run yet. They're versioned like agents (`workflows`,
+definition exists so far (`/api/workflows`; the UI lists them and shows their steps and
+schedules, but can't edit them): they can be built, versioned and nested, not run yet. They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
@@ -56,6 +56,28 @@ versioned and nested, not run yet. They're versioned like agents (`workflows`,
   its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
+
+**Triggers** start agents and workflows without a user in the loop. Each has a kind, and the
+first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@weekly`,
+`@monthly`, `@yearly`) in an IANA timezone. The **Scheduler** page lists every schedule, the
+next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
+does the same for its own (`/api/triggers`).
+
+- An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
+  version starts with that message as the user's, and runs one turn exactly as a chat turn does
+  (the run is listed with the agent's others, marked as scheduled). The schedule shows how its
+  last run went, with a link to it.
+- Workflows can't run yet, so a workflow's schedule records a failed run each time it fires.
+- Each API process runs the scheduler (`aios.scheduler`), polling every
+  `SCHEDULER_INTERVAL_SECONDS` (15). Due schedules are claimed with `FOR UPDATE SKIP LOCKED`
+  and moved on to their next run in the same transaction, so with any number of replicas each
+  run fires once. Set `SCHEDULER_ENABLED=false` to keep a process from running them.
+- Missed runs aren't caught up: a schedule that's overdue (nothing was running) fires once, then
+  carries on from now. Across daylight-saving changes it behaves like cron: a skipped local time
+  runs when the clock jumps, and a repeated one runs once. A turn still running when the process
+  stops keeps what it got to, and its schedule records that it failed.
+- Deleting an agent or a workflow deletes its schedules. Cron parsing is `cronsim`'s, wrapped in
+  `aios.cron`.
 
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
@@ -87,6 +109,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore
+    api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
+    scheduler.py    fires due schedules (runs in each API process)
+    cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation (and, later, running them)
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
