@@ -579,6 +579,16 @@ def test_layout_is_saved_with_the_workflow_but_not_versioned(api):
     )
     assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
 
+    # Restoring a version without b drops b's position too.
+    resp = api.put(
+        f"/api/workflows/{wf['id']}",
+        json=workflow_body("laid out", nodes, [("a", "b")], layout=layout),
+    )
+    assert (resp.json()["current_version"]["version"], resp.json()["layout"]) == (3, layout)
+    resp = api.post(f"/api/workflows/{wf['id']}/versions/2/restore")
+    assert resp.json()["current_version"]["version"] == 4
+    assert resp.json()["layout"] == {"a": {"x": 0, "y": 0}}
+
 
 def test_layout_on_create_and_invalid_positions(api):
     a = make_agent(api, "layout-c")

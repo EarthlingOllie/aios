@@ -496,6 +496,9 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"That version runs {what} that has since been deleted."
         )
+    # Keep the positions of the nodes it shares with the current graph, and drop the rest.
+    keys = {n.key for n in old.nodes}
+    workflow.layout = {key: p for key, p in workflow.layout.items() if key in keys}
     save_workflow_version(
         db,
         workflow,
