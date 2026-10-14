@@ -297,6 +297,20 @@ def _finish_run(
             )
             .values(status=status, output=output, error=error, finished_at=func.now())
         )
+        # Steps whose nodes were stopped with the run, e.g. when it took too long: they never
+        # recorded their own end.
+        db.execute(
+            update(WorkflowRunStep)
+            .where(
+                WorkflowRunStep.run_id == run_id,
+                WorkflowRunStep.status == WorkflowStepStatus.running,
+            )
+            .values(
+                status=WorkflowStepStatus.failed,
+                error="The run stopped before this step finished.",
+                finished_at=func.now(),
+            )
+        )
         db.commit()
 
 

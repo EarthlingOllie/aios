@@ -19,7 +19,7 @@ from aios.auth import current_user
 from aios.main import app
 from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStep
 from aios.tools import TOOLS
-from aios.workflows import execute_run
+from aios.workflows import execute_run, fail_run
 
 
 @pytest.fixture
@@ -261,6 +261,37 @@ def test_a_subworkflow_stopped_by_another_branchs_failure_fails_cleanly(api, que
         "Stopped: another node failed",
     )
     assert set(by_path) == {"boom", "sub", "sub/slow"}
+
+
+def test_a_run_stopped_midway_fails_the_steps_still_running(api, queued):
+    a = agents(api, "quick", "slow")
+    inner = make_workflow(api, "inner", [agent_node("slow", a["slow"])])
+    wf = make_workflow(
+        api, "stalls", [agent_node("quick", a["quick"]), workflow_node("sub", inner)]
+    )
+    started = start(api, wf)
+
+    async def script(messages, info):
+        if messages[0].content == "slow":
+            await asyncio.sleep(60)
+        yield "done"
+
+    async def stopped():
+        # As the worker's time limit stops it.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(execute_run(started["id"]), 5)
+
+    with use_model(model(script)):
+        asyncio.run(stopped())
+    fail_run(started["id"], "Too slow")
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["error"]) == ("failed", "Too slow")
+    by_path = steps(out)
+    assert by_path["quick"]["status"] == "succeeded"
+    for key in ("sub", "sub/slow"):
+        assert by_path[key]["status"] == "failed"
+        assert by_path[key]["error"] == "The run stopped before this step finished."
+        assert by_path[key]["finished_at"]
 
 
 def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch):
