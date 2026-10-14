@@ -193,6 +193,20 @@ test("deleting a workflow that another runs is refused with the reason", async (
   );
 });
 
+test("a refused delete's reason doesn't follow you to another workflow", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { review, report } = await seed(api);
+  await page.goto(`/workflows/${review.id}`);
+  page.once("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "Delete workflow" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+
+  await page.getByRole("link", { name: /Report/ }).click();
+  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page.getByRole("heading", { name: "Report" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("deleting a workflow returns to the list", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);

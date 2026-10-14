@@ -88,6 +88,11 @@ export function GraphView({
 
 export function WorkflowDetail() {
   const id = Number(useParams().workflowId);
+  // Keyed so an error from one workflow's actions doesn't stay up on the next one opened.
+  return <WorkflowDetailView key={id} id={id} />;
+}
+
+function WorkflowDetailView({ id }: { id: number }) {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
