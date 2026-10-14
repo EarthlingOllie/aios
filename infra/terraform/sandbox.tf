@@ -346,7 +346,7 @@ data "aws_iam_policy_document" "sandboxes" {
   }
 }
 
-resource "aws_iam_role_policy" "task_sandboxes" {
-  role   = aws_iam_role.task.id
+resource "aws_iam_role_policy" "api_sandboxes" {
+  role   = aws_iam_role.api.id
   policy = data.aws_iam_policy_document.sandboxes.json
 }
