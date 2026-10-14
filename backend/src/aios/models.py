@@ -21,7 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024
@@ -452,3 +452,80 @@ class WorkflowEdge(Base):
             ondelete="CASCADE",
         ),
     )
+
+
+# A workflow run walks its pinned version's graph, recording a step per node as it starts. An
+# agent node's conversation is an ordinary agent run, so it opens on the agent's run page.
+
+
+class WorkflowRunStatus(enum.StrEnum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class WorkflowStepStatus(enum.StrEnum):
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class WorkflowRun(Base):
+    """One run of a workflow, on the version that was current when it started
+    (`aios.workflows.execute_run`)."""
+
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Owned through the workflow. Soft-deleting it leaves its runs.
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    # Pinned when the run starts: editing the workflow mid-run doesn't change the run.
+    workflow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_versions.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[WorkflowRunStatus] = mapped_column(
+        Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
+    )
+    # Given to the nodes with no incoming edge.
+    input: Mapped[str] = mapped_column(Text)
+    # The sink nodes' outputs once it has succeeded; the first error once it has failed.
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    workflow_version: Mapped[WorkflowVersion] = relationship()
+
+
+class WorkflowRunStep(Base):
+    """A node of a run's graph, at any depth, from when it starts."""
+
+    __tablename__ = "workflow_run_steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"), index=True
+    )
+    # Node keys from the run's workflow down to the node: ["review", "critic"] is node "critic"
+    # of the subworkflow at top-level node "review".
+    path: Mapped[list[str]] = mapped_column(ARRAY(String(64)))
+    kind: Mapped[WorkflowNodeKind] = mapped_column(
+        Enum(WorkflowNodeKind, name="workflow_node_kind")
+    )
+    status: Mapped[WorkflowStepStatus] = mapped_column(
+        Enum(WorkflowStepStatus, name="workflow_step_status"), default=WorkflowStepStatus.running
+    )
+    input: Mapped[str] = mapped_column(Text)
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    # An agent node's conversation. Deleting the run deletes it (`delete_workflow_run`); if the
+    # agent run goes first (deleting its agent), the step stays without it.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

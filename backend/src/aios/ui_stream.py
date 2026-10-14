@@ -244,6 +244,17 @@ def to_ui_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
 # --- Streaming ----------------------------------------------------------------------------------
 
 
+def error_text(exc: BaseException) -> str:
+    """What to show the user of an error that ended an agent's turn.
+
+    A database error's text names the server and user (and SQLAlchemy's, the statement), so it
+    stays in the log. Others, mostly the model's, are shown as they are.
+    """
+    if isinstance(exc, psycopg.Error | sqlalchemy.exc.SQLAlchemyError):
+        return "Database error"
+    return str(exc) or exc.__class__.__name__
+
+
 class UIStream:
     """Turns one agent run's stream into UI message chunks, and keeps what's needed to save a
     reply that didn't finish (`partial_reply`)."""
@@ -279,13 +290,7 @@ class UIStream:
     def error(self, exc: BaseException) -> Iterator[Chunk]:
         yield from self._close_part()
         self.finish_reason = "error"
-        # A database error's text names the server and user (and SQLAlchemy's, the statement),
-        # so it stays in the log. Others, mostly the model's, are shown as they are.
-        if isinstance(exc, psycopg.Error | sqlalchemy.exc.SQLAlchemyError):
-            text = "Database error"
-        else:
-            text = str(exc) or exc.__class__.__name__
-        yield {"type": "error", "errorText": text}
+        yield {"type": "error", "errorText": error_text(exc)}
 
     def finish(self) -> Iterator[Chunk]:
         yield from self._close_part()

@@ -35,9 +35,8 @@ the model's behaviour:
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
 
-**Workflows** graph agents together, and can run other workflows as subgraphs. Only their
-definition exists so far (`/api/workflows`; the UI is a placeholder): they can be built,
-versioned and nested, not run yet. They're versioned like agents (`workflows`,
+**Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`;
+the UI is a placeholder so far). They're versioned like agents (`workflows`,
 `workflow_versions`):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
@@ -57,13 +56,30 @@ versioned and nested, not run yet. They're versioned like agents (`workflows`,
   its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
+- A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
+  starts. The worker runs it (`aios.run_workflow`, a Celery task with its own time limit,
+  `WORKFLOW_RUN_TIME_LIMIT`). A node starts once all its predecessors have succeeded, so
+  independent branches run at the same time; start nodes get the run's input, other nodes their
+  predecessors' outputs in edge order, joined with a blank line. An agent node is a new agent
+  run of its pinned version, given its input as the user's message, and outputs the final reply,
+  so its conversation opens on the run page like any other. A workflow node runs its pinned
+  version's graph with its input, and outputs its sink nodes' outputs (in node order); so does
+  the run. Each node records a step (`workflow_run_steps`, with the path of node keys down to it)
+  when it starts and finishes, committed as it goes, so the run can be watched while it's going.
+  Once a node fails nothing else starts, and the run fails with the first error. Each agent node
+  is traced like an agent run, with the workflow, its version, the run and the node's path added
+  to the metadata.
+- Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a tool
+  that has left the library, or an agent that has since been deleted), or if it has no nodes.
+  Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the database.
 
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
-api ──enqueue──▶ Redis ──▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
+api ──enqueue──▶ Redis ──▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings;
+                                   workflow runs)
 api, worker ──▶ Postgres 17 + pgvector (agent run history: LangGraph checkpoints, `langgraph` schema)
-api ──traces──▶ Langfuse (optional, self-hosted)
+api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
 | Layer | Stack |
@@ -87,8 +103,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/documents.py upload/list/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
-    api/workflows.py CRUD /api/workflows, versions and restore
-    workflows.py    workflow graph validation (and, later, running them)
+    api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
+    workflows.py    workflow graph validation, and running workflows
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -102,7 +118,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
-    worker.py       Celery app + ingest task
+    worker.py       Celery app + ingest and workflow run tasks
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
   Dockerfile        targets: api, worker, sandbox
 frontend/           Vite React SPA (+ nginx images/configs)
