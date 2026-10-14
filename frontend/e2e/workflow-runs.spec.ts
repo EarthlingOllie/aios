@@ -126,22 +126,46 @@ test("a poll that changes nothing leaves the graph as it was", async ({ page }) 
   const run = api.addRun(report, { steps: [{ path: ["research"], status: "running" }] });
   await page.goto(`/workflows/${report.id}/runs/${run.id}`);
   await expect(node(page, "research")).toHaveAttribute("data-state", "running");
-  // What React Flow hands the node's card: the canvas builds a new one only when what the node
-  // shows changes (and lays the graph out again when the graph does), so a poll shouldn't.
-  const shown = () =>
-    node(page, "research").evaluateHandle((el) => {
-      type Fiber = { type: unknown; memoizedProps?: { data?: unknown }; child?: Fiber };
-      const fiber = Object.entries(el).find(([k]) => k.startsWith("__reactFiber$"))![1] as Fiber;
-      let f = fiber.child;
-      while (f && !(typeof f.type === "function" && f.memoizedProps?.data)) f = f.child;
-      return f!.memoizedProps!.data;
+  // Shown once measured, and the graph is drawn and fit.
+  await expect(node(page, "write")).toBeVisible();
+  // React Flow re-adopts every node and edge it's handed as a new object: it hides each node to
+  // measure it again and redraws the edges. So a poll that rebuilds the graph changes the canvas's
+  // DOM even when nothing it shows has changed, and one that doesn't leaves it untouched.
+  // (The browser's globals, as the e2e tests are type-checked without the DOM's.)
+  type Browser = {
+    MutationObserver: new (
+      callback: (
+        records: { type: string; target: Element; attributeName: string | null }[],
+      ) => void,
+    ) => { observe: (el: unknown, options: object) => void };
+    canvasChanges: string[];
+  };
+  type Element = { getAttribute: (name: string) => string | null };
+  const canvas = page.locator(".react-flow__nodes, .react-flow__edges");
+  await expect(canvas).toHaveCount(2);
+  await canvas.evaluateAll((els) => {
+    const browser = globalThis as unknown as Browser;
+    const changes: string[] = (browser.canvasChanges = []);
+    const observer = new browser.MutationObserver((records) => {
+      for (const { type, target, attributeName } of records) {
+        const what = target.getAttribute("data-id") ?? target.getAttribute("class");
+        changes.push(`${type} ${what} ${attributeName ?? ""}`);
+      }
     });
-  const before = await shown();
+    for (const el of els) {
+      observer.observe(el, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+    }
+  });
   let polls = 0;
   // Each poll is set off by the last one's render, so by the third the first two have rendered.
   await page.waitForResponse((r) => r.url().endsWith(`/runs/${run.id}`) && ++polls === 3);
-  const same = await page.evaluate(([a, b]) => a === b, [before, await shown()]);
-  expect(same).toBe(true);
+  const changes = await page.evaluate(() => (globalThis as unknown as Browser).canvasChanges);
+  expect(changes).toEqual([]);
 });
 
 test("a node's step shows its input, output and conversation", async ({ page }) => {
