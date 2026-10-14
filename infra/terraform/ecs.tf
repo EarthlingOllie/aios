@@ -47,11 +47,19 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# Runtime role for the api, worker, web and migrate containers. Its only permissions are for
-# starting and stopping sandboxes (sandbox.tf), which the API does for the run_python tool. The
-# sandbox and egress proxy tasks don't get it: they have no task role at all.
+# Runtime role for the worker, web and migrate containers. It has no permissions: they make no
+# AWS calls (their secrets come in through the execution role).
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+# Runtime role for the api containers. Its only permissions are for starting and stopping
+# sandboxes (sandbox.tf), for the run_python tool. Agent runs execute in the API process, not in
+# Celery, so only the API needs them, and the worker, which parses untrusted uploads, can't start
+# or stop tasks. The sandbox and egress proxy tasks have no task role at all.
+resource "aws_iam_role" "api" {
+  name               = "${var.name}-ecs-api"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
@@ -104,7 +112,7 @@ resource "aws_ecs_task_definition" "api" {
   cpu                      = var.api.cpu
   memory                   = var.api.memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = aws_iam_role.api.arn
 
   runtime_platform {
     operating_system_family = "LINUX"

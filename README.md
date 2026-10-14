@@ -170,8 +170,8 @@ agent run that uses `run_python` gets its own Fargate task, so its own Firecrack
   this account's credentials. RDS and Valkey don't admit sandboxes. The proxy is an ECS service
   (`egress-proxy`, API image) found at `proxy.<name>.internal` through Cloud Map.
 - **IAM**: the sandbox task has no task role, so code in it has no AWS credentials. The API's
-  task role may run only the sandbox task definition, in this cluster, and describe and stop
-  the cluster's tasks.
+  task role (its own: the worker, web and migrate tasks share one with no permissions) may run
+  only the sandbox task definition, in this cluster, and describe and stop the cluster's tasks.
 - **Locally**, `docker compose` runs one `sandbox` container that every run shares
   (`SANDBOX_BACKEND=dev`). It has no isolation between runs and no network restrictions, so it's
   for development only.
