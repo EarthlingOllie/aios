@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -18,8 +18,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
+import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
+import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -57,15 +59,27 @@ export function WorkflowsIndex() {
 export function GraphView({
   version,
   layout,
+  editHref,
 }: {
   version: WorkflowVersion;
   layout: Record<string, NodePosition>;
+  /** Where to build the graph, if it's empty and can be edited. */
+  editHref?: string;
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);
   if (version.nodes.length === 0) {
     return (
       <p className="text-muted-foreground rounded-md border p-6 text-center text-sm">
         This workflow has no nodes yet.
+        {editHref && (
+          <>
+            {" "}
+            <Link to={editHref} className="underline">
+              Add some
+            </Link>
+            .
+          </>
+        )}
       </p>
     );
   }
@@ -126,15 +140,28 @@ function WorkflowDetailView({ id }: { id: number }) {
       }
       subtitle={w.description || `Updated ${formatDate(w.updated_at)}`}
       actions={
-        <Button variant="outline" size="sm" onClick={onDelete} aria-label="Delete workflow">
-          <Trash2 />
-        </Button>
+        <>
+          <Button asChild variant="outline" size="sm">
+            <Link to="edit">
+              <Pencil />
+              Edit
+            </Link>
+          </Button>
+          <Button variant="outline" size="sm" onClick={onDelete} aria-label="Delete workflow">
+            <Trash2 />
+          </Button>
+        </>
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       <Section title="Graph">
         {/* Keyed so the selection resets when the graph changes under it. */}
-        <GraphView key={current.id} version={current} layout={w.layout} />
+        <GraphView
+          key={current.id}
+          version={current}
+          layout={w.layout}
+          editHref={`/workflows/${id}/edit`}
+        />
       </Section>
       <Section title="Version history">
         <VersionHistory
@@ -205,21 +232,67 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   );
 }
 
-/** Names a new, empty workflow; its graph is built on its page. */
-export function NewWorkflowForm() {
+/** Builds a new workflow, or edits one: its name, description and graph. */
+export function WorkflowEditorPage() {
+  const params = useParams();
+  const id = params.workflowId ? Number(params.workflowId) : undefined;
+  // Keyed so switching workflows starts a fresh draft.
+  return <WorkflowEditorView key={id ?? "new"} id={id} />;
+}
+
+function WorkflowEditorView({ id }: { id: number | undefined }) {
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  const [meta, setMeta] = useState<{ name: string; description: string; note: string }>();
+  const [draft, setDraft] = useState<Draft>();
+  // The version being edited, if any.
+  const [editing, setEditing] = useState<number>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const agents = useLoad(api.listAgents);
+  const workflows = useLoad(api.listWorkflows);
+
+  useEffect(() => {
+    if (id === undefined) {
+      setMeta({ name: "", description: "", note: "" });
+      setDraft({ nodes: [], edges: [], positions: {} });
+      return;
+    }
+    api.getWorkflow(id).then(
+      (w) => {
+        setMeta({ name: w.name, description: w.description, note: "" });
+        setDraft(fromVersion(w.current_version, w.layout));
+        setEditing(w.current_version.version);
+      },
+      (err) => setError(describeError(err)),
+    );
+  }, [id]);
+
+  const targets = useMemo<Target[] | undefined>(
+    () =>
+      agents.data &&
+      workflows.data && [
+        ...agents.data.map((a) => ({ kind: "agent" as const, ...pick(a) })),
+        // A workflow can't contain itself.
+        ...workflows.data
+          .filter((w) => w.id !== id)
+          .map((w) => ({ kind: "workflow" as const, ...pick(w) })),
+      ],
+    [agents.data, workflows.data, id],
+  );
+
+  if (!meta || !draft) return error ? <Placeholder>{error}</Placeholder> : null;
+  const set = (patch: Partial<typeof meta>) => setMeta({ ...meta, ...patch });
+  const back = () => navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(undefined);
+    const body = toInput(draft!, meta!);
     try {
-      const saved = await api.createWorkflow({ name, description, nodes: [], edges: [] });
+      const saved =
+        id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
       await reloadList();
       navigate(`/workflows/${saved.id}`);
     } catch (err) {
@@ -230,31 +303,57 @@ export function NewWorkflowForm() {
   }
 
   return (
-    <DetailPage title="New workflow">
+    <DetailPage
+      wide
+      title={id === undefined ? "New workflow" : "Edit workflow"}
+      subtitle={
+        editing !== undefined &&
+        `Editing v${editing}. Changing nodes or edges creates v${editing + 1}; renaming and moving nodes don't.`
+      }
+    >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
-        <Field label="Name" htmlFor="workflow-name">
-          <Input
-            id="workflow-name"
-            required
-            maxLength={255}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Weekly report"
-          />
-        </Field>
-        <Field label="Description" htmlFor="workflow-description">
-          <Input
-            id="workflow-description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Name" htmlFor="workflow-name">
+            <Input
+              id="workflow-name"
+              required
+              maxLength={255}
+              value={meta.name}
+              onChange={(e) => set({ name: e.target.value })}
+              placeholder="e.g. Weekly report"
+            />
+          </Field>
+          <Field label="Description" htmlFor="workflow-description">
+            <Input
+              id="workflow-description"
+              value={meta.description}
+              onChange={(e) => set({ description: e.target.value })}
+            />
+          </Field>
+        </div>
+        <Section title="Graph">
+          <GraphEditor draft={draft} onChange={setDraft} targets={targets} />
+        </Section>
+        {id !== undefined && (
+          <Field
+            label="Change note"
+            htmlFor="workflow-note"
+            hint="Optional. Shown in the version history."
+          >
+            <Input
+              id="workflow-note"
+              value={meta.note}
+              onChange={(e) => set({ note: e.target.value })}
+              placeholder="What changed and why"
+            />
+          </Field>
+        )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !name.trim()}>
-            Create workflow
+          <Button type="submit" disabled={saving || !meta.name.trim()}>
+            {id === undefined ? "Create workflow" : "Save changes"}
           </Button>
-          <Button type="button" variant="ghost" onClick={() => navigate(-1)}>
+          <Button type="button" variant="ghost" onClick={back}>
             Cancel
           </Button>
         </div>
@@ -262,3 +361,10 @@ export function NewWorkflowForm() {
     </DetailPage>
   );
 }
+
+const pick = (t: { id: number; name: string; version: number; version_id: number }) => ({
+  id: t.id,
+  name: t.name,
+  version: t.version,
+  version_id: t.version_id,
+});
