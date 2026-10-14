@@ -128,9 +128,13 @@ def test_start_passes_the_session_to_the_task(ecs):
     )
     stubber.add_response("run_task", {"tasks": [task("PROVISIONING", ip=None)]}, run_task_params())
     stubber.add_response("describe_tasks", {"tasks": [task("RUNNING")]})
-    backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner().client(), poll_interval=0)
+    runner = FakeRunner()
+    backend = FargateBackend(SETTINGS, ecs=client, runner=runner.client(), poll_interval=0)
     handle = asyncio.run(backend.start(SPEC))
 
+    # It waits for the runner holding that token, not just any runner at the address.
+    [health] = runner.requests
+    assert health.headers["Authorization"] == f"Bearer {handle.secret}"
     [container] = sent["overrides"]["containerOverrides"]
     env = {e["name"]: e["value"] for e in container["environment"]}
     assert container["name"] == "sandbox"
@@ -262,6 +266,22 @@ def test_a_stopped_task_is_gone(ecs):
     backend = FargateBackend(SETTINGS, ecs=client, runner=FakeRunner(status=500).client())
     with pytest.raises(SandboxError, match="refused the call"):
         asyncio.run(backend.execute(handle, "1", 5))
+
+
+def test_another_sessions_sandbox_at_the_address_is_gone(ecs, workdir):
+    # Our task stopped and another session's task got its private IP: its runner answers,
+    # but with a different token, so ours is gone and the run must start a new one.
+    client, _ = ecs
+    server = runner_module.Server(("127.0.0.1", 0), "theirs", idle_seconds=60, max_seconds=600)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+    backend = FargateBackend(SETTINGS, ecs=client, runner=RunnerClient())
+    try:
+        assert not asyncio.run(backend.alive(SandboxHandle(ARN, endpoint, "ours")))
+        assert asyncio.run(backend.alive(SandboxHandle(ARN, endpoint, "theirs")))
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_an_unreadable_result_is_a_sandbox_error(ecs):

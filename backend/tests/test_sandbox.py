@@ -256,7 +256,11 @@ def test_runner_serve_mode(workdir):
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        assert httpx.get(f"{url}/health").json() == {"ok": True}
+        assert httpx.get(f"{url}/health").status_code == 401
+        nope = {"Authorization": "Bearer nope"}
+        assert httpx.get(f"{url}/health", headers=nope).status_code == 401
+        ok = httpx.get(f"{url}/health", headers={"Authorization": "Bearer tok"})
+        assert ok.json() == {"ok": True}
         body = {"code": "print('served')", "timeout": 5}
         assert httpx.post(f"{url}/exec", json=body).status_code == 401
         wrong = httpx.post(f"{url}/exec", json=body, headers={"Authorization": "Bearer nope"})
