@@ -174,7 +174,8 @@ agent run that uses `run_python` gets its own Fargate task, so its own Firecrack
   the cluster's tasks.
 - **Locally**, `docker compose` runs one `sandbox` container that every run shares
   (`SANDBOX_BACKEND=dev`). It has no isolation between runs and no network restrictions, so it's
-  for development only.
+  for development only. Allowed domains need no egress proxy there (`SANDBOX_PROXY_*` unset): the
+  runner can reach every domain anyway.
 
 Known limits:
 

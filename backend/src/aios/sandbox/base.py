@@ -54,6 +54,10 @@ class SandboxGone(SandboxError):
 
 
 class SandboxBackend(Protocol):
+    # Whether the sandbox's only way out is the proxy URL it's started with. False for the dev
+    # backend, whose runner has unrestricted network, so it needs no proxy for allowed domains.
+    restricts_network: bool
+
     async def start(self, spec: SessionSpec) -> SandboxHandle:
         """Starts a sandbox and returns once it can take calls.
 
