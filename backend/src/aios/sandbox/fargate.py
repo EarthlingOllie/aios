@@ -33,15 +33,23 @@ class RunnerClient:
     def __init__(self, http: httpx.AsyncClient | None = None) -> None:
         self.http = http or httpx.AsyncClient()
 
-    async def healthy(self, endpoint: str, timeout: float = 3) -> bool:
+    async def healthy(self, endpoint: str, token: str, timeout: float = 3) -> bool:
+        """Whether the runner at `endpoint` is up and holds `token`. Another session's
+        runner can get the address once ours stops, and it refuses our token."""
         try:
-            resp = await self.http.get(f"{endpoint}/health", timeout=timeout)
+            resp = await self.http.get(
+                f"{endpoint}/health",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=timeout,
+            )
         except httpx.HTTPError:
             return False
         return resp.status_code == 200
 
-    async def wait_healthy(self, endpoint: str, deadline: float, interval: float) -> None:
-        while not await self.healthy(endpoint):
+    async def wait_healthy(
+        self, endpoint: str, token: str, deadline: float, interval: float
+    ) -> None:
+        while not await self.healthy(endpoint, token):
             if time.monotonic() > deadline:
                 raise SandboxError("The sandbox started but didn't respond in time.")
             await asyncio.sleep(interval)
@@ -161,7 +169,7 @@ class FargateBackend:
         try:
             ip = await self._wait_running(arn, deadline)
             endpoint = f"http://{ip}:{RUNNER_PORT}"
-            await self.runner.wait_healthy(endpoint, deadline, self.poll_interval)
+            await self.runner.wait_healthy(endpoint, token, deadline, self.poll_interval)
         except BaseException:
             # Shielded: if the start was cancelled (e.g. the client went away), anyio would
             # cancel the stop too, and the task would run until its runner's idle timeout.
@@ -185,7 +193,7 @@ class FargateBackend:
             await asyncio.sleep(self.poll_interval)
 
     async def alive(self, handle: SandboxHandle) -> bool:
-        return await self.runner.healthy(handle.endpoint)
+        return await self.runner.healthy(handle.endpoint, handle.secret)
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
         return await self.runner.execute(handle, code, timeout)
@@ -210,12 +218,12 @@ class DevBackend:
         self.runner = runner or RunnerClient()
 
     async def start(self, spec: SessionSpec) -> SandboxHandle:
-        if not await self.runner.healthy(self.endpoint):
+        if not await self.runner.healthy(self.endpoint, self.token):
             raise SandboxError(f"The dev sandbox at {self.endpoint} isn't running.")
         return SandboxHandle("dev", self.endpoint, self.token)
 
     async def alive(self, handle: SandboxHandle) -> bool:
-        return await self.runner.healthy(handle.endpoint)
+        return await self.runner.healthy(handle.endpoint, handle.secret)
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
         return await self.runner.execute(handle, code, timeout)
