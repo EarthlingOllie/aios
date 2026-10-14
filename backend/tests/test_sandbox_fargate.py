@@ -188,6 +188,13 @@ def test_a_missing_region_is_a_sandbox_error(monkeypatch):
         FargateBackend(SETTINGS)
 
 
+def test_missing_settings_are_named_when_the_backend_is_created():
+    settings = SETTINGS.model_copy(update={"sandbox_cluster": "", "sandbox_subnets": ","})
+    with pytest.raises(SandboxError, match=r"SANDBOX_CLUSTER, SANDBOX_SUBNETS\b") as info:
+        FargateBackend(settings, ecs=object())
+    assert "SANDBOX_TASK_DEFINITION" not in str(info.value)
+
+
 def test_a_failed_describe_still_stops_the_task(ecs):
     client, stubber = ecs
     stubber.add_response("run_task", {"tasks": [task("PROVISIONING", ip=None)]})

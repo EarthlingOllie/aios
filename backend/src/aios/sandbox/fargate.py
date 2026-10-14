@@ -107,6 +107,22 @@ class FargateBackend:
         runner: RunnerClient | None = None,
         poll_interval: float = 2,
     ) -> None:
+        self.cluster = settings.sandbox_cluster
+        self.task_definition = settings.sandbox_task_definition
+        self.subnets = [s for s in settings.sandbox_subnets.split(",") if s]
+        self.security_groups = [g for g in settings.sandbox_security_groups.split(",") if g]
+        required = {
+            "SANDBOX_CLUSTER": self.cluster,
+            "SANDBOX_TASK_DEFINITION": self.task_definition,
+            "SANDBOX_SUBNETS": self.subnets,
+            "SANDBOX_SECURITY_GROUPS": self.security_groups,
+        }
+        if missing := [name for name, value in required.items() if not value]:
+            # Caught here rather than as an opaque RunTask error on every call.
+            log.error("the Fargate sandbox backend needs %s", ", ".join(missing))
+            raise SandboxError(
+                f"Running Python isn't set up correctly (missing {', '.join(missing)})."
+            )
         if ecs is None:
             import boto3
 
@@ -119,10 +135,6 @@ class FargateBackend:
                 ) from exc
         self.ecs = ecs
         self.runner = runner or RunnerClient()
-        self.cluster = settings.sandbox_cluster
-        self.task_definition = settings.sandbox_task_definition
-        self.subnets = [s for s in settings.sandbox_subnets.split(",") if s]
-        self.security_groups = [g for g in settings.sandbox_security_groups.split(",") if g]
         self.container = settings.sandbox_container
         self.start_timeout = settings.sandbox_start_timeout
         self.poll_interval = poll_interval
