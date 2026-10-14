@@ -937,3 +937,77 @@ def test_a_run_ended_elsewhere_stops_its_worker(api, queued, monkeypatch):
     assert (out["status"], out["error"]) == ("failed", "Stopped elsewhere")
     assert [s["path"] for s in out["steps"]] == [["slow"]]
     assert out["steps"][0]["status"] == "failed"
+
+
+def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(api, queued, monkeypatch):
+    # A worker whose event loop is stuck still beats (from its own thread), so it would stay
+    # running until Celery's hard time limit; once the loop has made no progress for long
+    # enough, the run fails instead, and stops as soon as the loop gets going again.
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(get_settings(), "workflow_run_no_progress_limit", 0.3)
+    a = agents(api, "stuck", "after")
+    wf = make_workflow(
+        api,
+        "flow",
+        [agent_node("stuck", a["stuck"]), agent_node("after", a["after"])],
+        [("stuck", "after")],
+    )
+    started = start(api, wf)
+    seen = []
+
+    def read_later():
+        time.sleep(1.0)
+        with SessionLocal() as db:
+            run = db.get(WorkflowRun, started["id"])
+            seen.append((run.status, run.error))
+
+    async def script(messages, info):
+        if messages[0].content == "stuck":
+            reader = threading.Thread(target=read_later)
+            reader.start()
+            time.sleep(1.5)  # Holds the event loop, five times the limit.
+            reader.join()
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    # Failed while the loop was still stuck, with an error saying why.
+    assert seen == [(WorkflowRunStatus.failed, workflows.no_progress_error())]
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["output"], out["error"]) == (
+        "failed",
+        None,
+        workflows.no_progress_error(),
+    )
+    # Stopped once the loop was free: nothing more started, and the node it was stuck in stays
+    # failed, though it went on to finish.
+    assert [(s["path"], s["status"], s["error"]) for s in out["steps"]] == [
+        (["stuck"], "failed", "The run stopped before this step finished.")
+    ]
+
+
+def test_a_run_awaiting_a_slow_node_isnt_failed_for_making_no_progress(api, queued, monkeypatch):
+    # A node waiting on a long model or tool call leaves the loop free to make progress.
+    monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(get_settings(), "workflow_run_no_progress_limit", 0.3)
+    a = agents(api, "slow")
+    wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
+    started = start(api, wf)
+
+    async def script(messages, info):
+        await asyncio.sleep(1.5)
+        yield "done"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert (out["status"], out["output"], out["error"]) == ("succeeded", "done", None)
+
+
+def test_the_no_progress_limit_outlasts_a_dead_workers_lease():
+    # A loop held for a while (a blocking call, CPU-bound work) isn't stuck: only one held well
+    # past the time a dead worker's run is failed in is.
+    limit = get_settings().workflow_run_no_progress_limit
+    assert (
+        2 * workflows.STALE_AFTER.total_seconds() < limit < get_settings().workflow_run_time_limit
+    )

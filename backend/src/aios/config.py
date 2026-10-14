@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     ingest_time_limit: int = 30 * 60
     # Budget for a whole workflow run, every node at every depth (`aios.workflows.execute_run`).
     workflow_run_time_limit: int = 2 * 60 * 60
+    # A run fails once its worker's event loop has made no progress for this long: something
+    # (a blocking call, CPU-bound work, a deadlock) has held the loop, so none of the run's nodes
+    # can move. A node awaiting a slow model or tool call leaves the loop free, so it isn't
+    # affected. Well over a dead worker's lease (`aios.workflows.STALE_AFTER`, 90s), so a node
+    # can hold the loop for a minute or two and still finish (`aios.workflows._Heartbeat`).
+    workflow_run_no_progress_limit: int = 5 * 60
 
     # Hybrid search.
     search_candidates: int = 40
