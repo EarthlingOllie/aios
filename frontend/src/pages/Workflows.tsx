@@ -251,6 +251,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const [saving, setSaving] = useState(false);
   const agents = useLoad(api.listAgents);
   const workflows = useLoad(api.listWorkflows);
+  const loadError = agents.error ?? workflows.error;
 
   useEffect(() => {
     if (id === undefined) {
@@ -314,6 +315,8 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+        {/* Without these there's nothing to add, so say why. */}
+        <ErrorBanner message={loadError && `Couldn't load agents and workflows: ${loadError}`} />
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Name" htmlFor="workflow-name">
             <Input

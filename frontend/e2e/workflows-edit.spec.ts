@@ -262,3 +262,13 @@ test("won't save while a node's key is invalid", async ({ page }) => {
   expect(api.writes).toHaveLength(1);
   expect(api.current(report).nodes.map((n) => n.key)).toEqual(["research", "draft"]);
 });
+
+test("says why there's nothing to add when agents fail to load", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { report } = seed(api);
+  await page.route("/api/agents", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
+  );
+  await page.goto(`/workflows/${report.id}/edit`);
+  await expect(page.getByRole("alert")).toContainText("Couldn't load agents and workflows: boom");
+});
