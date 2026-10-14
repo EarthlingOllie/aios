@@ -27,6 +27,11 @@ RUNNER_PORT = 8080
 EXEC_GRACE = 30
 
 
+class Unauthorized(SandboxGone):
+    """The runner rejected the call's token. For a Fargate task that means another session's
+    sandbox now has the address, so ours has stopped."""
+
+
 class RunnerClient:
     """Calls a runner in `serve` mode (see `aios.sandbox.runner`)."""
 
@@ -68,7 +73,7 @@ class RunnerClient:
             raise SandboxError("The sandbox didn't respond.") from exc
         if resp.status_code == 401:
             # Another session's sandbox now has the address: ours has stopped.
-            raise SandboxGone("The sandbox has stopped.")
+            raise Unauthorized("The sandbox has stopped.")
         if resp.status_code != 200:
             raise SandboxError(f"The sandbox refused the call ({resp.status_code}).")
         try:
@@ -226,7 +231,14 @@ class DevBackend:
         return await self.runner.healthy(handle.endpoint, handle.secret)
 
     async def execute(self, handle: SandboxHandle, code: str, timeout: int) -> ExecResult:
-        return await self.runner.execute(handle, code, timeout)
+        try:
+            return await self.runner.execute(handle, code, timeout)
+        except Unauthorized:
+            # The shared runner is still up; its token just isn't ours.
+            raise SandboxError(
+                f"The dev sandbox at {self.endpoint} rejected SANDBOX_DEV_TOKEN: set it to the"
+                " runner's SANDBOX_TOKEN."
+            ) from None
 
     async def stop(self, handle: SandboxHandle) -> None:
         pass
