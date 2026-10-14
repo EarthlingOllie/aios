@@ -32,7 +32,7 @@ export function RunPage() {
     try {
       await api.deleteRun(agentId, runId);
       reloadList();
-      navigate(`/agents/${agentId}`);
+      navigate(`/agents/${agentId}?tab=runs`);
     } catch (err) {
       setDeleteError(describeError(err));
     }
@@ -42,7 +42,7 @@ export function RunPage() {
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <Button asChild variant="ghost" size="icon" aria-label="Back to agent">
-          <Link to={`/agents/${agentId}`}>
+          <Link to={`/agents/${agentId}?tab=runs`}>
             <ArrowLeft />
           </Link>
         </Button>
