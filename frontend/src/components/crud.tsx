@@ -232,6 +232,10 @@ export function ErrorBanner({ message, onDismiss }: { message?: string; onDismis
   );
 }
 
+// Built once: `toLocaleString` with options builds a new formatter on every call, which costs
+// hundreds of microseconds, and lists call this once per row on every render.
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
 export function formatDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return dateFormat.format(new Date(iso));
 }
