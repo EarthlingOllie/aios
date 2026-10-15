@@ -209,6 +209,41 @@ def test_refuses_a_url_without_a_password(cluster):
     _connect(app_url).close()
 
 
+def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
+    """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
+    _, app_url, prov_url = cluster
+    tag = uuid.uuid4().hex[:8]
+    master, dbname = f"T_Master_{tag}", f"t_roles_q_{tag}"
+    with _connect(admin_url) as conn:
+        conn.execute(
+            sql.SQL("CREATE ROLE {} LOGIN CREATEDB CREATEROLE PASSWORD 'pw'").format(
+                sql.Identifier(master)
+            )
+        )
+    master_url = make_url(admin_url).set(username=master, password="pw", database=dbname)
+    master_url = master_url.render_as_string(hide_password=False)
+    try:
+        with _connect(master_url, database="postgres") as conn:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
+        with _connect(admin_url, database=dbname) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        with _connect(master_url) as conn:
+            conn.execute("CREATE TABLE things (id int)")
+        app_q = make_url(app_url).set(database=dbname).render_as_string(hide_password=False)
+        prov_q = make_url(prov_url).set(database=dbname).render_as_string(hide_password=False)
+
+        ensure_roles(master_url, app_q, prov_q)
+
+        with _connect(app_q) as conn:
+            conn.execute("ALTER TABLE things ADD COLUMN name text")
+    finally:
+        with _connect(admin_url) as conn:
+            conn.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(dbname))
+            )
+            conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
+
+
 def _migrate(database_url: str) -> subprocess.CompletedProcess:
     """`alembic upgrade head` against `database_url`, in a process of its own (the app's settings
     are read once per process)."""

@@ -56,7 +56,11 @@ def _login_role(conn: psycopg.Connection, url: str, *, privileged: bool) -> str:
 # table's indexes, row type, TOAST table and column sequences, and a type's array type, follow
 # it. Extensions' members (pgvector's) are left alone.
 _OWNED = """
-WITH own AS (
+WITH me AS (
+    -- Not current_user::regrole, which reads the name as an unquoted identifier.
+    SELECT oid FROM pg_roles WHERE rolname = current_user
+),
+own AS (
     SELECT n.oid AS nsp FROM pg_namespace n
      WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
 )
@@ -64,14 +68,14 @@ SELECT kind, name FROM (
     SELECT 'SCHEMA' AS kind, quote_ident(nspname) AS name,
            'pg_namespace'::regclass AS cls, oid
       FROM pg_namespace
-     WHERE oid IN (SELECT nsp FROM own) AND nspowner = current_user::regrole
+     WHERE oid IN (SELECT nsp FROM own) AND nspowner = (SELECT oid FROM me)
     UNION ALL
     SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
                           WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE'
                           ELSE 'TABLE' END,
            c.oid::regclass::text, 'pg_class'::regclass, c.oid
       FROM pg_class c
-     WHERE c.relnamespace IN (SELECT nsp FROM own) AND c.relowner = current_user::regrole
+     WHERE c.relnamespace IN (SELECT nsp FROM own) AND c.relowner = (SELECT oid FROM me)
        AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
        -- A column's sequence (serial or identity) follows its table.
        AND NOT EXISTS (SELECT 1 FROM pg_depend d
@@ -81,7 +85,7 @@ SELECT kind, name FROM (
     SELECT CASE t.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END,
            t.oid::regtype::text, 'pg_type'::regclass, t.oid
       FROM pg_type t
-     WHERE t.typnamespace IN (SELECT nsp FROM own) AND t.typowner = current_user::regrole
+     WHERE t.typnamespace IN (SELECT nsp FROM own) AND t.typowner = (SELECT oid FROM me)
        -- Enums, domains, ranges and standalone composite types; not tables' row types, array
        -- types or multiranges, which follow their table or type.
        AND (t.typtype IN ('e', 'd', 'r')
@@ -90,7 +94,7 @@ SELECT kind, name FROM (
     UNION ALL
     SELECT 'ROUTINE', p.oid::regprocedure::text, 'pg_proc'::regclass, p.oid
       FROM pg_proc p
-     WHERE p.pronamespace IN (SELECT nsp FROM own) AND p.proowner = current_user::regrole
+     WHERE p.pronamespace IN (SELECT nsp FROM own) AND p.proowner = (SELECT oid FROM me)
 ) o
 WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
                    WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
