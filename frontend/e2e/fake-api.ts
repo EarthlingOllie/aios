@@ -13,7 +13,20 @@ type NodeIn = { key: string; kind: Kind; version_id: number };
 type Edge = { source: string; target: string };
 type Position = { x: number; y: number };
 
-type AgentRow = { id: number; name: string; description: string; versions: number[] };
+type AgentRow = {
+  id: number;
+  name: string;
+  description: string;
+  base_prompt: string;
+  versions: number[];
+};
+type AgentRunRow = {
+  id: number;
+  agent_id: number;
+  agent_version_id: number;
+  title: string | null;
+  message_count: number;
+};
 type WorkflowVersionRow = {
   id: number;
   workflow_id: number;
@@ -70,9 +83,12 @@ export class FakeApi {
   agents = new Map<number, AgentRow>();
   // Agent version id -> [agent id, version number].
   agentVersions = new Map<number, [number, number]>();
+  // Agent version id -> note, for the versions that have one.
+  agentNotes = new Map<number, string>();
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
+  agentRuns = new Map<number, AgentRunRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** Every write the app sent, for assertions: [method, path, body]. */
@@ -83,7 +99,13 @@ export class FakeApi {
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
-    const agent: AgentRow = { id: this.id(), name, description, versions: [] };
+    const agent: AgentRow = {
+      id: this.id(),
+      name,
+      description,
+      base_prompt: `You are ${name}.`,
+      versions: [],
+    };
     for (let n = 1; n <= versions; n++) {
       const vid = this.id();
       agent.versions.push(vid);
@@ -91,6 +113,19 @@ export class FakeApi {
     }
     this.agents.set(agent.id, agent);
     return agent;
+  }
+
+  /** Adds a chat run of the agent, at its current version. */
+  addAgentRun(agent: AgentRow, title: string | null = null, message_count = 0): AgentRunRow {
+    const run: AgentRunRow = {
+      id: this.id(),
+      agent_id: agent.id,
+      agent_version_id: agent.versions.at(-1)!,
+      title,
+      message_count,
+    };
+    this.agentRuns.set(run.id, run);
+    return run;
   }
 
   /** Adds a workflow; `nodes` name their target as `{ agent }` or `{ workflow }`, at its latest. */
@@ -258,6 +293,44 @@ export class FakeApi {
 
   // --- Responses, shaped like the server's -------------------------------------------------
 
+  private agentRunsOf(agent: AgentRow) {
+    return [...this.agentRuns.values()].filter((r) => r.agent_id === agent.id);
+  }
+
+  private agentRunOut(run: AgentRunRow) {
+    return {
+      ...run,
+      agent_version: this.agentVersions.get(run.agent_version_id)![1],
+      created_at: NOW,
+      updated_at: NOW,
+    };
+  }
+
+  private agentVersionOut(agent: AgentRow, version: number) {
+    return {
+      id: agent.versions[version - 1],
+      version,
+      note: this.agentNotes.get(agent.versions[version - 1]) ?? null,
+      created_at: NOW,
+      base_prompt: agent.base_prompt,
+      model: null,
+      instructions: agent.base_prompt,
+      skills: [],
+      tools: [],
+    };
+  }
+
+  agentOut(agent: AgentRow) {
+    return {
+      id: agent.id,
+      name: agent.name,
+      description: agent.description,
+      created_at: NOW,
+      updated_at: NOW,
+      current_version: this.agentVersionOut(agent, agent.versions.length),
+    };
+  }
+
   private nodeOut(node: NodeIn) {
     if (node.kind === "agent") {
       const [agentId, version] = this.agentVersions.get(node.version_id)!;
@@ -351,6 +424,7 @@ export class FakeApi {
       return reply(200, { id: 1, login: "tester", name: "Tester", avatar_url: null });
     }
     if (path === "/api/documents") return reply(200, []);
+    if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
       return reply(
         200,
@@ -362,10 +436,69 @@ export class FakeApi {
           version_id: a.versions.at(-1),
           skill_count: 0,
           tool_count: 0,
-          run_count: 0,
+          run_count: this.agentRunsOf(a).length,
           updated_at: NOW,
         })),
       );
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/runs\/(\d+)$/)) && method === "DELETE") {
+      const run = this.agentRuns.get(Number(m[2]));
+      if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
+      this.agentRuns.delete(run.id);
+      return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
+      const agent = this.agents.get(Number(m[1]));
+      const version = Number(m[2]);
+      if (!agent || !agent.versions[version - 1]) return fail(404, "Not Found");
+      this.bumpAgent(agent);
+      this.agentNotes.set(agent.versions.at(-1)!, `Restored from v${version}`);
+      return reply(200, this.agentOut(agent));
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)(\/.*)?$/)) && method === "GET") {
+      const agent = this.agents.get(Number(m[1]));
+      const rest = m[2] ?? "";
+      if (!agent) return fail(404, "Not Found");
+      if (rest === "") return reply(200, this.agentOut(agent));
+      if (rest === "/runs") {
+        return reply(
+          200,
+          this.agentRunsOf(agent)
+            .reverse()
+            .map((r) => this.agentRunOut(r)),
+        );
+      }
+      if ((m = rest.match(/^\/runs\/(\d+)$/))) {
+        const run = this.agentRuns.get(Number(m[1]));
+        if (!run || run.agent_id !== agent.id) return fail(404, "Not Found");
+        return reply(200, {
+          ...this.agentRunOut(run),
+          ui_messages: [],
+          messages: [],
+          instructions: agent.base_prompt,
+        });
+      }
+      if (rest === "/versions") {
+        return reply(
+          200,
+          agent.versions
+            .map((vid, i) => ({
+              id: vid,
+              version: i + 1,
+              note: this.agentNotes.get(vid) ?? null,
+              created_at: NOW,
+              skill_count: 0,
+              tool_count: 0,
+              run_count: this.agentRunsOf(agent).filter((r) => r.agent_version_id === vid).length,
+            }))
+            .reverse(),
+        );
+      }
+      if ((m = rest.match(/^\/versions\/(\d+)$/))) {
+        const version = Number(m[1]);
+        if (!agent.versions[version - 1]) return fail(404, "Not Found");
+        return reply(200, this.agentVersionOut(agent, version));
+      }
     }
     if (path === "/api/triggers" && method === "GET") return reply(200, []);
     if (path === "/api/triggers/timezones") return reply(200, this.timezones);
