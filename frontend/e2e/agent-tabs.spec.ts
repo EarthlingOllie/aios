@@ -180,4 +180,6 @@ test("the Schedule tab shows the agent's schedules", async ({ page }) => {
     panel(page).getByText("No schedules. Add one to run this agent automatically."),
   ).toBeVisible();
   await expect(page.getByText("You are Researcher.")).toHaveCount(0);
+  // The tab names the section, so the panel doesn't repeat it as a heading.
+  await expect(panel(page).getByRole("heading", { name: "Schedules" })).toHaveCount(0);
 });

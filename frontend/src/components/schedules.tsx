@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Link } from "react-router";
 import { Bot, CalendarClock, Pencil, Plus, Trash2, Workflow } from "lucide-react";
 
-import { ErrorBanner, Field, formatDate, Section, useLoad } from "@/components/crud";
+import { ErrorBanner, Field, formatDate, useLoad } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -470,16 +470,14 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
   );
 }
 
-/** The "Schedules" section of an agent's or a workflow's page. */
+/** An agent's or a workflow's schedules. The page gives them a heading (or a tab) of its own. */
 export function TargetSchedules({ kind, id }: Target) {
   const target = useTargetMemo(kind, id);
   return (
-    <Section title="Schedules">
-      <ScheduleList
-        target={target}
-        empty={`No schedules. Add one to run this ${kind} automatically.`}
-      />
-    </Section>
+    <ScheduleList
+      target={target}
+      empty={`No schedules. Add one to run this ${kind} automatically.`}
+    />
   );
 }
 

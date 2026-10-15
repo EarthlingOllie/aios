@@ -223,7 +223,9 @@ function WorkflowDetailView({ id }: { id: number }) {
           editHref={`/workflows/${id}/edit`}
         />
       </Section>
-      <TargetSchedules kind="workflow" id={id} />
+      <Section title="Schedules">
+        <TargetSchedules kind="workflow" id={id} />
+      </Section>
       <Section title="Runs">
         {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
         {runs.data?.length === 0 && (
