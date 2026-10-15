@@ -144,6 +144,21 @@ def test_list_is_upcoming_first_and_filters_by_target(api):
     assert [t["id"] for t in by_a] == [t_later["id"], t_off["id"]]
 
 
+def test_list_filter_needs_both_target_kind_and_id(api):
+    agent = make_agent(api, "Bot")
+    workflow = make_workflow(api, "Flow")
+    make_trigger(api, schedule("agent", agent["id"]))
+    make_trigger(api, schedule("workflow", workflow["id"]))
+    for params in [
+        {"target_kind": "agent"},
+        {"target_kind": "workflow"},
+        {"target_id": agent["id"]},
+    ]:
+        resp = api.get("/api/triggers", params=params)
+        assert resp.status_code == 422, (params, resp.text)
+        assert resp.json()["detail"] == "Filter by both target_kind and target_id, or neither"
+
+
 def test_update_reschedules(api):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))

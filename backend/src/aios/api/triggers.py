@@ -159,7 +159,13 @@ def list_triggers(
     target_kind: TriggerTargetKind | None = None,
     target_id: DbId | None = None,
 ):
-    """The user's triggers, the next to fire first; disabled ones last."""
+    """The user's triggers, the next to fire first; disabled ones last. Optionally only one
+    target's: an agent's or workflow's, so both `target_kind` and `target_id` or neither."""
+    if (target_kind is None) != (target_id is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Filter by both target_kind and target_id, or neither",
+        )
     query = (
         select(Trigger)
         .where(Trigger.owner_id == user.id)
