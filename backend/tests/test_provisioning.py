@@ -19,7 +19,7 @@ import psycopg
 import pytest
 from conftest import delete_user
 from psycopg import errors, sql
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.engine import make_url
 
 from aios import worker
@@ -313,7 +313,7 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
         conn.execute("CREATE TABLE aios.marker (id int)")
     assert [store_row(db, s).schema_revision for s in ids] == ["0001", "0001", head]
 
-    outcome = provision.migrate_all()
+    outcome = provision.migrate_all(ids)
 
     assert {s: outcome[s] for s in (behind, ahead)} == {behind: head, ahead: head}
     assert isinstance(outcome[broken], Exception)
@@ -325,11 +325,16 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
         assert store.scalar(text("SELECT count(*) FROM aios.marker")) == 0
 
 
-def test_migrate_all_reports_failures_and_exits_non_zero(db, new_user, next_revision, capsys):
+def test_migrate_all_reports_failures_and_exits_non_zero(
+    db, new_user, next_revision, capsys, monkeypatch
+):
     ok, broken = [data_store_for(new_user().id) for _ in range(2)]
     for store_id in (ok, broken):
         provision.provision(store_id)
     next_revision()
+    # Only this test's stores: others in the database mustn't get the test's revision.
+    migrate_all = provision.migrate_all
+    monkeypatch.setattr(provision, "migrate_all", lambda: migrate_all([ok, broken]))
     with admin_connect(store_row(db, broken).dbname) as conn:
         conn.execute("CREATE TABLE aios.marker (id int)")
 
@@ -343,10 +348,26 @@ def test_migrate_all_reports_failures_and_exits_non_zero(db, new_user, next_revi
 def test_migrate_all_finishes_provisioning_stores_that_never_got_there(db, new_user):
     store_id = data_store_for(new_user().id)  # queued, but never run
 
-    outcome = provision.migrate_all()
+    outcome = provision.migrate_all([store_id])
 
     assert outcome[store_id] == head_revision()
     assert store_row(db, store_id).status == DataStoreStatus.ready
+
+
+def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, new_user):
+    """Stores made before migration 0012 have no passwords yet."""
+    store_id = data_store_for(new_user().id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
+    )
+    db.commit()
+
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    assert row.status == DataStoreStatus.ready
+    with psycopg.connect(login_url(row, "rw")) as conn:
+        assert conn.execute("SELECT current_user").fetchone() == (f"{row.role_prefix}_rw",)
 
 
 def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
@@ -356,7 +377,7 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
     user = new_user()
     store_id = data_store_for(user.id)
     provision.provision(store_id)
-    provision.migrate_all()
+    provision.migrate_all([store_id])
     row = store_row(db, store_id)
     passwords = [credentials.decrypt(row.rw_password), credentials.decrypt(row.ro_password)]
 
@@ -404,5 +425,5 @@ def test_the_provisioning_task_retries_then_marks_the_store_failed(db, new_user,
 
     # The deploy's migrate-all tries again.
     monkeypatch.undo()
-    assert provision.migrate_all()[store_id] == head_revision()
+    assert provision.migrate_all([store_id])[store_id] == head_revision()
     assert store_row(db, store_id).status == DataStoreStatus.ready

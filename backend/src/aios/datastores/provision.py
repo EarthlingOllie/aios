@@ -27,13 +27,13 @@ platform's migrations).
 import logging
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 import psycopg
 from psycopg import sql
-from sqlalchemy import create_engine, pool, select, text, update
+from sqlalchemy import create_engine, pool, select, text, true, update
 from sqlalchemy.engine import make_url
 
 from aios.config import get_settings, libpq_conninfo
@@ -324,15 +324,20 @@ def _describe(exc: BaseException) -> str:
     return f"{exc.__class__.__name__}: {exc}"[:2000]
 
 
-def migrate_all() -> dict[uuid.UUID, str | BaseException]:
+def migrate_all(
+    store_ids: Collection[uuid.UUID] | None = None,
+) -> dict[uuid.UUID, str | BaseException]:
     """Finish provisioning stores that never got there, then bring every ready store to the
     tree's head, one at a time. Returns each store's revision, or what stopped it: a store that
-    fails doesn't stop the rest."""
+    fails doesn't stop the rest.
+
+    `store_ids` limits it to those stores (tests use it to leave other stores alone)."""
+    only = DataStore.id.in_(store_ids) if store_ids is not None else true()
     outcome: dict[uuid.UUID, str | BaseException] = {}
     with SessionLocal() as db:
         unfinished = db.scalars(
             select(DataStore.id).where(
-                DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed])
+                only, DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed])
             )
         ).all()
     for store_id in unfinished:
@@ -345,7 +350,7 @@ def migrate_all() -> dict[uuid.UUID, str | BaseException]:
     with SessionLocal() as db:
         ready = db.scalars(
             select(DataStore.id)
-            .where(DataStore.status == DataStoreStatus.ready)
+            .where(only, DataStore.status == DataStoreStatus.ready)
             .order_by(DataStore.created_at)
         ).all()
     for store_id in ready:

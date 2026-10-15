@@ -22,9 +22,7 @@ down_revision: str | None = "0011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-STATUS = sa.Enum(
-    "provisioning", "ready", "failed", "deleting", "deleted", name="data_store_status"
-)
+STATUS = sa.Enum("provisioning", "ready", "failed", "deleting", "deleted", name="data_store_status")
 
 
 def upgrade() -> None:
