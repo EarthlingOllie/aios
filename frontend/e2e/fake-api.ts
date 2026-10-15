@@ -439,6 +439,12 @@ export class FakeApi {
         })),
       );
     }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/runs\/(\d+)$/)) && method === "DELETE") {
+      const run = this.agentRuns.get(Number(m[2]));
+      if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
+      this.agentRuns.delete(run.id);
+      return reply(204);
+    }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));
       const version = Number(m[2]);

@@ -152,3 +152,19 @@ test("Tab moves from the tab list into the panel, even one with nothing to focus
   await page.keyboard.press("Tab");
   await expect(panel(page)).toBeFocused();
 });
+
+test("deleting a run from its page returns to the Runs tab, without it", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  const run = api.addAgentRun(agent, "Find sources");
+  api.addAgentRun(agent, "Summarise");
+  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete run" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}\\?tab=runs$`));
+  await expect(tab(page, "Runs 1")).toHaveAttribute("aria-selected", "true");
+  await expect(panel(page).getByRole("link", { name: /Summarise/ })).toBeVisible();
+  await expect(panel(page).getByText("Find sources")).toHaveCount(0);
+});
