@@ -28,7 +28,7 @@ from aios.config import Settings
 class _BootstrapSettings(Settings):
     """The app's settings, plus the master user's DSN, which only this command reads."""
 
-    database_admin_url: str
+    database_admin_url: str = ""
 
 
 def _conninfo(url: str, **parts) -> str:
@@ -243,7 +243,9 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
 def main() -> None:
     try:
         settings = _BootstrapSettings()
-    except ValidationError:
+    except ValidationError as exc:
+        sys.exit(str(exc))
+    if not settings.database_admin_url:
         sys.exit("DATABASE_ADMIN_URL (the master user's DSN) is required")
     ensure_roles(
         settings.database_admin_url, settings.database_url, settings.data_store_provisioner_url

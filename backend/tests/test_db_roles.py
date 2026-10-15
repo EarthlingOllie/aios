@@ -163,6 +163,21 @@ def test_command_needs_the_master_users_url(cluster):
     assert "DATABASE_ADMIN_URL" in result.stderr
 
 
+def test_command_reports_the_setting_that_is_actually_invalid(cluster):
+    admin_url, app_url, prov_url = cluster
+
+    result = _bootstrap(
+        DATABASE_ADMIN_URL=admin_url,
+        DATABASE_URL=app_url,
+        DATA_STORE_PROVISIONER_URL=prov_url,
+        COOKIE_SECURE="not-a-bool",
+    )
+
+    assert result.returncode != 0
+    assert "cookie_secure" in result.stderr
+    assert "DATABASE_ADMIN_URL" not in result.stderr
+
+
 def test_rerunning_changes_the_passwords(cluster):
     admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
