@@ -18,6 +18,9 @@ export type Tab = {
  * a link back from a sub-page opens on it. The first tab is the default and leaves the URL bare.
  * Switching replaces the history entry, so Back leaves the page rather than stepping through tabs.
  * Follows the ARIA tabs pattern: the arrows, Home and End move between tabs.
+ * Only the open tab's panel is mounted, so state inside a panel (an open `<details>`, a scroll
+ * position, a draft) resets on switching, as it does on leaving the page; keep anything that must
+ * survive above the tabs or in the URL.
  */
 export function Tabs({
   tabs,
