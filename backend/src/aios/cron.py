@@ -26,7 +26,8 @@ class CronError(ValueError):
     pass
 
 
-_TIMEZONES = frozenset(available_timezones() | {"UTC"})
+# Not places: `localtime` is whatever zone the server runs in, and `Factory` is tzdata's "not set".
+_TIMEZONES = frozenset((available_timezones() | {"UTC"}) - {"localtime", "Factory"})
 
 
 def normalize(expr: str) -> str:

@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from aios.cron import CronError, describe, next_run, next_runs, normalize
+from aios.cron import CronError, describe, next_run, next_runs, normalize, timezones
 
 
 def utc(*args) -> datetime:
@@ -84,3 +84,13 @@ def test_normalize_and_describe():
     assert normalize(" @Daily ") == "@daily"
     assert describe("0 9 * * 1") == "At 09:00 on Monday"
     assert describe("*/15 * * * *") == "Every 15th minute of every hour"
+
+
+def test_timezones_are_places_not_the_servers_clock():
+    # `localtime` is whatever zone the server is set to, and `Factory` is tzdata's placeholder
+    # for "not set": neither means anything to the user scheduling a run.
+    assert "localtime" not in timezones() and "Factory" not in timezones()
+    assert {"UTC", "Europe/London", "America/New_York"} <= timezones()
+    for tz in ["localtime", "Factory"]:
+        with pytest.raises(CronError, match="Unknown timezone"):
+            next_runs("* * * * *", tz, utc(2026, 1, 1), 1)
