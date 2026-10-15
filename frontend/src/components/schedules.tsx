@@ -15,6 +15,7 @@ import {
   type TriggerInput,
   type TriggerTargetKind,
 } from "@/lib/api";
+import { browserKnowsTimeZone, formatInTimeZone } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 
 const PRESETS = [
@@ -65,7 +66,13 @@ export function triggerInput(t: Trigger, changes: Partial<TriggerInput> = {}): T
 
 /** What the cron expression means, and when it next runs; checked by the server as it's typed. */
 function Preview({ cron, timezone }: { cron: string; timezone: string }) {
-  const [state, setState] = useState<{ preview?: SchedulePreview; error?: string }>({});
+  // The preview keeps the timezone it was fetched for: until the next check, `timezone` may be
+  // half typed, and the runs are shown in the zone they were computed in, not that one.
+  const [state, setState] = useState<{
+    preview?: SchedulePreview;
+    timezone?: string;
+    error?: string;
+  }>({});
   useEffect(() => {
     if (!cron.trim() || !timezone.trim()) {
       setState({});
@@ -74,7 +81,7 @@ function Preview({ cron, timezone }: { cron: string; timezone: string }) {
     let stale = false;
     const timer = setTimeout(() => {
       api.previewSchedule(cron, timezone).then(
-        (preview) => !stale && setState({ preview }),
+        (preview) => !stale && setState({ preview, timezone }),
         (err) => !stale && setState({ error: describeError(err) }),
       );
     }, 250);
@@ -90,20 +97,19 @@ function Preview({ cron, timezone }: { cron: string; timezone: string }) {
         {state.error}
       </p>
     );
-  if (!state.preview) return null;
+  if (!state.preview || !state.timezone) return null;
+  const zone = state.timezone;
   return (
     <div className="bg-muted/50 rounded-md border p-3 text-sm" data-testid="schedule-preview">
       <p className="font-medium">{state.preview.description}</p>
-      <p className="text-muted-foreground mt-1 text-xs">Next runs ({timezone}):</p>
+      <p className="text-muted-foreground mt-1 text-xs">
+        {browserKnowsTimeZone(zone)
+          ? `Next runs (${zone}):`
+          : `Next runs (in UTC: this browser can't show times in ${zone}):`}
+      </p>
       <ul className="text-muted-foreground mt-1 space-y-0.5 text-xs">
         {state.preview.next_runs.map((t) => (
-          <li key={t}>
-            {new Date(t).toLocaleString(undefined, {
-              dateStyle: "medium",
-              timeStyle: "short",
-              timeZone: timezone,
-            })}
-          </li>
+          <li key={t}>{formatInTimeZone(t, zone)}</li>
         ))}
       </ul>
     </div>
