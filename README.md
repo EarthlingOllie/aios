@@ -230,7 +230,7 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 | Role | Attributes | Used by |
 | --- | --- | --- |
 | `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (the checkpointer's `langgraph`). It doesn't own the database, so it can't drop or reconfigure it. |
-| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS only the provisioning worker gets its secret. |
+| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker only; no service uses it yet. |
 
 `python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
 else reads), taking each role's name and password from its URL. It also creates the `vector`
@@ -283,7 +283,8 @@ anything real.
 
 Database credentials are in three secrets (see [Database roles](#database-roles)):
 `<name>/app`'s `DATABASE_URL` is `aios_app`'s, given to the api, the workers and migrations;
-`<name>/provisioner` is `aios_provisioner`'s, for the provisioning worker only; and
+`<name>/provisioner` is `aios_provisioner`'s, for the provisioning worker only (none runs yet, and
+the shared execution role can't read it); and
 `<name>/db-master` is the RDS master user's, for break-glass access. Only the `db-roles` task
 (whose execution role is the only one that can read it) is given the master user's, to create the
 roles before each migration; the secret also holds the two roles' DSNs, so that task reads nothing

@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     # the workers and migrations all connect as it.
     database_url: str = "postgresql+psycopg://aios_app:aios_app@localhost:5432/aios"
     # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), for creating data
-    # stores. On AWS only the provisioning worker is given it.
+    # stores. Read by `aios.db_roles` (to create the role) only, for now; on AWS only the
+    # provisioning worker is to be given it.
     data_store_provisioner_url: str = (
         "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
     )

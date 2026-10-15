@@ -26,7 +26,7 @@ resource "random_password" "db" {
 # - aios_app: the api, the workers and migrations. Owns the platform schema; no CREATEDB or
 #   CREATEROLE.
 # - aios_provisioner: CREATEDB and CREATEROLE, for creating data stores. Only the provisioning
-#   worker is given its secret.
+#   worker will be given its secret (no service has it yet).
 resource "random_password" "db_app" {
   length  = 32
   special = false

@@ -5,7 +5,8 @@
   create schemas, and has no `CREATEDB` or `CREATEROLE`. The database stays the master user's, so
   the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
-  `CREATEROLE`, for creating data stores. Only the provisioning worker has its credentials.
+  `CREATEROLE`, for creating data stores. Only the provisioning worker is to have its
+  credentials; nothing uses it yet.
 
 The names and passwords come from those two URLs, and the master user's from
 DATABASE_ADMIN_URL, which nothing else is given: past this one-off, the master user is for

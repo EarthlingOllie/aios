@@ -25,8 +25,9 @@ resource "aws_secretsmanager_secret_version" "app" {
 }
 
 # The provisioner's role (CREATEDB, CREATEROLE). A secret of its own so that only the
-# provisioning worker is given it: no other service's task definition references it, and the
-# shared execution role can't read it.
+# provisioning worker will be given it (with an execution role of its own): the shared execution
+# role can't read it. No service has it yet; nothing creates data stores until that worker
+# exists.
 resource "aws_secretsmanager_secret" "provisioner" {
   name                    = "${var.name}/provisioner"
   recovery_window_in_days = 0
