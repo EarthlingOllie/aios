@@ -3,7 +3,7 @@ import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -14,7 +14,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from aios import auth, scheduler, tracing
 from aios.api import agents, chat, documents, skills, tools, triggers, workflows
 from aios.config import get_settings
+from aios.datastores import DataStoreNotReady
 from aios.db import engine
+from aios.models import DataStoreStatus
 
 
 @asynccontextmanager
@@ -59,6 +61,19 @@ def create_app() -> FastAPI:
             exc.errors(), custom_encoder={float: lambda f: f if math.isfinite(f) else str(f)}
         )
         return await request_validation_exception_handler(request, RequestValidationError(errors))
+
+    @app.exception_handler(DataStoreNotReady)
+    async def data_store_not_ready(request: Request, exc: DataStoreNotReady) -> JSONResponse:
+        # Uploads, document lists and searches, until the user's store is provisioned.
+        detail = (
+            "Your data store couldn't be set up. We'll try again; please check back later."
+            if exc.status == DataStoreStatus.failed
+            else "Your data store is being set up. Try again in a moment."
+        )
+        return JSONResponse(
+            {"detail": detail, "data_store_status": exc.status.value},
+            status_code=status.HTTP_409_CONFLICT,
+        )
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

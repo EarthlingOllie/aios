@@ -8,8 +8,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.datastores import store_owner, store_session
+from aios.datastores import DataStoreNotReady, documents_session, store_owner, store_status
 from aios.embeddings import embed_query
+from aios.models import DataStoreStatus
 
 # Each branch ranks its own top-N candidates; Reciprocal Rank Fusion then scores every
 # chunk as sum(1 / (k + rank)) over the branches it appears in.
@@ -49,6 +50,10 @@ HYBRID_SQL = text(
     LIMIT :limit
     """
 )
+
+
+# What the search tools tell the model while the store is being set up.
+STORE_NOT_READY = "The user's data store is still being set up, so there's nothing to search yet."
 
 
 @dataclass
@@ -106,10 +111,14 @@ async def hybrid_search(*, data_store_id: uuid.UUID, query: str, limit: int = 8)
     """Search the data store's documents."""
     if not query.strip():  # e.g. a blank query from the agent's tool call
         return []
+    # Before embedding the query, which would be wasted on a store that isn't ready.
+    status = await to_thread.run_sync(store_status, data_store_id)
+    if status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, status)
     query_vector = await embed_query(query)
 
     def run() -> list[SearchHit]:
-        with store_session(data_store_id, "ro") as db:
+        with documents_session(data_store_id, "ro") as db:
             return hybrid_search_with_vector(
                 db, owner_id=store_owner(db), query=query, query_vector=query_vector, limit=limit
             )
@@ -121,7 +130,10 @@ async def document_search_results(
     *, data_store_id: uuid.UUID, query: str, limit: int = 8
 ) -> list[dict]:
     """Hybrid search hits in the form the search tools return to the model."""
-    hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
+    try:
+        hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
+    except DataStoreNotReady:
+        return [{"error": STORE_NOT_READY}]
     return [
         {
             "source": hit.filename,

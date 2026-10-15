@@ -1,16 +1,19 @@
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import OperationalError
 
 from aios.auth import current_user
+from aios.datastores import data_store_for, provision, resolve
+from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import User
+from aios.models import DataStore, DataStoreStatus, User
 from aios.sandbox import runner
 
 
@@ -45,14 +48,48 @@ def db():
         session.rollback()
 
 
+@pytest.fixture(autouse=True)
+def provisioning(monkeypatch) -> list[uuid.UUID]:
+    """Data stores whose provisioning was queued, instead of sending it to the broker."""
+    queued: list[uuid.UUID] = []
+    monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
+    return queued
+
+
+def delete_user(db, user: User) -> None:
+    """Delete the user, and drop their store's database if it was provisioned."""
+    stores = [
+        provision.StoreNames.of(s)
+        for s in db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id))
+    ]
+    db.delete(user)
+    db.commit()
+    if stores:
+        dispose_engines()
+        for names in stores:
+            provision.drop(names)
+
+
+def mark_ready(db, user: User) -> uuid.UUID:
+    """Give the user a store that's ready, without provisioning it: enough for documents and
+    search, which are still in the platform database."""
+    store_id = data_store_for(user.id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.ready)
+    )
+    db.commit()
+    return store_id
+
+
 @pytest.fixture
 def user(db):
+    """A user whose store is ready (not provisioned: see `mark_ready`)."""
     u = User(github_id=-1, login="test-user")
     db.add(u)
     db.commit()
+    mark_ready(db, u)
     yield u
-    db.delete(u)
-    db.commit()
+    delete_user(db, u)
 
 
 @pytest.fixture

@@ -8,9 +8,9 @@ from sqlalchemy import func, select
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
-from aios.datastores import data_store_for, store_owner, store_session
+from aios.datastores import data_store_for, documents_session, store_owner, store_status
 from aios.db import DbId
-from aios.models import Chunk, Document, DocumentStatus
+from aios.models import Chunk, DataStoreStatus, Document, DocumentStatus
 from aios.search import hybrid_search
 from aios.worker import ingest_document_task
 
@@ -44,14 +44,25 @@ class UserOut(BaseModel):
     avatar_url: str | None
 
 
+class DataStoreOut(BaseModel):
+    # Only its status: a store's name, roles and credentials never leave the platform.
+    status: DataStoreStatus
+
+
 @router.get("/me", response_model=UserOut)
 def me(user: CurrentUser):
     return user
 
 
+@router.get("/data-store", response_model=DataStoreOut)
+def data_store(user: CurrentUser):
+    """The user's data store's status: documents and search wait until it's `ready`."""
+    return DataStoreOut(status=store_status(data_store_for(user.id)))
+
+
 @router.get("/documents", response_model=list[DocumentOut])
 def list_documents(user: CurrentUser):
-    with store_session(data_store_for(user.id), "ro") as db:
+    with documents_session(data_store_for(user.id), "ro") as db:
         rows = db.execute(
             select(Document, func.count(Chunk.id))
             .outerjoin(Chunk)
@@ -81,7 +92,7 @@ def upload_document(file: UploadFile, user: CurrentUser):
     if len(data) > max_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     store_id = data_store_for(user.id)
-    with store_session(store_id, "rw") as db:
+    with documents_session(store_id, "rw") as db:
         doc = Document(
             owner_id=store_owner(db),
             filename=file.filename or "upload",
@@ -115,7 +126,7 @@ def upload_document(file: UploadFile, user: CurrentUser):
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: DbId, user: CurrentUser) -> None:
-    with store_session(data_store_for(user.id), "rw") as db:
+    with documents_session(data_store_for(user.id), "rw") as db:
         doc = db.get(Document, document_id)
         if doc is None or doc.owner_id != store_owner(db):
             raise HTTPException(status.HTTP_404_NOT_FOUND)

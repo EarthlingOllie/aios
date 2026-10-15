@@ -5,7 +5,7 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
-from aios.datastores import DataStoreNotFound, store_session
+from aios.datastores import DataStoreNotFound, DataStoreNotReady, documents_session
 from aios.datastores.resolve import data_store_of_document
 
 settings = get_settings()
@@ -31,12 +31,17 @@ celery_app.conf.update(
     # waits behind one. The timeout above is broker-wide and shorter than a run, which is fine:
     # a redelivered run doesn't start again, and is only failed if its heartbeat has stopped
     # (see `aios.workflows._claim`).
-    task_routes={"aios.run_workflow": {"queue": "workflows"}},
+    task_routes={
+        "aios.run_workflow": {"queue": "workflows"},
+        # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
+        "aios.provision_data_store": {"queue": "provisioning"},
+        "aios.migrate_data_stores": {"queue": "provisioning"},
+    },
 )
 
 
-@celery_app.task(name="aios.ingest_document")
-def ingest_document_task(data_store_id: str | int, document_id: int | None = None) -> None:
+@celery_app.task(name="aios.ingest_document", bind=True, max_retries=60)
+def ingest_document_task(self, data_store_id: str | int, document_id: int | None = None) -> None:
     """Ingest a document of the data store's (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
 
@@ -49,12 +54,44 @@ def ingest_document_task(data_store_id: str | int, document_id: int | None = Non
             return
         data_store_id = str(store_id)
     try:
-        with store_session(uuid.UUID(data_store_id), "rw") as db:
+        with documents_session(uuid.UUID(data_store_id), "rw") as db:
             ingest_document(db, document_id)
     except DataStoreNotFound:
         # Deleted since the upload (with its owner), and its documents with it: as for a
         # document deleted before its ingest, there's nothing left to do.
         return
+    except DataStoreNotReady as exc:
+        # Uploaded before the store was being provisioned (uploads wait for it now).
+        raise self.retry(countdown=60) from exc
+
+
+# Provisioning gives up after this many tries (a minute apart, then longer), and marks the store
+# failed; the deploy's `migrate_all` tries again.
+PROVISION_RETRIES = 5
+
+
+@celery_app.task(name="aios.provision_data_store", bind=True, max_retries=PROVISION_RETRIES)
+def provision_data_store_task(self, data_store_id: str) -> None:
+    """Create the store's database (`aios.datastores.provision`). Safe to run again, or at once
+    with another run for the same store."""
+    from aios.datastores import provision
+
+    store_id = uuid.UUID(data_store_id)
+    try:
+        provision.provision(store_id)
+    except Exception as exc:
+        if self.request.retries >= PROVISION_RETRIES:
+            provision.fail(store_id, f"{exc.__class__.__name__}: {exc}"[:2000])
+            raise
+        raise self.retry(countdown=60 * 2**self.request.retries) from exc
+
+
+@celery_app.task(name="aios.migrate_data_stores")
+def migrate_data_stores_task() -> None:
+    """Bring every ready store to the store tree's head (`aios.datastores.provision`)."""
+    from aios.datastores import provision
+
+    provision.migrate_all()
 
 
 @celery_app.task(

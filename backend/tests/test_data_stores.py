@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from fake_model import ToolCall, last_tool_results, model, use_model
-from sqlalchemy import event, select, text
+from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
 from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
@@ -19,10 +19,17 @@ from aios import auth, ingest, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
-from aios.datastores import DataStoreNotFound, data_store_for, store_session
+from aios.datastores import (
+    DataStoreNotFound,
+    DataStoreNotReady,
+    data_store_for,
+    documents_session,
+    store_session,
+)
 from aios.db import SessionLocal, engine
 from aios.models import (
     DataStore,
+    DataStoreStatus,
     Document,
     DocumentStatus,
     User,
@@ -50,15 +57,90 @@ def test_a_user_becomes_a_store_of_its_own(db, user):
         db.commit()
 
 
-def test_a_session_is_opened_on_a_store(db, user):
+def test_a_session_is_opened_only_on_a_store_that_exists_and_is_ready(db, user):
+    """(Sessions on a provisioned store's own database: see test_provisioning.)"""
     store_id = data_store_for(user.id)
-    with store_session(store_id, "ro") as store:
+    with documents_session(store_id, "ro") as store:
         assert store.scalar(text("SELECT 1")) == 1
 
-    with pytest.raises(DataStoreNotFound), store_session(uuid.uuid4(), "rw"):
-        pass
-    with pytest.raises(ValueError, match="role"), store_session(store_id, "admin"):
-        pass
+    for opener in (store_session, documents_session):
+        with pytest.raises(DataStoreNotFound), opener(uuid.uuid4(), "rw"):
+            pass
+        with pytest.raises(ValueError, match="role"), opener(store_id, "admin"):
+            pass
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+    )
+    db.commit()
+    for opener in (store_session, documents_session):
+        with pytest.raises(DataStoreNotReady), opener(store_id, "ro"):
+            pass
+
+
+@pytest.fixture
+def unready_user(db, user) -> User:
+    """`user`, with a store that's still being provisioned."""
+    db.execute(
+        update(DataStore)
+        .where(DataStore.owner_user_id == user.id)
+        .values(status=DataStoreStatus.provisioning)
+    )
+    db.commit()
+    return user
+
+
+def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *a: queued.append(a))
+
+    responses = [
+        api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")}),
+        api.get("/api/documents"),
+        api.get("/api/search", params={"q": "fish"}),
+    ]
+
+    for r in responses:
+        assert r.status_code == 409, r.text
+        assert r.json() == {
+            "detail": "Your data store is being set up. Try again in a moment.",
+            "data_store_status": "provisioning",
+        }
+    assert queued == []
+    assert api.get("/api/data-store").json() == {"status": "provisioning"}
+
+
+def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
+    db.execute(
+        update(DataStore)
+        .where(DataStore.owner_user_id == unready_user.id)
+        .values(status=DataStoreStatus.failed, error="boom")
+    )
+    db.commit()
+
+    r = api.get("/api/documents")
+
+    assert r.status_code == 409
+    assert r.json()["data_store_status"] == "failed"
+    assert "boom" not in r.text
+    assert api.get("/api/data-store").json() == {"status": "failed"}
+
+
+def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_user):
+    body = chat_body("fish?")
+    body["messages"][0]["role"] = "user"
+    seen = []
+
+    async def search_then_answer_seeing(messages, info):
+        if results := last_tool_results(messages):
+            seen.extend(results)
+            yield "done"
+        else:
+            yield ToolCall("search_documents", {"query": "fish"})
+
+    with use_model(model(search_then_answer_seeing)):
+        assert api.post("/api/chat", json=body).status_code == 200
+
+    assert seen and all("still being set up" in str(r) for r in seen)
 
 
 def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
@@ -279,7 +361,9 @@ class FakeResponse:
         return self.body
 
 
-def test_signing_in_gives_the_user_a_store(client, db, monkeypatch):
+def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
+    client, db, monkeypatch, provisioning
+):
     github = auth.oauth.github
 
     async def authorize_access_token(request):
@@ -298,7 +382,40 @@ def test_signing_in_gives_the_user_a_store(client, db, monkeypatch):
     user = db.scalar(select(User).where(User.github_id == -3))
     try:
         stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id)).all()
-        assert len(stores) == 1
+        assert [s.status for s in stores] == [DataStoreStatus.provisioning]
+        assert provisioning == [stores[0].id]
     finally:
         db.delete(user)
+        db.commit()
+
+
+def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, provisioning):
+    owner = User(github_id=-5, login="later")
+    db.add(owner)
+    db.commit()
+    try:
+        store_id = data_store_for(owner.id, db)
+        assert provisioning == []
+        db.commit()
+        assert provisioning == [store_id]
+        # Not again for a store that exists.
+        assert data_store_for(owner.id, db) == store_id
+        db.commit()
+        assert provisioning == [store_id]
+    finally:
+        db.delete(owner)
+        db.commit()
+
+
+def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(db, provisioning):
+    owner = User(github_id=-6, login="undone")
+    db.add(owner)
+    db.commit()
+    try:
+        data_store_for(owner.id, db)
+        db.rollback()
+        db.commit()
+        assert provisioning == []
+    finally:
+        db.delete(owner)
         db.commit()

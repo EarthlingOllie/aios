@@ -5,8 +5,11 @@
   create schemas, and has no `CREATEDB` or `CREATEROLE`. The database stays the master user's, so
   the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
-  `CREATEROLE`, for creating data stores. Only the provisioning worker is to have its
-  credentials; nothing uses it yet.
+  `CREATEROLE`, for creating and migrating data stores (`aios.datastores.provision`). Only the
+  provisioning worker and the deploy's store migration have its credentials.
+
+It also keeps every other role (data stores' roles included) from connecting to the platform
+database, `postgres` and `template1`, and makes the template data stores are copied from.
 
 The names and passwords come from those two URLs, and the master user's from
 DATABASE_ADMIN_URL, which nothing else is given: past this one-off, the master user is for
@@ -23,7 +26,7 @@ from psycopg import sql
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from aios.config import Settings, libpq_conninfo
+from aios.config import Settings, get_settings, libpq_conninfo
 
 
 class _BootstrapSettings(Settings):
@@ -193,12 +196,18 @@ SELECT pg_describe_object(o.cls, o.oid, 0)
 """
 
 
-def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
-    """Create or update both roles, and make the app's role own the platform schema.
+def ensure_roles(
+    admin_url: str, app_url: str, provisioner_url: str, store_template: str | None = None
+) -> list[str]:
+    """Create or update both roles, make the app's role own the platform schema, keep every
+    other role out of the platform database, `postgres` and `template1`, and make the data
+    stores' template (`store_template`, by default DATA_STORE_TEMPLATE).
 
     The platform database is `app_url`'s; the master user connects to it whatever database
-    `admin_url` names.
+    `admin_url` names. Returns the databases of those three it couldn't keep others out of,
+    not owning them.
     """
+    store_template = store_template or get_settings().data_store_template
     admin, app_u, prov_u = make_url(admin_url), make_url(app_url), make_url(provisioner_url)
     # Before anything changes: the same role twice would end with the last ALTER ROLE's
     # attributes and password (an app role with CREATEDB, or a master user without it), and a
@@ -243,6 +252,53 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
                 "The master user still owns these, which the app's role couldn't then change; "
                 f"hand them over (ALTER ... OWNER TO) or drop them: {', '.join(left)}"
             )
+        # Every role may connect to every database unless told otherwise, data stores' roles
+        # included: only the two roles may connect to the platform database, and nobody but its
+        # owner to `postgres` and `template1`. Only a database's owner (or a superuser) may
+        # revoke that, so one the master user doesn't own is left as it is, and reported.
+        left_open = []
+        for db in (dbname, "postgres", "template1"):
+            if conn.execute(_MAY_REVOKE, (db,)).fetchone():
+                conn.execute(
+                    sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(sql.Identifier(db))
+                )
+            else:
+                left_open.append(db)
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}").format(
+                sql.Identifier(dbname), app, sql.Identifier(prov_u.username)
+            )
+        )
+    _ensure_store_template(admin_url, dbname, store_template)
+    return left_open
+
+
+# Whether the current user may change who can connect to a database: its owner, or a superuser.
+_MAY_REVOKE = """
+SELECT 1 FROM pg_database d, pg_roles me
+ WHERE d.datname = %s AND me.rolname = current_user
+   AND (me.rolsuper OR pg_has_role(me.oid, d.datdba, 'MEMBER'))
+"""
+
+
+def _ensure_store_template(admin_url: str, platform_db: str, template: str) -> None:
+    """The database data stores are copied from (`aios.datastores.provision`): empty but for
+    pgvector, which the provisioner can't install itself (it isn't a trusted extension), in an
+    `extensions` schema every store's roles may use. Nobody may connect to it; the provisioner
+    may copy it because it's marked a template."""
+    name = sql.Identifier(template)
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:
+        exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (template,))
+        if not exists.fetchone():
+            conn.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(name))
+    with psycopg.connect(libpq_conninfo(admin_url, database=template)) as conn:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS extensions")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions")
+        conn.execute("REVOKE ALL ON SCHEMA extensions FROM PUBLIC")
+        conn.execute("GRANT USAGE ON SCHEMA extensions TO PUBLIC")
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:
+        conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(name))
+        conn.execute(sql.SQL("ALTER DATABASE {} IS_TEMPLATE true").format(name))
 
 
 def main() -> None:
@@ -252,9 +308,15 @@ def main() -> None:
         sys.exit(str(exc))
     if not settings.database_admin_url:
         sys.exit("DATABASE_ADMIN_URL (the master user's DSN) is required")
-    ensure_roles(
+    left_open = ensure_roles(
         settings.database_admin_url, settings.database_url, settings.data_store_provisioner_url
     )
+    for db in left_open:
+        print(
+            f"Warning: every role may still connect to {db}: the master user doesn't own it, so "
+            "it can't revoke CONNECT from PUBLIC there",
+            file=sys.stderr,
+        )
     print(
         f"Roles {make_url(settings.database_url).username} and "
         f"{make_url(settings.data_store_provisioner_url).username} are ready"
