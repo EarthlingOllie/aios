@@ -179,7 +179,16 @@ SELECT pg_describe_object(o.cls, o.oid, 0)
    AND o.oid >= 16384
    AND (o.nsp IS NULL OR o.nsp IN (SELECT nsp FROM own))
    AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+                    WHERE d.classid = o.cls AND d.objid = o.oid
+                      AND (d.deptype = 'e'
+                           -- Part of an extension's member, e.g. the array type of
+                           -- pgvector's `vector`, which Postgres 16 doesn't record as a
+                           -- member itself (17 does).
+                           OR (d.deptype = 'i'
+                               AND EXISTS (SELECT 1 FROM pg_depend m
+                                            WHERE m.classid = d.refclassid
+                                              AND m.objid = d.refobjid
+                                              AND m.deptype = 'e'))))
  ORDER BY 1
 """
 

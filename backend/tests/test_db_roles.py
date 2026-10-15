@@ -413,7 +413,14 @@ SELECT kind, name FROM (
 ) o
 WHERE owner = %s::regrole
   AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                   WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+                   WHERE d.classid = o.cls AND d.objid = o.oid
+                     AND (d.deptype = 'e'
+                          -- An extension type's array type (a member itself only from 17).
+                          OR (d.deptype = 'i'
+                              AND EXISTS (SELECT 1 FROM pg_depend m
+                                           WHERE m.classid = d.refclassid
+                                             AND m.objid = d.refobjid
+                                             AND m.deptype = 'e'))))
 ORDER BY 1, 2
 """
 
