@@ -375,3 +375,47 @@ def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db):
 
     assert stored(scheduled) == stored(chatted)
     assert stored(scheduled)[0] == 4
+
+
+def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, monkeypatch):
+    from aios.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 2)
+    agent = make_agent(api, "Bot")
+    now = datetime.now(UTC)
+    ids = []
+    for i in range(3):
+        t = make_trigger(api, schedule("agent", agent["id"], input=f"job {i}"))
+        make_due(db, t["id"], now - timedelta(seconds=3 - i))
+        ids.append(t["id"])
+
+    async def go():
+        started = []
+        release = asyncio.Event()
+
+        async def script(messages, info):
+            started.append(messages[-1].content)
+            await release.wait()
+            yield "done"
+
+        with use_model(model(script)):
+            first = await scheduler.tick(now)
+            # Only as many as there are free slots are claimed; the rest stay due, for another
+            # replica or a later tick.
+            assert sorted(first) == ids[:2]
+            assert load(db, ids[2]).next_run_at < now
+            while len(started) < 2:
+                await asyncio.sleep(0.01)
+            # Saturated: a tick claims nothing.
+            assert await scheduler.tick(now) == {}
+            release.set()
+            await asyncio.gather(*first.values())
+            # Slots free again: the one left over fires.
+            later = await scheduler.tick(now)
+            assert sorted(later) == ids[2:]
+            await asyncio.gather(*later.values())
+        return started
+
+    assert sorted(asyncio.run(go())) == ["job 0", "job 1", "job 2"]
+    for t_id in ids:
+        assert load(db, t_id).last_status == TriggerStatus.succeeded

@@ -3,6 +3,10 @@
 Each API process runs `run_forever` alongside serving requests. Every tick it claims the
 schedules that are due (`claim_due`) and fires each in a task of its own (`fire`):
 
+- A process fires at most `scheduler_max_concurrent_runs` at once, and claims no more than it has
+  free slots for: claiming moves a schedule on, so one claimed but left waiting would be late or,
+  if the process stopped, lost. What it leaves stays due, for another replica or a later tick.
+
 - Claiming locks the due rows with SKIP LOCKED and moves each schedule's `next_run_at` on in the
   same transaction, so however many replicas poll, each run of a schedule is claimed once.
 - Missed runs aren't caught up: a schedule that's overdue (no process was up) fires once, and its
@@ -34,12 +38,13 @@ from sqlalchemy import select, update
 from aios import cron
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
+from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.models import Trigger, TriggerStatus, TriggerTargetKind
 
 log = logging.getLogger(__name__)
 
-# Schedules claimed per tick; any left over are due on the next one.
+# Most schedules claimed per tick, however many slots are free; any left over are due on the next.
 BATCH = 50
 
 # Fires in flight, kept so they aren't garbage-collected and can be stopped on shutdown.
@@ -50,13 +55,14 @@ class FireError(Exception):
     """The trigger couldn't fire; the message is shown on it."""
 
 
-def claim_due(db, now: datetime) -> list[int]:
-    """Claim the schedules due at `now`: move each on to its next run, and return their ids."""
+def claim_due(db, now: datetime, limit: int = BATCH) -> list[int]:
+    """Claim up to `limit` of the schedules due at `now`, the most overdue first: move each on to
+    its next run, and return their ids."""
     due = db.scalars(
         select(Trigger)
         .where(Trigger.next_run_at <= now)
         .order_by(Trigger.next_run_at)
-        .limit(BATCH)
+        .limit(limit)
         .with_for_update(skip_locked=True)
     ).all()
     claimed = []
@@ -81,9 +87,9 @@ def claim_due(db, now: datetime) -> list[int]:
     return claimed
 
 
-def _claim(now: datetime) -> list[int]:
+def _claim(now: datetime, limit: int) -> list[int]:
     with SessionLocal() as db:
-        return claim_due(db, now)
+        return claim_due(db, now, limit)
 
 
 # What an agent's schedule runs once its run has started: (user id, agent id, run id, message).
@@ -203,10 +209,17 @@ async def fire(trigger_id: int, fired_at: datetime) -> None:
 
 
 async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
-    """Claim what's due and fire each in a task of its own; returns the tasks by trigger id."""
+    """Claim what's due, as much as there are free slots for, and fire each in a task of its own;
+    returns the tasks by trigger id."""
     now = now or datetime.now(UTC)
+    # Every fire counts, a workflow's too: it holds its slot only while it starts and queues
+    # the run, and counting it keeps the bound simple and honest.
+    in_flight = sum(not task.done() for task in _firing)
+    free = min(BATCH, get_settings().scheduler_max_concurrent_runs - in_flight)
     fired = {}
-    for trigger_id in await run_in_threadpool(_claim, now):
+    if free <= 0:
+        return fired
+    for trigger_id in await run_in_threadpool(_claim, now, free):
         task = asyncio.create_task(fire(trigger_id, now), name=f"trigger-{trigger_id}")
         _firing.add(task)
         task.add_done_callback(_firing.discard)

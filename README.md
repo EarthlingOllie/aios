@@ -102,6 +102,10 @@ does the same for its own (`/api/triggers`).
   `SCHEDULER_INTERVAL_SECONDS` (15). Due schedules are claimed with `FOR UPDATE SKIP LOCKED`
   and moved on to their next run in the same transaction, so with any number of replicas each
   run fires once. Set `SCHEDULER_ENABLED=false` to keep a process from running them.
+- A process fires at most `SCHEDULER_MAX_CONCURRENT_RUNS` (5) schedules at once (an agent's turn
+  runs in the API process, next to the chats it serves), and claims no more than it has free
+  slots for. What it can't start stays due, for another replica or its next poll, so a burst
+  (many schedules sharing `0 9 * * *`) runs a little late rather than crowding out chat.
 - Missed runs aren't caught up: a schedule that's overdue (nothing was running) fires once, then
   carries on from now. Across daylight-saving changes it behaves like cron: a skipped local time
   runs when the clock jumps, and a repeated one runs once. A turn still running when the process
