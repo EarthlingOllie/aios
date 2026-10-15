@@ -21,8 +21,12 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U aios" --health-interval 2s --health-retries 30
+    # As deployed: the master user (`aios`) only creates the roles; migrations and tests run as
+    # the app's role. The master user's DSN also lets tests/test_db_roles.py run.
     env:
-      DATABASE_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
+      DATABASE_URL: postgresql+psycopg://aios_app:aios_app@localhost:5432/aios
+      DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios
+      DATABASE_ADMIN_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
@@ -31,6 +35,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run python -m aios.db_roles
       - run: uv run alembic upgrade head
       - run: uv run alembic check
       - run: uv run pytest

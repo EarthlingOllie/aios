@@ -10,7 +10,14 @@ class Settings(BaseSettings):
     # Public origin the browser uses (SPA and API share it; the SPA calls /api/* and /login).
     public_url: str = "http://localhost:5173"
 
-    database_url: str = "postgresql+psycopg://aios:aios@localhost:5432/aios"
+    # The platform database, as the app's role (`aios_app`, created by `aios.db_roles`): the API,
+    # the workers and migrations all connect as it.
+    database_url: str = "postgresql+psycopg://aios_app:aios_app@localhost:5432/aios"
+    # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), for creating data
+    # stores. On AWS only the provisioning worker is given it.
+    data_store_provisioner_url: str = (
+        "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
+    )
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).
