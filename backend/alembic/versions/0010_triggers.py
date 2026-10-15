@@ -44,6 +44,7 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_run_id", sa.Integer(), nullable=True),
         sa.Column("last_workflow_run_id", sa.Integer(), nullable=True),
         sa.Column(

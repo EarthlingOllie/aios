@@ -1,10 +1,11 @@
 import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
 from fake_model import model, replies, use_model
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
@@ -419,3 +420,191 @@ def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, 
     assert sorted(asyncio.run(go())) == ["job 0", "job 1", "job 2"]
     for t_id in ids:
         assert load(db, t_id).last_status == TriggerStatus.succeeded
+
+
+def age(db, trigger_id: int) -> None:
+    """Make the trigger's heartbeat older than a live process would let it get."""
+    db.execute(
+        update(Trigger)
+        .where(Trigger.id == trigger_id)
+        .values(heartbeat_at=func.now() - scheduler.STALE_AFTER - timedelta(seconds=1))
+    )
+    db.commit()
+
+
+def test_a_claim_whose_process_died_is_failed_once_its_heartbeat_stops(api, db):
+    agent = make_agent(api, "Bot")
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    # Claimed by a replica that is then killed before it fires (or finishes) the run.
+    with SessionLocal() as s:
+        assert scheduler.claim_due(s, now) == [t["id"]]
+    next_run_at = load(db, t["id"]).next_run_at
+
+    # Recently claimed, so it may still be going: the next tick, on any replica, leaves it be.
+    assert tick(now) == []
+    assert load(db, t["id"]).last_status == TriggerStatus.running
+
+    # Nothing has kept it alive: it's failed, and stays scheduled.
+    age(db, t["id"])
+    assert tick(now) == []
+    stopped = load(db, t["id"])
+    assert stopped.last_status == TriggerStatus.failed
+    assert stopped.last_error == scheduler.STOPPED
+    assert stopped.enabled and stopped.next_run_at == next_run_at
+
+
+def test_a_tick_cancelled_while_claiming_doesnt_leave_it_running(api, db, monkeypatch):
+    agent = make_agent(api, "Bot")
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    claiming, cancelled, claimed = threading.Event(), threading.Event(), threading.Event()
+    claim_due = scheduler.claim_due
+
+    def slow_claim(db, now, limit=scheduler.BATCH):
+        claiming.set()
+        cancelled.wait(5)
+        try:
+            return claim_due(db, now, limit)
+        finally:
+            claimed.set()
+
+    monkeypatch.setattr(scheduler, "claim_due", slow_claim)
+
+    async def go():
+        # Shutdown cancels the tick mid-claim; the claim's thread carries on and commits, but
+        # nothing fires what it claimed.
+        task = asyncio.create_task(scheduler.tick(now))
+        await asyncio.to_thread(claiming.wait, 5)
+        task.cancel()
+        cancelled.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(claimed.wait, 5)
+        await asyncio.sleep(0.1)  # anything the tick would have fired gets going
+
+    asyncio.run(go())
+    monkeypatch.setattr(scheduler, "claim_due", claim_due)
+    assert load(db, t["id"]).last_status == TriggerStatus.running
+    assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+
+    age(db, t["id"])
+    tick(now)
+    assert load(db, t["id"]).last_status == TriggerStatus.failed
+
+
+def test_a_fire_in_flight_keeps_its_heartbeat_so_other_replicas_leave_it(api, db):
+    agent = make_agent(api, "Bot")
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    release = None
+
+    async def script(messages, info):
+        await release.wait()
+        yield "done"
+
+    def other_replica_sweeps():
+        with SessionLocal() as s:
+            scheduler.fail_stalled(s)
+
+    async def go():
+        nonlocal release
+        release = asyncio.Event()
+        fired = await scheduler.tick(now)
+        await asyncio.sleep(0.2)  # mid-turn
+        # Long enough without a beat that it would count as stopped; this process beats it.
+        await asyncio.to_thread(age, db, t["id"])
+        await scheduler.beat()
+        await asyncio.to_thread(other_replica_sweeps)
+        assert (await asyncio.to_thread(load, db, t["id"])).last_status == TriggerStatus.running
+        release.set()
+        await asyncio.gather(*fired.values())
+
+    with use_model(model(script)):
+        asyncio.run(go())
+    assert load(db, t["id"]).last_status == TriggerStatus.succeeded
+
+
+def test_the_loop_beats_the_fires_in_flight(api, db, monkeypatch):
+    agent = make_agent(api, "Bot")
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    with SessionLocal() as s:
+        scheduler.claim_due(s, now)
+    age(db, t["id"])
+
+    async def fake_tick(now=None):
+        return {}
+
+    monkeypatch.setattr(scheduler, "tick", fake_tick)
+    monkeypatch.setattr(scheduler, "HEARTBEAT_SECONDS", 0.01)
+
+    async def go():
+        # A fire of this trigger is in flight in this process.
+        in_flight = asyncio.create_task(asyncio.Event().wait())
+        scheduler._firing[in_flight] = (t["id"], now)
+        loop = asyncio.create_task(scheduler.run_forever(interval=10))
+        await asyncio.sleep(0.3)
+        loop.cancel()
+        await asyncio.gather(loop, in_flight, return_exceptions=True)
+
+    asyncio.run(go())
+    scheduler._firing.clear()
+    with SessionLocal() as s:
+        scheduler.fail_stalled(s)
+    assert load(db, t["id"]).last_status == TriggerStatus.running
+
+
+def test_a_schedule_retargeted_as_it_fires_isnt_left_running(api, db, queued, monkeypatch):
+    agent = make_agent(api, "Bot")
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    target = scheduler._target
+
+    def retargeted_meanwhile(trigger_id, fired_at):
+        kind = target(trigger_id, fired_at)
+        resp = api.put(f"/api/triggers/{t['id']}", json=schedule("workflow", workflow["id"]))
+        assert resp.status_code == 200, resp.text
+        return kind
+
+    monkeypatch.setattr(scheduler, "_target", retargeted_meanwhile)
+    with use_model(replies("hi")):
+        assert tick(now) == [t["id"]]
+    # Neither target runs this time (the new one does next time), and it isn't left running.
+    assert queued == []
+    assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+    fired = load(db, t["id"])
+    assert fired.last_status == TriggerStatus.failed
+    assert fired.last_error == scheduler.CHANGED
+
+
+def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch):
+    # The cap stops a busy process claiming, not sweeping: with one replica, nothing else would.
+    from aios.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 1)
+    agent = make_agent(api, "Bot")
+    stopped = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    make_due(db, stopped["id"], now - timedelta(seconds=1))
+    with SessionLocal() as s:
+        assert scheduler.claim_due(s, now) == [stopped["id"]]  # by a replica since killed
+    age(db, stopped["id"])
+
+    async def go():
+        busy = asyncio.create_task(asyncio.Event().wait())
+        scheduler._firing[busy] = (0, now)  # this process's one slot is taken
+        try:
+            assert await scheduler.tick(now) == {}
+        finally:
+            busy.cancel()
+            await asyncio.gather(busy, return_exceptions=True)
+            scheduler._firing.clear()
+
+    asyncio.run(go())
+    assert load(db, stopped["id"]).last_status == TriggerStatus.failed

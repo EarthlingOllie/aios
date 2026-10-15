@@ -591,6 +591,9 @@ class Trigger(Base):
         Enum(TriggerStatus, name="trigger_status")
     )
     last_error: Mapped[str | None] = mapped_column(Text)
+    # While `last_status` is running, refreshed by the process firing it; one that stops being
+    # refreshed has lost its process, and is failed (`aios.scheduler.fail_stalled`).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_id: Mapped[int | None] = mapped_column(
         ForeignKey(
             "agent_runs.id", ondelete="SET NULL", use_alter=True, name="fk_triggers_last_run_id"

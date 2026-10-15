@@ -109,7 +109,10 @@ does the same for its own (`/api/triggers`).
 - Missed runs aren't caught up: a schedule that's overdue (nothing was running) fires once, then
   carries on from now. Across daylight-saving changes it behaves like cron: a skipped local time
   runs when the clock jumps, and a repeated one runs once. A turn still running when the process
-  stops keeps what it got to, and its schedule records that it failed.
+  stops keeps what it got to, and its schedule records that it failed. A process that dies
+  can't record that, so while a schedule is running the process firing it refreshes a heartbeat
+  (every 30s), and any replica's tick fails a running schedule whose heartbeat has stopped for
+  90s; replicas that are up keep beating their own, so they're left be.
 - Deleting an agent or a workflow deletes its schedules. Cron parsing is `cronsim`'s, wrapped in
   `aios.cron`.
 

@@ -23,17 +23,24 @@ schedules that are due (`claim_due`) and fires each in a task of its own (`fire`
   that can't run, the queue down) records that it failed, without a run.
 - A turn in flight when the process stops is stopped like a chat turn the client abandons: what
   the agent got to is kept, and the schedule records that it failed.
+- A process that dies (killed, OOM, a deploy) can't record that, nor can a tick stopped between
+  claiming and firing. So while a schedule is stored as running, the process firing it refreshes
+  its heartbeat (`heartbeat_at`, set when it's claimed) every `HEARTBEAT_SECONDS` (`beat`), and
+  each tick, on any replica, fails those whose heartbeat has stopped for `STALE_AFTER`
+  (`fail_stalled`). A live replica keeps beating its own fires, so others leave them be. Only the
+  stored status counts: a workflow's schedule is stored as running only until its run is queued,
+  and the worker looks after the run from there (`aios.workflows`).
 """
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from anyio import CancelScope
 from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import HumanMessage
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, tuple_, update
 
 from aios import cron
 from aios.api import agents as agents_api
@@ -47,8 +54,20 @@ log = logging.getLogger(__name__)
 # Most schedules claimed per tick, however many slots are free; any left over are due on the next.
 BATCH = 50
 
-# Fires in flight, kept so they aren't garbage-collected and can be stopped on shutdown.
-_firing: set[asyncio.Task] = set()
+# How often a process refreshes the heartbeat of the schedules it's firing, and how long without
+# one until a running schedule counts as stopped: a few missed beats, so a slow write or a busy
+# loop doesn't fail a live fire. (As `aios.workflows` does for workflow runs.)
+HEARTBEAT_SECONDS = 30.0
+STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
+
+# Why a fire is failed when its process stops, or is found to have stopped.
+STOPPED = "The service stopped mid-run."
+# Why one is failed when its schedule was retargeted while it was starting.
+CHANGED = "The schedule was changed as it fired; it runs as changed next time."
+
+# Fires in flight, with the (trigger id, fired at) of each: kept so they aren't
+# garbage-collected, can be stopped on shutdown, and have their heartbeats refreshed.
+_firing: dict[asyncio.Task, tuple[int, datetime]] = {}
 
 
 class FireError(Exception):
@@ -82,14 +101,64 @@ def claim_due(db, now: datetime, limit: int = BATCH) -> list[int]:
             continue
         trigger.last_status = TriggerStatus.running
         trigger.last_error = None
+        trigger.heartbeat_at = func.now()
         claimed.append(trigger.id)
     db.commit()
     return claimed
 
 
+def fail_stalled(db) -> None:
+    """Fail the schedules stored as running whose heartbeat has stopped: the process firing
+    them has gone (see the module docstring). Commits."""
+    db.execute(
+        update(Trigger)
+        .where(
+            Trigger.last_status == TriggerStatus.running,
+            or_(Trigger.heartbeat_at.is_(None), Trigger.heartbeat_at < func.now() - STALE_AFTER),
+        )
+        .values(last_status=TriggerStatus.failed, last_error=STOPPED)
+    )
+    db.commit()
+
+
+def _sweep() -> None:
+    with SessionLocal() as db:
+        fail_stalled(db)
+
+
 def _claim(now: datetime, limit: int) -> list[int]:
     with SessionLocal() as db:
         return claim_due(db, now, limit)
+
+
+def _beat(fires: list[tuple[int, datetime]]) -> None:
+    with SessionLocal() as db:
+        # Not once it's recorded how it went, or fired again (on another replica, say).
+        db.execute(
+            update(Trigger)
+            .where(
+                tuple_(Trigger.id, Trigger.last_fired_at).in_(fires),
+                Trigger.last_status == TriggerStatus.running,
+            )
+            .values(heartbeat_at=func.now())
+        )
+        db.commit()
+
+
+async def beat() -> None:
+    """Refresh the heartbeat of the schedules this process is firing."""
+    if fires := list(_firing.values()):
+        await run_in_threadpool(_beat, fires)
+
+
+async def _beat_forever() -> None:
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            await beat()
+        except Exception:
+            # Only several missed beats in a row count as stopped.
+            log.exception("scheduler heartbeat failed")
 
 
 # What an agent's schedule runs once its run has started: (user id, agent id, run id, message).
@@ -193,14 +262,15 @@ async def fire(trigger_id: int, fired_at: datetime) -> None:
         else:
             error = await _run_agent(trigger_id, fired_at)
     except _Gone:
-        return
+        # A no-op unless it was retargeted (see `_claimed`), when it would be left running.
+        error = CHANGED
     except FireError as exc:
         error = str(exc)
     except HTTPException as exc:
         error = str(exc.detail)
     except asyncio.CancelledError:
         with CancelScope(shield=True):
-            await run_in_threadpool(_record, trigger_id, fired_at, "The service stopped mid-run.")
+            await run_in_threadpool(_record, trigger_id, fired_at, STOPPED)
         raise
     except Exception:
         log.exception("trigger %s couldn't fire", trigger_id)
@@ -208,10 +278,16 @@ async def fire(trigger_id: int, fired_at: datetime) -> None:
     await run_in_threadpool(_record, trigger_id, fired_at, error)
 
 
+def _forget(task: asyncio.Task) -> None:
+    _firing.pop(task, None)
+
+
 async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
     """Claim what's due, as much as there are free slots for, and fire each in a task of its own;
     returns the tasks by trigger id."""
     now = now or datetime.now(UTC)
+    # Even with no free slot: with one replica, nothing else would fail what a dead process left.
+    await run_in_threadpool(_sweep)
     # Every fire counts, a workflow's too: it holds its slot only while it starts and queues
     # the run, and counting it keeps the bound simple and honest.
     in_flight = sum(not task.done() for task in _firing)
@@ -221,14 +297,16 @@ async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
         return fired
     for trigger_id in await run_in_threadpool(_claim, now, free):
         task = asyncio.create_task(fire(trigger_id, now), name=f"trigger-{trigger_id}")
-        _firing.add(task)
-        task.add_done_callback(_firing.discard)
+        _firing[task] = (trigger_id, now)
+        task.add_done_callback(_forget)
         fired[trigger_id] = task
     return fired
 
 
 async def run_forever(interval: float) -> None:
-    """Tick every `interval` seconds until cancelled; then stop the fires still running."""
+    """Tick every `interval` seconds, and beat the fires in flight every `HEARTBEAT_SECONDS`,
+    until cancelled; then stop the fires still running."""
+    beating = asyncio.create_task(_beat_forever(), name="scheduler-heartbeat")
     try:
         while True:
             try:
@@ -237,6 +315,7 @@ async def run_forever(interval: float) -> None:
                 log.exception("scheduler tick failed")
             await asyncio.sleep(interval)
     finally:
+        beating.cancel()
         for task in list(_firing):
             task.cancel()
-        await asyncio.gather(*_firing, return_exceptions=True)
+        await asyncio.gather(beating, *_firing, return_exceptions=True)
