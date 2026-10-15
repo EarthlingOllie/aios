@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from aios import checkpoints
+from aios.config import get_settings
 from aios.db_roles import ensure_roles
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -173,22 +174,29 @@ def _migrate(database_url: str) -> subprocess.CompletedProcess:
 
 
 def _setup_checkpointer(database_url: str, monkeypatch) -> None:
+    """A turn's checkpointer, as `database_url`'s user: sets up its schema the first time."""
     monkeypatch.setattr(checkpoints, "_ready", False)
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
 
-    async def setup() -> None:
-        conn = await psycopg.AsyncConnection.connect(_libpq(database_url), autocommit=True)
-        async with conn:
-            await checkpoints.setup(conn)
+    async def turn() -> None:
+        async with checkpoints.turn(run_id=0):
+            pass
 
-    asyncio.run(setup())
+    asyncio.run(turn())
 
 
-def _table_owners(url: str) -> list[tuple[str]]:
+def _table_owners(url: str) -> list[tuple[str, str]]:
+    """(schema, owner) for every owner of a table in the app's and the checkpointer's schemas."""
     with _connect(url) as conn:
         return conn.execute(
-            "SELECT DISTINCT tableowner FROM pg_tables"
-            " WHERE schemaname IN ('public', 'langgraph') ORDER BY 1"
+            "SELECT DISTINCT schemaname::text, tableowner::text FROM pg_tables"
+            " WHERE schemaname IN ('public', 'langgraph') ORDER BY 1, 2"
         ).fetchall()
+
+
+def _owned_by_app(app_url: str) -> list[tuple[str, str]]:
+    app = make_url(app_url).username
+    return [("langgraph", app), ("public", app)]
 
 
 def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch):
@@ -199,7 +207,7 @@ def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch)
     assert result.returncode == 0, result.stderr
     _setup_checkpointer(app_url, monkeypatch)
 
-    assert _table_owners(app_url) == [(make_url(app_url).username,)]
+    assert _table_owners(app_url) == _owned_by_app(app_url)
 
 
 # Objects in the database's own schemas, other than extensions' (pgvector's stay the master
@@ -259,4 +267,4 @@ def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, m
     up = _migrate(app_url)
     assert up.returncode == 0, up.stderr
     _setup_checkpointer(app_url, monkeypatch)
-    assert _table_owners(app_url) == [(make_url(app_url).username,)]
+    assert _table_owners(app_url) == _owned_by_app(app_url)
