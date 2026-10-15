@@ -49,8 +49,9 @@ def admin_url() -> str:
 def cluster(admin_url):
     """A throwaway database owned by the master user, and names for its two roles.
 
-    Yields (admin_url, app_url, provisioner_url, created): the URLs point at that database, and
-    the test appends any databases or roles it creates to `created`, for cleanup.
+    Yields (admin_url, app_url, provisioner_url), each pointing at that database. The master
+    user needn't be a superuser (on RDS it isn't), as long as pgvector is already installed or
+    it may install it.
     """
     tag = uuid.uuid4().hex[:8]
     dbname, app, prov = f"t_roles_{tag}", f"t_app_{tag}", f"t_prov_{tag}"
@@ -59,29 +60,23 @@ def cluster(admin_url):
     base = make_url(admin_url)
     app_url = base.set(username=app, password=f"pw-{app}", database=dbname)
     prov_url = base.set(username=prov, password=f"pw-{prov}", database=dbname)
-    created: list[str] = []
     try:
         yield (
             base.set(database=dbname).render_as_string(hide_password=False),
             app_url.render_as_string(hide_password=False),
             prov_url.render_as_string(hide_password=False),
-            created,
         )
     finally:
         with _connect(admin_url) as conn:
             conn.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(dbname))
             )
-            for name in created:
-                conn.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name))
-                )
-            for role in [*created, app, prov]:
+            for role in (app, prov):
                 conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
 
 def test_app_role_cannot_create_databases_or_roles(cluster):
-    admin_url, app_url, prov_url, _ = cluster
+    admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
 
     with _connect(app_url) as conn:
@@ -92,16 +87,19 @@ def test_app_role_cannot_create_databases_or_roles(cluster):
 
 
 def test_provisioner_role_can_create_databases_and_roles(cluster):
-    admin_url, app_url, prov_url, created = cluster
+    admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
     tag = uuid.uuid4().hex[:8]
-    db, role = f"t_prov_db_{tag}", f"t_prov_role_{tag}"
+    db, role = sql.Identifier(f"t_prov_db_{tag}"), sql.Identifier(f"t_prov_role_{tag}")
 
     with _connect(prov_url) as conn:
-        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db)))
-        created.append(db)
-        conn.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)))
-        created.append(role)
+        try:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(db))
+            conn.execute(sql.SQL("CREATE ROLE {}").format(role))
+        finally:
+            # As the provisioner: a master user that isn't a superuser couldn't drop them.
+            conn.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(db))
+            conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(role))
 
 
 def test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles(db):
@@ -128,7 +126,7 @@ def _bootstrap(**env: str) -> subprocess.CompletedProcess:
 
 
 def test_command_creates_the_roles_from_the_environment(cluster):
-    admin_url, app_url, prov_url, _ = cluster
+    admin_url, app_url, prov_url = cluster
 
     result = _bootstrap(
         DATABASE_ADMIN_URL=admin_url, DATABASE_URL=app_url, DATA_STORE_PROVISIONER_URL=prov_url
@@ -142,7 +140,7 @@ def test_command_creates_the_roles_from_the_environment(cluster):
 
 
 def test_command_needs_the_master_users_url(cluster):
-    _, app_url, prov_url, _ = cluster
+    _, app_url, prov_url = cluster
 
     result = _bootstrap(DATABASE_URL=app_url, DATA_STORE_PROVISIONER_URL=prov_url)
 
@@ -151,7 +149,7 @@ def test_command_needs_the_master_users_url(cluster):
 
 
 def test_rerunning_changes_the_passwords(cluster):
-    admin_url, app_url, prov_url, _ = cluster
+    admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
     rotated = make_url(app_url).set(password="rotated").render_as_string(hide_password=False)
 
@@ -194,7 +192,7 @@ def _table_owners(url: str) -> list[tuple[str]]:
 
 
 def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch):
-    admin_url, app_url, prov_url, _ = cluster
+    admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
 
     result = _migrate(app_url)
@@ -233,7 +231,7 @@ ORDER BY 1, 2
 
 
 def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, monkeypatch):
-    admin_url, app_url, prov_url, _ = cluster
+    admin_url, app_url, prov_url = cluster
     admin = make_url(admin_url).username
     # As deployed before this role existed: migrated and checkpointed as the master user, with
     # a view and a function of its own besides.
