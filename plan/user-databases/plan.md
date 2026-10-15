@@ -218,6 +218,15 @@ Changes to existing code:
 - **Uploads**: `api/documents.py` streams the file to S3, then inserts the `documents` row in the
   store, then enqueues the ingest. It deletes the object again if the insert or the enqueue fails.
 - **Ingest**: `ingest_document_task(data_store_id, document_id)` reads the bytes from S3.
+- **Downloads**: `GET /api/documents/{id}/download` checks the user can read the store, then
+  redirects (302) to a presigned S3 `GetObject` URL.
+  - The URL is valid for `DOCUMENT_DOWNLOAD_URL_SECONDS` (default 60).
+  - It sets `ResponseContentDisposition` to an attachment with the original filename, so the
+    browser saves the file rather than rendering it on our origin.
+  - A presigned URL is a bearer link: anyone holding it can download the file until it expires.
+    That's why it lives only a minute, and is minted per click rather than shown on the page.
+  - Locally, MinIO's public endpoint signs the URLs (`DATA_STORE_FILES_PUBLIC_ENDPOINT`), so the
+    browser can reach them.
 - **Search**: `search.py` and `tools/hybrid_search.py` use `store_session(data_store_id, "ro")`.
   The search SQL itself doesn't change, apart from losing the `owner_id` filter.
 - **Run context**: `ChatDeps` gains `data_store_id`, set when a run or chat turn starts.
@@ -280,13 +289,14 @@ quoted by the compiler. Operations only ever touch the `data` schema.
      - where it came from: `requested_by_run` (the agent run), plus the workflow run and step if
        any
      - `base_revision`: the store's schema revision when it was made
-     - `status`: `pending`, `approved`, `rejected`, `expired`, `applied`, `failed`, `stale`
+     - `status`: `pending`, `approved`, `rejected`, `expired`, `applied`, `failed`, `stale`,
+       `cancelled` (the run that asked was deleted, or can no longer resume)
      - `decided_by_user_id`, `decided_at`, `applied_at`, `error`
    - Then the tool calls LangGraph's `interrupt()` with the request's id, which pauses the agent run
      at that tool call, with its state saved in its checkpoint.
 2. **Review.**
    - A *Data* page lists pending requests with the agent's reason and the exact SQL. The owner is
-     notified.
+     notified in the app (see [Notifications](#notifications)).
    - The owner approves or rejects each one. Only users who pass `can_approve(user, store)` can
      decide: today, the store's owner.
    - Destructive operations show what they would remove (row counts) and need the table's name
@@ -340,6 +350,32 @@ holds no worker:
 
 **The documents chat** has no run and no thread, so it isn't given the tool.
 
+**Runs stay on the versions they started on**, however long they wait. A workflow run resumes on
+its pinned workflow version, and each agent node on its pinned agent version, even if either has
+been edited meanwhile.
+
+- The waiting run shows which of its pins are no longer current, so the owner knows what it will
+  resume on.
+- If a pin can no longer run when the run resumes, the step fails with that reason and the run
+  fails as usual. That covers an agent that has since been deleted (its runs and threads go
+  with it) or a tool that has left the library.
+- If the run is deleted while it waits, its pending request becomes `cancelled`.
+
+### Notifications
+
+In the app only, for now. Email can be added later as another way to deliver the same rows.
+
+- A `notifications` table in the platform database: `id`, `user_id`, `kind`, `ref` (jsonb, here
+  the request id and store id), `created_at`, `read_at`.
+- A new request creates one notification for each user who passes `can_approve(user, store)`.
+  Today that's the owner; with teams, it's every approver.
+- A decided, expired or cancelled request marks its notifications read.
+- `GET /api/notifications` (unread first, with a count) is polled by the SPA, which shows a badge
+  in the navigation. Clicking an item opens the request.
+  `POST /api/notifications/{id}/read` marks one read.
+- Notifications are a platform feature, not tied to schema changes, so other kinds (a workflow
+  run that failed, a store over quota) can use them later.
+
 ### Destructive changes
 
 Backups are per instance, so restoring one store's table means restoring a snapshot to a new
@@ -392,6 +428,8 @@ New settings in `config.py`. Each has a default, and can be overridden from the 
 | `DATA_STORE_PROVISIONER_URL` | The provisioner's DSN (only the provisioning worker has it) |
 | `DATA_STORE_CREDENTIALS_KEY` | Encrypts store passwords |
 | `DATA_STORE_FILES_BUCKET` | The S3 bucket for raw uploads |
+| `DATA_STORE_FILES_PUBLIC_ENDPOINT` | The S3 endpoint that presigned URLs use (MinIO's public address locally; unset on AWS) |
+| `DOCUMENT_DOWNLOAD_URL_SECONDS` | How long a download link lasts (default 60) |
 | `DATA_STORE_DB_QUOTA_BYTES`, `DATA_STORE_FILES_QUOTA_BYTES` | The storage cap |
 | `DATA_STORE_DROPPED_RETENTION_DAYS` | How long dropped tables and columns are kept |
 | `DATA_STORE_DELETED_RETENTION_DAYS` | How long a deleted user's store is kept before it's dropped |
@@ -439,7 +477,7 @@ Each phase ships on its own and leaves the app working.
    - Provisioning on sign-up, the fan-out migrator, and the isolation tests.
 2. **Documents move**
    - The S3 bucket and MinIO.
-   - Upload, ingest and search against the store.
+   - Upload, ingest and search against the store, and downloads through presigned URLs.
    - `ChatDeps.data_store_id` and tasks that take `data_store_id`.
    - Drop `documents` and `chunks` from the platform database.
 3. **Data tools**: `describe_data`, `query_data`, `write_data` and the quota checks.
@@ -447,6 +485,7 @@ Each phase ships on its own and leaves the app working.
    - The spec and compiler, `request_schema_change` with `interrupt()`, the Data page, the
      applier, and reversible drops.
    - Paused and resumed agent runs and workflow runs.
+   - In-app notifications.
 5. **Run history export**: the setting, the outbox, the backfill, the export task and the `history`
    schema.
 6. **Later**:
@@ -465,6 +504,8 @@ Each phase ships on its own and leaves the app working.
   stop the rest.
 - **Documents**: an upload whose insert or enqueue fails leaves no S3 object. Ingest reads from
   S3.
+- **Downloads**: another store's document is a 404. The link expires on time and downloads as an
+  attachment with the original filename.
 - **Schema changes**:
   - The compiler's output for each operation, with identifiers quoted.
   - Requests the current schema rejects, and stale requests.
@@ -477,6 +518,11 @@ Each phase ships on its own and leaves the app working.
   - Approving resumes it from the waiting node. Rejecting resumes it with the rejection.
   - The heartbeat check and the time limit ignore waiting time.
   - An interactive run resumes after a decision and refuses new messages until then.
+  - A run resumes on its pinned versions after the agent or workflow has been edited.
+  - A run whose agent was deleted while waiting fails on resume.
+  - Deleting a waiting run cancels its request.
+- **Notifications**: each approver gets one. Deciding, expiring or cancelling the request marks it
+  read.
 - **Tools**: row and byte caps, the statement timeout, read-only enforcement, embedding columns,
   and quota refusals.
 - **Export**: outbox to store, idempotent re-export, backfill, deletes, and history kept after
@@ -486,20 +532,18 @@ Each phase ships on its own and leaves the app working.
 
 ## Open questions
 
-1. **Signed download URLs.** Should the original file be downloadable from the Documents page
-   through short-lived presigned URLs, or only through the API?
-2. **Notifications.** Pending requests need to reach the owner, or workflows sit waiting.
-   In-app only for now, or email too?
-3. **Waiting runs and agent changes.** A paused workflow run stays pinned to its versions, like
-   any run. Is it right that it resumes on those versions even if the agent has since changed?
-   That's the current rule for runs, and this plan assumes it.
+None at the moment.
 
 ## Decision log
 
 - **Platform data stays on the platform.** Agents, skills, workflows and run history are platform
   data. Documents, chunks and agent-created tables live in the data store. A copy of run history
   goes there too, if the owner opts in.
-- **Raw files go to S3** under the store's prefix. Postgres keeps metadata and chunks.
+- **Raw files go to S3** under the store's prefix. Postgres keeps metadata and chunks. Users
+  download them through presigned URLs that last a minute.
+- **Notifications are in the app only**, for now, in a general-purpose `notifications` table.
+- **Runs always stay on the versions they started on**, including after a pause. A run whose
+  pins can no longer run fails when it resumes.
 - **We own the data store's schema.** Users don't run DDL, and never connect directly. Agents
   propose changes, the owner approves them, and the platform applies them. Runtime roles have no
   `CREATE`, so Postgres enforces this.
