@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from aios import checkpoints, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live, lock_live_skills, unique_name
+from aios.api.triggers import delete_triggers
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
 from aios.db import DB, DbId, SessionLocal
@@ -27,6 +28,7 @@ from aios.models import (
     AgentVersionTool,
     Skill,
     SkillVersion,
+    Trigger,
     WorkflowNode,
     agent_version_skills,
 )
@@ -145,6 +147,8 @@ class RunSummary(BaseModel):
     agent_version: int
     title: str | None
     message_count: int
+    # The trigger that started the run (e.g. a schedule), if one did and it still exists.
+    trigger_id: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -424,6 +428,7 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
+    delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
@@ -507,6 +512,7 @@ def run_summary_query():
         AgentVersion.version.label("agent_version"),
         AgentRun.title,
         AgentRun.message_count,
+        AgentRun.trigger_id,
         AgentRun.created_at,
         AgentRun.updated_at,
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
@@ -534,18 +540,30 @@ def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
     return [RunSummary.model_validate(row, from_attributes=True) for row in rows]
 
 
+def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -> AgentRun:
+    """Add (and flush, not commit) a run of the agent's current version.
+
+    Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
+    version can't be built. The caller commits; the share lock taken here, held until then,
+    keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
+    starts one (`aios.scheduler`), passing its `trigger_id`.
+    """
+    lock_live_agent(db, agent, read=True)
+    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
+    build_version_tools(agent.current_version)
+    # Pin the version: later edits to the agent don't change this conversation.
+    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger_id)
+    db.add(run)
+    db.flush()
+    return run
+
+
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
 def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
-    # Keeps a concurrent delete from missing this run, which would be left behind.
-    lock_live_agent(db, agent, read=True)
-    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
-    build_version_tools(agent.current_version)
-    # Pin the version: later edits to the agent don't change this conversation.
-    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id)
-    db.add(run)
+    run = new_agent_run(db, agent)
     db.commit()
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     return RunSummary.model_validate(row, from_attributes=True)
@@ -723,6 +741,72 @@ def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
     task.add_done_callback(_prewarming.discard)
 
 
+async def turn_stream(
+    ctx: ChatContext, user_id: int, run_id: int, prompt: HumanMessage
+) -> AsyncIterator[ui_stream.Chunk]:
+    """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
+    the model is called, and whatever the reply got to is kept however the turn ends (it
+    completes, fails, or the consumer stops it). A failure is reported as an `error` chunk.
+
+    Shared by the chat endpoint and the scheduler (`aios.scheduler`)."""
+    config = {
+        **checkpoints.thread_config(run_id),
+        "callbacks": tracing.callbacks(),
+        "run_name": "agent-run",
+        "metadata": ctx.metadata,
+    }
+    ui = ui_stream.UIStream()
+    for chunk in ui.start():
+        yield chunk
+    if ctx.sandbox_domains is not None:
+        prewarm_sandbox(run_id, ctx.sandbox_domains)
+    try:
+        # Waits for any other turn of this run to finish (see `checkpoints.turn`).
+        async with checkpoints.turn(run_id) as saver:
+            agent = build_agent(
+                model=ctx.model,
+                instructions=ctx.instructions,
+                tools=ctx.tools,
+                checkpointer=saver,
+            )
+            finished = False
+            # Closed however the turn ends, which cancels the graph's running tasks (e.g. a
+            # tool call) before the turn is recorded: a stopped turn's response can be
+            # dropped while this waits at a `yield`, which doesn't close the stream itself.
+            events = agent.astream(
+                {"messages": [prompt]},
+                config,
+                context=ChatDeps(user_id=user_id, run_id=run_id),
+                stream_mode=["messages", "updates"],
+                # Checkpoint each step before the next starts, so the user's message is
+                # saved before the model is called.
+                durability="sync",
+            )
+            try:
+                async with aclosing(events):
+                    async for mode, data in events:
+                        for chunk in ui.feed(mode, data):
+                            yield chunk
+                finished = True
+            except Exception as exc:
+                log.exception("agent run %s failed", run_id)
+                for chunk in ui.error(exc):
+                    yield chunk
+            finally:
+                # Also when the client stops the turn, which cancels this task.
+                with CancelScope(shield=True):
+                    await _record_turn(
+                        agent, config, run_id, finished=finished, partial=ui.partial_reply()
+                    )
+    except Exception as exc:
+        # The turn couldn't start, e.g. the database or the model's configuration.
+        log.exception("agent run %s couldn't start a turn", run_id)
+        for chunk in ui.error(exc):
+            yield chunk
+    for chunk in ui.finish():
+        yield chunk
+
+
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
 async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the run's
@@ -744,63 +828,4 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
     prompt = ui_stream.human_message(message)
     await run_in_threadpool(_start_turn, run_id, prompt.text)
 
-    config = {
-        **checkpoints.thread_config(run_id),
-        "callbacks": tracing.callbacks(),
-        "run_name": "agent-run",
-        "metadata": ctx.metadata,
-    }
-
-    async def stream() -> AsyncIterator[ui_stream.Chunk]:
-        ui = ui_stream.UIStream()
-        for chunk in ui.start():
-            yield chunk
-        if ctx.sandbox_domains is not None:
-            prewarm_sandbox(run_id, ctx.sandbox_domains)
-        try:
-            # Waits for any other turn of this run to finish (see `checkpoints.turn`).
-            async with checkpoints.turn(run_id) as saver:
-                agent = build_agent(
-                    model=ctx.model,
-                    instructions=ctx.instructions,
-                    tools=ctx.tools,
-                    checkpointer=saver,
-                )
-                finished = False
-                # Closed however the turn ends, which cancels the graph's running tasks (e.g. a
-                # tool call) before the turn is recorded: a stopped turn's response can be
-                # dropped while this waits at a `yield`, which doesn't close the stream itself.
-                events = agent.astream(
-                    {"messages": [prompt]},
-                    config,
-                    context=ChatDeps(user_id=user.id, run_id=run_id),
-                    stream_mode=["messages", "updates"],
-                    # Checkpoint each step before the next starts, so the user's message is
-                    # saved before the model is called.
-                    durability="sync",
-                )
-                try:
-                    async with aclosing(events):
-                        async for mode, data in events:
-                            for chunk in ui.feed(mode, data):
-                                yield chunk
-                    finished = True
-                except Exception as exc:
-                    log.exception("agent run %s failed", run_id)
-                    for chunk in ui.error(exc):
-                        yield chunk
-                finally:
-                    # Also when the client stops the turn, which cancels this task.
-                    with CancelScope(shield=True):
-                        await _record_turn(
-                            agent, config, run_id, finished=finished, partial=ui.partial_reply()
-                        )
-        except Exception as exc:
-            # The turn couldn't start, e.g. the database or the model's configuration.
-            log.exception("agent run %s couldn't start a turn", run_id)
-            for chunk in ui.error(exc):
-                yield chunk
-        for chunk in ui.finish():
-            yield chunk
-
-    return ui_stream.streaming_response(stream())
+    return ui_stream.streaming_response(turn_stream(ctx, user.id, run_id, prompt))

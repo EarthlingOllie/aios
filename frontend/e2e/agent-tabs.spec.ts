@@ -75,11 +75,11 @@ test("moves between tabs with the keyboard", async ({ page }) => {
   await expect(tab(page, /Runs/)).toBeFocused();
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("End");
-  await expect(tab(page, /Versions/)).toHaveAttribute("aria-selected", "true");
+  await expect(tab(page, /Schedule/)).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
   await expect(tab(page, /Context/)).toBeFocused();
   await page.keyboard.press("ArrowLeft");
-  await expect(tab(page, /Versions/)).toBeFocused();
+  await expect(tab(page, /Schedule/)).toBeFocused();
   await page.keyboard.press("Home");
   await expect(tab(page, /Context/)).toHaveAttribute("aria-selected", "true");
 
@@ -167,4 +167,17 @@ test("deleting a run from its page returns to the Runs tab, without it", async (
   await expect(tab(page, "Runs 1")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByRole("link", { name: /Summarise/ })).toBeVisible();
   await expect(panel(page).getByText("Find sources")).toHaveCount(0);
+});
+
+test("the Schedule tab shows the agent's schedules", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  await page.goto(`/agents/${agent.id}`);
+
+  await tab(page, "Schedule").click();
+  await expect(page).toHaveURL(/\?tab=schedule$/);
+  await expect(
+    panel(page).getByText("No schedules. Add one to run this agent automatically."),
+  ).toBeVisible();
+  await expect(page.getByText("You are Researcher.")).toHaveCount(0);
 });

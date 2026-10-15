@@ -17,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TargetSchedules } from "@/components/schedules";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -222,6 +223,7 @@ function WorkflowDetailView({ id }: { id: number }) {
           editHref={`/workflows/${id}/edit`}
         />
       </Section>
+      <TargetSchedules kind="workflow" id={id} />
       <Section title="Runs">
         {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
         {runs.data?.length === 0 && (

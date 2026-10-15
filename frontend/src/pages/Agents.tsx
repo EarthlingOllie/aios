@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { ArrowUpCircle, MessageSquare, Pencil, Play, Trash2 } from "lucide-react";
+import {
+  ArrowUpCircle,
+  CalendarClock,
+  MessageSquare,
+  Pencil,
+  Play,
+  Trash2,
+} from "lucide-react";
 
 import {
   DetailPage,
@@ -17,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { TargetSchedules } from "@/components/schedules";
 import { Tabs } from "@/components/tabs";
 import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
 import {
@@ -294,7 +302,14 @@ export function AgentDetail() {
                           to={`runs/${run.id}`}
                           className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
                         >
-                          <MessageSquare className="text-muted-foreground size-4 shrink-0" />
+                          {run.trigger_id ? (
+                            <CalendarClock
+                              className="text-muted-foreground size-4 shrink-0"
+                              aria-label="Started by a schedule"
+                            />
+                          ) : (
+                            <MessageSquare className="text-muted-foreground size-4 shrink-0" />
+                          )}
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm">
                               {run.title ?? (
@@ -343,6 +358,11 @@ export function AgentDetail() {
                 }}
               />
             ),
+          },
+          {
+            id: "schedule",
+            label: "Schedule",
+            content: <TargetSchedules kind="agent" id={id} />,
           },
         ]}
       />

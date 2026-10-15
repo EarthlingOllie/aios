@@ -276,6 +276,10 @@ class AgentRun(Base):
         ForeignKey("agent_versions.id", ondelete="CASCADE"), index=True
     )
     title: Mapped[str | None] = mapped_column(String(255))
+    # The trigger that started the run, if one did (and still exists).
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey("triggers.id", ondelete="SET NULL"), index=True
+    )
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -532,3 +536,93 @@ class WorkflowRunStep(Base):
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# Triggers start agents and workflows without a user in the loop. Each has a kind; the only one
+# so far is a schedule (a cron expression in a timezone). Kind-specific settings are columns that
+# only that kind sets, so the scheduler can find what's due with one indexed query.
+
+
+class TriggerKind(enum.StrEnum):
+    schedule = "schedule"
+
+
+class TriggerTargetKind(enum.StrEnum):
+    agent = "agent"
+    workflow = "workflow"
+
+
+class TriggerStatus(enum.StrEnum):
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+class Trigger(Base):
+    """Starts an agent (a new run of its current version) or a workflow when it fires."""
+
+    __tablename__ = "triggers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[TriggerKind] = mapped_column(Enum(TriggerKind, name="trigger_kind"))
+    target_kind: Mapped[TriggerTargetKind] = mapped_column(
+        Enum(TriggerTargetKind, name="trigger_target_kind")
+    )
+    # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted, and
+    # deleting one deletes its triggers; the cascade is for deleting the user.
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), index=True
+    )
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    # The message an agent run starts with, or a workflow run's input.
+    input: Mapped[str] = mapped_column(Text, server_default="")
+    # Schedules: a 5-field cron expression (or a macro like @daily), in an IANA timezone.
+    cron: Mapped[str | None] = mapped_column(String(255))
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    # When it next fires; null while disabled. Missed runs aren't caught up: a schedule that's
+    # overdue (the service was down) fires once, then moves on from now.
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[TriggerStatus | None] = mapped_column(
+        Enum(TriggerStatus, name="trigger_status")
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    # While `last_status` is running, refreshed by the process firing it; one that stops being
+    # refreshed has lost its process, and is failed (`aios.scheduler.fail_stalled`).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "agent_runs.id", ondelete="SET NULL", use_alter=True, name="fk_triggers_last_run_id"
+        )
+    )
+    # The workflow run it last started; its status is the schedule's (`api.triggers.trigger_out`),
+    # since a worker runs it after the schedule has fired.
+    last_workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    agent: Mapped[Agent | None] = relationship()
+    workflow: Mapped[Workflow | None] = relationship()
+    last_workflow_run: Mapped[WorkflowRun | None] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL)"
+            " OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
+            name="ck_triggers_target",
+        ),
+        CheckConstraint(
+            "kind <> 'schedule' OR (cron IS NOT NULL AND timezone IS NOT NULL)",
+            name="ck_triggers_schedule",
+        ),
+        # What the scheduler polls for.
+        Index("ix_triggers_due", "next_run_at", postgresql_where=text("next_run_at IS NOT NULL")),
+    )
