@@ -16,9 +16,8 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, Connection
 from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
-from sqlalchemy.engine import make_url
 
-from aios.config import get_settings
+from aios.config import get_settings, libpq_conninfo
 
 SCHEMA = "langgraph"
 
@@ -31,8 +30,7 @@ _ready = False
 
 def conninfo() -> str:
     """DATABASE_URL as plain libpq connection info (it's written for SQLAlchemy)."""
-    url = make_url(get_settings().database_url).set(drivername="postgresql")
-    return url.render_as_string(hide_password=False)
+    return libpq_conninfo(get_settings().database_url)
 
 
 _CONNECT_KWARGS = {

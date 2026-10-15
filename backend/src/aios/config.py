@@ -2,6 +2,13 @@ from functools import lru_cache
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+
+def libpq_conninfo(url: str, **parts: str) -> str:
+    """A database URL (written for SQLAlchemy, like DATABASE_URL) as plain libpq connection info
+    for psycopg, with any `parts` (e.g. `database`) replaced."""
+    return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
 
 
 class Settings(BaseSettings):
@@ -10,7 +17,15 @@ class Settings(BaseSettings):
     # Public origin the browser uses (SPA and API share it; the SPA calls /api/* and /login).
     public_url: str = "http://localhost:5173"
 
-    database_url: str = "postgresql+psycopg://aios:aios@localhost:5432/aios"
+    # The platform database, as the app's role (`aios_app`, created by `aios.db_roles`): the API,
+    # the workers and migrations all connect as it.
+    database_url: str = "postgresql+psycopg://aios_app:aios_app@localhost:5432/aios"
+    # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), for creating data
+    # stores. Read by `aios.db_roles` (to create the role) only, for now; on AWS only the
+    # provisioning worker is to be given it.
+    data_store_provisioner_url: str = (
+        "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
+    )
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

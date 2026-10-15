@@ -8,7 +8,8 @@ x-backend: &backend
     - path: .env
       required: false
   environment: &backend-env
-    DATABASE_URL: postgresql+psycopg://aios:aios@db:5432/aios
+    # The app's role (made by `db-roles`), not the master user.
+    DATABASE_URL: postgresql+psycopg://aios_app:aios_app@db:5432/aios
     REDIS_URL: redis://redis:6379/0
     PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
   depends_on:
@@ -20,6 +21,8 @@ x-backend: &backend
 services:
   db:
     image: pgvector/pgvector:pg17
+    # `aios` is the master user, as on RDS: only `db-roles` (and you, for break-glass access)
+    # connect as it.
     environment:
       POSTGRES_USER: aios
       POSTGRES_PASSWORD: aios
@@ -39,12 +42,33 @@ services:
       interval: 2s
       retries: 30
 
-  # Reuses the api image (built once, by the api service) to run migrations.
+  # Creates the app's and the provisioner's roles as the master user (`aios.db_roles`), and
+  # hands the app's role anything the master user still owns. Reuses the api image (built
+  # once, by the api service), as does migrate.
+  db-roles:
+    image: aios-api:local
+    pull_policy: never
+    command: ["python", "-m", "aios.db_roles"]
+    environment:
+      DATABASE_ADMIN_URL: postgresql+psycopg://aios:aios@db:5432/aios
+      DATABASE_URL: postgresql+psycopg://aios_app:aios_app@db:5432/aios
+      DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@db:5432/aios
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   migrate:
     <<: *backend
     image: aios-api:local
     pull_policy: never
     command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db-roles:
+        condition: service_completed_successfully
+      # Not for migrating: the services that wait for migrate rely on it for Redis.
+      redis:
+        condition: service_healthy
     restart: "no"
 
   api:
