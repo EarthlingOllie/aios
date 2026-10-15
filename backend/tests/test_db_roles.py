@@ -20,18 +20,14 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from aios import checkpoints
-from aios.config import get_settings
+from aios.config import get_settings, libpq_conninfo
 from aios.db_roles import ensure_roles
 
 BACKEND = Path(__file__).resolve().parents[1]
 
 
-def _libpq(url: str, **parts) -> str:
-    return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
-
-
 def _connect(url: str, **parts) -> psycopg.Connection:
-    return psycopg.connect(_libpq(url, **parts), autocommit=True)
+    return psycopg.connect(libpq_conninfo(url, **parts), autocommit=True)
 
 
 @pytest.fixture

@@ -2,6 +2,13 @@ from functools import lru_cache
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+
+def libpq_conninfo(url: str, **parts: str) -> str:
+    """A database URL (written for SQLAlchemy, like DATABASE_URL) as plain libpq connection info
+    for psycopg, with any `parts` (e.g. `database`) replaced."""
+    return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
 
 
 class Settings(BaseSettings):

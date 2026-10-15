@@ -23,18 +23,13 @@ from psycopg import sql
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from aios.config import Settings
+from aios.config import Settings, libpq_conninfo
 
 
 class _BootstrapSettings(Settings):
     """The app's settings, plus the master user's DSN, which only this command reads."""
 
     database_admin_url: str = ""
-
-
-def _conninfo(url: str, **parts) -> str:
-    """A SQLAlchemy URL as plain libpq connection info."""
-    return make_url(url).set(drivername="postgresql", **parts).render_as_string(hide_password=False)
 
 
 def _login_role(conn: psycopg.Connection, url: str, *, privileged: bool) -> str:
@@ -211,7 +206,7 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
     dbname = app_u.database
     if not dbname:
         raise ValueError("The app's URL names no database")
-    with psycopg.connect(_conninfo(admin_url, database=dbname)) as conn:
+    with psycopg.connect(libpq_conninfo(admin_url, database=dbname)) as conn:
         app = sql.Identifier(_login_role(conn, app_url, privileged=False))
         _login_role(conn, provisioner_url, privileged=True)
         # Handing objects to a role takes membership of it, and on RDS the master user isn't a
