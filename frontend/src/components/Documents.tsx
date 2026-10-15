@@ -3,7 +3,8 @@ import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, describeError, type DocumentInfo } from "@/lib/api";
+import { api, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
+import { dataStoreNotice, dataStorePollInterval } from "@/lib/data-store";
 
 const statusVariant = {
   pending: "secondary",
@@ -17,6 +18,11 @@ export function Documents() {
   const [uploading, setUploading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The user's data store: until it's ready there's nothing to list, and uploads are refused.
+  // Unknown (undefined) until the first answer; a failed request keeps the last one.
+  const [storeStatus, setStoreStatus] = useState<DataStoreStatus>();
+  const storeBlocked = storeStatus !== undefined && storeStatus !== "ready";
+  const notice = storeStatus && dataStoreNotice(storeStatus);
 
   // Never rejects: a failed list (API restart, expired session) keeps the last list and the
   // poll below simply tries again.
@@ -31,6 +37,30 @@ export function Documents() {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  // Ask how the store is, and again while it isn't ready; list the documents once it is.
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () =>
+      api
+        .getDataStore()
+        .then(({ status }) => {
+          if (stopped) return;
+          setStoreStatus(status);
+          const wait = dataStorePollInterval(status);
+          if (wait === null) refresh();
+          else timer = setTimeout(check, wait);
+        })
+        .catch(() => {
+          if (!stopped) timer = setTimeout(check, 5000);
+        });
+    check();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [refresh]);
 
   // Poll while anything is still being ingested by the worker.
@@ -77,7 +107,12 @@ export function Documents() {
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Documents</h2>
-        <Button size="sm" variant="outline" onClick={() => inputRef.current?.click()}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={storeBlocked}
+          onClick={() => inputRef.current?.click()}
+        >
           {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
           Upload
         </Button>
@@ -90,6 +125,18 @@ export function Documents() {
           onChange={(e) => onFiles(e.target.files)}
         />
       </div>
+      {notice && (
+        <div
+          role="status"
+          aria-label="Data store"
+          className="text-muted-foreground flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm"
+        >
+          {storeStatus === "provisioning" && (
+            <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+          )}
+          <span>{notice}</span>
+        </div>
+      )}
       {errors.length > 0 && (
         <div
           role="alert"
@@ -112,7 +159,7 @@ export function Documents() {
         </div>
       )}
       <ul className="flex-1 space-y-1 overflow-y-auto">
-        {docs.length === 0 && (
+        {docs.length === 0 && !storeBlocked && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
         )}
         {docs.map((doc) => (

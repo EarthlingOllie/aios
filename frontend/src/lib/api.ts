@@ -7,6 +7,9 @@ export type User = {
   avatar_url: string | null;
 };
 
+/** The user's data store: documents and search wait until it's "ready". */
+export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
+
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
@@ -401,6 +404,7 @@ const json = (method: string, body: unknown): RequestInit => ({
 export const api = {
   me: () => request<User>("/api/me"),
   logout: () => request<void>("/logout", { method: "POST" }),
+  getDataStore: () => request<{ status: DataStoreStatus }>("/api/data-store"),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
