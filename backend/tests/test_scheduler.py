@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fake_model import model, replies, use_model
 from sqlalchemy import select, update
+from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, make_workflow, schedule
 
 from aios import checkpoints, scheduler
@@ -222,3 +223,35 @@ def test_the_api_runs_the_scheduler_while_its_up(monkeypatch):
     with TestClient(app):
         pass
     assert state == {"started": 1, "stopped": 1}
+
+
+def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db):
+    agent = make_agent(api, "Newsbot")
+    runs_url = f"/api/agents/{agent['id']}/runs"
+    t = make_trigger(api, schedule("agent", agent["id"], input="What happened today?"))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+
+    async def script(messages, info):
+        yield "Not much."
+
+    with use_model(model(script)):
+        tick(now)
+        scheduled = load(db, t["id"]).last_run_id
+        chatted = api.post(runs_url).json()["id"]
+        api.post(f"{runs_url}/{chatted}/chat", json=chat_body("What happened today?"))
+        # The user can continue a scheduled run from the UI, as any other.
+        for run_id in (scheduled, chatted):
+            assert api.post(f"{runs_url}/{run_id}/chat", json=chat_body("More?")).status_code == 200
+
+    def stored(run_id):
+        detail = api.get(f"{runs_url}/{run_id}").json()
+        ids = [m["id"] for m in detail["ui_messages"]]
+        # Each message has an id of its own, kept in the run's thread, so the UI's are stable.
+        assert ids == [m.id for m in checkpoints.history(run_id)]
+        assert all(ids) and len(set(ids)) == len(ids)
+        assert ids == [m["id"] for m in api.get(f"{runs_url}/{run_id}").json()["ui_messages"]]
+        return detail["message_count"], [(m["role"], m["parts"]) for m in detail["ui_messages"]]
+
+    assert stored(scheduled) == stored(chatted)
+    assert stored(scheduled)[0] == 4
