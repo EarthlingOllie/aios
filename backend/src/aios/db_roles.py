@@ -103,7 +103,22 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
     The platform database is `app_url`'s; the master user connects to it whatever database
     `admin_url` names.
     """
-    dbname = make_url(app_url).database
+    admin, app_u, prov_u = make_url(admin_url), make_url(app_url), make_url(provisioner_url)
+    # Before anything changes: the same role twice would end with the last ALTER ROLE's
+    # attributes and password (an app role with CREATEDB, or a master user without it), and a
+    # URL without a password would clear the role's.
+    names = [admin.username, app_u.username, prov_u.username]
+    if len(set(names)) != 3:
+        raise ValueError(
+            "The master user's, the app's and the provisioner's URLs must name three different "
+            f"roles, not {names}"
+        )
+    for u in (app_u, prov_u):
+        if not u.password:
+            raise ValueError(f"The URL for role {u.username} has no password")
+    dbname = app_u.database
+    if not dbname:
+        raise ValueError("The app's URL names no database")
     with psycopg.connect(_conninfo(admin_url, database=dbname)) as conn:
         app = sql.Identifier(_login_role(conn, app_url, privileged=False))
         _login_role(conn, provisioner_url, privileged=True)

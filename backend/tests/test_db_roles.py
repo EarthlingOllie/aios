@@ -161,6 +161,54 @@ def test_rerunning_changes_the_passwords(cluster):
         _connect(app_url)
 
 
+def _attrs(admin_url: str, role: str) -> tuple | None:
+    with _connect(admin_url) as conn:
+        return conn.execute(
+            "SELECT rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = %s", (role,)
+        ).fetchone()
+
+
+def _as(url: str, role: str) -> str:
+    return make_url(url).set(username=role).render_as_string(hide_password=False)
+
+
+@pytest.mark.parametrize(
+    "same", ["app_and_provisioner", "app_and_master", "provisioner_and_master"]
+)
+def test_refuses_urls_that_name_the_same_role(cluster, same):
+    """Else the app's role could end up with CREATEDB, or the master user lose it."""
+    admin_url, app_url, prov_url = cluster
+    admin = make_url(admin_url).username
+    app, prov = make_url(app_url).username, make_url(prov_url).username
+    master_before = _attrs(admin_url, admin)
+    if same == "app_and_provisioner":
+        prov_url = _as(prov_url, app)
+    elif same == "app_and_master":
+        app_url = _as(app_url, admin)
+    else:
+        prov_url = _as(prov_url, admin)
+
+    with pytest.raises(ValueError, match="different"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, admin) == master_before
+    assert _attrs(admin_url, app) is None
+    assert _attrs(admin_url, prov) is None
+
+
+def test_refuses_a_url_without_a_password(cluster):
+    """A missing password would otherwise clear the role's (PASSWORD NULL), locking it out."""
+    admin_url, app_url, prov_url = cluster
+    ensure_roles(admin_url, app_url, prov_url)
+    u = make_url(app_url)
+    no_password = f"{u.drivername}://{u.username}@{u.host}:{u.port}/{u.database}"
+
+    with pytest.raises(ValueError, match="password"):
+        ensure_roles(admin_url, no_password, prov_url)
+
+    _connect(app_url).close()
+
+
 def _migrate(database_url: str) -> subprocess.CompletedProcess:
     """`alembic upgrade head` against `database_url`, in a process of its own (the app's settings
     are read once per process)."""
