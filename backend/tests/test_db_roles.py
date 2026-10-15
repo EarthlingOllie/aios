@@ -263,6 +263,48 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 
+def test_less_common_objects_are_handed_over_too(cluster):
+    """As a migration might create them, and a later one alter them (dropping them needs only
+    the schema, which the app's role owns; altering them needs the object)."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE TABLE pairs (a int, b int)")
+        conn.execute("CREATE STATISTICS pairs_ab ON a, b FROM pairs")
+        conn.execute(
+            "CREATE COLLATION folded (provider = icu, locale = 'und', deterministic = false)"
+        )
+        conn.execute("CREATE TEXT SEARCH DICTIONARY plain_dict (TEMPLATE = simple)")
+        conn.execute("CREATE TEXT SEARCH CONFIGURATION plain (COPY = simple)")
+        conn.execute("CREATE FUNCTION near(int, int) RETURNS bool LANGUAGE sql AS 'SELECT $1 = $2'")
+        conn.execute("CREATE OPERATOR ~= (LEFTARG = int, RIGHTARG = int, FUNCTION = near)")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    # COMMENT ON, like ALTER, takes owning the object.
+    with _connect(app_url) as conn:
+        for obj in [
+            "STATISTICS pairs_ab",
+            "OPERATOR ~= (int, int)",
+            "FUNCTION near(int, int)",
+            "COLLATION folded",
+            "TEXT SEARCH CONFIGURATION plain",
+            "TEXT SEARCH DICTIONARY plain_dict",
+        ]:
+            conn.execute(sql.SQL("COMMENT ON {} IS 'migrated'").format(sql.SQL(obj)))
+
+
+def test_fails_naming_what_it_cannot_hand_over(cluster):
+    """Rather than leave the app's role unable to migrate something, silently."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE PUBLICATION everything_pub")
+
+    with pytest.raises(RuntimeError, match="everything_pub"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, make_url(app_url).username) is None
+
+
 def _migrate(database_url: str) -> subprocess.CompletedProcess:
     """`alembic upgrade head` against `database_url`, in a process of its own (the app's settings
     are read once per process)."""
