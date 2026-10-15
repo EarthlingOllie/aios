@@ -13,6 +13,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import DB
 from aios.models import User
 
@@ -59,6 +60,7 @@ async def auth_callback(request: Request, db: DB):
     user.email = email
     user.avatar_url = profile.get("avatar_url")
     db.commit()
+    data_store_for(user.id)
 
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()

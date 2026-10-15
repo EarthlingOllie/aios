@@ -1,5 +1,6 @@
 import asyncio
 import math
+import uuid
 
 import pytest
 
@@ -80,4 +81,4 @@ def test_search_endpoint_rejects_bad_params(client, params):
 
 def test_hybrid_search_blank_query_skips_embedding():
     # Would hit the embedding API (and fail without a key) if not short-circuited.
-    assert asyncio.run(hybrid_search(owner_id=1, query="  ")) == []
+    assert asyncio.run(hybrid_search(data_store_id=uuid.uuid4(), query="  ")) == []

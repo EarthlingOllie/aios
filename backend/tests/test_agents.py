@@ -654,7 +654,7 @@ def stop_during_searches(
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
 
-    async def search(owner_id, query, limit):
+    async def search(data_store_id, query, limit):
         if query == "slow":
             events.append("search started")
             try:

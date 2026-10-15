@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
+from aios.datastores import data_store_for
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -619,6 +621,8 @@ class ChatContext:
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
     # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
+    # The data store the turn's tools use: the user's.
+    data_store_id: uuid.UUID | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
@@ -645,6 +649,7 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         metadata=trace_metadata(run, user_id),
         tools=tools,
         sandbox_domains=sandbox_domains,
+        data_store_id=data_store_for(user_id),
     )
 
 
@@ -776,7 +781,7 @@ async def turn_stream(
             events = agent.astream(
                 {"messages": [prompt]},
                 config,
-                context=ChatDeps(user_id=user_id, run_id=run_id),
+                context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
                 stream_mode=["messages", "updates"],
                 # Checkpoint each step before the next starts, so the user's message is
                 # saved before the model is called.

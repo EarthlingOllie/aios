@@ -1,10 +1,11 @@
 import asyncio
+import uuid
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
-from aios.db import SessionLocal
+from aios.datastores import store_session
 
 settings = get_settings()
 
@@ -34,10 +35,11 @@ celery_app.conf.update(
 
 
 @celery_app.task(name="aios.ingest_document")
-def ingest_document_task(document_id: int) -> None:
+def ingest_document_task(data_store_id: str, document_id: int) -> None:
+    """Ingest a document of the data store's (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
 
-    with SessionLocal() as db:
+    with store_session(uuid.UUID(data_store_id), "rw") as db:
         ingest_document(db, document_id)
 
 

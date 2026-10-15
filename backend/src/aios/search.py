@@ -1,5 +1,6 @@
 """Hybrid retrieval: pgvector cosine search + Postgres full-text search, fused with RRF."""
 
+import uuid
 from dataclasses import dataclass
 
 from anyio import to_thread
@@ -7,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.db import SessionLocal
+from aios.datastores import store_owner, store_session
 from aios.embeddings import embed_query
 
 # Each branch ranks its own top-N candidates; Reciprocal Rank Fusion then scores every
@@ -101,23 +102,26 @@ def hybrid_search_with_vector(
     return hits
 
 
-async def hybrid_search(*, owner_id: int, query: str, limit: int = 8) -> list[SearchHit]:
+async def hybrid_search(*, data_store_id: uuid.UUID, query: str, limit: int = 8) -> list[SearchHit]:
+    """Search the data store's documents."""
     if not query.strip():  # e.g. a blank query from the agent's tool call
         return []
     query_vector = await embed_query(query)
 
     def run() -> list[SearchHit]:
-        with SessionLocal() as db:
+        with store_session(data_store_id, "ro") as db:
             return hybrid_search_with_vector(
-                db, owner_id=owner_id, query=query, query_vector=query_vector, limit=limit
+                db, owner_id=store_owner(db), query=query, query_vector=query_vector, limit=limit
             )
 
     return await to_thread.run_sync(run)
 
 
-async def document_search_results(*, owner_id: int, query: str, limit: int = 8) -> list[dict]:
+async def document_search_results(
+    *, data_store_id: uuid.UUID, query: str, limit: int = 8
+) -> list[dict]:
     """Hybrid search hits in the form the search tools return to the model."""
-    hits = await hybrid_search(owner_id=owner_id, query=query, limit=limit)
+    hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
     return [
         {
             "source": hit.filename,

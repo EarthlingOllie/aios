@@ -165,6 +165,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
                     runner and the egress proxy
     agent.py        the documents chat's agent + search_documents tool, and the run context
+    datastores/     data stores: data_store_for(user), the one place a user becomes a store,
+                    and store_session(id, role), the only way to open a session on user data
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest and workflow run tasks
@@ -304,6 +306,13 @@ Known limits:
 
 - **Uploads are stored in Postgres** (`documents.data`), so the API and worker don't need a
   shared bucket. Move them to S3 if files get large.
+- **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
+  user, with an id of its own, created when they sign in. Document upload, listing, deletion,
+  search, ingest and the document search tools open their sessions with
+  `store_session(data_store_id, role)`; the run context (`ChatDeps`) and the ingest task carry
+  the `data_store_id`, not the user. For now every store is in the platform database and its
+  rows are told apart by `owner_id`; giving each store a database of its own changes only
+  what's behind the seam.
 - **Torch**: Docling needs `torch`, whose PyPI wheels pull in several GB of CUDA runtime.
   `pyproject.toml` locks torch/torchvision to PyTorch's CPU-only index instead, so installs
   (the worker image and a local `uv sync --extra ingest`) need access to `download.pytorch.org`

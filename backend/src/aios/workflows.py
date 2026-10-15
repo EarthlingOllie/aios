@@ -30,6 +30,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -45,6 +46,7 @@ from aios import checkpoints, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -262,6 +264,8 @@ class RunState:
     workflow_id: int
     workflow_name: str
     workflow_version: int
+    # The data store its agents' tools use: the workflow owner's.
+    data_store_id: uuid.UUID
     # The first node to fail, and why. Once set, no more nodes start.
     error: str | None = None
     failed_path: tuple[str, ...] = ()
@@ -335,6 +339,7 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
         workflow_id=workflow.id,
         workflow_name=workflow.name,
         workflow_version=version,
+        data_store_id=data_store_for(workflow.owner_id),
     )
     return state, version_id, text
 
@@ -604,7 +609,9 @@ async def _run_agent(
             state = await graph.ainvoke(
                 {"messages": [HumanMessage(text)]},
                 config,
-                context=ChatDeps(user_id=run.user_id, run_id=agent_run_id),
+                context=ChatDeps(
+                    user_id=run.user_id, run_id=agent_run_id, data_store_id=run.data_store_id
+                ),
                 # As in a chat turn: checkpointed step by step, so a failed turn's history is kept.
                 durability="sync",
             )

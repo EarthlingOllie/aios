@@ -1,4 +1,5 @@
 import json
+import uuid
 from dataclasses import dataclass
 
 from langchain.agents import create_agent
@@ -16,6 +17,10 @@ class ChatDeps:
     user_id: int
     # The agent run (user-defined agents only), e.g. for the run's sandbox (`run_python`).
     run_id: int | None = None
+    # The data store the run's tools read and write (`aios.datastores`), resolved when the run
+    # or chat turn starts. Tools take it rather than the user, so they needn't change when a
+    # run's store isn't its user's (teams).
+    data_store_id: uuid.UUID | None = None
 
 
 INSTRUCTIONS = (
@@ -34,7 +39,10 @@ async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         query: A natural-language search query.
     """
     # As JSON text: LangChain would pass a list through as content blocks.
-    return json.dumps(await document_search_results(owner_id=runtime.context.user_id, query=query))
+    results = await document_search_results(
+        data_store_id=runtime.context.data_store_id, query=query
+    )
+    return json.dumps(results)
 
 
 def documents_agent():

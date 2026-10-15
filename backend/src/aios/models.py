@@ -1,4 +1,5 @@
 import enum
+import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
@@ -21,7 +22,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024
@@ -40,6 +41,26 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataStore(Base):
+    """Where a user's data lives: their documents and chunks (see `aios.datastores`).
+
+    It has an id of its own, rather than being the user's, so a store can later change hands
+    (to a team) without renaming anything named after it. For now every store is in the platform
+    database, and its rows are told apart there by their `owner_id`.
+    """
+
+    __tablename__ = "data_stores"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    # One store per user, for now. Teams will own stores too (an `owner_team_id`).
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
