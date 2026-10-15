@@ -34,9 +34,8 @@ from sqlalchemy import select, update
 from aios import cron
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
-from aios.api.skills import lock_live
 from aios.db import SessionLocal
-from aios.models import Agent, AgentRun, Trigger, TriggerStatus, TriggerTargetKind
+from aios.models import Trigger, TriggerStatus, TriggerTargetKind
 
 log = logging.getLogger(__name__)
 
@@ -117,18 +116,13 @@ def _start_agent_run(trigger_id: int, fired_at: datetime) -> AgentTurn:
     with SessionLocal() as db:
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
         agent = trigger.agent
-        # Keeps a concurrent delete of the agent from missing this run (see `create_run`).
-        if not lock_live(db, Agent, [agent.id], read=True):
-            raise FireError("The agent has been deleted.")
         try:
-            agents_api.build_version_tools(agent.current_version)
+            run = agents_api.new_agent_run(db, agent, trigger_id=trigger.id)
         except HTTPException as exc:
+            if exc.status_code == 404:
+                raise FireError("The agent has been deleted.") from exc
             raise FireError(exc.detail) from exc
-        run = AgentRun(
-            agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger.id
-        )
-        db.add(run)
-        db.flush()
+        # Committed with the run, under the agent's share lock (see `new_agent_run`).
         trigger.last_run_id = run.id
         db.commit()
         return agent.owner_id, agent.id, run.id, trigger.input

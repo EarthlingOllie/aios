@@ -540,18 +540,30 @@ def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
     return [RunSummary.model_validate(row, from_attributes=True) for row in rows]
 
 
+def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -> AgentRun:
+    """Add (and flush, not commit) a run of the agent's current version.
+
+    Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
+    version can't be built. The caller commits; the share lock taken here, held until then,
+    keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
+    starts one (`aios.scheduler`), passing its `trigger_id`.
+    """
+    lock_live_agent(db, agent, read=True)
+    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
+    build_version_tools(agent.current_version)
+    # Pin the version: later edits to the agent don't change this conversation.
+    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger_id)
+    db.add(run)
+    db.flush()
+    return run
+
+
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
 def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
-    # Keeps a concurrent delete from missing this run, which would be left behind.
-    lock_live_agent(db, agent, read=True)
-    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
-    build_version_tools(agent.current_version)
-    # Pin the version: later edits to the agent don't change this conversation.
-    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id)
-    db.add(run)
+    run = new_agent_run(db, agent)
     db.commit()
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     return RunSummary.model_validate(row, from_attributes=True)

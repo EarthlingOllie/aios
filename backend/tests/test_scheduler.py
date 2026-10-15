@@ -160,6 +160,10 @@ def test_an_agent_that_cant_run_fails_without_a_run(api, db):
     assert "retired_tool" in fired.last_error
     assert fired.last_run_id is None
     assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+    # Refused exactly as starting a run by hand is.
+    by_hand = api.post(f"/api/agents/{agent['id']}/runs")
+    assert by_hand.status_code == 409
+    assert fired.last_error == by_hand.json()["detail"]
 
 
 @pytest.fixture
