@@ -6,6 +6,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
 from aios.datastores import DataStoreNotFound, store_session
+from aios.datastores.resolve import data_store_of_document
 
 settings = get_settings()
 
@@ -35,10 +36,18 @@ celery_app.conf.update(
 
 
 @celery_app.task(name="aios.ingest_document")
-def ingest_document_task(data_store_id: str, document_id: int) -> None:
+def ingest_document_task(data_store_id: str | int, document_id: int | None = None) -> None:
     """Ingest a document of the data store's (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
 
+    if document_id is None:
+        # Queued by the release before data stores, with only the document's id. Only needed
+        # until that release's messages have drained (see `data_store_of_document`).
+        document_id = int(data_store_id)
+        store_id = data_store_of_document(document_id)
+        if store_id is None:
+            return
+        data_store_id = str(store_id)
     try:
         with store_session(uuid.UUID(data_store_id), "rw") as db:
             ingest_document(db, document_id)

@@ -94,6 +94,20 @@ def test_the_ingest_task_ingests_in_the_store_it_is_given(db, user, offline_inge
     assert [c.text for c in doc.chunks] == ["Hi"]
 
 
+def test_the_ingest_task_takes_messages_queued_before_data_stores(db, user, offline_ingest):
+    """Uploads queued while the previous release was running carry only the document's id."""
+    doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+
+    worker.ingest_document_task.run(doc.id)
+    worker.ingest_document_task.run(2**31 - 1)  # deleted since: nothing to do
+
+    db.refresh(doc)
+    assert doc.status == DocumentStatus.ready
+    assert [c.text for c in doc.chunks] == ["Hi"]
+
+
 def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
     """As for a document deleted before its ingest: there's nothing left to ingest."""
     owner = User(github_id=-4, login="gone")

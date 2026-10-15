@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios.db import SessionLocal
-from aios.models import DataStore
+from aios.models import DataStore, Document
 
 
 def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
@@ -35,3 +35,18 @@ def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
             .returning(DataStore.id)
         ) or db.scalar(select(DataStore.id).where(DataStore.owner_user_id == user_id))
     return store_id
+
+
+def data_store_of_document(document_id: int) -> uuid.UUID | None:
+    """The store a document is in; None if it's gone.
+
+    Only for ingest messages queued before data stores (`aios.worker`), which carry just the
+    document's id; remove it once a release has drained them.
+    """
+    with SessionLocal() as db:
+        owner_id = db.scalar(select(Document.owner_id).where(Document.id == document_id))
+        if owner_id is None:
+            return None
+        store_id = data_store_for(owner_id, db)
+        db.commit()
+        return store_id
