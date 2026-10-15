@@ -2,11 +2,13 @@ import ast
 import asyncio
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from fake_model import ToolCall, last_tool_results, model, use_model
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import OperationalError
 from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
@@ -14,9 +16,11 @@ from test_workflows import agent_node, make_workflow
 import aios
 from aios import agent as agent_module
 from aios import auth, ingest, worker, workflows
+from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
 from aios.datastores import DataStoreNotFound, data_store_for, store_session
+from aios.db import SessionLocal, engine
 from aios.models import (
     DataStore,
     Document,
@@ -161,6 +165,39 @@ def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, mon
 
     run = db.get(WorkflowRun, started["id"])
     assert (run.status, run.started_at) == (WorkflowRunStatus.queued, None)
+
+
+@contextmanager
+def connections() -> Iterator[dict]:
+    """Counts the most pooled connections checked out at once inside the block (`most`)."""
+    out = {"now": 0, "most": 0}
+
+    def checkout(*args):
+        out["now"] += 1
+        out["most"] = max(out["most"], out["now"])
+
+    def checkin(*args):
+        out["now"] -= 1
+
+    event.listen(engine, "checkout", checkout)
+    event.listen(engine, "checkin", checkin)
+    try:
+        yield out
+    finally:
+        event.remove(engine, "checkout", checkout)
+        event.remove(engine, "checkin", checkin)
+
+
+def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user):
+    """A turn's context is loaded on the request's session, without taking a second pooled
+    connection while it holds the first (a burst of turns could otherwise exhaust the pool)."""
+    agent = librarian(api)
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with connections() as used, SessionLocal() as session:
+        ctx = agents_api.load_chat_context(session, user.id, agent["id"], run["id"])
+
+    assert ctx.data_store_id == data_store_for(user.id)
+    assert used["most"] == 1
 
 
 SRC = Path(aios.__file__).parent

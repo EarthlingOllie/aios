@@ -643,13 +643,16 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
+    # On this session, rather than one of its own alongside it; committed in case it's created.
+    data_store_id = data_store_for(user_id, db)
+    db.commit()
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         metadata=trace_metadata(run, user_id),
         tools=tools,
         sandbox_domains=sandbox_domains,
-        data_store_id=data_store_for(user_id),
+        data_store_id=data_store_id,
     )
 
 
