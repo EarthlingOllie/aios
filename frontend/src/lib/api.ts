@@ -172,6 +172,8 @@ export type RunSummary = {
   agent_version: number;
   title: string | null;
   message_count: number;
+  /** The trigger (e.g. a schedule) that started the run, if one did and it still exists. */
+  trigger_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -314,6 +316,49 @@ export type WorkflowRun = WorkflowRunSummary & {
   steps: WorkflowRunStep[];
 };
 
+export type TriggerTargetKind = "agent" | "workflow";
+export type TriggerStatus = "running" | "succeeded" | "failed";
+
+/** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
+export type Trigger = {
+  id: number;
+  kind: "schedule";
+  target_kind: TriggerTargetKind;
+  target_id: number;
+  target_name: string;
+  enabled: boolean;
+  /** The message an agent's run starts with, or a workflow run's input. */
+  input: string;
+  cron: string;
+  /** The cron expression in plain English. */
+  description: string;
+  timezone: string;
+  /** Null while disabled. */
+  next_run_at: string | null;
+  last_fired_at: string | null;
+  /** For a workflow, how the run it last started is going (a worker runs it). */
+  last_status: TriggerStatus | null;
+  last_error: string | null;
+  /** The agent run it last started (agents). */
+  last_run_id: number | null;
+  /** The workflow run it last started (workflows). */
+  last_workflow_run_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TriggerInput = {
+  kind: "schedule";
+  target_kind: TriggerTargetKind;
+  target_id: number;
+  enabled: boolean;
+  input: string;
+  cron: string;
+  timezone: string;
+};
+
+export type SchedulePreview = { description: string; next_runs: string[] };
+
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -419,4 +464,18 @@ export const api = {
     request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
   deleteWorkflowRun: (id: number, runId: number) =>
     request<void>(`/api/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
+
+  listTriggers: (target?: { kind: TriggerTargetKind; id: number }) =>
+    request<Trigger[]>(
+      "/api/triggers" +
+        (target ? `?${new URLSearchParams({ target_kind: target.kind, target_id: String(target.id) })}` : ""),
+    ),
+  getTrigger: (id: number) => request<Trigger>(`/api/triggers/${id}`),
+  createTrigger: (body: TriggerInput) => request<Trigger>("/api/triggers", json("POST", body)),
+  updateTrigger: (id: number, body: TriggerInput) =>
+    request<Trigger>(`/api/triggers/${id}`, json("PUT", body)),
+  deleteTrigger: (id: number) => request<void>(`/api/triggers/${id}`, { method: "DELETE" }),
+  previewSchedule: (cron: string, timezone: string) =>
+    request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
+  listTimezones: () => request<string[]>("/api/triggers/timezones"),
 };

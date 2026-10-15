@@ -5,7 +5,7 @@ import type { Page, Route } from "@playwright/test";
  * tests: it keeps state across requests, so a test can save and see the result, and follows
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
- * is refused).
+ * is refused), plus schedules' preview and timezones.
  */
 
 type Kind = "agent" | "workflow";
@@ -73,6 +73,8 @@ export class FakeApi {
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
+  /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
+  timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -364,6 +366,18 @@ export class FakeApi {
           updated_at: NOW,
         })),
       );
+    }
+    if (path === "/api/triggers" && method === "GET") return reply(200, []);
+    if (path === "/api/triggers/timezones") return reply(200, this.timezones);
+    if (path === "/api/triggers/preview" && method === "POST") {
+      // Any expression is fine here; the timezone is checked as the server checks it.
+      if (!this.timezones.includes(body.timezone)) {
+        return fail(422, `Unknown timezone: '${body.timezone}'`);
+      }
+      return reply(200, {
+        description: `Runs on "${body.cron}"`,
+        next_runs: ["2026-10-15T13:00:00Z", "2026-10-16T13:00:00Z", "2026-10-17T13:00:00Z"],
+      });
     }
     if (path === "/api/workflows" && method === "GET") {
       return reply(

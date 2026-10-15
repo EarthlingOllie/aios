@@ -84,6 +84,41 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   that has left the library, or an agent that has since been deleted), or if it has no nodes.
   Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the database.
 
+**Triggers** start agents and workflows without a user in the loop. Each has a kind, and the
+first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@weekly`,
+`@monthly`, `@yearly`) in an IANA timezone. The **Scheduler** page lists every schedule, the
+next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
+does the same for its own (`/api/triggers`).
+
+- An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
+  version starts with that message as the user's, and runs one turn exactly as a chat turn does
+  (the run is listed with the agent's others, marked as scheduled). The schedule shows how its
+  last run went, with a link to it.
+- A workflow's schedule carries an input. Each time it fires, a run of the workflow's *current*
+  version starts with it, exactly as starting one by hand does (refused the same way, which the
+  schedule records as a failure), and is queued for the worker. The schedule shows how that run
+  is going, then how it went, with a link to it.
+- Each API process runs the scheduler (`aios.scheduler`), polling every
+  `SCHEDULER_INTERVAL_SECONDS` (15). Due schedules are claimed with `FOR UPDATE SKIP LOCKED`
+  and moved on to their next run in the same transaction, so with any number of replicas each
+  run fires once. Set `SCHEDULER_ENABLED=false` to keep a process from running them.
+- A process fires at most `SCHEDULER_MAX_CONCURRENT_RUNS` (5) schedules at once (an agent's turn
+  runs in the API process, next to the chats it serves), and claims no more than it has free
+  slots for. What it can't start stays due, for another replica or its next poll, so a burst
+  (many schedules sharing `0 9 * * *`) runs a little late rather than crowding out chat.
+- Missed runs aren't caught up: a schedule that's overdue (nothing was running) fires once, then
+  carries on from now. Across daylight-saving changes it behaves like cron: a skipped local time
+  runs when the clock jumps, and a repeated one runs once. A turn still running when the process
+  stops keeps what it got to, and its schedule records that it failed. A process that dies
+  can't record that, so while a schedule is running the process firing it refreshes a heartbeat
+  (every 30s), and any replica's tick fails a running schedule whose heartbeat has stopped for
+  90s; replicas that are up keep beating their own, so they're left be.
+- Pausing or editing a schedule that has just been claimed, before its run has started, drops
+  that firing (it was for the old settings); the trigger row is locked while the run is created,
+  so an edit racing it either drops it or waits and lets the started run finish.
+- Deleting an agent or a workflow deletes its schedules. Cron parsing is `cronsim`'s, wrapped in
+  `aios.cron`.
+
 ```
 browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
                           └─ everything else ─────────────────▶ web (React SPA, static)
@@ -115,6 +150,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
+    api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
+    scheduler.py    fires due schedules (runs in each API process)
+    cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
