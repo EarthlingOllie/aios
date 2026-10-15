@@ -225,7 +225,7 @@ Changes to existing code:
     browser saves the file rather than rendering it on our origin.
   - A presigned URL is a bearer link: anyone holding it can download the file until it expires.
     That's why it lives only a minute, and is minted per click rather than shown on the page.
-  - Locally, MinIO's public endpoint signs the URLs (`DATA_STORE_FILES_PUBLIC_ENDPOINT`), so the
+  - Locally, RustFS's public endpoint signs the URLs (`DATA_STORE_FILES_PUBLIC_ENDPOINT`), so the
     browser can reach them.
 - **Search**: `search.py` and `tools/hybrid_search.py` use `store_session(data_store_id, "ro")`.
   The search SQL itself doesn't change, apart from losing the `owner_id` filter.
@@ -428,7 +428,7 @@ New settings in `config.py`. Each has a default, and can be overridden from the 
 | `DATA_STORE_PROVISIONER_URL` | The provisioner's DSN (only the provisioning worker has it) |
 | `DATA_STORE_CREDENTIALS_KEY` | Encrypts store passwords |
 | `DATA_STORE_FILES_BUCKET` | The S3 bucket for raw uploads |
-| `DATA_STORE_FILES_PUBLIC_ENDPOINT` | The S3 endpoint that presigned URLs use (MinIO's public address locally; unset on AWS) |
+| `DATA_STORE_FILES_PUBLIC_ENDPOINT` | The S3 endpoint that presigned URLs use (RustFS's public address locally; unset on AWS) |
 | `DOCUMENT_DOWNLOAD_URL_SECONDS` | How long a download link lasts (default 60) |
 | `DATA_STORE_DB_QUOTA_BYTES`, `DATA_STORE_FILES_QUOTA_BYTES` | The storage cap |
 | `DATA_STORE_DROPPED_RETENTION_DAYS` | How long dropped tables and columns are kept |
@@ -459,7 +459,7 @@ New settings in `config.py`. Each has a default, and can be overridden from the 
 - **Local**:
   - Compose's `pgvector/pgvector:pg17` container plays the same part. The provisioner uses its
     superuser.
-  - MinIO stands in for S3.
+  - RustFS (single node; MinIO is no longer maintained) stands in for S3. Only the S3 API is used, so any S3-compatible server would do.
 - **Monitoring**:
   - Usage per store against its quota.
   - Slow queries per role.
@@ -476,7 +476,7 @@ Each phase ships on its own and leaves the app working.
    - The data store Alembic tree (`aios` schema: documents, chunks, schema_history).
    - Provisioning on sign-up, the fan-out migrator, and the isolation tests.
 2. **Documents move**
-   - The S3 bucket and MinIO.
+   - The S3 bucket and RustFS.
    - Upload, ingest and search against the store, and downloads through presigned URLs.
    - `ChatDeps.data_store_id` and tasks that take `data_store_id`.
    - Drop `documents` and `chunks` from the platform database.
@@ -527,7 +527,7 @@ Each phase ships on its own and leaves the app working.
   and quota refusals.
 - **Export**: outbox to store, idempotent re-export, backfill, deletes, and history kept after
   the export is switched off.
-- **Fixtures**: `conftest.py` gains fixtures that provision throwaway stores (and MinIO prefixes)
+- **Fixtures**: `conftest.py` gains fixtures that provision throwaway stores (and RustFS prefixes)
   on the test servers, and drop them afterwards.
 
 ## Open questions
