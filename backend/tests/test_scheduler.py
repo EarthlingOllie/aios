@@ -764,3 +764,141 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db):
     assert shown["enabled"] is False
     assert (shown["last_status"], shown["last_run_id"]) == ("running", run_id)
     assert load(db, t["id"]).last_fired_at == now
+
+
+def reclaim(trigger_id: int, now: datetime) -> list[int]:
+    """Make the trigger due at `now` and claim it, in a session of its own, as another replica
+    (or this one's next tick) would."""
+    with SessionLocal() as s:
+        make_due(s, trigger_id, now - timedelta(seconds=1))
+        return scheduler.claim_due(s, now)
+
+
+def workflow_runs(db, workflow_id: int) -> list[WorkflowRun]:
+    db.expire_all()
+    return db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow_id)).all()
+
+
+def test_an_agent_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(api, db, monkeypatch):
+    agent = make_agent(api, "Bot")
+    t = make_trigger(api, schedule("agent", agent["id"]))
+    now = datetime.now(UTC)
+    later = now + timedelta(minutes=1)
+    claim(db, t["id"], now)
+
+    def reclaim_then_create(db, agent, **kwargs):
+        # Fired again (a tight schedule, a slow start) before this firing commits its run. Not
+        # after the run is inserted: its foreign key share-locks the trigger, so a claim (SKIP
+        # LOCKED) would skip it until the start commits, as when it's locked (see below).
+        assert reclaim(t["id"], later) == [t["id"]]
+        return new_agent_run(db, agent, **kwargs)
+
+    monkeypatch.setattr(scheduler.agents_api, "new_agent_run", reclaim_then_create)
+    asyncio.run(scheduler.fire(t["id"], now))
+    monkeypatch.setattr(scheduler.agents_api, "new_agent_run", new_agent_run)
+
+    # The superseded firing's run is rolled back, and the trigger isn't pointed at it: it
+    # shows the newer firing, still to start its run.
+    assert agent_runs(db, agent["id"]) == []
+    t1 = load(db, t["id"])
+    assert (t1.last_fired_at, t1.last_status, t1.last_run_id) == (
+        later,
+        TriggerStatus.running,
+        None,
+    )
+
+    # The newer firing starts its own run, and is linked to it.
+    with use_model(replies("hi")):
+        asyncio.run(scheduler.fire(t["id"], later))
+    (run,) = agent_runs(db, agent["id"])
+    t2 = load(db, t["id"])
+    assert (t2.last_fired_at, t2.last_status, t2.last_run_id) == (
+        later,
+        TriggerStatus.succeeded,
+        run.id,
+    )
+
+
+def test_a_workflow_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
+    api, db, queued, monkeypatch
+):
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"]))
+    now = datetime.now(UTC)
+    later = now + timedelta(minutes=1)
+    claim(db, t["id"], now)
+    new_workflow_run = scheduler.workflows_api.new_workflow_run
+
+    def create_then_reclaim(db, workflow, input):
+        run = new_workflow_run(db, workflow, input)
+        assert reclaim(t["id"], later) == [t["id"]]
+        return run
+
+    monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", create_then_reclaim)
+    asyncio.run(scheduler.fire(t["id"], now))
+    monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", new_workflow_run)
+
+    # Neither committed nor queued; the trigger shows the newer firing.
+    assert workflow_runs(db, workflow["id"]) == [] and queued == []
+    t1 = load(db, t["id"])
+    assert (t1.last_fired_at, t1.last_status, t1.last_workflow_run_id) == (
+        later,
+        TriggerStatus.running,
+        None,
+    )
+
+    asyncio.run(scheduler.fire(t["id"], later))
+    (run,) = workflow_runs(db, workflow["id"])
+    assert queued == [run.id]
+    t2 = load(db, t["id"])
+    assert (t2.last_fired_at, t2.last_workflow_run_id) == (later, run.id)
+
+
+@pytest.mark.parametrize("kind", ["agent", "workflow"])
+def test_a_reclaim_while_a_run_is_being_started_waits_for_the_next_tick(
+    api, db, queued, monkeypatch, kind
+):
+    """The other interleaving: the re-claim comes while the start holds the trigger's lock."""
+    target = make_agent(api, "Bot") if kind == "agent" else make_runnable_workflow(api)
+    t = make_trigger(api, schedule(kind, target["id"]))
+    now = datetime.now(UTC)
+    later = now + timedelta(minutes=1)
+    claim(db, t["id"], now)
+    claimed = scheduler._claimed
+    attempts = []
+
+    def claimed_then_reclaim(db, trigger_id, fired_at, kind, *, lock=False):
+        if lock:
+            # Due again by the time this firing locks the trigger to link its run.
+            with SessionLocal() as s:
+                make_due(s, trigger_id, later - timedelta(seconds=1))
+        trigger = claimed(db, trigger_id, fired_at, kind, lock=lock)
+        if lock:
+            with SessionLocal() as s:
+                attempts.append(scheduler.claim_due(s, later))
+        return trigger
+
+    monkeypatch.setattr(scheduler, "_claimed", claimed_then_reclaim)
+    with use_model(replies("hi")):
+        asyncio.run(scheduler.fire(t["id"], now))
+    monkeypatch.setattr(scheduler, "_claimed", claimed)
+
+    # Skipped while locked, so this firing keeps its run and the link to it...
+    assert attempts == [[]]
+    fired = load(db, t["id"])
+    if kind == "agent":
+        (run,) = agent_runs(db, target["id"])
+        assert (fired.last_fired_at, fired.last_status, fired.last_run_id) == (
+            now,
+            TriggerStatus.succeeded,
+            run.id,
+        )
+    else:
+        (run,) = workflow_runs(db, target["id"])
+        assert (fired.last_fired_at, fired.last_workflow_run_id) == (now, run.id)
+        assert queued == [run.id]
+    # ...and the schedule is still due: claimed on the next tick, not lost.
+    with SessionLocal() as s:
+        assert scheduler.claim_due(s, later) == [t["id"]]
+    reclaimed = load(db, t["id"])
+    assert (reclaimed.last_fired_at, reclaimed.last_run_id) == (later, None)
