@@ -1,8 +1,9 @@
 """The platform database's roles, created by the master user: `python -m aios.db_roles`.
 
 - The app's role (`aios_app`, DATABASE_URL's user): what the API, the workers and migrations
-  connect as. It owns the platform database and everything in it, and has no `CREATEDB` or
-  `CREATEROLE`.
+  connect as. It owns the platform schema (`public`, and everything in the database), may
+  create schemas, and has no `CREATEDB` or `CREATEROLE`. The database stays the master user's, so
+  the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
   `CREATEROLE`, for creating data stores. Only the provisioning worker has its credentials.
 
@@ -102,7 +103,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
 
 
 def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
-    """Create or update both roles, and make the app's role own the platform database.
+    """Create or update both roles, and make the app's role own the platform schema.
 
     The platform database is `app_url`'s; the master user connects to it whatever database
     `admin_url` names.
@@ -133,9 +134,12 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
         # pgvector isn't a trusted extension, so the app's role can't create it (migration 0001
         # only creates it if it's missing).
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        # The database's owner can create schemas in it (the checkpointer's `langgraph`), and
-        # owns `public` (owned by `pg_database_owner`).
-        conn.execute(sql.SQL("ALTER DATABASE {} OWNER TO {}").format(sql.Identifier(dbname), app))
+        # The app's role owns the platform schema but not the database, which would let it drop
+        # or reconfigure it. CREATE on the database is for the checkpointer's `langgraph` schema.
+        conn.execute(
+            sql.SQL("GRANT CREATE ON DATABASE {} TO {}").format(sql.Identifier(dbname), app)
+        )
+        conn.execute(sql.SQL("ALTER SCHEMA public OWNER TO {}").format(app))
         # What was created as the master user (the whole schema, on a database migrated before
         # this role existed), so the app's role can migrate it.
         for kind, name in conn.execute(_OWNED).fetchall():

@@ -87,6 +87,20 @@ def test_app_role_cannot_create_databases_or_roles(cluster):
             conn.execute("CREATE ROLE t_app_may_not")
 
 
+def test_app_role_cannot_drop_or_reconfigure_the_platform_database(cluster):
+    admin_url, app_url, prov_url = cluster
+    ensure_roles(admin_url, app_url, prov_url)
+    db = sql.Identifier(make_url(app_url).database)
+
+    with _connect(app_url) as conn, pytest.raises(errors.InsufficientPrivilege):
+        conn.execute(sql.SQL("ALTER DATABASE {} SET statement_timeout = 0").format(db))
+    with (
+        _connect(app_url, database="postgres") as conn,
+        pytest.raises(errors.InsufficientPrivilege),
+    ):
+        conn.execute(sql.SQL("DROP DATABASE {}").format(db))
+
+
 def test_provisioner_role_can_create_databases_and_roles(cluster):
     admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
@@ -237,10 +251,15 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
         with _connect(app_q) as conn:
             conn.execute("ALTER TABLE things ADD COLUMN name text")
     finally:
-        with _connect(admin_url) as conn:
+        # As its owner: a master user that isn't a superuser couldn't drop it.
+        with _connect(master_url, database="postgres") as conn:
             conn.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(dbname))
             )
+            # It created them, so only it may drop them, if it isn't a superuser.
+            for role in (make_url(app_url).username, make_url(prov_url).username):
+                conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+        with _connect(admin_url) as conn:
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 

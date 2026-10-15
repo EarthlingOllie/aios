@@ -229,13 +229,13 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 
 | Role | Attributes | Used by |
 | --- | --- | --- |
-| `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform database, so it can migrate it and create the checkpointer's `langgraph` schema. |
+| `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (the checkpointer's `langgraph`). It doesn't own the database, so it can't drop or reconfigure it. |
 | `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS only the provisioning worker gets its secret. |
 
 `python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
 else reads), taking each role's name and password from its URL. It also creates the `vector`
-extension (not one a non-superuser can create) and makes `aios_app` own the platform database and
-anything in it the master user still owns, so a database that was migrated as the master user is
+extension (not one a non-superuser can create), grants `aios_app` `CREATE` on the platform
+database, and makes it own `public` and anything else in the database the master user still owns, so a database that was migrated as the master user is
 handed over. It's safe to re-run: to change a password, change the URL and run it again. Compose
 runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
 migration. The master user is otherwise for break-glass access only.
@@ -355,8 +355,8 @@ Known limits:
   schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
   first time a process runs a turn. Alembic only compares the `public` schema, so `alembic
   check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
-  keys, so this is done explicitly). The app's role (`aios_app`) can create that schema because
-  it owns the database.
+  keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
+  `CREATE` on the database.
 - **Tools are code, not data.** Each lives in `backend/src/aios/tools/`, registered under a stable
   key with a Pydantic settings model (every field has a default, and its JSON schema drives the
   settings form). An agent version stores which tools it has and their validated settings
