@@ -40,7 +40,9 @@ resource "aws_secretsmanager_secret_version" "provisioner" {
 }
 
 # The master user. Only the db-roles task is given it, to create the roles; otherwise it's for
-# break-glass access.
+# break-glass access. It also holds the DSNs of the roles that task creates, so that the task
+# reads nothing else: infra/deploy.sh creates the roles from this secret before the app's secret
+# is switched to them, and the app's secret never reaches the master user's task.
 resource "aws_secretsmanager_secret" "db_master" {
   name                    = "${var.name}/db-master"
   recovery_window_in_days = 0
@@ -49,7 +51,9 @@ resource "aws_secretsmanager_secret" "db_master" {
 resource "aws_secretsmanager_secret_version" "db_master" {
   secret_id = aws_secretsmanager_secret.db_master.id
   secret_string = jsonencode({
-    DATABASE_ADMIN_URL = local.database_admin_url
+    DATABASE_ADMIN_URL         = local.database_admin_url
+    DATABASE_URL               = local.database_url
+    DATA_STORE_PROVISIONER_URL = local.provisioner_url
   })
 }
 

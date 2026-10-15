@@ -286,9 +286,13 @@ Database credentials are in three secrets (see [Database roles](#database-roles)
 `<name>/provisioner` is `aios_provisioner`'s, for the provisioning worker only; and
 `<name>/db-master` is the RDS master user's, for break-glass access. Only the `db-roles` task
 (whose execution role is the only one that can read it) is given the master user's, to create the
-roles before each migration. On a stack deployed before these roles existed, the first deploy
-hands the schema to `aios_app`. Services still running the previous release connect as the master
-user until they're replaced, which keeps working: the master user is a member of `aios_app`.
+roles before each migration; the secret also holds the two roles' DSNs, so that task reads nothing
+else. On a stack with running services, `deploy.sh` creates the roles (a targeted apply of just
+that task and secret, then the task) before the full apply switches `<name>/app` to `aios_app`, so
+a task ECS starts in between never gets a role that doesn't exist yet. On a stack deployed before
+these roles existed, the first deploy hands the schema to `aios_app`. Services still running the
+previous release connect as the master user until they're replaced, which keeps working: the
+master user is a member of `aios_app`.
 
 ### Sandboxes on Fargate (`run_python`)
 

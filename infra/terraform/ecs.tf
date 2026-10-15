@@ -47,8 +47,8 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# The db-roles task's: the only execution role that can read the master user's secret (and,
-# for now, the provisioner's), so no other task definition can be given them.
+# The db-roles task's: the only execution role that can read the master user's secret, so no
+# other task definition can be given it.
 resource "aws_iam_role" "execution_db_roles" {
   name               = "${var.name}-ecs-execution-db-roles"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -61,12 +61,8 @@ resource "aws_iam_role_policy_attachment" "execution_db_roles" {
 
 data "aws_iam_policy_document" "read_db_roles_secrets" {
   statement {
-    actions = ["secretsmanager:GetSecretValue"]
-    resources = [
-      aws_secretsmanager_secret.app.arn,
-      aws_secretsmanager_secret.provisioner.arn,
-      aws_secretsmanager_secret.db_master.arn,
-    ]
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.db_master.arn]
   }
 }
 
@@ -198,9 +194,8 @@ resource "aws_ecs_task_definition" "db_roles" {
     essential = true
     command   = ["python", "-m", "aios.db_roles"]
     secrets = [
-      { name = "DATABASE_ADMIN_URL", valueFrom = "${aws_secretsmanager_secret.db_master.arn}:DATABASE_ADMIN_URL::" },
-      { name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:DATABASE_URL::" },
-      { name = "DATA_STORE_PROVISIONER_URL", valueFrom = "${aws_secretsmanager_secret.provisioner.arn}:DATA_STORE_PROVISIONER_URL::" },
+      for k in ["DATABASE_ADMIN_URL", "DATABASE_URL", "DATA_STORE_PROVISIONER_URL"] :
+      { name = k, valueFrom = "${aws_secretsmanager_secret.db_master.arn}:${k}::" }
     ]
     logConfiguration = local.log_config["db-roles"]
   }])
