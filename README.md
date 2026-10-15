@@ -135,7 +135,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → migrate → roll out
+infra/claude/       Claude Code image for debugging the Compose stack
 docker-compose.yml  db, redis, migrate, api, worker, workflow-worker, web, sandbox
+                    (+ claude, docker-proxy with --profile debug)
 ```
 
 ## Prerequisites
@@ -156,6 +158,32 @@ open http://localhost:8080
 `migrate` runs `alembic upgrade head` before `api`/`worker` start. The worker image bakes in
 Docling's models and the chunker tokenizer at build time, so it needs Hugging Face access
 while building but not at runtime.
+
+### Debug with Claude Code
+
+The `claude` service (compose profile `debug`) runs [Claude Code](https://code.claude.com) on the
+stack's network, so an agent can debug with the same context you have: the repo (bind-mounted
+at `/workspace`, so its edits land in your working copy), the database and Redis (`psql`,
+`redis-cli`), the api/sandbox over HTTP, and every container's logs (`docker compose logs`).
+
+```sh
+docker compose up -d                              # the stack to debug
+docker compose --profile debug run --rm claude    # interactive Claude Code session
+docker compose --profile debug run --rm claude claude -p "why did the last ingest fail?"
+```
+
+- **Auth**: log in with `/login` on first run; it's kept in the `claude-home` volume. If `.env`
+  has `ANTHROPIC_API_KEY`, Claude Code offers to use that key (API billing) instead.
+- **Docker access is read-only**: it goes through `docker-proxy`, a socket proxy that allows
+  logs, ps and inspect but no exec, restart or build. The agent tells you what to restart.
+- **Context**: `infra/claude/CLAUDE.md` (installed as Claude Code's managed memory) describes
+  the services and the rules above to the agent.
+- The backend venv, caches and `frontend/node_modules` are volumes, so they don't clobber your
+  host's. Run `uv sync` / `pnpm install` inside the container before running checks there.
+- On Linux, files the agent writes are owned by uid 1000. If yours differs, build with
+  `CLAUDE_UID=$(id -u) docker compose --profile debug build claude`.
+- To upgrade Claude Code, bump `CLAUDE_CODE_VERSION` in `infra/claude/Dockerfile` (keep it
+  at least a week old, per the dependency policy).
 
 ## Local development
 
