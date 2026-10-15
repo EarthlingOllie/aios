@@ -332,6 +332,8 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
             .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
             .where(WorkflowVersion.id == version_id)
         ).one()
+        # In the claim's transaction: if the store can't be resolved, the run isn't claimed.
+        data_store_id = data_store_for(workflow.owner_id, db)
         db.commit()
     state = RunState(
         id=run_id,
@@ -339,7 +341,7 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
         workflow_id=workflow.id,
         workflow_name=workflow.name,
         workflow_version=version,
-        data_store_id=data_store_for(workflow.owner_id),
+        data_store_id=data_store_id,
     )
     return state, version_id, text
 

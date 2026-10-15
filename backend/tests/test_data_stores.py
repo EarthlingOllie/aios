@@ -7,16 +7,24 @@ from pathlib import Path
 import pytest
 from fake_model import ToolCall, last_tool_results, model, use_model
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
 from aios import agent as agent_module
-from aios import auth, ingest, worker
+from aios import auth, ingest, worker, workflows
 from aios.api import documents
 from aios.api import workflows as workflows_api
 from aios.datastores import DataStoreNotFound, data_store_for, store_session
-from aios.models import DataStore, Document, DocumentStatus, User
+from aios.models import (
+    DataStore,
+    Document,
+    DocumentStatus,
+    User,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
 from aios.tools import hybrid_search
 from aios.workflows import execute_run
 
@@ -135,6 +143,24 @@ def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypat
         asyncio.run(execute_run(started["id"]))
 
     assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
+
+
+def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, monkeypatch):
+    """Resolving the store is part of claiming the run, so if it fails the run isn't left
+    `running` with no worker (a redelivery could never start it)."""
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+    workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
+    started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
+
+    def unavailable(*args, **kwargs):
+        raise OperationalError("SELECT", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    with pytest.raises(OperationalError):
+        asyncio.run(execute_run(started["id"]))
+
+    run = db.get(WorkflowRun, started["id"])
+    assert (run.status, run.started_at) == (WorkflowRunStatus.queued, None)
 
 
 SRC = Path(aios.__file__).parent
