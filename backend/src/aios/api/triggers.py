@@ -10,7 +10,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from aios import cron
@@ -184,6 +184,28 @@ def fail_stopped_last_runs(db: Session, *where) -> None:
     fail_stopped_runs(db, WorkflowRun.id.in_(select(Trigger.last_workflow_run_id).where(*where)))
 
 
+def cancel_unstarted_firing(db: Session, trigger_id: int) -> None:
+    """Drop the trigger's firing if it has been claimed but hasn't started its run, as it's
+    edited: that firing was for the old settings, and pausing must stop it.
+
+    It's cleared as if it never fired (its previous outcome was already replaced when it was
+    claimed), which `aios.scheduler` sees as it having fired again, and so skips. A firing that
+    has started its run is left to finish and record how it went. The scheduler holds the
+    trigger's row lock while it starts the run, so this waits for that and then re-checks.
+    """
+    db.execute(
+        update(Trigger)
+        .where(
+            Trigger.id == trigger_id,
+            Trigger.last_status == TriggerStatus.running,
+            Trigger.last_run_id.is_(None),
+            Trigger.last_workflow_run_id.is_(None),
+        )
+        .values(last_fired_at=None, last_status=None, last_error=None)
+        .execution_options(synchronize_session=False)
+    )
+
+
 def load(db: Session, trigger_id: int) -> Trigger:
     fail_stopped_last_runs(db, Trigger.id == trigger_id)
     db.expire_all()
@@ -255,9 +277,11 @@ def get_trigger(trigger_id: DbId, user: CurrentUser, db: DB):
 
 @router.put("/triggers/{trigger_id}", response_model=TriggerOut)
 def update_trigger(trigger_id: DbId, body: TriggerIn, user: CurrentUser, db: DB):
-    """Replace the trigger's settings; its next run is worked out again from now."""
+    """Replace the trigger's settings; its next run is worked out again from now. A firing that
+    hasn't started its run yet is dropped (see `cancel_unstarted_firing`)."""
     trigger = get_owned_trigger(db, user.id, trigger_id)
     apply(db, user.id, trigger, body)
+    cancel_unstarted_firing(db, trigger.id)
     db.commit()
     return trigger_out(load(db, trigger.id))
 

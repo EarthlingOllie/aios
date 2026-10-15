@@ -113,6 +113,9 @@ does the same for its own (`/api/triggers`).
   can't record that, so while a schedule is running the process firing it refreshes a heartbeat
   (every 30s), and any replica's tick fails a running schedule whose heartbeat has stopped for
   90s; replicas that are up keep beating their own, so they're left be.
+- Pausing or editing a schedule that has just been claimed, before its run has started, drops
+  that firing (it was for the old settings); the trigger row is locked while the run is created,
+  so an edit racing it either drops it or waits and lets the started run finish.
 - Deleting an agent or a workflow deletes its schedules. Cron parsing is `cronsim`'s, wrapped in
   `aios.cron`.
 

@@ -21,6 +21,9 @@ schedules that are due (`claim_due`) and fires each in a task of its own (`fire`
   run (`last_workflow_run_id`) and, once it's queued, that it fired; from then on it shows how the
   run is going (`aios.api.triggers.last_outcome`). One that can't start (no nodes, an agent
   that can't run, the queue down) records that it failed, without a run.
+- Editing a schedule (pausing it, changing its target or message, ...) after it's claimed but
+  before its run has started drops that firing: it was for the old settings
+  (`aios.api.triggers.cancel_unstarted_firing`). Once the run has started, it finishes.
 - A turn in flight when the process stops is stopped like a chat turn the client abandons: what
   the agent got to is kept, and the schedule records that it failed.
 - A process that dies (killed, OOM, a deploy) can't record that, nor can a tick stopped between
@@ -62,7 +65,7 @@ STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
 
 # Why a fire is failed when its process stops, or is found to have stopped.
 STOPPED = "The service stopped mid-run."
-# Why one is failed when its schedule was retargeted while it was starting.
+# Why one is failed if it was dropped (see `_claimed`) without its schedule being edited.
 CHANGED = "The schedule was changed as it fired; it runs as changed next time."
 
 # Fires in flight, with the (trigger id, fired at) of each: kept so they aren't
@@ -178,8 +181,22 @@ def _target(trigger_id: int, fired_at: datetime) -> TriggerTargetKind | None:
         return trigger.target_kind
 
 
-def _claimed(db, trigger_id: int, fired_at: datetime, kind: TriggerTargetKind) -> Trigger:
-    trigger = db.get(Trigger, trigger_id)
+def _claimed(
+    db, trigger_id: int, fired_at: datetime, kind: TriggerTargetKind, *, lock: bool = False
+) -> Trigger:
+    """The trigger, still claimed by this firing; else `_Gone`.
+
+    Editing a trigger (pausing it, say) drops a firing that hasn't started its run
+    (`aios.api.triggers.cancel_unstarted_firing`), which this sees as it having fired again.
+    With `lock`, the row stays locked until commit, so the run and the trigger's link to it are
+    committed only if the firing is still claimed, and an edit racing the start waits and then
+    sees the run. Take it after the target's lock (`new_agent_run`, `new_workflow_run`): a
+    delete or an edit locks the target first, then the trigger.
+    """
+    query = select(Trigger).where(Trigger.id == trigger_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    trigger = db.scalars(query).one_or_none()
     # Changed target: edited since it was claimed, so it fires the new one next time.
     if trigger is None or trigger.last_fired_at != fired_at or trigger.target_kind != kind:
         raise _Gone
@@ -197,6 +214,7 @@ def _start_agent_run(trigger_id: int, fired_at: datetime) -> AgentTurn:
             if exc.status_code == 404:
                 raise FireError("The agent has been deleted.") from exc
             raise FireError(exc.detail) from exc
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
         # Committed with the run, under the agent's share lock (see `new_agent_run`).
         trigger.last_run_id = run.id
         db.commit()
@@ -210,6 +228,7 @@ def _start_workflow_run(trigger_id: int, fired_at: datetime) -> None:
     with SessionLocal() as db:
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
         run = workflows_api.new_workflow_run(db, trigger.workflow, trigger.input)
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
         trigger.last_workflow_run_id = run.id
         # Commits the link with the run; if queueing fails the run is deleted, and the link
         # with it (SET NULL).
@@ -262,7 +281,8 @@ async def fire(trigger_id: int, fired_at: datetime) -> None:
         else:
             error = await _run_agent(trigger_id, fired_at)
     except _Gone:
-        # A no-op unless it was retargeted (see `_claimed`), when it would be left running.
+        # A no-op: it's gone, fired again, or was edited, which drops the firing (see
+        # `_claimed`). Recorded anyway, so a firing dropped some other way isn't left running.
         error = CHANGED
     except FireError as exc:
         error = str(exc)

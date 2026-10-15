@@ -11,9 +11,11 @@ from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
 from aios import checkpoints, scheduler
+from aios.api.agents import new_agent_run
 from aios.cron import next_run
 from aios.db import SessionLocal
 from aios.models import (
+    Agent,
     AgentRun,
     AgentVersionTool,
     Trigger,
@@ -575,12 +577,12 @@ def test_a_schedule_retargeted_as_it_fires_isnt_left_running(api, db, queued, mo
     monkeypatch.setattr(scheduler, "_target", retargeted_meanwhile)
     with use_model(replies("hi")):
         assert tick(now) == [t["id"]]
-    # Neither target runs this time (the new one does next time), and it isn't left running.
+    # Neither target runs this time (the new one does next time), and it isn't left running:
+    # the edit dropped the firing, as if it never happened.
     assert queued == []
     assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
     fired = load(db, t["id"])
-    assert fired.last_status == TriggerStatus.failed
-    assert fired.last_error == scheduler.CHANGED
+    assert (fired.last_fired_at, fired.last_status, fired.last_error) == (None, None, None)
 
 
 def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch):
@@ -608,3 +610,157 @@ def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch)
 
     asyncio.run(go())
     assert load(db, stopped["id"]).last_status == TriggerStatus.failed
+
+
+def claim(db, trigger_id: int, now: datetime) -> None:
+    make_due(db, trigger_id, now - timedelta(seconds=1))
+    with SessionLocal() as s:
+        assert scheduler.claim_due(s, now) == [trigger_id]
+
+
+def put(api, trigger_id: int, body: dict) -> dict:
+    resp = api.put(f"/api/triggers/{trigger_id}", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def agent_runs(db, agent_id: int) -> list[AgentRun]:
+    db.expire_all()
+    return db.scalars(select(AgentRun).where(AgentRun.agent_id == agent_id)).all()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param({"enabled": False}, id="paused"),
+        pytest.param({"input": "Something else"}, id="message-changed"),
+        pytest.param({"cron": "*/5 * * * *"}, id="rescheduled"),
+    ],
+)
+def test_editing_an_agent_schedule_after_its_claimed_cancels_that_firing(api, db, edit):
+    agent = make_agent(api, "Bot")
+    body = schedule("agent", agent["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    claim(db, t["id"], now)
+    # Edited between being claimed and starting its run: that firing was the old schedule's,
+    # so it's dropped, and shown as if it never happened.
+    shown = put(api, t["id"], {**body, **edit})
+    assert (shown["last_fired_at"], shown["last_status"]) == (None, None)
+
+    asyncio.run(scheduler.fire(t["id"], now))
+
+    assert agent_runs(db, agent["id"]) == []
+    after = api.get(f"/api/triggers/{t['id']}").json()
+    assert [after[k] for k in ("last_fired_at", "last_status", "last_run_id")] == [None] * 3
+    assert after["enabled"] == edit.get("enabled", True)
+
+
+def test_retargeting_an_agent_schedule_after_its_claimed_starts_neither_agent(api, db):
+    old, new = make_agent(api, "Old"), make_agent(api, "New")
+    body = schedule("agent", old["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    claim(db, t["id"], now)
+    put(api, t["id"], {**body, "target_id": new["id"]})
+
+    asyncio.run(scheduler.fire(t["id"], now))
+
+    assert agent_runs(db, old["id"]) == [] and agent_runs(db, new["id"]) == []
+    assert load(db, t["id"]).last_status is None
+
+
+def test_pausing_a_workflow_schedule_after_its_claimed_cancels_that_firing(api, db, queued):
+    workflow = make_runnable_workflow(api)
+    body = schedule("workflow", workflow["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    claim(db, t["id"], now)
+    put(api, t["id"], {**body, "enabled": False})
+
+    asyncio.run(scheduler.fire(t["id"], now))
+
+    assert queued == []
+    assert (
+        db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow["id"])).all() == []
+    )
+    paused = load(db, t["id"])
+    assert (paused.last_fired_at, paused.last_status, paused.enabled) == (None, None, False)
+
+
+def test_a_pause_landing_as_the_run_is_being_created_drops_it(api, db, monkeypatch):
+    agent = make_agent(api, "Bot")
+    body = schedule("agent", agent["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    claim(db, t["id"], now)
+
+    def pause_then_create(db, agent, **kwargs):
+        # Paused after the scheduler checked the trigger, before it's locked for the run.
+        put(api, t["id"], {**body, "enabled": False})
+        return new_agent_run(db, agent, **kwargs)
+
+    monkeypatch.setattr(scheduler.agents_api, "new_agent_run", pause_then_create)
+    asyncio.run(scheduler.fire(t["id"], now))
+
+    # The run it had added is rolled back with the firing.
+    assert agent_runs(db, agent["id"]) == []
+    paused = load(db, t["id"])
+    assert (paused.last_fired_at, paused.last_status, paused.last_run_id) == (None, None, None)
+
+
+def test_pausing_a_schedule_once_its_run_has_started_lets_the_run_finish(api, db):
+    agent = make_agent(api, "Bot")
+    body = schedule("agent", agent["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+
+    async def script(messages, info):
+        await asyncio.to_thread(put, api, t["id"], {**body, "enabled": False})
+        yield "done"
+
+    with use_model(model(script)):
+        tick(now)
+    (run,) = agent_runs(db, agent["id"])
+    fired = load(db, t["id"])
+    # Too late to cancel: the run it started is kept, and shown with how it went.
+    assert (fired.last_fired_at, fired.last_status, fired.last_run_id) == (
+        now,
+        TriggerStatus.succeeded,
+        run.id,
+    )
+    assert run.message_count == 2
+    assert not fired.enabled and fired.next_run_at is None
+
+
+def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db):
+    """A pause racing the start of a run waits for it, then sees that it has started."""
+    agent = make_agent(api, "Bot")
+    body = schedule("agent", agent["id"])
+    t = make_trigger(api, body)
+    now = datetime.now(UTC)
+    claim(db, t["id"], now)
+
+    async def go():
+        with SessionLocal() as s:
+            # Mid-start, as the scheduler starts a run: the agent share-locked, then the
+            # trigger row locked, until the run and the link to it are committed together.
+            run = new_agent_run(s, s.get(Agent, agent["id"]), trigger_id=t["id"])
+            trigger = s.scalars(
+                select(Trigger).where(Trigger.id == t["id"]).with_for_update()
+            ).one()
+            pausing = asyncio.create_task(
+                asyncio.to_thread(put, api, t["id"], {**body, "enabled": False})
+            )
+            await asyncio.sleep(0.3)
+            assert not pausing.done()
+            trigger.last_run_id = run.id
+            s.commit()
+            run_id = run.id
+        return await pausing, run_id
+
+    shown, run_id = asyncio.run(go())
+    assert shown["enabled"] is False
+    assert (shown["last_status"], shown["last_run_id"]) == ("running", run_id)
+    assert load(db, t["id"]).last_fired_at == now
