@@ -30,6 +30,15 @@ output "migrate_task" {
   }
 }
 
+output "migrate_stores_task" {
+  description = "Inputs for `aws ecs run-task` (used by infra/deploy.sh, after migrate_task)."
+  value = {
+    task_definition = aws_ecs_task_definition.migrate_stores.family
+    subnets         = aws_subnet.private[*].id
+    security_group  = aws_security_group.app.id
+  }
+}
+
 output "db_roles_task" {
   description = "Inputs for `aws ecs run-task` (used by infra/deploy.sh, before migrate_task)."
   value = {

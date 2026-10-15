@@ -52,7 +52,8 @@ else
   PREP_VARS=(-var "image_tag=$TAG" -var "run_services=false")
 fi
 
-# Runs a one-off task (a Terraform output with its task definition and network) to completion.
+# Runs a one-off task (a Terraform output with its task definition and network) to completion;
+# fails if it does.
 run_task() {
   local output="$1" logs="$2" spec taskdef netcfg task_arn exit_code
   CLUSTER="$(tf output -raw ecs_cluster)"
@@ -67,7 +68,7 @@ run_task() {
     --query 'tasks[0].containers[0].exitCode' --output text)"
   if [[ "$exit_code" != "0" ]]; then
     echo "$output failed (exit $exit_code); see CloudWatch log group /ecs/*/$logs" >&2
-    exit 1
+    return 1
   fi
 }
 
@@ -106,6 +107,14 @@ fi
 
 echo "==> Running database migrations"
 run_task migrate_task migrate
+
+# Every ready data store to the store tree's head (and any store left provisioning is finished),
+# one at a time, as the provisioner. Store migrations work with the release still running, so
+# the services roll out either way: a store that fails keeps its revision and is reported.
+echo "==> Migrating data stores"
+if ! run_task migrate_stores_task migrate-stores; then
+  echo "WARNING: some data stores weren't migrated; the migrate-stores log names them" >&2
+fi
 
 echo "==> Rolling out services"
 tf apply -auto-approve -input=false -var "image_tag=$TAG"

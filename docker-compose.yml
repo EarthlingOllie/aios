@@ -71,6 +71,36 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Brings every ready data store to the store tree's head, and finishes provisioning any left
+  # provisioning, as the provisioner (`aios.datastores.provision`), as the deploy does. A store
+  # that fails is reported in its log; the rest of the stack starts regardless.
+  migrate-stores:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command: ["python", "-m", "aios.datastores.provision", "migrate-all"]
+    environment: &provisioner-env
+      <<: *backend-env
+      # The provisioner's role (made by `db-roles`): only these two services have it.
+      DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@db:5432/aios
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Creates data stores (the provisioning queue, see aios.worker) as users sign up. It needs no
+  # Docling, so this reuses the api image.
+  provisioning-worker:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO", "--concurrency=1"]
+    environment: *provisioner-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api:
     <<: *backend
     image: aios-api:local

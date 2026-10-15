@@ -166,17 +166,20 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     runner and the egress proxy
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
-                    and store_session(id, role), the only way to open a session on user data
+                    store_session(id, role), the only way to open a session on user data,
+                    provision.py (creating and migrating each store's database), and
+                    migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
-    worker.py       Celery app + ingest and workflow run tasks
+    worker.py       Celery app + ingest, workflow run and data store provisioning tasks
     db_roles.py     creates the database roles (`aios_app`, `aios_provisioner`) as the master user
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
   Dockerfile        targets: api, worker, sandbox
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
-infra/deploy.sh     build → push → create roles → migrate → roll out
-docker-compose.yml  db, redis, db-roles, migrate, api, worker, workflow-worker, web, sandbox
+infra/deploy.sh     build → push → create roles → migrate → migrate data stores → roll out
+docker-compose.yml  db, redis, db-roles, migrate, migrate-stores, api, worker, workflow-worker,
+                    provisioning-worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -195,7 +198,8 @@ open http://localhost:8080
 ```
 
 `db-roles` creates the database roles as the master user (see [Database roles](#database-roles)),
-then `migrate` runs `alembic upgrade head` as `aios_app` before `api`/`worker` start. The worker image bakes in
+then `migrate` runs `alembic upgrade head` as `aios_app` before `api`/`worker` start, and
+`migrate-stores` brings the data stores to the store tree's head (see [Data stores](#data-stores)). The worker image bakes in
 Docling's models and the chunker tokenizer at build time, so it needs Hugging Face access
 while building but not at runtime.
 
@@ -212,6 +216,7 @@ uv run alembic upgrade head
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
 uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
+uv run celery -A aios.worker worker -Q provisioning --loglevel=INFO   # and data stores
 
 cd frontend
 pnpm install
@@ -232,7 +237,7 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 | Role | Attributes | Used by |
 | --- | --- | --- |
 | `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (the checkpointer's `langgraph`). It doesn't own the database, so it can't drop or reconfigure it. |
-| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker only; no service uses it yet. |
+| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating and migrating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker and the migrate-stores task only. |
 
 `python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
 else reads), taking each role's name and password from its URL. It also creates the `vector`
@@ -241,6 +246,52 @@ database, and makes it own `public` and anything else in the database the master
 handed over. It's safe to re-run: to change a password, change the URL and run it again. Compose
 runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
 migration. The master user is otherwise for break-glass access only.
+
+It also revokes `CONNECT` from `PUBLIC` on the platform database (then grants it to the two
+roles), `postgres` and `template1`, so no other role (a data store's included) can connect to
+them. Only a database's owner may do that, so one the master user doesn't own is left as it is
+and reported as a warning. And it makes the data stores' template, `aios_store_template`
+(`DATA_STORE_TEMPLATE`): an empty database with pgvector in an `extensions` schema, which no one
+may connect to and the provisioner copies.
+
+### Data stores
+
+Each user has a data store: a Postgres database of their own on the same instance (see
+`plan/user-databases/plan.md` on the plan branch). Signing up creates the store's row
+(`data_stores`, status `provisioning`) and queues `aios.provision_data_store` on the
+`provisioning` queue, which only the provisioning worker reads. That task, as
+`aios_provisioner`:
+
+- creates the roles `ds_<id>_owner` (no login), `ds_<id>_rw` and `ds_<id>_ro`, named after the
+  store's id (a UUID, never the user's), with a statement timeout, an idle-in-transaction
+  timeout and a connection limit each (`DATA_STORE_STATEMENT_TIMEOUT`,
+  `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in milliseconds, and `DATA_STORE_CONNECTION_LIMIT`);
+- creates the database `ds_<id>` from the template, owned by `_owner`, revokes `CONNECT` (and
+  `TEMPORARY`) from `PUBLIC` and grants `CONNECT` to `_rw` and `_ro`;
+- drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
+  the owner creates and `_ro` only read them; neither may create anything;
+- runs the store Alembic tree (`aios.datastores.migrations`, version table
+  `aios.alembic_version`) as `_owner`, and marks the store `ready` at its head revision.
+
+Every step checks what's already there, so a run that crashed is finished by running it again.
+After five failed tries the store is marked `failed`. Until a store is `ready`, uploads, the
+document list and search answer 409 ("being set up"), and the UI says so.
+
+The login roles' passwords are generated with the row, stored encrypted with a key derived from
+`DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so neither the app's
+logs nor a server logging statements ever has them. The API returns only a store's status
+(`GET /api/data-store`).
+
+`python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
+after the platform's migration) finishes provisioning any store left `provisioning` or `failed`,
+then brings every ready store to the store tree's head, one store at a time. A store that fails
+keeps its revision, gets the error on its row, and is reported; the rest carry on, and the
+command exits non-zero. Store migrations run while the previous release is still serving, so
+each must work with the code before it (expand now, contract in a later release).
+
+Documents and chunks are still in the platform database: `documents_session` opens a platform
+session for them, until they move into the stores. `store_session(id, role)` already opens a
+session on the store's own database, as `_rw` or `_ro`.
 
 ### Dependency policy
 
@@ -285,8 +336,9 @@ anything real.
 
 Database credentials are in three secrets (see [Database roles](#database-roles)):
 `<name>/app`'s `DATABASE_URL` is `aios_app`'s, given to the api, the workers and migrations;
-`<name>/provisioner` is `aios_provisioner`'s, for the provisioning worker only (none runs yet, and
-the shared execution role can't read it); and
+`<name>/provisioner` is `aios_provisioner`'s, for the `provisioning-worker` service and the
+`migrate-stores` task only (their execution role is the only one that can read it); `<name>/app`
+also holds `DATA_STORE_CREDENTIALS_KEY`, which encrypts data stores' passwords; and
 `<name>/db-master` is the RDS master user's, for break-glass access. Only the `db-roles` task
 (whose execution role is the only one that can read it) is given the master user's, to create the
 roles before each migration; the secret also holds the two roles' DSNs, so that task reads nothing

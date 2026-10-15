@@ -116,6 +116,12 @@ variable "workflow_worker" {
   default     = { cpu = 512, memory = 2048, count = 1, concurrency = 2 }
 }
 
+variable "provisioning_worker" {
+  description = "Creates and migrates data stores (the provisioning queue): small and mostly idle."
+  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
+  default     = { cpu = 256, memory = 512, count = 1, concurrency = 1 }
+}
+
 # --- run_python sandboxes (sandbox.tf) ---
 variable "sandbox" {
   description = "Size of each sandbox: one Fargate task per agent run that uses run_python."
