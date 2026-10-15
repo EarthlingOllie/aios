@@ -5,7 +5,7 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
-from aios.datastores import store_session
+from aios.datastores import DataStoreNotFound, store_session
 
 settings = get_settings()
 
@@ -39,8 +39,13 @@ def ingest_document_task(data_store_id: str, document_id: int) -> None:
     """Ingest a document of the data store's (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
 
-    with store_session(uuid.UUID(data_store_id), "rw") as db:
-        ingest_document(db, document_id)
+    try:
+        with store_session(uuid.UUID(data_store_id), "rw") as db:
+            ingest_document(db, document_id)
+    except DataStoreNotFound:
+        # Deleted since the upload (with its owner), and its documents with it: as for a
+        # document deleted before its ingest, there's nothing left to do.
+        return
 
 
 @celery_app.task(

@@ -70,7 +70,8 @@ def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
     assert queued == [(str(data_store_for(user.id)), doc["id"])]
 
 
-def test_the_ingest_task_ingests_in_the_store_it_is_given(db, user, monkeypatch):
+@pytest.fixture
+def offline_ingest(monkeypatch):
     def chunk_document(filename, data):
         return [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
 
@@ -79,17 +80,33 @@ def test_the_ingest_task_ingests_in_the_store_it_is_given(db, user, monkeypatch)
 
     monkeypatch.setattr(ingest, "chunk_document", chunk_document)
     monkeypatch.setattr(ingest, "embed_documents", embed_documents)
+
+
+def test_the_ingest_task_ingests_in_the_store_it_is_given(db, user, offline_ingest):
     doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
     db.add(doc)
     db.commit()
 
-    with pytest.raises(DataStoreNotFound):
-        worker.ingest_document_task.run(str(uuid.uuid4()), doc.id)
     worker.ingest_document_task.run(str(data_store_for(user.id)), doc.id)
 
     db.refresh(doc)
     assert doc.status == DocumentStatus.ready
     assert [c.text for c in doc.chunks] == ["Hi"]
+
+
+def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
+    """As for a document deleted before its ingest: there's nothing left to ingest."""
+    owner = User(github_id=-4, login="gone")
+    db.add(owner)
+    db.commit()
+    doc = Document(owner_id=owner.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+    store_id, doc_id = data_store_for(owner.id), doc.id
+    db.delete(owner)  # and, by the database's cascade, their store and documents
+    db.commit()
+
+    worker.ingest_document_task.run(str(store_id), doc_id)
 
 
 @pytest.fixture
