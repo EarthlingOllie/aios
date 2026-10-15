@@ -327,7 +327,7 @@ export type Trigger = {
   target_id: number;
   target_name: string;
   enabled: boolean;
-  /** The message an agent's run starts with. */
+  /** The message an agent's run starts with, or a workflow run's input. */
   input: string;
   cron: string;
   /** The cron expression in plain English. */
@@ -336,9 +336,13 @@ export type Trigger = {
   /** Null while disabled. */
   next_run_at: string | null;
   last_fired_at: string | null;
+  /** For a workflow, how the run it last started is going (a worker runs it). */
   last_status: TriggerStatus | null;
   last_error: string | null;
+  /** The agent run it last started (agents). */
   last_run_id: number | null;
+  /** The workflow run it last started (workflows). */
+  last_workflow_run_id: number | null;
   created_at: string;
   updated_at: string;
 };

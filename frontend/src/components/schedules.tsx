@@ -253,27 +253,26 @@ export function ScheduleEditor({
         </datalist>
       </Field>
       <Preview cron={form.cron} timezone={form.timezone} />
-      {isAgent ? (
-        <Field
-          label="Message"
-          htmlFor={`${id}-input`}
-          hint="Each time the schedule fires, a new run of the agent's current version starts with this message."
-        >
-          <Textarea
-            id={`${id}-input`}
-            required
-            rows={3}
-            value={form.input}
-            onChange={(e) => set({ input: e.target.value })}
-            placeholder="e.g. Summarise yesterday's support tickets."
-          />
-        </Field>
-      ) : (
-        <p className="text-muted-foreground text-xs">
-          Workflows can't be run yet: until they can, each time this schedule fires it records a
-          failed run.
-        </p>
-      )}
+      <Field
+        label={isAgent ? "Message" : "Input"}
+        htmlFor={`${id}-input`}
+        hint={
+          isAgent
+            ? "Each time the schedule fires, a new run of the agent's current version starts with this message."
+            : "Each time the schedule fires, a run of the workflow's current version starts with this input."
+        }
+      >
+        <Textarea
+          id={`${id}-input`}
+          required
+          rows={3}
+          value={form.input}
+          onChange={(e) => set({ input: e.target.value })}
+          placeholder={
+            isAgent ? "e.g. Summarise yesterday's support tickets." : "e.g. Yesterday's support tickets."
+          }
+        />
+      </Field>
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -283,7 +282,7 @@ export function ScheduleEditor({
         Enabled
       </label>
       <div className="flex gap-2">
-        <Button type="submit" disabled={saving || !form.target_id || (isAgent && !form.input.trim())}>
+        <Button type="submit" disabled={saving || !form.target_id || !form.input.trim()}>
           {trigger ? "Save schedule" : "Create schedule"}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
@@ -304,6 +303,14 @@ function StatusBadge({ trigger }: { trigger: Trigger }) {
   );
 }
 
+/** The page of the run the trigger last started, if it has one. */
+function runHref(t: Trigger): string | undefined {
+  if (t.target_kind === "agent" && t.last_run_id) return `/agents/${t.target_id}/runs/${t.last_run_id}`;
+  if (t.target_kind === "workflow" && t.last_workflow_run_id)
+    return `/workflows/${t.target_id}/runs/${t.last_workflow_run_id}`;
+  return undefined;
+}
+
 export function ScheduleRow({
   trigger,
   showTarget,
@@ -322,6 +329,7 @@ export function ScheduleRow({
   const t = trigger;
   const TargetIcon = t.target_kind === "agent" ? Bot : Workflow;
   const targetHref = `/${t.target_kind === "agent" ? "agents" : "workflows"}/${t.target_id}`;
+  const lastRunHref = runHref(t);
   return (
     <li className={cn("flex items-start gap-3 px-3 py-2.5", !t.enabled && "opacity-60")} data-testid="schedule-row">
       <CalendarClock className="text-muted-foreground mt-0.5 size-4 shrink-0" />
@@ -349,8 +357,8 @@ export function ScheduleRow({
           {t.last_fired_at && (
             <span className="flex items-center gap-1">
               Last run {formatDate(t.last_fired_at)} <StatusBadge trigger={t} />
-              {t.last_run_id && t.target_kind === "agent" && (
-                <Link to={`/agents/${t.target_id}/runs/${t.last_run_id}`} className="underline">
+              {lastRunHref && (
+                <Link to={lastRunHref} className="underline">
                   view run
                 </Link>
               )}

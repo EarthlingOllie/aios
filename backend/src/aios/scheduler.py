@@ -11,7 +11,12 @@ schedules that are due (`claim_due`) and fires each in a task of its own (`fire`
   `input` as the user's message, and runs one turn exactly as the chat endpoint does
   (`aios.api.agents.turn_stream`). The outcome goes on the trigger (`last_status`, `last_error`,
   `last_run_id`), unless the schedule has fired again since.
-- Workflows can't run yet, so firing a workflow's schedule records that it failed.
+- Firing a workflow's schedule starts a run of the workflow's current version, with the
+  trigger's `input` as the run's input, exactly as `POST /api/workflows/{id}/runs` does
+  (`aios.api.workflows.new_workflow_run`), and queues it for the worker. The trigger records the
+  run (`last_workflow_run_id`) and, once it's queued, that it fired; from then on it shows how the
+  run is going (`aios.api.triggers.last_outcome`). One that can't start (no nodes, an agent
+  that can't run, the queue down) records that it failed, without a run.
 - A turn in flight when the process stops is stopped like a chat turn the client abandons: what
   the agent got to is kept, and the schedule records that it failed.
 """
@@ -28,6 +33,7 @@ from sqlalchemy import select, update
 
 from aios import cron
 from aios.api import agents as agents_api
+from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live
 from aios.db import SessionLocal
 from aios.models import Agent, AgentRun, Trigger, TriggerStatus, TriggerTargetKind
@@ -57,7 +63,9 @@ def claim_due(db, now: datetime) -> list[int]:
     claimed = []
     for trigger in due:
         trigger.last_fired_at = now
+        # This firing's run, once it has one; until then the trigger shows it running.
         trigger.last_run_id = None
+        trigger.last_workflow_run_id = None
         try:
             trigger.next_run_at = cron.next_run(trigger.cron, trigger.timezone, now)
         except cron.CronError as exc:
@@ -79,15 +87,35 @@ def _claim(now: datetime) -> list[int]:
         return claim_due(db, now)
 
 
-def _start_agent_run(trigger_id: int, fired_at: datetime) -> tuple[int, int, int, str] | None:
-    """Start a run for an agent's schedule: (user id, agent id, run id, message). None if the
-    trigger has gone or fired again since."""
+# What an agent's schedule runs once its run has started: (user id, agent id, run id, message).
+AgentTurn = tuple[int, int, int, str]
+
+
+class _Gone(Exception):
+    """The trigger has gone, fired again, or changed target since it was claimed."""
+
+
+def _target(trigger_id: int, fired_at: datetime) -> TriggerTargetKind | None:
+    """What the claimed trigger targets; None if it has gone or fired again since."""
     with SessionLocal() as db:
         trigger = db.get(Trigger, trigger_id)
         if trigger is None or trigger.last_fired_at != fired_at:
             return None
-        if trigger.target_kind == TriggerTargetKind.workflow:
-            raise FireError("Workflows can't be run yet.")
+        return trigger.target_kind
+
+
+def _claimed(db, trigger_id: int, fired_at: datetime, kind: TriggerTargetKind) -> Trigger:
+    trigger = db.get(Trigger, trigger_id)
+    # Changed target: edited since it was claimed, so it fires the new one next time.
+    if trigger is None or trigger.last_fired_at != fired_at or trigger.target_kind != kind:
+        raise _Gone
+    return trigger
+
+
+def _start_agent_run(trigger_id: int, fired_at: datetime) -> AgentTurn:
+    """Start a run for an agent's schedule."""
+    with SessionLocal() as db:
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
         agent = trigger.agent
         # Keeps a concurrent delete of the agent from missing this run (see `create_run`).
         if not lock_live(db, Agent, [agent.id], read=True):
@@ -104,6 +132,33 @@ def _start_agent_run(trigger_id: int, fired_at: datetime) -> tuple[int, int, int
         trigger.last_run_id = run.id
         db.commit()
         return agent.owner_id, agent.id, run.id, trigger.input
+
+
+def _start_workflow_run(trigger_id: int, fired_at: datetime) -> None:
+    """Start a run for a workflow's schedule, and queue it for the worker (`aios.workflows`).
+
+    Raises `HTTPException` as starting one by hand would, if it can't start or be queued."""
+    with SessionLocal() as db:
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
+        run = workflows_api.new_workflow_run(db, trigger.workflow, trigger.input)
+        trigger.last_workflow_run_id = run.id
+        # Commits the link with the run; if queueing fails the run is deleted, and the link
+        # with it (SET NULL).
+        workflows_api.queue_workflow_run(db, run)
+
+
+async def _run_agent(trigger_id: int, fired_at: datetime) -> str | None:
+    """Start an agent's run and run its turn; the turn's error, if it failed."""
+    user_id, agent_id, run_id, message = await run_in_threadpool(
+        _start_agent_run, trigger_id, fired_at
+    )
+    ctx = await run_in_threadpool(_load_context, user_id, agent_id, run_id)
+    await run_in_threadpool(agents_api._start_turn, run_id, message)
+    error = None
+    async for chunk in agents_api.turn_stream(ctx, user_id, run_id, HumanMessage(content=message)):
+        if chunk["type"] == "error":
+            error = chunk["errorText"]
+    return error
 
 
 def _record(trigger_id: int, fired_at: datetime, error: str | None) -> None:
@@ -129,17 +184,16 @@ async def fire(trigger_id: int, fired_at: datetime) -> None:
     """Fire one claimed trigger, and record how it went."""
     error = None
     try:
-        started = await run_in_threadpool(_start_agent_run, trigger_id, fired_at)
-        if started is None:
+        kind = await run_in_threadpool(_target, trigger_id, fired_at)
+        if kind is None:
             return
-        user_id, agent_id, run_id, message = started
-        ctx = await run_in_threadpool(_load_context, user_id, agent_id, run_id)
-        await run_in_threadpool(agents_api._start_turn, run_id, message)
-        async for chunk in agents_api.turn_stream(
-            ctx, user_id, run_id, HumanMessage(content=message)
-        ):
-            if chunk["type"] == "error":
-                error = chunk["errorText"]
+        if kind == TriggerTargetKind.workflow:
+            # Queued for the worker: the trigger shows how the run goes from here.
+            await run_in_threadpool(_start_workflow_run, trigger_id, fired_at)
+        else:
+            error = await _run_agent(trigger_id, fired_at)
+    except _Gone:
+        return
     except FireError as exc:
         error = str(exc)
     except HTTPException as exc:

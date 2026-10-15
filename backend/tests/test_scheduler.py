@@ -1,15 +1,27 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
+import test_workflows as workflow_tests
 from fake_model import model, replies, use_model
 from sqlalchemy import select, update
 from test_agents import chat_body
-from test_triggers import make_agent, make_trigger, make_workflow, schedule
+from test_triggers import make_agent, make_trigger, schedule
+from test_workflow_runs import echo
 
 from aios import checkpoints, scheduler
 from aios.cron import next_run
 from aios.db import SessionLocal
-from aios.models import AgentRun, AgentVersionTool, Trigger, TriggerStatus
+from aios.models import (
+    AgentRun,
+    AgentVersionTool,
+    Trigger,
+    TriggerStatus,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
+from aios.worker import run_workflow_task
+from aios.workflows import execute_run
 
 
 def make_due(db, trigger_id: int, at: datetime) -> None:
@@ -150,16 +162,120 @@ def test_an_agent_that_cant_run_fails_without_a_run(api, db):
     assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
 
 
-def test_workflow_schedules_fail_until_workflows_can_run(api, db):
-    workflow = make_workflow(api, "Flow")
+@pytest.fixture
+def queued(monkeypatch) -> list[int]:
+    """The ids of the workflow runs started, instead of sending them to the worker."""
+    ids = []
+    monkeypatch.setattr(run_workflow_task, "delay", ids.append)
+    return ids
+
+
+def make_runnable_workflow(api, name: str = "Flow") -> dict:
+    """A workflow of one agent node, whose agent answers `echo(<input>)` (see `echo`)."""
+    agent = workflow_tests.make_agent(api, f"{name} agent", base_prompt="echo")
+    return workflow_tests.make_workflow(api, name, [workflow_tests.agent_node("a", agent)])
+
+
+def test_firing_a_workflow_schedule_starts_a_run_with_its_input(api, db, queued):
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"], input="Today's tickets"))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+
+    assert tick(now) == [t["id"]]
+
+    fired = load(db, t["id"])
+    assert fired.last_error is None and fired.last_run_id is None
+    run = db.get(WorkflowRun, fired.last_workflow_run_id)
+    # Started as `POST /api/workflows/{id}/runs` starts one: on the current version, queued
+    # for the worker.
+    assert run.workflow_id == workflow["id"]
+    assert run.workflow_version_id == workflow["current_version"]["id"]
+    assert run.input == "Today's tickets"
+    assert run.status == WorkflowRunStatus.queued
+    assert queued == [run.id]
+    assert fired.next_run_at == next_run("0 9 * * *", "Europe/London", now)
+
+    # The worker runs it; the schedule shows how the run is going, and then how it went.
+    shown = api.get(f"/api/triggers/{t['id']}").json()
+    assert (shown["last_status"], shown["last_workflow_run_id"]) == ("running", run.id)
+    with use_model(echo()):
+        asyncio.run(execute_run(run.id))
+    shown = api.get(f"/api/triggers/{t['id']}").json()
+    assert (shown["last_status"], shown["last_error"]) == ("succeeded", None)
+    out = api.get(f"/api/workflows/{workflow['id']}/runs/{run.id}").json()
+    assert out["output"] == "echo(Today's tickets)"
+
+
+def test_a_failed_workflow_run_shows_on_its_schedule(api, db, queued):
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    tick(now)
+    with use_model(echo(fail={"echo"})):
+        asyncio.run(execute_run(queued[-1]))
+    shown = api.get(f"/api/triggers/{t['id']}").json()
+    assert shown["last_status"] == "failed"
+    assert "echo broke" in shown["last_error"]
+    assert shown["last_workflow_run_id"] == queued[-1]
+
+
+def test_a_workflow_that_cant_run_fails_without_a_run(api, db, queued):
+    # Refused as starting it by hand would be: here, it has no nodes.
+    workflow = workflow_tests.make_workflow(api, "Empty")
     t = make_trigger(api, schedule("workflow", workflow["id"]))
     now = datetime.now(UTC)
     make_due(db, t["id"], now - timedelta(seconds=1))
     tick(now)
     fired = load(db, t["id"])
     assert fired.last_status == TriggerStatus.failed
-    assert fired.last_error == "Workflows can't be run yet."
-    assert fired.next_run_at > now
+    assert fired.last_error == "This workflow has no nodes"
+    assert fired.last_workflow_run_id is None
+    assert queued == []
+    assert (
+        db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow["id"])).all() == []
+    )
+    assert fired.enabled and fired.next_run_at > now
+
+
+def test_a_workflow_run_that_cant_be_queued_fails_without_a_run(api, db, monkeypatch):
+    def broker_down(run_id):
+        raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(run_workflow_task, "delay", broker_down)
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    tick(now)
+    fired = load(db, t["id"])
+    assert fired.last_status == TriggerStatus.failed
+    assert "Could not queue the run" in fired.last_error
+    assert fired.last_workflow_run_id is None
+    runs = db.scalars(select(WorkflowRun).where(WorkflowRun.workflow_id == workflow["id"]))
+    assert runs.all() == []
+
+
+def test_a_later_firing_that_fails_isnt_shown_as_the_earlier_run(api, db, queued):
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    tick(now)
+    with use_model(echo()):
+        asyncio.run(execute_run(queued[-1]))
+    assert api.get(f"/api/triggers/{t['id']}").json()["last_status"] == "succeeded"
+
+    # Its current version now can't run.
+    resp = api.put(f"/api/workflows/{workflow['id']}", json=workflow_tests.workflow_body("Flow"))
+    assert resp.status_code == 200, resp.text
+    later = now + timedelta(days=1)
+    make_due(db, t["id"], later - timedelta(seconds=1))
+    tick(later)
+    shown = api.get(f"/api/triggers/{t['id']}").json()
+    assert (shown["last_status"], shown["last_error"]) == ("failed", "This workflow has no nodes")
+    assert shown["last_workflow_run_id"] is None
 
 
 def test_a_trigger_deleted_mid_turn_doesnt_break_the_run(api, db):

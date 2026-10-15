@@ -578,7 +578,7 @@ class Trigger(Base):
         ForeignKey("workflows.id", ondelete="CASCADE"), index=True
     )
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
-    # The message an agent run starts with (a workflow's input, once workflows run).
+    # The message an agent run starts with, or a workflow run's input.
     input: Mapped[str] = mapped_column(Text, server_default="")
     # Schedules: a 5-field cron expression (or a macro like @daily), in an IANA timezone.
     cron: Mapped[str | None] = mapped_column(String(255))
@@ -596,6 +596,11 @@ class Trigger(Base):
             "agent_runs.id", ondelete="SET NULL", use_alter=True, name="fk_triggers_last_run_id"
         )
     )
+    # The workflow run it last started; its status is the schedule's (`api.triggers.trigger_out`),
+    # since a worker runs it after the schedule has fired.
+    last_workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -603,6 +608,7 @@ class Trigger(Base):
 
     agent: Mapped[Agent | None] = relationship()
     workflow: Mapped[Workflow | None] = relationship()
+    last_workflow_run: Mapped[WorkflowRun | None] = relationship()
 
     __table_args__ = (
         CheckConstraint(

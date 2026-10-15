@@ -94,7 +94,10 @@ does the same for its own (`/api/triggers`).
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
   (the run is listed with the agent's others, marked as scheduled). The schedule shows how its
   last run went, with a link to it.
-- Workflows can't run yet, so a workflow's schedule records a failed run each time it fires.
+- A workflow's schedule carries an input. Each time it fires, a run of the workflow's *current*
+  version starts with it, exactly as starting one by hand does (refused the same way, which the
+  schedule records as a failure), and is queued for the worker. The schedule shows how that run
+  is going, then how it went, with a link to it.
 - Each API process runs the scheduler (`aios.scheduler`), polling every
   `SCHEDULER_INTERVAL_SECONDS` (15). Due schedules are claimed with `FOR UPDATE SKIP LOCKED`
   and moved on to their next run in the same transaction, so with any number of replicas each

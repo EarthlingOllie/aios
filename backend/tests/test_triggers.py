@@ -69,10 +69,20 @@ def test_create_schedule_for_an_agent(api):
 
 def test_create_schedule_for_a_workflow(api):
     workflow = make_workflow(api, "Pipeline")
-    t = make_trigger(api, schedule("workflow", workflow["id"], input=""))
+    t = make_trigger(api, schedule("workflow", workflow["id"], input="Today's tickets"))
     assert t["target_kind"] == "workflow"
     assert t["target_name"] == "Pipeline"
-    assert t["input"] == ""
+    assert t["input"] == "Today's tickets"
+    assert t["last_run_id"] is None and t["last_workflow_run_id"] is None
+
+
+def test_a_workflow_schedule_needs_an_input(api):
+    # A workflow run takes a non-blank input, as when it's started by hand.
+    workflow = make_workflow(api, "Pipeline")
+    for blank in ("", "   "):
+        resp = api.post("/api/triggers", json=schedule("workflow", workflow["id"], input=blank))
+        assert resp.status_code == 422
+        assert "needs an input" in resp.json()["detail"]
 
 
 @pytest.mark.parametrize(

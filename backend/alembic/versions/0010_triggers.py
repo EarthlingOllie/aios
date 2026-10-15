@@ -1,8 +1,8 @@
 """triggers
 
 Triggers start agents and workflows without a user in the loop. The first kind is a schedule: a
-cron expression in a timezone, polled by the API's scheduler (`aios.scheduler`). Runs record the
-trigger that started them.
+cron expression in a timezone, polled by the API's scheduler (`aios.scheduler`). Agent runs record
+the trigger that started them; a trigger records the agent run or workflow run it last started.
 
 Revision ID: 0010
 Revises: 0009
@@ -45,6 +45,7 @@ def upgrade() -> None:
         ),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("last_run_id", sa.Integer(), nullable=True),
+        sa.Column("last_workflow_run_id", sa.Integer(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -69,6 +70,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["agent_id"], ["agents.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["workflow_id"], ["workflows.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["last_workflow_run_id"], ["workflow_runs.id"], ondelete="SET NULL"
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_triggers_agent_id"), "triggers", ["agent_id"], unique=False)

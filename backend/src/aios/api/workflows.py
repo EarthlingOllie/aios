@@ -683,7 +683,19 @@ def list_workflow_runs(workflow_id: DbId, user: CurrentUser, db: DB):
 def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUser, db: DB):
     """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
     workflow = get_owned_workflow(db, user.id, workflow_id)
-    # Keeps a concurrent delete from leaving a run started on a workflow that's gone.
+    run = new_workflow_run(db, workflow, body.input)
+    queue_workflow_run(db, run)
+    return workflow_run_summary(db, run.id)
+
+
+def new_workflow_run(db: Session, workflow: Workflow, input: str) -> WorkflowRun:
+    """Add (and flush, not commit) a run of the workflow's current version, given `input`.
+
+    Raises `HTTPException` if it can't run: 404 if it has been deleted, 422 if it has no nodes,
+    409 if an agent version in its graph can't run. Commit with `queue_workflow_run`; the share
+    lock taken here keeps a concurrent delete from leaving a run on a workflow that's gone.
+    Also how a schedule starts one (`aios.scheduler`).
+    """
     if not lock_live(db, Workflow, [workflow.id], read=True):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     version = workflow.current_version
@@ -695,8 +707,15 @@ def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUse
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # Pin the version: later edits to the workflow don't change this run.
-    run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, input=body.input)
+    run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, input=input)
     db.add(run)
+    db.flush()
+    return run
+
+
+def queue_workflow_run(db: Session, run: WorkflowRun) -> None:
+    """Commit the run (with whatever else is pending) and send it to the worker. If it can't be
+    queued, delete it and raise a 503."""
     db.commit()
     try:
         run_workflow_task.delay(run.id)
@@ -709,7 +728,6 @@ def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUse
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Could not queue the run; please try again shortly.",
         ) from exc
-    return workflow_run_summary(db, run.id)
 
 
 @router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunOut)

@@ -1,8 +1,8 @@
 """Triggers: what starts agents and workflows without a user in the loop.
 
 Schedules are the only kind so far. Each targets one agent (a new run of its current version,
-starting with the trigger's `input` as the user's message) or one workflow. `aios.scheduler`
-fires them.
+starting with the trigger's `input` as the user's message) or one workflow (a new run of its
+current version, with `input` as the run's input). `aios.scheduler` fires them.
 """
 
 from datetime import UTC, datetime
@@ -17,7 +17,17 @@ from aios import cron
 from aios.api.skills import lock_live
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
-from aios.models import Agent, Trigger, TriggerKind, TriggerStatus, TriggerTargetKind, Workflow
+from aios.models import (
+    Agent,
+    Trigger,
+    TriggerKind,
+    TriggerStatus,
+    TriggerTargetKind,
+    Workflow,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
+from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
 
@@ -29,7 +39,7 @@ class TriggerIn(BaseModel):
     target_kind: TriggerTargetKind
     target_id: DbId
     enabled: bool = True
-    # The message an agent run starts with; required for agents.
+    # The message an agent run starts with, or a workflow run's input; required.
     input: str = Field("", max_length=100_000)
     cron: str = Field(max_length=255)
     timezone: str = Field("UTC", max_length=64)
@@ -49,9 +59,12 @@ class TriggerOut(BaseModel):
     timezone: str
     next_run_at: datetime | None
     last_fired_at: datetime | None
+    # For a workflow, its last run's: a worker runs it after the schedule has fired.
     last_status: TriggerStatus | None
     last_error: str | None
+    # The agent run (agents) or workflow run (workflows) it last started.
     last_run_id: int | None
+    last_workflow_run_id: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -66,8 +79,25 @@ class PreviewOut(BaseModel):
     next_runs: list[datetime]
 
 
+RUN_STATUS = {
+    WorkflowRunStatus.queued: TriggerStatus.running,
+    WorkflowRunStatus.running: TriggerStatus.running,
+    WorkflowRunStatus.succeeded: TriggerStatus.succeeded,
+    WorkflowRunStatus.failed: TriggerStatus.failed,
+}
+
+
+def last_outcome(trigger: Trigger) -> tuple[TriggerStatus | None, str | None]:
+    """How the trigger last went: once it has started a workflow run, how that run is going."""
+    run = trigger.last_workflow_run
+    if run is None:
+        return trigger.last_status, trigger.last_error
+    return RUN_STATUS[run.status], run.error if run.status == WorkflowRunStatus.failed else None
+
+
 def trigger_out(trigger: Trigger) -> TriggerOut:
     target = trigger.agent if trigger.target_kind == TriggerTargetKind.agent else trigger.workflow
+    last_status, last_error = last_outcome(trigger)
     return TriggerOut(
         id=trigger.id,
         kind=trigger.kind,
@@ -81,9 +111,10 @@ def trigger_out(trigger: Trigger) -> TriggerOut:
         timezone=trigger.timezone,
         next_run_at=trigger.next_run_at,
         last_fired_at=trigger.last_fired_at,
-        last_status=trigger.last_status,
-        last_error=trigger.last_error,
+        last_status=last_status,
+        last_error=last_error,
         last_run_id=trigger.last_run_id,
+        last_workflow_run_id=trigger.last_workflow_run_id,
         created_at=trigger.created_at,
         updated_at=trigger.updated_at,
     )
@@ -109,10 +140,13 @@ def checked_schedule(expr: str, tz: str) -> tuple[str, str]:
 def apply(db: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     """Set the trigger from the request, checked, and schedule its next run."""
     expr, tz = checked_schedule(body.cron, body.timezone)
-    if body.target_kind == TriggerTargetKind.agent and not body.input.strip():
+    if not body.input.strip():
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "A schedule for an agent needs a message to start its run with.",
+            "A schedule for an agent needs a message to start its run with."
+            if body.target_kind == TriggerTargetKind.agent
+            # As `POST /api/workflows/{id}/runs` requires.
+            else "A schedule for a workflow needs an input to start its run with.",
         )
     model = Agent if body.target_kind == TriggerTargetKind.agent else Workflow
     target = db.get(model, body.target_id)
@@ -137,13 +171,23 @@ def apply(db: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
 
 
+LOAD = (
+    selectinload(Trigger.agent),
+    selectinload(Trigger.workflow),
+    selectinload(Trigger.last_workflow_run),
+)
+
+
+def fail_stopped_last_runs(db: Session, *where) -> None:
+    """Fail the last workflow runs of the triggers matching `where` whose worker died, so they
+    aren't shown running for ever (as `api.workflows.get_workflow_run` does); commits."""
+    fail_stopped_runs(db, WorkflowRun.id.in_(select(Trigger.last_workflow_run_id).where(*where)))
+
+
 def load(db: Session, trigger_id: int) -> Trigger:
+    fail_stopped_last_runs(db, Trigger.id == trigger_id)
     db.expire_all()
-    return db.scalars(
-        select(Trigger)
-        .where(Trigger.id == trigger_id)
-        .options(selectinload(Trigger.agent), selectinload(Trigger.workflow))
-    ).one()
+    return db.scalars(select(Trigger).where(Trigger.id == trigger_id).options(*LOAD)).one()
 
 
 def delete_triggers(db: Session, condition) -> None:
@@ -166,10 +210,11 @@ def list_triggers(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Filter by both target_kind and target_id, or neither",
         )
+    fail_stopped_last_runs(db, Trigger.owner_id == user.id)
     query = (
         select(Trigger)
         .where(Trigger.owner_id == user.id)
-        .options(selectinload(Trigger.agent), selectinload(Trigger.workflow))
+        .options(*LOAD)
         .order_by(Trigger.next_run_at.asc().nulls_last(), Trigger.id)
     )
     if target_kind == TriggerTargetKind.agent:
