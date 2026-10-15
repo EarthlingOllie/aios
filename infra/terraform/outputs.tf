@@ -30,6 +30,20 @@ output "migrate_task" {
   }
 }
 
+output "db_roles_task" {
+  description = "Inputs for `aws ecs run-task` (used by infra/deploy.sh, before migrate_task)."
+  value = {
+    task_definition = aws_ecs_task_definition.db_roles.family
+    subnets         = aws_subnet.private[*].id
+    security_group  = aws_security_group.app.id
+  }
+}
+
+output "db_master_secret_id" {
+  description = "The RDS master user's DSN: break-glass access only."
+  value       = aws_secretsmanager_secret.db_master.name
+}
+
 output "db_endpoint" {
   value = aws_db_instance.main.endpoint
 }

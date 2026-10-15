@@ -24,6 +24,35 @@ resource "aws_secretsmanager_secret_version" "app" {
   })
 }
 
+# The provisioner's role (CREATEDB, CREATEROLE). A secret of its own so that only the
+# provisioning worker is given it: no other service's task definition references it, and the
+# shared execution role can't read it.
+resource "aws_secretsmanager_secret" "provisioner" {
+  name                    = "${var.name}/provisioner"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "provisioner" {
+  secret_id = aws_secretsmanager_secret.provisioner.id
+  secret_string = jsonencode({
+    DATA_STORE_PROVISIONER_URL = local.provisioner_url
+  })
+}
+
+# The master user. Only the db-roles task is given it, to create the roles; otherwise it's for
+# break-glass access.
+resource "aws_secretsmanager_secret" "db_master" {
+  name                    = "${var.name}/db-master"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "db_master" {
+  secret_id = aws_secretsmanager_secret.db_master.id
+  secret_string = jsonencode({
+    DATABASE_ADMIN_URL = local.database_admin_url
+  })
+}
+
 # Third-party credentials: Terraform creates the secret with placeholders and never
 # touches the value again, so the keys stay out of state. Set them with:
 #   aws secretsmanager put-secret-value --secret-id <name>/external --secret-string file://external.json

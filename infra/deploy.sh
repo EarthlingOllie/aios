@@ -53,21 +53,33 @@ else
 fi
 tf apply -auto-approve -input=false "${PREP_VARS[@]}" -var "migrate_image_tag=$TAG"
 
-echo "==> Running database migrations"
 CLUSTER="$(tf output -raw ecs_cluster)"
-MIGRATE="$(tf output -json migrate_task)"
-TASKDEF="$(echo "$MIGRATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')"
-NETCFG="$(echo "$MIGRATE" | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
-TASK_ARN="$(aws ecs run-task --region "$REGION" --cluster "$CLUSTER" --launch-type FARGATE \
-  --task-definition "$TASKDEF" --network-configuration "$NETCFG" \
-  --query 'tasks[0].taskArn' --output text)"
-aws ecs wait tasks-stopped --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN"
-EXIT_CODE="$(aws ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN" \
-  --query 'tasks[0].containers[0].exitCode' --output text)"
-if [[ "$EXIT_CODE" != "0" ]]; then
-  echo "Migration failed (exit $EXIT_CODE); see CloudWatch log group /ecs/*/migrate" >&2
-  exit 1
-fi
+# Runs a one-off task (a Terraform output with its task definition and network) to completion.
+run_task() {
+  local output="$1" logs="$2" spec taskdef netcfg task_arn exit_code
+  spec="$(tf output -json "$output")"
+  taskdef="$(echo "$spec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')"
+  netcfg="$(echo "$spec" | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
+  task_arn="$(aws ecs run-task --region "$REGION" --cluster "$CLUSTER" --launch-type FARGATE \
+    --task-definition "$taskdef" --network-configuration "$netcfg" \
+    --query 'tasks[0].taskArn' --output text)"
+  aws ecs wait tasks-stopped --region "$REGION" --cluster "$CLUSTER" --tasks "$task_arn"
+  exit_code="$(aws ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$task_arn" \
+    --query 'tasks[0].containers[0].exitCode' --output text)"
+  if [[ "$exit_code" != "0" ]]; then
+    echo "$output failed (exit $exit_code); see CloudWatch log group /ecs/*/$logs" >&2
+    exit 1
+  fi
+}
+
+# The only use of the master user: create the app's and the provisioner's roles (or update
+# their passwords) and hand the app's role the schema. Services still running as the master
+# user keep working: it's a member of the app's role.
+echo "==> Creating database roles"
+run_task db_roles_task db-roles
+
+echo "==> Running database migrations"
+run_task migrate_task migrate
 
 echo "==> Rolling out services"
 tf apply -auto-approve -input=false -var "image_tag=$TAG"
