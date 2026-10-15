@@ -29,6 +29,18 @@ test("documents wait for a store that's being set up, then can be uploaded", asy
   await expect(page.getByText("1 chunks")).toBeVisible();
 });
 
+test("uploads wait until the store's status is known", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.dataStoreStatus = "ready";
+  api.dataStoreDelay = 1500;
+  await page.goto("/");
+
+  const upload = page.getByRole("button", { name: "Upload" });
+  await upload.waitFor();
+  expect(await upload.isDisabled()).toBe(true);
+  await expect(upload).toBeEnabled();
+});
+
 test("a store that couldn't be set up says so", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "failed";

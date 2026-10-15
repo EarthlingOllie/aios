@@ -101,6 +101,8 @@ export class FakeApi {
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
+  /** How long GET /api/data-store takes to answer (ms). */
+  dataStoreDelay = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
@@ -442,7 +444,10 @@ export class FakeApi {
     if (path === "/api/me") {
       return reply(200, { id: 1, login: "tester", name: "Tester", avatar_url: null });
     }
-    if (path === "/api/data-store") return reply(200, { status: this.dataStoreStatus });
+    if (path === "/api/data-store") {
+      await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
+      return reply(200, { status: this.dataStoreStatus });
+    }
     if (path === "/api/documents" || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {

@@ -19,9 +19,10 @@ export function Documents() {
   const [errors, setErrors] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   // The user's data store: until it's ready there's nothing to list, and uploads are refused.
-  // Unknown (undefined) until the first answer; a failed request keeps the last one.
+  // Unknown (undefined) until the first answer, and uploads wait for it; a failed request keeps
+  // the last one.
   const [storeStatus, setStoreStatus] = useState<DataStoreStatus>();
-  const storeBlocked = storeStatus !== undefined && storeStatus !== "ready";
+  const storeBlocked = storeStatus !== "ready";
   const notice = storeStatus && dataStoreNotice(storeStatus);
 
   // Never rejects: a failed list (API restart, expired session) keeps the last list and the
