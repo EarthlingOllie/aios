@@ -104,3 +104,21 @@ test("going back from a run or a version returns to its tab", async ({ page }) =
   await page.getByRole("heading").getByRole("link", { name: "Researcher" }).click();
   await expect(tab(page, /Versions/)).toHaveAttribute("aria-selected", "true");
 });
+
+test("each tab's aria-controls names a panel that is on the page", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
+
+  const dangling = await page
+    .getByRole("tab")
+    .evaluateAll((tabs) =>
+      tabs
+        .map((t) => t.getAttribute("aria-controls"))
+        .filter((id) => id !== null && !document.getElementById(id)),
+    );
+  expect(dangling).toEqual([]);
+  const panelId = await panel(page).getAttribute("id");
+  await expect(tab(page, /Runs/)).toHaveAttribute("aria-controls", panelId!);
+});

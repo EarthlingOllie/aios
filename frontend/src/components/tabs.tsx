@@ -71,7 +71,8 @@ export function Tabs({
               role="tab"
               id={`${base}-tab-${t.id}`}
               aria-selected={isSelected}
-              aria-controls={`${base}-panel-${t.id}`}
+              // Only the open tab's panel is rendered, so only it can be pointed at.
+              aria-controls={isSelected ? `${base}-panel-${t.id}` : undefined}
               tabIndex={isSelected ? 0 : -1}
               onClick={() => select(t.id)}
               onKeyDown={(e) => onKeyDown(e, i)}
