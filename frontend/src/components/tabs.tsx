@@ -104,7 +104,8 @@ export function Tabs({
           role="tabpanel"
           id={`${base}-panel-${selected.id}`}
           aria-labelledby={`${base}-tab-${selected.id}`}
-          className="flex flex-col gap-6"
+          tabIndex={0}
+          className="focus-visible:ring-ring/50 flex flex-col gap-6 rounded-md outline-none focus-visible:ring-[3px]"
         >
           {selected.content}
         </div>

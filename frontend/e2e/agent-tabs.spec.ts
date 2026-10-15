@@ -139,3 +139,16 @@ test("restoring a version returns to the Versions tab, with the new current vers
   await expect(restored).toContainText("Restored from v1");
   await expect(restored).toContainText("current");
 });
+
+test("Tab moves from the tab list into the panel, even one with nothing to focus", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await expect(panel(page).getByText("No runs yet")).toBeVisible();
+
+  await tab(page, /Runs/).focus();
+  await page.keyboard.press("Tab");
+  await expect(panel(page)).toBeFocused();
+});
