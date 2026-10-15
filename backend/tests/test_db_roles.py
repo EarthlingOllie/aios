@@ -124,6 +124,31 @@ def test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles(db):
     assert tuple(row) == (False, False, False)
 
 
+def test_db_tests_fail_rather_than_skip_when_the_app_role_cannot_log_in(admin_url):
+    """A server that's up but rejects DATABASE_URL's role (the roles were never created) is a
+    setup to fix, not a database that isn't there."""
+    nobody = make_url(admin_url).set(username="t_no_such_role", password="x")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_db_roles.py::"
+            "test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles",
+        ],
+        cwd=BACKEND,
+        env={**os.environ, "DATABASE_URL": nobody.render_as_string(hide_password=False)},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0, result.stdout
+    assert "python -m aios.db_roles" in result.stdout
+
+
 def _bootstrap(**env: str) -> subprocess.CompletedProcess:
     """`python -m aios.db_roles` with just `env` for its settings (and no `.env` file)."""
     base = {k: v for k, v in os.environ.items() if not k.startswith(("DATABASE_", "DATA_STORE_"))}

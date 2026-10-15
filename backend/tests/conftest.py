@@ -26,6 +26,17 @@ def db():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM chunks LIMIT 1"))
     except Exception as exc:  # noqa: BLE001
+        # The server is up but won't let DATABASE_URL's role in: the roles haven't been created
+        # (or the password is wrong), which skipping would hide.
+        message = str(exc)
+        if isinstance(exc, OperationalError) and (
+            "password authentication failed" in message
+            or ('role "' in message and "does not exist" in message)
+        ):
+            pytest.fail(
+                f"DATABASE_URL's role can't log in ({exc.orig}). Create the roles with "
+                "`python -m aios.db_roles` (see the README's Database roles)."
+            )
         if isinstance(exc, OperationalError) or "chunks" in str(exc):
             pytest.skip(f"database not available: {exc.__class__.__name__}")
         raise
