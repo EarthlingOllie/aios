@@ -387,6 +387,39 @@ instance and copying it back. Drops are made reversible instead:
 - Until then, the owner can restore them from the Data page.
 - Dropped data still counts towards the quota until it's purged.
 
+## The Data page
+
+A new **Data** item in the navigation: the user's window onto their data store. Users never
+connect to the store themselves, so this page is where they see what their agents have stored.
+It's read-only apart from deciding schema changes and a few housekeeping actions.
+
+It reads the store as its read-only role, with the same row and byte caps as `query_data`. It
+has five sections:
+
+1. **Overview**
+   - The store's status: being set up, ready, or failed.
+   - Usage against both storage caps, with a warning near the limit.
+2. **Tables**: a browser for the `data` schema.
+   - Each table shows its columns, types and descriptions, its row count, and where it came
+     from: the request that created it, and the agent or workflow run that asked.
+   - Opening a table shows its rows, paged and read-only. Columns can be sorted, and
+     embedding columns are shown as their dimension, not the vector.
+3. **Changes**
+   - Pending schema change requests first, each with the agent's reason, the exact SQL and a
+     link to the run that asked, plus approve and reject.
+   - Below them, the history of applied, rejected, expired, cancelled and stale requests (from
+     `aios.schema_history` and `schema_change_requests`).
+   - Notifications link here.
+4. **Dropped**
+   - Tables and columns awaiting purge, with how long until each goes, and a restore button.
+5. **Documents**: the Data page owns documents.
+   - Upload, plus the list of documents with ingest status, chunk count, size, download (a
+     presigned link) and delete.
+   - The chat keeps its upload button, which adds to the same list.
+
+The run history export is not here: its settings live on the **Settings** page (today a stub),
+with the user's other account settings.
+
 ## Storage quota
 
 - Each store has a cap made of two configuration values:
@@ -399,7 +432,8 @@ instance and copying it back. Drops are made reversible instead:
 
 ## Run history export (opt-in)
 
-- A per-user setting, `export_run_history`. For a team store, later, it becomes a setting of the
+- A per-user setting, `export_run_history`, toggled on the **Settings** page. The page is a stub
+  today, and this is its first real setting. For a team store, later, it becomes a setting of the
   store.
 - **Switching it on** runs the `history` migrations if they haven't run yet, and enqueues a
   backfill of the owner's existing runs.
@@ -413,9 +447,11 @@ instance and copying it back. Drops are made reversible instead:
     - `history.workflow_runs` and `history.workflow_run_steps`
   - Upserts are keyed on the platform's ids, so re-running is safe.
   - Each run row records the user who ran it.
-- **Messages can also be embedded**, behind a setting, so agents can search past runs.
+- **Messages can also be embedded**, behind a second setting on the same page, so agents can search
+  past runs.
 - **Switching it off** stops the export. What was already exported stays. The owner can delete it
-  from the Data page, which empties the `history` tables.
+  from the Settings page, which empties the `history` tables.
+- **The Settings page** also shows when the export last ran.
 - **Run deletes** delete the exported copy too, while the export is on.
 
 ## Configuration
@@ -478,9 +514,11 @@ Each phase ships on its own and leaves the app working.
 2. **Documents move**
    - The S3 bucket and RustFS.
    - Upload, ingest and search against the store, and downloads through presigned URLs.
+   - The Data page, with its Overview and Documents sections.
    - `ChatDeps.data_store_id` and tasks that take `data_store_id`.
    - Drop `documents` and `chunks` from the platform database.
-3. **Data tools**: `describe_data`, `query_data`, `write_data` and the quota checks.
+3. **Data tools**: `describe_data`, `query_data`, `write_data`, the quota checks, and the Data
+   page's Tables section.
 4. **Schema change requests**
    - The spec and compiler, `request_schema_change` with `interrupt()`, the Data page, the
      applier, and reversible drops.
@@ -541,6 +579,9 @@ None at the moment.
   goes there too, if the owner opts in.
 - **Raw files go to S3** under the store's prefix. Postgres keeps metadata and chunks. Users
   download them through presigned URLs that last a minute.
+- **The Data page owns the store's contents**: its status and usage, tables with their rows,
+  schema changes, dropped objects and documents. The run history export's settings live on the
+  Settings page.
 - **Notifications are in the app only**, for now, in a general-purpose `notifications` table.
 - **Runs always stay on the versions they started on**, including after a pause. A run whose
   pins can no longer run fails when it resumes.
