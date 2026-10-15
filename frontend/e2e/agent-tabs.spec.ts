@@ -122,3 +122,20 @@ test("each tab's aria-controls names a panel that is on the page", async ({ page
   const panelId = await panel(page).getAttribute("id");
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-controls", panelId!);
 });
+
+test("restoring a version returns to the Versions tab, with the new current version", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher", 2);
+  await page.goto(`/agents/${agent.id}?tab=versions`);
+
+  await panel(page).getByRole("link", { name: /v1/ }).click();
+  await page.getByRole("button", { name: "Restore this version" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}\\?tab=versions$`));
+  await expect(tab(page, "Versions 3")).toHaveAttribute("aria-selected", "true");
+  const restored = panel(page).getByRole("link", { name: /v3/ });
+  await expect(restored).toContainText("Restored from v1");
+  await expect(restored).toContainText("current");
+});

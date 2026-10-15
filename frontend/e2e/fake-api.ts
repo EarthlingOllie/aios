@@ -83,6 +83,8 @@ export class FakeApi {
   agents = new Map<number, AgentRow>();
   // Agent version id -> [agent id, version number].
   agentVersions = new Map<number, [number, number]>();
+  // Agent version id -> note, for the versions that have one.
+  agentNotes = new Map<number, string>();
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
@@ -306,7 +308,7 @@ export class FakeApi {
     return {
       id: agent.versions[version - 1],
       version,
-      note: null,
+      note: this.agentNotes.get(agent.versions[version - 1]) ?? null,
       created_at: NOW,
       base_prompt: agent.base_prompt,
       model: null,
@@ -437,6 +439,14 @@ export class FakeApi {
         })),
       );
     }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
+      const agent = this.agents.get(Number(m[1]));
+      const version = Number(m[2]);
+      if (!agent || !agent.versions[version - 1]) return fail(404, "Not Found");
+      this.bumpAgent(agent);
+      this.agentNotes.set(agent.versions.at(-1)!, `Restored from v${version}`);
+      return reply(200, this.agentOut(agent));
+    }
     if ((m = path.match(/^\/api\/agents\/(\d+)(\/.*)?$/)) && method === "GET") {
       const agent = this.agents.get(Number(m[1]));
       const rest = m[2] ?? "";
@@ -467,7 +477,7 @@ export class FakeApi {
             .map((vid, i) => ({
               id: vid,
               version: i + 1,
-              note: null,
+              note: this.agentNotes.get(vid) ?? null,
               created_at: NOW,
               skill_count: 0,
               tool_count: 0,

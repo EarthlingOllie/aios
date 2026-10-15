@@ -388,7 +388,8 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreAgentVersion(id, number);
       await reloadList();
-      navigate(`/agents/${id}`);
+      // Back to where the version was opened from, which now lists the restored copy as current.
+      navigate(`/agents/${id}?tab=versions`);
     } catch (err) {
       setError(describeError(err));
     }
