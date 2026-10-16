@@ -124,29 +124,48 @@ def test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles(db):
     assert tuple(row) == (False, False, False)
 
 
-def test_db_tests_fail_rather_than_skip_when_the_app_role_cannot_log_in(admin_url):
-    """A server that's up but rejects DATABASE_URL's role (the roles were never created) is a
-    setup to fix, not a database that isn't there."""
-    nobody = make_url(admin_url).set(username="t_no_such_role", password="x")
-    result = subprocess.run(
+def _run_a_db_test(database_url: str) -> subprocess.CompletedProcess:
+    """A test that uses the `db` fixture, run with `database_url` as DATABASE_URL."""
+    return subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
             "-q",
+            "-rs",
             "-p",
             "no:cacheprovider",
             "tests/test_db_roles.py::"
             "test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles",
         ],
         cwd=BACKEND,
-        env={**os.environ, "DATABASE_URL": nobody.render_as_string(hide_password=False)},
+        env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
         text=True,
     )
 
+
+# Any refusal from a server that's up is a setup to fix, not a database that isn't there: these
+# two stand in for the rest (a pg_hba.conf rule, no CONNECT privilege, a wrong password).
+@pytest.mark.parametrize(
+    "parts",
+    [{"username": "t_no_such_role", "password": "x"}, {"database": "t_no_such_database"}],
+    ids=["role-missing", "database-missing"],
+)
+def test_db_tests_fail_rather_than_skip_when_the_server_turns_the_app_away(admin_url, parts):
+    url = make_url(admin_url).set(**parts)
+    result = _run_a_db_test(url.render_as_string(hide_password=False))
+
     assert result.returncode != 0, result.stdout
     assert "python -m aios.db_roles" in result.stdout
+
+
+def test_db_tests_skip_when_no_server_is_listening(admin_url):
+    url = make_url(admin_url).set(host="127.0.0.1", port=1)
+    result = _run_a_db_test(url.render_as_string(hide_password=False))
+
+    assert result.returncode == 0, result.stdout
+    assert "1 skipped" in result.stdout
 
 
 def _bootstrap(**env: str) -> subprocess.CompletedProcess:
