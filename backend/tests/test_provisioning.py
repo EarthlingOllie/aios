@@ -19,7 +19,7 @@ import psycopg
 import pytest
 from conftest import delete_user
 from psycopg import errors, sql
-from sqlalchemy import select, text, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.engine import make_url
 
 from aios import worker
@@ -388,6 +388,25 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
     assert row.status == DataStoreStatus.ready
     with psycopg.connect(login_url(row, "rw")) as conn:
         assert conn.execute("SELECT current_user").fetchone() == (f"{row.role_prefix}_rw",)
+
+
+def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provisioned(db, new_user):
+    """While a deploy migrates, the release before migration 0012 still serves, and makes a
+    new user's store with only its owner: the row gets its names from its id."""
+    user = new_user()
+    store_id = db.scalar(insert(DataStore).values(owner_user_id=user.id).returning(DataStore.id))
+    db.commit()
+
+    row = store_row(db, store_id)
+    assert (row.dbname, row.role_prefix) == provision.names_for(store_id)
+    assert row.status == DataStoreStatus.provisioning
+
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    assert row.status == DataStoreStatus.ready
+    with psycopg.connect(login_url(row, "rw")) as conn:
+        assert conn.execute("SELECT current_database()").fetchone() == (row.dbname,)
 
 
 def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
