@@ -62,25 +62,34 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
   // What to say about the last read of the list failing (e.g. the store is busy); the list
   // keeps its last rows meanwhile.
   const [listError, setListError] = useState<string>();
+  // Whether that failure may pass on its own: a refusal (an expired session, a store that isn't
+  // ready) answers the same however often it's asked, so it isn't asked again.
+  const [listRetrying, setListRetrying] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const ready = storeStatus === "ready";
 
-  // Never rejects: a failed read keeps the last list, and the poll below tries again.
+  // Never rejects: a failed read keeps the last list, and the poll below tries again if the
+  // failure is transient.
   const refresh = useCallback(
     () =>
       api.listDocuments().then(
         (list) => {
           setDocs(list);
           setListError(undefined);
+          setListRetrying(false);
         },
-        (err) =>
+        (err) => {
+          // A network error, or the API restarting (502, 504) or busy (503: every connection the
+          // store allows is in use), which a moment's wait frees.
+          const transient = !(err instanceof ApiError) || [502, 503, 504].includes(err.status);
+          setListRetrying(transient);
           setListError(
-            // 503: every connection the store allows is in use, which a moment's wait frees.
             err instanceof ApiError && err.status === 503
               ? "Your data store is busy. Trying again…"
-              : `Couldn't load your documents (${describeError(err)}). Trying again…`,
-          ),
+              : `Couldn't load your documents (${describeError(err)}).${transient ? " Trying again…" : ""}`,
+          );
+        },
       ),
     [],
   );
@@ -90,9 +99,10 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     if (ready) refresh();
   }, [ready, refresh]);
 
-  // Poll while anything is still being ingested by the worker, or the last read failed.
+  // Poll while anything is still being ingested by the worker, or the last read failed for a
+  // reason that may pass.
   const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
-  const retry = ready && Boolean(listError);
+  const retry = ready && listRetrying;
   useEffect(() => {
     if (!ingesting && !retry) return;
     const id = setInterval(refresh, 2000);
@@ -135,6 +145,7 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     /** The store is ready but its list hasn't been read yet (and no read has failed). */
     loading: ready && docs === undefined && !listError,
     listError,
+    listRetrying,
     uploading,
     errors,
     dismissErrors: () => setErrors([]),
@@ -229,7 +240,7 @@ export function DocumentsNotices({
           aria-label="Documents list"
           className="text-muted-foreground flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm"
         >
-          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+          {documents.listRetrying && <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />}
           <span>{documents.listError}</span>
         </div>
       )}

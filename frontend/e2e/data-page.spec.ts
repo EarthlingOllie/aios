@@ -269,3 +269,27 @@ test("an upload from the chat that finishes after you open the Data page still a
   api.releaseUploads();
   await expect(row(page, "late.md")).toBeVisible();
 });
+
+test("a list refused for good says so once, without asking again", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "report.pdf")).toBeVisible();
+
+  // The session expires: the next read of the list is refused, and so would every later one be.
+  let reads = 0;
+  await page.route("**/api/documents", (route) => {
+    reads++;
+    return route.fulfill({ status: 401, body: '{"detail":"Not authenticated"}' });
+  });
+  await page.locator('input[type="file"]').setInputFiles(file("notes.md"));
+
+  const notice = page.getByRole("status", { name: "Documents list" });
+  await expect(notice).toContainText(
+    "Couldn't load your documents (session expired, sign in again).",
+  );
+  await expect(notice).not.toContainText("Trying again");
+  const after = reads;
+  await page.waitForTimeout(5000);
+  expect(reads).toBe(after);
+});
