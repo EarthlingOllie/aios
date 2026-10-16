@@ -1,0 +1,140 @@
+
+> aios-web@0.1.0 test:e2e /home/user/aios/.claude/worktrees/agent-adf32d3f8ad761786/frontend
+> playwright test
+
+
+Running 75 tests using 2 workers
+
+  ✓   2 e2e/agent-tabs.spec.ts:10:1 › opens on the Context tab, with the agent's skills, tools and prompt (2.8s)
+  ✓   1 e2e/agent-tabs.spec.ts:27:1 › switches tabs on click, keeps the tab in the URL, and shows counts (4.2s)
+  ✓   3 e2e/agent-tabs.spec.ts:58:1 › an unknown tab in the URL falls back to the first (1.8s)
+  ✓   4 e2e/agent-tabs.spec.ts:65:1 › moves between tabs with the keyboard (2.0s)
+  ✓   5 e2e/agent-tabs.spec.ts:90:1 › going back from a run or a version returns to its tab (2.7s)
+  ✓   6 e2e/agent-tabs.spec.ts:108:1 › each tab's aria-controls names a panel that is on the page (1.9s)
+  ✓   7 e2e/agent-tabs.spec.ts:126:1 › restoring a version returns to the Versions tab, with the new current version (2.1s)
+  ✓   8 e2e/agent-tabs.spec.ts:143:1 › Tab moves from the tab list into the panel, even one with nothing to focus (1.7s)
+  ✓   9 e2e/agent-tabs.spec.ts:156:1 › deleting a run from its page returns to the Runs tab, without it (1.7s)
+  ✓  10 e2e/agent-tabs.spec.ts:172:1 › the Schedule tab shows the agent's schedules (1.5s)
+  ✓  12 e2e/schedules.spec.ts:35:1 › a timezone the server knows but the browser doesn't is shown in UTC (2.1s)
+  ✓  11 e2e/schedules.spec.ts:17:1 › a partly typed timezone doesn't break the preview (3.1s)
+  ✓  13 e2e/workflow-runs.spec.ts:38:1 › starts a run from the workflow page (2.0s)
+[WebServer] 10:13:23 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+[WebServer] 10:13:24 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+  ✓  14 e2e/workflow-runs.spec.ts:52:1 › shows where a live run is, and follows it to the end (3.7s)
+[WebServer] 10:13:27 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+  ✓  15 e2e/workflow-runs.spec.ts:102:1 › a live run survives failed re-reads and keeps following (4.9s)
+  ✓  16 e2e/workflow-runs.spec.ts:131:1 › a poll that changes nothing leaves the graph as it was (4.4s)
+  ✓  17 e2e/workflow-runs.spec.ts:179:1 › a selected node or edge keeps its run's colour, drawn thicker (2.2s)
+  ✓  18 e2e/workflow-runs.spec.ts:227:1 › a node's step shows its input, output and conversation (1.9s)
+  ✓  19 e2e/workflow-runs.spec.ts:259:1 › a failed run shows the error, where it happened, and what didn't run (1.9s)
+  ✓  20 e2e/workflow-runs.spec.ts:279:1 › a run that failed before it started says so, not that it's queued (1.7s)
+  ✓  21 e2e/workflow-runs.spec.ts:295:1 › opens a subworkflow's graph with its own steps (2.2s)
+  ✓  22 e2e/workflow-runs.spec.ts:318:1 › opens a subworkflow that has since been deleted (1.8s)
+  ✓  23 e2e/workflow-runs.spec.ts:338:1 › lists a workflow's runs and deletes one (2.1s)
+  ✓  24 e2e/workflow-runs.spec.ts:363:1 › still shows a run whose workflow fails to load, and says why (1.4s)
+[WebServer] 10:13:38 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+  ✓  26 e2e/workflows-edit.spec.ts:45:1 › builds a new workflow from agents and workflows (2.6s)
+  ✓  27 e2e/workflows-edit.spec.ts:83:1 › edits a workflow's nodes and edges and saves a new version (2.0s)
+  ✓  28 e2e/workflows-edit.spec.ts:128:1 › connects nodes by dragging from one handle to another (1.9s)
+  ✓  25 e2e/workflow-runs.spec.ts:382:1 › the runs list follows a live run until nothing is going (8.0s)
+[WebServer] 10:13:45 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+  ✓  30 e2e/workflows-edit.spec.ts:206:1 › selects one node at a time, even with Shift held (2.2s)
+  ✓  29 e2e/workflows-edit.spec.ts:147:1 › lays the graph out again in edge order when edges change (3.5s)
+  ✓  32 e2e/workflows-edit.spec.ts:245:1 › refuses an edge that would make a cycle, and says why (1.9s)
+  ✓  31 e2e/workflows-edit.spec.ts:228:1 › Delete and Backspace delete only while the canvas has focus (2.3s)
+[WebServer] 10:13:50 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+  ✓  34 e2e/workflows-edit.spec.ts:292:1 › rejects an invalid or duplicate key (2.6s)
+  ✓  33 e2e/workflows-edit.spec.ts:259:1 › connects nodes from the inspector with the keyboard (3.0s)
+  ✓  35 e2e/workflows-edit.spec.ts:310:1 › a button clicked straight after typing a key acts on the renamed node (2.3s)
+  ✓  36 e2e/workflows-edit.spec.ts:323:1 › takes a newer version of what a node runs (2.5s)
+[WebServer] 10:13:53 PM [vite] http proxy error: /api/workflows/108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:13:55 PM [vite] http proxy error: /api/workflows/108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:13:55 PM [vite] http proxy error: /api/workflows/108/versions
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:13:55 PM [vite] http proxy error: /api/workflows/108/runs
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:13:55 PM [vite] http proxy error: /api/workflows/108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✓  37 e2e/workflows-edit.spec.ts:336:1 › moving nodes saves the layout without a new version (2.5s)
+  ✓  38 e2e/workflows-edit.spec.ts:351:1 › brings a new node into view (2.2s)
+  ✓  39 e2e/workflows-edit.spec.ts:378:1 › with no agents, says so and links to creating one (1.7s)
+  ✓  40 e2e/workflows-edit.spec.ts:392:1 › shows the server's reason when a save is refused (1.8s)
+  ✓  41 e2e/workflows-edit.spec.ts:403:1 › refuses to overwrite a version saved since the editor loaded (1.9s)
+  ✓  42 e2e/workflows-edit.spec.ts:425:1 › reports a stale version before a taken name (1.7s)
+  ✓  43 e2e/workflows-edit.spec.ts:439:1 › cancel discards the changes (2.0s)
+  ✓  44 e2e/workflows-edit.spec.ts:456:1 › won't save while a node's key is invalid (2.1s)
+  ✓  45 e2e/workflows-edit.spec.ts:477:1 › says why there's nothing to add when agents fail to load (1.4s)
+  ✓  46 e2e/workflows-edit.spec.ts:487:1 › cancel asks before discarding changes, and stays if you say no (2.0s)
+[WebServer] 10:14:04 PM [vite] http proxy error: /api/triggers?target_kind=workflow&target_id=108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:04 PM [vite] http proxy error: /api/triggers?target_kind=workflow&target_id=108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✓  47 e2e/workflows-edit.spec.ts:503:1 › cancel without changes doesn't ask (1.8s)
+  ✓  48 e2e/workflows-edit.spec.ts:520:1 › leaving the page with changes asks first (1.8s)
+[WebServer] 10:14:06 PM [vite] http proxy error: /api/workflows/108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:06 PM [vite] http proxy error: /api/workflows/108/versions
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:06 PM [vite] http proxy error: /api/workflows/108/runs
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:06 PM [vite] http proxy error: /api/workflows/108
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:06 PM [vite] http proxy error: /api/workflows/108/versions
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✓  49 e2e/workflows-edit.spec.ts:531:1 › leaving for another page with changes asks first, and stays if you say no (2.4s)
+  ✓  50 e2e/workflows-edit.spec.ts:559:1 › leaving for another page without changes doesn't ask (2.2s)
+  ✓  51 e2e/workflows-edit.spec.ts:573:1 › following what a node runs without changes goes there in the same tab (2.0s)
+  ✓  52 e2e/workflows-edit.spec.ts:591:1 › following what a node runs with changes asks first, and stays if you say no (2.4s)
+  ✓  53 e2e/workflows-edit.spec.ts:624:1 › going back with changes asks first (2.1s)
+  ✓  54 e2e/workflows-edit.spec.ts:642:1 › cancel with changes asks only once (2.0s)
+  ✓  55 e2e/workflows-edit.spec.ts:657:1 › the workflow itself and ones that run it are shown but can't be added (1.8s)
+  ✓  56 e2e/workflows-edit.spec.ts:690:1 › the picker can be used with the keyboard (2.1s)
+  ✓  57 e2e/workflows-edit.spec.ts:715:1 › won't update a node to a version that runs this workflow (1.9s)
+  ✓  58 e2e/workflows-edit.spec.ts:741:1 › shows the nodes when the graph changes just as they're first measured (1.6s)
+  ✓  60 e2e/workflows-view.spec.ts:40:1 › lists workflows and shows a workflow's graph (1.8s)
+[WebServer] 10:14:17 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+[WebServer] 10:14:19 PM [vite] http proxy error: /api/triggers?target_kind=workflow&target_id=106
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 10:14:19 PM [vite] http proxy error: /api/triggers?target_kind=workflow&target_id=106
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✓  61 e2e/workflows-view.spec.ts:70:1 › clicking a node shows what it runs (1.7s)
+  ✓  62 e2e/workflows-view.spec.ts:106:1 › a node whose target was deleted names it without a link (1.4s)
+  ✓  63 e2e/workflows-view.spec.ts:120:1 › clicking an edge shows what passes along it (1.7s)
+  ✓  64 e2e/workflows-view.spec.ts:146:1 › saved positions are used for the layout (1.5s)
+  ✓  59 e2e/workflows-smoke.spec.ts:37:1 › lists, views, edits, runs and follows a workflow end to end (10.1s)
+  ✓  65 e2e/workflows-view.spec.ts:165:1 › a graph too wide to fit is shown legibly from where it starts, to be panned (1.4s)
+  ✓  66 e2e/workflows-view.spec.ts:187:1 › an empty workflow says so (1.6s)
+  ✓  67 e2e/workflows-view.spec.ts:194:1 › version history opens an old version's graph, which can be restored (2.1s)
+  ✓  68 e2e/workflows-view.spec.ts:235:1 › restoring a version sends one request, however often it's clicked (1.7s)
+  ✓  69 e2e/workflows-view.spec.ts:250:1 › the restore button shows that the restore is running (1.6s)
+  ✓  71 e2e/workflows-view.spec.ts:287:1 › version history that fails to load says why (1.5s)
+  ✓  70 e2e/workflows-view.spec.ts:264:1 › a failed restore can be retried (2.1s)
+  ✓  72 e2e/workflows-view.spec.ts:301:1 › a version page whose workflow fails to load says why (1.5s)
+  ✓  73 e2e/workflows-view.spec.ts:316:1 › deleting a workflow that another runs is refused with the reason (1.6s)
+  ✓  74 e2e/workflows-view.spec.ts:327:1 › a refused delete's reason doesn't follow you to another workflow (1.8s)
+  ✓  75 e2e/workflows-view.spec.ts:341:1 › deleting a workflow returns to the list (2.0s)
+
+  75 passed (1.5m)

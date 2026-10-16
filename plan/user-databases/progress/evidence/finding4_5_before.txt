@@ -1,0 +1,8 @@
+                logger.debug("connection failed: %s: %s", descr, str(tex))
+                logger.debug("connection failed: %s: %s", descr, str(ex))
+E               psycopg.OperationalError: connection failed: connection to server at "127.0.0.1", port 55422 failed: FATAL:  password authentication failed for user "aios"
+E       Failed: DID NOT RAISE ValueError
+E       Failed: DID NOT RAISE ValueError
+3 failed, 1 skipped, 8 deselected, 1 error in 0.65s
+E       Failed: DID NOT RAISE ValueError
+1 failed, 11 deselected in 0.27s

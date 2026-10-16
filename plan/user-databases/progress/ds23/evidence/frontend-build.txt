@@ -1,0 +1,19 @@
+
+> aios-web@0.1.0 build /home/user/aios/.claude/worktrees/agent-a5755f85feb67858d/frontend
+> tsc -b && vite build
+
+vite v8.3.2 building client environment for production...
+transforming...
+✓ 2536 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     0.38 kB │ gzip:   0.26 kB
+dist/assets/index-BMkW9Cz4.css     50.43 kB │ gzip:   9.33 kB
+dist/assets/index-Do6zNxa9.js   1,034.12 kB │ gzip: 312.93 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.35s

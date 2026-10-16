@@ -1,0 +1,6 @@
+mode=ready; store status at switch-on: ready
+0.0s status: Off. Nothing has been exported.
+0.5s status: Setting up the history tables in your data store…
+1.5s status: Last exported Oct 16, 2026, 7:09 PM.
+settled=true; GET /api/settings in the 4s after: 0; total: 4
+settings: {"export_run_history":true,"history_ready":true,"history_exported_at":"2026-10-16T19:09:31.856748Z"}

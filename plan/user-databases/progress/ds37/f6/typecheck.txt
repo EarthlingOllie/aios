@@ -1,0 +1,4 @@
+
+> aios-web@0.1.0 typecheck /home/user/aios/.claude/worktrees/ds37-f6/frontend
+> tsc -b
+

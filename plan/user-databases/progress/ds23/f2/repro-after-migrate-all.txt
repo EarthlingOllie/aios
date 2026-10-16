@@ -1,0 +1,15 @@
+== 28s+ later, still without migrate-all ==
+GET /api/data-store 200 {"status":"provisioning"}
+GET /api/documents 409 {"detail":"Your data store is being set up. Try again in a moment.","data_store_status":"provisioning"}
+== uv run python -m aios.datastores.provision migrate-all ==
+INFO:alembic.runtime.migration:Context impl PostgresqlImpl.
+INFO:alembic.runtime.migration:Will assume transactional DDL.
+INFO:alembic.runtime.migration:Running upgrade  -> 0001, schema history
+INFO:__main__:Data store b621335d-32d5-47c0-b73e-b2e04092cbe4 is ready at revision 0001
+INFO:alembic.runtime.migration:Context impl PostgresqlImpl.
+INFO:alembic.runtime.migration:Will assume transactional DDL.
+b621335d-32d5-47c0-b73e-b2e04092cbe4: 0001
+1 data stores at head, 0 failed
+GET /api/data-store 200 {"status":"ready"}
+GET /api/documents 200 [{"id":1,"filename":"notes.md","status":"ready","error":null,"chunk_count":0,"created_at":"2026-10-16T02:33:29.525845Z"}]
+DELETE /api/documents/1 204 

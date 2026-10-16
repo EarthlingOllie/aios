@@ -1,0 +1,55 @@
+
+ RUN  v5.0.3 /home/user/aios/.claude/worktrees/ds37-f8/frontend
+
+ ❯ src/lib/data-store.test.ts (10 tests | 2 failed) 33ms
+   ❯ dataStoreSummary (4)
+     × says a store couldn't be set up and will be retried 24ms
+   ❯ dataStoreNotice and dataStoreSummary (1)
+     × say the same thing about a store that failed or isn't available 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/data-store.test.ts > dataStoreSummary > says a store couldn't be set up and will be retried
+AssertionError: expected { label: 'Failed', …(1) } to deeply equal { label: 'Failed', …(1) }
+
+- Expected
++ Received
+
+  {
+    "label": "Failed",
+-   "message": "Your data store couldn't be set up. We'll try again; please check back later.",
++   "message": "Your data store failed.",
+  }
+
+ ❯ src/lib/data-store.test.ts:23:40
+     21|
+     22|   it("says a store couldn't be set up and will be retried", () => {
+     23|     expect(dataStoreSummary("failed")).toEqual({
+       |                                        ^
+     24|       label: "Failed",
+     25|       message: "Your data store couldn't be set up. We'll try again; p…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/lib/data-store.test.ts > dataStoreNotice and dataStoreSummary > say the same thing about a store that failed or isn't available
+AssertionError: expected 'Your data store failed.' to be 'Your data store couldn\'t be set up. …' // Object.is equality
+
+Expected: "Your data store couldn't be set up. We'll try again; please check back later."
+Received: "Your data store failed."
+
+ ❯ src/lib/data-store.test.ts:56:48
+     54|   it("say the same thing about a store that failed or isn't available"…
+     55|     for (const status of ["failed", "deleting"] as const) {
+     56|       expect(dataStoreSummary(status).message).toBe(dataStoreNotice(st…
+       |                                                ^
+     57|     }
+     58|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 8 passed (10)
+   Start at  13:04:02
+   Duration  784ms (import 39%, transform 30%, tests 20%, worker 11%)
+

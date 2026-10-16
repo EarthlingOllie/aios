@@ -1,0 +1,105 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [17605]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8134 (Press CTRL+C to quit)
+INFO:     127.0.0.1:36250 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44604 - "GET /auth/callback?code=x&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:44606 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44620 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44622 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44658 - "POST /api/agents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:44650 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44638 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44680 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44666 - "POST /api/agents/459/runs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:44696 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44712 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44724 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44732 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44742 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44766 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44756 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44778 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44790 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44784 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44802 - "POST /api/agents/459/runs/262/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44818 - "POST /api/agents/459/runs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:44832 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44840 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44852 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44856 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44868 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44876 - "GET /api/agents/459/runs/263 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44892 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44906 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44924 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44908 - "GET /api/agents/459/runs/263 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44940 - "POST /api/agents/459/runs/263/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44958 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44960 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44962 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44976 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44992 - "PUT /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45006 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45014 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45026 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45032 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45046 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45068 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45050 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45066 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45078 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45072 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45084 - "POST /api/agents/459/runs/262/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45092 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45086 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50666 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50674 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50712 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50720 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50698 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50734 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50688 - "GET /api/agents/459/runs/263 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50750 - "GET /api/agents/459/runs/263 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50766 - "DELETE /api/agents/459/runs/263 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:50776 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50780 - "GET /api/agents/459/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50806 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50808 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50796 - "GET /api/agents/459/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50830 - "GET /api/agents/459/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50810 - "GET /api/agents/459/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50822 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50816 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50832 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50838 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50852 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50858 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50862 - "PUT /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50864 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50866 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50876 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50882 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50896 - "GET /api/agents/459 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50886 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50898 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50888 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50902 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50910 - "POST /api/agents/459/runs/262/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50932 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50926 - "GET /api/agents/459/runs/262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43934 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43946 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43954 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43958 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43972 - "DELETE /api/settings/exported-history HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:43974 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43978 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43984 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43994 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44010 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [17605]

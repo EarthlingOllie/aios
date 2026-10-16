@@ -1,0 +1,7 @@
+== ds_13415bd59ca84e06a7189bf485800a03
+ id | filename  | status |                            error                             | chunks 
+----+-----------+--------+--------------------------------------------------------------+--------
+  2 | broken.md | failed | UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in  |      0
+  3 | otters.md | ready  |                                                              |      2
+(2 rows)
+

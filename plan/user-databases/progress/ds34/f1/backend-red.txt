@@ -1,0 +1,56 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+..F.............F                                                        [100%]
+=================================== FAILURES ===================================
+_______________ test_with_no_runs_to_export_it_still_catches_up ________________
+
+api = <starlette.testclient.TestClient object at 0x7fb58ffc07d0>
+user = <aios.models.User object at 0x7fb590190510>
+store_id = UUID('ebf7f71c-c612-4e51-b9f6-cf7c65d86bfb')
+history_tasks = {'export': [UUID('ebf7f71c-c612-4e51-b9f6-cf7c65d86bfb')], 'set_up': []}
+
+    def test_with_no_runs_to_export_it_still_catches_up(api, user, store_id, history_tasks):
+        # The Settings page waits for `history_exported_at` once the export is on.
+        switch(api, True)
+        set_up_and_export(store_id, history_tasks)
+    
+        assert settings(api)["history_ready"] is True
+>       assert settings(api)["history_exported_at"] is not None
+E       assert None is not None
+
+tests/test_history_export.py:118: AssertionError
+__ test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned __
+
+client = <starlette.testclient.TestClient object at 0x7fb58ee9acf0>
+db = <sqlalchemy.orm.session.Session object at 0x7fb58fbdea50>
+history_tasks = {'export': [], 'set_up': [UUID('22e5f5ed-d75a-4c56-a280-b18867e5631c')]}
+
+    def test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned(
+        client, db, history_tasks
+    ):
+        u = User(github_id=-77, login="unready")
+        db.add(u)
+        db.commit()
+        app.dependency_overrides[current_user] = lambda: u
+        try:
+            out = client.put("/api/settings", json={"export_run_history": True})
+            assert out.status_code == 200
+            assert out.json()["history_ready"] is False
+            store_id = data_store_for(u.id)
+            assert history_tasks["set_up"] == [store_id]
+    
+            provision.provision(store_id)
+    
+            assert client.get("/api/settings").json()["history_ready"] is True
+            # With no runs to export, only the sweep exports it: then it has caught up.
+            worker.export_pending_history_task.apply().get()
+>           assert history_tasks["export"] == [store_id]
+E           AssertionError: assert [] == [UUID('22e5f5...18867e5631c')]
+E             
+E             Right contains one more item: UUID('22e5f5ed-d75a-4c56-a280-b18867e5631c')
+E             Use -v to get more diff
+
+tests/test_history_export.py:409: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_history_export.py::test_with_no_runs_to_export_it_still_catches_up
+FAILED tests/test_history_export.py::test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned
+2 failed, 15 passed in 7.80s

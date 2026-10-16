@@ -1,0 +1,53 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-a176008e83aa78497/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- app34@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 13:20:36
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f40d2353e00
+- ** ---------- .> transport:   redis://localhost:6534/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.export_history
+  . aios.export_pending_history
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+  . aios.set_up_history_export
+
+[2026-10-16 13:20:36,402: INFO/MainProcess] Connected to redis://localhost:6534/0
+[2026-10-16 13:20:36,408: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 13:20:37,416: INFO/MainProcess] mingle: all alone
+[2026-10-16 13:20:37,429: INFO/MainProcess] app34@vm ready.
+[2026-10-16 13:20:37,435: INFO/MainProcess] Task aios.export_pending_history[938cd3c9-bc02-4438-a992-feceed5f7591] received
+[2026-10-16 13:20:37,435: INFO/MainProcess] Discarding revoked task: aios.export_pending_history[938cd3c9-bc02-4438-a992-feceed5f7591]
+[2026-10-16 13:20:37,438: INFO/MainProcess] Task aios.export_pending_history[d23c7762-237a-41aa-a5ec-d9bccf539d6f] received
+[2026-10-16 13:20:37,680: INFO/ForkPoolWorker-1] Task aios.export_pending_history[d23c7762-237a-41aa-a5ec-d9bccf539d6f] succeeded in 0.2415572229999725s: None
+[2026-10-16 13:20:43,488: INFO/MainProcess] Task aios.export_history[908f034f-7a86-4bd1-a64d-096cc773b29d] received
+[2026-10-16 13:20:43,508: INFO/ForkPoolWorker-1] Task aios.export_history[908f034f-7a86-4bd1-a64d-096cc773b29d] succeeded in 0.019065796999939266s: None
+[2026-10-16 13:20:43,913: INFO/MainProcess] Task aios.export_history[304f4880-7181-489a-8861-b73507d41771] received
+[2026-10-16 13:20:44,037: INFO/ForkPoolWorker-1] Task aios.export_history[304f4880-7181-489a-8861-b73507d41771] succeeded in 0.12190875999999662s: None
+[2026-10-16 13:20:47,326: INFO/MainProcess] Task aios.export_history[3650d2a2-8df8-4334-ac33-18c7183fb889] received
+[2026-10-16 13:20:47,442: INFO/ForkPoolWorker-1] Task aios.export_history[3650d2a2-8df8-4334-ac33-18c7183fb889] succeeded in 0.11434682499998416s: None
+[2026-10-16 13:20:49,426: INFO/MainProcess] Task aios.export_history[83b4f676-0d51-461a-809e-f48f7cfc1a4d] received
+[2026-10-16 13:20:49,560: INFO/ForkPoolWorker-1] Task aios.export_history[83b4f676-0d51-461a-809e-f48f7cfc1a4d] succeeded in 0.13350036400015597s: None
+
+worker: Warm shutdown (MainProcess)

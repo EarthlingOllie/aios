@@ -1,0 +1,72 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [18814]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8537 (Press CTRL+C to quit)
+INFO:     127.0.0.1:36854 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34204 - "GET /auth/callback?code=-3700&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:34212 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34226 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34236 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34248 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34254 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34256 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34270 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34276 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34288 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34294 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34296 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34306 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34314 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34320 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34336 - "POST /api/documents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:34346 - "POST /api/documents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:34362 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34368 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57184 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57188 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57200 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57210 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57216 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57222 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57224 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57232 - "POST /api/documents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:57246 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57248 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57256 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57264 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57280 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57292 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57302 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57312 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57314 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57316 - "GET /api/search?q=hedgehogs+eat+beetles&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57326 - "GET /api/search?q=hedgehogs+eat+beetles&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57340 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57350 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57354 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57356 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57366 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57372 - "DELETE /api/documents/1 HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:57380 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57386 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57400 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57406 - "GET /api/search?q=hedgehogs+eat+beetles&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57414 - "GET /api/search?q=hedgehogs+eat+beetles&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57430 - "GET /api/search?q=hedgehogs+beetles HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57446 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57450 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57454 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57456 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57474 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57482 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57494 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57506 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57508 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34450 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34466 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34482 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [18814]

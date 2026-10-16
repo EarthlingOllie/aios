@@ -1,0 +1,14 @@
+POST /api/skills -> 201
+skill listed after reload: ds22 skill 1792102798191
+           name           | table_owner 
+--------------------------+-------------
+ ds22 skill 1792102798191 | aios_app
+(1 row)
+
+ usename  | client_addr | state 
+----------+-------------+-------
+ aios_app | 172.18.0.6  | idle
+ aios_app | 172.18.0.7  | idle
+ aios_app | 172.18.0.5  | idle
+(3 rows)
+

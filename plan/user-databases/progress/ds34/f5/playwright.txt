@@ -1,0 +1,145 @@
+
+Running 84 tests using 2 workers
+
+[1/84] e2e/agent-tabs.spec.ts:10:1 › opens on the Context tab, with the agent's skills, tools and prompt
+[2/84] e2e/agent-tabs.spec.ts:27:1 › switches tabs on click, keeps the tab in the URL, and shows counts
+[3/84] e2e/agent-tabs.spec.ts:58:1 › an unknown tab in the URL falls back to the first
+[4/84] e2e/agent-tabs.spec.ts:65:1 › moves between tabs with the keyboard
+[5/84] e2e/agent-tabs.spec.ts:90:1 › going back from a run or a version returns to its tab
+[6/84] e2e/agent-tabs.spec.ts:108:1 › each tab's aria-controls names a panel that is on the page
+[7/84] e2e/agent-tabs.spec.ts:126:1 › restoring a version returns to the Versions tab, with the new current version
+[8/84] e2e/agent-tabs.spec.ts:143:1 › Tab moves from the tab list into the panel, even one with nothing to focus
+[9/84] e2e/agent-tabs.spec.ts:156:1 › deleting a run from its page returns to the Runs tab, without it
+[10/84] e2e/agent-tabs.spec.ts:172:1 › the Schedule tab shows the agent's schedules
+[11/84] e2e/data-store.spec.ts:7:1 › documents wait for a store that's being set up, then can be uploaded
+[12/84] e2e/data-store.spec.ts:32:1 › uploads wait until the store's status is known
+[13/84] e2e/data-store.spec.ts:44:1 › a store that couldn't be set up says so
+[14/84] e2e/data-store.spec.ts:55:1 › searching before the store is ready says it's being set up
+[15/84] e2e/schedules.spec.ts:17:1 › a partly typed timezone doesn't break the preview
+[16/84] e2e/schedules.spec.ts:35:1 › a timezone the server knows but the browser doesn't is shown in UTC
+[17/84] e2e/settings.spec.ts:7:1 › switching the export on sets the store up, then says when it last ran
+[18/84] e2e/settings.spec.ts:38:1 › switching it off keeps what was exported, which can then be deleted
+[19/84] e2e/settings.spec.ts:63:1 › deleting exported history while it's on starts the export over
+[20/84] e2e/settings.spec.ts:92:1 › deleting exported history asks first
+[21/84] e2e/settings.spec.ts:103:1 › the Settings link opens the page
+[22/84] e2e/workflow-runs.spec.ts:38:1 › starts a run from the workflow page
+[23/84] e2e/workflow-runs.spec.ts:52:1 › shows where a live run is, and follows it to the end
+[24/84] e2e/workflow-runs.spec.ts:102:1 › a live run survives failed re-reads and keeps following
+[WebServer] 7:03:26 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[25/84] e2e/workflow-runs.spec.ts:131:1 › a poll that changes nothing leaves the graph as it was
+[WebServer] 7:03:29 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[WebServer] 7:03:30 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[26/84] e2e/workflow-runs.spec.ts:179:1 › a selected node or edge keeps its run's colour, drawn thicker
+[27/84] e2e/workflow-runs.spec.ts:227:1 › a node's step shows its input, output and conversation
+[WebServer] 7:03:35 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[28/84] e2e/workflow-runs.spec.ts:259:1 › a failed run shows the error, where it happened, and what didn't run
+[29/84] e2e/workflow-runs.spec.ts:279:1 › a run that failed before it started says so, not that it's queued
+[30/84] e2e/workflow-runs.spec.ts:295:1 › opens a subworkflow's graph with its own steps
+[31/84] e2e/workflow-runs.spec.ts:318:1 › opens a subworkflow that has since been deleted
+[WebServer] 7:03:41 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[32/84] e2e/workflow-runs.spec.ts:338:1 › lists a workflow's runs and deletes one
+[33/84] e2e/workflow-runs.spec.ts:363:1 › still shows a run whose workflow fails to load, and says why
+[34/84] e2e/workflow-runs.spec.ts:382:1 › the runs list follows a live run until nothing is going
+[WebServer] 7:03:44 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[35/84] e2e/workflows-edit.spec.ts:45:1 › builds a new workflow from agents and workflows
+[WebServer] 7:03:47 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[WebServer] 7:03:48 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[36/84] e2e/workflows-edit.spec.ts:83:1 › edits a workflow's nodes and edges and saves a new version
+[WebServer] 7:03:52 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[37/84] e2e/workflows-edit.spec.ts:128:1 › connects nodes by dragging from one handle to another
+[38/84] e2e/workflows-edit.spec.ts:147:1 › lays the graph out again in edge order when edges change
+[WebServer] 7:03:55 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[39/84] e2e/workflows-edit.spec.ts:206:1 › selects one node at a time, even with Shift held
+[WebServer] 7:03:56 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[40/84] e2e/workflows-edit.spec.ts:228:1 › Delete and Backspace delete only while the canvas has focus
+[WebServer] 7:03:59 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[41/84] e2e/workflows-edit.spec.ts:245:1 › refuses an edge that would make a cycle, and says why
+[42/84] e2e/workflows-edit.spec.ts:259:1 › connects nodes from the inspector with the keyboard
+[43/84] e2e/workflows-edit.spec.ts:292:1 › rejects an invalid or duplicate key
+[WebServer] 7:04:05 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[44/84] e2e/workflows-edit.spec.ts:310:1 › a button clicked straight after typing a key acts on the renamed node
+[45/84] e2e/workflows-edit.spec.ts:323:1 › takes a newer version of what a node runs
+[46/84] e2e/workflows-edit.spec.ts:336:1 › moving nodes saves the layout without a new version
+[47/84] e2e/workflows-edit.spec.ts:351:1 › brings a new node into view
+[WebServer] 7:04:12 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[48/84] e2e/workflows-edit.spec.ts:378:1 › with no agents, says so and links to creating one
+[49/84] e2e/workflows-edit.spec.ts:392:1 › shows the server's reason when a save is refused
+[50/84] e2e/workflows-edit.spec.ts:403:1 › refuses to overwrite a version saved since the editor loaded
+[51/84] e2e/workflows-edit.spec.ts:425:1 › reports a stale version before a taken name
+[52/84] e2e/workflows-edit.spec.ts:439:1 › cancel discards the changes
+[53/84] e2e/workflows-edit.spec.ts:456:1 › won't save while a node's key is invalid
+[WebServer] 7:04:22 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[54/84] e2e/workflows-edit.spec.ts:477:1 › says why there's nothing to add when agents fail to load
+[WebServer] 7:04:23 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[55/84] e2e/workflows-edit.spec.ts:487:1 › cancel asks before discarding changes, and stays if you say no
+[56/84] e2e/workflows-edit.spec.ts:503:1 › cancel without changes doesn't ask
+[57/84] e2e/workflows-edit.spec.ts:520:1 › leaving the page with changes asks first
+[58/84] e2e/workflows-edit.spec.ts:531:1 › leaving for another page with changes asks first, and stays if you say no
+[59/84] e2e/workflows-edit.spec.ts:559:1 › leaving for another page without changes doesn't ask
+[60/84] e2e/workflows-edit.spec.ts:573:1 › following what a node runs without changes goes there in the same tab
+[61/84] e2e/workflows-edit.spec.ts:591:1 › following what a node runs with changes asks first, and stays if you say no
+[62/84] e2e/workflows-edit.spec.ts:624:1 › going back with changes asks first
+[63/84] e2e/workflows-edit.spec.ts:642:1 › cancel with changes asks only once
+[64/84] e2e/workflows-edit.spec.ts:657:1 › the workflow itself and ones that run it are shown but can't be added
+[65/84] e2e/workflows-edit.spec.ts:690:1 › the picker can be used with the keyboard
+[66/84] e2e/workflows-edit.spec.ts:715:1 › won't update a node to a version that runs this workflow
+[67/84] e2e/workflows-edit.spec.ts:741:1 › shows the nodes when the graph changes just as they're first measured
+[68/84] e2e/workflows-smoke.spec.ts:37:1 › lists, views, edits, runs and follows a workflow end to end
+[69/84] e2e/workflows-view.spec.ts:40:1 › lists workflows and shows a workflow's graph
+[WebServer] 7:04:47 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[70/84] e2e/workflows-view.spec.ts:70:1 › clicking a node shows what it runs
+[71/84] e2e/workflows-view.spec.ts:106:1 › a node whose target was deleted names it without a link
+[72/84] e2e/workflows-view.spec.ts:120:1 › clicking an edge shows what passes along it
+[73/84] e2e/workflows-view.spec.ts:146:1 › saved positions are used for the layout
+[74/84] e2e/workflows-view.spec.ts:165:1 › a graph too wide to fit is shown legibly from where it starts, to be panned
+[75/84] e2e/workflows-view.spec.ts:187:1 › an empty workflow says so
+[76/84] e2e/workflows-view.spec.ts:194:1 › version history opens an old version's graph, which can be restored
+[77/84] e2e/workflows-view.spec.ts:235:1 › restoring a version sends one request, however often it's clicked
+[WebServer] 7:05:03 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+[78/84] e2e/workflows-view.spec.ts:250:1 › the restore button shows that the restore is running
+[79/84] e2e/workflows-view.spec.ts:264:1 › a failed restore can be retried
+[80/84] e2e/workflows-view.spec.ts:287:1 › version history that fails to load says why
+[81/84] e2e/workflows-view.spec.ts:301:1 › a version page whose workflow fails to load says why
+[82/84] e2e/workflows-view.spec.ts:316:1 › deleting a workflow that another runs is refused with the reason
+[83/84] e2e/workflows-view.spec.ts:327:1 › a refused delete's reason doesn't follow you to another workflow
+[84/84] e2e/workflows-view.spec.ts:341:1 › deleting a workflow returns to the list
+[WebServer] 7:05:13 PM [vite] (client) [console.warn] React Flow: It seems like you are hiding the attribution. Please only do this when you are subscribed to React Flow Pro: https://reactflow.dev/remove-attr
+[WebServer] You can ignore this warning if you are subscribed.
+
+  84 passed (2.5m)

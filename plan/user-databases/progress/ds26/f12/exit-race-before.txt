@@ -1,0 +1,2 @@
+exit_race_experiment.py 200, autovacuum=off, provisioner with ADMIN only on the login roles (6e129d0):
+20 of 200 FORCE drops right after closing a ro session were refused

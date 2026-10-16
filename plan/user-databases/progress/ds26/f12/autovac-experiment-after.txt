@@ -1,0 +1,2 @@
+in the store's database: [(16956, 'autovacuum worker', None, None, 'autovacuum: VACUUM ANALYZE aios.big')]
+drop succeeded in 0.15s

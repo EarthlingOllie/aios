@@ -1,0 +1,65 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_the_ingest_task_fails_a_document_its_store_never_got_ready_for ______
+
+db = <sqlalchemy.orm.session.Session object at 0x7efcec3c74d0>
+user = <aios.models.User object at 0x7efcec3c7620>
+
+    def test_the_ingest_task_fails_a_document_its_store_never_got_ready_for(db, user):
+        """Messages queued before data stores wait for the user's store; if it's still not ready
+        once they stop retrying, nothing would ever ingest the document, so it's failed, not left
+        pending."""
+        doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+        db.add(doc)
+        db.commit()
+        store_id = data_store_for(user.id)
+        db.execute(
+            update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+        )
+        db.commit()
+    
+        # Eagerly, each retry runs at once (no countdown), until the last gives up.
+        result = worker.ingest_document_task.apply(args=(doc.id,))
+    
+        assert result.failed()
+        db.refresh(doc)
+>       assert doc.status == DocumentStatus.failed
+E       AssertionError: assert <DocumentStat...ng: 'pending'> == <DocumentStat...led: 'failed'>
+E         
+E         - failed
+E         + pending
+
+tests/test_data_stores.py:226: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    celery.app.trace:trace.py:309 Task aios.ingest_document[01961ab6-5c5b-4e61-8e74-600e3d9d1528] raised unexpected: MaxRetriesExceededError("Can't retry aios.ingest_document[01961ab6-5c5b-4e61-8e74-600e3d9d1528] args:(1,) kwargs:{}")
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/src/aios/worker.py", line 57, in ingest_document_task
+    with documents_session(uuid.UUID(data_store_id), "rw") as db:
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/contextlib.py", line 141, in __enter__
+    return next(self.gen)
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/src/aios/datastores/connections.py", line 122, in documents_session
+    owner_id = _ready_store(db, data_store_id).owner_user_id
+               ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/src/aios/datastores/connections.py", line 61, in _ready_store
+    raise DataStoreNotReady(data_store_id, store.status)
+aios.datastores.connections.DataStoreNotReady: Data store 01477e7b-afed-4863-9d14-bc78c81efb57 is failed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/src/aios/worker.py", line 65, in ingest_document_task
+    raise self.retry(countdown=60) from exc
+          ~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/ds23-f3/backend/.venv/lib/python3.13/site-packages/celery/app/task.py", line 770, in retry
+    raise self.MaxRetriesExceededError(
+    ...<3 lines>...
+    )
+celery.exceptions.MaxRetriesExceededError: Can't retry aios.ingest_document[01961ab6-5c5b-4e61-8e74-600e3d9d1528] args:(1,) kwargs:{}
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_the_ingest_task_fails_a_document_its_store_never_got_ready_for
+1 failed, 18 deselected in 0.89s

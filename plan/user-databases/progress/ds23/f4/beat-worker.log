@@ -1,0 +1,55 @@
+/home/user/aios/.claude/worktrees/ds23-f4/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 02:35:24
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7fdd9a416270
+- ** ---------- .> transport:   redis://localhost:6394/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> provisioning     exchange=provisioning(direct) key=provisioning
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+
+[2026-10-16 02:35:24,406: INFO/Beat] beat: Starting...
+[2026-10-16 02:35:24,412: INFO/MainProcess] Connected to redis://localhost:6394/0
+[2026-10-16 02:35:24,415: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 02:35:25,423: INFO/MainProcess] mingle: all alone
+[2026-10-16 02:35:25,435: INFO/MainProcess] celery@vm ready.
+[2026-10-16 02:35:29,431: INFO/Beat] Scheduler: Sending due task retry-unfinished-data-stores (aios.retry_unfinished_data_stores)
+[2026-10-16 02:35:29,437: INFO/MainProcess] Task aios.retry_unfinished_data_stores[b3d1eb4e-ddb1-496d-8d8d-afbc578568ab] received
+[2026-10-16 02:35:29,743: INFO/ForkPoolWorker-2] Context impl PostgresqlImpl.
+[2026-10-16 02:35:29,743: INFO/ForkPoolWorker-2] Will assume transactional DDL.
+[2026-10-16 02:35:29,754: INFO/ForkPoolWorker-2] Running upgrade  -> 0001, schema history
+[2026-10-16 02:35:29,771: INFO/ForkPoolWorker-2] Data store ba5a2975-abef-4ef7-a723-0252e75481a5 is ready at revision 0001
+[2026-10-16 02:35:29,771: INFO/ForkPoolWorker-2] Task aios.retry_unfinished_data_stores[b3d1eb4e-ddb1-496d-8d8d-afbc578568ab] succeeded in 0.33257334900000046s: None
+[2026-10-16 02:35:34,426: INFO/Beat] Scheduler: Sending due task retry-unfinished-data-stores (aios.retry_unfinished_data_stores)
+[2026-10-16 02:35:34,428: INFO/MainProcess] Task aios.retry_unfinished_data_stores[e03cea3a-3453-4193-b95b-989771caba85] received
+[2026-10-16 02:35:34,432: INFO/ForkPoolWorker-2] Task aios.retry_unfinished_data_stores[e03cea3a-3453-4193-b95b-989771caba85] succeeded in 0.002800941999993256s: None
+[2026-10-16 02:35:39,426: INFO/Beat] Scheduler: Sending due task retry-unfinished-data-stores (aios.retry_unfinished_data_stores)
+[2026-10-16 02:35:39,428: INFO/MainProcess] Task aios.retry_unfinished_data_stores[56c03f21-3dbd-40b5-9fd9-05521a09f2c5] received
+[2026-10-16 02:35:39,431: INFO/ForkPoolWorker-2] Task aios.retry_unfinished_data_stores[56c03f21-3dbd-40b5-9fd9-05521a09f2c5] succeeded in 0.0027362120000020695s: None
+[2026-10-16 02:35:44,426: INFO/Beat] Scheduler: Sending due task retry-unfinished-data-stores (aios.retry_unfinished_data_stores)
+[2026-10-16 02:35:44,428: INFO/MainProcess] Task aios.retry_unfinished_data_stores[f82ab948-28a1-4ad5-a6fb-e094723db0cc] received
+[2026-10-16 02:35:44,432: INFO/ForkPoolWorker-2] Task aios.retry_unfinished_data_stores[f82ab948-28a1-4ad5-a6fb-e094723db0cc] succeeded in 0.0033858890000146857s: None
+
+worker: Warm shutdown (MainProcess)
+[2026-10-16 02:35:47,808: INFO/MainProcess] beat: Shutting down...

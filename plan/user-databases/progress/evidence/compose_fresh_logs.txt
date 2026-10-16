@@ -1,0 +1,6 @@
+db-roles-1  | Roles aios_app and aios_provisioner are ready
+migrate-1   | INFO  [alembic.runtime.migration] Running upgrade 0009 -> 0010, triggers
+workflow-worker-1  | [2026-10-15 22:14:05,848: INFO/MainProcess] Task aios.run_workflow[ab3722d4-3030-4e7b-8fa3-ceeb0d7fd34e] received
+workflow-worker-1  | [2026-10-15 22:14:08,404: INFO/ForkPoolWorker-1] Task aios.run_workflow[ab3722d4-3030-4e7b-8fa3-ceeb0d7fd34e] succeeded in 2.548350107000033s: None
+worker-1           | [2026-10-15 22:14:05,841: INFO/MainProcess] Task aios.ingest_document[bfd2602f-9731-4f9b-8ca4-1d9109dc72ca] received
+worker-1           | [2026-10-15 22:14:07,529: INFO/ForkPoolWorker-1] Task aios.ingest_document[bfd2602f-9731-4f9b-8ca4-1d9109dc72ca] succeeded in 1.6868338730000687s: None

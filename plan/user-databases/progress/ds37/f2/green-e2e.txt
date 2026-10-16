@@ -1,0 +1,7 @@
+
+Running 2 tests using 2 workers
+
+  ✓  1 e2e/data-page.spec.ts:181:1 › a slow list shows it's loading, not that there are no documents (9.0s)
+  ✓  2 e2e/data-store.spec.ts:65:1 › the chat's panel shows it's loading, not an invitation to upload (8.1s)
+
+  2 passed (24.8s)

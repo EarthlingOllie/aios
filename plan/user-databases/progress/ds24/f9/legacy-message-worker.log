@@ -1,0 +1,48 @@
+/home/user/aios/.claude/worktrees/agent-a502cb03e7a4f47f0/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 08:15:59
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f3000eea3c0
+- ** ---------- .> transport:   redis://localhost:6439/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+
+[2026-10-16 08:15:59,906: INFO/MainProcess] Connected to redis://localhost:6439/0
+[2026-10-16 08:15:59,909: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 08:16:00,919: INFO/MainProcess] mingle: all alone
+[2026-10-16 08:16:00,936: INFO/MainProcess] celery@vm ready.
+[2026-10-16 08:16:00,947: INFO/MainProcess] Task aios.ingest_document[a4544a1f-2dd9-4a41-b39f-11e16e5da8f1] received
+[2026-10-16 08:16:00,952: ERROR/ForkPoolWorker-1] Task aios.ingest_document[a4544a1f-2dd9-4a41-b39f-11e16e5da8f1] raised unexpected: TypeError("ingest_document_task() missing 1 required positional argument: 'document_id'")
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-a502cb03e7a4f47f0/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a502cb03e7a4f47f0/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+TypeError: ingest_document_task() missing 1 required positional argument: 'document_id'
+
+worker: Warm shutdown (MainProcess)
+queue len after worker: 0; unacked: 0

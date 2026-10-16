@@ -1,0 +1,87 @@
+diff --git a/backend/src/aios/datastores/provision.py b/backend/src/aios/datastores/provision.py
+index 255bffb..b1da52d 100644
+--- a/backend/src/aios/datastores/provision.py
++++ b/backend/src/aios/datastores/provision.py
+@@ -248,9 +248,10 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
+         return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
+ 
+ 
+-def provision(store_id: uuid.UUID) -> None:
++def provision(store_id: uuid.UUID) -> str | None:
+     """Create the store's database and roles, migrate it and mark it ready (see the module
+-    docstring). Does nothing for a store that's gone, or that's past provisioning."""
++    docstring); returns the revision it's at. Does nothing (returns None) for a store that's
++    gone, or that's past provisioning."""
+     with _provisioner_locked(store_id) as server:
+         with SessionLocal() as db:
+             store = db.get(DataStore, store_id)
+@@ -258,15 +259,16 @@ def provision(store_id: uuid.UUID) -> None:
+                 DataStoreStatus.provisioning,
+                 DataStoreStatus.failed,
+             ):
+-                return
++                return None
+             names = StoreNames.of(store)
+         passwords = _passwords(store_id)
+         if passwords is None:
+-            return
++            return None
+         run = _Run(store_id, names, *passwords, server=server)
+         for step in STEPS:
+             step(run)
+     log.info("Data store %s is ready at revision %s", store_id, run.revision)
++    return run.revision
+ 
+ 
+ def drop(names: StoreNames) -> None:
+@@ -342,7 +344,9 @@ def migrate_all(
+         ).all()
+     for store_id in unfinished:
+         try:
+-            provision(store_id)
++            revision = provision(store_id)
++            if revision is not None:
++                outcome[store_id] = revision
+         except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
+             log.exception("Provisioning data store %s failed", store_id)
+             fail(store_id, _describe(exc))
+@@ -354,6 +358,8 @@ def migrate_all(
+             .order_by(DataStore.created_at)
+         ).all()
+     for store_id in ready:
++        if store_id in outcome:  # just provisioned, so already at head
++            continue
+         try:
+             outcome[store_id] = migrate_store(store_id)
+         except Exception as exc:  # noqa: BLE001
+diff --git a/backend/tests/test_provisioning.py b/backend/tests/test_provisioning.py
+index 5fe6883..af635f3 100644
+--- a/backend/tests/test_provisioning.py
++++ b/backend/tests/test_provisioning.py
+@@ -354,6 +354,26 @@ def test_migrate_all_finishes_provisioning_stores_that_never_got_there(db, new_u
+     assert store_row(db, store_id).status == DataStoreStatus.ready
+ 
+ 
++def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
++    """A store it has just provisioned is already at head: it isn't migrated again."""
++    unfinished = data_store_for(new_user().id)
++    ready = data_store_for(new_user().id)
++    provision.provision(ready)
++    upgrades = []
++    upgrade_store = provision.upgrade_store
++
++    def counted(names):
++        upgrades.append(names.dbname)
++        return upgrade_store(names)
++
++    monkeypatch.setattr(provision, "upgrade_store", counted)
++
++    outcome = provision.migrate_all([unfinished, ready])
++
++    assert outcome == {unfinished: head_revision(), ready: head_revision()}
++    assert sorted(upgrades) == sorted(store_row(db, s).dbname for s in (unfinished, ready))
++
++
+ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, new_user):
+     """Stores made before migration 0012 have no passwords yet."""
+     store_id = data_store_for(new_user().id)

@@ -1,0 +1,2 @@
+POST /api/skills -> 201
+skill listed after reload: ds22 skill 1792104197310

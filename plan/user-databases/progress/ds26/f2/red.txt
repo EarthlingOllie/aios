@@ -1,0 +1,54 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_slow_queries_dont_starve_the_apis_other_requests _____________
+
+api = <starlette.testclient.TestClient object at 0x7f7724333380>
+store = <aios.models.DataStore object at 0x7f7724264e90>
+data_agent = {'id': 36, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:05:42.391761Z', ...}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7724343e10>
+
+    def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent, monkeypatch):
+        """A query holds a worker thread while it runs, or while it waits for one of the store's
+        few connections, and the API's sync endpoints run on the same threads. So a model asking
+        for many slow queries at once mustn't take them all. (The thread pool is shrunk from its 40
+        to keep the test quick.)"""
+        monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
+        sql = "SELECT pg_sleep(0.5)"
+        threads = 16
+    
+        async def script(messages, info):
+            if last_tool_results(messages):
+                yield "done"
+            else:
+                for _ in range(threads + 4):
+                    yield ToolCall("query_data", {"sql": sql})
+    
+        def sleeping() -> int:
+            with psycopg.connect(login_url(store, "ro")) as conn:
+                query = "SELECT count(*) FROM pg_stat_activity WHERE query = %s"
+                return conn.execute(query, (sql,)).fetchone()[0]
+    
+        def shrink() -> None:
+            to_thread.current_default_thread_limiter().total_tokens = threads
+    
+        with api, use_model(model(script)):
+            api.portal.call(shrink)
+            run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
+            url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"
+            with ThreadPoolExecutor(1) as pool:
+                turn = pool.submit(api.post, url, json=chat_body("go"))
+                while not sleeping():
+                    time.sleep(0.01)
+                start = time.monotonic()
+                assert api.get("/api/tools").status_code == 200
+                waited = time.monotonic() - start
+                assert turn.result().status_code == 200
+    
+>       assert waited < 0.25
+E       assert 1.048432027000004 < 0.25
+
+tests/test_data_tools.py:461: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_slow_queries_dont_starve_the_apis_other_requests
+1 failed, 44 deselected in 7.37s

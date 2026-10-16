@@ -1,0 +1,96 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.21kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#2 DONE 0.1s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e 0.0s done
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/python:3.13-slim-bookworm
+#4 DONE 0.1s
+
+#5 [internal] load metadata for ghcr.io/astral-sh/uv:0.11.32
+#5 DONE 0.2s
+
+#6 [internal] load .dockerignore
+#6 transferring context:
+#6 transferring context: 92B done
+#6 DONE 0.0s
+
+#7 [uv 1/1] FROM ghcr.io/astral-sh/uv:0.11.32@sha256:257d62b3fc6e081c5872e49fc6f6f999a6097d9064167d27d9c901d543406888
+#7 resolve ghcr.io/astral-sh/uv:0.11.32@sha256:257d62b3fc6e081c5872e49fc6f6f999a6097d9064167d27d9c901d543406888 0.0s done
+#7 CACHED
+
+#8 [sandbox 1/6] FROM docker.io/library/python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+#8 resolve docker.io/library/python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 0.0s done
+#8 CACHED
+
+#9 [sandbox 2/6] COPY --from=uv /uv /bin/
+#9 ...
+
+#10 [internal] load build context
+#10 transferring context: 207B 0.0s done
+#10 DONE 0.0s
+
+#9 [sandbox 2/6] COPY --from=uv /uv /bin/
+#9 DONE 0.4s
+
+#11 [sandbox 3/6] RUN --mount=type=cache,target=/root/.cache/uv     --mount=type=bind,source=sandbox/requirements.txt,target=/tmp/requirements.txt     uv pip install --system --require-hashes -r /tmp/requirements.txt     && rm /bin/uv
+#11 0.301 Using Python 3.13.16 environment at: /usr/local
+#11 1.130 Resolved 18 packages in 827ms
+#11 1.185 Downloading pandas (10.3MiB)
+#11 1.185 Downloading pyarrow (47.8MiB)
+#11 1.239 Downloading lxml (5.0MiB)
+#11 1.584  Downloaded lxml
+#11 2.154  Downloaded pandas
+#11 3.348  Downloaded pyarrow
+#11 3.349 Prepared 5 packages in 2.21s
+#11 3.351 warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+#11 3.351          If the cache and target directories are on different filesystems, hardlinking may not be supported.
+#11 3.351          If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+#11 4.461 Installed 18 packages in 1.11s
+#11 4.461  + anyio==4.15.1
+#11 4.461  + beautifulsoup4==4.15.0
+#11 4.461  + certifi==2026.7.22
+#11 4.461  + charset-normalizer==3.5.2
+#11 4.461  + h11==0.16.0
+#11 4.461  + httpcore==1.0.9
+#11 4.461  + httpx==0.28.1
+#11 4.461  + idna==3.20
+#11 4.461  + lxml==6.1.3
+#11 4.461  + numpy==2.5.3
+#11 4.461  + pandas==3.0.6
+#11 4.461  + pyarrow==25.0.1
+#11 4.461  + python-dateutil==2.9.0.post0
+#11 4.461  + requests==2.34.2
+#11 4.461  + six==1.17.0
+#11 4.461  + soupsieve==2.10
+#11 4.461  + typing-extensions==4.16.0
+#11 4.461  + urllib3==2.8.0
+#11 DONE 5.1s
+
+#12 [sandbox 4/6] RUN useradd --uid 1001 --no-create-home --home-dir /work sandbox     && mkdir /work && chown sandbox:sandbox /work
+#12 DONE 0.1s
+
+#13 [sandbox 5/6] COPY src/aios/sandbox/runner.py /opt/sandbox/runner.py
+#13 DONE 0.0s
+
+#14 [sandbox 6/6] WORKDIR /work
+#14 DONE 0.0s
+
+#15 exporting to image
+#15 exporting layers
+#15 exporting layers 11.5s done
+#15 exporting manifest sha256:d44f657e946e635eb71a50b983a7cc9e146fe01c850ba6f8819f0704aee127a2 done
+#15 exporting config sha256:a68a0d9f510d221916c4556ecfe6e0650df5043e15ec1b35641466d5aefa5384 done
+#15 exporting attestation manifest sha256:c2a235a56585da953e07ce985c91fc206aadba95597befb1f3d0ae365656e0fe done
+#15 exporting manifest list sha256:9e3ffe8c66b07eaa5673ca3ea80cf5a82fd7e9b695d501a75c55accbdc879529 done
+#15 naming to docker.io/library/aios-sandbox-ds22:local done
+#15 unpacking to docker.io/library/aios-sandbox-ds22:local
+#15 unpacking to docker.io/library/aios-sandbox-ds22:local 4.5s done
+#15 DONE 16.1s

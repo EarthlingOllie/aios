@@ -1,0 +1,78 @@
+
+Running 2 tests using 2 workers
+
+[WebServer] 1:04:01 PM [vite] http proxy error: /api/documents
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✘  1 e2e/data-page.spec.ts:209:1 › uploads still in flight when you switch tabs keep their progress and errors (9.6s)
+  ✘  2 e2e/data-page.spec.ts:241:1 › an upload from the chat that finishes after you open the Data page still appears there (8.8s)
+
+
+  1) e2e/data-page.spec.ts:209:1 › uploads still in flight when you switch tabs keep their progress and errors 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByRole('button', { name: 'Upload' }).locator('.animate-spin')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByRole('button', { name: 'Upload' }).locator('.animate-spin') with timeout 5000ms
+      - waiting for getByRole('button', { name: 'Upload' }).locator('.animate-spin')
+
+
+      226 |   await expect(overview(page)).toBeVisible();
+      227 |   await page.getByRole("tab", { name: "Documents" }).click();
+    > 228 |   await expect(upload.locator(".animate-spin")).toBeVisible();
+          |                                                 ^
+      229 |
+      230 |   // Away again while they finish: back on Documents, the one that failed says why.
+      231 |   await page.getByRole("tab", { name: "Overview" }).click();
+        at /home/user/aios/.claude/worktrees/ds37-f1/frontend/e2e/data-page.spec.ts:228:49
+
+    Error Context: test-results/data-page-uploads-still-in-4a8da-p-their-progress-and-errors/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-uploads-still-in-4a8da-p-their-progress-and-errors/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-uploads-still-in-4a8da-p-their-progress-and-errors/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) e2e/data-page.spec.ts:241:1 › an upload from the chat that finishes after you open the Data page still appears there 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'late.md' })
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'late.md' }) with timeout 5000ms
+      - waiting for getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'late.md' })
+
+
+      254 |
+      255 |   api.releaseUploads();
+    > 256 |   await expect(row(page, "late.md")).toBeVisible();
+          |                                      ^
+      257 | });
+      258 |
+        at /home/user/aios/.claude/worktrees/ds37-f1/frontend/e2e/data-page.spec.ts:256:38
+
+    Error Context: test-results/data-page-an-upload-from-t-6e07f-ta-page-still-appears-there/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-an-upload-from-t-6e07f-ta-page-still-appears-there/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-an-upload-from-t-6e07f-ta-page-still-appears-there/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    e2e/data-page.spec.ts:209:1 › uploads still in flight when you switch tabs keep their progress and errors 
+    e2e/data-page.spec.ts:241:1 › an upload from the chat that finishes after you open the Data page still appears there 

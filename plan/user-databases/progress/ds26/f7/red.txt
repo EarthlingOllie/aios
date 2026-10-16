@@ -1,0 +1,40 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_dates_times_and_intervals_come_back_as_postgres_writes_them _______
+
+api = <starlette.testclient.TestClient object at 0x7fae20833380>
+store = <aios.models.DataStore object at 0x7fae2083f820>
+data_agent = {'id': 6, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:14:34.455356Z', ...}
+
+    def test_dates_times_and_intervals_come_back_as_postgres_writes_them(api, store, data_agent):
+        """Including those Python can't hold (infinities, years past 9999 or BC, 24:00), so one
+        such row doesn't fail the whole query."""
+        with as_owner(store) as conn:
+            conn.execute("CREATE TABLE data.events (id int, at timestamptz, day date)")
+            conn.execute(
+                "INSERT INTO data.events VALUES (1, '2026-10-16 12:00+00', '2026-10-16'),"
+                " (2, 'infinity', '-infinity')"
+            )
+    
+>       assert query(api, data_agent, "SELECT * FROM data.events ORDER BY id") == {
+            "columns": ["id", "at", "day"],
+            "rows": [[1, "2026-10-16 12:00:00+00", "2026-10-16"], [2, "infinity", "-infinity"]],
+            "row_count": 2,
+            "truncated": False,
+        }
+E       assert {'error': "ti...: 'infinity'"} == {'columns': [...cated': False}
+E         
+E         Left contains 1 more item:
+E         {'error': "timestamp too large (after year 10K): 'infinity'"}
+E         Right contains 4 more items:
+E         {'columns': ['id', 'at', 'day'],
+E          'row_count': 2,
+E          'rows': [[1, '2026-10-16 12:00:00+00', '2026-10-16'],...
+E         
+E         ...Full output truncated (3 lines hidden), use '-vv' to show
+
+tests/test_data_tools.py:318: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_dates_times_and_intervals_come_back_as_postgres_writes_them
+1 failed, 44 deselected in 0.79s

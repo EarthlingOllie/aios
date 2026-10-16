@@ -1,0 +1,33 @@
+notice: Setting up your data store. You can upload documents once it's ready.
+upload disabled while provisioning: true
+search while provisioning: shows the 409 message
+notice visible once ready: false
+notice gone; upload enabled: true
+uploaded and ingested: hedgehogs.md, 3 chunks
+search finds the passage
+API responses:
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/documents 409
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/documents 409
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/search?q=hedgehogs&limit=8 409
+GET http://localhost:5183/api/search?q=hedgehogs&limit=8 409
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/documents 409
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/documents 409
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/data-store 200
+GET http://localhost:5183/api/documents 200
+POST http://localhost:5183/api/documents 201
+GET http://localhost:5183/api/documents 200
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/me 200
+GET http://localhost:5183/api/search?q=what+do+hedgehogs+eat&limit=8 200
+GET http://localhost:5183/api/search?q=what+do+hedgehogs+eat&limit=8 200

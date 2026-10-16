@@ -1,0 +1,15 @@
+diff --git a/backend/src/aios/datastores/history.py b/backend/src/aios/datastores/history.py
+index 981f5d5..14bd48a 100644
+--- a/backend/src/aios/datastores/history.py
++++ b/backend/src/aios/datastores/history.py
+@@ -9,7 +9,9 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
+ - **The outbox** is `history_exports`, a row per run and store. Whatever changes a run (a turn
+   ending, `aios.api.agents._end_turn`, which every chat, schedule and workflow agent node turn
+   goes through; or deleting it) writes its row with `enqueue_runs`, in the same transaction as
+-  its own change, and the store's export is queued once that commits.
++  its own change, and the store's export is queued once that commits. Nothing else does, so a
++  copy's agent name and schedule are as of its run's last turn: renaming the agent or deleting
++  the schedule shows in the copy at the run's next turn, not before.
+ - **The export** (`export`, the `aios.export_history` task, on the app workers: it writes as
+   the store's `rw` role) drains the store's outbox, copying each run and its messages,
+   flattened from its checkpoint, or deleting the copy of a run that's gone. Copies are upserted

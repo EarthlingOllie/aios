@@ -1,0 +1,50 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_______________ test_the_ingest_task_skips_a_store_deleted_since _______________
+
+db = <sqlalchemy.orm.session.Session object at 0x7ff98dfb8fc0>
+offline_ingest = None
+
+    def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
+        """As for a document deleted before its ingest: there's nothing left to ingest."""
+        owner = User(github_id=-4, login="gone")
+        db.add(owner)
+        db.commit()
+        doc = Document(owner_id=owner.id, filename="a.md", data=b"# Hi")
+        db.add(doc)
+        db.commit()
+        store_id, doc_id = data_store_for(owner.id), doc.id
+        db.delete(owner)  # and, by the database's cascade, their store and documents
+        db.commit()
+    
+>       worker.ingest_document_task.run(str(store_id), doc_id)
+
+tests/test_data_stores.py:109: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/aios/worker.py:42: in ingest_document_task
+    with store_session(uuid.UUID(data_store_id), "rw") as db:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.13/contextlib.py:141: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+data_store_id = UUID('08d6321f-6711-46c7-8c67-05704aac56eb'), role = 'rw'
+
+    @contextmanager
+    def store_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
+        """A session on the data store, closed on exit. Raises `DataStoreNotFound` if there's no
+        such store."""
+        if role not in get_args(Role):
+            raise ValueError(f"Unknown data store role: {role!r}")
+        with SessionLocal() as db:
+            owner_id = db.scalar(select(DataStore.owner_user_id).where(DataStore.id == data_store_id))
+            if owner_id is None:
+>               raise DataStoreNotFound(data_store_id)
+E               aios.datastores.connections.DataStoreNotFound: 08d6321f-6711-46c7-8c67-05704aac56eb
+
+src/aios/datastores/connections.py:39: DataStoreNotFound
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_the_ingest_task_skips_a_store_deleted_since
+1 failed, 1 passed, 10 deselected in 0.24s

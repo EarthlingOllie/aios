@@ -1,0 +1,4 @@
+E       AssertionError: s                                                                        [100%]
+E         1 skipped in 0.03s
+E         
+E       assert 0 != 0

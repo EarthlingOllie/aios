@@ -1,0 +1,3 @@
+OperationalError None None None connection failed: connection to server at "127.0.0.1", port 5497 failed: FATAL:  too many connections for role "lim"
+OperationalError None None None connection failed: connection to server at "127.0.0.1", port 5497 failed: FATAL:  too many connections for role "lim"
+lc_messages|superuser

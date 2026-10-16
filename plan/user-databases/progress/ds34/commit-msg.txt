@@ -1,0 +1,21 @@
+Export agent run history to the data store (#34)
+
+An opt-in, per-user setting on a real Settings page (replacing its stub) copies the user's
+agent runs into their data store's `history` schema: `history.agent_runs` (keyed by platform
+run ids, recording who ran each) and `history.messages` (role, text, tool calls, usage,
+flattened from the checkpoint).
+
+- The history tables are a second line of the store tree (branch label `history`, `h0001`),
+  run only once the owner switches the export on (`aios.set_up_history_export`, provisioning
+  queue) and kept at its head by every migration after; retry_unfinished sets up stores whose
+  owner wants it but whose set-up was lost.
+- `history_exports` is the outbox: `_end_turn` (every chat, schedule and workflow agent node
+  turn, failed or stopped too) writes the run's row in the same transaction as its own
+  update, as do deleting a run, an agent or a workflow run. Switching on backfills.
+- `aios.export_history` (default queue, as the store's rw role) drains it, upserting by
+  platform ids or deleting copies of runs that are gone; a minutely beat sweeps stores with
+  rows still pending.
+- Switching off keeps the copy; "Delete exported history" empties it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KC3fucdE9rANvvSzGLn7e5

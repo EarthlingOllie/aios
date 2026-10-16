@@ -1,0 +1,47 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-ad9f7ec867ab4b8b2/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- appf1@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 19:06:31
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f9cff9adfd0
+- ** ---------- .> transport:   redis://localhost:6801/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.export_history
+  . aios.export_pending_history
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+  . aios.set_up_history_export
+
+[2026-10-16 19:06:32,128: INFO/MainProcess] Connected to redis://localhost:6801/0
+[2026-10-16 19:06:32,137: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 19:06:33,168: INFO/MainProcess] mingle: all alone
+[2026-10-16 19:06:33,192: INFO/MainProcess] appf1@vm ready.
+[2026-10-16 19:06:38,562: INFO/MainProcess] Task aios.export_history[99fda9a9-df38-4c3a-b66d-263aae18d817] received
+[2026-10-16 19:06:39,031: INFO/ForkPoolWorker-2] Task aios.export_history[99fda9a9-df38-4c3a-b66d-263aae18d817] succeeded in 0.46619559100003016s: None
+[2026-10-16 19:07:31,931: INFO/MainProcess] Task aios.export_pending_history[b8d32d5b-7795-465b-8cdc-4bca667eccc7] received
+[2026-10-16 19:07:31,941: INFO/ForkPoolWorker-2] Task aios.export_pending_history[b8d32d5b-7795-465b-8cdc-4bca667eccc7] succeeded in 0.009752094000020861s: None
+[2026-10-16 19:08:31,923: INFO/MainProcess] Task aios.export_pending_history[5c26fd2d-e5d2-4da3-b22b-8bc75e88e14b] received
+[2026-10-16 19:08:31,929: INFO/ForkPoolWorker-2] Task aios.export_pending_history[5c26fd2d-e5d2-4da3-b22b-8bc75e88e14b] succeeded in 0.004294618000017181s: None
+
+worker: Warm shutdown (MainProcess)

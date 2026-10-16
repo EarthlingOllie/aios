@@ -1,0 +1,99 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+........................................................................ [ 19%]
+................................................................E....... [ 39%]
+....................................F................................... [ 59%]
+........................................................................ [ 79%]
+........................................................................ [ 99%]
+..                                                                       [100%]
+==================================== ERRORS ====================================
+__________ ERROR at teardown of test_a_stores_roles_have_their_limits __________
+
+db = <sqlalchemy.orm.session.Session object at 0x7fafaae41450>
+
+    @pytest.fixture
+    def new_user(db) -> Iterator[Callable[[], User]]:
+        """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+        made: list[User] = []
+    
+        def make() -> User:
+            u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
+            db.add(u)
+            db.commit()
+            made.append(u)
+            return u
+    
+        yield make
+        for u in made:
+>           delete_user(db, u)
+
+tests/test_provisioning.py:54: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/conftest.py:70: in delete_user
+    provision.drop(names)
+src/aios/datastores/provision.py:293: in drop
+    conn.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <psycopg.Connection [BAD] at 0x7fafaacaa120>
+query = Composed([SQL('DROP DATABASE IF EXISTS '), Identifier('ds_35cd7fe1c9fc456d9ebdb9052fe2a67a'), SQL(' WITH (FORCE)')])
+params = None, prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+    
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.InsufficientPrivilege: permission denied to terminate process
+E           DETAIL:  Only roles with privileges of the role whose process is being terminated or with privileges of the "pg_signal_backend" role may terminate this process.
+
+.venv/lib/python3.13/site-packages/psycopg/connection.py:304: InsufficientPrivilege
+=================================== FAILURES ===================================
+_ test_egress_proxy_refusals[CONNECT other.com:443 HTTP/1.1\r\nHost: other.com:443\r\nProxy-Authorization: Basic c2FuZGJveDpleUp6SWpvaVlXZGxiblF0Y25WdUxUY2lMQ0prSWpwYkltRndhUzVsZUdGdGNHeGxMbU52YlNKZExDSmxJam94TnpreU1USXhNakUzZlEuWlAtaDZqN2ZyaEs2b1VJeERUYkpBNk83NEphSWg3eU5KbmRzSUdGenp2MA==\r\n\r\n-403-isn't in this sandbox's allowed domains] _
+
+request_bytes = b'CONNECT other.com:443 HTTP/1.1\r\nHost: other.com:443\r\nProxy-Authorization: Basic c2FuZGJveDpleUp6SWpvaVlXZGxiblF0...dGdGNHeGxMbU52YlNKZExDSmxJam94TnpreU1USXhNakUzZlEuWlAtaDZqN2ZyaEs2b1VJeERUYkpBNk83NEphSWg3eU5KbmRzSUdGenp2MA==\r\n\r\n'
+status = '403', reason = "isn't in this sandbox's allowed domains"
+
+    @pytest.mark.parametrize(
+        ("request_bytes", "status", "reason"),
+        [
+            (connect_request("api.example.com", None), "407", "missing or invalid proxy token"),
+            (connect_request("api.example.com", "forged.token"), "407", "invalid proxy token"),
+            (connect_request("api.example.com", "abc.\u00e9"), "407", "invalid proxy token"),
+            (connect_request("api.example.com", token(ttl=-1)), "407", "invalid proxy token"),
+            (connect_request("other.com", token()), "403", "isn't in this sandbox's allowed domains"),
+            (connect_request("api.example.com", token(), port=80), "403", "only port 443"),
+            (connect_request("api.example.com", token(), method="GET"), "405", "only HTTPS"),
+            (b"\r\n\r\n", "405", "only HTTPS"),
+        ],
+    )
+    def test_egress_proxy_refusals(request_bytes, status, reason):
+        head, _ = proxy_exchange(request_bytes)
+>       assert head.startswith(f"HTTP/1.1 {status}")
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x7fafb069cb90>('HTTP/1.1 403')
+E        +    where <built-in method startswith of str object at 0x7fafb069cb90> = 'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="sandbox"\r\nContent-Type: text/plain\r\nContent-Length: 31\r\nConnection: close\r\n\r\n'.startswith
+
+tests/test_sandbox.py:137: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sandbox.py::test_egress_proxy_refusals[CONNECT other.com:443 HTTP/1.1\r\nHost: other.com:443\r\nProxy-Authorization: Basic c2FuZGJveDpleUp6SWpvaVlXZGxiblF0Y25WdUxUY2lMQ0prSWpwYkltRndhUzVsZUdGdGNHeGxMbU52YlNKZExDSmxJam94TnpreU1USXhNakUzZlEuWlAtaDZqN2ZyaEs2b1VJeERUYkpBNk83NEphSWg3eU5KbmRzSUdGenp2MA==\r\n\r\n-403-isn't in this sandbox's allowed domains]
+ERROR tests/test_provisioning.py::test_a_stores_roles_have_their_limits - psy...
+1 failed, 360 passed, 1 skipped, 1 error in 131.75s (0:02:11)

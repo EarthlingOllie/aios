@@ -1,0 +1,57 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedule _
+
+db = <sqlalchemy.orm.session.Session object at 0x7fdff503f8c0>
+user = <aios.models.User object at 0x7fdff503fa10>
+api = <starlette.testclient.TestClient object at 0x7fdff4d6d010>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fdff50a3360>
+
+    def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedule(
+        db, user, api, monkeypatch
+    ):
+        """The release before a deploy keeps provisioning stores, at its own head, after the
+        deploy's migrate-stores has run (or migrate-stores failed for one): they're ready, but
+        behind the tree's head, which the new release's code needs."""
+        store_id = data_store_for(user.id)
+        names = provision.StoreNames.of(store_row(db, store_id))
+        # The store as the release before this one left it: at 0001, with no documents tables.
+        engine = create_engine(
+            make_url(get_settings().data_store_provisioner_url).set(database=names.dbname),
+            poolclass=pool.NullPool,
+        )
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            conn.commit()
+            command.downgrade(migrations.config(conn), "0001")
+            conn.commit()
+        engine.dispose()
+        db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+        db.commit()
+        # A store already past this release's head (the next release has migrated it) is left alone.
+        ahead_user = provisioned_user(db, -2, "ahead-user")
+        ahead = data_store_for(ahead_user.id)
+        try:
+            db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))
+            db.commit()
+            with pytest.raises(ProgrammingError, match="UndefinedTable"):
+                api.get("/api/documents")
+            # Only this test's stores: others in the database are left alone.
+            retry = provision.retry_unfinished
+            monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id, ahead]))
+    
+            worker.retry_unfinished_data_stores_task.apply().get()
+    
+>           assert store_row(db, store_id).schema_revision == head_revision()
+E           AssertionError: assert '0001' == '0002'
+E             
+E             - 0002
+E             ?    ^
+E             + 0001
+E             ?    ^
+
+tests/test_provisioning.py:523: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_provisioning.py::test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedule
+1 failed, 24 deselected in 1.02s

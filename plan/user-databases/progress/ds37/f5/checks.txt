@@ -1,0 +1,40 @@
+
+> aios-web@0.1.0 typecheck /home/user/aios/.claude/worktrees/ds37-f5/frontend
+> tsc -b
+
+
+> aios-web@0.1.0 test /home/user/aios/.claude/worktrees/ds37-f5/frontend
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/aios/.claude/worktrees/ds37-f5/frontend
+
+
+ Test Files  7 passed (7)
+      Tests  57 passed (57)
+   Start at  13:06:14
+   Duration  10.00s (transform 39%, import 37%, tests 17%, worker 7%)
+
+  Transform  transforming modules took 3.36s · 39% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+
+> aios-web@0.1.0 build /home/user/aios/.claude/worktrees/ds37-f5/frontend
+> tsc -b && vite build
+
+vite v8.3.2 building client environment for production...
+transforming...
+✓ 2537 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     0.38 kB │ gzip:   0.26 kB
+dist/assets/index-B0Ekgy9S.css     50.47 kB │ gzip:   9.33 kB
+dist/assets/index-DIG8R0cR.js   1,039.46 kB │ gzip: 314.10 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 15.49s

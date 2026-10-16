@@ -1,0 +1,36 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [18553]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8183 (Press CTRL+C to quit)
+INFO:     127.0.0.1:48944 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48956 - "GET /auth/callback?code=x&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:48970 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48974 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48994 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48980 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49000 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49010 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49026 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49038 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49040 - "GET /api/search?q=hedgehogs&limit=8 HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49044 - "GET /api/search?q=hedgehogs&limit=8 HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49048 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49050 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49060 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49074 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49086 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:49102 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37136 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37144 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37154 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37160 - "POST /api/documents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:37168 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37180 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37192 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37208 - "GET /api/search?q=what+do+hedgehogs+eat&limit=8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37222 - "GET /api/search?q=what+do+hedgehogs+eat&limit=8 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [18553]

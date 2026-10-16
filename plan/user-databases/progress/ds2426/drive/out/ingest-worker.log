@@ -1,0 +1,61 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-ab17abbcec02c8f74/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 13:24:49
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7fa959551160
+- ** ---------- .> transport:   redis://localhost:6530/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+
+[2026-10-16 13:24:49,956: INFO/MainProcess] Connected to redis://localhost:6530/0
+[2026-10-16 13:24:49,959: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 13:24:50,966: INFO/MainProcess] mingle: all alone
+[2026-10-16 13:24:50,977: INFO/MainProcess] celery@vm ready.
+[2026-10-16 13:24:52,593: INFO/MainProcess] Task aios.ingest_document[ad421bf3-0954-4fc1-b645-764e18dba349] received
+[2026-10-16 13:24:52,700: INFO/ForkPoolWorker-1] Task aios.ingest_document[ad421bf3-0954-4fc1-b645-764e18dba349] succeeded in 0.10624723399996583s: None
+
+worker: Warm shutdown (MainProcess)
+
+worker: Warm shutdown (MainProcess)
+[2026-10-16 13:24:59,509: WARNING/MainProcess] Traceback (most recent call last):
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/usr/lib/python3.13/multiprocessing/util.py", line 371, in _run_finalizers
+    finalizer()
+    ~~~~~~~~~^^
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/usr/lib/python3.13/multiprocessing/util.py", line 295, in __call__
+    res = self._callback(*self._args, **self._kwargs)
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/home/user/aios/.claude/worktrees/agent-ab17abbcec02c8f74/backend/.venv/lib/python3.13/site-packages/billiard/pool.py", line 1668, in _terminate_pool
+    cls._help_stuff_finish(*help_stuff_finish_args)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/home/user/aios/.claude/worktrees/agent-ab17abbcec02c8f74/backend/.venv/lib/python3.13/site-packages/celery/concurrency/asynpool.py", line 1381, in _help_stuff_finish
+    fileno_to_proc[fd].inq._reader.recv()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/home/user/aios/.claude/worktrees/agent-ab17abbcec02c8f74/backend/.venv/lib/python3.13/site-packages/billiard/connection.py", line 276, in recv
+    return ForkingPickler.loadbuf(buf)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^
+[2026-10-16 13:24:59,510: WARNING/MainProcess]   File "/home/user/aios/.claude/worktrees/agent-ab17abbcec02c8f74/backend/.venv/lib/python3.13/site-packages/billiard/reduction.py", line 60, in loadbuf
+    return cls.loads(buf.getbuffer())
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^
+[2026-10-16 13:24:59,510: WARNING/MainProcess] EOFError: Ran out of input

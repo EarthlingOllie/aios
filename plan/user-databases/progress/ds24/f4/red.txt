@@ -1,0 +1,42 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+..F.                                                                     [100%]
+=================================== FAILURES ===================================
+________ test_a_store_busy_mid_ingest_leaves_the_document_for_the_retry ________
+
+user = <aios.models.User object at 0x7f1450c77610>, offline_ingest = None
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1450b16b10>
+
+    def test_a_store_busy_mid_ingest_leaves_the_document_for_the_retry(
+        user, offline_ingest, monkeypatch
+    ):
+        """Busy once the document is claimed (its connection went back to the pool through the
+        conversion, and the store's are all in use by the time it's wanted again): the retry, not
+        the failure, is what's recorded."""
+        store_id = data_store_for(user.id)
+        doc_id = add_document(store_id)
+        monkeypatch.setattr(worker.ingest_document_task, "retry", lambda **kwargs: Retry())
+    
+        busy = [True]
+    
+        def busy_once(conn, cursor, statement, *args):
+            if statement.startswith("DELETE FROM aios.chunks") and busy and busy.pop():
+                raise DataStoreBusy(store_id)
+    
+        rw = store_engine(store_id, "rw")
+        event.listen(rw, "before_cursor_execute", busy_once)
+        try:
+            with pytest.raises(Retry):
+                worker.ingest_document_task.run(str(store_id), doc_id)
+        finally:
+            event.remove(rw, "before_cursor_execute", busy_once)
+    
+>       assert stored_document(store_id, doc_id).status == DocumentStatus.processing
+E       AssertionError: assert <DocumentStat...led: 'failed'> == <DocumentStat... 'processing'>
+E         
+E         - processing
+E         + failed
+
+tests/test_data_stores.py:555: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_a_store_busy_mid_ingest_leaves_the_document_for_the_retry
+1 failed, 3 passed, 21 deselected in 2.36s

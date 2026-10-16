@@ -1,0 +1,6 @@
+
+Running 1 test using 1 worker
+
+  ✓  1 e2e/data-store.spec.ts:65:1 › a busy store doesn't tell the chat panel there are no documents (6.9s)
+
+  1 passed (14.2s)

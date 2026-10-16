@@ -1,0 +1,111 @@
+diff --git a/frontend/src/components/Documents.tsx b/frontend/src/components/Documents.tsx
+index 1686755..db15fcf 100644
+--- a/frontend/src/components/Documents.tsx
++++ b/frontend/src/components/Documents.tsx
+@@ -1,7 +1,7 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
+ 
+-import { formatDate } from "@/components/crud";
++import { formatDate, usePoll } from "@/components/crud";
+ import { Badge } from "@/components/ui/badge";
+ import { Button } from "@/components/ui/button";
+ import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
+@@ -58,38 +58,40 @@ export function useDocuments(storeStatus: DataStoreStatus | undefined) {
+   const [errors, setErrors] = useState<string[]>([]);
+   const ready = storeStatus === "ready";
+ 
+-  // Never rejects: a failed read keeps the last list, and the poll below tries again.
+-  const refresh = useCallback(
+-    () =>
+-      api.listDocuments().then(
+-        (list) => {
+-          setDocs(list);
+-          setListError(undefined);
+-        },
+-        (err) =>
+-          setListError(
+-            // 503: every connection the store allows is in use, which a moment's wait frees.
+-            err instanceof ApiError && err.status === 503
+-              ? "Your data store is busy. Trying again…"
+-              : `Couldn't load your documents (${describeError(err)}). Trying again…`,
+-          ),
+-      ),
+-    [],
+-  );
++  // Never rejects: a failed read keeps the last list, and the poll below tries again. Only the
++  // latest read may update state: a slower, older answer (a poll sent before a delete, say) is
++  // dropped.
++  const latest = useRef(0);
++  const refresh = useCallback(() => {
++    const request = ++latest.current;
++    return api.listDocuments().then(
++      (list) => {
++        if (request !== latest.current) return;
++        setDocs(list);
++        setListError(undefined);
++      },
++      (err) => {
++        if (request !== latest.current) return;
++        setListError(
++          // 503: every connection the store allows is in use, which a moment's wait frees.
++          err instanceof ApiError && err.status === 503
++            ? "Your data store is busy. Trying again…"
++            : `Couldn't load your documents (${describeError(err)}). Trying again…`,
++        );
++      },
++    );
++  }, []);
+ 
+   // Until the store is ready there's nothing to list (the API answers 409).
+   useEffect(() => {
+     if (ready) refresh();
+   }, [ready, refresh]);
+ 
+-  // Poll while anything is still being ingested by the worker, or the last read failed.
++  // Poll while anything is still being ingested by the worker, or the last read failed; each
++  // read waits for the last to answer, so a slow store doesn't pile them up.
+   const ingesting = docs.some((d) => d.status === "pending" || d.status === "processing");
+   const retry = ready && Boolean(listError);
+-  useEffect(() => {
+-    if (!ingesting && !retry) return;
+-    const id = setInterval(refresh, 2000);
+-    return () => clearInterval(id);
+-  }, [ingesting, retry, refresh]);
++  usePoll(ingesting || retry, refresh, 2000);
+ 
+   async function upload(files: File[]) {
+     if (!files.length) return;
+diff --git a/frontend/src/components/crud.tsx b/frontend/src/components/crud.tsx
+index c3e4934..62f7529 100644
+--- a/frontend/src/components/crud.tsx
++++ b/frontend/src/components/crud.tsx
+@@ -52,23 +52,23 @@ export function useLoad<T>(fn: () => Promise<T>) {
+ export const POLL_MS = 1000;
+ 
+ /**
+- * While `active`, calls `reload` again `POLL_MS` after each call settles, failed or not, so one
+- * failed read doesn't stop the polling.
++ * While `active`, calls `reload` again `ms` (by default `POLL_MS`) after each call settles,
++ * failed or not, so one failed read doesn't stop the polling.
+  */
+-export function usePoll(active: boolean, reload: () => Promise<unknown>) {
++export function usePoll(active: boolean, reload: () => Promise<unknown>, ms = POLL_MS) {
+   useEffect(() => {
+     if (!active) return;
+     let stopped = false;
+     let timer: ReturnType<typeof setTimeout>;
+     const poll = () => {
+-      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
++      timer = setTimeout(() => reload().finally(() => stopped || poll()), ms);
+     };
+     poll();
+     return () => {
+       stopped = true;
+       clearTimeout(timer);
+     };
+-  }, [active, reload]);
++  }, [active, reload, ms]);
+ }
+ 
+ /** Passed to the detail routes so they can refresh the list after a change. */

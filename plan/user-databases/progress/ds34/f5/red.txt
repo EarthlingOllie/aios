@@ -1,0 +1,57 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+.FF.                                                                     [100%]
+=================================== FAILURES ===================================
+______ test_delete_exported_history_while_exporting_starts_the_copy_over _______
+
+api = <starlette.testclient.TestClient object at 0x7f437a14efd0>
+user = <aios.models.User object at 0x7f437a14fed0>
+store_id = UUID('6872b9aa-0295-44c1-bf89-750835cdafaa')
+history_tasks = {'export': [], 'set_up': []}
+
+    def test_delete_exported_history_while_exporting_starts_the_copy_over(
+        api, user, store_id, history_tasks
+    ):
+        agent = make_agent(api, "Bot")
+        runs = [new_run(api, agent) for _ in range(2)]
+        for run in runs:
+            chat(api, agent, run, "hi")
+        switch(api, True)
+        set_up_and_export(store_id, history_tasks)
+        history_tasks["export"].clear()
+    
+        assert api.delete("/api/settings/exported-history").status_code == 204
+    
+        # Emptied, and nothing is said to have been exported since.
+        assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+>       assert settings(api)["history_exported_at"] is None
+E       AssertionError: assert '2026-10-16T13:29:46.606513Z' is None
+
+tests/test_history_export.py:258: AssertionError
+____________ test_delete_exported_history_while_off_keeps_it_empty _____________
+
+api = <starlette.testclient.TestClient object at 0x7f437a14ec10>
+user = <aios.models.User object at 0x7f437a14c410>
+store_id = UUID('450d1cf6-eafe-47c0-a298-9dadf5c8110b')
+history_tasks = {'export': [], 'set_up': []}
+
+    def test_delete_exported_history_while_off_keeps_it_empty(api, user, store_id, history_tasks):
+        agent = make_agent(api, "Bot")
+        chat(api, agent, new_run(api, agent), "hi")
+        switch(api, True)
+        set_up_and_export(store_id, history_tasks)
+        switch(api, False)
+        history_tasks["export"].clear()
+    
+        assert api.delete("/api/settings/exported-history").status_code == 204
+        history.export(store_id)
+    
+        assert history_tasks["export"] == []
+        assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+>       assert settings(api)["history_exported_at"] is None
+E       AssertionError: assert '2026-10-16T13:29:47.242421Z' is None
+
+tests/test_history_export.py:281: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_history_export.py::test_delete_exported_history_while_exporting_starts_the_copy_over
+FAILED tests/test_history_export.py::test_delete_exported_history_while_off_keeps_it_empty
+2 failed, 2 passed, 14 deselected in 3.28s

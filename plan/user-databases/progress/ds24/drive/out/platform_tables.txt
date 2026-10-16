@@ -1,0 +1,23 @@
+                List of relations
+ Schema |         Name         | Type  |  Owner   
+--------+----------------------+-------+----------
+ public | agent_runs           | table | aios_app
+ public | agent_version_skills | table | aios_app
+ public | agent_version_tools  | table | aios_app
+ public | agent_versions       | table | aios_app
+ public | agents               | table | aios_app
+ public | alembic_version      | table | aios_app
+ public | data_stores          | table | aios_app
+ public | sandbox_sessions     | table | aios_app
+ public | skill_versions       | table | aios_app
+ public | skills               | table | aios_app
+ public | triggers             | table | aios_app
+ public | users                | table | aios_app
+ public | workflow_edges       | table | aios_app
+ public | workflow_nodes       | table | aios_app
+ public | workflow_run_steps   | table | aios_app
+ public | workflow_runs        | table | aios_app
+ public | workflow_versions    | table | aios_app
+ public | workflows            | table | aios_app
+(18 rows)
+

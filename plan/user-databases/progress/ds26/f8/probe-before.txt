@@ -1,0 +1,10 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+deep jsonb UNCAUGHT RecursionError maximum recursion depth exceeded
+deep json UNCAUGHT RecursionError maximum recursion depth exceeded
+deep jsonb 900 OK {'columns': ['jsonb'], 'rows': [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+NUL in sql OK {'columns': ['?column?'], 'rows': [[1]], 'row_count': 1, 'truncated': False}
+lone surrogate UNCAUGHT UnicodeEncodeError 'utf-8' codec can't encode character '\ud800' in position 8: surrogates not allowed
+infinity date psycopg.Error DataError date too large (after year 10K): 'infinity'
+big interval psycopg.Error DatetimeFieldOverflow interval out of range
+LINE 1: SELECT interval '200000000 years'
+                        ^

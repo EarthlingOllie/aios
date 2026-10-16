@@ -1,0 +1,29 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+'infinity'::date                         ERR DataError: date too large (after year 10K): 'infinity'
+'-infinity'::date                        ERR DataError: date too small (before year 1): '-infinity'
+'5874897-01-01'::date                    ERR DataError: date too large (after year 10K): '5874897-01-01'
+'0044-03-15 BC'::date                    ERR DataError: date too small (before year 1): '0044-03-15 BC'
+'infinity'::timestamp                    ERR DataError: timestamp too large (after year 10K): 'infinity'
+'-infinity'::timestamptz                 ERR DataError: timestamp too small (before year 1): '-infinity'
+'10000-01-01'::timestamp                 ERR DataError: timestamp too large (after year 10K): '10000-01-01 00:00:00'
+'0001-01-01 BC'::timestamptz             ERR DataError: timestamp too small (before year 1): '0001-01-01 00:00:00+00 BC'
+interval '1 day'                         OK  timedelta    datetime.timedelta(days=1)
+interval '1 mon 2 days 03:00'            OK  timedelta    datetime.timedelta(days=32, seconds=10800)
+interval '-1 day 01:00'                  OK  timedelta    datetime.timedelta(days=-1, seconds=3600)
+interval '1000000000 days'               ERR DataError: can't parse interval '1000000000 days': days=1000000000; must have magnitude <= 999999999
+interval '1 year'                        OK  timedelta    datetime.timedelta(days=365)
+'24:00:00'::time                         ERR DataError: can't parse time '24:00:00': hour must be in 0..23
+'24:00:00+00'::timetz                    ERR DataError: can't parse timetz '24:00:00+00': hour must be in 0..23
+'NaN'::numeric                           OK  Decimal      Decimal('NaN')
+'Infinity'::numeric                      OK  Decimal      Decimal('Infinity')
+'2026-10-16 12:00'::timestamptz          OK  datetime     datetime.datetime(2026, 10, 16, 12, 0, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC'))
+'12:00+05'::timetz                       OK  time         datetime.time(12, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=18000)))
+'[2026-01-01,infinity)'::daterange       ERR DataError: date too large (after year 10K): 'infinity'
+ARRAY['infinity'::date]                  ERR DataError: can't parse date 'infinity}': unexpected length
+'(1,2)'::point                           OK  str          '(1,2)'
+'a'::"char"                              OK  str          'a'
+'1'::money                               OK  str          '$1.00'
+'{"a":1}'::json                          OK  dict         {'a': 1}
+'10.0.0.1'::inet                         OK  IPv4Address  IPv4Address('10.0.0.1')
+'101'::bit(3)                            OK  str          '101'
+('Etc/UTC',) ('ISO, MDY',) ('postgres',)

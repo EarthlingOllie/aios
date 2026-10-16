@@ -1,0 +1,21 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_the_ingest_task_takes_messages_queued_before_data_stores _________
+
+db = <sqlalchemy.orm.session.Session object at 0x7faabd565940>
+user = <aios.models.User object at 0x7faabd565a90>, offline_ingest = None
+
+    def test_the_ingest_task_takes_messages_queued_before_data_stores(db, user, offline_ingest):
+        """Uploads queued while the previous release was running carry only the document's id."""
+        doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+        db.add(doc)
+        db.commit()
+    
+>       worker.ingest_document_task.run(doc.id)
+E       TypeError: ingest_document_task() missing 1 required positional argument: 'document_id'
+
+tests/test_data_stores.py:103: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_the_ingest_task_takes_messages_queued_before_data_stores
+1 failed, 12 deselected in 0.20s

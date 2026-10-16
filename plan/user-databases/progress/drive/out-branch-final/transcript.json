@@ -1,0 +1,163 @@
+[
+  {
+    "consoleError": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  },
+  {
+    "step": "signed in",
+    "me": "browser-check"
+  },
+  {
+    "step": "uploaded",
+    "sidebar": [
+      "cats.md\n2 chunks",
+      "fish.md\n2 chunks"
+    ]
+  },
+  {
+    "api": "GET /api/documents",
+    "body": [
+      {
+        "filename": "cats.md",
+        "status": "ready",
+        "error": null,
+        "chunk_count": 2
+      },
+      {
+        "filename": "fish.md",
+        "status": "ready",
+        "error": null,
+        "chunk_count": 2
+      }
+    ]
+  },
+  {
+    "step": "searched",
+    "results": [
+      "4 passages, best match first",
+      "fish.md",
+      "Semantic #1",
+      "Keyword #1",
+      "0.0328",
+      "fish.md",
+      "The zebrafish genome was sequenced in 2013.",
+      "fish.md",
+      "Semantic #2",
+      "0.0161",
+      "fish.md",
+      "Zebrafish embryos are transparent.",
+      "cats.md",
+      "Semantic #3",
+      "0.0159",
+      "cats.md",
+      "Cats purr when content.",
+      "cats.md",
+      "Semantic #4",
+      "0.0156",
+      "cats.md",
+      "A cat sleeps most of the day."
+    ]
+  },
+  {
+    "api": "GET /api/search?q=zebrafish genome",
+    "body": [
+      {
+        "filename": "fish.md",
+        "text": "The zebrafish genome was sequenced in 2013.",
+        "meta": {
+          "headings": [
+            "fish.md"
+          ]
+        },
+        "score": 0.032787,
+        "semantic_rank": 1,
+        "lexical_rank": 1
+      },
+      {
+        "filename": "fish.md",
+        "text": "Zebrafish embryos are transparent.",
+        "meta": {
+          "headings": [
+            "fish.md"
+          ]
+        },
+        "score": 0.016129,
+        "semantic_rank": 2,
+        "lexical_rank": null
+      },
+      {
+        "filename": "cats.md",
+        "text": "Cats purr when content.",
+        "meta": {
+          "headings": [
+            "cats.md"
+          ]
+        },
+        "score": 0.015873,
+        "semantic_rank": 3,
+        "lexical_rank": null
+      },
+      {
+        "filename": "cats.md",
+        "text": "A cat sleeps most of the day.",
+        "meta": {
+          "headings": [
+            "cats.md"
+          ]
+        },
+        "score": 0.015625,
+        "semantic_rank": 4,
+        "lexical_rank": null
+      }
+    ]
+  },
+  {
+    "step": "deleted cats.md",
+    "sidebar": [
+      "fish.md\n2 chunks"
+    ]
+  },
+  {
+    "api": "GET /api/documents",
+    "body": [
+      {
+        "filename": "fish.md",
+        "status": "ready",
+        "error": null,
+        "chunk_count": 2
+      }
+    ]
+  },
+  {
+    "api": "DELETE missing doc",
+    "status": 404
+  },
+  {
+    "api": "GET /api/search after delete",
+    "body": [
+      {
+        "filename": "fish.md",
+        "text": "Zebrafish embryos are transparent.",
+        "meta": {
+          "headings": [
+            "fish.md"
+          ]
+        },
+        "score": 0.016393,
+        "semantic_rank": 1,
+        "lexical_rank": null
+      },
+      {
+        "filename": "fish.md",
+        "text": "The zebrafish genome was sequenced in 2013.",
+        "meta": {
+          "headings": [
+            "fish.md"
+          ]
+        },
+        "score": 0.016129,
+        "semantic_rank": 2,
+        "lexical_rank": null
+      }
+    ]
+  }
+]

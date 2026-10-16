@@ -1,0 +1,11 @@
+
+Running 1 test using 1 worker
+
+after No documents yet visible while loading: false
+after chat 'Upload files' visible while loading: false
+[WebServer] 1:05:58 PM [vite] http proxy error: /api/documents
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✓  1 e2e/zz-shot.spec.ts:4:3 › after (13.9s)
+
+  1 passed (26.2s)

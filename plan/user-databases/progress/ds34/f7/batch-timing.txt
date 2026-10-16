@@ -1,0 +1,8 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+
+RUNS=501 msgs/run=80 batches=11
+per-batch seconds: [2.52, 1.99, 1.98, 2.01, 1.93, 2.06, 2.2, 2.01, 2.08, 2.24, 0.05]
+avg full batch 2.10s; ms/run 42.1
+runs exportable in ingest_time_limit (1800s): ~42787
+.
+1 passed in 23.19s

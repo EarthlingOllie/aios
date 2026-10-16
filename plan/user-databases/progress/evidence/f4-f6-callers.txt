@@ -1,0 +1,12 @@
+src/aios/worker.py:39:def ingest_document_task(data_store_id: str | int, document_id: int | None = None) -> None:
+src/aios/api/documents.py:15:from aios.worker import ingest_document_task
+src/aios/api/documents.py:96:            ingest_document_task.delay(str(store_id), doc.id)
+---
+src/aios/workflows.py:614:                context=ChatDeps(
+src/aios/api/agents.py:787:                context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
+src/aios/api/chat.py:39:                context=ChatDeps(user_id=user.id, data_store_id=data_store_id),
+---
+tests/test_tools.py:379:    assert spy["deps"] == ChatDeps(user_id=user.id, run_id=run["id"])
+tests/test_run_python.py:141:    assert spy["deps"] == ChatDeps(user_id=spy["deps"].user_id, run_id=run["id"])
+tests/test_run_python.py:447:        context = ChatDeps(user_id=1)
+tests/test_agents.py:44:            seen["deps"] = ChatDeps(user_id=self.user_id, run_id=self.run_id)

@@ -1,0 +1,47 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-a79ad339f55bbb311/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 03:14:16
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f9334d67cb0
+- ** ---------- .> transport:   redis://localhost:6386/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> provisioning     exchange=provisioning(direct) key=provisioning
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+
+[2026-10-16 03:14:16,752: INFO/MainProcess] Connected to redis://localhost:6386/0
+[2026-10-16 03:14:16,754: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 03:14:17,762: INFO/MainProcess] mingle: all alone
+[2026-10-16 03:14:17,775: INFO/MainProcess] celery@vm ready.
+[2026-10-16 03:14:17,778: INFO/MainProcess] Task aios.provision_data_store[9e29225e-7816-4cd6-804b-66c275caa0c1] received
+[2026-10-16 03:14:18,118: INFO/ForkPoolWorker-1] Context impl PostgresqlImpl.
+[2026-10-16 03:14:18,118: INFO/ForkPoolWorker-1] Will assume transactional DDL.
+[2026-10-16 03:14:18,132: INFO/ForkPoolWorker-1] Running upgrade  -> 0001, schema history
+[2026-10-16 03:14:18,143: INFO/ForkPoolWorker-1] Running upgrade 0001 -> 0002, data schema
+[2026-10-16 03:14:18,157: INFO/ForkPoolWorker-1] Data store 6a22135c-7384-4290-92f5-ebb60071dc04 is ready at revision 0002
+[2026-10-16 03:14:18,157: INFO/ForkPoolWorker-1] Task aios.provision_data_store[9e29225e-7816-4cd6-804b-66c275caa0c1] succeeded in 0.37821738299999197s: None
+[2026-10-16 03:14:21,025: INFO/MainProcess] Task aios.provision_data_store[75ebc2a9-a456-4488-814d-5d52a4abd6ea] received
+[2026-10-16 03:14:21,268: INFO/ForkPoolWorker-1] Task aios.provision_data_store[75ebc2a9-a456-4488-814d-5d52a4abd6ea] succeeded in 0.24216873699970165s: None
+
+worker: Warm shutdown (MainProcess)

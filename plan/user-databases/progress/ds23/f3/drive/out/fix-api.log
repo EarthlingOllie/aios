@@ -1,0 +1,17 @@
+INFO:     Started server process [23206]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8193 (Press CTRL+C to quit)
+INFO:     127.0.0.1:60068 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60076 - "GET /auth/callback?code=x&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:60092 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60104 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60116 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60126 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60140 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60150 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60154 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [23206]

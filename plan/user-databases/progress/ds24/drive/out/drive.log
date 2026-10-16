@@ -1,0 +1,66 @@
+1. user A signs up; their store is provisioned
+  [-2400] GET /api/me 200
+  [-2400] GET /api/me 200
+  [-2400] GET /api/data-store 200
+  [-2400] GET /api/data-store 200
+  [-2400] GET /api/documents 200
+  [-2400] GET /api/documents 200
+  [-2400] GET /api/documents 200
+2. user A uploads; the ingest worker writes the chunks into A's store
+  [-2400] POST /api/documents 201
+  [-2400] GET /api/documents 200
+  [-2400] GET /api/documents 200
+   hedgehogs.md: ready, 3 chunks
+3. the search page finds the passage
+  [-2400] GET /api/me 200
+  [-2400] GET /api/me 200
+  [-2400] GET /api/search?q=what+do+hedgehogs+eat&limit=8 200
+  [-2400] GET /api/search?q=what+do+hedgehogs+eat&limit=8 200
+4. the documents chat searches A's store
+  [-2400] GET /api/me 200
+  [-2400] GET /api/me 200
+  [-2400] GET /api/documents 200
+  [-2400] GET /api/data-store 200
+  [-2400] GET /api/data-store 200
+  [-2400] GET /api/documents 200
+  [-2400] GET /api/documents 200
+  [-2400] POST /api/chat 200
+   reply: Found: Hedgehogs eat beetles and worms at night. | # Hedgehogs | They hibernate in winter.
+5. an agent with the document search tool searches A's store
+   agent saved with hybrid_search: 200
+  [-2400] GET /api/me 200
+  [-2400] GET /api/me 200
+  [-2400] GET /api/agents 200
+  [-2400] GET /api/agents/879 200
+  [-2400] GET /api/agents/879/runs/564 200
+  [-2400] GET /api/agents 200
+  [-2400] GET /api/agents/879 200
+  [-2400] GET /api/agents/879/runs/564 200
+  [-2400] POST /api/agents/879/runs/564/chat 200
+  [-2400] GET /api/agents 200
+  [-2400] GET /api/agents/879/runs/564 200
+   reply: Found: They hibernate in winter. | # Hedgehogs | Hedgehogs eat beetles and worms at night.
+6. user B signs up: none of A's documents, search and chat find nothing
+  [-2401] GET /api/me 200
+  [-2401] GET /api/me 200
+  [-2401] GET /api/data-store 200
+  [-2401] GET /api/documents 200
+  [-2401] GET /api/data-store 200
+  [-2401] GET /api/documents 200
+  [-2401] GET /api/documents 200
+   B's documents: []
+  [-2401] GET /api/me 200
+  [-2401] GET /api/me 200
+  [-2401] GET /api/search?q=what+do+hedgehogs+eat&limit=8 200
+  [-2401] GET /api/search?q=what+do+hedgehogs+eat&limit=8 200
+   B's search hits: []
+  [-2401] GET /api/me 200
+  [-2401] GET /api/me 200
+  [-2401] GET /api/data-store 200
+  [-2401] GET /api/data-store 200
+  [-2401] GET /api/documents 200
+  [-2401] GET /api/documents 200
+  [-2401] GET /api/documents 200
+  [-2401] POST /api/chat 200
+   B's chat reply: Found: nothing
+DONE

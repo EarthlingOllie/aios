@@ -1,0 +1,4 @@
+
+> aios-web@0.1.0 typecheck /home/user/aios/.claude/worktrees/agent-a324b5be96f802bcb/frontend
+> tsc -b
+

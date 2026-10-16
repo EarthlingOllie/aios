@@ -1,0 +1,96 @@
+upload disabled while provisioning: true
+agent detail lists tools: true true
+asked "Which is the heaviest fish?" -> "The data tools refused: The user's data store is still being set up, so there's no data to read yet."
+store ready; upload enabled
+made data.fish; other store: ds_e4fdad38427b41be8d2c54aa9171f512
+asked "Which is the heaviest fish?" -> "The heaviest catch is the carp, at 7.5 kg (from data.fish)."
+asked "Please delete the fish" -> "I couldn't delete anything: cannot execute DELETE in a read-only transaction (SQLSTATE 25006)"
+asked "Run something slow" -> "The slow query was stopped: The query ran past the time limit and was stopped. Try a cheaper one."
+asked "Read the other store ds_e4fdad38427b41be8d2c54aa9171f512" -> "Reaching another store failed: cross-database references are not implemented: \"ds_e4fdad38427b41be8d2c54aa9171f512.data.secrets\" (SQLSTATE 0A000)"
+API responses:
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/tools 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/skills 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/skills 200
+GET http://localhost:5196/api/tools 200
+POST http://localhost:5196/api/agents 201
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/tools 200
+GET http://localhost:5196/api/agents/953/runs 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/versions 200
+GET http://localhost:5196/api/tools 200
+GET http://localhost:5196/api/agents/953/versions 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs 200
+POST http://localhost:5196/api/agents/953/runs 201
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+POST http://localhost:5196/api/agents/953/runs/708/chat 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/documents 409
+GET http://localhost:5196/api/data-store 200
+GET http://localhost:5196/api/documents 409
+GET http://localhost:5196/api/data-store 200
+GET http://localhost:5196/api/data-store 200
+GET http://localhost:5196/api/data-store 200
+GET http://localhost:5196/api/documents 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+POST http://localhost:5196/api/agents/953/runs/708/chat 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+POST http://localhost:5196/api/agents/953/runs/708/chat 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+POST http://localhost:5196/api/agents/953/runs/708/chat 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/me 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953 200
+GET http://localhost:5196/api/agents/953/runs/708 200
+POST http://localhost:5196/api/agents/953/runs/708/chat 200
+GET http://localhost:5196/api/agents 200
+GET http://localhost:5196/api/agents/953/runs/708 200

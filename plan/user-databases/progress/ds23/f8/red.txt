@@ -1,0 +1,37 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_migrate_all_runs_each_store_to_head_once _________________
+
+db = <sqlalchemy.orm.session.Session object at 0x7f9d8f4a3770>
+new_user = <function new_user.<locals>.make at 0x7f9d8f5279c0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9d8f5b3bb0>
+
+    def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
+        """A store it has just provisioned is already at head: it isn't migrated again."""
+        unfinished = data_store_for(new_user().id)
+        ready = data_store_for(new_user().id)
+        provision.provision(ready)
+        upgrades = []
+        upgrade_store = provision.upgrade_store
+    
+        def counted(names):
+            upgrades.append(names.dbname)
+            return upgrade_store(names)
+    
+        monkeypatch.setattr(provision, "upgrade_store", counted)
+    
+        outcome = provision.migrate_all([unfinished, ready])
+    
+        assert outcome == {unfinished: head_revision(), ready: head_revision()}
+>       assert sorted(upgrades) == sorted(store_row(db, s).dbname for s in (unfinished, ready))
+E       AssertionError: assert ['ds_a04911da...7d2ace515162'] == ['ds_a04911da...7d2ace515162']
+E         
+E         At index 1 diff: 'ds_a04911da4f6346a293d2d79890dd5a76' != 'ds_ae5e7d054ef84cf8903e7d2ace515162'
+E         Left contains one more item: 'ds_ae5e7d054ef84cf8903e7d2ace515162'
+E         Use -v to get more diff
+
+tests/test_provisioning.py:374: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_provisioning.py::test_migrate_all_runs_each_store_to_head_once
+1 failed, 21 deselected in 0.96s

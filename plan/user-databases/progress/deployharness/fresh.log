@@ -1,0 +1,27 @@
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform apply -auto-approve -input=false -target=aws_ecr_repository.this
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -raw region
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json ecr_repositories
+aws ecr get-login-password --region us-east-1
+docker login --username AWS --password-stdin 123.dkr.ecr.us-east-1.amazonaws.com
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json ecr_repositories
+docker buildx build --platform linux/amd64 --target api -t 123.dkr.ecr.us-east-1.amazonaws.com/aios-api:newtag --push /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json ecr_repositories
+docker buildx build --platform linux/amd64 --target worker -t 123.dkr.ecr.us-east-1.amazonaws.com/aios-worker:newtag --push /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json ecr_repositories
+docker buildx build --platform linux/amd64 --target sandbox -t 123.dkr.ecr.us-east-1.amazonaws.com/aios-sandbox:newtag --push /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json ecr_repositories
+docker buildx build --platform linux/amd64 -t 123.dkr.ecr.us-east-1.amazonaws.com/aios-web:newtag --push /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/frontend
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform show -json
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform apply -auto-approve -input=false -var image_tag=newtag -var run_services=false -var migrate_image_tag=newtag
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -raw ecs_cluster
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json db_roles_task
+aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-db-roles --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+aws ecs wait tasks-stopped --region us-east-1 --cluster aios --tasks arn:task/aios-db-roles
+aws ecs describe-tasks --region us-east-1 --cluster aios --tasks arn:task/aios-db-roles --query tasks[0].containers[0].exitCode --output text
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -raw ecs_cluster
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -json migrate_task
+aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-migrate --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+aws ecs wait tasks-stopped --region us-east-1 --cluster aios --tasks arn:task/aios-migrate
+aws ecs describe-tasks --region us-east-1 --cluster aios --tasks arn:task/aios-migrate --query tasks[0].containers[0].exitCode --output text
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform apply -auto-approve -input=false -var image_tag=newtag
+terraform -chdir=/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/infra/terraform output -raw url

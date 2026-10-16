@@ -1,0 +1,27 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_stores_that_never_got_there_are_tried_again_on_a_schedule ________
+
+db = <sqlalchemy.orm.session.Session object at 0x7f5643803b60>
+new_user = <function new_user.<locals>.make at 0x7f5643886980>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5643815e00>
+
+    def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user, monkeypatch):
+        gave_up, never_queued, just_signed_up = [data_store_for(new_user().id) for _ in range(3)]
+        provision.fail(gave_up, "OperationalError: the instance is down")
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == never_queued)
+            .values(created_at=text("now() - interval '2 hours'"))
+        )
+        db.commit()
+        # Only this test's stores: others in the database are left alone.
+>       retry = provision.retry_unfinished
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'aios.datastores.provision' has no attribute 'retry_unfinished'
+
+tests/test_provisioning.py:442: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_provisioning.py::test_stores_that_never_got_there_are_tried_again_on_a_schedule
+1 failed, 21 deselected in 0.26s

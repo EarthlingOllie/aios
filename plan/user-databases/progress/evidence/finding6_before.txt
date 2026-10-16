@@ -1,0 +1,3 @@
+E       assert 'cookie_secure' in "DATABASE_ADMIN_URL (the master user's DSN) is required\n"
+E        +  where "DATABASE_ADMIN_URL (the master user's DSN) is required\n" = CompletedProcess(args=['/home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend/.venv/bin/python', '-m', 'aios.db_roles'], returncode=1, stdout='', stderr="DATABASE_ADMIN_URL (the master user's DSN) is required\n").stderr
+1 failed, 2 passed, 14 deselected in 1.93s

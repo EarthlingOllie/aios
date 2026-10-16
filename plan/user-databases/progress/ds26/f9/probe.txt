@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0 -- /home/user/aios/.claude/worktrees/agent-ae6ec8e0fb087a345/backend/.venv/bin/python
+rootdir: /home/user/aios/.claude/worktrees/agent-ae6ec8e0fb087a345/backend
+configfile: pyproject.toml
+plugins: langsmith-0.14.4, anyio-4.15.1
+collecting ... collected 45 items / 44 deselected / 1 selected
+
+tests/test_data_tools.py::test_the_tools_keep_working_call_after_call 

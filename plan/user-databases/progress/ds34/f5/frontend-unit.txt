@@ -1,0 +1,16 @@
+
+> aios-web@0.1.0 test /home/user/aios/.claude/worktrees/agent-a24cbea290d2f1cca/frontend
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/aios/.claude/worktrees/agent-a24cbea290d2f1cca/frontend
+
+
+ Test Files  8 passed (8)
+      Tests  58 passed (58)
+   Start at  19:02:41
+   Duration  1.64s (transform 53%, import 31%, tests 13%, worker 3%)
+
+    Isolate  8 workers spawned · ~259ms startup each (spawn + environment, per file)
+             at least ~431ms faster with isolate: false — reuses workers across files instead of one per file
+

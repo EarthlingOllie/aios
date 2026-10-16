@@ -1,0 +1,40 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_loading_a_turn_resolves_its_store_on_the_turns_connection ________
+
+api = <starlette.testclient.TestClient object at 0x7fc9fd806e40>
+user = <aios.models.User object at 0x7fc9fd7363c0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fc9fd751480>
+
+    def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user, monkeypatch):
+        """A turn's context is loaded on the request's session, without taking a second pooled
+        connection while it holds the first (a burst of turns could otherwise exhaust the pool)."""
+        agent = librarian(api)
+        run = api.post(f"/api/agents/{agent['id']}/runs").json()
+        out = {"now": 0, "most": 0}
+    
+        def checkout(*args):
+            out["now"] += 1
+            out["most"] = max(out["most"], out["now"])
+    
+        def checkin(*args):
+            out["now"] -= 1
+    
+        event.listen(engine, "checkout", checkout)
+        event.listen(engine, "checkin", checkin)
+        try:
+            with SessionLocal() as session:
+                ctx = agents_api.load_chat_context(session, user.id, agent["id"], run["id"])
+        finally:
+            event.remove(engine, "checkout", checkout)
+            event.remove(engine, "checkin", checkin)
+    
+        assert ctx.data_store_id == data_store_for(user.id)
+>       assert out["most"] == 1
+E       assert 2 == 1
+
+tests/test_data_stores.py:192: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_loading_a_turn_resolves_its_store_on_the_turns_connection
+1 failed, 10 deselected in 0.31s

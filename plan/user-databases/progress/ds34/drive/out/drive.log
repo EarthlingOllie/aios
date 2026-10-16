@@ -1,0 +1,147 @@
+store ready
+runs before the export: 262, 263
+settings, off: Off. Nothing has been exported.
+switched on: Off. Nothing has been exported.
+after set-up and backfill: Last exported Oct 16, 2026, 1:20 PM.
+== after backfill (store cb03edb9-cd6e-4403-aa85-2560c530ee2d, as its ro role)
+select current_user -> ds_cb03edb9cd6e4403aa852560c530ee2d_ro
+SELECT id, agent_name, agent_version, title, user_id, message_count FROM history.agent_runs ORDER BY id
+   (262, 'Echo', 1, 'before the export', 581, 2)
+   (263, 'Echo', 1, 'another old run', 581, 2)
+SELECT agent_run_id, position, role, text FROM history.messages ORDER BY 1, 2
+   (262, 0, 'user', 'before the export')
+   (262, 1, 'assistant', 'echo: before the export')
+   (263, 0, 'user', 'another old run')
+   (263, 1, 'assistant', 'echo: another old run')
+
+== polling for the new turn (store cb03edb9-cd6e-4403-aa85-2560c530ee2d, as its ro role)
+select current_user -> ds_cb03edb9cd6e4403aa852560c530ee2d_ro
+SELECT id, agent_name, agent_version, title, user_id, message_count FROM history.agent_runs ORDER BY id
+   (262, 'Echo', 1, 'before the export', 581, 4)
+   (263, 'Echo', 1, 'another old run', 581, 2)
+SELECT agent_run_id, position, role, text FROM history.messages ORDER BY 1, 2
+   (262, 0, 'user', 'before the export')
+   (262, 1, 'assistant', 'echo: before the export')
+   (262, 2, 'user', 'a new turn')
+   (262, 3, 'assistant', 'echo: a new turn')
+   (263, 0, 'user', 'another old run')
+   (263, 1, 'assistant', 'echo: another old run')
+
+new turn exported within 2.2s of being sent
+== polling for the delete (store cb03edb9-cd6e-4403-aa85-2560c530ee2d, as its ro role)
+select current_user -> ds_cb03edb9cd6e4403aa852560c530ee2d_ro
+SELECT id, agent_name, agent_version, title, user_id, message_count FROM history.agent_runs ORDER BY id
+   (262, 'Echo', 1, 'before the export', 581, 4)
+SELECT agent_run_id, position, role, text FROM history.messages ORDER BY 1, 2
+   (262, 0, 'user', 'before the export')
+   (262, 1, 'assistant', 'echo: before the export')
+   (262, 2, 'user', 'a new turn')
+   (262, 3, 'assistant', 'echo: a new turn')
+
+deleted run's copy is gone
+switched off: Off. What was exported is kept. Last exported Oct 16, 2026, 1:20 PM.
+== after switching off and another turn (store cb03edb9-cd6e-4403-aa85-2560c530ee2d, as its ro role)
+select current_user -> ds_cb03edb9cd6e4403aa852560c530ee2d_ro
+SELECT id, agent_name, agent_version, title, user_id, message_count FROM history.agent_runs ORDER BY id
+   (262, 'Echo', 1, 'before the export', 581, 4)
+SELECT agent_run_id, position, role, text FROM history.messages ORDER BY 1, 2
+   (262, 0, 'user', 'before the export')
+   (262, 1, 'assistant', 'echo: before the export')
+   (262, 2, 'user', 'a new turn')
+   (262, 3, 'assistant', 'echo: a new turn')
+
+== after delete exported history (store cb03edb9-cd6e-4403-aa85-2560c530ee2d, as its ro role)
+select current_user -> ds_cb03edb9cd6e4403aa852560c530ee2d_ro
+SELECT id, agent_name, agent_version, title, user_id, message_count FROM history.agent_runs ORDER BY id
+SELECT agent_run_id, position, role, text FROM history.messages ORDER BY 1, 2
+
+exported history deleted: the tables are empty
+after reload, checked: false
+API responses:
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/data-store 200
+GET http://localhost:5134/api/documents 200
+GET http://localhost:5134/api/data-store 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/agents 200
+POST http://localhost:5134/api/agents/459/runs/262/chat 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459/runs/263 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/263 200
+POST http://localhost:5134/api/agents/459/runs/263/chat 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+PUT http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+POST http://localhost:5134/api/agents/459/runs/262/chat 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459/runs/263 200
+GET http://localhost:5134/api/agents/459/runs/263 200
+DELETE http://localhost:5134/api/agents/459/runs/263 204
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/versions 200
+GET http://localhost:5134/api/tools 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459/runs 200
+GET http://localhost:5134/api/agents/459/runs 200
+GET http://localhost:5134/api/agents/459/versions 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/tools 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+PUT http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents/459 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+POST http://localhost:5134/api/agents/459/runs/262/chat 200
+GET http://localhost:5134/api/agents 200
+GET http://localhost:5134/api/agents/459/runs/262 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200
+DELETE http://localhost:5134/api/settings/exported-history 204
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/me 200
+GET http://localhost:5134/api/settings 200
+GET http://localhost:5134/api/settings 200

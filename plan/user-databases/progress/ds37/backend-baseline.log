@@ -1,0 +1,60 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+Roles aios_app and aios_provisioner are ready
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001, initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001 -> 0002, agents and skills
+INFO  [alembic.runtime.migration] Running upgrade 0002 -> 0003, agent version tools
+INFO  [alembic.runtime.migration] Running upgrade 0003 -> 0004, sandbox sessions
+INFO  [alembic.runtime.migration] Running upgrade 0004 -> 0005, agent runs on LangGraph: history moves to the checkpointer
+INFO  [alembic.runtime.migration] Running upgrade 0005 -> 0006, workflows
+INFO  [alembic.runtime.migration] Running upgrade 0006 -> 0007, soft-delete agents and workflows
+INFO  [alembic.runtime.migration] Running upgrade 0007 -> 0008, workflow layout
+INFO  [alembic.runtime.migration] Running upgrade 0008 -> 0009, workflow runs
+INFO  [alembic.runtime.migration] Running upgrade 0009 -> 0010, triggers
+INFO  [alembic.runtime.migration] Running upgrade 0010 -> 0011, data stores
+INFO  [alembic.runtime.migration] Running upgrade 0011 -> 0012, data store databases
+INFO  [alembic.runtime.migration] Running upgrade 0012 -> 0013, documents move to data stores
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+<frozen runpy>:130: RuntimeWarning: 'aios.datastores.provision' found in sys.modules after import of package 'aios.datastores', but prior to execution of 'aios.datastores.provision'; this may result in unpredictable behaviour
+0 data stores at head, 0 failed
+            (connect_request("api.example.com", token(), method="GET"), "405", "only HTTPS"),
+            (b"\r\n\r\n", "405", "only HTTPS"),
+        ],
+    )
+    def test_egress_proxy_refusals(request_bytes, status, reason):
+        head, _ = proxy_exchange(request_bytes)
+>       assert head.startswith(f"HTTP/1.1 {status}")
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x7f8f39ab2250>('HTTP/1.1 403')
+E        +    where <built-in method startswith of str object at 0x7f8f39ab2250> = 'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="sandbox"\r\nContent-Type: text/plain\r\nContent-Length: 31\r\nConnection: close\r\n\r\n'.startswith
+
+tests/test_sandbox.py:137: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sandbox.py::test_egress_proxy_refusals[CONNECT other.com:443 HTTP/1.1\r\nHost: other.com:443\r\nProxy-Authorization: Basic c2FuZGJveDpleUp6SWpvaVlXZGxiblF0Y25WdUxUY2lMQ0prSWpwYkltRndhUzVsZUdGdGNHeGxMbU52YlNKZExDSmxJam94TnpreU1UTTVOak0xZlEuZExRdGRteWhUYW9TN3d2M3hqaHVQUWlnMFNlTlFQLWxGRjdwaXh2QllzVQ==\r\n\r\n-403-isn't in this sandbox's allowed domains]
+1 failed, 326 passed, 1 skipped in 145.36s (0:02:25)
+All checks passed!
+89 files already formatted
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.schemas
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.tables
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.types
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.constraints
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.defaults
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.comments
+INFO  [alembic.ddl.postgresql] Detected sequence named 'agent_runs_id_seq' as owned by integer column 'agent_runs(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'workflows_id_seq' as owned by integer column 'workflows(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'skill_versions_id_seq' as owned by integer column 'skill_versions(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'agents_id_seq' as owned by integer column 'agents(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'sandbox_sessions_id_seq' as owned by integer column 'sandbox_sessions(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'users_id_seq' as owned by integer column 'users(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'workflow_versions_id_seq' as owned by integer column 'workflow_versions(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'skills_id_seq' as owned by integer column 'skills(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'triggers_id_seq' as owned by integer column 'triggers(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'workflow_run_steps_id_seq' as owned by integer column 'workflow_run_steps(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'workflow_runs_id_seq' as owned by integer column 'workflow_runs(id)', assuming SERIAL and omitting
+INFO  [alembic.ddl.postgresql] Detected sequence named 'agent_versions_id_seq' as owned by integer column 'agent_versions(id)', assuming SERIAL and omitting
+No new upgrade operations detected.

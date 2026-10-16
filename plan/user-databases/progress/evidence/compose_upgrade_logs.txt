@@ -1,0 +1,6 @@
+db-roles-1  | Roles aios_app and aios_provisioner are ready
+worker-1           | [2026-10-15 22:15:23,839: INFO/MainProcess] Task aios.ingest_document[fc428a4c-5b97-4275-95e9-5614655bdf4d] received
+worker-1           | [2026-10-15 22:15:24,536: INFO/ForkPoolWorker-1] Task aios.ingest_document[fc428a4c-5b97-4275-95e9-5614655bdf4d] succeeded in 0.6960570969999935s: None
+migrate-1          | INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+workflow-worker-1  | [2026-10-15 22:15:23,841: INFO/MainProcess] Task aios.run_workflow[f2b45d5c-74b7-4dfd-993a-1734f37bbb00] received
+workflow-worker-1  | [2026-10-15 22:15:25,261: INFO/ForkPoolWorker-1] Task aios.run_workflow[f2b45d5c-74b7-4dfd-993a-1734f37bbb00] succeeded in 1.41879747400003s: None

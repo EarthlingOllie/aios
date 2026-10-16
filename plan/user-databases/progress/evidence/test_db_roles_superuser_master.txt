@@ -1,0 +1,19 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0 -- /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/aios/.claude/worktrees/agent-a4fdf4a3db18716fe/backend
+configfile: pyproject.toml
+plugins: langsmith-0.14.4, anyio-4.15.1
+collecting ... collected 8 items
+
+tests/test_db_roles.py::test_app_role_cannot_create_databases_or_roles PASSED [ 12%]
+tests/test_db_roles.py::test_provisioner_role_can_create_databases_and_roles PASSED [ 25%]
+tests/test_db_roles.py::test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles PASSED [ 37%]
+tests/test_db_roles.py::test_command_creates_the_roles_from_the_environment PASSED [ 50%]
+tests/test_db_roles.py::test_command_needs_the_master_users_url PASSED   [ 62%]
+tests/test_db_roles.py::test_rerunning_changes_the_passwords PASSED      [ 75%]
+tests/test_db_roles.py::test_migrations_and_checkpointer_setup_run_as_app_role PASSED [ 87%]
+tests/test_db_roles.py::test_a_database_migrated_as_the_master_user_is_handed_to_app_role PASSED [100%]
+
+============================== 8 passed in 6.11s ===============================

@@ -1,0 +1,57 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-ad9f7ec867ab4b8b2/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- provf1@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 19:09:26
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f5017d4fe00
+- ** ---------- .> transport:   redis://localhost:6801/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> provisioning     exchange=provisioning(direct) key=provisioning
+                
+
+[tasks]
+  . aios.export_history
+  . aios.export_pending_history
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+  . aios.set_up_history_export
+
+[2026-10-16 19:09:26,321: INFO/Beat] beat: Starting...
+[2026-10-16 19:09:26,333: INFO/MainProcess] Connected to redis://localhost:6801/0
+[2026-10-16 19:09:26,342: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 19:09:27,366: INFO/MainProcess] mingle: all alone
+[2026-10-16 19:09:27,375: INFO/MainProcess] provf1@vm ready.
+[2026-10-16 19:09:29,539: INFO/MainProcess] Task aios.provision_data_store[e2bd0cc5-7c78-45d0-9d6c-ebf949b2aa1f] received
+[2026-10-16 19:09:29,914: INFO/ForkPoolWorker-2] Context impl PostgresqlImpl.
+[2026-10-16 19:09:29,914: INFO/ForkPoolWorker-2] Will assume transactional DDL.
+[2026-10-16 19:09:29,931: INFO/ForkPoolWorker-2] Running upgrade  -> 0001, schema history
+[2026-10-16 19:09:29,948: INFO/ForkPoolWorker-2] Running upgrade 0001 -> 0002, documents and chunks
+[2026-10-16 19:09:30,020: INFO/ForkPoolWorker-2] Data store c00c2fa7-2a6e-44de-b56c-a3e3811bd5db is ready at revisions Revisions(aios='0002', history=None)
+[2026-10-16 19:09:30,021: INFO/ForkPoolWorker-2] Task aios.provision_data_store[e2bd0cc5-7c78-45d0-9d6c-ebf949b2aa1f] succeeded in 0.48042438000004495s: None
+[2026-10-16 19:09:31,345: INFO/MainProcess] Task aios.set_up_history_export[de30917d-a490-4e85-bbfd-731e504831f0] received
+[2026-10-16 19:09:31,535: INFO/ForkPoolWorker-2] Context impl PostgresqlImpl.
+[2026-10-16 19:09:31,535: INFO/ForkPoolWorker-2] Will assume transactional DDL.
+[2026-10-16 19:09:31,543: INFO/ForkPoolWorker-2] Context impl PostgresqlImpl.
+[2026-10-16 19:09:31,543: INFO/ForkPoolWorker-2] Will assume transactional DDL.
+[2026-10-16 19:09:31,546: INFO/ForkPoolWorker-2] Running upgrade  -> h0001, run history
+[2026-10-16 19:09:31,584: INFO/ForkPoolWorker-2] Task aios.set_up_history_export[de30917d-a490-4e85-bbfd-731e504831f0] succeeded in 0.2376185320000559s: None
+
+worker: Warm shutdown (MainProcess)
+[2026-10-16 19:09:37,348: INFO/MainProcess] beat: Shutting down...

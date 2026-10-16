@@ -1,0 +1,34 @@
+== running stack
+PASS db-roles task runs
+PASS db-roles runs before the migration
+PASS db-roles runs before the first untargeted apply
+PASS the targeted apply covers db_roles_task's resources
+PASS the targeted apply leaves the app's secret alone
+   0 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -target=aws_ecr_repository.this
+   1 terraform -chdir=<wt>/infra/terraform output -raw region
+  13 terraform -chdir=<wt>/infra/terraform show -json
+  14 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=oldtag -var migrate_image_tag=newtag -target=aws_secretsmanager_secret_version.db_master -target=aws_ecs_task_definition.db_roles -target=aws_iam_role_policy.execution_db_roles_secrets -target=aws_iam_role_policy_attachment.execution_db_roles -target=aws_subnet.private -target=aws_security_group.app
+  15 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  16 terraform -chdir=<wt>/infra/terraform output -json db_roles_task
+  17 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-db-roles --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  20 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=oldtag -var migrate_image_tag=newtag
+  21 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  22 terraform -chdir=<wt>/infra/terraform output -json migrate_task
+  23 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-migrate --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  26 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag
+  27 terraform -chdir=<wt>/infra/terraform output -raw url
+== fresh stack
+PASS db-roles task runs
+PASS db-roles runs before the migration
+   0 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -target=aws_ecr_repository.this
+   1 terraform -chdir=<wt>/infra/terraform output -raw region
+  13 terraform -chdir=<wt>/infra/terraform show -json
+  14 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag -var run_services=false -var migrate_image_tag=newtag
+  15 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  16 terraform -chdir=<wt>/infra/terraform output -json db_roles_task
+  17 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-db-roles --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  20 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  21 terraform -chdir=<wt>/infra/terraform output -json migrate_task
+  22 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-migrate --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  25 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag
+  26 terraform -chdir=<wt>/infra/terraform output -raw url

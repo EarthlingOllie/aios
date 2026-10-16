@@ -1,0 +1,34 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed ________
+
+api = <starlette.testclient.TestClient object at 0x7f4eace1ee40>
+db = <sqlalchemy.orm.session.Session object at 0x7f4eaccba270>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4eacd455b0>
+
+    def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, monkeypatch):
+        """Resolving the store is part of claiming the run, so if it fails the run isn't left
+        `running` with no worker (a redelivery could never start it)."""
+        monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+        workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
+        started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
+    
+        def unavailable(*args, **kwargs):
+            raise OperationalError("SELECT", {}, Exception("connection lost"))
+    
+        monkeypatch.setattr(workflows, "data_store_for", unavailable)
+        with pytest.raises(OperationalError):
+            asyncio.run(execute_run(started["id"]))
+    
+        run = db.get(WorkflowRun, started["id"])
+>       assert (run.status, run.started_at) == (WorkflowRunStatus.queued, None)
+E       AssertionError: assert (<WorkflowRun...y='Etc/UTC'))) == (<WorkflowRun...ueued'>, None)
+E         
+E         At index 0 diff: <WorkflowRunStatus.running: 'running'> != <WorkflowRunStatus.queued: 'queued'>
+E         Use -v to get more diff
+
+tests/test_data_stores.py:163: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed
+1 failed, 9 deselected in 0.40s

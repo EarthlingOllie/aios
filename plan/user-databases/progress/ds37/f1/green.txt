@@ -1,0 +1,7 @@
+
+Running 2 tests using 2 workers
+
+  ✓  1 e2e/data-page.spec.ts:209:1 › uploads still in flight when you switch tabs keep their progress and errors (9.4s)
+  ✓  2 e2e/data-page.spec.ts:241:1 › an upload from the chat that finishes after you open the Data page still appears there (9.2s)
+
+  2 passed (23.6s)

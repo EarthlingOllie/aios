@@ -1,0 +1,65 @@
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/lib/settings.test.ts > historyExportStatus > says the store has no exported history once it's deleted while off
+AssertionError: expected 'Off. What was exported is kept. Nothi…' to be 'Off. Your data store has no exported …' // Object.is equality
+
+Expected: "Off. Your data store has no exported history."
+Received: "Off. What was exported is kept. Nothing was exported."
+
+ ❯ src/lib/settings.test.ts:44:40
+     42|   it("says the store has no exported history once it's deleted while o…
+     43|     const s = settings({ history_ready: true });
+     44|     expect(historyExportStatus(s, at)).toBe("Off. Your data store has …
+       |                                        ^
+     45|     expect(historyExportPending(s)).toBe(false);
+     46|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 passed (5)
+   Start at  19:01:11
+   Duration  970ms (transform 53%, import 35%, worker 7%, tests 4%)
+
+
+  3) e2e/settings.spec.ts:63:1 › deleting exported history while it's on starts the export over ────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('Exported history deleted. All your runs are exported again.')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByText('Exported history deleted. All your runs are exported again.') with timeout 5000ms
+      - waiting for getByText('Exported history deleted. All your runs are exported again.')
+
+
+      80 |   await expect(
+      81 |     page.getByText("Exported history deleted. All your runs are exported again."),
+    > 82 |   ).toBeVisible();
+         |     ^
+      83 |   expect(asked).toContain("switch the export off first");
+      84 |   expect(api.exportedHistoryDeletes).toBe(1);
+      85 |
+        at /home/user/aios/.claude/worktrees/agent-a24cbea290d2f1cca/frontend/e2e/settings.spec.ts:82:5
+
+    Error Context: test-results/settings-deleting-exported-7ff76-s-on-starts-the-export-over/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/settings-deleting-exported-7ff76-s-on-starts-the-export-over/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/settings-deleting-exported-7ff76-s-on-starts-the-export-over/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+  3 failed
+    e2e/settings.spec.ts:7:1 › switching the export on sets the store up, then says when it last ran 
+    e2e/settings.spec.ts:38:1 › switching it off keeps what was exported, which can then be deleted 
+    e2e/settings.spec.ts:63:1 › deleting exported history while it's on starts the export over ─────
+  2 passed (32.4s)

@@ -1,0 +1,43 @@
+
+Running 1 test using 1 worker
+
+  ✘  1 e2e/data-store.spec.ts:65:1 › a busy store doesn't tell the chat panel there are no documents (11.6s)
+
+
+  1) e2e/data-store.spec.ts:65:1 › a busy store doesn't tell the chat panel there are no documents ─
+
+    Error: expect(locator).toBeHidden() failed
+
+    Locator:  getByText('Upload files to search them in chat.')
+    Expected: hidden
+    Received: visible
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toBeHidden" getByText('Upload files to search them in chat.') with timeout 5000ms
+      - waiting for getByText('Upload files to search them in chat.')
+        13 × locator resolved to <li class="text-muted-foreground text-sm">Upload files to search them in chat.</li>
+           - unexpected value "visible"
+
+
+      73 |   );
+      74 |   await page.screenshot({ path: process.env.F6_SHOT ?? "test-results/f6-busy.png" });
+    > 75 |   await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+         |                                                                        ^
+      76 |
+      77 |   api.dataStoreBusy = false;
+      78 |   await expect(page.getByText("report.pdf")).toBeVisible();
+        at /home/user/aios/.claude/worktrees/ds37-f6/frontend/e2e/data-store.spec.ts:75:72
+
+    Error Context: test-results/data-store-a-busy-store-do-7e13e-anel-there-are-no-documents/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-store-a-busy-store-do-7e13e-anel-there-are-no-documents/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-store-a-busy-store-do-7e13e-anel-there-are-no-documents/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    e2e/data-store.spec.ts:65:1 › a busy store doesn't tell the chat panel there are no documents ──

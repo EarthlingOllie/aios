@@ -1,0 +1,13 @@
+
+> aios-web@0.1.0 test /home/user/aios/.claude/worktrees/agent-a5755f85feb67858d/frontend
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/aios/.claude/worktrees/agent-a5755f85feb67858d/frontend
+
+
+ Test Files  7 passed (7)
+      Tests  53 passed (53)
+   Start at  23:32:24
+   Duration  890ms (transform 50%, import 32%, tests 14%, worker 4%)
+

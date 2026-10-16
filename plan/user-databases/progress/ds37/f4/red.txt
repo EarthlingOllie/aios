@@ -1,0 +1,83 @@
+
+Running 2 tests using 2 workers
+
+[WebServer] 1:06:03 PM [vite] http proxy error: /api/documents
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 1:06:03 PM [vite] http proxy error: /api/documents
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+[WebServer] 1:06:03 PM [vite] http proxy error: /api/documents
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✘  2 e2e/data-page.spec.ts:241:1 › a slow list doesn't stack up polls behind it (12.9s)
+  ✘  1 e2e/data-page.spec.ts:211:1 › a slow poll that answers after a delete doesn't bring the document back (16.0s)
+
+
+  1) e2e/data-page.spec.ts:211:1 › a slow poll that answers after a delete doesn't bring the document back 
+
+    Error: expect(locator).toHaveCount(expected) failed
+
+    Locator:  getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'drop.md' })
+    Expected: 0
+    Received: 1
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toHaveCount" getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'drop.md' }) with timeout 5000ms
+      - waiting for getByRole('list', { name: 'Documents' }).getByRole('listitem').filter({ hasText: 'drop.md' })
+        13 × locator resolved to 1 element
+           - unexpected value "1"
+
+
+      235 |   await stale;
+      236 |   await page.waitForTimeout(300);
+    > 237 |   await expect(row(page, "drop.md")).toHaveCount(0);
+          |                                      ^
+      238 |   await expect(row(page, "slides.pptx")).toBeVisible();
+      239 | });
+      240 |
+        at /home/user/aios/.claude/worktrees/ds37-f4/frontend/e2e/data-page.spec.ts:237:38
+
+    Error Context: test-results/data-page-a-slow-poll-that-1caf5-n-t-bring-the-document-back/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-a-slow-poll-that-1caf5-n-t-bring-the-document-back/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-a-slow-poll-that-1caf5-n-t-bring-the-document-back/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) e2e/data-page.spec.ts:241:1 › a slow list doesn't stack up polls behind it ────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 5
+
+    Call Log:
+    - Timeout 5000ms exceeded while waiting on the predicate
+
+      250 |   api.holdDocumentLists();
+      251 |   await page.clock.runFor(10_000);
+    > 252 |   await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+          |                                                         ^
+      253 |   await page.waitForTimeout(300);
+      254 |   expect(api.heldDocumentLists).toHaveLength(1);
+      255 |
+        at /home/user/aios/.claude/worktrees/ds37-f4/frontend/e2e/data-page.spec.ts:252:57
+
+    Error Context: test-results/data-page-a-slow-list-doesn-t-stack-up-polls-behind-it/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-a-slow-list-doesn-t-stack-up-polls-behind-it/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-a-slow-list-doesn-t-stack-up-polls-behind-it/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    e2e/data-page.spec.ts:211:1 › a slow poll that answers after a delete doesn't bring the document back 
+    e2e/data-page.spec.ts:241:1 › a slow list doesn't stack up polls behind it ─────────────────────

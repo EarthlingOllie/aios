@@ -1,0 +1,28 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0 -- /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend/.venv/bin/python
+rootdir: /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend
+configfile: pyproject.toml
+plugins: langsmith-0.14.4, anyio-4.15.1
+collecting ... collected 18 items
+
+tests/test_history_export.py::test_the_export_is_off_until_switched_on_and_the_setting_persists PASSED [  5%]
+tests/test_history_export.py::test_switching_it_on_creates_the_history_tables_and_backfills_existing_runs PASSED [ 11%]
+tests/test_history_export.py::test_a_turn_that_ends_is_exported_shortly_after PASSED [ 16%]
+tests/test_history_export.py::test_exporting_again_gives_no_duplicates_and_catches_up_with_new_turns PASSED [ 22%]
+tests/test_history_export.py::test_a_turn_that_fails_exports_what_the_user_saw PASSED [ 27%]
+tests/test_history_export.py::test_deleting_a_run_or_its_agent_deletes_its_copy PASSED [ 33%]
+tests/test_history_export.py::test_switching_it_off_stops_the_export_and_keeps_what_was_exported PASSED [ 38%]
+tests/test_history_export.py::test_delete_exported_history_empties_it PASSED [ 44%]
+tests/test_history_export.py::test_delete_exported_history_before_the_export_ever_ran PASSED [ 50%]
+tests/test_history_export.py::test_an_export_of_a_store_already_exporting_leaves_it_to_that_one PASSED [ 55%]
+tests/test_history_export.py::test_delete_exported_history_while_an_export_is_running_is_busy PASSED [ 61%]
+tests/test_history_export.py::test_the_store_roles_may_read_the_history_tables_and_only_rw_write_them PASSED [ 66%]
+tests/test_history_export.py::test_a_workflow_runs_agent_turns_are_exported_and_go_with_the_workflow_run PASSED [ 72%]
+tests/test_history_export.py::test_messages_are_flattened_to_role_text_tool_calls_and_usage PASSED [ 77%]
+tests/test_history_export.py::test_a_change_that_is_rolled_back_queues_no_export PASSED [ 83%]
+tests/test_history_export.py::test_the_sweep_queues_exporting_stores_with_runs_still_waiting PASSED [ 88%]
+tests/test_history_export.py::test_the_export_task_tries_a_busy_store_again PASSED [ 94%]
+tests/test_history_export.py::test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned PASSED [100%]
+
+============================= 18 passed in 27.50s ==============================

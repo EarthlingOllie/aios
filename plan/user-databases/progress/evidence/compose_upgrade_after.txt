@@ -1,0 +1,38 @@
+## container IPs (aios_ds22)
+aios_ds22-workflow-worker-1 172.18.0.6
+aios_ds22-api-1 172.18.0.5
+aios_ds22-worker-1 172.18.0.7
+aios_ds22-migrate-1 invalid IP
+aios_ds22-db-roles-1 invalid IP
+aios_ds22-sandbox-1 172.18.0.4
+aios_ds22-redis-1 172.18.0.3
+aios_ds22-db-1 172.18.0.2
+
+## pg_stat_activity (client backends)
+ usename  | client_addr | state |         backend_start         | last_query 
+----------+-------------+-------+-------------------------------+------------
+ aios_app | 172.18.0.5  | idle  | 2026-10-15 22:15:18.722176+00 | COMMIT
+ aios_app | 172.18.0.6  | idle  | 2026-10-15 22:15:25.235823+00 | COMMIT
+ aios_app | 172.18.0.7  | idle  | 2026-10-15 22:15:24.516414+00 | COMMIT
+(3 rows)
+
+## roles
+     rolname      | rolsuper | rolcreatedb | rolcreaterole | rolcanlogin 
+------------------+----------+-------------+---------------+-------------
+ aios             | t        | t           | t             | t
+ aios_app         | f        | f           | f             | t
+ aios_provisioner | f        | t           | t             | t
+(3 rows)
+
+## owners
+ datname | db_owner 
+---------+----------
+ aios    | aios_app
+(1 row)
+
+ schemaname | tableowner | count 
+------------+------------+-------
+ langgraph  | aios_app   |     4
+ public     | aios_app   |    19
+(2 rows)
+

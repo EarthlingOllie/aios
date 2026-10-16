@@ -1,0 +1,13 @@
+#!/bin/bash
+# Runs a command in backend/ with ds25's environment.
+export DATABASE_ADMIN_URL=postgresql+psycopg://aios:aios@localhost:5525/aios_ds25
+export DATABASE_URL=postgresql+psycopg://aios_app:aios_app@localhost:5525/aios_ds25
+export DATA_STORE_PROVISIONER_URL=postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5525/aios_ds25
+export REDIS_URL=redis://localhost:6525/0
+export DATA_STORE_FILES_ENDPOINT=http://localhost:9525
+export DATA_STORE_FILES_BUCKET=aios-data-ds25
+export AWS_ACCESS_KEY_ID=aios
+export AWS_SECRET_ACCESS_KEY=aios-dev-secret
+export AWS_REGION=us-east-1
+cd /home/user/aios/.claude/worktrees/agent-adceb569ffe795073/backend || exit 1
+exec "$@"

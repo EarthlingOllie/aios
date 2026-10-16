@@ -1,0 +1,12 @@
+Don't hold a worker waiting on a store's history export lock
+
+An export queued while another of the store runs (a backfill can take minutes,
+while every turn end and the minutely sweep queue more) waited on
+pg_advisory_lock, holding an app worker, so ingest stalled for everyone. It now
+tries the lock and leaves the store to the running export; what's left pending,
+the sweep queues again. Deleting the exported history still must not race an
+export, so it waits up to LOCK_WAIT seconds, then answers busy (503).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KC3fucdE9rANvvSzGLn7e5
+

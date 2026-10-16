@@ -1,0 +1,5 @@
+<frozen runpy>:130: RuntimeWarning: 'aios.datastores.provision' found in sys.modules after import of package 'aios.datastores', but prior to execution of 'aios.datastores.provision'; this may result in unpredictable behaviour
+INFO:alembic.runtime.migration:Context impl PostgresqlImpl.
+INFO:alembic.runtime.migration:Will assume transactional DDL.
+d371dd13-744c-4a1d-aa85-f4f41e934ecc: 0001
+1 data stores at head, 0 failed

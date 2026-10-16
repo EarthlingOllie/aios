@@ -1,0 +1,4 @@
+Checking formatting...
+[warn] src/App.tsx
+[warn] src/lib/api.ts
+[warn] Code style issues found in 2 files. Run Prettier with --write to fix.

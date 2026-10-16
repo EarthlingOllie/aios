@@ -1,0 +1,73 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.21kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#2 DONE 0.3s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e 0.0s done
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/python:3.13-slim-bookworm
+#4 DONE 0.6s
+
+#5 [internal] load metadata for ghcr.io/astral-sh/uv:0.11.32
+#5 DONE 0.7s
+
+#6 [internal] load .dockerignore
+#6 transferring context: 92B done
+#6 DONE 0.0s
+
+#7 [uv 1/1] FROM ghcr.io/astral-sh/uv:0.11.32@sha256:257d62b3fc6e081c5872e49fc6f6f999a6097d9064167d27d9c901d543406888
+#7 resolve ghcr.io/astral-sh/uv:0.11.32@sha256:257d62b3fc6e081c5872e49fc6f6f999a6097d9064167d27d9c901d543406888 0.0s done
+#7 DONE 0.0s
+
+#8 [base 1/4] FROM docker.io/library/python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+#8 resolve docker.io/library/python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 0.0s done
+#8 DONE 0.0s
+
+#9 [base 3/4] WORKDIR /app
+#9 CACHED
+
+#10 [base 2/4] COPY --from=uv /uv /uvx /bin/
+#10 CACHED
+
+#11 [base 4/4] RUN useradd --create-home --uid 1000 app
+#11 CACHED
+
+#12 [internal] load build context
+#12 transferring context: 1.42MB 0.0s done
+#12 DONE 0.0s
+
+#13 [worker 1/5] RUN apt-get update     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
+#13 0.102 Err:1 http://deb.debian.org/debian bookworm InRelease
+#13 0.102   405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.104 Err:2 http://deb.debian.org/debian bookworm-updates InRelease
+#13 0.104   405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.105 Err:3 http://deb.debian.org/debian-security bookworm-security InRelease
+#13 0.108   405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.115 Reading package lists...
+#13 0.134 E: The repository 'http://deb.debian.org/debian bookworm InRelease' is not signed.
+#13 0.134 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.134 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm-updates/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.134 E: The repository 'http://deb.debian.org/debian bookworm-updates InRelease' is not signed.
+#13 0.134 E: Failed to fetch http://deb.debian.org/debian-security/dists/bookworm-security/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+#13 0.134 E: The repository 'http://deb.debian.org/debian-security bookworm-security InRelease' is not signed.
+#13 ERROR: process "/bin/sh -c apt-get update     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*" did not complete successfully: exit code: 100
+------
+ > [worker 1/5] RUN apt-get update     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*:
+0.104   405  Method Not Allowed [IP: 127.0.0.1 42419]
+0.105 Err:3 http://deb.debian.org/debian-security bookworm-security InRelease
+0.108   405  Method Not Allowed [IP: 127.0.0.1 42419]
+0.115 Reading package lists...
+0.134 E: The repository 'http://deb.debian.org/debian bookworm InRelease' is not signed.
+0.134 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+0.134 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm-updates/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+0.134 E: The repository 'http://deb.debian.org/debian bookworm-updates InRelease' is not signed.
+0.134 E: Failed to fetch http://deb.debian.org/debian-security/dists/bookworm-security/InRelease  405  Method Not Allowed [IP: 127.0.0.1 42419]
+0.134 E: The repository 'http://deb.debian.org/debian-security bookworm-security InRelease' is not signed.
+------
+ERROR: failed to build: failed to solve: process "/bin/sh -c apt-get update     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*" did not complete successfully: exit code: 100

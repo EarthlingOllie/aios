@@ -1,0 +1,70 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [26139]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8531 (Press CTRL+C to quit)
+INFO:     127.0.0.1:44716 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44722 - "GET /auth/callback?code=-2426&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:44728 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44744 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44754 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44766 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44748 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44778 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44788 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44802 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44808 - "POST /api/documents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:44812 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44826 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44836 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44846 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44868 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44858 - "GET /api/skills HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44884 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44896 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44902 - "GET /api/skills HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44904 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44920 - "POST /api/agents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:44922 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44956 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44938 - "GET /api/agents/590/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44942 - "GET /api/agents/590/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44966 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44980 - "GET /api/agents/590/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44996 - "GET /api/agents/590/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45012 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45014 - "POST /api/agents/590/runs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:45016 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45026 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45034 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45040 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45060 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45088 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45074 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45044 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45104 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45118 - "POST /api/agents/590/runs/437/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data', 'search_documents']
+MODEL sees tools: ['describe_data', 'query_data', 'search_documents']
+INFO:     127.0.0.1:45150 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45134 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45162 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45170 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45190 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45172 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45204 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45220 - "GET /api/agents/590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45182 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45234 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45250 - "POST /api/agents/590/runs/437/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data', 'search_documents']
+MODEL sees tools: ['describe_data', 'query_data', 'search_documents']
+MODEL described: ['aios.chunks', 'aios.documents', 'aios.schema_history']
+MODEL sees tools: ['describe_data', 'query_data', 'search_documents']
+INFO:     127.0.0.1:45280 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45264 - "GET /api/agents/590/runs/437 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [26139]

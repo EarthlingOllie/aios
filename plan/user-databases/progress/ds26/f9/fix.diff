@@ -1,0 +1,86 @@
+diff --git a/backend/src/aios/datastores/connections.py b/backend/src/aios/datastores/connections.py
+index d516c4a..ab4882d 100644
+--- a/backend/src/aios/datastores/connections.py
++++ b/backend/src/aios/datastores/connections.py
+@@ -82,7 +82,12 @@ def _engine(store: DataStore, role: Role) -> Engine:
+             port=store.port,
+             database=store.dbname,
+         )
+-        engine = create_engine(url, pool_size=1, max_overflow=2, pool_pre_ping=True)
++        # `query_data` resets read-only connections with `DISCARD ALL`, which drops prepared
++        # statements, so psycopg mustn't make any on them (it prepares those it runs often).
++        connect_args = {"prepare_threshold": None} if role == "ro" else {}
++        engine = create_engine(
++            url, pool_size=1, max_overflow=2, pool_pre_ping=True, connect_args=connect_args
++        )
+         _engines[key] = engine
+         while len(_engines) > MAX_ENGINES:
+             _, evicted = _engines.popitem(last=False)
+diff --git a/backend/src/aios/tools/data.py b/backend/src/aios/tools/data.py
+index 7a8e937..46f939d 100644
+--- a/backend/src/aios/tools/data.py
++++ b/backend/src/aios/tools/data.py
+@@ -166,11 +166,9 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
+     with store_session(data_store_id, "ro") as session:
+         # Autocommit at the driver, so the transaction below is the only one, and is ours.
+         conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
++        # Read-only connections never prepare statements, which `DISCARD ALL` below would drop
++        # (see `datastores.connections`).
+         pg: psycopg.Connection = conn.connection.driver_connection
+-        # `DISCARD ALL` below drops the session's prepared statements, so psycopg mustn't use
+-        # any on this connection (it prepares those it runs often), now or once it's back in
+-        # the pool.
+-        pg.prepare_threshold = None
+         try:
+             pg.execute("BEGIN READ ONLY")
+             return _read(pg, sql)
+diff --git a/backend/tests/test_data_tools.py b/backend/tests/test_data_tools.py
+index 0ed7802..70399cc 100644
+--- a/backend/tests/test_data_tools.py
++++ b/backend/tests/test_data_tools.py
+@@ -13,14 +13,14 @@ from contextlib import contextmanager
+ import psycopg
+ import pytest
+ from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
+-from sqlalchemy import update
++from sqlalchemy import text, update
+ from sqlalchemy.engine import make_url
+ from test_agents import agent_body, chat_body, make_agent
+ from test_provisioning import login_url, new_user, store_row  # noqa: F401  (new_user: fixture)
+ 
+ from aios.auth import current_user
+ from aios.config import get_settings, libpq_conninfo
+-from aios.datastores import data_store_for, provision
++from aios.datastores import data_store_for, provision, store_session
+ from aios.datastores.connections import dispose_engines
+ from aios.db import SessionLocal
+ from aios.main import app
+@@ -412,6 +412,28 @@ def test_the_tools_keep_working_call_after_call(api, store, data_agent):
+     assert [o.get("error") for o in outputs] == [None] * len(calls)
+ 
+ 
++def test_read_only_connections_prepare_nothing_whether_or_not_they_ran_a_query(
++    api, store, data_agent
++):
++    """`query_data` has psycopg prepare nothing on its connection (its reset would drop them),
++    so no other user of the read-only engine does either, whatever the pooled connection last
++    served."""
++
++    def prepared_by_a_busy_session() -> tuple[int, list]:
++        with store_session(store.id, "ro") as session:
++            for _ in range(8):  # past psycopg's default threshold (5)
++                session.execute(text("SELECT count(*) FROM data.fish"))
++            pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
++            return pid, session.execute(text("SELECT name FROM pg_prepared_statements")).all()
++
++    pid, before = prepared_by_a_busy_session()
++    assert "error" not in query(api, data_agent, "SELECT 1")
++    same_pid, after = prepared_by_a_busy_session()
++
++    assert same_pid == pid  # the same pooled connection, before and after the query
++    assert before == after == []
++
++
+ def test_a_query_cant_hold_a_lock_past_its_call(api, store, data_agent):
+     run_tools(api, data_agent, ToolCall("query_data", {"sql": "SELECT pg_advisory_lock(42)"}))
+ 

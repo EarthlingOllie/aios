@@ -1,0 +1,7 @@
+==> Ensuring ECR repositories exist
+==> Building and pushing images (newtag)
+==> Applying infrastructure (services stay on oldtag; migration uses newtag)
+==> Creating database roles
+==> Running database migrations
+==> Rolling out services
+Deployed newtag -> http://example

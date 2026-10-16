@@ -1,0 +1,10 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+3 processes x 3 sessions = 9 wanted; connected 9; errors 0
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+4 processes x 3 sessions = 12 wanted; connected 10; errors 2
+   (psycopg.OperationalError) connection failed: connection to server at "127.0.0.1", port 5455 failed: FATAL:  too many connections for role "ds_46c45fde48704ea1a
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+6 processes x 1 sessions = 6 wanted; connected 6; errors 0
+   (psycopg.OperationalError) connection failed: connection to server at "127.0.0.1", port 5455 failed: FATAL:  too many connections for role "ds_ce9b4ad0da17456da
+   (psycopg.OperationalError) connection failed: connection to server at "127.0.0.1", port 5455 failed: FATAL:  too many connections for role "ds_ce9b4ad0da17456da
+   (psycopg.OperationalError) connection failed: connection to server at "127.0.0.1", port 5455 failed: FATAL:  too many connections for role "ds_ce9b4ad0da17456da

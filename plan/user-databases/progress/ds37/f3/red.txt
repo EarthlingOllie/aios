@@ -1,0 +1,43 @@
+
+Running 1 test using 1 worker
+
+  ✘  1 e2e/data-page.spec.ts:249:1 › a list refused for good says so once, without asking again (9.3s)
+
+
+  1) e2e/data-page.spec.ts:249:1 › a list refused for good says so once, without asking again ──────
+
+    Error: expect(locator).not.toContainText(expected) failed
+
+    Locator: getByRole('status', { name: 'Documents list' })
+    Expected substring: not "Trying again"
+    Received string: "Couldn't load your documents (session expired, sign in again). Trying again…"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "not toContainText" getByRole('status', { name: 'Documents list' }) with timeout 5000ms
+      - waiting for getByRole('status', { name: 'Documents list' })
+        14 × locator resolved to <div role="status" aria-label="Documents list" class="text-muted-foreground flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm">…</div>
+           - unexpected value "Couldn't load your documents (session expired, sign in again). Trying again…"
+
+
+      271 |     "Couldn't load your documents (session expired, sign in again).",
+      272 |   );
+    > 273 |   await expect(notice).not.toContainText("Trying again");
+          |                            ^
+      274 |   const after = reads;
+      275 |   await page.waitForTimeout(5000);
+      276 |   expect(reads).toBe(after);
+        at /home/user/aios/.claude/worktrees/ds37-f3/frontend/e2e/data-page.spec.ts:273:28
+
+    Error Context: test-results/data-page-a-list-refused-f-74020-o-once-without-asking-again/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-a-list-refused-f-74020-o-once-without-asking-again/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-a-list-refused-f-74020-o-once-without-asking-again/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    e2e/data-page.spec.ts:249:1 › a list refused for good says so once, without asking again ───────

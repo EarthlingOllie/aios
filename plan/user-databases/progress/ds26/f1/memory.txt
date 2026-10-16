@@ -1,0 +1,23 @@
+Finding 1: memory of one query_data call returning one huge value
+(scripts/measure.py: `_query(store, "SELECT repeat('x', N)")`, one process per run;
+python_peak = tracemalloc peak, rss_growth = ru_maxrss growth over the call;
+scripts/retained.py: current VmRSS after the call and after the next small call)
+
+BEFORE (6e129d0, original data.py)
+value=100MB python_peak=310MiB  rss_growth=477MiB  took=1.39s  truncated, 0 rows
+value=400MB python_peak=1240MiB rss_growth=1907MiB took=10.07s truncated, 0 rows
+retained after the call (original code, pooled connection kept): ~+382MiB at 400MB,
+  still held after the next small call; closing the connection frees it
+  (scripts/inbuffer.py: +763 open, +763 after small query, +382 after close -> libpq's
+  input buffer stays grown for the life of the connection)
+
+AFTER (value refused before loading + connection closed rather than pooled)
+value=100MB python_peak=0MiB rss_growth=191MiB took=0.97s truncated, 0 rows
+value=400MB python_peak=0MiB rss_growth=763MiB took=3.70s / 5.86s truncated, 0 rows
+retained: value=400MB rss_now_after_call=+0MiB rss_now_after_next_small_call=+0MiB
+
+Remaining peak (~1.9x the value) is libpq itself: the DataRow is read whole into its input
+buffer and copied into the PGresult before any client code can look at it. Only a
+server-side bound could avoid it; Postgres has no setting for that, and wrapping the
+model's SQL to cap each column would change its semantics (so it wasn't done). The value
+is still bounded by Postgres's 1 GB field limit and by the statement timeout.

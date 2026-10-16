@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_a_value_over_the_byte_cap_is_never_loaded ________________
+
+api = <starlette.testclient.TestClient object at 0x7fd55800b230>
+store = <aios.models.DataStore object at 0x7fd557f48fc0>
+data_agent = {'id': 2, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T03:28:44.993140Z', ...}
+
+    def test_a_value_over_the_byte_cap_is_never_loaded(api, store, data_agent):
+        """One row is one value too: a value far past the byte cap stops the result without being
+        turned into Python (and JSON), so it can't take the API's memory with it."""
+        tracemalloc.start()
+        try:
+            result = query(api, data_agent, "SELECT 'small' UNION ALL SELECT repeat('x', 50000000)")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    
+        assert result["rows"] == [["small"]]
+        assert result["truncated"] is True
+        # Loading the value would take 50 MB for the string alone, and as much again as JSON.
+>       assert peak < 20_000_000
+E       assert 163442646 < 20000000
+
+tests/test_data_tools.py:307: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_a_value_over_the_byte_cap_is_never_loaded
+1 failed, 44 deselected in 1.64s

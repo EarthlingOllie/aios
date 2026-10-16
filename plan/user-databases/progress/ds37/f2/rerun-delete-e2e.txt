@@ -1,0 +1,8 @@
+
+Running 3 tests using 2 workers
+
+  ✓  2 e2e/data-page.spec.ts:152:1 › deleting a document removes it from the list and from search (11.6s)
+  ✓  1 e2e/data-page.spec.ts:152:1 › deleting a document removes it from the list and from search (12.3s)
+  ✓  3 e2e/data-page.spec.ts:152:1 › deleting a document removes it from the list and from search (10.6s)
+
+  3 passed (32.2s)

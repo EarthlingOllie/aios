@@ -1,0 +1,64 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-a5586cc5941c372f2/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 08:41:56
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f046e370980
+- ** ---------- .> transport:   redis://localhost:6537/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+
+[2026-10-16 08:41:56,439: INFO/MainProcess] Connected to redis://localhost:6537/0
+[2026-10-16 08:41:56,441: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 08:41:57,451: INFO/MainProcess] mingle: all alone
+[2026-10-16 08:41:57,459: INFO/MainProcess] celery@vm ready.
+[2026-10-16 08:42:04,034: INFO/MainProcess] Task aios.ingest_document[df16402f-45e9-415d-850e-571ec6ab772b] received
+[2026-10-16 08:42:04,066: INFO/MainProcess] Task aios.ingest_document[a65065fd-667e-4754-9be8-79530c06059f] received
+[2026-10-16 08:42:08,172: INFO/ForkPoolWorker-1] Task aios.ingest_document[df16402f-45e9-415d-850e-571ec6ab772b] succeeded in 4.135413245000109s: None
+[2026-10-16 08:42:08,195: ERROR/ForkPoolWorker-2] Task aios.ingest_document[a65065fd-667e-4754-9be8-79530c06059f] raised unexpected: UnicodeDecodeError('utf-8', b'\xff\xfe\x00\x81', 0, 1, 'invalid start byte')
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-a5586cc5941c372f2/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a5586cc5941c372f2/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a5586cc5941c372f2/backend/src/aios/worker.py", line 68, in ingest_document_task
+    ingest_document(db, document_id)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a5586cc5941c372f2/backend/src/aios/ingest.py", line 95, in ingest_document
+    pieces = chunk_document(claimed.filename, claimed.data)
+  File "/tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/drive/fakes.py", line 35, in chunk_document
+    paras = [p.strip() for p in data.decode().split("\n\n") if p.strip()]
+                                ~~~~~~~~~~~^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+[2026-10-16 08:42:11,000: INFO/MainProcess] Task aios.ingest_document[9493a607-b232-4a9f-955e-70b6f7bf970f] received
+[2026-10-16 08:42:15,023: INFO/ForkPoolWorker-1] Task aios.ingest_document[9493a607-b232-4a9f-955e-70b6f7bf970f] succeeded in 4.022930590999749s: None
+
+worker: Warm shutdown (MainProcess)
+
+worker: Warm shutdown (MainProcess)
+
+worker: Warm shutdown (MainProcess)

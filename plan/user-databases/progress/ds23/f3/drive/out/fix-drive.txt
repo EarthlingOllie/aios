@@ -1,0 +1,3 @@
+[fix] row: legacy.md failed
+[fix] row title (error): Your data store wasn't ready in time to process this document; please upload it again.
+[fix] GET /api/documents in the 10s after the list loaded: 0

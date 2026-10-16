@@ -1,0 +1,57 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_a_store_is_dropped_with_its_roles_still_connected ____________
+
+two_stores = (<aios.models.DataStore object at 0x7f6b147ae210>, <aios.models.DataStore object at 0x7f6b148860f0>)
+
+    def test_a_store_is_dropped_with_its_roles_still_connected(two_stores):
+        a, b = two_stores
+        names = provision.StoreNames.of(a)
+        with (
+            psycopg.connect(login_url(a, "ro"), autocommit=True) as ro,
+            psycopg.connect(login_url(a, "rw"), autocommit=True) as rw,
+        ):
+>           provision.drop(names)
+
+tests/test_provisioning.py:173: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/aios/datastores/provision.py:293: in drop
+    conn.execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <psycopg.Connection [BAD] at 0x7f6b147e8c50>
+query = Composed([SQL('DROP DATABASE IF EXISTS '), Identifier('ds_af646e9acee44afbb55ed978c12be518'), SQL(' WITH (FORCE)')])
+params = None, prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+    
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.InsufficientPrivilege: permission denied to terminate process
+E           DETAIL:  Only roles with privileges of the role whose process is being terminated or with privileges of the "pg_signal_backend" role may terminate this process.
+
+.venv/lib/python3.13/site-packages/psycopg/connection.py:304: InsufficientPrivilege
+=========================== short test summary info ============================
+FAILED tests/test_provisioning.py::test_a_store_is_dropped_with_its_roles_still_connected
+1 failed, 23 deselected in 0.74s

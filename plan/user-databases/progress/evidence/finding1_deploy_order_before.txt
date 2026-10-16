@@ -1,0 +1,29 @@
+== running stack
+PASS db-roles task runs
+PASS db-roles runs before the migration
+FAIL db-roles runs before the first untargeted apply
+   0 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -target=aws_ecr_repository.this
+   1 terraform -chdir=<wt>/infra/terraform output -raw region
+  13 terraform -chdir=<wt>/infra/terraform show -json
+  14 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=oldtag -var migrate_image_tag=newtag
+  15 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  16 terraform -chdir=<wt>/infra/terraform output -json db_roles_task
+  17 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-db-roles --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  20 terraform -chdir=<wt>/infra/terraform output -json migrate_task
+  21 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-migrate --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  24 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag
+  25 terraform -chdir=<wt>/infra/terraform output -raw url
+== fresh stack
+PASS db-roles task runs
+PASS db-roles runs before the migration
+   0 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -target=aws_ecr_repository.this
+   1 terraform -chdir=<wt>/infra/terraform output -raw region
+  13 terraform -chdir=<wt>/infra/terraform show -json
+  14 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag -var run_services=false -var migrate_image_tag=newtag
+  15 terraform -chdir=<wt>/infra/terraform output -raw ecs_cluster
+  16 terraform -chdir=<wt>/infra/terraform output -json db_roles_task
+  17 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-db-roles --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  20 terraform -chdir=<wt>/infra/terraform output -json migrate_task
+  21 aws ecs run-task --region us-east-1 --cluster aios --launch-type FARGATE --task-definition aios-migrate --network-configuration {"awsvpcConfiguration": {"subnets": ["s1"], "securityGroups": ["sg1"], "assignPublicIp": "DISABLED"}} --query tasks[0].taskArn --output text
+  24 terraform -chdir=<wt>/infra/terraform apply -auto-approve -input=false -var image_tag=newtag
+  25 terraform -chdir=<wt>/infra/terraform output -raw url

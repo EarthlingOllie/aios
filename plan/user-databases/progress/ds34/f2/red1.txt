@@ -1,0 +1,32 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0 -- /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend/.venv/bin/python
+rootdir: /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend
+configfile: pyproject.toml
+plugins: langsmith-0.14.4, anyio-4.15.1
+collecting ... collected 18 items / 17 deselected / 1 selected
+
+tests/test_history_export.py::test_an_export_of_a_store_already_exporting_leaves_it_to_that_one FAILED [100%]
+
+=================================== FAILURES ===================================
+______ test_an_export_of_a_store_already_exporting_leaves_it_to_that_one _______
+
+api = <starlette.testclient.TestClient object at 0x7f501d8774d0>
+user = <aios.models.User object at 0x7f501d722660>
+store_id = UUID('6ffd8928-bd95-4568-bca5-8cd177351acf'), export_running = None
+
+    def test_an_export_of_a_store_already_exporting_leaves_it_to_that_one(
+        api, user, store_id, export_running
+    ):
+        # It doesn't hold a worker waiting: what's still pending after, the sweep queues again.
+        started = time.monotonic()
+        assert history.export(store_id) == 0
+>       assert time.monotonic() - started < 1
+E       assert (1727.204611648 - 1722.142071794) < 1
+E        +  where 1727.204611648 = <built-in function monotonic>()
+E        +    where <built-in function monotonic> = time.monotonic
+
+tests/test_history_export.py:282: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_history_export.py::test_an_export_of_a_store_already_exporting_leaves_it_to_that_one
+======================= 1 failed, 17 deselected in 5.82s =======================

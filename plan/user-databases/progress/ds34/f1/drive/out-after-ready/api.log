@@ -1,0 +1,23 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [32387]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8101 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51850 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51864 - "GET /auth/callback?code=x&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:51884 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51870 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51890 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51904 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51906 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51922 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51928 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51930 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51938 - "PUT /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51944 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51952 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39866 - "GET /api/settings HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [32387]

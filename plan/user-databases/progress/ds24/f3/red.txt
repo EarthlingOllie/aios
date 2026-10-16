@@ -1,0 +1,396 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+..F.                                                                     [100%]
+=================================== FAILURES ===================================
+_____________ test_the_ingest_task_never_gives_up_on_a_busy_store ______________
+
+self = <sqlalchemy.engine.base.Connection object at 0x7f24b2ebfc50>
+engine = Engine(postgresql+psycopg://ds_d68d57fd933b47f28bc4a7a212115095_rw:***@localhost:5493/ds_d68d57fd933b47f28bc4a7a212115095)
+connection = None, _has_events = None, _allow_revalidate = True
+_allow_autobegin = True
+
+    def __init__(
+        self,
+        engine: Engine,
+        connection: Optional[PoolProxiedConnection] = None,
+        _has_events: Optional[bool] = None,
+        _allow_revalidate: bool = True,
+        _allow_autobegin: bool = True,
+    ):
+        """Construct a new Connection."""
+        self.engine = engine
+        self.dialect = dialect = engine.dialect
+    
+        if connection is None:
+            try:
+>               self._dbapi_connection = engine.raw_connection()
+                                         ^^^^^^^^^^^^^^^^^^^^^^^
+
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:149: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:3284: in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:445: in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:1287: in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:709: in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py:176: in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py:166: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py:174: in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:386: in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:671: in __init__
+    self.__connect()
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:895: in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py:166: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:891: in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/create.py:643: in connect
+    return dialect.connect(*mutable_cargs, **mutable_cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py:857: in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <class 'psycopg.Connection'>
+conninfo = 'host=localhost dbname=ds_d68d57fd933b47f28bc4a7a212115095 user=ds_d68d57fd933b47f28bc4a7a212115095_rw password=Sizxg2_RUTuualrSej6xoUFL9NTqIHgEp9nTqHBYTVI port=5493 hostaddr=127.0.0.1'
+autocommit = False, prepare_threshold = 5
+context = <psycopg.adapt.AdaptersMap object at 0x7f24b2f6b380>
+row_factory = None, cursor_factory = None
+kwargs = {'host': 'localhost', 'dbname': 'ds_d68d57fd933b47f28bc4a7a212115095', 'user': 'ds_d68d57fd933b47f28bc4a7a212115095_rw', 'password': 'Sizxg2_RUTuualrSej6xoUFL9NTqIHgEp9nTqHBYTVI', ...}
+
+    @classmethod
+    def connect(
+        cls,
+        conninfo: str = "",
+        *,
+        autocommit: bool = False,
+        prepare_threshold: int | None = 5,
+        context: AdaptContext | None = None,
+        row_factory: RowFactory[Row] | None = None,
+        cursor_factory: type[Cursor[Row]] | None = None,
+        **kwargs: ConnParam,
+    ) -> Self:
+        """
+        Connect to a database server and return a new `Connection` instance.
+        """
+    
+        params = cls._get_connection_params(conninfo, **kwargs)
+        timeout = timeout_from_conninfo(params)
+        rv = None
+        attempts = conninfo_attempts(params)
+        conn_errors: list[tuple[e.Error, str]] = []
+        for attempt in attempts:
+            tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
+            descr = "host: %r, port: %r, hostaddr: %r" % tdescr
+            logger.debug("connection attempt: %s", descr)
+            try:
+                conninfo = make_conninfo("", **attempt)
+                gen = cls._connect_gen(conninfo)
+                rv = waiting.wait_conn(gen, interval=_WAIT_INTERVAL, timeout=timeout)
+            except e._WaitTimeout:
+                tex = e.ConnectionTimeout("connection timeout expired")
+                logger.debug("connection failed: %s: %s", descr, str(tex))
+                conn_errors.append((tex, descr))
+            except e.Error as ex:
+                logger.debug("connection failed: %s: %s", descr, str(ex))
+                conn_errors.append((ex, descr))
+            except e._NO_TRACEBACK as ex:
+                raise ex.with_traceback(None)
+            else:
+                logger.debug("connection succeeded: %s", descr)
+                break
+    
+        if not rv:
+            last_ex = conn_errors[-1][0]
+            if len(conn_errors) == 1:
+>               raise last_ex.with_traceback(None)
+E               psycopg.OperationalError: connection failed: connection to server at "127.0.0.1", port 5493 failed: FATAL:  too many connections for role "ds_d68d57fd933b47f28bc4a7a212115095_rw"
+
+.venv/lib/python3.13/site-packages/psycopg/connection.py:126: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+self = <@task: aios.ingest_document of aios at 0x7f24b36a5fd0>
+data_store_id = 'd68d57fd-933b-47f2-8bc4-a7a212115095', document_id = 1
+
+    @celery_app.task(name="aios.ingest_document", bind=True, max_retries=BUSY_RETRIES)
+    def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
+        """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
+        from aios.ingest import ingest_document
+    
+        try:
+            with store_session(uuid.UUID(data_store_id), "rw") as db:
+>               ingest_document(db, document_id)
+
+src/aios/worker.py:68: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/aios/ingest.py:70: in ingest_document
+    claimed = db.execute(
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py:2473: in execute
+    return self._execute_internal(
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py:2350: in _execute_internal
+    conn = self._connection_for_bind(bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py:2173: in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py:1203: in _connection_for_bind
+    conn = bind.connect()
+           ^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:3260: in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:151: in __init__
+    Connection._handle_dbapi_exception_noconnection(
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:2414: in _handle_dbapi_exception_noconnection
+    raise newraise.with_traceback(exc_info[2]) from e
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:149: in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py:3284: in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:445: in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:1287: in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:709: in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py:176: in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py:166: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py:174: in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:386: in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:671: in __init__
+    self.__connect()
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:895: in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py:166: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py:891: in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/create.py:643: in connect
+    return dialect.connect(*mutable_cargs, **mutable_cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py:857: in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <class 'psycopg.Connection'>
+conninfo = 'host=localhost dbname=ds_d68d57fd933b47f28bc4a7a212115095 user=ds_d68d57fd933b47f28bc4a7a212115095_rw password=Sizxg2_RUTuualrSej6xoUFL9NTqIHgEp9nTqHBYTVI port=5493 hostaddr=127.0.0.1'
+autocommit = False, prepare_threshold = 5
+context = <psycopg.adapt.AdaptersMap object at 0x7f24b2f6b380>
+row_factory = None, cursor_factory = None
+kwargs = {'host': 'localhost', 'dbname': 'ds_d68d57fd933b47f28bc4a7a212115095', 'user': 'ds_d68d57fd933b47f28bc4a7a212115095_rw', 'password': 'Sizxg2_RUTuualrSej6xoUFL9NTqIHgEp9nTqHBYTVI', ...}
+
+    @classmethod
+    def connect(
+        cls,
+        conninfo: str = "",
+        *,
+        autocommit: bool = False,
+        prepare_threshold: int | None = 5,
+        context: AdaptContext | None = None,
+        row_factory: RowFactory[Row] | None = None,
+        cursor_factory: type[Cursor[Row]] | None = None,
+        **kwargs: ConnParam,
+    ) -> Self:
+        """
+        Connect to a database server and return a new `Connection` instance.
+        """
+    
+        params = cls._get_connection_params(conninfo, **kwargs)
+        timeout = timeout_from_conninfo(params)
+        rv = None
+        attempts = conninfo_attempts(params)
+        conn_errors: list[tuple[e.Error, str]] = []
+        for attempt in attempts:
+            tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
+            descr = "host: %r, port: %r, hostaddr: %r" % tdescr
+            logger.debug("connection attempt: %s", descr)
+            try:
+                conninfo = make_conninfo("", **attempt)
+                gen = cls._connect_gen(conninfo)
+                rv = waiting.wait_conn(gen, interval=_WAIT_INTERVAL, timeout=timeout)
+            except e._WaitTimeout:
+                tex = e.ConnectionTimeout("connection timeout expired")
+                logger.debug("connection failed: %s: %s", descr, str(tex))
+                conn_errors.append((tex, descr))
+            except e.Error as ex:
+                logger.debug("connection failed: %s: %s", descr, str(ex))
+                conn_errors.append((ex, descr))
+            except e._NO_TRACEBACK as ex:
+                raise ex.with_traceback(None)
+            else:
+                logger.debug("connection succeeded: %s", descr)
+                break
+    
+        if not rv:
+            last_ex = conn_errors[-1][0]
+            if len(conn_errors) == 1:
+>               raise last_ex.with_traceback(None)
+E               aios.datastores.connections.DataStoreBusy: Data store d68d57fd-933b-47f2-8bc4-a7a212115095 has no connections free
+
+.venv/lib/python3.13/site-packages/psycopg/connection.py:126: DataStoreBusy
+
+During handling of the above exception, another exception occurred:
+
+busy_store = UUID('d68d57fd-933b-47f2-8bc4-a7a212115095')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f24b2f0b2f0>
+
+    def test_the_ingest_task_never_gives_up_on_a_busy_store(busy_store, monkeypatch):
+        # Giving up would leave the document pending with nothing left to ingest it, and marking it
+        # failed needs the very connection the store hasn't got free.
+        queued = []
+        monkeypatch.setattr(
+            worker.ingest_document_task, "apply_async", lambda *a, **kw: queued.append(kw)
+        )
+        worker.ingest_document_task.push_request(id="busy", retries=1000, called_directly=False)
+        try:
+            with pytest.raises(Retry):
+>               worker.ingest_document_task.run(str(busy_store), 1)
+
+tests/test_data_stores.py:541: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/aios/worker.py:78: in ingest_document_task
+    raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <@task: aios.ingest_document of aios at 0x7f24b36a5fd0>, args = None
+kwargs = None, exc = None, throw = True, eta = None, countdown = 30
+max_retries = 20, options = {}
+
+    def retry(self, args=None, kwargs=None, exc=None, throw=True,
+              eta=None, countdown=None, max_retries=None, **options):
+        """Retry the task, adding it to the back of the queue.
+    
+        Example:
+            >>> from imaginary_twitter_lib import Twitter
+            >>> from proj.celery import app
+    
+            >>> @app.task(bind=True)
+            ... def tweet(self, auth, message):
+            ...     twitter = Twitter(oauth=auth)
+            ...     try:
+            ...         twitter.post_status_update(message)
+            ...     except twitter.FailWhale as exc:
+            ...         # Retry in 5 minutes.
+            ...         raise self.retry(countdown=60 * 5, exc=exc)
+    
+        Note:
+            Although the task will never return above as `retry` raises an
+            exception to notify the worker, we use `raise` in front of the
+            retry to convey that the rest of the block won't be executed.
+    
+        Arguments:
+            args (Tuple): Positional arguments to retry with.
+            kwargs (Dict): Keyword arguments to retry with.
+            exc (Exception): Custom exception to report when the max retry
+                limit has been exceeded (default:
+                :exc:`~@MaxRetriesExceededError`).
+    
+                If this argument is set and retry is called while
+                an exception was raised (``sys.exc_info()`` is set)
+                it will attempt to re-raise the current exception.
+    
+                If no exception was raised it will raise the ``exc``
+                argument provided.
+            countdown (float): Time in seconds to delay the retry for.
+            eta (~datetime.datetime): Explicit time and date to run the
+                retry at.
+            max_retries (int): If set, overrides the default retry limit for
+                this execution.  Changes to this parameter don't propagate to
+                subsequent task retry attempts.  A value of :const:`None`,
+                means "use the default", so if you want infinite retries you'd
+                have to set the :attr:`max_retries` attribute of the task to
+                :const:`None` first.
+            time_limit (int): If set, overrides the default time limit.
+            soft_time_limit (int): If set, overrides the default soft
+                time limit.
+            throw (bool): If this is :const:`False`, don't raise the
+                :exc:`~@Retry` exception, that tells the worker to mark
+                the task as being retried.  Note that this means the task
+                will be marked as failed if the task raises an exception,
+                or successful if it returns after the retry call.
+            **options (Any): Extra options to pass on to :meth:`apply_async`.
+    
+        Raises:
+    
+            celery.exceptions.Retry:
+                To tell the worker that the task has been re-sent for retry.
+                This always happens, unless the `throw` keyword argument
+                has been explicitly set to :const:`False`, and is considered
+                normal operation.
+        """
+        request = self.request
+        retries = request.retries + 1
+        if max_retries is not None:
+            self.override_max_retries = max_retries
+        max_retries = self.max_retries if max_retries is None else max_retries
+    
+        # Not in worker or emulated by (apply/always_eager),
+        # so just raise the original exception.
+        if request.called_directly:
+            # raises orig stack if PyErr_Occurred,
+            # and augments with exc' if that argument is defined.
+            raise_with_context(exc or Retry('Task can be retried', None))
+    
+        if not eta and countdown is None:
+            countdown = self.default_retry_delay
+    
+        is_eager = request.is_eager
+        S = self.signature_from_request(
+            request, args, kwargs,
+            countdown=countdown, eta=eta, retries=retries,
+            **options
+        )
+    
+        if max_retries is not None and retries > max_retries:
+            if exc:
+                # On Py3: will augment any current exception with
+                # the exc' argument provided (raise exc from orig)
+                raise_with_context(exc)
+>           raise self.MaxRetriesExceededError(
+                "Can't retry {}[{}] args:{} kwargs:{}".format(
+                    self.name, request.id, S.args, S.kwargs
+                ), task_args=S.args, task_kwargs=S.kwargs
+            )
+E           celery.exceptions.MaxRetriesExceededError: Can't retry aios.ingest_document[busy] args:() kwargs:{}
+
+.venv/lib/python3.13/site-packages/celery/app/task.py:770: MaxRetriesExceededError
+=========================== short test summary info ============================
+FAILED tests/test_data_stores.py::test_the_ingest_task_never_gives_up_on_a_busy_store
+1 failed, 3 passed, 21 deselected in 2.40s

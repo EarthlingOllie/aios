@@ -1,0 +1,5 @@
+                  id                  | status | schema_revision |               dbname                |   host    | port | error | rw_password_ciphertext 
+--------------------------------------+--------+-----------------+-------------------------------------+-----------+------+-------+------------------------
+ d371dd13-744c-4a1d-aa85-f4f41e934ecc | ready  | 0001            | ds_d371dd13744c4a1daa85f4f41e934ecc | localhost | 5443 |       | gAAAAABq0WIe...
+(1 row)
+

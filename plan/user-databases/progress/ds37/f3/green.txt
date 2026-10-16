@@ -1,0 +1,6 @@
+
+Running 1 test using 1 worker
+
+  ✓  1 e2e/data-page.spec.ts:249:1 › a list refused for good says so once, without asking again (11.2s)
+
+  1 passed (22.1s)

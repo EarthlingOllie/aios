@@ -1,0 +1,43 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-a5755f85feb67858d/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- celery@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v114-x86_64-with-glibc2.39 2026-10-15 23:30:40
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f1aeee6bb60
+- ** ---------- .> transport:   redis://localhost:6380/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> provisioning     exchange=provisioning(direct) key=provisioning
+                
+
+[tasks]
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.run_workflow
+
+[2026-10-15 23:30:40,775: INFO/MainProcess] Connected to redis://localhost:6380/0
+[2026-10-15 23:30:40,778: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-15 23:30:41,785: INFO/MainProcess] mingle: all alone
+[2026-10-15 23:30:41,795: INFO/MainProcess] celery@vm ready.
+[2026-10-15 23:30:41,798: INFO/MainProcess] Task aios.provision_data_store[5618e334-cb9f-4fbf-9ccd-61822ff1c7e5] received
+[2026-10-15 23:30:42,073: INFO/ForkPoolWorker-1] Context impl PostgresqlImpl.
+[2026-10-15 23:30:42,074: INFO/ForkPoolWorker-1] Will assume transactional DDL.
+[2026-10-15 23:30:42,084: INFO/ForkPoolWorker-1] Running upgrade  -> 0001, schema history
+[2026-10-15 23:30:42,098: INFO/ForkPoolWorker-1] Data store d371dd13-744c-4a1d-aa85-f4f41e934ecc is ready at revision 0001
+[2026-10-15 23:30:42,098: INFO/ForkPoolWorker-1] Task aios.provision_data_store[5618e334-cb9f-4fbf-9ccd-61822ff1c7e5] succeeded in 0.2999430029994983s: None
+
+worker: Warm shutdown (MainProcess)

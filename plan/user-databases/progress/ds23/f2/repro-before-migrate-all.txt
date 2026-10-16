@@ -1,0 +1,5 @@
+== after README local steps (upgrade head + provisioning worker running, 8s later) ==
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+GET /api/data-store 200 {"status":"provisioning"}
+GET /api/documents 409 {"detail":"Your data store is being set up. Try again in a moment.","data_store_status":"provisioning"}
+DELETE /api/documents/1 409 {"detail":"Your data store is being set up. Try again in a moment.","data_store_status":"provisioning"}

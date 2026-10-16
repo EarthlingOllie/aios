@@ -1,0 +1,5 @@
+same engine, new pool: True
+after use, connections: 1
+after dropping engine (no gc): 1
+after gc.collect() + 0.5s: 0
+after 2nd gc.collect() + 1s: 0

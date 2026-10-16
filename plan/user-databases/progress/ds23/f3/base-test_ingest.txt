@@ -1,0 +1,55 @@
+.....E                                                                   [100%]
+==================================== ERRORS ====================================
+____ ERROR at teardown of test_ingest_tolerates_document_deleted_mid_ingest ____
+
+db = <sqlalchemy.orm.session.Session object at 0x7fa980cd1bf0>
+
+    @pytest.fixture
+    def user(db):
+        """A user whose store is ready (not provisioned: see `mark_ready`)."""
+        u = User(github_id=-1, login="test-user")
+        db.add(u)
+        db.commit()
+        mark_ready(db, u)
+        yield u
+>       delete_user(db, u)
+
+tests/conftest.py:92: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/conftest.py:63: in delete_user
+    for s in db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id))
+                                                                           ^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/attributes.py:575: in __get__
+    return self.impl.get(state, dict_)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/attributes.py:1091: in get
+    value = self._fire_loader_callables(state, key, passive)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/attributes.py:1121: in _fire_loader_callables
+    return state._load_expired(state, passive)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/state.py:833: in _load_expired
+    self.manager.expired_attribute_loader(self, toload, passive)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+mapper = <Mapper at 0x7fa9e8784c20; User>
+state = <sqlalchemy.orm.state.InstanceState object at 0x7fa980c24fb0>
+attribute_names = {'avatar_url', 'created_at', 'email', 'github_id', 'id', 'login', ...}
+passive = symbol('PASSIVE_OFF')
+
+    def _load_scalar_attributes(mapper, state, attribute_names, passive):
+        """initiate a column-based attribute refresh operation."""
+    
+        # assert mapper is _state_mapper(state)
+        session = state.session
+        if not session:
+>           raise orm_exc.DetachedInstanceError(
+                "Instance %s is not bound to a Session; "
+                "attribute refresh operation cannot proceed" % (state_str(state))
+            )
+E           sqlalchemy.orm.exc.DetachedInstanceError: Instance <User at 0x7fa980c08c30> is not bound to a Session; attribute refresh operation cannot proceed (Background on this error at: https://sqlalche.me/e/21/bhk3)
+
+.venv/lib/python3.13/site-packages/sqlalchemy/orm/loading.py:1633: DetachedInstanceError
+=========================== short test summary info ============================
+ERROR tests/test_ingest.py::test_ingest_tolerates_document_deleted_mid_ingest
+5 passed, 1 error in 6.79s

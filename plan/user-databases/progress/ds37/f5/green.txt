@@ -1,0 +1,6 @@
+
+Running 1 test using 1 worker
+
+  ✓  1 e2e/data-page.spec.ts:85:1 › a store whose status can't be read says so, and recovers when it can (13.6s)
+
+  1 passed (25.8s)

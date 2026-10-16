@@ -1,0 +1,6 @@
+Installed 128 packages in 445ms
+1665 ERROR target lists can have at most 1664 entries
+1664 cols ok; max name bytes 63 json header bytes 111488 one row bytes 4992
+1664 cols ok; max name bytes 63 json header bytes 304512 one row bytes 4992
+1664 cols ok; max name bytes 61 json header bytes 294528 one row bytes 4992
+100 cols ok; max name bytes 17 json header bytes 2090 one row bytes 300

@@ -1,0 +1,12 @@
+== migrate
+{"db-roles": "service_completed_successfully", "redis": "service_healthy"}
+== migrate-stores
+{"migrate": "service_completed_successfully"}
+== provisioning-worker
+{"migrate": "service_completed_successfully"}
+== worker
+{"migrate": "service_completed_successfully"}
+== workflow-worker
+{"migrate": "service_completed_successfully", "sandbox": "service_started"}
+== api
+{"migrate": "service_completed_successfully", "sandbox": "service_started"}

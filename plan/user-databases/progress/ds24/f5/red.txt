@@ -1,0 +1,36 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_______ test_migrate_all_gives_a_stores_roles_the_limits_configured_now ________
+
+db = <sqlalchemy.orm.session.Session object at 0x7f0d4df51c50>
+new_user = <function new_user.<locals>.make at 0x7f0d4df19940>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0d4e177360>
+
+    def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "data_store_connection_limit", 10)
+        monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
+        monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
+        store_id = data_store_for(new_user().id)
+        provision.provision(store_id)
+    
+        monkeypatch.setattr(settings, "data_store_connection_limit", 20)
+        monkeypatch.setattr(settings, "data_store_statement_timeout", 30_000)
+        monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 60_000)
+        provision.migrate_all([store_id])
+    
+        row = store_row(db, store_id)
+        for role in ("rw", "ro"):
+            with psycopg.connect(login_url(row, role), autocommit=True) as conn:
+                limit = conn.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
+>               assert limit.fetchone() == (20,)
+E               assert (10,) == (20,)
+E                 
+E                 At index 0 diff: 10 != 20
+E                 Use -v to get more diff
+
+tests/test_provisioning.py:186: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_provisioning.py::test_migrate_all_gives_a_stores_roles_the_limits_configured_now
+1 failed, 1 passed, 23 deselected in 2.29s

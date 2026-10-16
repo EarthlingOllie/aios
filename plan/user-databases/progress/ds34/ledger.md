@@ -1,0 +1,12 @@
+# #34 ledger (orchestrator) — head 371f4f1, base 56584b0 (#24)
+- Builder: separate store-tree line h0001 (branch label 'history'), applied only when export switched on; no renumbering needed. Integration note: add 'history' to #26 describe_data DESCRIBE_SQL schema filter.
+- Backend 347p/1s/1 flaky; e2e 83/83; real-app drive exit 0.
+- 10 findings dispatched.
+- F6 NOT REAL/no change: every signed-in user has a store (0011 backfill, auth_callback before session); Delete disabled unless history_ready; data_store_for is the convention.
+- F9 NOT WORTH IT/no change: _line ~0.82ms/call, ~6ms/store at deploy, steady-state ~1.6ms/10min; cache would need test clearing + stale risk.
+- F8 PARTLY/ACCEPTED doc-only: 1517a8a — all agent_runs deletes already enqueue (tested); agent_name/trigger_id may be stale until next turn; documented in history.py.
+- F10 REAL(format)/ACCEPTED: e028655 — api.ts space; Settings.tsx two lines wrapped; repo has no prettier config.
+- F7 PARTLY/NOT WORTH IT/no change: ~42ms/run, 30-min limit at ~43k runs; soft-limit redo bounded to one batch; sweep resumes in 60s. Real harm (slot starvation) is F2's.
+- F4 REAL(low)/ACCEPTED: ce12bf2 — enqueue_runs(deleting=True) writes outbox rows for stores with history tables even when export off; drained on re-enable (deletes copies). red [(3,),(4,)]!=[(4,)] -> green; 348p. INTEGRATION w/ F5: 'delete exported history' should also drop waiting delete-rows (harmless if not).
+- F3 REAL/ACCEPTED: bc08f53+4cd133f — per-run savepoint; failing run recorded as outbox error and set aside; enqueue clears error; 0014 gains error column + index predicate; red->green; 348p. Follow-up: show failed count in Settings.
+- F2 REAL/ACCEPTED: fc422a3 — try-lock; export returns 0 if locked; delete_exported waits LOCK_WAIT=5s then 503 busy; red 5.06s wait -> green; 349p.

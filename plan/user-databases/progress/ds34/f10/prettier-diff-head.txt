@@ -1,0 +1,65 @@
+=== src/App.tsx
+127c127,131
+<             <Route key={to} path={to} element={<StubPage title={label} icon={icon} description={stub} />} />
+---
+>             <Route
+>               key={to}
+>               path={to}
+>               element={<StubPage title={label} icon={icon} description={stub} />}
+>             />
+202,203c206,215
+<         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+<         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
+---
+>         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+>           {nav("shrink-0")}
+>         </div>
+>         <Button
+>           variant="ghost"
+>           size="icon"
+>           className="shrink-0"
+>           aria-label="Sign out"
+>           onClick={onSignOut}
+>         >
+=== src/lib/api.ts
+439,440c439
+<   listSkillVersions: (id: number) =>
+<     request<SkillVersionSummary[]>(`/api/skills/${id}/versions`),
+---
+>   listSkillVersions: (id: number) => request<SkillVersionSummary[]>(`/api/skills/${id}/versions`),
+452,453c451
+<   listAgentVersions: (id: number) =>
+<     request<AgentVersionSummary[]>(`/api/agents/${id}/versions`),
+---
+>   listAgentVersions: (id: number) => request<AgentVersionSummary[]>(`/api/agents/${id}/versions`),
+459,460c457
+<   getRun: (agentId: number, runId: number) =>
+<     request<Run>(`/api/agents/${agentId}/runs/${runId}`),
+---
+>   getRun: (agentId: number, runId: number) => request<Run>(`/api/agents/${agentId}/runs/${runId}`),
+467,468c464
+<   createWorkflow: (body: WorkflowInput) =>
+<     request<Workflow>("/api/workflows", json("POST", body)),
+---
+>   createWorkflow: (body: WorkflowInput) => request<Workflow>("/api/workflows", json("POST", body)),
+490c486,488
+<         (target ? `?${new URLSearchParams({ target_kind: target.kind, target_id: String(target.id) })}` : ""),
+---
+>         (target
+>           ? `?${new URLSearchParams({ target_kind: target.kind, target_id: String(target.id) })}`
+>           : ""),
+=== src/pages/Settings.tsx
+36c36,38
+<     if (!window.confirm("Delete the run history exported to your data store? Your runs stay here.")) {
+---
+>     if (
+>       !window.confirm("Delete the run history exported to your data store? Your runs stay here.")
+>     ) {
+76c78,82
+<               <p role="status" aria-label="Run history export" className="text-muted-foreground text-sm">
+---
+>               <p
+>                 role="status"
+>                 aria-label="Run history export"
+>                 className="text-muted-foreground text-sm"
+>               >

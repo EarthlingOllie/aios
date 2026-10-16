@@ -1,0 +1,1 @@
+0 of 100 drops right after closing a ro session failed

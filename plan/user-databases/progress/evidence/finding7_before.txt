@@ -1,0 +1,2 @@
+E           psycopg.errors.UndefinedObject: role "t_master_99c477de" does not exist
+1 failed, 12 deselected in 0.43s

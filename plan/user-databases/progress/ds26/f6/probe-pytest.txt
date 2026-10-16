@@ -1,0 +1,240 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_a_first_row_over_the_byte_cap_is_said_to_be_too_big ___________
+
+api = <starlette.testclient.TestClient object at 0x7f1c5831f230>
+data_agent = {'id': 4, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:21:13.560082Z', ...}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1c58327820>
+
+    def test_a_first_row_over_the_byte_cap_is_said_to_be_too_big(api, data_agent, monkeypatch):
+        """So the model knows to leave out or cut down a big column, not to narrow the query."""
+        monkeypatch.setattr(get_settings(), "query_data_max_bytes", 100)
+    
+>       result = query(api, data_agent, "SELECT 1 AS id, repeat('x', 200) AS body")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_data_tools.py:287: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+api = <starlette.testclient.TestClient object at 0x7f1c5831f230>
+agent = {'id': 4, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:21:13.560082Z', ...}
+sql = "SELECT 1 AS id, repeat('x', 200) AS body"
+
+    def query(api, agent, sql: str) -> dict:
+>       return run_tools(api, agent, ToolCall("query_data", {"sql": sql}))[0]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: list index out of range
+
+tests/test_data_tools.py:100: IndexError
+------------------------------ Captured log call -------------------------------
+ERROR    aios.api.agents:agents.py:800 agent run 4 failed
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 149, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 3284, in raw_connection
+    return self.pool.connect()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 445, in connect
+    return _ConnectionFairy._checkout(self)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 1287, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 709, in checkout
+    rec = pool._do_get()
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py", line 176, in _do_get
+    with util.safe_reraise():
+         ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py", line 166, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py", line 174, in _do_get
+    return self._create_connection()
+           ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 386, in _create_connection
+    return _ConnectionRecord(self)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 671, in __init__
+    self.__connect()
+    ~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    with util.safe_reraise():
+         ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py", line 166, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 891, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/create.py", line 645, in connect
+    return dialect.connect(*cargs_tup, **cparams)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 857, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/psycopg/connection.py", line 126, in connect
+    raise last_ex.with_traceback(None)
+psycopg.OperationalError: connection is bad: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory
+	Is the server running locally and accepting connections on that socket?
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/src/aios/api/agents.py", line 795, in turn_stream
+    async for mode, data in events:
+        for chunk in ui.feed(mode, data):
+            yield chunk
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/main.py", line 3505, in astream
+    async for _ in runner.atick(
+    ...<16 lines>...
+            yield o
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 558, in atick
+    _panic_or_proceed(
+    ~~~~~~~~~~~~~~~~~^
+        futures.done.union(f for f, t in futures.items() if t is not None),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        handled_futures=handled_futures,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 689, in _panic_or_proceed
+    raise exc
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 756, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        step.ainvoke(input, config, **kwargs), context=context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 522, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 858, in _afunc
+    outputs = await asyncio.gather(*coros)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1193, in _arun_one
+    return await self._execute_tool_async(tool_request, input_type, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1153, in _execute_tool_async
+    content = _handle_tool_error(e, flag=self._handle_tool_errors)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 434, in _handle_tool_error
+    content = flag(e)  # type: ignore [assignment, call-arg]
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 391, in _default_handle_tool_errors
+    raise e
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1105, in _execute_tool_async
+    response = await tool.ainvoke(call_args, config)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 125, in ainvoke
+    return await super().ainvoke(input, config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 774, in ainvoke
+    return await self.arun(tool_input, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1262, in arun
+    raise error_to_raise
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1228, in arun
+    response = await coro_with_context(coro, context)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 179, in _arun
+    return await self.coroutine(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/src/aios/tools/data.py", line 241, in query_data
+    return await _in_store(runtime, _query, sql)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/src/aios/tools/data.py", line 195, in _in_store
+    return json.dumps(await to_thread.run_sync(read, store_id, *args))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/anyio/to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/src/aios/tools/data.py", line 168, in _query
+    conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2157, in connection
+    return self._connection_for_bind(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        bind,
+        ^^^^^
+        execution_options=execution_options,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 2173, in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<sqlalchemy generated _go() wrapper for sqlalchemy.orm.session.SessionTransaction._connection_for_bind>", line 2, in _connection_for_bind
+    return target(fn, self, bind, execution_options)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/orm/state_changes.py", line 137, in _go
+    ret_value = fn(self, *arg, **kw)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/orm/session.py", line 1203, in _connection_for_bind
+    conn = bind.connect()
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 3260, in connect
+    return self._connection_cls(self)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 151, in __init__
+    Connection._handle_dbapi_exception_noconnection(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        err, dialect, engine
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 2417, in _handle_dbapi_exception_noconnection
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 149, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/base.py", line 3284, in raw_connection
+    return self.pool.connect()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 445, in connect
+    return _ConnectionFairy._checkout(self)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 1287, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 709, in checkout
+    rec = pool._do_get()
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py", line 176, in _do_get
+    with util.safe_reraise():
+         ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py", line 166, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/impl.py", line 174, in _do_get
+    return self._create_connection()
+           ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 386, in _create_connection
+    return _ConnectionRecord(self)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 671, in __init__
+    self.__connect()
+    ~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    with util.safe_reraise():
+         ~~~~~~~~~~~~~~~~~^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/util/langhelpers.py", line 166, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 891, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/create.py", line 645, in connect
+    return dialect.connect(*cargs_tup, **cparams)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 857, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-aab9c35fd6fa8fdf4/backend/.venv/lib/python3.13/site-packages/psycopg/connection.py", line 126, in connect
+    raise last_ex.with_traceback(None)
+sqlalchemy.exc.OperationalError: (psycopg.OperationalError) connection is bad: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory
+	Is the server running locally and accepting connections on that socket?
+(Background on this error at: https://sqlalche.me/e/21/e3q8)
+During task with name 'tools' and id 'e6ff7732-fa14-304e-1233-f7d3910011cb'
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_a_first_row_over_the_byte_cap_is_said_to_be_too_big
+1 failed, 44 deselected in 0.61s

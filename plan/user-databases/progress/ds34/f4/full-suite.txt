@@ -1,0 +1,8 @@
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x7f323c3dc5e0>('HTTP/1.1 403')
+E        +    where <built-in method startswith of str object at 0x7f323c3dc5e0> = 'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="sandbox"\r\nContent-Type: text/plain\r\nContent-Length: 31\r\nConnection: close\r\n\r\n'.startswith
+
+tests/test_sandbox.py:137: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_sandbox.py::test_egress_proxy_refusals[CONNECT other.com:443 HTTP/1.1\r\nHost: other.com:443\r\nProxy-Authorization: Basic c2FuZGJveDpleUp6SWpvaVlXZGxiblF0Y25WdUxUY2lMQ0prSWpwYkltRndhUzVsZUdGdGNHeGxMbU52YlNKZExDSmxJam94TnpreU1UVTNORGsxZlEuTlRBQVptSkx6R0NLbmV6VDJlNlNTOUNidHRubnlOdF9wYm1kUGZ1OFpzZw==\r\n\r\n-403-isn't in this sandbox's allowed domains]
+1 failed, 348 passed, 1 skipped in 140.42s (0:02:20)

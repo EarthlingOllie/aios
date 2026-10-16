@@ -1,0 +1,17 @@
+
+> aios-web@0.1.0 test /home/user/aios/.claude/worktrees/ds37-f8/frontend
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/aios/.claude/worktrees/ds37-f8/frontend
+
+
+ Test Files  7 passed (7)
+      Tests  58 passed (58)
+   Start at  13:03:37
+   Duration  4.78s (transform 50%, tests 25%, import 23%, worker 2%)
+
+  Transform  transforming modules took 2.61s · 50% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+

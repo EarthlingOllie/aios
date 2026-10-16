@@ -1,0 +1,37 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__ test_read_only_connections_prepare_nothing_whether_or_not_they_ran_a_query __
+
+api = <starlette.testclient.TestClient object at 0x7ff987a3f230>
+store = <aios.models.DataStore object at 0x7ff98791d0f0>
+data_agent = {'id': 7, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:11:34.698340Z', ...}
+
+    def test_read_only_connections_prepare_nothing_whether_or_not_they_ran_a_query(
+        api, store, data_agent
+    ):
+        """`query_data` has psycopg prepare nothing on its connection (its reset would drop them),
+        so no other user of the read-only engine does either, whatever the pooled connection last
+        served."""
+    
+        def prepared_by_a_busy_session() -> tuple[int, list]:
+            with store_session(store.id, "ro") as session:
+                for _ in range(8):  # past psycopg's default threshold (5)
+                    session.execute(text("SELECT count(*) FROM data.fish"))
+                pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                return pid, session.execute(text("SELECT name FROM pg_prepared_statements")).all()
+    
+        pid, before = prepared_by_a_busy_session()
+        assert "error" not in query(api, data_agent, "SELECT 1")
+        same_pid, after = prepared_by_a_busy_session()
+    
+        assert same_pid == pid  # the same pooled connection, before and after the query
+>       assert before == after == []
+E       AssertionError: assert [('_pg3_0',)] == []
+E         
+E         Left contains one more item: ('_pg3_0',)
+E         Use -v to get more diff
+
+tests/test_data_tools.py:434: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_read_only_connections_prepare_nothing_whether_or_not_they_ran_a_query
+1 failed, 44 deselected in 0.76s

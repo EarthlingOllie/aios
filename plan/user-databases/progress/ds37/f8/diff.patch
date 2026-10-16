@@ -1,0 +1,61 @@
+diff --git a/frontend/src/lib/data-store.test.ts b/frontend/src/lib/data-store.test.ts
+index 5be6787..2eb0b2c 100644
+--- a/frontend/src/lib/data-store.test.ts
++++ b/frontend/src/lib/data-store.test.ts
+@@ -50,6 +50,14 @@ describe("dataStoreNotice", () => {
+   });
+ });
+ 
++describe("dataStoreNotice and dataStoreSummary", () => {
++  it("say the same thing about a store that failed or isn't available", () => {
++    for (const status of ["failed", "deleting"] as const) {
++      expect(dataStoreSummary(status).message).toBe(dataStoreNotice(status));
++    }
++  });
++});
++
+ describe("dataStorePollInterval", () => {
+   it("stops polling once the store is ready", () => {
+     expect(dataStorePollInterval("ready")).toBeNull();
+diff --git a/frontend/src/lib/data-store.ts b/frontend/src/lib/data-store.ts
+index 59ebe6f..bd9861d 100644
+--- a/frontend/src/lib/data-store.ts
++++ b/frontend/src/lib/data-store.ts
+@@ -1,5 +1,10 @@
+ import type { DataStoreStatus } from "@/lib/api";
+ 
++// The notice and the Overview say the same thing about a store that failed or is otherwise
++// unavailable (the failed wording also matches the API's 409). They differ only while it's set up.
++const FAILED_MESSAGE = "Your data store couldn't be set up. We'll try again; please check back later.";
++const UNAVAILABLE_MESSAGE = "Your data store isn't available.";
++
+ /** What the documents panel says about a data store that isn't ready; null once it is. */
+ export function dataStoreNotice(status: DataStoreStatus): string | null {
+   switch (status) {
+@@ -8,9 +13,9 @@ export function dataStoreNotice(status: DataStoreStatus): string | null {
+     case "provisioning":
+       return "Setting up your data store. You can upload documents once it's ready.";
+     case "failed":
+-      return "Your data store couldn't be set up. We'll try again; please check back later.";
++      return FAILED_MESSAGE;
+     default:
+-      return "Your data store isn't available.";
++      return UNAVAILABLE_MESSAGE;
+   }
+ }
+ 
+@@ -30,12 +35,9 @@ export function dataStoreSummary(status: DataStoreStatus): { label: string; mess
+           "We're setting up your data store. This usually takes a few seconds; you can upload documents once it's ready.",
+       };
+     case "failed":
+-      return {
+-        label: "Failed",
+-        message: "Your data store couldn't be set up. We'll try again; please check back later.",
+-      };
++      return { label: "Failed", message: FAILED_MESSAGE };
+     default:
+-      return { label: "Unavailable", message: "Your data store isn't available." };
++      return { label: "Unavailable", message: UNAVAILABLE_MESSAGE };
+   }
+ }
+ 

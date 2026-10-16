@@ -1,0 +1,34 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0 -- /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend/.venv/bin/python
+rootdir: /home/user/aios/.claude/worktrees/agent-a36afdb4bba941131/backend
+configfile: pyproject.toml
+plugins: langsmith-0.14.4, anyio-4.15.1
+collecting ... collected 18 items / 17 deselected / 1 selected
+
+tests/test_history_export.py::test_delete_exported_history_while_an_export_is_running_is_busy FAILED [100%]
+
+=================================== FAILURES ===================================
+_______ test_delete_exported_history_while_an_export_is_running_is_busy ________
+
+api = <starlette.testclient.TestClient object at 0x7ff4b897f4d0>
+user = <aios.models.User object at 0x7ff4b882a660>
+store_id = UUID('883301f4-e93c-4f2a-baf2-1546442629f5'), export_running = None
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff4b87a69e0>
+
+    def test_delete_exported_history_while_an_export_is_running_is_busy(
+        api, user, store_id, export_running, monkeypatch
+    ):
+        monkeypatch.setattr(history, "LOCK_WAIT", 0.2, raising=False)
+    
+        started = time.monotonic()
+        response = api.delete("/api/settings/exported-history")
+    
+>       assert response.status_code == 503
+E       assert 204 == 503
+E        +  where 204 = <Response [204 No Content]>.status_code
+
+tests/test_history_export.py:293: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_history_export.py::test_delete_exported_history_while_an_export_is_running_is_busy
+======================= 1 failed, 17 deselected in 5.91s =======================

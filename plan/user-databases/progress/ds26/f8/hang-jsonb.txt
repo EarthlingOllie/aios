@@ -1,0 +1,256 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+
+tests/test_data_tools.py::test_a_query_that_fails_outside_postgres_comes_back_as_an_error[SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb] 
+-------------------------------- live log setup --------------------------------
+INFO     alembic.runtime.migration:migration.py:205 Context impl PostgresqlImpl.
+INFO     alembic.runtime.migration:migration.py:208 Will assume transactional DDL.
+INFO     alembic.runtime.migration:migration.py:611 Running upgrade  -> 0001, schema history
+INFO     alembic.runtime.migration:migration.py:611 Running upgrade 0001 -> 0002, data schema
+INFO     aios.datastores.provision:provision.py:284 Data store d8b8bc4c-ee2d-47ad-9220-f4080aaf7adf is ready at revision 0002
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents "HTTP/1.1 201 Created"
+INFO     httpx2:_client.py:1085 HTTP Request: PUT http://testserver/api/agents/4 "HTTP/1.1 200 OK"
+-------------------------------- live log call ---------------------------------
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents/4/runs "HTTP/1.1 201 Created"
+ERROR    aios.api.agents:agents.py:800 agent run 4 failed
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/api/agents.py", line 795, in turn_stream
+    async for mode, data in events:
+        for chunk in ui.feed(mode, data):
+            yield chunk
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/main.py", line 3505, in astream
+    async for _ in runner.atick(
+    ...<16 lines>...
+            yield o
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 558, in atick
+    _panic_or_proceed(
+    ~~~~~~~~~~~~~~~~~^
+        futures.done.union(f for f, t in futures.items() if t is not None),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        handled_futures=handled_futures,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 689, in _panic_or_proceed
+    raise exc
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 756, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        step.ainvoke(input, config, **kwargs), context=context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 522, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 858, in _afunc
+    outputs = await asyncio.gather(*coros)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1193, in _arun_one
+    return await self._execute_tool_async(tool_request, input_type, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1153, in _execute_tool_async
+    content = _handle_tool_error(e, flag=self._handle_tool_errors)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 434, in _handle_tool_error
+    content = flag(e)  # type: ignore [assignment, call-arg]
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 391, in _default_handle_tool_errors
+    raise e
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1105, in _execute_tool_async
+    response = await tool.ainvoke(call_args, config)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 125, in ainvoke
+    return await super().ainvoke(input, config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 774, in ainvoke
+    return await self.arun(tool_input, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1262, in arun
+    raise error_to_raise
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1228, in arun
+    response = await coro_with_context(coro, context)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 179, in _arun
+    return await self.coroutine(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 241, in query_data
+    return await _in_store(runtime, _query, sql)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 195, in _in_store
+    return json.dumps(await to_thread.run_sync(read, store_id, *args))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 176, in _query
+    return _read(pg, sql)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 148, in _read
+    value = [_jsonable(v) for v in row]
+             ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  [Previous line repeated 992 more times]
+RecursionError: maximum recursion depth exceeded
+During task with name 'tools' and id '575db0d3-cbc0-5b0e-7142-822b5d71f9ee'
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents/4/runs/4/chat "HTTP/1.1 200 OK"
+FAILED                                                                   [100%]
+
+=================================== FAILURES ===================================
+_ test_a_query_that_fails_outside_postgres_comes_back_as_an_error[SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb] _
+
+api = <starlette.testclient.TestClient object at 0x7f1a80e37380>
+store = <aios.models.DataStore object at 0x7f1a80d65ba0>
+data_agent = {'id': 4, 'name': 'Analyst', 'description': '', 'created_at': '2026-10-16T08:05:48.080306Z', ...}
+sql = "SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb"
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            # Nested deeper than Python's JSON decoder goes (Postgres goes much deeper).
+            "SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb",
+            # Text the model sent that isn't valid Unicode (a lone surrogate).
+            "SELECT '\ud800'",
+        ],
+    )
+    def test_a_query_that_fails_outside_postgres_comes_back_as_an_error(api, store, data_agent, sql):
+>       failed, after = run_tools(
+        ^^^^^^^^^^^^^
+            api,
+            data_agent,
+            ToolCall("query_data", {"sql": sql}),
+            ToolCall("query_data", {"sql": "SELECT count(*) FROM data.fish"}),
+        )
+E       ValueError: not enough values to unpack (expected 2, got 0)
+
+tests/test_data_tools.py:318: ValueError
+------------------------------ Captured log setup ------------------------------
+INFO     alembic.runtime.migration:migration.py:205 Context impl PostgresqlImpl.
+INFO     alembic.runtime.migration:migration.py:208 Will assume transactional DDL.
+INFO     alembic.runtime.migration:migration.py:611 Running upgrade  -> 0001, schema history
+INFO     alembic.runtime.migration:migration.py:611 Running upgrade 0001 -> 0002, data schema
+INFO     aios.datastores.provision:provision.py:284 Data store d8b8bc4c-ee2d-47ad-9220-f4080aaf7adf is ready at revision 0002
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents "HTTP/1.1 201 Created"
+INFO     httpx2:_client.py:1085 HTTP Request: PUT http://testserver/api/agents/4 "HTTP/1.1 200 OK"
+------------------------------ Captured log call -------------------------------
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents/4/runs "HTTP/1.1 201 Created"
+ERROR    aios.api.agents:agents.py:800 agent run 4 failed
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/api/agents.py", line 795, in turn_stream
+    async for mode, data in events:
+        for chunk in ui.feed(mode, data):
+            yield chunk
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/main.py", line 3505, in astream
+    async for _ in runner.atick(
+    ...<16 lines>...
+            yield o
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 558, in atick
+    _panic_or_proceed(
+    ~~~~~~~~~~~~~~~~~^
+        futures.done.union(f for f, t in futures.items() if t is not None),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        handled_futures=handled_futures,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_runner.py", line 689, in _panic_or_proceed
+    raise exc
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/pregel/_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 756, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        step.ainvoke(input, config, **kwargs), context=context
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/_internal/_runnable.py", line 522, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 858, in _afunc
+    outputs = await asyncio.gather(*coros)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1193, in _arun_one
+    return await self._execute_tool_async(tool_request, input_type, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1153, in _execute_tool_async
+    content = _handle_tool_error(e, flag=self._handle_tool_errors)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 434, in _handle_tool_error
+    content = flag(e)  # type: ignore [assignment, call-arg]
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 391, in _default_handle_tool_errors
+    raise e
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langgraph/prebuilt/tool_node.py", line 1105, in _execute_tool_async
+    response = await tool.ainvoke(call_args, config)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 125, in ainvoke
+    return await super().ainvoke(input, config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 774, in ainvoke
+    return await self.arun(tool_input, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1262, in arun
+    raise error_to_raise
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/base.py", line 1228, in arun
+    response = await coro_with_context(coro, context)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/langchain_core/tools/structured.py", line 179, in _arun
+    return await self.coroutine(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 241, in query_data
+    return await _in_store(runtime, _query, sql)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 195, in _in_store
+    return json.dumps(await to_thread.run_sync(read, store_id, *args))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/.venv/lib/python3.13/site-packages/anyio/_backends/_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 176, in _query
+    return _read(pg, sql)
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 148, in _read
+    value = [_jsonable(v) for v in row]
+             ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  File "/home/user/aios/.claude/worktrees/agent-ad053075621a537e6/backend/src/aios/tools/data.py", line 107, in _jsonable
+    return [_jsonable(v) for v in value]
+            ~~~~~~~~~^^^
+  [Previous line repeated 992 more times]
+RecursionError: maximum recursion depth exceeded
+During task with name 'tools' and id '575db0d3-cbc0-5b0e-7142-822b5d71f9ee'
+INFO     httpx2:_client.py:1085 HTTP Request: POST http://testserver/api/agents/4/runs/4/chat "HTTP/1.1 200 OK"
+=========================== short test summary info ============================
+FAILED tests/test_data_tools.py::test_a_query_that_fails_outside_postgres_comes_back_as_an_error[SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb]
+======================= 1 failed, 45 deselected in 1.00s =======================

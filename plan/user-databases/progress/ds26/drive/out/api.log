@@ -1,0 +1,110 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+INFO:     Started server process [26789]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8186 (Press CTRL+C to quit)
+INFO:     127.0.0.1:44836 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44838 - "GET /auth/callback?code=x&state=y HTTP/1.1" 303 See Other
+INFO:     127.0.0.1:44844 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44846 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44848 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:44866 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44870 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44892 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44908 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44884 - "GET /api/skills HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44920 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44934 - "GET /api/skills HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44918 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52750 - "POST /api/agents HTTP/1.1" 201 Created
+INFO:     127.0.0.1:52760 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52796 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52786 - "GET /api/agents/953/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52776 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52778 - "GET /api/agents/953/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52806 - "GET /api/tools HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52850 - "GET /api/agents/953/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52838 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52822 - "GET /api/agents/953/runs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52866 - "POST /api/agents/953/runs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:52872 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52888 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52900 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52902 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52916 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52930 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52944 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52904 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52960 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52970 - "POST /api/agents/953/runs/708/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data'] results: []
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'error': "The user's data store is still being set up, so there's no data to read yet."}]
+INFO:     127.0.0.1:52984 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52974 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52988 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52996 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53002 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:53004 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53018 - "GET /api/documents HTTP/1.1" 409 Conflict
+INFO:     127.0.0.1:53030 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53040 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53056 - "GET /api/data-store HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53064 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53080 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53092 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53106 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53116 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53132 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53134 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53150 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53124 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53154 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53158 - "POST /api/agents/953/runs/708/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data'] results: []
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'tables': [{'schema': 'data', 'name': 'fish', 'description': 'Fish the user has caught', 'columns': [{'name': 'id', 'type': 'bigint', 'nullable': False, 'description': None}, {'name': 'name', 'type': 'text', 'nullable': False, 'description': None}, {'name': 'weight_kg', 'type': 'numeric', 'nullable': True, 'description': 'As weighed on the boat'}]}, {'schema': 'aios', 'name': 'schema_history', 'description': None, 'columns': [{'name': 'id', 'type': 'bigint', 'nullable': False, 'description': None}, {'name': 'request_id', 'type': 'uuid', 'nullable': True, 'description': None}, {'name': 'summary', 'type': 'text', 'nullable': False, 'description': None}, {'name': 'sql', 'type': 'text', 'nullable': False, 'description': None}, {'name': 'applied_at', 'type': 'timestamp with time zone', 'nullable': False, 'description': None}]}]}]
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'columns': ['name', 'weight_kg'], 'rows': [['carp', '7.5']], 'row_count': 1, 'truncated': False}]
+INFO:     127.0.0.1:53178 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53162 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53182 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53184 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53210 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53188 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53194 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53224 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53238 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53250 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53256 - "POST /api/agents/953/runs/708/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data'] results: []
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'error': 'cannot execute DELETE in a read-only transaction (SQLSTATE 25006)'}]
+INFO:     127.0.0.1:53262 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53258 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53272 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53286 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53318 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53300 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53320 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53334 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53302 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53342 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53344 - "POST /api/agents/953/runs/708/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data'] results: []
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'error': 'The query ran past the time limit and was stopped. Try a cheaper one.'}]
+INFO:     127.0.0.1:49484 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49480 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49498 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49510 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49538 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49512 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49524 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49546 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49550 - "GET /api/agents/953 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49556 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49564 - "POST /api/agents/953/runs/708/chat HTTP/1.1" 200 OK
+MODEL sees tools: ['describe_data', 'query_data'] results: []
+MODEL sees tools: ['describe_data', 'query_data'] results: [{'error': 'cross-database references are not implemented: "ds_e4fdad38427b41be8d2c54aa9171f512.data.secrets" (SQLSTATE 0A000)'}]
+INFO:     127.0.0.1:49582 - "GET /api/agents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49572 - "GET /api/agents/953/runs/708 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [26789]

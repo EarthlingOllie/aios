@@ -1,0 +1,61 @@
+1. sign up; the store is provisioned by the real worker
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+  GET /api/documents 200
+  GET /api/documents 200
+   data store: {"status":"ready"}
+2. upload; the ingest worker writes it into the store
+  POST /api/documents 201
+  GET /api/documents 200
+  GET /api/documents 200
+3. an agent with Document search, Describe data and Query data
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/tools 200
+  GET /api/skills 200
+  GET /api/agents 200
+  GET /api/tools 200
+  GET /api/skills 200
+  GET /api/agents 200
+  POST /api/agents 201
+  GET /api/agents 200
+  GET /api/tools 200
+  GET /api/agents/590/versions 200
+  GET /api/agents/590/runs 200
+  GET /api/agents/590 200
+  GET /api/tools 200
+  GET /api/agents/590/versions 200
+  GET /api/agents/590/runs 200
+  GET /api/agents/590 200
+  POST /api/agents/590/runs 201
+4. the agent searches the store's documents
+  GET /api/agents 200
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/agents/590 200
+  GET /api/agents 200
+  GET /api/agents 200
+  GET /api/agents/590 200
+  GET /api/agents/590/runs/437 200
+  GET /api/agents/590/runs/437 200
+  POST /api/agents/590/runs/437/chat 200
+  GET /api/agents 200
+asked "hedgehogs in winter" -> "Found: They hibernate in winter. | # Hedgehogs | Hedgehogs eat beetles and worms at night."
+  GET /api/agents/590/runs/437 200
+5. the agent lists the store's documents with describe_data + query_data
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/agents 200
+  GET /api/agents/590 200
+  GET /api/agents 200
+  GET /api/agents/590 200
+  GET /api/agents/590/runs/437 200
+  GET /api/agents/590/runs/437 200
+  POST /api/agents/590/runs/437/chat 200
+asked "Which documents are in my store?" -> "Documents in aios.documents: hedgehogs.md (ready, 3 chunks)"
+  GET /api/agents 200
+  GET /api/agents/590/runs/437 200
+DONE

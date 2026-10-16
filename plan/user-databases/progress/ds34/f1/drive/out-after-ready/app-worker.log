@@ -1,0 +1,43 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+/home/user/aios/.claude/worktrees/agent-ad9f7ec867ab4b8b2/backend/.venv/lib/python3.13/site-packages/celery/platforms.py:841: SecurityWarning: You're running the worker with superuser privileges: this is
+absolutely not recommended!
+
+Please specify a different user using the --uid option.
+
+User information: uid=0 euid=0 gid=0 egid=0
+
+  warnings.warn(SecurityWarning(ROOT_DISCOURAGED.format(
+ 
+ -------------- appf1@vm v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.44-fc-v139-x86_64-with-glibc2.39 2026-10-16 19:09:26
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         aios:0x7f5bf3363e00
+- ** ---------- .> transport:   redis://localhost:6801/0
+- ** ---------- .> results:     disabled://
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . aios.export_history
+  . aios.export_pending_history
+  . aios.ingest_document
+  . aios.migrate_data_stores
+  . aios.provision_data_store
+  . aios.retry_unfinished_data_stores
+  . aios.run_workflow
+  . aios.set_up_history_export
+
+[2026-10-16 19:09:26,317: INFO/MainProcess] Connected to redis://localhost:6801/0
+[2026-10-16 19:09:26,320: INFO/MainProcess] mingle: searching for neighbors
+[2026-10-16 19:09:27,334: INFO/MainProcess] mingle: all alone
+[2026-10-16 19:09:27,343: INFO/MainProcess] appf1@vm ready.
+[2026-10-16 19:09:31,585: INFO/MainProcess] Task aios.export_history[51b41dec-2d91-4e26-8d3d-ed86a85398e5] received
+[2026-10-16 19:09:31,860: INFO/ForkPoolWorker-1] Task aios.export_history[51b41dec-2d91-4e26-8d3d-ed86a85398e5] succeeded in 0.2734574539999812s: None
+
+worker: Warm shutdown (MainProcess)

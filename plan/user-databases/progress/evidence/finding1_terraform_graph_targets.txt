@@ -1,0 +1,24 @@
+pulled in by the targeted apply:
+  aws_cloudwatch_log_group.this
+  aws_db_instance.main
+  aws_db_parameter_group.main
+  aws_db_subnet_group.main
+  aws_ecr_repository.this
+  aws_ecs_task_definition.db_roles
+  aws_iam_role.execution_db_roles
+  aws_iam_role.task
+  aws_iam_role_policy.execution_db_roles_secrets
+  aws_iam_role_policy_attachment.execution_db_roles
+  aws_secretsmanager_secret.db_master
+  aws_secretsmanager_secret_version.db_master
+  aws_security_group.app
+  aws_security_group.db
+  aws_subnet.private
+  aws_vpc.main
+  data.aws_availability_zones.available
+  data.aws_iam_policy_document.ecs_assume
+  data.aws_iam_policy_document.read_db_roles_secrets
+  random_password.db
+  random_password.db_app
+  random_password.db_provisioner
+PASS: app secret version is not pulled in

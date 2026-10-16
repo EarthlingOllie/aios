@@ -1,0 +1,6 @@
+  ✓  72 e2e/workflows-view.spec.ts:301:1 › a version page whose workflow fails to load says why (1.6s)
+  ✓  73 e2e/workflows-view.spec.ts:316:1 › deleting a workflow that another runs is refused with the reason (1.7s)
+  ✓  74 e2e/workflows-view.spec.ts:327:1 › a refused delete's reason doesn't follow you to another workflow (1.9s)
+  ✓  75 e2e/workflows-view.spec.ts:341:1 › deleting a workflow returns to the list (1.7s)
+
+  75 passed (1.5m)

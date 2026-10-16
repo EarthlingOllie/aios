@@ -1,0 +1,78 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go_in _
+
+api = <starlette.testclient.TestClient object at 0x7f15ba3774d0>
+user = <aios.models.User object at 0x7f15ba22ea50>
+store_id = UUID('81ea5ff4-1591-449a-8c9f-ab0125a4f05a')
+history_tasks = {'export': [UUID('81ea5ff4-1591-449a-8c9f-ab0125a4f05a'), UUID('81ea5ff4-1591-449a-8c9f-ab0125a4f05a'), UUID('81ea5ff4-1591-449a-8c9f-ab0125a4f05a')], 'set_up': []}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f15ba19ed70>
+
+    def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go_in(
+        api, user, store_id, history_tasks, monkeypatch
+    ):
+        switch(api, True)
+        set_up_and_export(store_id, history_tasks)
+        agent = make_agent(api, "Bot")
+        broken, fine = new_run(api, agent), new_run(api, agent)
+        chat(api, agent, broken, "first")
+        # Its checkpoint no longer loads (not valid msgpack), so it can't be flattened.
+        with SessionLocal() as db:
+            db.execute(
+                text(
+                    "UPDATE langgraph.checkpoint_blobs SET blob = '\\xc1'::bytea"
+                    " WHERE thread_id = :thread AND channel = 'messages'"
+                ),
+                {"thread": f"agent-run-{broken['id']}"},
+            )
+            db.commit()
+        chat(api, agent, fine, "second", "hello")
+    
+        # The broken run is first in line; the task still succeeds and the next run goes in.
+>       assert worker.export_history_task.apply(args=[str(store_id)]).successful()
+E       AssertionError: assert False
+E        +  where False = successful()
+E        +    where successful = <EagerResult: 30e16dbe-0aeb-4596-9c07-59ff948d3ee6>.successful
+E        +      where <EagerResult: 30e16dbe-0aeb-4596-9c07-59ff948d3ee6> = apply(args=['81ea5ff4-1591-449a-8c9f-ab0125a4f05a'])
+E        +        where apply = <@task: aios.export_history of aios at 0x7f15ba7c6270>.apply
+E        +          where <@task: aios.export_history of aios at 0x7f15ba7c6270> = worker.export_history_task
+
+tests/test_history_export.py:424: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    celery.app.trace:trace.py:309 Task aios.export_history[30e16dbe-0aeb-4596-9c07-59ff948d3ee6] raised unexpected: ValueError('invalid type Reserved')
+Traceback (most recent call last):
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/.venv/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/src/aios/worker.py", line 156, in export_history_task
+    history.export(uuid.UUID(data_store_id))
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/src/aios/datastores/history.py", line 309, in export
+    while count := _export_batch(data_store_id):
+                   ~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/src/aios/datastores/history.py", line 280, in _export_batch
+    _write_run(store, run, flatten(run["id"], checkpoints.history(run["id"])))
+                                              ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/src/aios/checkpoints.py", line 95, in history
+    checkpoint = saver.get_tuple(thread_config(run_id))
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/.venv/lib/python3.13/site-packages/langgraph/checkpoint/postgres/__init__.py", line 261, in get_tuple
+    return self._load_checkpoint_tuple(value)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/.venv/lib/python3.13/site-packages/langgraph/checkpoint/postgres/__init__.py", line 583, in _load_checkpoint_tuple
+    **self._load_blobs(value["channel_values"]),
+      ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/.venv/lib/python3.13/site-packages/langgraph/checkpoint/postgres/base.py", line 381, in _load_blobs
+    k.decode(): self.serde.loads_typed((t.decode(), v))
+                ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/user/aios/.claude/worktrees/agent-a7e70acb74e3b90fa/backend/.venv/lib/python3.13/site-packages/langgraph/checkpoint/serde/jsonplus.py", line 284, in loads_typed
+    return ormsgpack.unpackb(
+           ~~~~~~~~~~~~~~~~~^
+        data_, ext_hook=self._unpack_ext_hook, option=ormsgpack.OPT_NON_STR_KEYS
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+ValueError: invalid type Reserved
+=========================== short test summary info ============================
+FAILED tests/test_history_export.py::test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go_in
+1 failed, 16 deselected in 0.84s

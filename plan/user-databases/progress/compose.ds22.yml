@@ -1,0 +1,22 @@
+# Verification-only override for this container (ports clear of the parallel agent; images that
+# can't be built here replaced). Not part of the repo.
+services:
+  db:
+    ports: !override ["55432:5432"]
+  redis:
+    ports: !override ["56379:6379"]
+  api:
+    build: !reset null
+    ports: !override ["58000:8000"]
+  worker:
+    # The worker image's apt-get can't get through this container's proxy; the api image runs
+    # the same Celery app (no Docling, so ingests would fail, but it connects the same way).
+    image: aios-api:local
+    build: !reset null
+    pull_policy: never
+    command: ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=1"]
+  sandbox:
+    image: aios-sandbox-ds22:local
+    build: !reset null
+    pull_policy: never
+    ports: !override ["127.0.0.1:58081:8080"]

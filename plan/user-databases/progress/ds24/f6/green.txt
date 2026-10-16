@@ -1,0 +1,7 @@
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+.........................                                                [100%]
+============================= slowest 3 durations ==============================
+0.54s call     tests/test_data_stores.py::test_a_workflow_run_searches_its_owners_store
+0.53s setup    tests/test_data_stores.py::test_a_user_becomes_a_store_of_its_own
+0.50s setup    tests/test_data_stores.py::test_the_search_tools_tell_the_model_the_store_is_being_set_up
+25 passed in 12.81s

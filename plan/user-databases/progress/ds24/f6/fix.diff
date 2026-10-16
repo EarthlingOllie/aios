@@ -1,0 +1,83 @@
+diff --git a/backend/src/aios/datastores/connections.py b/backend/src/aios/datastores/connections.py
+index f0561f5..db95e18 100644
+--- a/backend/src/aios/datastores/connections.py
++++ b/backend/src/aios/datastores/connections.py
+@@ -6,8 +6,9 @@ read-write (`rw`) or read-only (`ro`) role, once the store is ready. Engines are
+ `MAX_ENGINES`. `store_engine` is the lookup on its own, for a caller that wants to know the
+ store is ready before doing something costly (search, before it pays to embed the query).
+ 
+-Each login role may hold only so many connections (`data_store_connection_limit`). Past it,
+-opening a connection raises `DataStoreBusy`, which callers can retry.
++Each login role may hold only so many connections (`data_store_connection_limit`). Past it, or
++when this process's pool on the store stays full for `POOL_TIMEOUT` seconds, opening a
++connection raises `DataStoreBusy`, which callers can retry.
+ """
+ 
+ import threading
+@@ -19,7 +20,9 @@ from typing import Literal, get_args
+ 
+ from sqlalchemy import Engine, create_engine, event, select
+ from sqlalchemy.engine import URL, ExceptionContext
++from sqlalchemy.exc import TimeoutError as PoolTimeout
+ from sqlalchemy.orm import Session
++from sqlalchemy.pool import PoolProxiedConnection, QueuePool
+ 
+ from aios.datastores import credentials
+ from aios.db import SessionLocal
+@@ -31,6 +34,9 @@ Role = Literal["rw", "ro"]
+ # Engines kept open at once (each up to 3 connections); past it the least recently used goes.
+ MAX_ENGINES = 64
+ 
++# Seconds to wait for one of those connections when all are in use.
++POOL_TIMEOUT = 30
++
+ 
+ class DataStoreNotFound(LookupError):
+     """No data store has this id."""
+@@ -46,8 +52,8 @@ class DataStoreNotReady(RuntimeError):
+ 
+ 
+ class DataStoreBusy(RuntimeError):
+-    """The store's role already holds all the connections it may (its `CONNECTION LIMIT`):
+-    worth trying again shortly."""
++    """The store's role already holds all the connections it may (its `CONNECTION LIMIT`), or
++    this process's pool on it does: worth trying again shortly."""
+ 
+     def __init__(self, data_store_id: uuid.UUID):
+         super().__init__(f"Data store {data_store_id} has no connections free")
+@@ -82,6 +88,19 @@ def _busy(data_store_id: uuid.UUID):
+     return handle_error
+ 
+ 
++def _pool_class(data_store_id: uuid.UUID) -> type[QueuePool]:
++    # A pool that stays full raises `PoolTimeout`, which isn't a database error, so `_busy`
++    # never sees it.
++    class StorePool(QueuePool):
++        def connect(self) -> PoolProxiedConnection:
++            try:
++                return super().connect()
++            except PoolTimeout as exc:
++                raise DataStoreBusy(data_store_id) from exc
++
++    return StorePool
++
++
+ def _engine(store: DataStore, role: Role) -> Engine:
+     key = (store.id, role)
+     with _engines_lock:
+@@ -100,7 +119,14 @@ def _engine(store: DataStore, role: Role) -> Engine:
+         )
+         # Up to 3 connections per (store, role) in each process: the roles' connection limit is
+         # budgeted from it (`data_store_connection_limit`).
+-        engine = create_engine(url, pool_size=1, max_overflow=2, pool_pre_ping=True)
++        engine = create_engine(
++            url,
++            poolclass=_pool_class(store.id),
++            pool_size=1,
++            max_overflow=2,
++            pool_timeout=POOL_TIMEOUT,
++            pool_pre_ping=True,
++        )
+         event.listen(engine, "handle_error", _busy(store.id))
+         _engines[key] = engine
+         while len(_engines) > MAX_ENGINES:

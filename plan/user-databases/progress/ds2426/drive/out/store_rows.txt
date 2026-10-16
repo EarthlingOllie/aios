@@ -1,0 +1,18 @@
+ version_num 
+-------------
+ 0003
+(1 row)
+
+                    List of schemas
+    Name    |                   Owner                   
+------------+-------------------------------------------
+ aios       | ds_04db56c9bb504b24a75fb71deb80009a_owner
+ data       | ds_04db56c9bb504b24a75fb71deb80009a_owner
+ extensions | aios
+(3 rows)
+
+ id |   filename   | status | chunks 
+----+--------------+--------+--------
+  1 | hedgehogs.md | ready  |      3
+(1 row)
+

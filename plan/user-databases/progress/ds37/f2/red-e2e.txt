@@ -1,0 +1,76 @@
+
+Running 2 tests using 2 workers
+
+  ✘  1 e2e/data-page.spec.ts:181:1 › a slow list shows it's loading, not that there are no documents (8.3s)
+  ✘  2 e2e/data-store.spec.ts:65:1 › the chat's panel shows it's loading, not an invitation to upload (9.2s)
+
+
+  1) e2e/data-page.spec.ts:181:1 › a slow list shows it's loading, not that there are no documents ─
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByLabel('Loading documents')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByLabel('Loading documents') with timeout 5000ms
+      - waiting for getByLabel('Loading documents')
+
+
+      185 |   await page.goto("/data?tab=documents");
+      186 |
+    > 187 |   await expect(page.getByLabel("Loading documents")).toBeVisible();
+          |                                                      ^
+      188 |   await expect(page.getByText("No documents yet")).toBeHidden();
+      189 |   await page.screenshot({ path: test.info().outputPath("loading.png") });
+      190 |
+        at /home/user/aios/.claude/worktrees/ds37-f2/frontend/e2e/data-page.spec.ts:187:54
+
+    Error Context: ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-page-a-slow-list-show-296d7-that-there-are-no-documents/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-page-a-slow-list-show-296d7-that-there-are-no-documents/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-page-a-slow-list-show-296d7-that-there-are-no-documents/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) e2e/data-store.spec.ts:65:1 › the chat's panel shows it's loading, not an invitation to upload 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByLabel('Loading documents')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByLabel('Loading documents') with timeout 5000ms
+      - waiting for getByLabel('Loading documents')
+
+
+      69 |   await page.goto("/");
+      70 |
+    > 71 |   await expect(page.getByLabel("Loading documents")).toBeVisible();
+         |                                                      ^
+      72 |   await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+      73 |
+      74 |   await expect(page.getByText("report.pdf")).toBeVisible();
+        at /home/user/aios/.claude/worktrees/ds37-f2/frontend/e2e/data-store.spec.ts:71:54
+
+    Error Context: ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-store-the-chat-s-pane-4d7ec-not-an-invitation-to-upload/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-store-the-chat-s-pane-4d7ec-not-an-invitation-to-upload/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace ../../../../../../../tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds37/f2/red-results/data-store-the-chat-s-pane-4d7ec-not-an-invitation-to-upload/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    e2e/data-page.spec.ts:181:1 › a slow list shows it's loading, not that there are no documents ──
+    e2e/data-store.spec.ts:65:1 › the chat's panel shows it's loading, not an invitation to upload ─

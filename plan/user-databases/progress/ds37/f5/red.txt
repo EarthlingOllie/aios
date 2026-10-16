@@ -1,0 +1,46 @@
+
+Running 1 test using 1 worker
+
+[WebServer] 1:03:39 PM [vite] http proxy error: /api/data-store
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8000
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+  ✘  1 e2e/data-page.spec.ts:85:1 › a store whose status can't be read says so, and recovers when it can (8.1s)
+
+
+  1) e2e/data-page.spec.ts:85:1 › a store whose status can't be read says so, and recovers when it can 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('region', { name: 'Data store' })
+    Expected substring: "Couldn't check your data store"
+    Received string:    "Data store"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" getByRole('region', { name: 'Data store' }) with timeout 5000ms
+      - waiting for getByRole('region', { name: 'Data store' })
+        13 × locator resolved to <section aria-label="Data store" class="flex flex-col gap-2 rounded-md border px-4 py-3">…</section>
+           - unexpected value "Data store"
+
+
+      88 |   await page.goto("/data");
+      89 |
+    > 90 |   await expect(overview(page)).toContainText("Couldn't check your data store");
+         |                                ^
+      91 |   await expect(overview(page)).toContainText("Trying again…");
+      92 |   await page.screenshot({ path: "test-results/data-store-status-error.png" });
+      93 |
+        at /home/user/aios/.claude/worktrees/ds37-f5/frontend/e2e/data-page.spec.ts:90:32
+
+    Error Context: test-results/data-page-a-store-whose-st-28893-so-and-recovers-when-it-can/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/data-page-a-store-whose-st-28893-so-and-recovers-when-it-can/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/data-page-a-store-whose-st-28893-so-and-recovers-when-it-can/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    e2e/data-page.spec.ts:85:1 › a store whose status can't be read says so, and recovers when it can 

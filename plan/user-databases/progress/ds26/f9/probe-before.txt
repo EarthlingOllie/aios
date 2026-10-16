@@ -1,0 +1,8 @@
+
+fresh conn, busy session: (18396, 5, [('_pg3_0', 'SELECT count(*) FROM pg_class WHERE relname = $1')])
+next session, same conn:   (18396, 5, [])
+query_data: {'columns': ['one'], 'rows': [[1]], 'row_count': 1, 'truncated': False}
+after query_data, busy:   (18396, None, [])
+next session:             (18396, None, [])
+.
+1 passed in 0.74s

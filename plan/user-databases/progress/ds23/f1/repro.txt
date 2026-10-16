@@ -1,0 +1,23 @@
+(Background on this error at: https://sqlalche.me/e/21/e3q8)
+(Background on this error at: https://sqlalche.me/e/21/e3q8)
+--- old release (0011): first sign-in inserts its store as data_store_for does
+ id 
+----
+  3
+(1 row)
+
+INSERT 0 1
+ERROR:  null value in column "dbname" of relation "data_stores" violates not-null constraint
+DETAIL:  Failing row contains (b648ef26-725b-4294-a432-935f49aa9647, 1, 2026-10-16 02:34:00.186211+00, provisioning, null, null, null, null, null, null, null, null, null).
+--- deploy.sh runs 0012 while the old release still serves
+(Background on this error at: https://sqlalche.me/e/21/e3q8)
+ id 
+----
+  4
+(1 row)
+
+INSERT 0 1
+ERROR:  null value in column "dbname" of relation "data_stores" violates not-null constraint
+DETAIL:  Failing row contains (b5b9e7c4-a964-4c3a-aefc-d37b413482b0, 2, 2026-10-16 02:34:01.323211+00, provisioning, null, null, null, null, null, null, null, null, null).
+
+NOTE: the first 'old release' insert above fails only because the stray downgrade left the DB at 0012 (alembic downgrade 0010 errored); the second block is the case that matters: at 0012, the 0011 release's insert of DataStore(owner_user_id=...) gets NotNullViolation on dbname.

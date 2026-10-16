@@ -1,0 +1,4 @@
+Before the fix (6e129d0 drop, plus only the grant, i.e. still WITH (FORCE)), autovacuum_naptime=1:
+in the store's database: [(1064, 'autovacuum worker', None, None, 'autovacuum: VACUUM ANALYZE aios.big')]
+drop failed after 0.03s: InsufficientPrivilege: permission denied to terminate process
+DETAIL:  Only roles with privileges of the role whose process is being terminated or with privileges of the "pg_signal_backend" role may terminate this process.

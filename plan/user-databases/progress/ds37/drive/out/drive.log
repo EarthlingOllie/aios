@@ -1,0 +1,83 @@
+1. a new user signs in; the Data nav item opens the Overview: being set up
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+   ok: Overview says the store is being set up
+2. Documents while it's being set up: no upload
+   ok: Upload is disabled while the store is set up
+3. the provisioning worker starts; the page sees the store become ready
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+   ok: Upload is enabled once the store is ready
+4. upload two files from the Data page: one ingests, one fails
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+  POST /api/documents 201
+  POST /api/documents 201
+  GET /api/documents 200
+   ok: hedgehogs.md shows it's in progress (hedgehogs.md /  / Uploaded Oct 16, 2026, 8:42 AM /  / Waiting)
+  GET /api/documents 200
+  GET /api/documents 200
+  GET /api/documents 200
+   broken.md: broken.md /  / Uploaded Oct 16, 2026, 8:42 AM /  / UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte /  / Failed
+   ok: the failure's error is shown
+   ok: the upload time is shown
+5. upload from the chat's panel; it appears on the Data page and follows its ingest
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+  POST /api/documents 201
+  GET /api/documents 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+  GET /api/documents 200
+   otters.md on the Data page: otters.md /  / Uploaded Oct 16, 2026, 8:42 AM /  / Processing
+  GET /api/documents 200
+  GET /api/documents 200
+   ok: otters.md reached ready on the Data page without a reload
+6. delete hedgehogs.md: gone from the list and from search
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/search?q=hedgehogs+eat+beetles&limit=8 200
+  GET /api/search?q=hedgehogs+eat+beetles&limit=8 200
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+  DELETE /api/documents/1 204
+  GET /api/documents 200
+   ok: the other documents stay
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/search?q=hedgehogs+eat+beetles&limit=8 200
+  GET /api/search?q=hedgehogs+eat+beetles&limit=8 200
+   search hits after delete: ["otters.md","otters.md"]
+   ok: search no longer finds hedgehogs.md
+7. each section's URL opens it directly
+  GET /api/me 200
+  GET /api/me 200
+   ok: /data?tab=documents opens Documents
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/me 200
+  GET /api/me 200
+   ok: /data opens the Overview
+8. a phone-sized screen
+  GET /api/data-store 200
+  GET /api/me 200
+  GET /api/me 200
+  GET /api/data-store 200
+  GET /api/data-store 200
+  GET /api/documents 200
+DONE

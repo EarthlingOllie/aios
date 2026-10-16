@@ -1,0 +1,4 @@
+/var/log/postgresql/postgresql-16-ds23.log: 447779 bytes, plaintext passwords found: 0
+    2026-10-15 23:27:17.867 UTC [14925] aios_provisioner@aios_ds ... PASSWORD 'SCRAM-SHA-256$4096:H8Fn4hjfc0/
+/tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds23/drive/out/api.log: 2340 bytes, plaintext passwords found: 0
+/tmp/claude-0/-home-user-aios/16d5b276-3547-54f2-a93a-085ab108fdbf/scratchpad/ds23/drive/out/provisioning-worker.log: 2216 bytes, plaintext passwords found: 0

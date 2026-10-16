@@ -1,0 +1,18 @@
+== docker compose config provisioning-worker (services rendered, with depends_on)
+  db {}
+  db-roles {'db': 'service_healthy'}
+  migrate {'db-roles': 'service_completed_successfully', 'redis': 'service_healthy'}
+  provisioning-worker {'migrate': 'service_completed_successfully'}
+  redis {}
+== docker compose config migrate-stores (services rendered, with depends_on)
+  db {}
+  db-roles {'db': 'service_healthy'}
+  migrate {'db-roles': 'service_completed_successfully', 'redis': 'service_healthy'}
+  migrate-stores {'migrate': 'service_completed_successfully'}
+  redis {}
+== docker compose config worker (services rendered, with depends_on)
+  db {}
+  db-roles {'db': 'service_healthy'}
+  migrate {'db-roles': 'service_completed_successfully', 'redis': 'service_healthy'}
+  redis {}
+  worker {'migrate': 'service_completed_successfully'}
