@@ -168,6 +168,34 @@ def test_a_stores_roles_have_their_limits(two_stores):
             assert distance.fetchone() == (1.0,)
 
 
+def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "data_store_connection_limit", 10)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+
+    monkeypatch.setattr(settings, "data_store_connection_limit", 20)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 30_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 60_000)
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    for role in ("rw", "ro"):
+        with psycopg.connect(login_url(row, role), autocommit=True) as conn:
+            limit = conn.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
+            assert limit.fetchone() == (20,)
+            timeouts = conn.execute(
+                "SELECT name, setting FROM pg_settings WHERE name IN "
+                "('statement_timeout', 'idle_in_transaction_session_timeout')"
+            )
+            assert dict(timeouts.fetchall()) == {
+                "statement_timeout": "30000",
+                "idle_in_transaction_session_timeout": "60000",
+            }
+
+
 class Crash(Exception):
     pass
 

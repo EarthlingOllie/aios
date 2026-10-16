@@ -18,13 +18,14 @@ Then it runs the store tree to its head, as the owner (`upgrade_store`), and mar
 `ready`. Every step checks what's already there, so after a crash running it again finishes
 the job; runs of the same store wait for each other.
 
-`migrate_all` brings every ready store to the tree's head, one at a time: a store that fails is
-reported and the rest carry on. It also finishes provisioning stores that never got there.
-`python -m aios.datastores.provision migrate-all` runs it (the deploy does, after the
-platform's migrations). Between deploys, `retry_unfinished` tries those stores again every few
-minutes, so a store whose provisioning gave up (the instance was down, say) gets there once it
-can. It also brings ready stores behind the tree's head to it: the release before a deploy can
-still make one after the deploy migrated stores, and migrating one can fail.
+`migrate_all` brings every ready store to the tree's head, and its roles to the limits
+configured now, one at a time: a store that fails is reported and the rest carry on. It also
+finishes provisioning stores that never got there. `python -m aios.datastores.provision
+migrate-all` runs it (the deploy does, after the platform's migrations). Between deploys,
+`retry_unfinished` tries those stores again every few minutes, so a store whose provisioning
+gave up (the instance was down, say) gets there once it can. It also brings ready stores behind
+the tree's head to it: the release before a deploy can still make one after the deploy migrated
+stores, and migrating one can fail.
 """
 
 import logging
@@ -96,19 +97,14 @@ def _ident(*names: str) -> sql.Composable:
     return sql.SQL(", ").join(sql.Identifier(n) for n in names)
 
 
-def _create_roles(run: _Run) -> None:
-    conn, n, settings = run.server, run.names, get_settings()
-    for role, password in ((n.owner, None), (n.rw, run.rw_password), (n.ro, run.ro_password)):
-        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
-            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
-        if password is None:
-            continue
-        # The verifier, not the password, so no statement log ever holds it.
+def _set_limits(conn: psycopg.Connection, names: StoreNames) -> None:
+    """Give the store's login roles the limits configured now (`data_store_*` settings): when
+    they're made, and on every migration, so a changed setting reaches existing stores."""
+    settings = get_settings()
+    for role in (names.rw, names.ro):
         conn.execute(
-            sql.SQL("ALTER ROLE {} WITH LOGIN CONNECTION LIMIT {} PASSWORD {}").format(
-                sql.Identifier(role),
-                sql.Literal(settings.data_store_connection_limit),
-                sql.Literal(credentials.scram_verifier(password)),
+            sql.SQL("ALTER ROLE {} WITH CONNECTION LIMIT {}").format(
+                sql.Identifier(role), sql.Literal(settings.data_store_connection_limit)
             )
         )
         for setting, value in (
@@ -123,6 +119,22 @@ def _create_roles(run: _Run) -> None:
                     sql.Identifier(role), sql.Identifier(setting), sql.Literal(value)
                 )
             )
+
+
+def _create_roles(run: _Run) -> None:
+    conn, n = run.server, run.names
+    for role, password in ((n.owner, None), (n.rw, run.rw_password), (n.ro, run.ro_password)):
+        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+        if password is None:
+            continue
+        # The verifier, not the password, so no statement log ever holds it.
+        conn.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(credentials.scram_verifier(password))
+            )
+        )
+    _set_limits(conn, n)
     # To create the database owned by it, and to act as it inside.
     conn.execute(
         sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET TRUE").format(
@@ -328,13 +340,15 @@ def fail(store_id: uuid.UUID, error: str) -> None:
 
 
 def migrate_store(store_id: uuid.UUID) -> str:
-    """Bring a ready store to the tree's head and record its revision."""
-    with _provisioner_locked(store_id):
+    """Bring a ready store to the tree's head, and its roles to the limits configured now, and
+    record its revision."""
+    with _provisioner_locked(store_id) as server:
         with SessionLocal() as db:
             store = db.get(DataStore, store_id)
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
+        _set_limits(server, names)
         revision = upgrade_store(names)
         with SessionLocal() as db:
             db.execute(
