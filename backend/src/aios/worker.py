@@ -110,7 +110,7 @@ def provision_data_store_task(self, data_store_id: str) -> None:
         provision.provision(store_id)
     except Exception as exc:
         if self.request.retries >= PROVISION_RETRIES:
-            provision.fail(store_id, f"{exc.__class__.__name__}: {exc}"[:2000])
+            provision.fail(store_id, provision.describe_error(exc))
             raise
         raise self.retry(countdown=60 * 2**self.request.retries) from exc
 

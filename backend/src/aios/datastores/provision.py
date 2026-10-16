@@ -336,7 +336,7 @@ def _record_error(store_id: uuid.UUID, error: str) -> None:
         db.commit()
 
 
-def _describe(exc: BaseException) -> str:
+def describe_error(exc: BaseException) -> str:
     return f"{exc.__class__.__name__}: {exc}"[:2000]
 
 
@@ -357,7 +357,7 @@ def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
                 outcome[store_id] = revision
         except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
             log.exception("Provisioning data store %s failed", store_id)
-            fail(store_id, _describe(exc))
+            fail(store_id, describe_error(exc))
             outcome[store_id] = exc
     return outcome
 
@@ -372,7 +372,8 @@ def retry_unfinished(
 ) -> dict[uuid.UUID, str | BaseException]:
     """Try once more to provision the stores whose provisioning gave up, or never ran
     (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
-    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped it."""
+    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped
+    it."""
     return _finish(
         and_(
             _only(store_ids),
@@ -412,7 +413,7 @@ def migrate_all(
             outcome[store_id] = migrate_store(store_id)
         except Exception as exc:  # noqa: BLE001
             log.exception("Migrating data store %s failed", store_id)
-            _record_error(store_id, _describe(exc))
+            _record_error(store_id, describe_error(exc))
             outcome[store_id] = exc
     return outcome
 
@@ -425,7 +426,7 @@ def main(argv: list[str]) -> int:
     outcome = migrate_all()
     failed = {k: v for k, v in outcome.items() if isinstance(v, BaseException)}
     for store_id, result in outcome.items():
-        print(f"{store_id}: {_describe(result) if store_id in failed else result}")
+        print(f"{store_id}: {describe_error(result) if store_id in failed else result}")
     print(f"{len(outcome) - len(failed)} data stores at head, {len(failed)} failed")
     return 1 if failed else 0
 
