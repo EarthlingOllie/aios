@@ -611,3 +611,10 @@ def test_the_tool_reads_the_catalog_as_the_store_sees_it_now(api, store, agent):
     )
 
     assert result["row_count"] == 1
+
+
+def test_arguments_of_the_wrong_shape_are_refused_by_the_tools_schema(api, store, agent):
+    result = write(api, agent, table="fish", operation="insert", rows=["pike"])
+
+    assert "valid dictionary" in result
+    assert len(fish(store)) == 2
