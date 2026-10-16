@@ -52,13 +52,12 @@ else
   PREP_VARS=(-var "image_tag=$TAG" -var "run_services=false")
 fi
 
-# Runs a one-off task (a Terraform output with its task definition and network) to completion.
+# Runs a one-off task (a task definition family) to completion, in the network that the
+# migrate_task output names.
 run_task() {
-  local output="$1" logs="$2" spec taskdef netcfg task_arn exit_code
+  local taskdef="$1" logs="$2" netcfg task_arn exit_code
   CLUSTER="$(tf output -raw ecs_cluster)"
-  spec="$(tf output -json "$output")"
-  taskdef="$(echo "$spec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')"
-  netcfg="$(echo "$spec" | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
+  netcfg="$(tf output -json migrate_task | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
   task_arn="$(aws ecs run-task --region "$REGION" --cluster "$CLUSTER" --launch-type FARGATE \
     --task-definition "$taskdef" --network-configuration "$netcfg" \
     --query 'tasks[0].taskArn' --output text)"
@@ -66,7 +65,7 @@ run_task() {
   exit_code="$(aws ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$task_arn" \
     --query 'tasks[0].containers[0].exitCode' --output text)"
   if [[ "$exit_code" != "0" ]]; then
-    echo "$output failed (exit $exit_code); see CloudWatch log group /ecs/*/$logs" >&2
+    echo "$taskdef failed (exit $exit_code); see CloudWatch log group /ecs/*/$logs" >&2
     exit 1
   fi
 }
@@ -78,21 +77,19 @@ run_task() {
 # The full apply below switches the app's secret to the app's role, and ECS reads the secret
 # whenever it starts a task. So on a stack with running services, the roles are created first,
 # from the master user's secret alone (it also holds the roles' DSNs), with only that task and
-# its secret applied: a task replaced in between still gets credentials that work. A targeted
-# apply only writes an output whose every resource is targeted, so db_roles_task's are too
-# (they're unchanged on a running stack).
+# its secret applied: a task replaced in between still gets credentials that work. (A targeted
+# apply only writes an output whose every resource is targeted, which is why the task runs in
+# migrate_task's network: that output is the previous deploy's, from its full apply.)
 create_roles() {
   echo "==> Creating database roles"
-  run_task db_roles_task db-roles
+  run_task "$(tf output -raw db_roles_task_definition)" db-roles
 }
 if [[ -n "$CURRENT_TAG" ]]; then
   tf apply -auto-approve -input=false "${PREP_VARS[@]}" -var "migrate_image_tag=$TAG" \
     -target=aws_secretsmanager_secret_version.db_master \
     -target=aws_ecs_task_definition.db_roles \
     -target=aws_iam_role_policy.execution_db_roles_secrets \
-    -target=aws_iam_role_policy_attachment.execution_db_roles \
-    -target=aws_subnet.private \
-    -target=aws_security_group.app
+    -target=aws_iam_role_policy_attachment.execution_db_roles
   create_roles
 fi
 
@@ -105,7 +102,7 @@ if [[ -z "$CURRENT_TAG" ]]; then
 fi
 
 echo "==> Running database migrations"
-run_task migrate_task migrate
+run_task "$(tf output -json migrate_task | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')" migrate
 
 echo "==> Rolling out services"
 tf apply -auto-approve -input=false -var "image_tag=$TAG"
