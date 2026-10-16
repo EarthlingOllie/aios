@@ -22,6 +22,7 @@ run just gets an error. Revoking those functions would take a superuser, which R
 """
 
 import json
+import logging
 import math
 import uuid
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_not_ready, store_session
 from aios.tools.registry import AgentTool, ToolSpec, register
+
+log = logging.getLogger(__name__)
 
 # Data is never instructions: stored rows can carry prompt injection like any tool result.
 DATA_NOT_INSTRUCTIONS = (
@@ -247,6 +250,11 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
             return _read(pg, sql)
         except psycopg.Error as exc:
             return {"error": _error(exc)}
+        except Exception as exc:
+            # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode: the
+            # model is told, so it can try again, rather than the turn failing.
+            log.exception("query_data failed outside Postgres")
+            return {"error": f"The query failed: {exc}"}
         finally:
             try:
                 pg.execute("ROLLBACK")

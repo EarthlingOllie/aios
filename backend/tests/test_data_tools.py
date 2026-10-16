@@ -398,6 +398,27 @@ def test_dates_times_and_intervals_come_back_as_postgres_writes_them(api, store,
     ]
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Nested deeper than Python's JSON decoder goes (Postgres goes much deeper).
+        "SELECT (repeat('[', 5000) || repeat(']', 5000))::jsonb",
+        # Text the model sent that isn't valid Unicode (a lone surrogate).
+        "SELECT '\ud800'",
+    ],
+)
+def test_a_query_that_fails_outside_postgres_comes_back_as_an_error(api, store, data_agent, sql):
+    failed, after = run_tools(
+        api,
+        data_agent,
+        ToolCall("query_data", {"sql": sql}),
+        ToolCall("query_data", {"sql": "SELECT count(*) FROM data.fish"}),
+    )
+
+    assert set(failed) == {"error"}
+    assert after["rows"] == [[3]]
+
+
 def test_a_query_with_no_rows_still_names_its_columns(api, store, data_agent):
     result = query(api, data_agent, "SELECT name, weight_kg FROM data.fish WHERE false")
 
