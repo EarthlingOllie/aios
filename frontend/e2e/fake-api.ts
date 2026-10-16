@@ -105,6 +105,8 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
+  /** How many times the app asked for the list of documents. */
+  documentLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -448,6 +450,7 @@ export class FakeApi {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       return reply(200, { status: this.dataStoreStatus });
     }
+    if (path === "/api/documents" && method === "GET") this.documentLists++;
     if (path === "/api/documents" || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {

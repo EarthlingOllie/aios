@@ -36,11 +36,8 @@ export function Documents() {
     [],
   );
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Ask how the store is, and again while it isn't ready; list the documents once it is.
+  // Ask how the store is, and again while it isn't ready; list the documents once it is (not
+  // before: the API refuses to list them until then).
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
