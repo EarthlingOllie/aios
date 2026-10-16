@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://aios_app:aios_app@localhost:5432/aios"
     # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), which creates data
     # stores and migrates them (`aios.datastores.provision`). New stores are created on its
-    # instance. On AWS only the provisioning worker (and the deploy's store migration) has it.
+    # instance, which must be DATABASE_URL's: the app reaches them at DATABASE_URL's address
+    # (they may know the instance by different names, as in Compose). On AWS only the
+    # provisioning worker (and the deploy's store migration) has it.
     data_store_provisioner_url: str = (
         "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
     )

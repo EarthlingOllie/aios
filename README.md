@@ -292,7 +292,10 @@ each must work with the code before it (expand now, contract in a later release)
 
 Documents and chunks are still in the platform database: `documents_session` opens a platform
 session for them, until they move into the stores. `store_session(id, role)` already opens a
-session on the store's own database, as `_rw` or `_ro`.
+session on the store's own database, as `_rw` or `_ro`, at `DATABASE_URL`'s address (and with
+its options, like `sslmode`): stores are on the platform database's instance, which the
+provisioner may know by another name (Compose's `db`, with the API on the host). A row's `host`
+and `port` are for a store moved to another instance later; they're empty until then.
 
 ### Dependency policy
 

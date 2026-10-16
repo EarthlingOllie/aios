@@ -26,6 +26,7 @@ from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
+from aios.datastores.connections import store_url
 from aios.datastores.migrations import head_revision
 from aios.db import SessionLocal
 from aios.main import app
@@ -70,6 +71,53 @@ def test_a_new_users_store_is_provisioned_ready_at_the_store_trees_head(db, new_
         assert store.scalar(text("SELECT current_database()")) == row.dbname
 
 
+def test_a_store_is_reached_at_the_platform_databases_address_not_the_provisioners(
+    db, new_user, monkeypatch
+):
+    """The provisioner may know the instance by a name the app can't resolve (Compose's `db`,
+    with the API on the host): the app reaches a store where it reaches the platform database."""
+    settings = get_settings()
+    prov = make_url(settings.data_store_provisioner_url)
+    # A name only the provisioner can resolve: libpq connects to `hostaddr` instead.
+    as_db = prov.set(host="db.invalid").update_query_dict({"hostaddr": "127.0.0.1"})
+    monkeypatch.setattr(
+        settings, "data_store_provisioner_url", as_db.render_as_string(hide_password=False)
+    )
+    store_id = data_store_for(new_user().id)
+
+    provision.provision(store_id)
+
+    with store_session(store_id, "ro") as store:
+        assert store.scalar(text("SELECT current_database()")) == store_row(db, store_id).dbname
+
+
+def test_a_store_moved_to_another_instance_is_reached_there_with_the_apps_options(monkeypatch):
+    monkeypatch.setattr(
+        get_settings(),
+        "database_url",
+        "postgresql+psycopg://app:pw@platform:5432/aios?sslmode=require",
+    )
+    store = DataStore(
+        dbname="ds_x",
+        role_prefix="ds_x",
+        rw_password=credentials.encrypt("rw-secret"),
+        ro_password=credentials.encrypt("ro-secret"),
+    )
+    here = store_url(store, "ro")
+    store.host, store.port = "elsewhere", 6543
+    moved = store_url(store, "ro")
+
+    assert (here.host, here.port, here.database, here.username, here.password) == (
+        "platform",
+        5432,
+        "ds_x",
+        "ds_x_ro",
+        "ro-secret",
+    )
+    assert (moved.host, moved.port) == ("elsewhere", 6543)
+    assert here.query == moved.query == {"sslmode": "require"}
+
+
 @pytest.fixture
 def two_stores(db, new_user) -> tuple[DataStore, DataStore]:
     """Two provisioned stores, A and B."""
@@ -83,17 +131,9 @@ def two_stores(db, new_user) -> tuple[DataStore, DataStore]:
 
 def login_url(store: DataStore, role: str, database: str | None = None) -> str:
     """Store `store`'s `role`, as the app connects as it, to `database` (by default its own)."""
-    password = credentials.decrypt(store.rw_password if role == "rw" else store.ro_password)
     return (
-        make_url(get_settings().database_url)
-        .set(
-            drivername="postgresql",
-            username=f"{store.role_prefix}_{role}",
-            password=password,
-            host=store.host,
-            port=store.port,
-            database=database or store.dbname,
-        )
+        store_url(store, role)
+        .set(drivername="postgresql", database=database or store.dbname)
         .render_as_string(hide_password=False)
     )
 

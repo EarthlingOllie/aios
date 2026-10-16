@@ -79,7 +79,8 @@ class DataStore(Base):
         default=DataStoreStatus.provisioning,
         server_default=DataStoreStatus.provisioning.value,
     )
-    # Where its database is: set when it's provisioned, on the provisioner's instance.
+    # Where its database is, if not on the platform database's instance (where every store is,
+    # for now, and NULL says so): kept so a store can later move to another instance.
     host: Mapped[str | None] = mapped_column(String(255))
     port: Mapped[int | None] = mapped_column(Integer)
     # `ds_<id as hex>`, and its roles `<role_prefix>_owner`, `_rw` and `_ro`.

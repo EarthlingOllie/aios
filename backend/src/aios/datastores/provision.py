@@ -202,7 +202,8 @@ def _migrate(run: _Run) -> None:
 
 
 def _mark_ready(run: _Run) -> None:
-    prov = make_url(get_settings().data_store_provisioner_url)
+    # No host or port: it's on the platform database's instance, which the app reaches at its
+    # own address (`connections.store_url`), not necessarily the provisioner's.
     with SessionLocal() as db:
         db.execute(
             update(DataStore)
@@ -210,8 +211,6 @@ def _mark_ready(run: _Run) -> None:
             .values(
                 status=DataStoreStatus.ready,
                 schema_revision=run.revision,
-                host=prov.host,
-                port=prov.port or 5432,
                 error=None,
             )
         )

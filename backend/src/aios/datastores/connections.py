@@ -19,9 +19,10 @@ from contextlib import contextmanager
 from typing import Literal, get_args
 
 from sqlalchemy import Engine, create_engine, select
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session
 
+from aios.config import get_settings
 from aios.datastores import credentials
 from aios.db import SessionLocal
 from aios.models import DataStore, DataStoreStatus
@@ -62,6 +63,23 @@ def _ready_store(db: Session, data_store_id: uuid.UUID) -> DataStore:
     return store
 
 
+def store_url(store: DataStore, role: Role) -> URL:
+    """Where the app reaches the store's database, as its `role`.
+
+    A store with no host of its own is on the platform database's instance, so it's reached at
+    DATABASE_URL's address, with its options (e.g. `sslmode`): where the provisioner reached it
+    from may not resolve here (Compose's `db`, with the API on the host)."""
+    url = make_url(get_settings().database_url)
+    if store.host is not None:
+        url = url.set(host=store.host, port=store.port)
+    password = store.rw_password if role == "rw" else store.ro_password
+    return url.set(
+        username=f"{store.role_prefix}_{role}",
+        password=credentials.decrypt(password),
+        database=store.dbname,
+    )
+
+
 _engines: OrderedDict[tuple[uuid.UUID, str], Engine] = OrderedDict()
 _engines_lock = threading.Lock()
 
@@ -73,16 +91,9 @@ def _engine(store: DataStore, role: Role) -> Engine:
         if engine is not None:
             _engines.move_to_end(key)
             return engine
-        password = store.rw_password if role == "rw" else store.ro_password
-        url = URL.create(
-            "postgresql+psycopg",
-            username=f"{store.role_prefix}_{role}",
-            password=credentials.decrypt(password),
-            host=store.host,
-            port=store.port,
-            database=store.dbname,
+        engine = create_engine(
+            store_url(store, role), pool_size=1, max_overflow=2, pool_pre_ping=True
         )
-        engine = create_engine(url, pool_size=1, max_overflow=2, pool_pre_ping=True)
         _engines[key] = engine
         while len(_engines) > MAX_ENGINES:
             _, evicted = _engines.popitem(last=False)
