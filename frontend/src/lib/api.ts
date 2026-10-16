@@ -20,7 +20,7 @@ export type Settings = {
   history_exported_at: string | null;
 };
 
-export type DocumentStatus ="pending" | "processing" | "ready" | "failed";
+export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
   id: number;
