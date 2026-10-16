@@ -14,6 +14,31 @@ export function dataStoreNotice(status: DataStoreStatus): string | null {
   }
 }
 
+/** How the Data page's Overview names a store's status, and what it says about it. */
+export function dataStoreSummary(status: DataStoreStatus): { label: string; message: string } {
+  switch (status) {
+    case "ready":
+      return {
+        label: "Ready",
+        message:
+          "Your data store is ready. Your agents can keep data in it, and you can upload documents.",
+      };
+    case "provisioning":
+      return {
+        label: "Being set up",
+        message:
+          "We're setting up your data store. This usually takes a few seconds; you can upload documents once it's ready.",
+      };
+    case "failed":
+      return {
+        label: "Failed",
+        message: "Your data store couldn't be set up. We'll try again; please check back later.",
+      };
+    default:
+      return { label: "Unavailable", message: "Your data store isn't available." };
+  }
+}
+
 /** How long to wait before asking again about a store that isn't ready (ms); null once it is. */
 export function dataStorePollInterval(status: DataStoreStatus): number | null {
   if (status === "ready") return null;
