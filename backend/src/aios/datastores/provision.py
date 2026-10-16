@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import psycopg
+from celery.exceptions import SoftTimeLimitExceeded
 from psycopg import sql
 from sqlalchemy import (
     ColumnElement,
@@ -369,6 +370,9 @@ def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
             revision = provision(store_id)
             if revision is not None:
                 outcome[store_id] = revision
+        except SoftTimeLimitExceeded:
+            # The provisioning worker's time limit, for the whole run: not this store's failure.
+            raise
         except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
             log.exception("Provisioning data store %s failed", store_id)
             fail(store_id, describe_error(exc))
@@ -425,6 +429,8 @@ def migrate_all(
             continue
         try:
             outcome[store_id] = migrate_store(store_id)
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.exception("Migrating data store %s failed", store_id)
             _record_error(store_id, describe_error(exc))

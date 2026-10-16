@@ -17,6 +17,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from conftest import delete_user
 from psycopg import errors, sql
 from sqlalchemy import insert, select, text, update
@@ -615,3 +616,55 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
+
+
+def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short(
+    db, new_user, monkeypatch
+):
+    """The provisioning worker's time limits stop the whole run, not just one store's."""
+    stores = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in stores:
+        provision.fail(store_id, "OperationalError: the instance is down")
+    tries = []
+
+    def out_of_time(store_id):
+        tries.append(store_id)
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(provision, "provision", out_of_time)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        provision.retry_unfinished(stores)
+
+    assert len(tries) == 1
+    for store_id in stores:
+        row = store_row(db, store_id)
+        assert (row.status, row.error) == (
+            DataStoreStatus.failed,
+            "OperationalError: the instance is down",
+        )
+
+
+def test_a_time_limit_stops_migrating_stores_without_recording_an_error(db, new_user, monkeypatch):
+    stores = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in stores:
+        provision.provision(store_id)
+    tries = []
+
+    def out_of_time(store_id):
+        tries.append(store_id)
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(provision, "migrate_store", out_of_time)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        provision.migrate_all(stores)
+
+    assert len(tries) == 1
+    assert [store_row(db, s).error for s in stores] == [None, None]
+
+
+def test_provisioning_tasks_have_time_limits_of_their_own():
+    """Not ingest's half hour: provisioning a store takes seconds."""
+    for task in (worker.provision_data_store_task, worker.retry_unfinished_data_stores_task):
+        assert task.soft_time_limit < task.time_limit < get_settings().ingest_time_limit
