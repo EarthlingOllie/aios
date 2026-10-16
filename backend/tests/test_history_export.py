@@ -2,6 +2,8 @@
 (`aios.datastores.history`), switched on and off from the Settings page."""
 
 import asyncio
+import threading
+import time
 import uuid
 
 import pytest
@@ -242,6 +244,54 @@ def test_delete_exported_history_empties_it(api, user, store_id, history_tasks):
 
 def test_delete_exported_history_before_the_export_ever_ran(api, user):
     assert api.delete("/api/settings/exported-history").status_code == 204
+
+
+@pytest.fixture
+def export_running(api, user, store_id, history_tasks, monkeypatch):
+    """An export of the store under way (e.g. a long backfill), stuck reading a run's thread
+    until the test ends; 5 seconds at most, so a test that waits for it fails rather than hangs."""
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "hi")
+    switch(api, True)
+    for queued in history_tasks["set_up"]:
+        provision.migrate_store(queued)
+    reading, release = threading.Event(), threading.Event()
+    threading.Timer(5, release.set).start()
+    read = history.checkpoints.history
+
+    def slow(run_id):
+        reading.set()
+        release.wait()
+        return read(run_id)
+
+    monkeypatch.setattr(history.checkpoints, "history", slow)
+    running = threading.Thread(target=history.export, args=[store_id])
+    running.start()
+    assert reading.wait(5)
+    yield
+    release.set()
+    running.join()
+
+
+def test_an_export_of_a_store_already_exporting_leaves_it_to_that_one(
+    api, user, store_id, export_running
+):
+    # It doesn't hold a worker waiting: what's still pending after, the sweep queues again.
+    started = time.monotonic()
+    assert history.export(store_id) == 0
+    assert time.monotonic() - started < 1
+
+
+def test_delete_exported_history_while_an_export_is_running_is_busy(
+    api, user, store_id, export_running, monkeypatch
+):
+    monkeypatch.setattr(history, "LOCK_WAIT", 0.2)
+
+    started = time.monotonic()
+    response = api.delete("/api/settings/exported-history")
+
+    assert response.status_code == 503
+    assert time.monotonic() - started < 2
 
 
 def test_the_store_roles_may_read_the_history_tables_and_only_rw_write_them(
