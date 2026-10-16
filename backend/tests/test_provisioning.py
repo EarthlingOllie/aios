@@ -427,3 +427,33 @@ def test_the_provisioning_task_retries_then_marks_the_store_failed(db, new_user,
     monkeypatch.undo()
     assert provision.migrate_all([store_id])[store_id] == head_revision()
     assert store_row(db, store_id).status == DataStoreStatus.ready
+
+
+def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user, monkeypatch):
+    gave_up, never_queued, just_signed_up = [data_store_for(new_user().id) for _ in range(3)]
+    provision.fail(gave_up, "OperationalError: the instance is down")
+    db.execute(
+        update(DataStore)
+        .where(DataStore.id == never_queued)
+        .values(created_at=text("now() - interval '2 hours'"))
+    )
+    db.commit()
+    # Only this test's stores: others in the database are left alone.
+    retry = provision.retry_unfinished
+    monkeypatch.setattr(
+        provision, "retry_unfinished", lambda: retry([gave_up, never_queued, just_signed_up])
+    )
+
+    worker.retry_unfinished_data_stores_task.apply().get()
+
+    assert store_row(db, gave_up).status == DataStoreStatus.ready
+    assert store_row(db, gave_up).error is None
+    assert store_row(db, never_queued).status == DataStoreStatus.ready
+    # Its own provisioning task may still be trying: it's left to that.
+    assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
+    # The provisioning worker runs it (`celery worker -B`), as the provisioner.
+    scheduled = [e for e in worker.celery_app.conf.beat_schedule.values()]
+    assert [e["task"] for e in scheduled] == ["aios.retry_unfinished_data_stores"]
+    assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
+        "queue": "provisioning"
+    }

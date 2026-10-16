@@ -31,8 +31,8 @@ def _provision_committed(session: Session) -> None:
         try:
             enqueue_provisioning(store_id)
         except Exception:
-            # Not the caller's failure: the store stays `provisioning`, which the deploy's
-            # `migrate_all` finishes.
+            # Not the caller's failure: the store stays `provisioning`, which
+            # `provision.retry_unfinished` finishes (or the deploy's `migrate_all`).
             log.exception("Couldn't queue provisioning data store %s", store_id)
 
 

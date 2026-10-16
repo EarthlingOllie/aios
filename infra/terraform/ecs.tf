@@ -321,6 +321,8 @@ resource "aws_ecs_task_definition" "provisioning_worker" {
     command = [
       "celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO",
       "--concurrency=${var.provisioning_worker.concurrency}",
+      # Its beat retries stores whose provisioning gave up (aios.worker.RETRY_UNFINISHED_EVERY).
+      "-B", "--schedule=/tmp/celerybeat-schedule",
     ]
     environment      = local.backend_env
     secrets          = local.provisioner_secrets

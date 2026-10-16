@@ -48,7 +48,8 @@ class DataStoreStatus(enum.StrEnum):
     # Its database is being created (`aios.datastores.provision`); nothing can use it yet.
     provisioning = "provisioning"
     ready = "ready"
-    # Provisioning gave up; re-running it (the deploy's `migrate_all` does) carries on.
+    # Provisioning gave up; re-running it (`aios.datastores.provision.retry_unfinished` does, every
+    # few minutes, as does the deploy's `migrate_all`) carries on.
     failed = "failed"
     # For deleting users' stores (not yet used).
     deleting = "deleting"

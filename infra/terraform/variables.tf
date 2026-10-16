@@ -117,7 +117,7 @@ variable "workflow_worker" {
 }
 
 variable "provisioning_worker" {
-  description = "Creates and migrates data stores (the provisioning queue): small and mostly idle."
+  description = "Creates and migrates data stores (the provisioning queue): small and mostly idle. Each runs the retry beat, so keep count at 1 (more only retries twice)."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 256, memory = 512, count = 1, concurrency = 1 }
 }

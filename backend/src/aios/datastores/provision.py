@@ -21,7 +21,9 @@ the job; runs of the same store wait for each other.
 `migrate_all` brings every ready store to the tree's head, one at a time: a store that fails is
 reported and the rest carry on. It also finishes provisioning stores that never got there.
 `python -m aios.datastores.provision migrate-all` runs it (the deploy does, after the
-platform's migrations).
+platform's migrations). Between deploys, `retry_unfinished` tries those stores again every few
+minutes, so a store whose provisioning gave up (the instance was down, say) gets there once it
+can.
 """
 
 import logging
@@ -30,10 +32,22 @@ import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 
 import psycopg
 from psycopg import sql
-from sqlalchemy import create_engine, pool, select, text, true, update
+from sqlalchemy import (
+    ColumnElement,
+    and_,
+    create_engine,
+    func,
+    or_,
+    pool,
+    select,
+    text,
+    true,
+    update,
+)
 from sqlalchemy.engine import make_url
 
 from aios.config import get_settings, libpq_conninfo
@@ -324,6 +338,51 @@ def _describe(exc: BaseException) -> str:
     return f"{exc.__class__.__name__}: {exc}"[:2000]
 
 
+def _only(store_ids: Collection[uuid.UUID] | None) -> ColumnElement[bool]:
+    return DataStore.id.in_(store_ids) if store_ids is not None else true()
+
+
+def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
+    """Provision the stores `which` picks, one at a time; returns what stopped each that failed
+    (and marks it failed), without stopping the rest."""
+    outcome: dict[uuid.UUID, str | BaseException] = {}
+    with SessionLocal() as db:
+        unfinished = db.scalars(select(DataStore.id).where(which)).all()
+    for store_id in unfinished:
+        try:
+            provision(store_id)
+        except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
+            log.exception("Provisioning data store %s failed", store_id)
+            fail(store_id, _describe(exc))
+            outcome[store_id] = exc
+    return outcome
+
+
+# A store still provisioning this long after it was made isn't being retried any more: its task
+# was never queued, or was lost. (Its own retries give up after about half an hour.)
+UNFINISHED_AFTER = timedelta(hours=1)
+
+
+def retry_unfinished(
+    store_ids: Collection[uuid.UUID] | None = None,
+) -> dict[uuid.UUID, str | BaseException]:
+    """Try once more to provision the stores whose provisioning gave up, or never ran
+    (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
+    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns what stopped each that failed again."""
+    return _finish(
+        and_(
+            _only(store_ids),
+            or_(
+                DataStore.status == DataStoreStatus.failed,
+                and_(
+                    DataStore.status == DataStoreStatus.provisioning,
+                    DataStore.created_at < func.now() - UNFINISHED_AFTER,
+                ),
+            ),
+        )
+    )
+
+
 def migrate_all(
     store_ids: Collection[uuid.UUID] | None = None,
 ) -> dict[uuid.UUID, str | BaseException]:
@@ -332,21 +391,10 @@ def migrate_all(
     fails doesn't stop the rest.
 
     `store_ids` limits it to those stores (tests use it to leave other stores alone)."""
-    only = DataStore.id.in_(store_ids) if store_ids is not None else true()
-    outcome: dict[uuid.UUID, str | BaseException] = {}
-    with SessionLocal() as db:
-        unfinished = db.scalars(
-            select(DataStore.id).where(
-                only, DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed])
-            )
-        ).all()
-    for store_id in unfinished:
-        try:
-            provision(store_id)
-        except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
-            log.exception("Provisioning data store %s failed", store_id)
-            fail(store_id, _describe(exc))
-            outcome[store_id] = exc
+    only = _only(store_ids)
+    outcome = _finish(
+        and_(only, DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed]))
+    )
     with SessionLocal() as db:
         ready = db.scalars(
             select(DataStore.id)

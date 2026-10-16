@@ -38,8 +38,21 @@ celery_app.conf.update(
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.migrate_data_stores": {"queue": "provisioning"},
+        "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
     },
 )
+
+# Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
+# worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
+RETRY_UNFINISHED_EVERY = 600
+celery_app.conf.beat_schedule = {
+    "retry-unfinished-data-stores": {
+        "task": "aios.retry_unfinished_data_stores",
+        "schedule": RETRY_UNFINISHED_EVERY,
+        # One that waited longer than this is stale: the next is due.
+        "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+}
 
 
 @celery_app.task(name="aios.ingest_document", bind=True, max_retries=60)
@@ -82,7 +95,7 @@ def ingest_document_task(self, data_store_id: str | int, document_id: int | None
 
 
 # Provisioning gives up after this many tries (a minute apart, then longer), and marks the store
-# failed; the deploy's `migrate_all` tries again.
+# failed; `retry_unfinished_data_stores_task` tries again, every `RETRY_UNFINISHED_EVERY`.
 PROVISION_RETRIES = 5
 
 
@@ -100,6 +113,14 @@ def provision_data_store_task(self, data_store_id: str) -> None:
             provision.fail(store_id, f"{exc.__class__.__name__}: {exc}"[:2000])
             raise
         raise self.retry(countdown=60 * 2**self.request.retries) from exc
+
+
+@celery_app.task(name="aios.retry_unfinished_data_stores")
+def retry_unfinished_data_stores_task() -> None:
+    """Try once more to provision stores that never got there (`aios.datastores.provision`)."""
+    from aios.datastores import provision
+
+    provision.retry_unfinished()
 
 
 @celery_app.task(name="aios.migrate_data_stores")

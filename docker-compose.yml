@@ -88,14 +88,15 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # Creates data stores (the provisioning queue, see aios.worker) as users sign up. It needs no
-  # Docling, so this reuses the api image.
+  # Creates data stores (the provisioning queue, see aios.worker) as users sign up, and (-B)
+  # retries any that gave up every few minutes. It needs no Docling, so this reuses the api image.
   provisioning-worker:
     <<: *backend
     image: aios-api:local
     pull_policy: never
     command:
-      ["celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO", "--concurrency=1"]
+      ["celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO", "--concurrency=1",
+       "-B", "--schedule=/tmp/celerybeat-schedule"]
     environment: *provisioner-env
     depends_on:
       migrate:
