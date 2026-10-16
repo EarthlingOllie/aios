@@ -7,6 +7,7 @@ owner role.
 
 import threading
 import time
+import tracemalloc
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -312,6 +313,24 @@ def test_a_huge_result_is_cut_short_without_reading_it_all(api, data_agent, shor
     assert result["row_count"] == get_settings().query_data_max_rows
     assert result["rows"][:2] == [[1], [2]]
     assert result["truncated"] is True
+
+
+def test_a_value_over_the_byte_cap_is_never_loaded(api, store, data_agent):
+    """One row is one value too: a value far past the byte cap stops the result without being
+    turned into Python (and JSON), so it can't take the API's memory with it."""
+    tracemalloc.start()
+    try:
+        result = query(api, data_agent, "SELECT 'small' UNION ALL SELECT repeat('x', 50000000)")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result["rows"] == [["small"]]
+    assert result["truncated"] is True
+    # Loading the value would take 50 MB for the string alone, and as much again as JSON.
+    assert peak < 20_000_000
+    # Nor does it keep any (the connection's buffer is thrown away), and the next call works.
+    assert query(api, data_agent, "SELECT 1")["rows"] == [[1]]
 
 
 def test_values_come_back_as_json(api, store, data_agent):

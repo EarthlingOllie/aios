@@ -31,7 +31,7 @@ import psycopg
 from anyio import to_thread
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
-from psycopg import pq
+from psycopg import adapt, pq
 from psycopg.types.string import TextLoader
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
@@ -142,39 +142,75 @@ def _error(exc: psycopg.Error) -> str:
     return message if exc.diag.sqlstate is None else f"{message} (SQLSTATE {exc.diag.sqlstate})"
 
 
-def _columns(pg: psycopg.Connection, sql: str) -> list[str]:
-    """The names of the columns the statement returns, from parsing it (as one statement: the
-    extended protocol takes no more) without running it."""
+def _columns(pg: psycopg.Connection, sql: str) -> tuple[list[str], list[int]]:
+    """The names and type OIDs of the columns the statement returns, from parsing it (as one
+    statement: the extended protocol takes no more) without running it."""
     pgconn = pg.pgconn
     for res in (pgconn.prepare(b"", sql.encode()), pgconn.describe_prepared(b"")):
         if res.status != pq.ExecStatus.COMMAND_OK:
             raise psycopg.errors.error_from_result(res, encoding=pg.info.encoding)
-    return [(res.fname(i) or b"").decode(pg.info.encoding) for i in range(res.nfields)]
+    names = [(res.fname(i) or b"").decode(pg.info.encoding) for i in range(res.nfields)]
+    return names, [res.ftype(i) for i in range(res.nfields)]
+
+
+class _ValueTooBig(Exception):
+    pass
+
+
+def _cap_values(cur: psycopg.Cursor, types: list[int], max_bytes: int) -> None:
+    """Makes `cur` refuse a value whose text is over `max_bytes` before loading it, as it can't
+    fit the result anyway: one row is unbounded, and loading a huge one (then dumping it as
+    JSON) would take several times its size in memory."""
+    for oid in set(types):
+        # As psycopg loads it otherwise; types it doesn't know (e.g. `vector`), as text.
+        loader = cur.adapters.get_loader(oid, pq.Format.TEXT) or cur.adapters.get_loader(
+            0, pq.Format.TEXT
+        )
+
+        class Capped(adapt.Loader):
+            def __init__(self, oid: int, context: Any = None, loader: Any = loader):
+                super().__init__(oid, context)
+                self._loader = loader(oid, context)
+
+            def load(self, data: Any) -> Any:
+                if len(data) > max_bytes:
+                    raise _ValueTooBig
+                return self._loader.load(data)
+
+        cur.adapters.register_loader(oid, Capped)
 
 
 def _read(pg: psycopg.Connection, sql: str) -> dict:
     """Runs the statement in the open transaction, reading its rows up to the caps."""
     settings = get_settings()
     max_rows, max_bytes = settings.query_data_max_rows, settings.query_data_max_bytes
-    columns = _columns(pg, sql)
+    columns, types = _columns(pg, sql)
     if not columns:
         # So nothing that returns no rows (SET, COMMIT, DO, ...) is run at all.
         return {"error": "Only queries that return rows can be run (SELECT, WITH, VALUES)."}
-    cursor = pg.cursor()
+    cur = pg.cursor()
     for name in TEXT_TYPES:
-        cursor.adapters.register_loader(name, TextLoader)
+        cur.adapters.register_loader(name, TextLoader)
+    # After the text loaders, so the cap wraps them.
+    _cap_values(cur, types, max_bytes)
     rows: list[list] = []
     size, truncated = 0, False
     # `stream` sends it with the extended protocol too, and reads it a row at a time; leaving
     # early cancels the rest.
-    for row in cursor.stream(sql):
-        value = [_jsonable(v) for v in row]
-        row_size = len(json.dumps(value)) + 1
-        if len(rows) == max_rows or size + row_size > max_bytes:
-            truncated = True
-            break
-        rows.append(value)
-        size += row_size
+    try:
+        for row in cur.stream(sql):
+            value = [_jsonable(v) for v in row]
+            row_size = len(json.dumps(value)) + 1
+            if len(rows) == max_rows or size + row_size > max_bytes:
+                truncated = True
+                break
+            rows.append(value)
+            size += row_size
+    except _ValueTooBig:
+        truncated = True
+        # libpq keeps the buffer it read the value into for as long as the connection is open,
+        # so it's closed rather than pooled (`_query` throws away one it can't roll back).
+        pg.close()
     result: dict = {"columns": columns, "rows": rows, "row_count": len(rows)}
     result["truncated"] = truncated
     if truncated:
