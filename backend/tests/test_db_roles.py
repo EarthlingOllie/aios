@@ -487,10 +487,14 @@ def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, m
 
     with _connect(admin_url) as conn:
         assert conn.execute(_OWNED_BY, (admin,)).fetchall() == []
-    # The app's role can change what it now owns: migrate down and up again, and the
-    # checkpointer's setup.
+    # The app's role can change what it now owns: drop the master user's view and function, then
+    # migrate all the way down (to `base`, not a revision that a squash would rename) and up
+    # again, and the checkpointer's setup.
+    with _connect(app_url) as conn:
+        conn.execute("DROP VIEW recent_users")
+        conn.execute("DROP FUNCTION one()")
     down = subprocess.run(
-        [sys.executable, "-m", "alembic", "downgrade", "0004"],
+        [sys.executable, "-m", "alembic", "downgrade", "base"],
         cwd=BACKEND,
         env={**os.environ, "DATABASE_URL": app_url},
         capture_output=True,
