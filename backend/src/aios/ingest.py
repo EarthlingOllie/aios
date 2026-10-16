@@ -1,4 +1,5 @@
-"""Document ingestion: Docling conversion -> HybridChunker -> embeddings -> chunks table.
+"""Document ingestion: Docling conversion -> HybridChunker -> embeddings -> chunks table, in the
+document's data store (on a `store_session` the caller gives it).
 
 Docling is only installed in the worker image (the `ingest` extra), so it's imported lazily.
 """
@@ -11,8 +12,8 @@ from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
+from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.embeddings import embed_documents
-from aios.models import Chunk, Document, DocumentStatus
 
 # Deliveries before giving up; a doc that crashes the worker would otherwise be redelivered forever.
 MAX_ATTEMPTS = 3

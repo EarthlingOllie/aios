@@ -16,6 +16,8 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection
 
+from aios.datastores.models import SCHEMA, StoreBase
+
 HERE = Path(__file__).parent
 # Where the tree's revisions are. Tests add a directory of their own.
 VERSION_LOCATIONS = [str(HERE / "versions")]
@@ -28,6 +30,21 @@ def config(connection: Connection | None = None) -> Config:
     cfg.set_main_option("path_separator", "space")
     cfg.attributes["connection"] = connection
     return cfg
+
+
+def include_name(name, type_, parent_names) -> bool:
+    # The owner's tables (`data`) are changed only by approved schema change requests.
+    return not (type_ == "schema" and name == "data")
+
+
+def context_options() -> dict:
+    """How Alembic sees a store: its tables are `aios.datastores.models`', in `aios`."""
+    return {
+        "target_metadata": StoreBase.metadata,
+        "version_table_schema": SCHEMA,
+        "include_schemas": True,
+        "include_name": include_name,
+    }
 
 
 def head_revision() -> str:

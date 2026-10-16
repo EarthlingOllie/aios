@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
 from aios.auth import current_user
@@ -13,7 +13,7 @@ from aios.datastores import data_store_for, provision, resolve
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, User
 from aios.sandbox import runner
 
 
@@ -27,7 +27,7 @@ def db():
     """A session against a migrated database (`alembic upgrade head`); skips if unavailable."""
     try:
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1 FROM chunks LIMIT 1"))
+            conn.execute(text("SELECT 1 FROM data_stores LIMIT 1"))
     except Exception as exc:  # noqa: BLE001
         # The server is up but won't let DATABASE_URL's role in: the roles haven't been created
         # (or the password is wrong), which skipping would hide.
@@ -40,7 +40,7 @@ def db():
                 f"DATABASE_URL's role can't log in ({exc.orig}). Create the roles with "
                 "`python -m aios.db_roles` (see the README's Database roles)."
             )
-        if isinstance(exc, OperationalError) or "chunks" in str(exc):
+        if isinstance(exc, OperationalError) or "data_stores" in str(exc):
             pytest.skip(f"database not available: {exc.__class__.__name__}")
         raise
     with SessionLocal() as session:
@@ -70,24 +70,20 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
-def mark_ready(db, user: User) -> uuid.UUID:
-    """Give the user a store that's ready, without provisioning it: enough for documents and
-    search, which are still in the platform database."""
-    store_id = data_store_for(user.id)
-    db.execute(
-        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.ready)
-    )
+def provisioned_user(db, github_id: int, login: str) -> User:
+    """A new user, with their store provisioned: a database of its own, ready. Delete them with
+    `delete_user`."""
+    u = User(github_id=github_id, login=login)
+    db.add(u)
     db.commit()
-    return store_id
+    provision.provision(data_store_for(u.id))
+    return u
 
 
 @pytest.fixture
 def user(db):
-    """A user whose store is ready (not provisioned: see `mark_ready`)."""
-    u = User(github_id=-1, login="test-user")
-    db.add(u)
-    db.commit()
-    mark_ready(db, u)
+    """A user whose store is provisioned and ready."""
+    u = provisioned_user(db, -1, "test-user")
     yield u
     delete_user(db, u)
 

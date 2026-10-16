@@ -17,9 +17,11 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from conftest import delete_user
 from psycopg import errors, sql
-from sqlalchemy import select, text, update
+from sqlalchemy import create_engine, pool, select, text, update
 from sqlalchemy.engine import make_url
 
 from aios import worker
@@ -27,6 +29,7 @@ from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
 from aios.datastores.migrations import head_revision
+from aios.datastores.models import StoreBase
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
@@ -264,13 +267,13 @@ def test_database_and_role_names_never_contain_a_user_id(two_stores):
         )
 
 
-# A second revision of the store tree, for the migration tests.
+# A revision after the store tree's head, for the migration tests.
 NEXT_REVISION = """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "t0002"
-down_revision = "0001"
+revision = "tnext"
+down_revision = "{head}"
 branch_labels = None
 depends_on = None
 
@@ -286,14 +289,14 @@ def downgrade():
 
 @pytest.fixture
 def next_revision(tmp_path, monkeypatch) -> Callable[[], str]:
-    """Adds `t0002` to the store tree when called; returns its id."""
+    """Adds `tnext` to the store tree, after its head, when called; returns its id."""
 
     def add() -> str:
-        (tmp_path / "t0002_marker.py").write_text(NEXT_REVISION)
+        (tmp_path / "tnext_marker.py").write_text(NEXT_REVISION.replace("{head}", head_revision()))
         monkeypatch.setattr(
             migrations, "VERSION_LOCATIONS", [*migrations.VERSION_LOCATIONS, str(tmp_path)]
         )
-        return "t0002"
+        return "tnext"
 
     return add
 
@@ -305,20 +308,21 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
     for store_id in ids:
         provision.provision(store_id)
     broken, behind, ahead = ids
+    before = head_revision()
     head = next_revision()
     provision.migrate_store(ahead)
     # The broken store is first in line, and can't be migrated: the new revision's table is
     # already there.
     with admin_connect(store_row(db, broken).dbname) as conn:
         conn.execute("CREATE TABLE aios.marker (id int)")
-    assert [store_row(db, s).schema_revision for s in ids] == ["0001", "0001", head]
+    assert [store_row(db, s).schema_revision for s in ids] == [before, before, head]
 
     outcome = provision.migrate_all(ids)
 
     assert {s: outcome[s] for s in (behind, ahead)} == {behind: head, ahead: head}
     assert isinstance(outcome[broken], Exception)
     rows = {s: store_row(db, s) for s in ids}
-    assert [rows[s].schema_revision for s in ids] == ["0001", head, head]
+    assert [rows[s].schema_revision for s in ids] == [before, head, head]
     assert "marker" in rows[broken].error
     assert all(r.status == DataStoreStatus.ready for r in rows.values())
     with store_session(behind, "ro") as store:
@@ -341,7 +345,7 @@ def test_migrate_all_reports_failures_and_exits_non_zero(
     assert provision.main(["migrate-all"]) == 1
 
     out = capsys.readouterr().out
-    assert f"{ok}: t0002" in out
+    assert f"{ok}: tnext" in out
     assert f"{broken}: " in out and "marker" in out
 
 
@@ -477,3 +481,27 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
+
+
+def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
+    """Like `alembic check` for the platform: a provisioned store's tables are what
+    `aios.datastores.models` says, so the models and the tree can't drift apart."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
+    # With `aios` off the search path, reflection names its schema as the models do.
+    engine = create_engine(
+        url, poolclass=pool.NullPool, connect_args={"options": "-c search_path=extensions"}
+    )
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            context = MigrationContext.configure(conn, opts=migrations.context_options())
+            assert compare_metadata(context, StoreBase.metadata) == []
+            tables = conn.scalars(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'aios'")
+            ).all()
+            assert {"documents", "chunks"} <= set(tables)
+    finally:
+        engine.dispose()

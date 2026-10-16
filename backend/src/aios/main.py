@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from aios import auth, scheduler, tracing
 from aios.api import agents, chat, documents, skills, tools, triggers, workflows
 from aios.config import get_settings
-from aios.datastores import DataStoreNotReady
+from aios.datastores import DataStoreBusy, DataStoreNotReady
 from aios.db import engine
 from aios.models import DataStoreStatus
 
@@ -73,6 +73,15 @@ def create_app() -> FastAPI:
         return JSONResponse(
             {"detail": detail, "data_store_status": exc.status.value},
             status_code=status.HTTP_409_CONFLICT,
+        )
+
+    @app.exception_handler(DataStoreBusy)
+    async def data_store_busy(request: Request, exc: DataStoreBusy) -> JSONResponse:
+        # The store's role is at its connection limit: a moment's wait frees one.
+        return JSONResponse(
+            {"detail": "Your data store is busy. Try again in a moment."},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "1"},
         )
 
     @app.get("/healthz")

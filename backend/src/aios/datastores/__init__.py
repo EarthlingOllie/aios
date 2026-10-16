@@ -2,28 +2,28 @@
 
 Nothing reaches user data except through here. `data_store_for` turns a user into a store id
 (and creates the store, queuing its provisioning), and `store_session` opens a session on a
-store's database; everything in between takes a data store id. Documents and chunks are still
-in the platform database for now (`documents_session`).
+store's database; everything in between takes a data store id. The tables every store has
+(documents and chunks) are in `aios.datastores.models`.
 """
 
 from aios.datastores.connections import (
+    DataStoreBusy,
     DataStoreNotFound,
     DataStoreNotReady,
     Role,
-    documents_session,
-    store_owner,
+    store_engine,
     store_session,
     store_status,
 )
 from aios.datastores.resolve import data_store_for
 
 __all__ = [
+    "DataStoreBusy",
     "DataStoreNotFound",
     "DataStoreNotReady",
     "Role",
     "data_store_for",
-    "documents_session",
-    "store_owner",
+    "store_engine",
     "store_session",
     "store_status",
 ]

@@ -28,6 +28,7 @@ can.
 
 import logging
 import sys
+import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
@@ -35,7 +36,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import psycopg
-from psycopg import sql
+from psycopg import errors, sql
 from sqlalchemy import (
     ColumnElement,
     and_,
@@ -285,14 +286,28 @@ def provision(store_id: uuid.UUID) -> str | None:
     return run.revision
 
 
+# Tries at dropping a store's database (see `drop`).
+DROP_TRIES = 10
+
+
 def drop(names: StoreNames) -> None:
     """Drop a store's database and roles, if they exist. Only tests use it for now: deleting
     users' stores (after a retention period) is to come."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
-        conn.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(names.dbname))
+        drop_database = sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+            sql.Identifier(names.dbname)
         )
+        for attempt in range(DROP_TRIES):
+            try:
+                conn.execute(drop_database)
+                break
+            except errors.InsufficientPrivilege:
+                # Autovacuum is working in it (a new store's tables get analyzed), and only a
+                # superuser may end that: it's done in a moment.
+                if attempt == DROP_TRIES - 1:
+                    raise
+                time.sleep(0.5)
         for role in (names.rw, names.ro, names.owner):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
