@@ -21,7 +21,6 @@ and stop another run's reads of the same store: nothing it couldn't read itself,
 run just gets an error. Revoking those functions would take a superuser, which RDS doesn't give.
 """
 
-import datetime
 import json
 import math
 import uuid
@@ -33,6 +32,7 @@ from anyio import to_thread
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 from psycopg import pq
+from psycopg.types.string import TextLoader
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
@@ -64,6 +64,25 @@ DESCRIBE_SQL = text(
       AND NOT (n.nspname = 'aios' AND c.relname = 'alembic_version')
     ORDER BY n.nspname <> 'data', n.nspname, c.relname, a.attnum
     """
+)
+
+
+# Types `query_data` reads as Postgres writes them, not as Python values: Python's can't hold
+# some legal ones (infinities, years past 9999 or BC, 24:00, huge intervals), and one such
+# value would fail the whole query. Also in arrays, whose loaders look these up.
+TEXT_TYPES = (
+    "date",
+    "time",
+    "timetz",
+    "timestamp",
+    "timestamptz",
+    "interval",
+    "daterange",
+    "tsrange",
+    "tstzrange",
+    "datemultirange",
+    "tsmultirange",
+    "tstzmultirange",
 )
 
 
@@ -111,8 +130,6 @@ def _jsonable(value: Any) -> Any:
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return "\\x" + bytes(value).hex()
-    if isinstance(value, (datetime.date, datetime.time)):
-        return value.isoformat()
     # Numerics, UUIDs, ranges, and types psycopg doesn't know (e.g. `vector`), as text.
     return str(value)
 
@@ -143,11 +160,14 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
     if not columns:
         # So nothing that returns no rows (SET, COMMIT, DO, ...) is run at all.
         return {"error": "Only queries that return rows can be run (SELECT, WITH, VALUES)."}
+    cursor = pg.cursor()
+    for name in TEXT_TYPES:
+        cursor.adapters.register_loader(name, TextLoader)
     rows: list[list] = []
     size, truncated = 0, False
     # `stream` sends it with the extended protocol too, and reads it a row at a time; leaving
     # early cancels the rest.
-    for row in pg.cursor().stream(sql):
+    for row in cursor.stream(sql):
         value = [_jsonable(v) for v in row]
         row_size = len(json.dumps(value)) + 1
         if len(rows) == max_rows or size + row_size > max_bytes:

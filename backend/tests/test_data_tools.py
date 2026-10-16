@@ -329,6 +329,43 @@ def test_values_come_back_as_json(api, store, data_agent):
     ]
 
 
+def test_dates_times_and_intervals_come_back_as_postgres_writes_them(api, store, data_agent):
+    """Including those Python can't hold (infinities, years past 9999 or BC, 24:00), so one
+    such row doesn't fail the whole query."""
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.events (id int, at timestamptz, day date)")
+        conn.execute(
+            "INSERT INTO data.events VALUES (1, '2026-10-16 12:00+00', '2026-10-16'),"
+            " (2, 'infinity', '-infinity')"
+        )
+
+    assert query(api, data_agent, "SELECT * FROM data.events ORDER BY id") == {
+        "columns": ["id", "at", "day"],
+        "rows": [[1, "2026-10-16 12:00:00+00", "2026-10-16"], [2, "infinity", "-infinity"]],
+        "row_count": 2,
+        "truncated": False,
+    }
+
+    result = query(
+        api,
+        data_agent,
+        "SELECT '10000-01-01'::timestamp, '0044-03-15 BC'::date, '24:00'::time,"
+        " interval '1 mon 2 days 03:00', interval '1000000000 days',"
+        " ARRAY['infinity'::date], '[2026-01-01,infinity)'::daterange",
+    )
+    assert result["rows"] == [
+        [
+            "10000-01-01 00:00:00",
+            "0044-03-15 BC",
+            "24:00:00",
+            "1 mon 2 days 03:00:00",
+            "1000000000 days",
+            ["infinity"],
+            "[2026-01-01,infinity)",
+        ]
+    ]
+
+
 def test_a_query_with_no_rows_still_names_its_columns(api, store, data_agent):
     result = query(api, data_agent, "SELECT name, weight_kg FROM data.fish WHERE false")
 
