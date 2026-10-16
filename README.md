@@ -213,6 +213,7 @@ cp .env.example .env     # PUBLIC_URL=http://localhost:5173
 uv sync --extra ingest   # drop --extra ingest if you're not running the worker
 uv run python -m aios.db_roles   # as the master user (DATABASE_ADMIN_URL); safe to re-run
 uv run alembic upgrade head
+uv run python -m aios.datastores.provision migrate-all   # data stores, after every upgrade
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
 uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
