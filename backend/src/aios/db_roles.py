@@ -141,6 +141,9 @@ SELECT kind, name FROM (
 ) o
 WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
                    WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+-- Schemas first: a master user that isn't a superuser can only give an object to a role that
+-- may create in its schema. UNION ALL keeps no order of its own (a merge join sorts by catalog).
+ORDER BY kind <> 'SCHEMA'
 """
 
 # After the hand-over: anything in the database the current user still owns, from every catalog

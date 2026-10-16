@@ -396,6 +396,23 @@ def test_partitioned_tables_and_their_partitions_are_handed_over(cluster):
             conn.execute(sql.SQL("ALTER SEQUENCE {} RESTART").format(sql.Identifier(seq)))
 
 
+def test_a_schema_is_handed_over_before_what_is_in_it(cluster, monkeypatch):
+    """A master user that isn't a superuser can only give an object to a role that may create in
+    its schema, so the schema has to go first, whatever order the planner reads the catalogs in.
+    A merge anti join, which these settings force, returns its rows sorted by catalog, and
+    pg_class's OID is below pg_namespace's."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE SCHEMA langgraph")
+        conn.execute("CREATE TABLE langgraph.checkpoints (id int)")
+    monkeypatch.setenv("PGOPTIONS", "-c enable_hashjoin=off -c enable_nestloop=off")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    with _connect(app_url) as conn:
+        conn.execute("ALTER TABLE langgraph.checkpoints ADD COLUMN name text")
+
+
 def test_fails_naming_what_it_cannot_hand_over(cluster):
     """Rather than leave the app's role unable to migrate something, silently."""
     admin_url, app_url, prov_url = cluster
