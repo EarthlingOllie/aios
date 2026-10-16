@@ -683,3 +683,17 @@ def test_provisioning_tasks_have_time_limits_of_their_own():
     """Not ingest's half hour: provisioning a store takes seconds."""
     for task in (worker.provision_data_store_task, worker.retry_unfinished_data_stores_task):
         assert task.soft_time_limit < task.time_limit < get_settings().ingest_time_limit
+
+
+def test_running_migrate_all_as_a_module_gives_no_import_warning():
+    """`python -m` runs a fresh copy of the module; one imported before it is a second copy."""
+    result = subprocess.run(
+        [sys.executable, "-m", "aios.datastores.provision"],
+        cwd=BACKEND,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2  # usage: no command given
+    assert "RuntimeWarning" not in result.stderr

@@ -8,7 +8,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios.datastores import credentials
-from aios.datastores.provision import names_for
 from aios.db import SessionLocal
 from aios.models import DataStore, Document
 
@@ -16,6 +15,12 @@ log = logging.getLogger(__name__)
 
 # Stores a session created, to provision once it commits (see `_provision_committed`).
 _NEW_STORES = "aios.new_data_stores"
+
+
+def names_for(store_id: uuid.UUID) -> tuple[str, str]:
+    """A new store's database name and role prefix: from its id, never its owner's."""
+    name = f"ds_{store_id.hex}"
+    return name, name
 
 
 def enqueue_provisioning(store_id: uuid.UUID) -> None:

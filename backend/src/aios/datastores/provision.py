@@ -75,12 +75,6 @@ class StoreNames:
         return cls(store.dbname, f"{p}_owner", f"{p}_rw", f"{p}_ro")
 
 
-def names_for(store_id: uuid.UUID) -> tuple[str, str]:
-    """A new store's database name and role prefix: from its id, never its owner's."""
-    name = f"ds_{store_id.hex}"
-    return name, name
-
-
 @dataclass
 class _Run:
     """What the steps of one provisioning run share."""
