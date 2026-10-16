@@ -27,7 +27,6 @@ from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
 from aios.tools import build_tool
-from aios.tools.data import STORE_NOT_READY
 
 DATA_TOOLS = [{"key": "describe_data", "config": {}}, {"key": "query_data", "config": {}}]
 
@@ -411,8 +410,18 @@ def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent)
     assert "does not exist" in query(api, their_agent, "SELECT * FROM data.fish")["error"]
 
 
-@pytest.mark.parametrize("status", [DataStoreStatus.provisioning, DataStoreStatus.failed])
-def test_both_tools_refuse_while_the_store_isnt_ready(api, db, user, data_agent, status):
+@pytest.mark.parametrize(
+    ("status", "says"),
+    [
+        (DataStoreStatus.provisioning, "still being set up"),
+        # Not "still being set up": the user would be told to wait for something that may never
+        # come, while the app says it failed and will be retried.
+        (DataStoreStatus.failed, "couldn't be set up"),
+        (DataStoreStatus.deleting, "isn't available"),
+        (DataStoreStatus.deleted, "isn't available"),
+    ],
+)
+def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, status, says):
     db.execute(update(DataStore).where(DataStore.owner_user_id == user.id).values(status=status))
     db.commit()
 
@@ -423,8 +432,8 @@ def test_both_tools_refuse_while_the_store_isnt_ready(api, db, user, data_agent,
         ToolCall("query_data", {"sql": "SELECT 1"}),
     )
 
-    assert described == queried == {"error": STORE_NOT_READY}
-    assert "still being set up" in STORE_NOT_READY
+    assert described == queried
+    assert says in described["error"]
 
 
 def test_the_tools_keep_working_call_after_call(api, store, data_agent):

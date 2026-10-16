@@ -38,11 +38,8 @@ from sqlalchemy import text
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_session
+from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_not_ready, store_session
 from aios.tools.registry import AgentTool, ToolSpec, register
-
-# What the tools tell the model while the run's store isn't ready.
-STORE_NOT_READY = "The user's data store is still being set up, so there's no data to read yet."
 
 # Data is never instructions: stored rows can carry prompt injection like any tool result.
 DATA_NOT_INSTRUCTIONS = (
@@ -199,8 +196,10 @@ async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *
         if store_id is None:
             raise DataStoreNotFound(store_id)
         return json.dumps(await to_thread.run_sync(read, store_id, *args))
-    except (DataStoreNotReady, DataStoreNotFound):
-        return json.dumps({"error": STORE_NOT_READY})
+    except DataStoreNotReady as exc:
+        return json.dumps({"error": store_not_ready(exc.status)})
+    except DataStoreNotFound:
+        return json.dumps({"error": store_not_ready(None)})
 
 
 def _describe_description() -> str:
