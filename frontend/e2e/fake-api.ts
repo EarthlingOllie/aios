@@ -118,6 +118,9 @@ export class FakeApi {
   private uploadGate?: { wait: Promise<void>; release: () => void };
   /** While true, the documents endpoints answer 503: every connection the store allows is in use. */
   dataStoreBusy = false;
+  /** Reads of the list being held back by `holdDocumentLists`, oldest first. */
+  heldDocumentLists: (() => void)[] = [];
+  private holdingLists = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -150,6 +153,14 @@ export class FakeApi {
   releaseUploads() {
     this.uploadGate?.release();
     this.uploadGate = undefined;
+  }
+
+  /**
+   * Until called again with false, each GET /api/documents reads the list when it arrives but
+   * waits to answer until the test calls its entry in `heldDocumentLists`: a slow response.
+   */
+  holdDocumentLists(hold = true) {
+    this.holdingLists = hold;
   }
 
   /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
@@ -547,7 +558,11 @@ export class FakeApi {
       }
       if (path === "/api/documents") {
         await new Promise((resolve) => setTimeout(resolve, this.documentsDelay));
-        return reply(200, this.documents);
+        const list = [...this.documents];
+        if (this.holdingLists) {
+          await new Promise<void>((release) => this.heldDocumentLists.push(release));
+        }
+        return reply(200, list);
       }
       return fail(404, "Not Found");
     }

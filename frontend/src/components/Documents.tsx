@@ -9,7 +9,7 @@ import {
 } from "react";
 import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
-import { formatDate } from "@/components/crud";
+import { formatDate, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
@@ -70,29 +70,32 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
   const ready = storeStatus === "ready";
 
   // Never rejects: a failed read keeps the last list, and the poll below tries again if the
-  // failure is transient.
-  const refresh = useCallback(
-    () =>
-      api.listDocuments().then(
-        (list) => {
-          setDocs(list);
-          setListError(undefined);
-          setListRetrying(false);
-        },
-        (err) => {
-          // A network error, or the API restarting (502, 504) or busy (503: every connection the
-          // store allows is in use), which a moment's wait frees.
-          const transient = !(err instanceof ApiError) || [502, 503, 504].includes(err.status);
-          setListRetrying(transient);
-          setListError(
-            err instanceof ApiError && err.status === 503
-              ? "Your data store is busy. Trying again…"
-              : `Couldn't load your documents (${describeError(err)}).${transient ? " Trying again…" : ""}`,
-          );
-        },
-      ),
-    [],
-  );
+  // failure is transient. Only the latest read may update state: a slower, older answer (a poll
+  // sent before a delete, say) is dropped.
+  const latest = useRef(0);
+  const refresh = useCallback(() => {
+    const request = ++latest.current;
+    return api.listDocuments().then(
+      (list) => {
+        if (request !== latest.current) return;
+        setDocs(list);
+        setListError(undefined);
+        setListRetrying(false);
+      },
+      (err) => {
+        if (request !== latest.current) return;
+        // A network error, or the API restarting (502, 504) or busy (503: every connection the
+        // store allows is in use), which a moment's wait frees.
+        const transient = !(err instanceof ApiError) || [502, 503, 504].includes(err.status);
+        setListRetrying(transient);
+        setListError(
+          err instanceof ApiError && err.status === 503
+            ? "Your data store is busy. Trying again…"
+            : `Couldn't load your documents (${describeError(err)}).${transient ? " Trying again…" : ""}`,
+        );
+      },
+    );
+  }, []);
 
   // Until the store is ready there's nothing to list (the API answers 409).
   useEffect(() => {
@@ -100,14 +103,11 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
   }, [ready, refresh]);
 
   // Poll while anything is still being ingested by the worker, or the last read failed for a
-  // reason that may pass.
+  // reason that may pass; each read waits for the last to answer, so a slow store doesn't pile
+  // them up.
   const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
   const retry = ready && listRetrying;
-  useEffect(() => {
-    if (!ingesting && !retry) return;
-    const id = setInterval(refresh, 2000);
-    return () => clearInterval(id);
-  }, [ingesting, retry, refresh]);
+  usePoll(ingesting || retry, refresh, 2000);
 
   async function upload(files: File[]) {
     if (!files.length) return;

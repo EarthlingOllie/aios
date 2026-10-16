@@ -8,6 +8,8 @@ const overview = (page: Page) => page.getByRole("region", { name: "Data store" }
 const documentList = (page: Page) => page.getByRole("list", { name: "Documents" });
 const row = (page: Page, filename: string) =>
   documentList(page).getByRole("listitem").filter({ hasText: filename });
+/** When the tests that drive the page's clock start it. */
+const START = new Date("2026-10-15T09:00:00Z");
 const file = (name: string) => ({
   name,
   mimeType: "text/markdown",
@@ -292,4 +294,57 @@ test("a list refused for good says so once, without asking again", async ({ page
   const after = reads;
   await page.waitForTimeout(5000);
   expect(reads).toBe(after);
+});
+
+test("a slow poll that answers after a delete doesn't bring the document back", async ({ page }) => {
+  const api = await fakeApi(page);
+  // Something still ingesting keeps the list polling.
+  api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
+  api.addDocument("drop.md");
+  // Timers only move when the test says, so no other poll can hide (or cause) a stale list.
+  await page.clock.install({ time: START });
+  await page.clock.pauseAt(START);
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "drop.md")).toBeVisible();
+
+  // A poll reads the list (drop.md still in it), but its answer is slow to arrive.
+  api.holdDocumentLists();
+  await page.clock.runFor(2000);
+  await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+  api.holdDocumentLists(false);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete drop.md" }).click();
+  await expect(row(page, "drop.md")).toHaveCount(0);
+
+  // The slow poll answers last, with the list from before the delete.
+  const stale = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/documents");
+  api.heldDocumentLists[0]();
+  await stale;
+  await page.waitForTimeout(300);
+  await expect(row(page, "drop.md")).toHaveCount(0);
+  await expect(row(page, "slides.pptx")).toBeVisible();
+});
+
+test("a slow list doesn't stack up polls behind it", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
+  await page.clock.install({ time: START });
+  await page.clock.pauseAt(START);
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "slides.pptx")).toBeVisible();
+
+  // The store is slow to answer: while a read is out, no more are sent.
+  api.holdDocumentLists();
+  await page.clock.runFor(10_000);
+  await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+  await page.waitForTimeout(300);
+  expect(api.heldDocumentLists).toHaveLength(1);
+
+  // Once it answers, polling carries on.
+  api.holdDocumentLists(false);
+  api.heldDocumentLists[0]();
+  api.finishIngest("slides.pptx", { chunks: 4 });
+  await page.clock.runFor(10_000);
+  await expect(row(page, "slides.pptx")).toContainText("4 chunks");
 });
