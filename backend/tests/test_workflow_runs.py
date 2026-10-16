@@ -318,6 +318,23 @@ def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch)
     assert out["steps"] == []
 
 
+def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, queued, monkeypatch):
+    wf = make_workflow(api, "w", [agent_node("a", make_agent(api, "a"))])
+    started = start(api, wf)
+
+    def broken(user):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(workflows, "data_store_for", broken)
+    # Failed then and there, not left running without a worker until it's failed as stopped.
+    asyncio.run(execute_run(started["id"]))
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert out["status"] == "failed"
+    assert out["error"] == "store unavailable"
+    assert out["finished_at"]
+    assert out["steps"] == []
+
+
 def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, queued, monkeypatch):
     poet = test_agents.make_agent(api, "Poet", "Write.", [make_skill(api, "Haiku", "5-7-5")])
     url = f"/api/agents/{poet['id']}"
