@@ -37,7 +37,6 @@ celery_app.conf.update(
         "aios.run_workflow": {"queue": "workflows"},
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
-        "aios.migrate_data_stores": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
     },
 )
@@ -137,14 +136,6 @@ def retry_unfinished_data_stores_task() -> None:
     from aios.datastores import provision
 
     provision.retry_unfinished()
-
-
-@celery_app.task(name="aios.migrate_data_stores")
-def migrate_data_stores_task() -> None:
-    """Bring every ready store to the store tree's head (`aios.datastores.provision`)."""
-    from aios.datastores import provision
-
-    provision.migrate_all()
 
 
 @celery_app.task(
