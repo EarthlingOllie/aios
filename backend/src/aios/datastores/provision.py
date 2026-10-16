@@ -380,15 +380,18 @@ def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
     return outcome
 
 
-# A store still provisioning this long after it was made isn't being retried any more: its task
-# was never queued, or was lost. (Its own retries give up after about half an hour.)
-UNFINISHED_AFTER = timedelta(hours=1)
+# A store still provisioning this long after it was made (which takes seconds) is tried again
+# here, rather than left to its task: that may never have been queued, or may be stuck with a
+# worker that was killed (Redis redelivers it only after its visibility timeout, over an hour).
+# If its task is only waiting to try again, this is safe: runs of a store wait for each other,
+# and one that's ready is left alone. (A failure here marks it failed while its retries go on.)
+UNFINISHED_AFTER = timedelta(minutes=5)
 
 
 def retry_unfinished(
     store_ids: Collection[uuid.UUID] | None = None,
 ) -> dict[uuid.UUID, str | BaseException]:
-    """Try once more to provision the stores whose provisioning gave up, or never ran
+    """Try once more to provision the stores whose provisioning gave up, or hasn't finished
     (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
     (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped
     it."""
