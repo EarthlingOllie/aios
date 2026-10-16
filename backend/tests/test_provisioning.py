@@ -145,6 +145,72 @@ def test_a_stores_roles_have_their_limits(two_stores):
             assert distance.fetchone() == (1.0,)
 
 
+def test_a_store_is_dropped_with_its_roles_still_connected(two_stores):
+    a, b = two_stores
+    names = provision.StoreNames.of(a)
+    with (
+        psycopg.connect(login_url(a, "ro"), autocommit=True) as ro,
+        psycopg.connect(login_url(a, "rw"), autocommit=True) as rw,
+    ):
+        provision.drop(names)
+
+        for conn in (ro, rw):
+            with pytest.raises(psycopg.OperationalError):
+                conn.execute("SELECT 1")
+    with admin_connect() as admin:
+        assert not admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)
+        ).fetchone()
+        roles = admin.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+            ([names.owner, names.rw, names.ro],),
+        )
+        assert not roles.fetchall()
+    # The other store is untouched.
+    psycopg.connect(login_url(b, "ro")).close()
+
+
+@pytest.fixture
+def quick_autovacuum() -> Iterator[None]:
+    """Autovacuum looking at each database every second, instead of every minute."""
+    with admin_connect() as admin:
+        admin.execute("ALTER SYSTEM SET autovacuum_naptime = 1")
+        admin.execute("SELECT pg_reload_conf()")
+        try:
+            yield
+        finally:
+            admin.execute("ALTER SYSTEM RESET autovacuum_naptime")
+            admin.execute("SELECT pg_reload_conf()")
+
+
+def test_a_store_is_dropped_while_autovacuum_works_in_it(two_stores, quick_autovacuum):
+    a, _ = two_stores
+    names = provision.StoreNames.of(a)
+    with admin_connect(names.dbname) as conn:
+        # Enough dead rows for autovacuum to take on, and slow to get through.
+        conn.execute(
+            "CREATE TABLE aios.slow (i int) WITH (autovacuum_vacuum_cost_delay = 100,"
+            " autovacuum_vacuum_cost_limit = 1)"
+        )
+        conn.execute("INSERT INTO aios.slow SELECT generate_series(1, 100000)")
+        conn.execute("DELETE FROM aios.slow WHERE i % 2 = 0")
+    with admin_connect() as admin:
+        deadline = time.monotonic() + 30
+        while not admin.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE datname = %s"
+            " AND backend_type = 'autovacuum worker'",
+            (names.dbname,),
+        ).fetchone():
+            assert time.monotonic() < deadline, "autovacuum never got to the store"
+            time.sleep(0.05)
+
+        provision.drop(names)
+
+        assert not admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)
+        ).fetchone()
+
+
 class Crash(Exception):
     pass
 

@@ -290,9 +290,27 @@ def drop(names: StoreNames) -> None:
     users' stores (after a retention period) is to come."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
-        conn.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(names.dbname))
-        )
+        if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)).fetchone():
+            db = sql.Identifier(names.dbname)
+            conn.execute(sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS false").format(db))
+            # End its sessions. Ending the login roles' takes their privileges: the provisioner
+            # only has ADMIN on them, from creating them.
+            for role in (names.rw, names.ro):
+                if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+                    conn.execute(
+                        sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET FALSE").format(
+                            sql.Identifier(role)
+                        )
+                    )
+            conn.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+                " WHERE datname = %s AND pg_has_role(usesysid, 'USAGE')",
+                (names.dbname,),
+            )
+            # Not WITH (FORCE), which refuses while an autovacuum worker is in the database (it
+            # has no role, so only a superuser may end it). A plain drop stops the worker
+            # itself, and waits a few seconds for the sessions ended above to exit.
+            conn.execute(sql.SQL("DROP DATABASE {}").format(db))
         for role in (names.rw, names.ro, names.owner):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
