@@ -444,7 +444,8 @@ def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch)
 
 
 # Objects in the database's own schemas, other than extensions' (pgvector's stay the master
-# user's), whose owner is `%s`.
+# user's), whose owner is `%s`. Looked up by name in pg_roles, not cast with ::regrole, which
+# reads it as an unquoted identifier (so a master user like `AiosAdmin` isn't found).
 _OWNED_BY = """
 SELECT kind, name FROM (
     SELECT 'schema' AS kind, nspname::text AS name, nspowner AS owner,
@@ -464,7 +465,7 @@ SELECT kind, name FROM (
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname NOT LIKE 'pg\\_%%' AND n.nspname <> 'information_schema'
 ) o
-WHERE owner = %s::regrole
+WHERE owner = (SELECT oid FROM pg_roles WHERE rolname = %s)
   AND NOT EXISTS (SELECT 1 FROM pg_depend d
                    WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
 ORDER BY 1, 2
