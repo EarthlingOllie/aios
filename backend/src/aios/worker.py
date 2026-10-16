@@ -101,7 +101,8 @@ def provision_data_store_task(self, data_store_id: str) -> None:
 
 @celery_app.task(name="aios.retry_unfinished_data_stores")
 def retry_unfinished_data_stores_task() -> None:
-    """Try once more to provision stores that never got there (`aios.datastores.provision`)."""
+    """Try once more to provision stores that never got there, and bring ready stores behind
+    the store tree's head to it (`aios.datastores.provision`)."""
     from aios.datastores import provision
 
     provision.retry_unfinished()

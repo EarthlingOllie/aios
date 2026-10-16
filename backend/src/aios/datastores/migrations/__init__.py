@@ -50,3 +50,10 @@ def context_options() -> dict:
 def head_revision() -> str:
     """The tree's head: the revision every ready store is brought to."""
     return ScriptDirectory.from_config(config()).get_current_head()
+
+
+def revisions_before_head() -> list[str]:
+    """The tree's revisions before its head: a store at one of them is behind."""
+    script = ScriptDirectory.from_config(config())
+    head = script.get_current_head()
+    return [s.revision for s in script.walk_revisions() if s.revision != head]

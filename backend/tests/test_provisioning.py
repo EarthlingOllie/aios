@@ -19,10 +19,11 @@ import psycopg
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from conftest import delete_user
+from conftest import delete_user, provisioned_user
 from psycopg import errors, sql
 from sqlalchemy import create_engine, pool, select, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ProgrammingError
 
 from aios import worker
 from aios.auth import current_user
@@ -33,6 +34,7 @@ from aios.datastores.models import StoreBase
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
+from alembic import command
 
 
 def store_row(db, store_id: uuid.UUID) -> DataStore:
@@ -481,6 +483,51 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
+
+
+def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedule(
+    db, user, api, monkeypatch
+):
+    """The release before a deploy keeps provisioning stores, at its own head, after the
+    deploy's migrate-stores has run (or migrate-stores failed for one): they're ready, but
+    behind the tree's head, which the new release's code needs."""
+    store_id = data_store_for(user.id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    # The store as the release before this one left it: at 0001, with no documents tables.
+    engine = create_engine(
+        make_url(get_settings().data_store_provisioner_url).set(database=names.dbname),
+        poolclass=pool.NullPool,
+    )
+    with engine.connect() as conn:
+        conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+        conn.commit()
+        command.downgrade(migrations.config(conn), "0001")
+        conn.commit()
+    engine.dispose()
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+    db.commit()
+    # A store already past this release's head (the next release has migrated it) is left alone.
+    ahead_user = provisioned_user(db, -2, "ahead-user")
+    ahead = data_store_for(ahead_user.id)
+    try:
+        db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))
+        db.commit()
+        with pytest.raises(ProgrammingError, match="UndefinedTable"):
+            api.get("/api/documents")
+        # Only this test's stores: others in the database are left alone.
+        retry = provision.retry_unfinished
+        monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id, ahead]))
+
+        worker.retry_unfinished_data_stores_task.apply().get()
+
+        assert store_row(db, store_id).schema_revision == head_revision()
+        assert api.get("/api/documents").json() == []
+        assert (store_row(db, ahead).schema_revision, store_row(db, ahead).error) == (
+            "tnext",
+            None,
+        )
+    finally:
+        delete_user(db, ahead_user)
 
 
 def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):

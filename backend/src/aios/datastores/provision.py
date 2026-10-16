@@ -23,7 +23,8 @@ reported and the rest carry on. It also finishes provisioning stores that never 
 `python -m aios.datastores.provision migrate-all` runs it (the deploy does, after the
 platform's migrations). Between deploys, `retry_unfinished` tries those stores again every few
 minutes, so a store whose provisioning gave up (the instance was down, say) gets there once it
-can.
+can. It also brings ready stores behind the tree's head to it: the release before a deploy can
+still make one after the deploy migrated stores, and migrating one can fail.
 """
 
 import logging
@@ -382,16 +383,48 @@ def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
 UNFINISHED_AFTER = timedelta(hours=1)
 
 
+def _migrate_ready(
+    which: ColumnElement[bool], skip: Collection[uuid.UUID] = ()
+) -> dict[uuid.UUID, str | BaseException]:
+    """Bring the ready stores `which` picks (but `skip`) to the tree's head, one at a time;
+    returns the revision each reached, or what stopped it (recorded on the store)."""
+    outcome: dict[uuid.UUID, str | BaseException] = {}
+    with SessionLocal() as db:
+        ready = db.scalars(
+            select(DataStore.id)
+            .where(which, DataStore.status == DataStoreStatus.ready)
+            .order_by(DataStore.created_at)
+        ).all()
+    for store_id in ready:
+        if store_id in skip:
+            continue
+        try:
+            outcome[store_id] = migrate_store(store_id)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Migrating data store %s failed", store_id)
+            _record_error(store_id, describe_error(exc))
+            outcome[store_id] = exc
+    return outcome
+
+
+def _behind_head() -> ColumnElement[bool]:
+    """Stores at an earlier revision of the tree than its head. Not one it doesn't know: the
+    release after this one has already migrated that store."""
+    return DataStore.schema_revision.in_(migrations.revisions_before_head())
+
+
 def retry_unfinished(
     store_ids: Collection[uuid.UUID] | None = None,
 ) -> dict[uuid.UUID, str | BaseException]:
     """Try once more to provision the stores whose provisioning gave up, or never ran
-    (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
-    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped
-    it."""
-    return _finish(
+    (`UNFINISHED_AFTER`), and bring ready stores behind the tree's head to it (the release
+    before this one made them after the deploy migrated stores, or migrating them failed); the
+    provisioning worker runs it every few minutes (`aios.worker.RETRY_UNFINISHED_EVERY`).
+    Returns the revision each reached, or what stopped it."""
+    only = _only(store_ids)
+    outcome = _finish(
         and_(
-            _only(store_ids),
+            only,
             or_(
                 DataStore.status == DataStoreStatus.failed,
                 and_(
@@ -401,6 +434,7 @@ def retry_unfinished(
             ),
         )
     )
+    return outcome | _migrate_ready(and_(only, _behind_head()), skip=outcome)
 
 
 def migrate_all(
@@ -415,22 +449,8 @@ def migrate_all(
     outcome = _finish(
         and_(only, DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed]))
     )
-    with SessionLocal() as db:
-        ready = db.scalars(
-            select(DataStore.id)
-            .where(only, DataStore.status == DataStoreStatus.ready)
-            .order_by(DataStore.created_at)
-        ).all()
-    for store_id in ready:
-        if store_id in outcome:  # just provisioned, so already at head
-            continue
-        try:
-            outcome[store_id] = migrate_store(store_id)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Migrating data store %s failed", store_id)
-            _record_error(store_id, describe_error(exc))
-            outcome[store_id] = exc
-    return outcome
+    # Those just provisioned are already at head.
+    return outcome | _migrate_ready(only, skip=outcome)
 
 
 def main(argv: list[str]) -> int:
