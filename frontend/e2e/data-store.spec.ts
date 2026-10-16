@@ -67,9 +67,11 @@ test("a store that couldn't be set up says so", async ({ page }) => {
   api.dataStoreStatus = "failed";
   await page.goto("/");
 
-  await expect(page.getByRole("status", { name: "Data store" })).toContainText(
+  // An error, not news of progress.
+  await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
     "Your data store couldn't be set up",
   );
+  await expect(page.getByRole("status", { name: "Data store" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
 
