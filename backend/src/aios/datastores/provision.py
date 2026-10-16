@@ -262,9 +262,10 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
         return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
 
 
-def provision(store_id: uuid.UUID) -> None:
+def provision(store_id: uuid.UUID) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
-    docstring). Does nothing for a store that's gone, or that's past provisioning."""
+    docstring); returns the revision it's at. Does nothing (returns None) for a store that's
+    gone, or that's past provisioning."""
     with _provisioner_locked(store_id) as server:
         with SessionLocal() as db:
             store = db.get(DataStore, store_id)
@@ -272,15 +273,16 @@ def provision(store_id: uuid.UUID) -> None:
                 DataStoreStatus.provisioning,
                 DataStoreStatus.failed,
             ):
-                return
+                return None
             names = StoreNames.of(store)
         passwords = _passwords(store_id)
         if passwords is None:
-            return
+            return None
         run = _Run(store_id, names, *passwords, server=server)
         for step in STEPS:
             step(run)
     log.info("Data store %s is ready at revision %s", store_id, run.revision)
+    return run.revision
 
 
 def drop(names: StoreNames) -> None:
@@ -343,14 +345,16 @@ def _only(store_ids: Collection[uuid.UUID] | None) -> ColumnElement[bool]:
 
 
 def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
-    """Provision the stores `which` picks, one at a time; returns what stopped each that failed
-    (and marks it failed), without stopping the rest."""
+    """Provision the stores `which` picks, one at a time; returns the revision each reached, or
+    what stopped it (and marks it failed), without stopping the rest."""
     outcome: dict[uuid.UUID, str | BaseException] = {}
     with SessionLocal() as db:
         unfinished = db.scalars(select(DataStore.id).where(which)).all()
     for store_id in unfinished:
         try:
-            provision(store_id)
+            revision = provision(store_id)
+            if revision is not None:
+                outcome[store_id] = revision
         except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
             log.exception("Provisioning data store %s failed", store_id)
             fail(store_id, _describe(exc))
@@ -368,7 +372,7 @@ def retry_unfinished(
 ) -> dict[uuid.UUID, str | BaseException]:
     """Try once more to provision the stores whose provisioning gave up, or never ran
     (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
-    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns what stopped each that failed again."""
+    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped it."""
     return _finish(
         and_(
             _only(store_ids),
@@ -402,6 +406,8 @@ def migrate_all(
             .order_by(DataStore.created_at)
         ).all()
     for store_id in ready:
+        if store_id in outcome:  # just provisioned, so already at head
+            continue
         try:
             outcome[store_id] = migrate_store(store_id)
         except Exception as exc:  # noqa: BLE001

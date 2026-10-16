@@ -354,6 +354,26 @@ def test_migrate_all_finishes_provisioning_stores_that_never_got_there(db, new_u
     assert store_row(db, store_id).status == DataStoreStatus.ready
 
 
+def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
+    """A store it has just provisioned is already at head: it isn't migrated again."""
+    unfinished = data_store_for(new_user().id)
+    ready = data_store_for(new_user().id)
+    provision.provision(ready)
+    upgrades = []
+    upgrade_store = provision.upgrade_store
+
+    def counted(names):
+        upgrades.append(names.dbname)
+        return upgrade_store(names)
+
+    monkeypatch.setattr(provision, "upgrade_store", counted)
+
+    outcome = provision.migrate_all([unfinished, ready])
+
+    assert outcome == {unfinished: head_revision(), ready: head_revision()}
+    assert sorted(upgrades) == sorted(store_row(db, s).dbname for s in (unfinished, ready))
+
+
 def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, new_user):
     """Stores made before migration 0012 have no passwords yet."""
     store_id = data_store_for(new_user().id)
