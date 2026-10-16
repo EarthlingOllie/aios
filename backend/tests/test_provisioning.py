@@ -779,6 +779,23 @@ def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user
     assert provision.retry_unfinished([busy]) == {busy: head_revision()}
 
 
+def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_user):
+    """Like provisioning, bringing a store to head on the schedule mustn't wait for another
+    run on it (a deploy's migrate-all, say)."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+    db.commit()
+
+    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(store_id):
+        outcome = pool.submit(provision.retry_unfinished, [store_id]).result(timeout=30)
+
+    assert outcome == {}
+    assert store_row(db, store_id).schema_revision == "0001"
+    # The next one gets it.
+    assert provision.retry_unfinished([store_id]) == {store_id: head_revision()}
+
+
 def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, monkeypatch):
     store_id = data_store_for(new_user().id)
     # Takes the connection (the kernel does), then says nothing.
