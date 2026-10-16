@@ -20,7 +20,7 @@ from fake_model import ToolCall, last_tool_results, model, tool_output, use_mode
 from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
 from test_agents import agent_body, chat_body, make_agent
-from test_provisioning import login_url, new_user, store_row  # noqa: F401  (new_user: fixture)
+from test_provisioning import login_url, store_row
 
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
@@ -431,7 +431,7 @@ def test_a_query_with_no_rows_still_names_its_columns(api, store, data_agent):
 
 
 @pytest.fixture
-def other_store(db, new_user) -> DataStore:  # noqa: F811  (new_user is the fixture)
+def other_store(db, new_user) -> DataStore:
     """Another user's provisioned store, with a `data.secrets` table."""
     row = provisioned(db, data_store_for(new_user().id))
     with as_owner(row) as conn:

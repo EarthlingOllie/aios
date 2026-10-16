@@ -12,12 +12,11 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import psycopg
 import pytest
-from conftest import delete_user
 from psycopg import errors, sql
 from sqlalchemy import select, text, update
 from sqlalchemy.engine import make_url
@@ -29,29 +28,12 @@ from aios.datastores import credentials, data_store_for, migrations, provision, 
 from aios.datastores.migrations import head_revision
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, DataStoreStatus
 
 
 def store_row(db, store_id: uuid.UUID) -> DataStore:
     db.expire_all()
     return db.scalar(select(DataStore).where(DataStore.id == store_id))
-
-
-@pytest.fixture
-def new_user(db) -> Iterator[Callable[[], User]]:
-    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
-    made: list[User] = []
-
-    def make() -> User:
-        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
-        db.add(u)
-        db.commit()
-        made.append(u)
-        return u
-
-    yield make
-    for u in made:
-        delete_user(db, u)
 
 
 def test_a_new_users_store_is_provisioned_ready_at_the_store_trees_head(db, new_user, provisioning):
