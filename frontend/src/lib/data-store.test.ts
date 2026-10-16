@@ -50,6 +50,14 @@ describe("dataStoreNotice", () => {
   });
 });
 
+describe("dataStoreNotice and dataStoreSummary", () => {
+  it("say the same thing about a store that failed or isn't available", () => {
+    for (const status of ["failed", "deleting"] as const) {
+      expect(dataStoreSummary(status).message).toBe(dataStoreNotice(status));
+    }
+  });
+});
+
 describe("dataStorePollInterval", () => {
   it("stops polling once the store is ready", () => {
     expect(dataStorePollInterval("ready")).toBeNull();
