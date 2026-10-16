@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TargetSchedules } from "@/components/schedules";
+import { Tabs } from "@/components/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -214,55 +215,82 @@ function WorkflowDetailView({ id }: { id: number }) {
           </div>
         </form>
       )}
-      <Section title="Graph">
-        {/* Keyed so the selection resets when the graph changes under it. */}
-        <GraphView
-          key={current.id}
-          version={current}
-          layout={w.layout}
-          editHref={`/workflows/${id}/edit`}
-        />
-      </Section>
-      <TargetSchedules kind="workflow" id={id} />
-      <Section title="Runs">
-        {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
-        {runs.data?.length === 0 && (
-          <p className="text-muted-foreground text-sm">No runs yet. Start one to watch it go.</p>
-        )}
-        {!!runs.data?.length && (
-          <ul aria-label="Runs" className="divide-y rounded-md border">
-            {runs.data.map((run) => (
-              <li key={run.id}>
-                <Link
-                  to={`runs/${run.id}`}
-                  className="hover:bg-accent flex items-center gap-3 px-3 py-2"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">{run.input}</span>
-                    <span className="text-muted-foreground block text-xs">
-                      {formatDate(run.created_at)}
-                    </span>
-                  </span>
-                  <VersionBadge version={run.workflow_version} />
-                  <RunStatusBadge status={run.status} />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <Section title="Version history">
-        <VersionHistory
-          versions={versions.data}
-          error={versions.error}
-          current={current.version}
-          href={(v) => `/workflows/${id}/versions/${v}`}
-          detail={(v) => {
-            const s = versions.data?.find((x) => x.version === v);
-            return plural(s?.node_count ?? 0, "node");
-          }}
-        />
-      </Section>
+      <Tabs
+        label="Workflow details"
+        tabs={[
+          {
+            id: "graph",
+            label: "Graph",
+            content: (
+              // Keyed so the selection resets when the graph changes under it.
+              <GraphView
+                key={current.id}
+                version={current}
+                layout={w.layout}
+                editHref={`/workflows/${id}/edit`}
+              />
+            ),
+          },
+          {
+            id: "runs",
+            label: "Runs",
+            count: runs.data?.length,
+            content: (
+              <>
+                {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
+                {runs.data?.length === 0 && (
+                  <p className="text-muted-foreground text-sm">
+                    No runs yet. Start one to watch it go.
+                  </p>
+                )}
+                {!!runs.data?.length && (
+                  <ul aria-label="Runs" className="divide-y rounded-md border">
+                    {runs.data.map((run) => (
+                      <li key={run.id}>
+                        <Link
+                          to={`runs/${run.id}`}
+                          className="hover:bg-accent flex items-center gap-3 px-3 py-2"
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm">{run.input}</span>
+                            <span className="text-muted-foreground block text-xs">
+                              {formatDate(run.created_at)}
+                            </span>
+                          </span>
+                          <VersionBadge version={run.workflow_version} />
+                          <RunStatusBadge status={run.status} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ),
+          },
+          {
+            id: "versions",
+            label: "Versions",
+            count: versions.data?.length,
+            content: (
+              <VersionHistory
+                versions={versions.data}
+                error={versions.error}
+                current={current.version}
+                href={(v) => `/workflows/${id}/versions/${v}`}
+                detail={(v) => {
+                  const s = versions.data?.find((x) => x.version === v);
+                  return plural(s?.node_count ?? 0, "node");
+                }}
+              />
+            ),
+          },
+          {
+            id: "schedule",
+            label: "Schedule",
+            content: <TargetSchedules kind="workflow" id={id} />,
+          },
+        ]}
+      />
     </DetailPage>
   );
 }
@@ -290,7 +318,8 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreWorkflowVersion(id, number);
       await reloadList();
-      navigate(`/workflows/${id}`);
+      // Back to where the version was opened from, which now lists the restored copy as current.
+      navigate(`/workflows/${id}?tab=versions`);
     } catch (err) {
       setError(describeError(err));
     }
@@ -301,7 +330,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
       wide
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/workflows/${id}`} className="hover:underline">
+          <Link to={`/workflows/${id}?tab=versions`} className="hover:underline">
             {workflow.data.name}
           </Link>
           <VersionBadge version={v.version} />

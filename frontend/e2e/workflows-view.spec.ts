@@ -205,6 +205,7 @@ test("version history opens an old version's graph, which can be restored", asyn
   await page.goto(`/workflows/${report.id}`);
   await expect(node(page, "review")).toHaveCount(0);
 
+  await page.getByRole("tab", { name: /Versions/ }).click();
   const history = page.getByRole("list").filter({ hasText: "drop review" });
   await expect(history.getByText("2 nodes")).toBeVisible();
   await history.getByRole("link", { name: /v1/ }).click();
@@ -214,9 +215,11 @@ test("version history opens an old version's graph, which can be restored", asyn
   await expect(inspector(page)).toContainText("Review");
 
   await page.getByRole("button", { name: "Restore this version" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
-  await expect(node(page, "review")).toBeVisible();
+  // Back on the Versions tab, which lists the restored copy; the graph has it again.
+  await expect(page).toHaveURL(`/workflows/${report.id}?tab=versions`);
   await expect(page.getByText("Restored from v1")).toBeVisible();
+  await page.getByRole("tab", { name: "Graph" }).click();
+  await expect(node(page, "review")).toBeVisible();
 });
 
 /** Holds restore requests until `release` is called, counting them. */
@@ -242,7 +245,7 @@ test("restoring a version sends one request, however often it's clicked", async 
   await page.getByRole("button", { name: "Restore this version" }).dblclick();
   await expect.poll(() => restores.count).toBeGreaterThan(0);
   restores.release();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(`/workflows/${report.id}?tab=versions`);
   expect(restores.count).toBe(1);
   expect(api.writes.filter(([method]) => method === "POST")).toHaveLength(1);
 });
@@ -258,7 +261,7 @@ test("the restore button shows that the restore is running", async ({ page }) =>
   const restoring = page.getByRole("button", { name: "Restoring…" });
   await expect(restoring).toBeDisabled();
   restores.release();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(`/workflows/${report.id}?tab=versions`);
 });
 
 test("a failed restore can be retried", async ({ page }) => {
@@ -280,7 +283,7 @@ test("a failed restore can be retried", async ({ page }) => {
   await page.getByRole("button", { name: "Restore this version" }).click();
   await expect(page.getByText("Restore failed")).toBeVisible();
   await page.getByRole("button", { name: "Restore this version" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(`/workflows/${report.id}?tab=versions`);
   await expect(page.getByText("Restored from v1")).toBeVisible();
 });
 
@@ -294,7 +297,7 @@ test("version history that fails to load says why", async ({ page }) => {
       body: JSON.stringify({ detail: "Version store unavailable" }),
     }),
   );
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(`/workflows/${report.id}?tab=versions`);
   await expect(page.getByText("Version store unavailable")).toBeVisible();
 });
 
