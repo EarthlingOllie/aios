@@ -13,9 +13,10 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
 - **The export** (`export`, the `aios.export_history` task, on the app workers: it writes as
   the store's `rw` role) drains the store's outbox, copying each run and its messages,
   flattened from its checkpoint, or deleting the copy of a run that's gone. Copies are upserted
-  by the platform's ids, so exporting again changes nothing. A periodic sweep
-  (`stores_to_export`) queues stores whose rows are still pending, should a queued export be
-  lost.
+  by the platform's ids, so exporting again changes nothing. A run that fails to export keeps
+  its error on its row and waits for its next change, so it doesn't hold up the rest. A
+  periodic sweep (`stores_to_export`) queues stores whose rows are still pending, should a
+  queued export be lost.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it.
 """
 
@@ -116,7 +117,7 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool]) -> None:
                 HistoryExport.kind,
                 HistoryExport.source_id,
             ],
-            set_={"enqueued_at": func.clock_timestamp(), "exported_at": None},
+            set_={"enqueued_at": func.clock_timestamp(), "exported_at": None, "error": None},
         ).returning(HistoryExport.data_store_id)
     ).all()
     if stores:
@@ -273,7 +274,9 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
         pending = db.execute(
             select(HistoryExport.id, HistoryExport.source_id, HistoryExport.enqueued_at)
             .where(
-                HistoryExport.data_store_id == data_store_id, HistoryExport.exported_at.is_(None)
+                HistoryExport.data_store_id == data_store_id,
+                HistoryExport.exported_at.is_(None),
+                HistoryExport.error.is_(None),
             )
             .order_by(HistoryExport.enqueued_at)
             .limit(BATCH)
@@ -281,20 +284,32 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
     if not pending:
         return 0
     runs = _load_runs([p.source_id for p in pending])
+    errors: dict[int, str] = {}
     with store_session(data_store_id, "rw") as store:
         for p in pending:
             run = runs.get(p.source_id)
             if run is None:
                 # Deleted (its messages go with it, by their foreign key).
                 store.execute(delete(HistoryAgentRun).where(HistoryAgentRun.id == p.source_id))
-            else:
-                _write_run(store, run, flatten(run["id"], checkpoints.history(run["id"])))
+                continue
+            try:
+                with store.begin_nested():
+                    _write_run(store, run, flatten(run["id"], checkpoints.history(run["id"])))
+            except Exception as exc:
+                # E.g. its checkpoint won't load. Set aside with its error (until the run
+                # changes again), so the runs after it still go in.
+                log.exception(
+                    "Couldn't export agent run %s to data store %s", p.source_id, data_store_id
+                )
+                errors[p.id] = f"{type(exc).__name__}: {exc}"
         store.commit()
     with SessionLocal() as db:
         for p in pending:
             # Only as it was read: a run changed since is pending again, for the next batch.
             same = (HistoryExport.id == p.id, HistoryExport.enqueued_at == p.enqueued_at)
-            if p.source_id in runs:
+            if p.id in errors:
+                db.execute(update(HistoryExport).where(*same).values(error=errors[p.id]))
+            elif p.source_id in runs:
                 db.execute(update(HistoryExport).where(*same).values(exported_at=func.now()))
             else:
                 db.execute(delete(HistoryExport).where(*same))
@@ -343,6 +358,7 @@ def stores_to_export() -> list[uuid.UUID]:
                     .where(
                         HistoryExport.data_store_id == DataStore.id,
                         HistoryExport.exported_at.is_(None),
+                        HistoryExport.error.is_(None),
                     )
                     .exists(),
                 )

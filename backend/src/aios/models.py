@@ -109,8 +109,9 @@ class HistoryExport(Base):
     store, or to delete from it if it's gone (`aios.datastores.history`).
 
     One row per run and store. It's written in the same transaction as the run's own update,
-    and written again (`exported_at` cleared) each time the run changes, so it's pending while
-    `exported_at` is null.
+    and written again (`exported_at` and `error` cleared) each time the run changes, so it's
+    pending while both are null. A run that failed to export keeps its `error`, set aside
+    until it changes again, so it doesn't hold up the runs after it.
     """
 
     __tablename__ = "history_exports"
@@ -128,6 +129,7 @@ class HistoryExport(Base):
         DateTime(timezone=True), server_default=func.clock_timestamp()
     )
     exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         UniqueConstraint("data_store_id", "kind", "source_id"),
@@ -136,7 +138,7 @@ class HistoryExport(Base):
             "ix_history_exports_pending",
             "data_store_id",
             "enqueued_at",
-            postgresql_where=text("exported_at IS NULL"),
+            postgresql_where=text("exported_at IS NULL AND error IS NULL"),
         ),
     )
 
