@@ -167,7 +167,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
-                    models.py (the tables every store has: documents, chunks),
+                    models.py (the tables every store has: documents, chunks; and the
+                    run history export's), history.py (the run history export),
                     provision.py (creating and migrating each store's database), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
@@ -318,6 +319,29 @@ pools up to 3 per store and role, so the limit must be at least 3 x the processe
 role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
 ingest task retries, and the search tools tell the model.
+
+#### Run history export
+
+On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
+their agent runs into their store's `history` schema (`history.agent_runs`, keyed by the
+platform's run ids and recording who ran each, and `history.messages`: role, text, tool calls
+and usage, flattened from the run's checkpoint). The platform database stays the source of
+truth (`aios.datastores.history`):
+
+- The `history` tables are the store tree's second line (branch label `history`, revisions
+  `h0001`, ...), which a store gets only once its owner first switches the export on:
+  `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
+  migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
+  same default privileges on it as on `aios`.
+- Switching it on backfills: every run of the user's goes in the outbox, `history_exports` (a row
+  per run and store). Every agent turn ends in `_end_turn` (chats, schedules and workflow agent
+  nodes alike, failed or stopped too), which writes the run's row in the same transaction as the
+  run's own update; deleting a run, its agent or its workflow run writes it too.
+- `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
+  upserting each run and its messages, or deleting the copy of a run that's gone. It's queued
+  when the outbox is written, and the provisioning worker's beat queues it every minute for any
+  store with rows still pending.
+- Switching it off stops the export and keeps the copy; "Delete exported history" empties it.
 
 ### Dependency policy
 

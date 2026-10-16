@@ -21,7 +21,7 @@ from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, history
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -429,6 +429,7 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
+    history.enqueue_runs(db, AgentRun.agent_id == agent.id)  # their exported copies go too
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
@@ -590,6 +591,8 @@ def delete_run(
 ) -> None:
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
+    # Its exported copy goes too (found through the run, so before it's deleted).
+    history.enqueue_runs(db, AgentRun.id == run.id)
     db.delete(run)
     db.commit()
     background.add_task(checkpoints.delete_threads, [run_id])
@@ -676,6 +679,9 @@ def _end_turn(run_id: int, message_count: int) -> None:
             .where(AgentRun.id == run_id)
             .values(message_count=message_count, updated_at=func.now())
         )
+        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: with
+        # the run's own update, it goes in the run history export's outbox.
+        history.enqueue_runs(db, AgentRun.id == run_id)
         db.commit()
 
 

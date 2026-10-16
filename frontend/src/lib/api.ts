@@ -10,7 +10,17 @@ export type User = {
 /** The user's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
-export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
+/** The user's settings (the Settings page). */
+export type Settings = {
+  /** Copy agent runs into the data store's `history` tables. */
+  export_run_history: boolean;
+  /** The data store has its `history` tables (made once the export is first switched on). */
+  history_ready: boolean;
+  /** When the export last copied runs into the data store. */
+  history_exported_at: string | null;
+};
+
+export type DocumentStatus ="pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
   id: number;
@@ -405,6 +415,11 @@ export const api = {
   me: () => request<User>("/api/me"),
   logout: () => request<void>("/logout", { method: "POST" }),
   getDataStore: () => request<{ status: DataStoreStatus }>("/api/data-store"),
+  getSettings: () => request<Settings>("/api/settings"),
+  updateSettings: (body: { export_run_history: boolean }) =>
+    request<Settings>("/api/settings", json("PUT", body)),
+  deleteExportedHistory: () =>
+    request<void>("/api/settings/exported-history", { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {

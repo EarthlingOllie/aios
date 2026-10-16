@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     String,
@@ -36,6 +37,8 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
+    export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -87,10 +90,56 @@ class DataStore(Base):
     ro_password: Mapped[str | None] = mapped_column(Text)
     # The store tree's Alembic revision its database is at (`aios.datastores.migrations`).
     schema_revision: Mapped[str | None] = mapped_column(String(64))
+    # The revision of the tree's `history` branch it's at: null until its owner first switches
+    # the run history export on, which creates the `history` schema.
+    history_revision: Mapped[str | None] = mapped_column(String(64))
+    # When the run history export last copied runs into it.
+    history_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class HistoryExportKind(enum.StrEnum):
+    agent_run = "agent_run"
+
+
+class HistoryExport(Base):
+    """The run history export's outbox: a run (by kind and platform id) to copy into the data
+    store, or to delete from it if it's gone (`aios.datastores.history`).
+
+    One row per run and store. It's written in the same transaction as the run's own update,
+    and written again (`exported_at` cleared) each time the run changes, so it's pending while
+    `exported_at` is null.
+    """
+
+    __tablename__ = "history_exports"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("data_stores.id", ondelete="CASCADE")
+    )
+    kind: Mapped[HistoryExportKind] = mapped_column(
+        Enum(HistoryExportKind, name="history_export_kind")
+    )
+    # Not a foreign key: the row outlives a deleted run, to delete its copy.
+    source_id: Mapped[int] = mapped_column(BigInteger)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("data_store_id", "kind", "source_id"),
+        # What the export drains.
+        Index(
+            "ix_history_exports_pending",
+            "data_store_id",
+            "enqueued_at",
+            postgresql_where=text("exported_at IS NULL"),
+        ),
+    )
 
 
 # Agents and skills are split into an editable identity row (name, description) and a chain of
