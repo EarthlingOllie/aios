@@ -57,7 +57,8 @@ export function useDataStoreStatus(): DataStoreStatus | undefined {
  * ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
 function useDocuments(storeStatus: DataStoreStatus | undefined) {
-  const [docs, setDocs] = useState<DocumentInfo[]>([]);
+  // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
+  const [docs, setDocs] = useState<DocumentInfo[]>();
   // What to say about the last read of the list failing (e.g. the store is busy); the list
   // keeps its last rows meanwhile.
   const [listError, setListError] = useState<string>();
@@ -90,7 +91,7 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
   }, [ready, refresh]);
 
   // Poll while anything is still being ingested by the worker, or the last read failed.
-  const ingesting = docs.some((d) => d.status === "pending" || d.status === "processing");
+  const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
   const retry = ready && Boolean(listError);
   useEffect(() => {
     if (!ingesting && !retry) return;
@@ -131,6 +132,8 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
 
   return {
     docs,
+    /** The store is ready but its list hasn't been read yet (and no read has failed). */
+    loading: ready && docs === undefined && !listError,
     listError,
     uploading,
     errors,
@@ -262,6 +265,12 @@ const statusLabel = {
   failed: "Failed",
 } as const;
 
+function DocumentsLoading() {
+  return (
+    <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading documents" />
+  );
+}
+
 /** The chat's documents panel: a compact list beside the conversation it grounds. */
 export function Documents() {
   const { storeStatus, documents } = useSharedDocuments();
@@ -274,11 +283,12 @@ export function Documents() {
         <UploadButton documents={documents} />
       </div>
       <DocumentsNotices storeStatus={storeStatus} documents={documents} />
+      {documents.loading && <DocumentsLoading />}
       <ul className="flex-1 space-y-1 overflow-y-auto">
-        {docs.length === 0 && documents.canUpload && !documents.listError && (
+        {docs?.length === 0 && documents.canUpload && !documents.listError && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
         )}
-        {docs.map((doc) => (
+        {docs?.map((doc) => (
           <li
             key={doc.id}
             className="group hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-sm"
@@ -325,12 +335,13 @@ export function DocumentsSection() {
         <UploadButton documents={documents} />
       </div>
       <DocumentsNotices storeStatus={storeStatus} documents={documents} />
-      {docs.length === 0 && documents.canUpload && !documents.listError && (
+      {documents.loading && <DocumentsLoading />}
+      {docs?.length === 0 && documents.canUpload && !documents.listError && (
         <p className="text-muted-foreground text-sm">
           No documents yet. Upload PDFs, Office files, web pages, text or images to search them.
         </p>
       )}
-      {docs.length > 0 && (
+      {docs && docs.length > 0 && (
         <ul className="divide-y rounded-md border" aria-label="Documents">
           {docs.map((doc) => (
             <li key={doc.id} className="group flex items-start gap-3 px-3 py-2">

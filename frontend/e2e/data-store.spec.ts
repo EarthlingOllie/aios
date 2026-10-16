@@ -77,3 +77,16 @@ test("a busy store doesn't tell the chat panel there are no documents", async ({
   await expect(page.getByText("report.pdf")).toBeVisible();
   await expect(page.getByRole("status", { name: "Documents list" })).toBeHidden();
 });
+
+test("the chat's panel shows it's loading, not an invitation to upload", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.documentsDelay = 1500;
+  await page.goto("/");
+
+  await expect(page.getByLabel("Loading documents")).toBeVisible();
+  await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+
+  await expect(page.getByText("report.pdf")).toBeVisible();
+  await expect(page.getByLabel("Loading documents")).toBeHidden();
+});

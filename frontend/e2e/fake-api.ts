@@ -105,6 +105,8 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
+  /** How long GET /api/documents takes to answer (ms). */
+  documentsDelay = 0;
   /**
    * The status an upload starts in: "ready" (with one chunk) skips the worker; "pending" waits
    * for the test to finish its ingest with `finishIngest`.
@@ -543,7 +545,10 @@ export class FakeApi {
         );
         return reply(201, doc);
       }
-      if (path === "/api/documents") return reply(200, this.documents);
+      if (path === "/api/documents") {
+        await new Promise((resolve) => setTimeout(resolve, this.documentsDelay));
+        return reply(200, this.documents);
+      }
       return fail(404, "Not Found");
     }
     if (path === "/api/tools") return reply(200, []);

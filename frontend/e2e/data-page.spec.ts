@@ -178,6 +178,20 @@ test("cancelling a delete keeps the document", async ({ page }) => {
   expect(api.writes).toEqual([]);
 });
 
+test("a slow list shows it's loading, not that there are no documents", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.documentsDelay = 1500;
+  await page.goto("/data?tab=documents");
+
+  await expect(page.getByLabel("Loading documents")).toBeVisible();
+  await expect(page.getByText("No documents yet")).toBeHidden();
+  await page.screenshot({ path: test.info().outputPath("loading.png") });
+
+  await expect(row(page, "report.pdf")).toBeVisible();
+  await expect(page.getByLabel("Loading documents")).toBeHidden();
+});
+
 test("a busy store says so, and the list loads once it's free", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
