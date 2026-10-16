@@ -2,7 +2,8 @@ import type { DataStoreStatus } from "@/lib/api";
 
 // The notice and the Overview say the same thing about a store that failed or is otherwise
 // unavailable (the failed wording also matches the API's 409). They differ only while it's set up.
-const FAILED_MESSAGE = "Your data store couldn't be set up. We'll try again; please check back later.";
+const FAILED_MESSAGE =
+  "Your data store couldn't be set up. We'll try again; please check back later.";
 const UNAVAILABLE_MESSAGE = "Your data store isn't available.";
 
 /** What the documents panel says about a data store that isn't ready; null once it is. */

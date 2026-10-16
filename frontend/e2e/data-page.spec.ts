@@ -311,7 +311,9 @@ test("a list refused for good says so once, without asking again", async ({ page
   expect(reads).toBe(after);
 });
 
-test("a slow poll that answers after a delete doesn't bring the document back", async ({ page }) => {
+test("a slow poll that answers after a delete doesn't bring the document back", async ({
+  page,
+}) => {
   const api = await fakeApi(page);
   // Something still ingesting keeps the list polling.
   api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
