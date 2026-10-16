@@ -60,15 +60,34 @@ SELECT rolname FROM pg_roles
 """
 
 
+# Extensions' members, and what is part of one (`pg_depend`'s 'i', recursively): a member type's
+# array type, a range's multirange and its array, which whoever ran CREATE EXTENSION owns but
+# which aren't members themselves and can't be altered on their own. The server records 'i' only
+# for what it made as part of another object, so this reaches nothing a user created.
+_EXTENSIONS = """
+ext (cls, oid) AS (
+    SELECT classid, objid FROM pg_depend WHERE deptype = 'e'
+    UNION
+    SELECT d.classid, d.objid FROM pg_depend d
+      JOIN ext ON d.refclassid = ext.cls AND d.refobjid = ext.oid
+     WHERE d.deptype = 'i'
+)
+"""
+
+
 # What the current user owns in the database's own schemas, as (the ALTER statement's object
 # kind, the object's name as SQL). Only objects whose owner can be changed on their own: a
 # table's indexes, row type, TOAST table and column sequences, and a type's array type, follow
-# it. Extensions' members (pgvector's) are left alone.
-_OWNED = """
-WITH me AS (
+# it. Extensions' members (pgvector's), and what is part of them, are left alone.
+_OWNED = (
+    """
+WITH RECURSIVE me AS (
     -- Not current_user::regrole, which reads the name as an unquoted identifier.
     SELECT oid FROM pg_roles WHERE rolname = current_user
 ),
+"""
+    + _EXTENSIONS
+    + """,
 own AS (
     SELECT n.oid AS nsp FROM pg_namespace n
      WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
@@ -151,19 +170,23 @@ SELECT kind, name FROM (
       FROM pg_ts_dict d
      WHERE d.dictnamespace IN (SELECT nsp FROM own) AND d.dictowner = (SELECT oid FROM me)
 ) o
-WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
-                   WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+WHERE NOT EXISTS (SELECT 1 FROM ext WHERE ext.cls = o.cls AND ext.oid = o.oid)
 -- Schemas first: a master user that isn't a superuser can only give an object to a role that
 -- may create in its schema. UNION ALL keeps no order of its own (a merge join sorts by catalog).
 ORDER BY kind <> 'SCHEMA'
 """
+)
 
 # After the hand-over: anything in the database the current user still owns, from every catalog
-# with an owner, but extensions and their members (and initdb's objects, below
-# FirstNormalObjectId). Whatever `_OWNED` doesn't cover ends up here, and is reported rather than
-# left for a migration to trip over.
-_LEFT_OVER = """
-WITH me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+# with an owner, but extensions and their members and what is part of them (and initdb's
+# objects, below FirstNormalObjectId). Whatever `_OWNED` doesn't cover ends up here, and is
+# reported rather than left for a migration to trip over.
+_LEFT_OVER = (
+    """
+WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+"""
+    + _EXTENSIONS
+    + """,
 own AS (
     SELECT n.oid AS nsp FROM pg_namespace n
      WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
@@ -197,10 +220,10 @@ SELECT pg_describe_object(o.cls, o.oid, 0)
  WHERE o.owner = (SELECT oid FROM me)
    AND o.oid >= 16384
    AND (o.nsp IS NULL OR o.nsp IN (SELECT nsp FROM own))
-   AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+   AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.cls = o.cls AND ext.oid = o.oid)
  ORDER BY 1
 """
+)
 
 
 def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:

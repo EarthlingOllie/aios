@@ -465,6 +465,30 @@ def test_a_schema_is_handed_over_before_what_is_in_it(cluster, monkeypatch):
         conn.execute("ALTER TABLE langgraph.checkpoints ADD COLUMN name text")
 
 
+def test_an_extension_the_master_user_created_is_left_alone(cluster):
+    """A master user that is a superuser (CI's and Compose's) creates pgvector itself, and owns
+    its members and their array types. Those array types are part of their element type, not
+    members of the extension, and can't be handed over on their own; nor need they be.
+
+    A trusted extension's members are owned by the bootstrap superuser, whoever creates it, so
+    this makes the master user's own types members of one: the same shape, without needing a
+    superuser. A range type also has a multirange, its array, and constructors."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE EXTENSION citext")
+        conn.execute("CREATE TYPE mood AS ENUM ('ok')")
+        conn.execute("CREATE TYPE floatrange AS RANGE (subtype = float8)")
+        conn.execute("ALTER EXTENSION citext ADD TYPE mood")
+        conn.execute("ALTER EXTENSION citext ADD TYPE floatrange")
+        conn.execute("CREATE TYPE status AS ENUM ('ok')")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    # What isn't in the extension is still handed over.
+    with _connect(app_url) as conn:
+        conn.execute("COMMENT ON TYPE status IS 'migrated'")
+
+
 def test_fails_naming_what_it_cannot_hand_over(cluster):
     """Rather than leave the app's role unable to migrate something, silently."""
     admin_url, app_url, prov_url = cluster
