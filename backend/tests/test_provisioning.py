@@ -150,6 +150,27 @@ def test_a_stores_roles_cant_connect_to_another_store_or_the_platform(two_stores
     psycopg.connect(login_url(a, role)).close()
 
 
+def test_no_other_role_can_connect_to_a_new_store_before_its_access_is_set(
+    db, new_user, two_stores, monkeypatch
+):
+    """A new database lets every role connect, until `_restrict_connect` says who may: one let
+    in before then would stay connected."""
+    other, _ = two_stores
+    store_id = data_store_for(new_user().id)
+    steps = list(provision.STEPS)
+    monkeypatch.setattr(provision, "STEPS", steps[: steps.index(provision._create_database) + 1])
+    provision.provision(store_id)
+    dbname = store_row(db, store_id).dbname
+
+    for role in ("rw", "ro"):
+        with pytest.raises(psycopg.OperationalError):
+            psycopg.connect(login_url(other, role, dbname)).close()
+
+    monkeypatch.setattr(provision, "STEPS", steps)
+    provision.provision(store_id)
+    psycopg.connect(login_url(store_row(db, store_id), "rw")).close()
+
+
 @pytest.mark.parametrize("role", ["rw", "ro"])
 def test_a_stores_roles_cant_create_anything(two_stores, role):
     a, _ = two_stores

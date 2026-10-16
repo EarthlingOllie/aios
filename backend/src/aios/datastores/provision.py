@@ -11,9 +11,10 @@ three roles named after it (never after a user):
   which both only read. Neither may create anything. Each has its own statement timeout,
   idle-in-transaction timeout and connection limit (`data_store_*` settings).
 
-Nobody else may connect (`CONNECT` is revoked from `PUBLIC`), and the database has no `public`
-schema. It's copied from the store template (`aios.db_roles`), which brings pgvector in an
-`extensions` schema: the provisioner isn't a superuser, so it couldn't install it.
+Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
+connections at all), and the database has no `public` schema. It's copied from the store
+template (`aios.db_roles`), which brings pgvector in an `extensions` schema: the provisioner
+isn't a superuser, so it couldn't install it.
 
 Then it runs the store tree to its head, as the owner (`upgrade_store`), and marks the store
 `ready`. Every step checks what's already there, so after a crash running it again finishes
@@ -134,8 +135,10 @@ def _create_database(run: _Run) -> None:
     conn, n = run.server, run.names
     if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (n.dbname,)).fetchone():
         return
+    # Closed: a new database lets every role connect, and one let in before `_restrict_connect`
+    # would stay connected.
     conn.execute(
-        sql.SQL("CREATE DATABASE {} OWNER {} TEMPLATE {}").format(
+        sql.SQL("CREATE DATABASE {} OWNER {} TEMPLATE {} ALLOW_CONNECTIONS false").format(
             sql.Identifier(n.dbname),
             sql.Identifier(n.owner),
             sql.Identifier(get_settings().data_store_template),
@@ -149,6 +152,7 @@ def _restrict_connect(run: _Run) -> None:
     # ALL: CONNECT, and TEMPORARY, which would let any role create temporary tables.
     conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(db))
     conn.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(db, _ident(n.rw, n.ro)))
+    conn.execute(sql.SQL("ALTER DATABASE {} ALLOW_CONNECTIONS true").format(db))
 
 
 @contextmanager

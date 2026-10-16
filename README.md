@@ -267,8 +267,9 @@ Each user has a data store: a Postgres database of their own on the same instanc
   store's id (a UUID, never the user's), with a statement timeout, an idle-in-transaction
   timeout and a connection limit each (`DATA_STORE_STATEMENT_TIMEOUT`,
   `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in milliseconds, and `DATA_STORE_CONNECTION_LIMIT`);
-- creates the database `ds_<id>` from the template, owned by `_owner`, revokes `CONNECT` (and
-  `TEMPORARY`) from `PUBLIC` and grants `CONNECT` to `_rw` and `_ro`;
+- creates the database `ds_<id>` from the template, owned by `_owner` and taking no
+  connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw` and
+  `_ro`, and only then lets them connect;
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
   the owner creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
