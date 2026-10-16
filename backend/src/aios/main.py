@@ -13,6 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from aios import auth, scheduler, tracing
 from aios.api import agents, chat, documents, skills, tools, triggers, workflows
+from aios.api import settings as settings_api
 from aios.config import get_settings
 from aios.datastores import DataStoreBusy, DataStoreNotReady
 from aios.db import engine
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(tools.router)
     app.include_router(workflows.router)
     app.include_router(triggers.router)
+    app.include_router(settings_api.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

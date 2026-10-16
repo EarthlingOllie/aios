@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
 from aios.auth import current_user
-from aios.datastores import data_store_for, provision, resolve
+from aios.datastores import data_store_for, history, provision, resolve
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal, engine
 from aios.main import app
@@ -53,6 +53,16 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     """Data stores whose provisioning was queued, instead of sending it to the broker."""
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
+    return queued
+
+
+@pytest.fixture(autouse=True)
+def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
+    """The run history export's tasks the code queued (by store), instead of sending them to
+    the broker: "export" drains a store's outbox, "set_up" gives it the `history` tables."""
+    queued: dict[str, list[uuid.UUID]] = {"export": [], "set_up": []}
+    monkeypatch.setattr(history, "enqueue_export", queued["export"].append)
+    monkeypatch.setattr(history, "enqueue_set_up", queued["set_up"].append)
     return queued
 
 

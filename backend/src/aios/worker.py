@@ -36,18 +36,30 @@ celery_app.conf.update(
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.migrate_data_stores": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
+        # Its `history` tables are migrations, so it's the provisioner's too. The export itself
+        # writes as the store's `rw` role, as ingest does, so it's the app workers' (the
+        # default queue).
+        "aios.set_up_history_export": {"queue": "provisioning"},
     },
 )
 
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# Stores with runs still waiting to be exported (their export was never queued, or was lost)
+# are queued this often (seconds), by the same beat; the exports go to the app workers.
+EXPORT_PENDING_HISTORY_EVERY = 60
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "export-pending-history": {
+        "task": "aios.export_pending_history",
+        "schedule": EXPORT_PENDING_HISTORY_EVERY,
+        "options": {"expires": EXPORT_PENDING_HISTORY_EVERY},
     },
 }
 
@@ -114,6 +126,49 @@ def migrate_data_stores_task() -> None:
     from aios.datastores import provision
 
     provision.migrate_all()
+
+
+@celery_app.task(name="aios.set_up_history_export")
+def set_up_history_export_task(data_store_id: str) -> None:
+    """Give the store its `history` tables, now its owner has switched the run history export
+    on, then queue the export of what's waiting (`aios.datastores.history`). Safe to run again.
+
+    A store that isn't ready yet gets them as it's provisioned, and its runs are exported by
+    the periodic sweep (`export_pending_history_task`) once it is; one whose migration fails is
+    tried again by `retry_unfinished_data_stores_task`."""
+    from aios.datastores import history, provision
+
+    store_id = uuid.UUID(data_store_id)
+    try:
+        provision.migrate_store(store_id)
+    except LookupError:
+        return
+    history.enqueue_export(store_id)
+
+
+@celery_app.task(name="aios.export_history", bind=True, max_retries=None)
+def export_history_task(self, data_store_id: str) -> None:
+    """Drain the store's run history outbox into its `history` tables
+    (`aios.datastores.history`). Safe to run again, or at once with another for the store."""
+    from aios.datastores import history
+
+    try:
+        history.export(uuid.UUID(data_store_id))
+    except (DataStoreNotFound, DataStoreNotReady):
+        # Deleted, or being deleted, since: its outbox goes with it.
+        return
+    except DataStoreBusy as exc:
+        # Its rows are still pending; this delivery's retry picks them up.
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
+
+
+@celery_app.task(name="aios.export_pending_history")
+def export_pending_history_task() -> None:
+    """Queue the export of every exporting store with runs still waiting."""
+    from aios.datastores import history
+
+    for store_id in history.stores_to_export():
+        history.enqueue_export(store_id)
 
 
 @celery_app.task(

@@ -103,6 +103,15 @@ export class FakeApi {
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
   /** How long GET /api/data-store takes to answer (ms). */
   dataStoreDelay = 0;
+  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
+   * a test says so, as the provisioning worker would. */
+  settings = {
+    export_run_history: false,
+    history_ready: false,
+    history_exported_at: null as string | null,
+  };
+  /** Times "delete exported history" was asked for. */
+  exportedHistoryDeletes = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
@@ -447,6 +456,14 @@ export class FakeApi {
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       return reply(200, { status: this.dataStoreStatus });
+    }
+    if (path === "/api/settings") {
+      if (method === "PUT") this.settings.export_run_history = Boolean(body?.export_run_history);
+      return reply(200, this.settings);
+    }
+    if (path === "/api/settings/exported-history" && method === "DELETE") {
+      this.exportedHistoryDeletes++;
+      return reply(204);
     }
     if (path === "/api/documents" || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {

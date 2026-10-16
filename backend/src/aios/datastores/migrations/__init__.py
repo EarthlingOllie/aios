@@ -1,10 +1,17 @@
-"""The data store Alembic tree: the platform-managed schemas in every store (`aios`, later
-`history`), apart from the platform database's own tree (`backend/alembic`).
+"""The data store Alembic tree: the platform-managed schemas in every store, apart from the
+platform database's own tree (`backend/alembic`).
 
-Its version table is `aios.alembic_version`, in each store. `data`, the owner's own tables,
-is never touched by it. `aios.datastores.provision` runs it, as the store's owner role; there's
-no alembic.ini for it. To add a revision, copy the latest file in versions/ and set its
-`down_revision` to that file's `revision`.
+It has two lines, each with its own head:
+
+- `aios` (revisions `0001`, `0002`, ...), which every store is at the head of.
+- `history` (the branch labelled `history`, revisions `h0001`, ...): the run history export's
+  tables, which a store gets only once its owner switches the export on, and is then kept at
+  the head of too (`aios.datastores.history`).
+
+Its version table is `aios.alembic_version`, in each store: a row per line the store has.
+`data`, the owner's own tables, is never touched by it. `aios.datastores.provision` runs it, as
+the store's owner role; there's no alembic.ini for it. To add a revision, copy the latest file
+of its line in versions/ and set its `down_revision` to that file's `revision`.
 
 Stores are upgraded one at a time while the new release is already running, so every revision
 must work with the code before it (expand now, contract in a later release).
@@ -47,13 +54,35 @@ def context_options() -> dict:
     }
 
 
+# The branch label of the run history export's line.
+HISTORY = "history"
+
+
+def _line(history: bool) -> list[str]:
+    """The revisions of the `aios` line, or of the `history` line, head first."""
+    script = ScriptDirectory.from_config(config())
+    return [s.revision for s in script.walk_revisions() if (HISTORY in s.branch_labels) == history]
+
+
 def head_revision() -> str:
-    """The tree's head: the revision every ready store is brought to."""
-    return ScriptDirectory.from_config(config()).get_current_head()
+    """The `aios` line's head: the revision every ready store is brought to."""
+    return _line(history=False)[0]
 
 
 def revisions_before_head() -> list[str]:
-    """The tree's revisions before its head: a store at one of them is behind."""
-    script = ScriptDirectory.from_config(config())
-    head = script.get_current_head()
-    return [s.revision for s in script.walk_revisions() if s.revision != head]
+    """The `aios` line's revisions before its head: a store at one of them is behind."""
+    return _line(history=False)[1:]
+
+
+def history_head() -> str:
+    """The `history` line's head: the revision a store with run history is brought to."""
+    return _line(history=True)[0]
+
+
+def history_revisions_before_head() -> list[str]:
+    """The `history` line's revisions before its head."""
+    return _line(history=True)[1:]
+
+
+def is_history_revision(revision: str) -> bool:
+    return revision in _line(history=True)

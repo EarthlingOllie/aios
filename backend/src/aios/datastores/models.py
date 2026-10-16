@@ -1,5 +1,6 @@
-"""The tables every data store has, in its `aios` schema (the store tree, `migrations/`, makes
-them). Sessions on them come from `store_session`, on the store's own database: they're never
+"""The tables every data store has, in its `aios` schema, and the run history export's, in its
+`history` schema once its owner first switches the export on (the store tree, `migrations/`,
+makes them). Sessions on them come from `store_session`, on the store's own database: they're never
 in the platform database (`aios.models`), and a store's rows are all its own, so nothing here
 says whose they are.
 """
@@ -11,6 +12,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Computed,
     DateTime,
     Enum,
@@ -20,6 +22,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Text,
     func,
@@ -30,6 +33,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 EMBEDDING_DIM = 1024
 
 SCHEMA = "aios"
+# The run history export's tables (`aios.datastores.history`).
+HISTORY_SCHEMA = "history"
 
 
 class StoreBase(DeclarativeBase):
@@ -108,4 +113,72 @@ class Chunk(StoreBase):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
+    )
+
+
+# The run history export: a copy of the owner's agent runs, keyed by the platform's ids. The
+# platform database stays the source of truth; these are only ever written by the export.
+
+
+class HistoryAgentRun(StoreBase):
+    __tablename__ = "agent_runs"
+    __table_args__ = {
+        "schema": HISTORY_SCHEMA,
+        "comment": "A copy of an agent run (one conversation with an agent), from the platform.",
+    }
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
+    )
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    agent_name: Mapped[str] = mapped_column(Text)
+    agent_version: Mapped[int] = mapped_column(Integer, comment="The agent version it ran.")
+    model: Mapped[str | None] = mapped_column(
+        Text, comment="The version's model; null means the deployment's default."
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    trigger_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The schedule that started it, if one did."
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The workflow run whose agent node it was, if any."
+    )
+    message_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), comment="When its last turn ended."
+    )
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HistoryMessage(StoreBase):
+    __tablename__ = "messages"
+
+    agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{HISTORY_SCHEMA}.agent_runs.id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(Integer, comment="Its place in the run, from 0.")
+    message_id: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(Text, comment="user, assistant, tool or system.")
+    text: Mapped[str] = mapped_column(Text, comment="Its text, without tool calls.")
+    tool_calls: Mapped[list | None] = mapped_column(
+        JSONB, comment="An assistant message's tool calls: [{id, name, args}]."
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(
+        Text, comment="A tool message's call, in its run's tool_calls."
+    )
+    tool_name: Mapped[str | None] = mapped_column(Text)
+    is_error: Mapped[bool | None] = mapped_column(Boolean, comment="A tool message that failed.")
+    usage: Mapped[dict | None] = mapped_column(
+        JSONB, comment="An assistant message's token usage: {input_tokens, output_tokens, ...}."
+    )
+    model: Mapped[str | None] = mapped_column(Text, comment="The model that wrote it.")
+
+    __table_args__ = (
+        PrimaryKeyConstraint("agent_run_id", "position"),
+        {
+            "schema": HISTORY_SCHEMA,
+            "comment": "The messages of the agent runs in history.agent_runs, in order.",
+        },
     )
