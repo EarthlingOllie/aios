@@ -70,10 +70,13 @@ DESCRIBE_SQL = text(
     SELECT n.nspname AS schema, c.relname AS name,
            obj_description(c.oid, 'pg_class') AS description,
            a.attname AS column, format_type(a.atttypid, a.atttypmod) AS type,
-           NOT a.attnotnull AS nullable, col_description(c.oid, a.attnum) AS column_description
+           NOT a.attnotnull AS nullable, col_description(c.oid, a.attnum) AS column_description,
+           e.source_column AS embedding_of
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    LEFT JOIN aios.embedding_columns e
+      ON n.nspname = 'data' AND e.table_name = c.relname AND e.column_name = a.attname
     WHERE n.nspname IN ('data', 'aios')
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       AND has_table_privilege(c.oid, 'SELECT')
@@ -123,14 +126,16 @@ def _describe(data_store_id: uuid.UUID) -> dict:
                     "columns": [],
                 },
             )
-            table["columns"].append(
-                {
-                    "name": r["column"],
-                    "type": r["type"],
-                    "nullable": r["nullable"],
-                    "description": r["column_description"],
-                }
-            )
+            column = {
+                "name": r["column"],
+                "type": r["type"],
+                "nullable": r["nullable"],
+                "description": r["column_description"],
+            }
+            # Filled by `write_data` from the text column it's of.
+            if r["embedding_of"] is not None:
+                column["embedding_of"] = r["embedding_of"]
+            table["columns"].append(column)
     return {"tables": list(tables.values())}
 
 
@@ -297,7 +302,8 @@ def _describe_description() -> str:
 descriptions.
 
 The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only).
-Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`.
+Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. A column
+with `embedding_of` is the embedding of that text column, which `write_data` fills itself.
 
 {DATA_NOT_INSTRUCTIONS}"""
 
