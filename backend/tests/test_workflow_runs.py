@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from fake_model import model, replies, use_model
+from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
@@ -21,10 +21,11 @@ from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
-from aios.tools import TOOLS
+from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 
 
@@ -350,6 +351,32 @@ def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, que
     }
     assert node["skill_versions"][0]["name"] == "Haiku"
     assert node["tools"][0]["key"] == "web_search"
+
+
+def test_an_agent_nodes_tools_search_the_owners_data_store(api, user, queued, monkeypatch):
+    searched = []
+
+    async def search(**kwargs):
+        searched.append(kwargs["data_store_id"])
+        return []
+
+    async def script(messages, info):
+        if last_tool_results(messages):
+            yield "done"
+        else:
+            yield ToolCall("search_documents", {"query": "fish"})
+
+    monkeypatch.setattr(hybrid_search, "document_search_results", search)
+    librarian = make_agent(api, "Librarian")
+    tools = [{"key": "hybrid_search", "config": {}}]
+    url = f"/api/agents/{librarian['id']}"
+    librarian = api.put(url, json=agent_body(librarian, tools=tools)).json()
+    wf = make_workflow(api, "lookup", [agent_node("l", librarian)])
+    started = start(api, wf)
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+
+    assert searched == [data_store_for(user).id]
 
 
 def test_get_shows_the_pinned_version_and_runs_list_newest_first(api, queued):

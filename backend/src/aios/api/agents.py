@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
+from aios.datastores import data_store_for
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -29,6 +31,7 @@ from aios.models import (
     Skill,
     SkillVersion,
     Trigger,
+    User,
     WorkflowNode,
     agent_version_skills,
 )
@@ -614,6 +617,8 @@ class ChatContext:
     model: str | None
     instructions: str
     metadata: dict[str, Any]
+    # The run's user's data store (`ChatDeps.data_store_id`).
+    data_store_id: uuid.UUID
     # The version's tools, built from their stored settings.
     tools: list[AgentTool] = field(default_factory=list)
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
@@ -643,6 +648,7 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         model=version.model,
         instructions=version.instructions,
         metadata=trace_metadata(run, user_id),
+        data_store_id=data_store_for(db.get_one(User, user_id)).id,
         tools=tools,
         sandbox_domains=sandbox_domains,
     )
@@ -776,7 +782,7 @@ async def turn_stream(
             events = agent.astream(
                 {"messages": [prompt]},
                 config,
-                context=ChatDeps(user_id=user_id, run_id=run_id),
+                context=ChatDeps(user_id=user_id, data_store_id=ctx.data_store_id, run_id=run_id),
                 stream_mode=["messages", "updates"],
                 # Checkpoint each step before the next starts, so the user's message is
                 # saved before the model is called.

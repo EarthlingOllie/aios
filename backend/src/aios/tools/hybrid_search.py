@@ -23,8 +23,8 @@ class HybridSearchConfig(BaseModel):
 
 
 def build(config: HybridSearchConfig) -> list[AgentTool]:
-    # The same retrieval as the documents chat's `search_documents` tool, scoped to the documents
-    # of the user running the agent (the run's context).
+    # The same retrieval as the documents chat's `search_documents` tool, in the data store of
+    # the user running the agent (the run's context).
     @tool(parse_docstring=True)
     async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         """Search the user's uploaded documents with hybrid (semantic + keyword) retrieval.
@@ -36,7 +36,7 @@ def build(config: HybridSearchConfig) -> list[AgentTool]:
             query: A natural-language search query.
         """
         results = await document_search_results(
-            owner_id=runtime.context.user_id, query=query, limit=config.max_results
+            data_store_id=runtime.context.data_store_id, query=query, limit=config.max_results
         )
         # As JSON text: LangChain would pass a list through as content blocks.
         return json.dumps(results)

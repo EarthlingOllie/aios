@@ -24,3 +24,32 @@ def test_callback_rejects_missing_state(client):
 
 def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
+
+
+def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
+    from aios import auth
+    from aios.models import DataStore, User
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    async def authorize_access_token(request):
+        return {"access_token": "t"}
+
+    async def get(path, token):
+        return Response({"id": -42, "login": "new-user", "email": "new@example.com"})
+
+    monkeypatch.setattr(auth.oauth.github, "authorize_access_token", authorize_access_token)
+    monkeypatch.setattr(auth.oauth.github, "get", get)
+    try:
+        resp = client.get("/auth/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 303
+        user = db.query(User).filter_by(github_id=-42).one()
+        assert db.query(DataStore).filter_by(owner_user_id=user.id).count() == 1
+    finally:
+        db.query(User).filter_by(github_id=-42).delete()
+        db.commit()

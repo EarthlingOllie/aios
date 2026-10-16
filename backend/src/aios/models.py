@@ -1,4 +1,5 @@
 import enum
+import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
@@ -40,6 +41,25 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataStore(Base):
+    """Where a user's data lives: their documents and chunks. Only `aios.datastores` turns a user
+    into a store, and everything below it takes the store's id, so a store can later belong to a
+    team rather than a user.
+
+    For now every store is in the platform database (see `aios.datastores.store_session`)."""
+
+    __tablename__ = "data_stores"
+
+    # Its own id, not the user's: anything named after a store (its database, roles, S3 prefix)
+    # is named after this.
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
+    # Unique while each user has one store. Teams will add `owner_team_id`.
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
