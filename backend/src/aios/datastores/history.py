@@ -18,6 +18,7 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   periodic sweep (`stores_to_export`) queues stores whose rows are still pending, should a
   queued export be lost.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it.
+  Runs deleted meanwhile still go in the outbox, so their copies go once it's back on.
 """
 
 import logging
@@ -28,7 +29,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from sqlalchemy import ColumnElement, delete, event, func, literal, select, update
+from sqlalchemy import ColumnElement, delete, event, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -92,12 +93,17 @@ def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_TO_EXPORT, None)
 
 
-def enqueue_runs(db: Session, *where: ColumnElement[bool]) -> None:
+def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:
     """Put the agent runs matching `where` in their stores' outbox, if their owner has the
     export on; in `db`'s transaction, which the caller commits (the stores' exports are queued
     then). A run already there is pending again.
 
-    For a run being deleted, call it before deleting the run: it's found through its row."""
+    For runs being deleted, call it before deleting them, with `deleting`: they're found
+    through their rows. Their copies are kept while the export is off, so they go in the outbox
+    then too, if the store has its `history` tables, and are deleted once it's back on."""
+    exporting: ColumnElement[bool] = User.export_run_history
+    if deleting:
+        exporting = or_(exporting, DataStore.history_revision.is_not(None))
     runs = (
         select(
             DataStore.id, literal(HistoryExportKind.agent_run, HistoryExport.kind.type), AgentRun.id
@@ -105,7 +111,7 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool]) -> None:
         .join(Agent, Agent.id == AgentRun.agent_id)
         .join(User, User.id == Agent.owner_id)
         .join(DataStore, DataStore.owner_user_id == User.id)
-        .where(User.export_run_history, *where)
+        .where(exporting, *where)
     )
     stmt = insert(HistoryExport).from_select(
         [HistoryExport.data_store_id, HistoryExport.kind, HistoryExport.source_id], runs
@@ -120,6 +126,13 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool]) -> None:
             set_={"enqueued_at": func.clock_timestamp(), "exported_at": None, "error": None},
         ).returning(HistoryExport.data_store_id)
     ).all()
+    if stores and deleting:
+        # Only the exporting ones are queued: the others' rows wait for it to be back on.
+        stores = db.scalars(
+            select(DataStore.id)
+            .join(User, User.id == DataStore.owner_user_id)
+            .where(DataStore.id.in_(stores), User.export_run_history)
+        ).all()
     if stores:
         db.info.setdefault(_TO_EXPORT, set()).update(stores)
 

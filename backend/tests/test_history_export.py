@@ -226,6 +226,28 @@ def test_switching_it_off_stops_the_export_and_keeps_what_was_exported(
     assert settings(api)["history_ready"] is True
 
 
+def test_a_run_deleted_while_it_is_off_loses_its_copy_once_it_is_back_on(
+    api, user, store_id, history_tasks
+):
+    agent = make_agent(api, "Bot")
+    runs = [new_run(api, agent) for _ in range(2)]
+    for run in runs:
+        chat(api, agent, run, "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    switch(api, False)
+    assert api.delete(f"/api/agents/{agent['id']}/runs/{runs[0]['id']}").status_code == 204
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(2,)]
+
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+
+    assert stored(store_id, "SELECT id FROM history.agent_runs") == [(runs[1]["id"],)]
+    assert stored(store_id, "SELECT DISTINCT agent_run_id FROM history.messages") == [
+        (runs[1]["id"],)
+    ]
+
+
 def test_delete_exported_history_empties_it(api, user, store_id, history_tasks):
     agent = make_agent(api, "Bot")
     run = new_run(api, agent)
