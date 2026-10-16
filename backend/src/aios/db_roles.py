@@ -200,6 +200,16 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
             "The master user's, the app's and the provisioner's URLs must name three different "
             f"roles, not {names}"
         )
+    # The roles are made on the master user's server, so a URL for another (a stale host in a
+    # .env) would report success and leave the app unable to log in. Compose, CI and Terraform
+    # write the same host and port into all three, so this compares them as written: the same
+    # server under another name (localhost and 127.0.0.1) is refused too.
+    servers = [((u.host or "").lower(), u.port or 5432) for u in (admin, app_u, prov_u)]
+    if len(set(servers)) != 1:
+        raise ValueError(
+            "The master user's, the app's and the provisioner's URLs must be for the same server "
+            f"(host and port), not {[f'{h}:{p}' for h, p in servers]}"
+        )
     for u in (app_u, prov_u):
         if not u.password:
             raise ValueError(f"The URL for role {u.username} has no password")

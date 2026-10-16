@@ -259,6 +259,36 @@ def test_refuses_a_url_without_a_password(cluster):
     _connect(app_url).close()
 
 
+@pytest.mark.parametrize("which", ["app", "provisioner"])
+@pytest.mark.parametrize("part", [{"host": "elsewhere.invalid"}, {"port": 5433}])
+def test_refuses_urls_for_another_server(cluster, which, part):
+    """Else the roles are made on the master user's server, and the app can't log in to its own."""
+    admin_url, app_url, prov_url = cluster
+    moved = lambda url: make_url(url).set(**part).render_as_string(hide_password=False)  # noqa: E731
+    if which == "app":
+        app_url = moved(app_url)
+    else:
+        prov_url = moved(prov_url)
+
+    with pytest.raises(ValueError, match="same server"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, make_url(app_url).username) is None
+
+
+def test_the_same_server_may_be_written_differently(cluster):
+    """Host names compare without case, and no port is Postgres's default one."""
+    admin_url, app_url, prov_url = cluster
+    u = make_url(app_url)
+    if u.port not in (None, 5432):
+        pytest.skip("the master user's URL isn't on the default port")
+    app_url = u.set(host=u.host.upper(), port=None).render_as_string(hide_password=False)
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    _connect(prov_url).close()
+
+
 def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
     """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
     _, app_url, prov_url = cluster
