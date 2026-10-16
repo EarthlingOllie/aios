@@ -270,7 +270,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "t0002"
-down_revision = "0001"
+down_revision = "{base}"
 branch_labels = None
 depends_on = None
 
@@ -289,7 +289,7 @@ def next_revision(tmp_path, monkeypatch) -> Callable[[], str]:
     """Adds `t0002` to the store tree when called; returns its id."""
 
     def add() -> str:
-        (tmp_path / "t0002_marker.py").write_text(NEXT_REVISION)
+        (tmp_path / "t0002_marker.py").write_text(NEXT_REVISION.format(base=head_revision()))
         monkeypatch.setattr(
             migrations, "VERSION_LOCATIONS", [*migrations.VERSION_LOCATIONS, str(tmp_path)]
         )
@@ -305,20 +305,21 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
     for store_id in ids:
         provision.provision(store_id)
     broken, behind, ahead = ids
+    base = head_revision()
     head = next_revision()
     provision.migrate_store(ahead)
     # The broken store is first in line, and can't be migrated: the new revision's table is
     # already there.
     with admin_connect(store_row(db, broken).dbname) as conn:
         conn.execute("CREATE TABLE aios.marker (id int)")
-    assert [store_row(db, s).schema_revision for s in ids] == ["0001", "0001", head]
+    assert [store_row(db, s).schema_revision for s in ids] == [base, base, head]
 
     outcome = provision.migrate_all(ids)
 
     assert {s: outcome[s] for s in (behind, ahead)} == {behind: head, ahead: head}
     assert isinstance(outcome[broken], Exception)
     rows = {s: store_row(db, s) for s in ids}
-    assert [rows[s].schema_revision for s in ids] == ["0001", head, head]
+    assert [rows[s].schema_revision for s in ids] == [base, head, head]
     assert "marker" in rows[broken].error
     assert all(r.status == DataStoreStatus.ready for r in rows.values())
     with store_session(behind, "ro") as store:

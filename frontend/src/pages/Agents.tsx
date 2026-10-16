@@ -663,7 +663,7 @@ export function AgentForm() {
                       <span className="text-muted-foreground block text-xs">{tool.description}</span>
                     </span>
                   </label>
-                  {attached && (
+                  {attached && Object.keys(tool.config_schema.properties ?? {}).length > 0 && (
                     <div className="px-3 pt-1 pb-3 pl-9">
                       <ToolSettingsFields
                         tool={tool}

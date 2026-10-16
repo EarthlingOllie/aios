@@ -272,7 +272,9 @@ Each user has a data store: a Postgres database of their own on the same instanc
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
   the owner creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
-  `aios.alembic_version`) as `_owner`, and marks the store `ready` at its head revision.
+  `aios.alembic_version`) as `_owner`, and marks the store `ready` at its head revision. The
+  tree makes the `aios` schema (the platform's tables) and an empty `data` schema (the owner's
+  tables, which the tree otherwise leaves alone).
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After five failed tries the store is marked `failed`. Until a store is `ready`, uploads, the
@@ -453,6 +455,16 @@ Known limits:
   only) and the libraries pinned in `backend/sandbox/requirements.txt`. `SANDBOX_BACKEND`
   chooses how sandboxes are started; with none set, the tool tells the model it isn't
   available. See `plan/run-python/plan.md`.
+- **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's data
+  store, as its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data`
+  (the owner's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+  descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
+  `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
+  statement is sent with the extended protocol, which takes only one. Rows are streamed and cut
+  off at `QUERY_DATA_MAX_ROWS` rows or `QUERY_DATA_MAX_BYTES` bytes (as JSON), with `truncated`
+  set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
+  model their results are data, not instructions, and that the store is being set up until
+  it's ready.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
