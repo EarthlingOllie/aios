@@ -1,5 +1,5 @@
-"""Document ingestion: Docling conversion -> HybridChunker -> embeddings -> chunks table, in the
-document's data store (on a `store_session` the caller gives it).
+"""Document ingestion: the file from S3 -> Docling conversion -> HybridChunker -> embeddings ->
+chunks table, in the document's data store (on a `store_session` the caller gives it).
 
 Docling is only installed in the worker image (the `ingest` extra), so it's imported lazily.
 """
@@ -12,7 +12,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.datastores import DataStoreBusy
+from aios.datastores import DataStoreBusy, files
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.embeddings import embed_documents
 
@@ -66,8 +66,9 @@ def set_status(db: Session, document_id: int, status: DocumentStatus, error: str
 
 def ingest_document(db: Session, document_id: int) -> None:
     # Atomically claim the row and count this delivery. Finished docs (e.g. a duplicate
-    # delivery) are skipped. The bytes come back with the claim, and the commit ends the
-    # transaction so none sits idle through the (possibly minutes-long) conversion.
+    # delivery) are skipped. Its file's key comes back with the claim, and the commit ends the
+    # transaction so none sits idle through the download and the (possibly minutes-long)
+    # conversion.
     claimed = db.execute(
         update(Document)
         .where(
@@ -75,7 +76,7 @@ def ingest_document(db: Session, document_id: int) -> None:
             Document.status.in_([DocumentStatus.pending, DocumentStatus.processing]),
         )
         .values(status=DocumentStatus.processing, error=None, attempts=Document.attempts + 1)
-        .returning(Document.attempts, Document.filename, Document.data)
+        .returning(Document.attempts, Document.filename, Document.s3_key)
     ).one_or_none()
     db.commit()
     if claimed is None:
@@ -92,7 +93,7 @@ def ingest_document(db: Session, document_id: int) -> None:
         return
 
     try:
-        pieces = chunk_document(claimed.filename, claimed.data)
+        pieces = chunk_document(claimed.filename, files.read(claimed.s3_key))
         vectors = asyncio.run(embed_documents([p["contextualized"] for p in pieces]))
         db.execute(delete(Chunk).where(Chunk.document_id == document_id))
         db.add_all(

@@ -66,7 +66,7 @@ def test_the_list_gives_each_documents_size(api, queued):
 
 
 def test_upload_enqueue_failure_returns_503_and_leaves_no_row_or_object(
-    client, db, user, monkeypatch
+    client, db, user, files_bucket, monkeypatch
 ):
     def broker_down(*args, **kwargs):
         raise ConnectionError("broker unreachable")
@@ -189,7 +189,7 @@ def test_a_delete_that_s3_refuses_keeps_the_document(api, user, queued, monkeypa
 
 
 def test_download_redirects_to_a_short_lived_link_to_the_original_file(api, queued):
-    name = "Résumé \"final\" 2026.pdf"
+    name = "Résumé (final), 2026.pdf"
     doc = upload(api, name).json()
 
     r = api.get(f"/api/documents/{doc['id']}/download", follow_redirects=False)
@@ -203,9 +203,9 @@ def test_download_redirects_to_a_short_lived_link_to_the_original_file(api, queu
     assert got.content == PDF
     disposition = got.headers["Content-Disposition"]
     assert disposition.startswith("attachment;")
-    assert "filename*=UTF-8''R%C3%A9sum%C3%A9%20%22final%22%202026.pdf" in disposition
+    assert "filename*=UTF-8''R%C3%A9sum%C3%A9%20%28final%29%2C%202026.pdf" in disposition
     # Browsers without filename* support get an ASCII stand-in.
-    assert 'filename="R_sum_ _final_ 2026.pdf"' in disposition
+    assert 'filename="R_sum_ (final), 2026.pdf"' in disposition
 
 
 def test_the_download_link_is_refused_once_it_expires(api, queued, monkeypatch):
@@ -259,7 +259,7 @@ def test_a_missing_document_is_a_404(api):
 
 
 def test_the_ascii_filename_stands_in_for_any_name():
-    assert files.attachment("a\\b\r\n.pdf") == (
-        "attachment; filename=\"a_b__.pdf\"; filename*=UTF-8''a%5Cb%0D%0A.pdf"
+    assert files.attachment('a"b\\c\r\n.pdf') == (
+        "attachment; filename=\"a_b_c__.pdf\"; filename*=UTF-8''a%22b%5Cc%0D%0A.pdf"
     )
     assert files.attachment("") == "attachment; filename=\"download\"; filename*=UTF-8''download"

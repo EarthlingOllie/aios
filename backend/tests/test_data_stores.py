@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from celery.exceptions import Retry
-from conftest import delete_user, provisioned_user
+from conftest import add_document, delete_user, provisioned_user
 from fake_model import ToolCall, last_tool_results, model, use_model
 from psycopg import sql
 from sqlalchemy import event, select, text, update
@@ -159,7 +159,7 @@ def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
 
 
 @pytest.fixture
-def offline_ingest(monkeypatch):
+def offline_ingest(monkeypatch, files_bucket):
     def chunk_document(filename, data):
         return [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
 
@@ -168,15 +168,6 @@ def offline_ingest(monkeypatch):
 
     monkeypatch.setattr(ingest, "chunk_document", chunk_document)
     monkeypatch.setattr(ingest, "embed_documents", embed_documents)
-
-
-def add_document(store_id: uuid.UUID, **values) -> int:
-    """A document in the store; returns its id."""
-    with store_session(store_id, "rw") as store:
-        doc = Document(**{"filename": "a.md", "data": b"# Hi", **values})
-        store.add(doc)
-        store.commit()
-        return doc.id
 
 
 def stored_document(store_id: uuid.UUID, document_id: int) -> Document | None:
