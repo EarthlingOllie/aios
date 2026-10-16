@@ -17,14 +17,14 @@ import psycopg
 import pytest
 from anyio import to_thread
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
 from test_agents import agent_body, chat_body, make_agent
 from test_provisioning import login_url, new_user, store_row  # noqa: F401  (new_user: fixture)
 
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for, provision
+from aios.datastores import data_store_for, provision, store_session
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
@@ -534,6 +534,28 @@ def test_the_tools_keep_working_call_after_call(api, store, data_agent):
     outputs = run_tools(api, data_agent, *calls)
 
     assert [o.get("error") for o in outputs] == [None] * len(calls)
+
+
+def test_read_only_connections_prepare_nothing_whether_or_not_they_ran_a_query(
+    api, store, data_agent
+):
+    """`query_data` has psycopg prepare nothing on its connection (its reset would drop them),
+    so no other user of the read-only engine does either, whatever the pooled connection last
+    served."""
+
+    def prepared_by_a_busy_session() -> tuple[int, list]:
+        with store_session(store.id, "ro") as session:
+            for _ in range(8):  # past psycopg's default threshold (5)
+                session.execute(text("SELECT count(*) FROM data.fish"))
+            pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            return pid, session.execute(text("SELECT name FROM pg_prepared_statements")).all()
+
+    pid, before = prepared_by_a_busy_session()
+    assert "error" not in query(api, data_agent, "SELECT 1")
+    same_pid, after = prepared_by_a_busy_session()
+
+    assert same_pid == pid  # the same pooled connection, before and after the query
+    assert before == after == []
 
 
 def test_a_query_cant_hold_a_lock_past_its_call(api, store, data_agent):

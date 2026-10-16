@@ -82,7 +82,12 @@ def _engine(store: DataStore, role: Role) -> Engine:
             port=store.port,
             database=store.dbname,
         )
-        engine = create_engine(url, pool_size=1, max_overflow=2, pool_pre_ping=True)
+        # `query_data` resets read-only connections with `DISCARD ALL`, which drops prepared
+        # statements, so psycopg mustn't make any on them (it prepares those it runs often).
+        connect_args = {"prepare_threshold": None} if role == "ro" else {}
+        engine = create_engine(
+            url, pool_size=1, max_overflow=2, pool_pre_ping=True, connect_args=connect_args
+        )
         _engines[key] = engine
         while len(_engines) > MAX_ENGINES:
             _, evicted = _engines.popitem(last=False)

@@ -240,11 +240,9 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
     with store_session(data_store_id, "ro") as session:
         # Autocommit at the driver, so the transaction below is the only one, and is ours.
         conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+        # Read-only connections never prepare statements, which `DISCARD ALL` below would drop
+        # (see `datastores.connections`).
         pg: psycopg.Connection = conn.connection.driver_connection
-        # `DISCARD ALL` below drops the session's prepared statements, so psycopg mustn't use
-        # any on this connection (it prepares those it runs often), now or once it's back in
-        # the pool.
-        pg.prepare_threshold = None
         try:
             pg.execute("BEGIN READ ONLY")
             return _read(pg, sql)
