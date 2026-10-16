@@ -167,6 +167,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
+                    models.py (the tables every store has: documents, chunks),
                     provision.py (creating and migrating each store's database), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
@@ -292,9 +293,16 @@ keeps its revision, gets the error on its row, and is reported; the rest carry o
 command exits non-zero. Store migrations run while the previous release is still serving, so
 each must work with the code before it (expand now, contract in a later release).
 
-Documents and chunks are still in the platform database: `documents_session` opens a platform
-session for them, until they move into the stores. `store_session(id, role)` already opens a
-session on the store's own database, as `_rw` or `_ro`.
+Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
+by the store tree); the platform database has none. `store_session(id, role)` opens a session
+on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
+and the document search tools') as `_ro`. Searches have no owner filter: a store holds only its
+owner's documents, and its roles can't connect to any other database.
+
+Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 20), and each process
+pools up to 3 per store and role, so the limit must be at least 3 x the processes that use
+store roles (about 6 on AWS: see `config.py`). A connection past the limit is refused: the API
+answers 503 to try again, the ingest task retries, and the search tools tell the model.
 
 ### Dependency policy
 
@@ -310,9 +318,10 @@ session on the store's own database, as `_rw` or `_ro`.
 their `langchain-*` package). The tools and the UI stream adapter expect Anthropic's content
 format, and web search is Anthropic's server-side tool, whose version is picked from the model
 name (`llm.web_search_type`). `EMBEDDING_MODEL` is `voyageai:<model>`. The vector column is
-`vector(1024)` (`EMBEDDING_DIM` in `models.py`), and embeddings are requested at that size, so
-`EMBEDDING_MODEL` must support 1024-dimension output. To use a different size, change
-`EMBEDDING_DIM`, add a migration that changes the column size, then re-ingest documents.
+`vector(1024)` (`EMBEDDING_DIM` in `datastores/models.py`), and embeddings are requested at
+that size, so `EMBEDDING_MODEL` must support 1024-dimension output. To use a different size,
+change `EMBEDDING_DIM`, add a store tree migration that changes the column size, then re-ingest
+documents.
 
 ## Deploy to AWS
 
@@ -394,15 +403,14 @@ Known limits:
 
 ## Notes and trade-offs
 
-- **Uploads are stored in Postgres** (`documents.data`), so the API and worker don't need a
-  shared bucket. Move them to S3 if files get large.
+- **Uploads are stored in Postgres** (`documents.data`, in the user's data store), so the API
+  and worker don't need a shared bucket. Move them to S3 if files get large.
 - **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
   user, with an id of its own, created when they sign in. Document upload, listing, deletion,
   search, ingest and the document search tools open their sessions with
   `store_session(data_store_id, role)`; the run context (`ChatDeps`) and the ingest task carry
-  the `data_store_id`, not the user. For now every store is in the platform database and its
-  rows are told apart by `owner_id`; giving each store a database of its own changes only
-  what's behind the seam.
+  the `data_store_id`, not the user. Each store is a database of its own, so isolating users'
+  documents is the database's job, not a filter in every query.
 - **Torch**: Docling needs `torch`, whose PyPI wheels pull in several GB of CUDA runtime.
   `pyproject.toml` locks torch/torchvision to PyTorch's CPU-only index instead, so installs
   (the worker image and a local `uv sync --extra ingest`) need access to `download.pytorch.org`
@@ -457,14 +465,15 @@ Known limits:
   available. See `plan/run-python/plan.md`.
 - **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's data
   store, as its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data`
-  (the owner's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+  (the owner's) and the platform's `aios` tables (the store's documents and chunks, and its
+  schema history), with their columns, types and `COMMENT ON`
   descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
   `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
   statement is sent with the extended protocol, which takes only one. Rows are streamed and cut
   off at `QUERY_DATA_MAX_ROWS` rows or `QUERY_DATA_MAX_BYTES` bytes (as JSON), with `truncated`
   set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
-  model their results are data, not instructions, and that the store is being set up until
-  it's ready.
+  model their results are data, not instructions, why the store can't be read while it isn't
+  ready, and to try again while it has no connections free.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and

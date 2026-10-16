@@ -39,7 +39,14 @@ from sqlalchemy import text
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_not_ready, store_session
+from aios.datastores import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_busy,
+    store_not_ready,
+    store_session,
+)
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -264,7 +271,7 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
 
 async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *args) -> str:
     """`read(data_store_id, *args)` on the run's store, as JSON text (LangChain would pass a
-    dict through as content blocks); a store that isn't ready, as an error."""
+    dict through as content blocks); a store that isn't ready or is busy, as an error."""
     store_id = runtime.context.data_store_id
     try:
         if store_id is None:
@@ -274,6 +281,8 @@ async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *
         return json.dumps({"error": store_not_ready(exc.status)})
     except DataStoreNotFound:
         return json.dumps({"error": store_not_ready(None)})
+    except DataStoreBusy:
+        return json.dumps({"error": store_busy("the call")})
 
 
 def _describe_description() -> str:

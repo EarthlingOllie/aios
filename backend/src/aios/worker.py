@@ -5,15 +5,12 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
-from aios.datastores import DataStoreNotFound, DataStoreNotReady, documents_session
-from aios.datastores.resolve import data_store_of_document
-from aios.db import SessionLocal
-from aios.models import DocumentStatus
+from aios.datastores import DataStoreBusy, DataStoreNotFound, DataStoreNotReady, store_session
 
 settings = get_settings()
 
-# Fire-and-forget tasks: no result backend; progress lives on the documents and workflow_runs
-# tables.
+# Fire-and-forget tasks: no result backend; progress lives on the documents (in data stores) and
+# workflow_runs tables.
 celery_app = Celery("aios", broker=settings.redis_url)
 celery_app.conf.update(
     task_acks_late=True,
@@ -55,43 +52,30 @@ celery_app.conf.beat_schedule = {
 }
 
 
-@celery_app.task(name="aios.ingest_document", bind=True, max_retries=60)
-def ingest_document_task(self, data_store_id: str | int, document_id: int | None = None) -> None:
-    """Ingest a document of the data store's (its id as a string: tasks' arguments are JSON)."""
+# A busy store (its role at its connection limit) is tried again this often (seconds), for as long
+# as it stays busy: giving up would leave the document pending with nothing left to ingest it, and
+# marking it failed needs the connection the store hasn't got free.
+BUSY_RETRY_COUNTDOWN = 30
+
+
+@celery_app.task(name="aios.ingest_document", bind=True, max_retries=None)
+def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
+    """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
 
-    if document_id is None:
-        # Queued by the release before data stores, with only the document's id. Only needed
-        # until that release's messages have drained (see `data_store_of_document`).
-        document_id = int(data_store_id)
-        store_id = data_store_of_document(document_id)
-        if store_id is None:
-            return
-        data_store_id = str(store_id)
     try:
-        with documents_session(uuid.UUID(data_store_id), "rw") as db:
+        with store_session(uuid.UUID(data_store_id), "rw") as db:
             ingest_document(db, document_id)
-    except DataStoreNotFound:
-        # Deleted since the upload (with its owner), and its documents with it: as for a
-        # document deleted before its ingest, there's nothing left to do.
+    except (DataStoreNotFound, DataStoreNotReady):
+        # Deleted since the upload (with its owner), or being deleted: a store is ready by the
+        # time anything is uploaded to it, and stops being ready only when it's deleted. Its
+        # documents go with it, so, as for a document deleted before its ingest, there's
+        # nothing left to do.
         return
-    except DataStoreNotReady as exc:
-        # Uploaded before the store was being provisioned (uploads wait for it now).
-        if self.request.retries >= self.max_retries:
-            # Nothing queues it again once the store is ready: fail it, rather than leave it
-            # pending for good.
-            from aios.ingest import set_status
-
-            with SessionLocal() as db:
-                set_status(
-                    db,
-                    document_id,
-                    DocumentStatus.failed,
-                    "Your data store wasn't ready in time to process this document; "
-                    "please upload it again.",
-                )
-            raise
-        raise self.retry(countdown=60) from exc
+    except DataStoreBusy as exc:
+        # Its role's connections are all in use; the document is still pending (or, claimed,
+        # processing), and the next delivery picks it up.
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
 
 
 # Provisioning gives up after this many tries (a minute apart, then longer), and marks the store
@@ -117,7 +101,8 @@ def provision_data_store_task(self, data_store_id: str) -> None:
 
 @celery_app.task(name="aios.retry_unfinished_data_stores")
 def retry_unfinished_data_stores_task() -> None:
-    """Try once more to provision stores that never got there (`aios.datastores.provision`)."""
+    """Try once more to provision stores that never got there, and bring ready stores behind
+    the store tree's head to it (`aios.datastores.provision`)."""
     from aios.datastores import provision
 
     provision.retry_unfinished()

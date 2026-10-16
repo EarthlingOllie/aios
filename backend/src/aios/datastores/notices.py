@@ -1,4 +1,4 @@
-"""What agents' tools tell the model about a data store they can't use yet."""
+"""What agents' tools tell the model about a data store they can't use (yet, or just now)."""
 
 from aios.models import DataStoreStatus
 
@@ -14,3 +14,9 @@ def store_not_ready(status: DataStoreStatus | None) -> str:
             " the user can check back later."
         )
     return "The user's data store isn't available."
+
+
+def store_busy(retry: str) -> str:
+    """What to tell the model when the store has no connections free (`DataStoreBusy`): worth
+    trying `retry` (e.g. "the search") again shortly."""
+    return f"The user's data store is busy. Try {retry} again in a moment."

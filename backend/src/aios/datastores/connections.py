@@ -3,12 +3,12 @@
 `store_session(data_store_id, role)` opens a session on the store's own database, as its
 read-write (`rw`) or read-only (`ro`) role, once the store is ready. Engines are cached per
 (store, role), each with a small pool, and the least recently used are disposed of beyond
-`MAX_ENGINES`.
+`MAX_ENGINES`. `store_engine` is the lookup on its own, for a caller that wants to know the
+store is ready before doing something costly (search, before it pays to embed the query).
 
-Until documents and chunks move into the stores' databases, they're still in the platform
-database, told apart there by the user who owns them: `documents_session` opens a platform
-session for them (also only once the store is ready, as they'll need it), and `store_owner`
-says whose rows are the store's. Both go once documents move.
+Each login role may hold only so many connections (`data_store_connection_limit`). Past it, or
+when this process's pool on the store stays full for `POOL_TIMEOUT` seconds, opening a
+connection raises `DataStoreBusy`, which callers can retry.
 """
 
 import threading
@@ -18,9 +18,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Literal, get_args
 
-from sqlalchemy import Engine, create_engine, select
-from sqlalchemy.engine import URL
+from sqlalchemy import Engine, create_engine, event, select
+from sqlalchemy.engine import URL, ExceptionContext
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import PoolProxiedConnection, QueuePool
 
 from aios.datastores import credentials
 from aios.db import SessionLocal
@@ -32,7 +34,8 @@ Role = Literal["rw", "ro"]
 # Engines kept open at once (each up to 3 connections); past it the least recently used goes.
 MAX_ENGINES = 64
 
-_OWNER = "data_store_owner_id"
+# Seconds to wait for one of those connections when all are in use.
+POOL_TIMEOUT = 30
 
 
 class DataStoreNotFound(LookupError):
@@ -46,6 +49,15 @@ class DataStoreNotReady(RuntimeError):
         super().__init__(f"Data store {data_store_id} is {status.value}")
         self.data_store_id = data_store_id
         self.status = status
+
+
+class DataStoreBusy(RuntimeError):
+    """The store's role already holds all the connections it may (its `CONNECTION LIMIT`), or
+    this process's pool on it does: worth trying again shortly."""
+
+    def __init__(self, data_store_id: uuid.UUID):
+        super().__init__(f"Data store {data_store_id} has no connections free")
+        self.data_store_id = data_store_id
 
 
 def _check_role(role: str) -> None:
@@ -66,6 +78,30 @@ _engines: OrderedDict[tuple[uuid.UUID, str], Engine] = OrderedDict()
 _engines_lock = threading.Lock()
 
 
+def _busy(data_store_id: uuid.UUID):
+    def handle_error(context: ExceptionContext) -> BaseException | None:
+        # Postgres refuses the connection: 'too many connections for role "ds_..._rw"'. By the
+        # text: psycopg gives a FATAL at connect time no SQLSTATE to check.
+        if "too many connections for role" in str(context.original_exception):
+            return DataStoreBusy(data_store_id)
+        return None
+
+    return handle_error
+
+
+def _pool_class(data_store_id: uuid.UUID) -> type[QueuePool]:
+    # A pool that stays full raises `PoolTimeout`, which isn't a database error, so `_busy`
+    # never sees it.
+    class StorePool(QueuePool):
+        def connect(self) -> PoolProxiedConnection:
+            try:
+                return super().connect()
+            except PoolTimeout as exc:
+                raise DataStoreBusy(data_store_id) from exc
+
+    return StorePool
+
+
 def _engine(store: DataStore, role: Role) -> Engine:
     key = (store.id, role)
     with _engines_lock:
@@ -82,12 +118,21 @@ def _engine(store: DataStore, role: Role) -> Engine:
             port=store.port,
             database=store.dbname,
         )
+        # Up to 3 connections per (store, role) in each process: the roles' connection limit is
+        # budgeted from it (`data_store_connection_limit`).
         # `query_data` resets read-only connections with `DISCARD ALL`, which drops prepared
         # statements, so psycopg mustn't make any on them (it prepares those it runs often).
         connect_args = {"prepare_threshold": None} if role == "ro" else {}
         engine = create_engine(
-            url, pool_size=1, max_overflow=2, pool_pre_ping=True, connect_args=connect_args
+            url,
+            poolclass=_pool_class(store.id),
+            pool_size=1,
+            max_overflow=2,
+            pool_timeout=POOL_TIMEOUT,
+            pool_pre_ping=True,
+            connect_args=connect_args,
         )
+        event.listen(engine, "handle_error", _busy(store.id))
         _engines[key] = engine
         while len(_engines) > MAX_ENGINES:
             _, evicted = _engines.popitem(last=False)
@@ -103,40 +148,25 @@ def dispose_engines() -> None:
             engine.dispose()
 
 
-@contextmanager
-def store_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
-    """A session on the data store's database, as its `role`, closed on exit.
+def store_engine(data_store_id: uuid.UUID, role: Role = "rw") -> Engine:
+    """The engine on the data store's database, as its `role`.
 
     Raises `DataStoreNotFound` if there's no such store, and `DataStoreNotReady` until it's
     ready."""
     _check_role(role)
     with SessionLocal() as db:
         store = _ready_store(db, data_store_id)
-    with Session(_engine(store, role)) as session:
-        yield session
+    return _engine(store, role)
 
 
 @contextmanager
-def documents_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
-    """A platform session for the store's documents and chunks, which are still in the
-    platform database (see the module docstring), closed on exit.
+def store_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
+    """A session on the data store's database, as its `role`, closed on exit.
 
-    Raises as `store_session` does."""
-    _check_role(role)
-    with SessionLocal() as db:
-        owner_id = _ready_store(db, data_store_id).owner_user_id
-        # End the lookup's transaction, so the caller starts from a clean session.
-        db.commit()
-        db.info[_OWNER] = owner_id
-        yield db
-
-
-def store_owner(db: Session) -> int:
-    """The user whose documents in the platform database are the store's (see the module
-    docstring).
-
-    Only for sessions from `documents_session`."""
-    return db.info[_OWNER]
+    Raises as `store_engine` does, and `DataStoreBusy` if the role has no connections free."""
+    # Like the platform's sessions (`aios.db`), rows stay readable after a commit.
+    with Session(store_engine(data_store_id, role), expire_on_commit=False) as session:
+        yield session
 
 
 def store_status(data_store_id: uuid.UUID) -> DataStoreStatus:

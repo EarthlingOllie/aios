@@ -8,7 +8,6 @@ owner role.
 import threading
 import time
 import tracemalloc
-import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -24,8 +23,9 @@ from test_provisioning import login_url, store_row
 
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for, provision, store_session
+from aios.datastores import data_store_for, provision, store_busy, store_engine, store_session
 from aios.datastores.connections import dispose_engines
+from aios.datastores.models import Document, DocumentStatus
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
@@ -44,18 +44,10 @@ def as_owner(store: DataStore) -> Iterator[psycopg.Connection]:
         yield conn
 
 
-def provisioned(db, store_id: uuid.UUID) -> DataStore:
-    """The store, provisioned for real (the `user` fixture's is only marked ready)."""
-    db.get(DataStore, store_id).status = DataStoreStatus.provisioning
-    db.commit()
-    provision.provision(store_id)
-    return store_row(db, store_id)
-
-
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, provisioned, with a hand-made `data.fish` table."""
-    row = provisioned(db, data_store_for(user.id))
+    row = store_row(db, data_store_for(user.id))
     with as_owner(row) as conn:
         conn.execute(
             "CREATE TABLE data.fish (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
@@ -433,7 +425,9 @@ def test_a_query_with_no_rows_still_names_its_columns(api, store, data_agent):
 @pytest.fixture
 def other_store(db, new_user) -> DataStore:
     """Another user's provisioned store, with a `data.secrets` table."""
-    row = provisioned(db, data_store_for(new_user().id))
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    row = store_row(db, store_id)
     with as_owner(row) as conn:
         conn.execute("CREATE TABLE data.secrets (code text)")
         conn.execute("INSERT INTO data.secrets VALUES ('hunter2')")
@@ -445,6 +439,8 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
     described = describe(api, data_agent)
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "fish"),
+        ("aios", "chunks"),
+        ("aios", "documents"),
         ("aios", "schema_history"),
     }
     assert query(api, data_agent, "SELECT current_database()")["rows"] == [[store.dbname]]
@@ -494,6 +490,8 @@ def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent)
 
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "secrets"),
+        ("aios", "chunks"),
+        ("aios", "documents"),
         ("aios", "schema_history"),
     }
     assert result["rows"] == [["hunter2"]]
@@ -603,3 +601,43 @@ def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent
             assert turn.result().status_code == 200
 
     assert waited < 0.25
+
+
+def test_the_documents_are_tables_the_tools_can_read(api, store, data_agent):
+    """The store's uploaded documents (`aios.datastores.models`) sit next to the owner's tables,
+    and the read-only role may read them."""
+    with store_session(store.id, "rw") as session:
+        session.add(Document(filename="notes.md", data=b"# Hi", status=DocumentStatus.ready))
+        session.commit()
+
+    described, queried = run_tools(
+        api,
+        data_agent,
+        ToolCall("describe_data", {}),
+        ToolCall("query_data", {"sql": "SELECT filename, status FROM aios.documents"}),
+    )
+
+    documents = next(
+        t for t in described["tables"] if (t["schema"], t["name"]) == ("aios", "documents")
+    )
+    assert {c["name"] for c in documents["columns"]} >= {"id", "filename", "status"}
+    assert queried["rows"] == [["notes.md", "ready"]]
+
+
+def test_both_tools_tell_the_model_the_store_is_busy(api, store, data_agent):
+    """A store whose read-only role holds every connection it may answers the model, as search
+    does, rather than failing the run."""
+    url = get_settings().data_store_provisioner_url
+    with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
+        provisioner.execute(f'ALTER ROLE "{store.role_prefix}_ro" CONNECTION LIMIT 1')
+    dispose_engines()
+
+    with store_engine(store.id, "ro").connect():
+        described, queried = run_tools(
+            api,
+            data_agent,
+            ToolCall("describe_data", {}),
+            ToolCall("query_data", {"sql": "SELECT 1"}),
+        )
+
+    assert described == queried == {"error": store_busy("the call")}
