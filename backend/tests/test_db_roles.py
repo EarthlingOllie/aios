@@ -359,6 +359,29 @@ def test_less_common_objects_are_handed_over_too(cluster):
             conn.execute(sql.SQL("COMMENT ON {} IS 'migrated'").format(sql.SQL(obj)))
 
 
+def test_partitioned_tables_and_their_partitions_are_handed_over(cluster):
+    """A partitioned table's partitions don't follow it, as its column sequences do."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute(
+            "CREATE TABLE events (id int GENERATED ALWAYS AS IDENTITY, n serial, at date)"
+            " PARTITION BY RANGE (at)"
+        )
+        conn.execute(
+            "CREATE TABLE events_2026 PARTITION OF events"
+            " FOR VALUES FROM ('2026-01-01') TO ('2027-01-01') PARTITION BY LIST (n)"
+        )
+        conn.execute("CREATE TABLE events_2026_rest PARTITION OF events_2026 DEFAULT")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    with _connect(app_url) as conn:
+        for table in ["events", "events_2026", "events_2026_rest"]:
+            conn.execute(sql.SQL("COMMENT ON TABLE {} IS 'migrated'").format(sql.Identifier(table)))
+        for seq in ["events_id_seq", "events_n_seq"]:
+            conn.execute(sql.SQL("ALTER SEQUENCE {} RESTART").format(sql.Identifier(seq)))
+
+
 def test_fails_naming_what_it_cannot_hand_over(cluster):
     """Rather than leave the app's role unable to migrate something, silently."""
     admin_url, app_url, prov_url = cluster

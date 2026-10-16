@@ -74,10 +74,14 @@ SELECT kind, name FROM (
       FROM pg_class c
      WHERE c.relnamespace IN (SELECT nsp FROM own) AND c.relowner = (SELECT oid FROM me)
        AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-       -- A column's sequence (serial or identity) follows its table.
-       AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                        WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-                          AND d.deptype IN ('a', 'i'))
+       -- A column's sequence (serial or identity) follows its table. Only sequences: a
+       -- partition depends on its parent in the same way, and a partitioned table on itself
+       -- (its partition key), but neither follows anything.
+       AND NOT (c.relkind = 'S'
+                AND EXISTS (SELECT 1 FROM pg_depend d
+                             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                               AND d.refclassid = 'pg_class'::regclass
+                               AND d.refobjsubid <> 0 AND d.deptype IN ('a', 'i')))
     UNION ALL
     SELECT CASE t.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END,
            t.oid::regtype::text, 'pg_type'::regclass, t.oid
