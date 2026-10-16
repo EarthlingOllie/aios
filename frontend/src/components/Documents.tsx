@@ -275,7 +275,7 @@ export function Documents() {
       </div>
       <DocumentsNotices storeStatus={storeStatus} documents={documents} />
       <ul className="flex-1 space-y-1 overflow-y-auto">
-        {docs.length === 0 && documents.canUpload && (
+        {docs.length === 0 && documents.canUpload && !documents.listError && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
         )}
         {docs.map((doc) => (

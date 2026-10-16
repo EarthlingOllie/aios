@@ -61,3 +61,19 @@ test("searching before the store is ready says it's being set up", async ({ page
     page.getByText("Your data store is being set up. Try again in a moment."),
   ).toBeVisible();
 });
+
+test("a busy store doesn't tell the chat panel there are no documents", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.dataStoreBusy = true;
+  await page.goto("/");
+
+  await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
+    "Your data store is busy.",
+  );
+  await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+
+  api.dataStoreBusy = false;
+  await expect(page.getByText("report.pdf")).toBeVisible();
+  await expect(page.getByRole("status", { name: "Documents list" })).toBeHidden();
+});
