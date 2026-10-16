@@ -84,6 +84,21 @@ test("a store that couldn't be set up says so", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
 
+test("a store whose status can't be read says so, and recovers when it can", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.dataStoreFails = true;
+  await page.goto("/data");
+
+  await expect(overview(page)).toContainText("Couldn't check your data store");
+  await expect(overview(page)).toContainText("Trying again…");
+  await page.screenshot({ path: "test-results/data-store-status-error.png" });
+
+  // It keeps asking, so the page catches up once the server answers again.
+  api.dataStoreFails = false;
+  await expect(overview(page)).toContainText("Your data store is ready.", { timeout: 10_000 });
+  await expect(overview(page)).not.toContainText("Couldn't check your data store");
+});
+
 test("an empty store invites an upload", async ({ page }) => {
   await fakeApi(page);
   await page.goto("/data?tab=documents");

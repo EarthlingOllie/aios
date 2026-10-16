@@ -24,10 +24,12 @@ const statusVariant = {
 
 /**
  * The user's data store's status, asked again while it isn't ready. Unknown (undefined) until
- * the first answer; a failed request keeps the last one and tries again.
+ * the first answer; a failed request keeps the last one, says what went wrong in `error`, and
+ * tries again.
  */
-export function useDataStoreStatus(): DataStoreStatus | undefined {
+export function useDataStoreStatus(): { status?: DataStoreStatus; error?: string } {
   const [status, setStatus] = useState<DataStoreStatus>();
+  const [error, setError] = useState<string>();
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -37,11 +39,14 @@ export function useDataStoreStatus(): DataStoreStatus | undefined {
         .then(({ status }) => {
           if (stopped) return;
           setStatus(status);
+          setError(undefined);
           const wait = dataStorePollInterval(status);
           if (wait !== null) timer = setTimeout(check, wait);
         })
-        .catch(() => {
-          if (!stopped) timer = setTimeout(check, 5000);
+        .catch((err) => {
+          if (stopped) return;
+          setError(`Couldn't check your data store (${describeError(err)}). Trying again…`);
+          timer = setTimeout(check, 5000);
         });
     check();
     return () => {
@@ -49,7 +54,7 @@ export function useDataStoreStatus(): DataStoreStatus | undefined {
       clearTimeout(timer);
     };
   }, []);
-  return status;
+  return { status, error };
 }
 
 /**
@@ -158,7 +163,12 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
 
 type DocumentsState = ReturnType<typeof useDocuments>;
 
-type SharedDocuments = { storeStatus: DataStoreStatus | undefined; documents: DocumentsState };
+type SharedDocuments = {
+  storeStatus: DataStoreStatus | undefined;
+  /** Why the store's status couldn't be read, while it keeps trying. */
+  storeError: string | undefined;
+  documents: DocumentsState;
+};
 
 const DocumentsContext = createContext<SharedDocuments | null>(null);
 
@@ -168,9 +178,11 @@ const DocumentsContext = createContext<SharedDocuments | null>(null);
  * switch tabs or pages.
  */
 export function DocumentsProvider({ children }: { children: ReactNode }) {
-  const storeStatus = useDataStoreStatus();
+  const { status: storeStatus, error: storeError } = useDataStoreStatus();
   const documents = useDocuments(storeStatus);
-  return <DocumentsContext value={{ storeStatus, documents }}>{children}</DocumentsContext>;
+  return (
+    <DocumentsContext value={{ storeStatus, storeError, documents }}>{children}</DocumentsContext>
+  );
 }
 
 /** The store's status and the documents, from the `DocumentsProvider` above. */

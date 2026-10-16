@@ -20,7 +20,7 @@ const statusVariant = {
  */
 export function DataPage() {
   // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.
-  const { storeStatus } = useSharedDocuments();
+  const { storeStatus, storeError } = useSharedDocuments();
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6 md:px-8">
@@ -33,7 +33,11 @@ export function DataPage() {
         <Tabs
           label="Data sections"
           tabs={[
-            { id: "overview", label: "Overview", content: <Overview status={storeStatus} /> },
+            {
+              id: "overview",
+              label: "Overview",
+              content: <Overview status={storeStatus} error={storeError} />,
+            },
             {
               id: "documents",
               label: "Documents",
@@ -46,7 +50,7 @@ export function DataPage() {
   );
 }
 
-function Overview({ status }: { status: DataStoreStatus | undefined }) {
+function Overview({ status, error }: { status: DataStoreStatus | undefined; error?: string }) {
   const summary = status && dataStoreSummary(status);
   return (
     <section aria-label="Data store" className="flex flex-col gap-2 rounded-md border px-4 py-3">
@@ -62,6 +66,7 @@ function Overview({ status }: { status: DataStoreStatus | undefined }) {
         )}
       </div>
       {summary && <p className="text-muted-foreground text-sm">{summary.message}</p>}
+      {error && <p className="text-destructive text-sm">{error}</p>}
     </section>
   );
 }

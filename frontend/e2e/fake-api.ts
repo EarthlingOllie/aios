@@ -103,6 +103,8 @@ export class FakeApi {
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
   /** How long GET /api/data-store takes to answer (ms). */
   dataStoreDelay = 0;
+  /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
+  dataStoreFails = false;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How long GET /api/documents takes to answer (ms). */
@@ -509,6 +511,7 @@ export class FakeApi {
     }
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
+      if (this.dataStoreFails) return fail(500, "Internal Server Error");
       return reply(200, { status: this.dataStoreStatus });
     }
     if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
