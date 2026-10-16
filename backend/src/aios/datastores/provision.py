@@ -260,8 +260,14 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
             return None
         if store.rw_password is not None and store.ro_password is not None:
             return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
-        # Concurrent runs wait for each other, but the row could be changed by others.
-        store = db.scalar(select(DataStore).where(DataStore.id == store_id).with_for_update())
+        # Concurrent runs wait for each other, but the row could be changed by others. Reloaded
+        # (populate_existing): the session would otherwise keep what it read before the lock.
+        store = db.scalar(
+            select(DataStore)
+            .where(DataStore.id == store_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if store is None:
             return None
         if store.rw_password is None:

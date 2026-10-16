@@ -531,6 +531,34 @@ def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provis
         assert conn.execute("SELECT current_database()").fetchone() == (row.dbname,)
 
 
+def test_passwords_another_run_gave_a_store_meanwhile_are_kept(db, new_user, monkeypatch):
+    """Another run (or a deploy's migrate-all) may give the store its passwords between our
+    first look and taking the row's lock: those win, not new ones."""
+    store_id = data_store_for(new_user().id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
+    )
+    db.commit()
+    theirs = credentials.encrypt("theirs")
+    real_select = provision.select
+
+    def meanwhile(*args):
+        with SessionLocal() as other:
+            other.execute(
+                update(DataStore)
+                .where(DataStore.id == store_id)
+                .values(rw_password=theirs, ro_password=theirs)
+            )
+            other.commit()
+        return real_select(*args)
+
+    monkeypatch.setattr(provision, "select", meanwhile)
+
+    assert provision._passwords(store_id) == ("theirs", "theirs")
+    row = store_row(db, store_id)
+    assert (row.rw_password, row.ro_password) == (theirs, theirs)
+
+
 def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
     db, new_user, caplog, client
 ):
