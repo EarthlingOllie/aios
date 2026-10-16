@@ -24,7 +24,7 @@ test("switching the export on sets the store up, then says when it last ran", as
 
   // The workers set the store up and export: the page keeps asking until they have.
   api.settings.history_ready = true;
-  await expect(status).toHaveText("Waiting for the first export…");
+  await expect(status).toHaveText("Exporting your runs…");
   api.settings.history_exported_at = "2026-10-16T10:00:00Z";
   await expect(status).toContainText("Last exported");
   await expect(remove).toBeEnabled();
@@ -55,6 +55,38 @@ test("switching it off keeps what was exported, which can then be deleted", asyn
   await page.getByRole("button", { name: "Delete exported history" }).click();
   await expect(page.getByText("Exported history deleted.")).toBeVisible();
   expect(api.exportedHistoryDeletes).toBe(1);
+  await expect(page.getByRole("status", { name: "Run history export" })).toHaveText(
+    "Off. Your data store has no exported history.",
+  );
+});
+
+test("deleting exported history while it's on starts the export over", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.settings = {
+    export_run_history: true,
+    history_ready: true,
+    history_exported_at: "2026-10-16T10:00:00Z",
+  };
+  await page.goto("/settings");
+  const status = page.getByRole("status", { name: "Run history export" });
+  await expect(status).toContainText("Last exported");
+
+  let asked = "";
+  page.once("dialog", (dialog) => {
+    asked = dialog.message();
+    return dialog.accept();
+  });
+  await page.getByRole("button", { name: "Delete exported history" }).click();
+  await expect(
+    page.getByText("Exported history deleted. All your runs are exported again."),
+  ).toBeVisible();
+  expect(asked).toContain("switch the export off first");
+  expect(api.exportedHistoryDeletes).toBe(1);
+
+  // No longer "Last exported", until the export has copied the runs again.
+  await expect(status).toHaveText("Exporting your runs…");
+  api.settings.history_exported_at = "2026-10-16T11:00:00Z";
+  await expect(status).toContainText("Last exported");
 });
 
 test("deleting exported history asks first", async ({ page }) => {

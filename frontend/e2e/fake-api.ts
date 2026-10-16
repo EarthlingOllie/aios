@@ -463,6 +463,8 @@ export class FakeApi {
     }
     if (path === "/api/settings/exported-history" && method === "DELETE") {
       this.exportedHistoryDeletes++;
+      // Emptied: nothing exported since (while it's on, the export starts over).
+      this.settings.history_exported_at = null;
       return reply(204);
     }
     if (path === "/api/documents" || path === "/api/search") {

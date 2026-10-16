@@ -22,9 +22,9 @@ describe("historyExportStatus", () => {
     expect(historyExportPending(s)).toBe(true);
   });
 
-  it("waits for the first export, then says when it last ran", () => {
+  it("says it's exporting until it has (first, or after a delete), then when it last ran", () => {
     const waiting = settings({ export_run_history: true, history_ready: true });
-    expect(historyExportStatus(waiting, at)).toBe("Waiting for the first export…");
+    expect(historyExportStatus(waiting, at)).toBe("Exporting your runs…");
     expect(historyExportPending(waiting)).toBe(true);
     const done = { ...waiting, history_exported_at: "2026-10-16T10:00:00Z" };
     expect(historyExportStatus(done, at)).toBe("Last exported <2026-10-16T10:00:00Z>.");
@@ -36,6 +36,12 @@ describe("historyExportStatus", () => {
     expect(historyExportStatus(s, at)).toBe(
       "Off. What was exported is kept. Last exported <2026-10-16T10:00:00Z>.",
     );
+    expect(historyExportPending(s)).toBe(false);
+  });
+
+  it("says the store has no exported history once it's deleted while off", () => {
+    const s = settings({ history_ready: true });
+    expect(historyExportStatus(s, at)).toBe("Off. Your data store has no exported history.");
     expect(historyExportPending(s)).toBe(false);
   });
 });
