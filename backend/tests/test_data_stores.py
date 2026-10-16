@@ -528,6 +528,23 @@ def test_the_ingest_task_tries_a_busy_store_again(busy_store, monkeypatch):
     assert retried == [{"countdown": worker.BUSY_RETRY_COUNTDOWN}]
 
 
+def test_the_ingest_task_never_gives_up_on_a_busy_store(busy_store, monkeypatch):
+    # Giving up would leave the document pending with nothing left to ingest it, and marking it
+    # failed needs the very connection the store hasn't got free.
+    queued = []
+    monkeypatch.setattr(
+        worker.ingest_document_task, "apply_async", lambda *a, **kw: queued.append(kw)
+    )
+    worker.ingest_document_task.push_request(id="busy", retries=1000, called_directly=False)
+    try:
+        with pytest.raises(Retry):
+            worker.ingest_document_task.run(str(busy_store), 1)
+    finally:
+        worker.ingest_document_task.pop_request()
+
+    assert [kw["countdown"] for kw in queued] == [worker.BUSY_RETRY_COUNTDOWN]
+
+
 def test_the_search_tools_tell_the_model_the_store_is_busy(busy_store, monkeypatch):
     async def embed_query(text):
         return [1.0] + [0.0] * 1023

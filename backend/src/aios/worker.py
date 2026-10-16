@@ -52,13 +52,13 @@ celery_app.conf.beat_schedule = {
 }
 
 
-# A busy store (its role at its connection limit) is tried again this often (seconds), this many
-# times.
+# A busy store (its role at its connection limit) is tried again this often (seconds), for as long
+# as it stays busy: giving up would leave the document pending with nothing left to ingest it, and
+# marking it failed needs the connection the store hasn't got free.
 BUSY_RETRY_COUNTDOWN = 30
-BUSY_RETRIES = 20
 
 
-@celery_app.task(name="aios.ingest_document", bind=True, max_retries=BUSY_RETRIES)
+@celery_app.task(name="aios.ingest_document", bind=True, max_retries=None)
 def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
     """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
     from aios.ingest import ingest_document
