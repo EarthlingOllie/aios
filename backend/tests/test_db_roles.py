@@ -3,7 +3,8 @@ provisioner's.
 
 These run the bootstrap against a throwaway database, with role names of their own, so they
 don't touch the real `aios_app` and `aios_provisioner`. They need the master user's DSN
-(DATABASE_ADMIN_URL) and skip without it.
+(DATABASE_ADMIN_URL, from the environment or `.env`, as the command reads it) and skip without
+it.
 """
 
 import asyncio
@@ -21,7 +22,7 @@ from sqlalchemy.engine import make_url
 
 from aios import checkpoints
 from aios.config import get_settings, libpq_conninfo
-from aios.db_roles import ensure_roles
+from aios.db_roles import _BootstrapSettings, ensure_roles
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -32,7 +33,8 @@ def _connect(url: str, **parts) -> psycopg.Connection:
 
 @pytest.fixture
 def admin_url() -> str:
-    url = os.environ.get("DATABASE_ADMIN_URL")
+    # Read as `python -m aios.db_roles` reads it, so a `.env` set up as the README says runs these.
+    url = _BootstrapSettings().database_admin_url
     if not url:
         pytest.skip("DATABASE_ADMIN_URL not set")
     try:
