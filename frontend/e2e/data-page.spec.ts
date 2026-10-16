@@ -205,3 +205,53 @@ test("an upload refused by a busy store says so", async ({ page }) => {
     "notes.md: Your data store is busy. Try again in a moment.",
   );
 });
+
+test("uploads still in flight when you switch tabs keep their progress and errors", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.tooLarge.add("huge.md");
+  api.holdUploads();
+  await page.goto("/data?tab=documents");
+  await expect(page.getByText("No documents yet.")).toBeVisible();
+
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles([file("one.md"), file("huge.md"), file("two.md")]);
+  const upload = page.getByRole("button", { name: "Upload" });
+  await expect(upload.locator(".animate-spin")).toBeVisible();
+
+  // Away and back mid-upload: it's still uploading.
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await expect(overview(page)).toBeVisible();
+  await page.getByRole("tab", { name: "Documents" }).click();
+  await expect(upload.locator(".animate-spin")).toBeVisible();
+
+  // Away again while they finish: back on Documents, the one that failed says why.
+  await page.getByRole("tab", { name: "Overview" }).click();
+  api.releaseUploads();
+  await expect.poll(() => api.writes.filter(([method]) => method === "POST").length).toBe(3);
+  await page.getByRole("tab", { name: "Documents" }).click();
+  await expect(page.getByRole("alert")).toContainText("huge.md: too large");
+  await expect(row(page, "one.md")).toBeVisible();
+  await expect(row(page, "two.md")).toBeVisible();
+  await expect(upload.locator(".animate-spin")).toBeHidden();
+});
+
+test("an upload from the chat that finishes after you open the Data page still appears there", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.holdUploads();
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
+  await page.locator('input[type="file"]').setInputFiles(file("late.md"));
+
+  // Off to the Data page before the upload answers.
+  await page.getByRole("link", { name: "Data" }).first().click();
+  await page.getByRole("tab", { name: "Documents" }).click();
+  await expect(page.getByText("No documents yet.")).toBeVisible();
+
+  api.releaseUploads();
+  await expect(row(page, "late.md")).toBeVisible();
+});

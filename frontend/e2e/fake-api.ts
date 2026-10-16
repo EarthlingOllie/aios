@@ -110,6 +110,10 @@ export class FakeApi {
    * for the test to finish its ingest with `finishIngest`.
    */
   ingestAs: "ready" | "pending" = "ready";
+  /** Uploads of these filenames answer 413, as the proxy does for a file over its size limit. */
+  tooLarge = new Set<string>();
+  /** While set (by `holdUploads`), uploads wait for `releaseUploads` before they answer. */
+  private uploadGate?: { wait: Promise<void>; release: () => void };
   /** While true, the documents endpoints answer 503: every connection the store allows is in use. */
   dataStoreBusy = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
@@ -132,6 +136,18 @@ export class FakeApi {
     };
     this.documents.unshift(doc);
     return doc;
+  }
+
+  /** Uploads wait, as if still on the wire, until `releaseUploads`. */
+  holdUploads() {
+    let release = () => {};
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    this.uploadGate = { wait, release };
+  }
+
+  releaseUploads() {
+    this.uploadGate?.release();
+    this.uploadGate = undefined;
   }
 
   /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
@@ -519,6 +535,8 @@ export class FakeApi {
       }
       if (path === "/api/documents" && method === "POST") {
         const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
+        await this.uploadGate?.wait;
+        if (this.tooLarge.has(filename)) return reply(413);
         const doc = this.addDocument(
           filename,
           this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
 import { formatDate } from "@/components/crud";
@@ -46,10 +54,9 @@ export function useDataStoreStatus(): DataStoreStatus | undefined {
 
 /**
  * The user's documents, listed once their store is ready and re-read while any is still being
- * ingested, plus upload and delete. The chat's panel and the Data page's Documents both use it,
- * so they show the same list.
+ * ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
-export function useDocuments(storeStatus: DataStoreStatus | undefined) {
+function useDocuments(storeStatus: DataStoreStatus | undefined) {
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   // What to say about the last read of the list failing (e.g. the store is busy); the list
   // keeps its last rows meanwhile.
@@ -136,6 +143,28 @@ export function useDocuments(storeStatus: DataStoreStatus | undefined) {
 }
 
 type DocumentsState = ReturnType<typeof useDocuments>;
+
+type SharedDocuments = { storeStatus: DataStoreStatus | undefined; documents: DocumentsState };
+
+const DocumentsContext = createContext<SharedDocuments | null>(null);
+
+/**
+ * The store's status and the user's documents, held above the pages: the chat's panel and the
+ * Data page read one list, and an upload still in flight keeps its progress and errors when you
+ * switch tabs or pages.
+ */
+export function DocumentsProvider({ children }: { children: ReactNode }) {
+  const storeStatus = useDataStoreStatus();
+  const documents = useDocuments(storeStatus);
+  return <DocumentsContext value={{ storeStatus, documents }}>{children}</DocumentsContext>;
+}
+
+/** The store's status and the documents, from the `DocumentsProvider` above. */
+export function useSharedDocuments() {
+  const shared = useContext(DocumentsContext);
+  if (!shared) throw new Error("useSharedDocuments needs a DocumentsProvider above it");
+  return shared;
+}
 
 /** The Upload button, with the file picker it opens. */
 export function UploadButton({ documents }: { documents: DocumentsState }) {
@@ -235,8 +264,7 @@ const statusLabel = {
 
 /** The chat's documents panel: a compact list beside the conversation it grounds. */
 export function Documents() {
-  const storeStatus = useDataStoreStatus();
-  const documents = useDocuments(storeStatus);
+  const { storeStatus, documents } = useSharedDocuments();
   const { docs } = documents;
 
   return (
@@ -279,8 +307,8 @@ export function Documents() {
  * The Data page's Documents: every document with its ingest status (and why one failed), chunk
  * count and upload time. Uploads from the chat's panel land in the same list.
  */
-export function DocumentsSection({ storeStatus }: { storeStatus: DataStoreStatus | undefined }) {
-  const documents = useDocuments(storeStatus);
+export function DocumentsSection() {
+  const { storeStatus, documents } = useSharedDocuments();
   const { docs } = documents;
 
   const onDelete = (doc: DocumentInfo) => {

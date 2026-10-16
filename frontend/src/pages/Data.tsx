@@ -1,6 +1,6 @@
 import { Loader2 } from "lucide-react";
 
-import { DocumentsSection, useDataStoreStatus } from "@/components/Documents";
+import { DocumentsSection, useSharedDocuments } from "@/components/Documents";
 import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { DataStoreStatus } from "@/lib/api";
@@ -19,8 +19,8 @@ const statusVariant = {
  * Overview, `/data?tab=documents`), so other pages and notifications can link straight to one.
  */
 export function DataPage() {
-  // Asked here, not in each tab, so switching tabs doesn't ask again.
-  const storeStatus = useDataStoreStatus();
+  // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.
+  const { storeStatus } = useSharedDocuments();
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6 md:px-8">
@@ -37,7 +37,7 @@ export function DataPage() {
             {
               id: "documents",
               label: "Documents",
-              content: <DocumentsSection storeStatus={storeStatus} />,
+              content: <DocumentsSection />,
             },
           ]}
         />
