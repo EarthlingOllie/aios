@@ -109,6 +109,15 @@ def test_switching_it_on_creates_the_history_tables_and_backfills_existing_runs(
     ) == [(run["id"], 0, "user", "hello there"), (run["id"], 1, "assistant", "arr")]
 
 
+def test_with_no_runs_to_export_it_still_catches_up(api, user, store_id, history_tasks):
+    # The Settings page waits for `history_exported_at` once the export is on.
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+
+    assert settings(api)["history_ready"] is True
+    assert settings(api)["history_exported_at"] is not None
+
+
 def test_a_turn_that_ends_is_exported_shortly_after(api, user, store_id, history_tasks):
     switch(api, True)
     set_up_and_export(store_id, history_tasks)
@@ -395,6 +404,11 @@ def test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned(
         provision.provision(store_id)
 
         assert client.get("/api/settings").json()["history_ready"] is True
+        # With no runs to export, only the sweep exports it: then it has caught up.
+        worker.export_pending_history_task.apply().get()
+        assert history_tasks["export"] == [store_id]
+        history.export(store_id)
+        assert client.get("/api/settings").json()["history_exported_at"] is not None
     finally:
         app.dependency_overrides.clear()
         delete_user(db, u)
