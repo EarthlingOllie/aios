@@ -121,9 +121,10 @@ def _jsonable(value: Any) -> Any:
 
 
 def _error(exc: psycopg.Error) -> str:
-    if isinstance(exc, psycopg.errors.QueryCanceled):
-        return "The query ran past the time limit and was stopped. Try a cheaper one."
     message = exc.diag.message_primary or str(exc)
+    # Cancelled by the timeout, rather than by someone else (an operator, say).
+    if isinstance(exc, psycopg.errors.QueryCanceled) and "statement timeout" in message:
+        return "The query ran past the time limit and was stopped. Try a cheaper one."
     return message if exc.diag.sqlstate is None else f"{message} (SQLSTATE {exc.diag.sqlstate})"
 
 

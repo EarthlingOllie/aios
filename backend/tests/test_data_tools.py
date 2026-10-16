@@ -5,6 +5,7 @@ These run against real, provisioned stores. Nothing can change a store's `data` 
 owner role.
 """
 
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -219,6 +220,30 @@ def test_a_slow_query_hits_the_timeout(api, data_agent, short_timeout):
 
     assert stopped(result)
     assert time.monotonic() - started < 4
+
+
+def test_a_query_cancelled_from_elsewhere_isnt_called_slow(api, store, data_agent):
+    """Someone else cancelling it (an operator's `pg_cancel_backend`) isn't the time limit, so
+    the model isn't told to try a cheaper query."""
+
+    def cancel():
+        with psycopg.connect(login_url(store, "ro"), autocommit=True) as conn:
+            for _ in range(100):
+                cancelled = conn.execute(
+                    "SELECT pg_cancel_backend(pid) FROM pg_stat_activity"
+                    " WHERE query = 'SELECT pg_sleep(5)' AND pid <> pg_backend_pid()"
+                ).fetchall()
+                if cancelled:
+                    return
+                time.sleep(0.05)
+
+    canceller = threading.Thread(target=cancel)
+    canceller.start()
+    result = query(api, data_agent, "SELECT pg_sleep(5)")
+    canceller.join()
+
+    assert set(result) == {"error"} and "user request" in result["error"]
+    assert not stopped(result)
 
 
 @pytest.mark.parametrize(
