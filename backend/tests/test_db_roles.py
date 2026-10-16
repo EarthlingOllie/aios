@@ -289,6 +289,20 @@ def test_the_same_server_may_be_written_differently(cluster):
     _connect(prov_url).close()
 
 
+def test_refuses_to_grant_createrole_before_postgres_16(cluster, monkeypatch):
+    """Before 16, CREATEROLE could alter (reset the password of) and take membership of any role
+    but a superuser: the app's, and on RDS the master user. The server here is newer, so it
+    reports 15 for this test."""
+    admin_url, app_url, prov_url = cluster
+    monkeypatch.setattr(psycopg.ConnectionInfo, "server_version", property(lambda _: 150010))
+
+    with pytest.raises(RuntimeError, match="PostgreSQL 16"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, make_url(app_url).username) is None
+    assert _attrs(admin_url, make_url(prov_url).username) is None
+
+
 def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
     """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
     _, app_url, prov_url = cluster

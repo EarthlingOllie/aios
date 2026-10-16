@@ -75,6 +75,13 @@ variable "db_engine_version" {
   description = "RDS PostgreSQL version (pgvector ships with RDS; the migration runs CREATE EXTENSION vector)."
   type        = string
   default     = "17"
+
+  # Before 16, CREATEROLE (which the provisioner's role has) reaches every role but a superuser,
+  # the master user's included. `python -m aios.db_roles` refuses such a server too.
+  validation {
+    condition     = can(regex("^[0-9]+(\\.[0-9]+)?$", var.db_engine_version)) ? tonumber(split(".", var.db_engine_version)[0]) >= 16 : false
+    error_message = "db_engine_version must be PostgreSQL 16 or later (e.g. \"17\" or \"16.4\")."
+  }
 }
 
 variable "db_multi_az" {

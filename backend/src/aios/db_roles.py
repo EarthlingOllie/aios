@@ -221,6 +221,15 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
     if not dbname:
         raise ValueError("The app's URL names no database")
     with psycopg.connect(libpq_conninfo(admin_url, database=dbname)) as conn:
+        # Before 16, CREATEROLE lets a role alter (and so reset the password of) and grant
+        # itself membership in any role but a superuser: the app's role, and on RDS the master
+        # user and rds_superuser. From 16 it covers only roles it has ADMIN OPTION on, which by
+        # default are the ones it created.
+        if conn.info.server_version < 160000:
+            raise RuntimeError(
+                "The provisioner's role needs PostgreSQL 16 or later, where CREATEROLE no longer "
+                f"reaches roles it didn't create; this server is {conn.info.server_version}"
+            )
         app = sql.Identifier(_login_role(conn, app_url, privileged=False))
         _login_role(conn, provisioner_url, privileged=True)
         # Handing objects to a role takes membership of it, and on RDS the master user isn't a
