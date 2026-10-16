@@ -62,6 +62,10 @@ from alembic import command
 
 log = logging.getLogger(__name__)
 
+# Seconds the provisioner waits to connect before giving up on an instance: the one provisioning
+# worker shouldn't sit on one that never answers while new stores queue behind it.
+CONNECT_TIMEOUT = 10
+
 
 @dataclass(frozen=True)
 class StoreNames:
@@ -155,7 +159,11 @@ def _restrict_connect(run: _Run) -> None:
 def _as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
     """The provisioner on the store's database, acting as its owner."""
     url = get_settings().data_store_provisioner_url
-    with psycopg.connect(libpq_conninfo(url, database=names.dbname), autocommit=True) as conn:
+    with psycopg.connect(
+        libpq_conninfo(url, database=names.dbname),
+        autocommit=True,
+        connect_timeout=CONNECT_TIMEOUT,
+    ) as conn:
         conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(names.owner)))
         yield conn
 
@@ -190,7 +198,9 @@ def upgrade_store(names: StoreNames) -> str:
     """Run the store tree to its head on the store's database, as its owner, and keep `_rw` off
     its bookkeeping (`BOOKKEEPING`); returns the revision it's at."""
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
-    engine = create_engine(url, poolclass=pool.NullPool)
+    engine = create_engine(
+        url, poolclass=pool.NullPool, connect_args={"connect_timeout": CONNECT_TIMEOUT}
+    )
     try:
         with engine.connect() as conn:
             quote = conn.dialect.identifier_preparer.quote
@@ -240,14 +250,23 @@ STEPS: list[Callable[[_Run], None]] = [
 
 
 @contextmanager
-def _provisioner_locked(store_id: uuid.UUID) -> Iterator[psycopg.Connection]:
+def _provisioner_locked(
+    store_id: uuid.UUID, wait: bool = True
+) -> Iterator[psycopg.Connection | None]:
     """The provisioner on the platform database, holding the store's lock (released when the
-    connection closes, however the run ends)."""
+    connection closes, however the run ends); unless `wait`, None if another run holds it."""
     url = get_settings().data_store_provisioner_url
-    with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
-        conn.execute(
-            "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (f"aios.data_store:{store_id}",)
-        )
+    with psycopg.connect(
+        libpq_conninfo(url), autocommit=True, connect_timeout=CONNECT_TIMEOUT
+    ) as conn:
+        key = (f"aios.data_store:{store_id}",)
+        if wait:
+            conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", key)
+        else:
+            got = conn.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", key)
+            if not got.fetchone()[0]:
+                yield None
+                return
         yield conn
 
 
@@ -278,11 +297,13 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
         return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
 
 
-def provision(store_id: uuid.UUID) -> str | None:
+def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
     docstring); returns the revision it's at. Does nothing (returns None) for a store that's
-    gone, or that's past provisioning."""
-    with _provisioner_locked(store_id) as server:
+    gone, or that's past provisioning, or, unless `wait`, that another run is on."""
+    with _provisioner_locked(store_id, wait) as server:
+        if server is None:
+            return None
         with SessionLocal() as db:
             store = db.get(DataStore, store_id)
             if store is None or store.status not in (
@@ -360,15 +381,16 @@ def _only(store_ids: Collection[uuid.UUID] | None) -> ColumnElement[bool]:
     return DataStore.id.in_(store_ids) if store_ids is not None else true()
 
 
-def _finish(which: ColumnElement[bool]) -> dict[uuid.UUID, str | BaseException]:
+def _finish(which: ColumnElement[bool], wait: bool = True) -> dict[uuid.UUID, str | BaseException]:
     """Provision the stores `which` picks, one at a time; returns the revision each reached, or
-    what stopped it (and marks it failed), without stopping the rest."""
+    what stopped it (and marks it failed), without stopping the rest. Unless `wait`, skips a
+    store another run is on."""
     outcome: dict[uuid.UUID, str | BaseException] = {}
     with SessionLocal() as db:
         unfinished = db.scalars(select(DataStore.id).where(which)).all()
     for store_id in unfinished:
         try:
-            revision = provision(store_id)
+            revision = provision(store_id, wait)
             if revision is not None:
                 outcome[store_id] = revision
         except SoftTimeLimitExceeded:
@@ -395,7 +417,8 @@ def retry_unfinished(
     """Try once more to provision the stores whose provisioning gave up, or hasn't finished
     (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
     (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped
-    it."""
+    it. A store another run is on (a deploy's migrate-all, say) is left to it: new stores'
+    provisioning waits behind this, on the one provisioning worker."""
     return _finish(
         and_(
             _only(store_ids),
@@ -406,7 +429,8 @@ def retry_unfinished(
                     DataStore.created_at < func.now() - UNFINISHED_AFTER,
                 ),
             ),
-        )
+        ),
+        wait=False,
     )
 
 

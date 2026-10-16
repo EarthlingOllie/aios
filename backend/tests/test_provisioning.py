@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -671,7 +672,7 @@ def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short
         provision.fail(store_id, "OperationalError: the instance is down")
     tries = []
 
-    def out_of_time(store_id):
+    def out_of_time(store_id, wait=True):
         tries.append(store_id)
         raise SoftTimeLimitExceeded()
 
@@ -726,3 +727,37 @@ def test_running_migrate_all_as_a_module_gives_no_import_warning():
 
     assert result.returncode == 2  # usage: no command given
     assert "RuntimeWarning" not in result.stderr
+
+
+def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user):
+    """New stores' provisioning queues behind it on the one provisioning worker: it mustn't
+    wait for a deploy's migrate-all, say, to finish a store."""
+    busy, other = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in (busy, other):
+        provision.fail(store_id, "OperationalError: the instance is down")
+
+    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(busy):
+        outcome = pool.submit(provision.retry_unfinished, [busy, other]).result(timeout=30)
+
+    assert outcome == {other: head_revision()}
+    assert store_row(db, busy).status == DataStoreStatus.failed
+    # The next one gets it.
+    assert provision.retry_unfinished([busy]) == {busy: head_revision()}
+
+
+def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, monkeypatch):
+    store_id = data_store_for(new_user().id)
+    # Takes the connection (the kernel does), then says nothing.
+    silent = socket.create_server(("127.0.0.1", 0))
+    url = make_url(get_settings().data_store_provisioner_url).set(
+        host="127.0.0.1", port=silent.getsockname()[1]
+    )
+    # Undone before the store is dropped, which needs the real instance.
+    with monkeypatch.context() as m, ThreadPoolExecutor(1) as pool, silent:
+        m.setattr(
+            get_settings(), "data_store_provisioner_url", url.render_as_string(hide_password=False)
+        )
+        m.setattr(provision, "CONNECT_TIMEOUT", 1)
+        run = pool.submit(provision.provision, store_id)
+        with pytest.raises(psycopg.OperationalError, match="timeout"):
+            run.result(timeout=30)
