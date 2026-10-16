@@ -14,6 +14,11 @@ cross-database queries (nor `dblink` or `postgres_fdw`, which stores don't get).
   `QUERY_DATA_MAX_BYTES` bytes, saying the result was `truncated`.
 - The connection is reset (`DISCARD ALL`) before it goes back to the pool, so nothing a query
   set (settings, prepared statements, advisory locks) carries over to the next.
+
+Every run of a store shares its `ro` role, and a role may see its own sessions' query text in
+`pg_stat_activity` and cancel or terminate them (`pg_terminate_backend`). So one run can see
+and stop another run's reads of the same store: nothing it couldn't read itself, and the other
+run just gets an error. Revoking those functions would take a superuser, which RDS doesn't give.
 """
 
 import datetime
