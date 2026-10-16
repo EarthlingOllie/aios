@@ -4,6 +4,11 @@ Documents and chunks now live in each user's data store (the store tree's `0002`
 platform database drops them. Nothing is moved: the platform is in development, and its
 documents are discarded (upload them again).
 
+This contracts in the same release, against the expand-then-contract rule: until the rollout
+finishes, the previous release's document requests and ingests fail on the missing tables.
+Keeping the tables a release longer wouldn't save anything, since nothing reads what that
+release writes to them, so its uploads would be lost silently instead.
+
 Revision ID: 0013
 Revises: 0012
 Create Date: 2026-10-16 09:00:00
