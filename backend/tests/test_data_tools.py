@@ -10,10 +10,12 @@ import time
 import tracemalloc
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import psycopg
 import pytest
+from anyio import to_thread
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from sqlalchemy import update
 from sqlalchemy.engine import make_url
@@ -507,3 +509,43 @@ def test_a_query_cant_hold_a_lock_past_its_call(api, store, data_agent):
 
     with psycopg.connect(login_url(store, "ro")) as conn:
         assert conn.execute("SELECT pg_try_advisory_lock(42)").fetchone() == (True,)
+
+
+def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent, monkeypatch):
+    """A query holds a worker thread while it runs, or while it waits for one of the store's
+    few connections, and the API's sync endpoints run on the same threads. So a model asking
+    for many slow queries at once mustn't take them all. (The thread pool is shrunk from its 40
+    to keep the test quick.)"""
+    monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
+    sql = "SELECT pg_sleep(0.5)"
+    threads = 16
+
+    async def script(messages, info):
+        if last_tool_results(messages):
+            yield "done"
+        else:
+            for _ in range(threads + 4):
+                yield ToolCall("query_data", {"sql": sql})
+
+    def sleeping() -> int:
+        with psycopg.connect(login_url(store, "ro")) as conn:
+            query = "SELECT count(*) FROM pg_stat_activity WHERE query = %s"
+            return conn.execute(query, (sql,)).fetchone()[0]
+
+    def shrink() -> None:
+        to_thread.current_default_thread_limiter().total_tokens = threads
+
+    with api, use_model(model(script)):
+        api.portal.call(shrink)
+        run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
+        url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"
+        with ThreadPoolExecutor(1) as pool:
+            turn = pool.submit(api.post, url, json=chat_body("go"))
+            while not sleeping():
+                time.sleep(0.01)
+            start = time.monotonic()
+            assert api.get("/api/tools").status_code == 200
+            waited = time.monotonic() - start
+            assert turn.result().status_code == 200
+
+    assert waited < 0.25
