@@ -307,6 +307,17 @@ def test_results_over_the_byte_cap_come_back_truncated(api, store, data_agent, m
     assert result["truncated"] is True
 
 
+def test_a_first_row_over_the_byte_cap_is_said_to_be_too_big(api, store, data_agent, monkeypatch):
+    """So the model knows to leave out or cut down a big column, not to narrow the query."""
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 100)
+
+    result = query(api, data_agent, "SELECT 1 AS id, repeat('x', 200) AS body")
+
+    assert (result["rows"], result["truncated"]) == ([], True)
+    assert "first row alone" in result["note"]
+    assert "first 0 rows" not in result["note"]
+
+
 def test_a_huge_result_is_cut_short_without_reading_it_all(api, data_agent, short_timeout):
     """Rows are streamed, so a result far past the caps stops at them, well inside the
     timeout, rather than being read whole (or timing out)."""

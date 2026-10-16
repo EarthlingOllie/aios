@@ -219,7 +219,13 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
         pg.close()
     result: dict = {"columns": columns, "rows": rows, "row_count": len(rows)}
     result["truncated"] = truncated
-    if truncated:
+    if truncated and not rows:
+        # Only bytes can stop it at no rows: narrowing the query wouldn't help.
+        result["note"] = (
+            f"The first row alone is over {max_bytes} bytes, so no rows are shown. Leave out"
+            " or cut down its biggest values (e.g. with `left(column, n)`)."
+        )
+    elif truncated:
         result["note"] = (
             f"Only the first {len(rows)} rows are shown (at most {max_rows} rows or"
             f" {max_bytes} bytes). Narrow the query, or aggregate, to see the rest."
