@@ -7,7 +7,7 @@ login roles' encrypted passwords, its status and its schema revision.
 Existing stores start out `provisioning`, and the deploy's `migrate_all` provisions them.
 
 The release before this one still serves while a deploy migrates, and makes a new user's store
-with only its owner: a trigger gives such a row its names (`names_for`, from its id), and
+with only its owner: a trigger gives such a row its names (`resolve.names_for`, from its id), and
 `retry_unfinished` provisions it (making its passwords). Drop the trigger once no release from
 before this migration can be running.
 

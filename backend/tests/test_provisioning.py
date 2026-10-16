@@ -30,6 +30,7 @@ from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
 from aios.datastores.connections import store_url
 from aios.datastores.migrations import head_revision
+from aios.datastores.resolve import names_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
@@ -519,7 +520,7 @@ def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provis
     db.commit()
 
     row = store_row(db, store_id)
-    assert (row.dbname, row.role_prefix) == provision.names_for(store_id)
+    assert (row.dbname, row.role_prefix) == names_for(store_id)
     assert row.status == DataStoreStatus.provisioning
 
     provision.migrate_all([store_id])
