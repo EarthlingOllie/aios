@@ -7,6 +7,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from aios.config import get_settings
 from aios.datastores import DataStoreNotFound, DataStoreNotReady, documents_session
 from aios.datastores.resolve import data_store_of_document
+from aios.db import SessionLocal
+from aios.models import DocumentStatus
 
 settings = get_settings()
 
@@ -62,6 +64,20 @@ def ingest_document_task(self, data_store_id: str | int, document_id: int | None
         return
     except DataStoreNotReady as exc:
         # Uploaded before the store was being provisioned (uploads wait for it now).
+        if self.request.retries >= self.max_retries:
+            # Nothing queues it again once the store is ready: fail it, rather than leave it
+            # pending for good.
+            from aios.ingest import set_status
+
+            with SessionLocal() as db:
+                set_status(
+                    db,
+                    document_id,
+                    DocumentStatus.failed,
+                    "Your data store wasn't ready in time to process this document; "
+                    "please upload it again.",
+                )
+            raise
         raise self.retry(countdown=60) from exc
 
 

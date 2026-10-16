@@ -205,6 +205,28 @@ def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
     worker.ingest_document_task.run(str(store_id), doc_id)
 
 
+def test_the_ingest_task_fails_a_document_its_store_never_got_ready_for(db, user):
+    """Messages queued before data stores wait for the user's store; if it's still not ready
+    once they stop retrying, nothing would ever ingest the document, so it's failed, not left
+    pending."""
+    doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+    store_id = data_store_for(user.id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+    )
+    db.commit()
+
+    # Eagerly, each retry runs at once (no countdown), until the last gives up.
+    result = worker.ingest_document_task.apply(args=(doc.id,))
+
+    assert result.failed()
+    db.refresh(doc)
+    assert doc.status == DocumentStatus.failed
+    assert "upload it again" in doc.error
+
+
 @pytest.fixture
 def searches(monkeypatch) -> list[dict]:
     """What the document search tools search (the documents chat's and the agents' tool)."""
