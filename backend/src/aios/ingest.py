@@ -12,6 +12,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
+from aios.datastores import DataStoreBusy
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.embeddings import embed_documents
 
@@ -99,6 +100,8 @@ def ingest_document(db: Session, document_id: int) -> None:
             for i, (piece, vec) in enumerate(zip(pieces, vectors, strict=True))
         )
         set_status(db, document_id, DocumentStatus.ready, None)
+    except DataStoreBusy:
+        raise  # Left processing, for the task's retry to claim again (`aios.worker`).
     except Exception as exc:
         db.rollback()
         if not set_status(

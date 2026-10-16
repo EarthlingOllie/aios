@@ -545,6 +545,37 @@ def test_the_ingest_task_never_gives_up_on_a_busy_store(busy_store, monkeypatch)
     assert [kw["countdown"] for kw in queued] == [worker.BUSY_RETRY_COUNTDOWN]
 
 
+def test_a_store_busy_mid_ingest_leaves_the_document_for_the_retry(
+    user, offline_ingest, monkeypatch
+):
+    """Busy once the document is claimed (its connection went back to the pool through the
+    conversion, and the store's are all in use by the time it's wanted again): the retry, not
+    the failure, is what's recorded."""
+    store_id = data_store_for(user.id)
+    doc_id = add_document(store_id)
+    monkeypatch.setattr(worker.ingest_document_task, "retry", lambda **kwargs: Retry())
+
+    busy = [True]
+
+    def busy_once(conn, cursor, statement, *args):
+        if statement.startswith("DELETE FROM aios.chunks") and busy and busy.pop():
+            raise DataStoreBusy(store_id)
+
+    rw = store_engine(store_id, "rw")
+    event.listen(rw, "before_cursor_execute", busy_once)
+    try:
+        with pytest.raises(Retry):
+            worker.ingest_document_task.run(str(store_id), doc_id)
+    finally:
+        event.remove(rw, "before_cursor_execute", busy_once)
+
+    assert stored_document(store_id, doc_id).status == DocumentStatus.processing
+    worker.ingest_document_task.run(str(store_id), doc_id)  # the retry
+    doc = stored_document(store_id, doc_id)
+    assert doc.status == DocumentStatus.ready
+    assert [c.text for c in doc.chunks] == ["Hi"]
+
+
 def test_the_search_tools_tell_the_model_the_store_is_busy(busy_store, monkeypatch):
     async def embed_query(text):
         return [1.0] + [0.0] * 1023
