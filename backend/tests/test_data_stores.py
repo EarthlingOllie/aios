@@ -33,6 +33,7 @@ from aios.datastores import (
     store_engine,
     store_session,
 )
+from aios.datastores import connections as store_connections
 from aios.datastores.models import Document, DocumentStatus
 from aios.db import SessionLocal, engine
 from aios.models import (
@@ -584,3 +585,16 @@ def test_the_search_tools_tell_the_model_the_store_is_busy(busy_store, monkeypat
     results = asyncio.run(search.document_search_results(data_store_id=busy_store, query="fish"))
 
     assert results == [{"error": search.STORE_BUSY}]
+
+
+def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monkeypatch):
+    # Below the role's connection limit, but every connection this process pools on the store
+    # is in use (polling, an upload and searches at once, say).
+    monkeypatch.setattr(store_connections, "POOL_TIMEOUT", 0.1)
+    store_connections.dispose_engines()
+    ro = store_engine(data_store_for(user.id), "ro")
+    with ro.connect(), ro.connect(), ro.connect():
+        r = api.get("/api/documents")
+
+    assert r.status_code == 503, r.text
+    assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
