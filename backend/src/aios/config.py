@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     # The database new stores are copied from, made by `aios.db_roles`: it holds pgvector (in
     # an `extensions` schema), which the provisioner, not being a superuser, can't install.
     data_store_template: str = "aios_store_template"
-    # Limits on each store's login roles: a query's longest run, the longest a session may sit
-    # idle in a transaction (both in milliseconds), and how many connections the role may hold.
+    # For each store's login roles: a query's longest run, the longest a session may sit idle in
+    # a transaction (both in milliseconds, and defaults a session may change), and how many
+    # connections the role may hold.
     data_store_statement_timeout: int = Field(default=30_000, ge=1)
     data_store_idle_in_transaction_timeout: int = Field(default=60_000, ge=1)
     data_store_connection_limit: int = Field(default=10, ge=1)

@@ -93,8 +93,9 @@ def ingest_document_task(self, data_store_id: str | int, document_id: int | None
         raise self.retry(countdown=60) from exc
 
 
-# Provisioning gives up after this many tries (a minute apart, then longer), and marks the store
-# failed; `retry_unfinished_data_stores_task` tries again, every `RETRY_UNFINISHED_EVERY`.
+# Provisioning is retried this many times after its first try (a minute apart, then longer:
+# about half an hour in all), then marks the store failed; `retry_unfinished_data_stores_task`
+# tries again, every `RETRY_UNFINISHED_EVERY`.
 PROVISION_RETRIES = 5
 
 

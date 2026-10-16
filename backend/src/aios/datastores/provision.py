@@ -8,8 +8,9 @@ three roles named after it (never after a user):
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
   it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
   tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`),
-  which both only read. Neither may create anything. Each has its own statement timeout,
-  idle-in-transaction timeout and connection limit (`data_store_*` settings).
+  which both only read. Neither may create anything. Each has its own connection limit, and
+  default statement and idle-in-transaction timeouts, which a session may change
+  (`data_store_*` settings).
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
