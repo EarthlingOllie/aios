@@ -80,7 +80,8 @@ _engines_lock = threading.Lock()
 
 def _busy(data_store_id: uuid.UUID):
     def handle_error(context: ExceptionContext) -> BaseException | None:
-        # Postgres refuses the connection: 'too many connections for role "ds_..._rw"'.
+        # Postgres refuses the connection: 'too many connections for role "ds_..._rw"'. By the
+        # text: psycopg gives a FATAL at connect time no SQLSTATE to check.
         if "too many connections for role" in str(context.original_exception):
             return DataStoreBusy(data_store_id)
         return None
