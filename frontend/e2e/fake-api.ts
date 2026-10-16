@@ -105,11 +105,45 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
+  /**
+   * The status an upload starts in: "ready" (with one chunk) skips the worker; "pending" waits
+   * for the test to finish its ingest with `finishIngest`.
+   */
+  ingestAs: "ready" | "pending" = "ready";
+  /** While true, the documents endpoints answer 503: every connection the store allows is in use. */
+  dataStoreBusy = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
   private id() {
     return this.nextId++;
+  }
+
+  /** Adds a document, as if uploaded earlier. */
+  addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
+    const doc: DocumentRow = {
+      id: this.id(),
+      filename,
+      status: "ready",
+      error: null,
+      chunk_count: 1,
+      created_at: NOW,
+      ...fields,
+    };
+    this.documents.unshift(doc);
+    return doc;
+  }
+
+  /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
+  finishIngest(filename: string, outcome: { chunks: number } | { error: string }) {
+    const doc = this.documents.find((d) => d.filename === filename);
+    if (!doc) throw new Error(`No document ${filename}`);
+    Object.assign(
+      doc,
+      "chunks" in outcome
+        ? { status: "ready", chunk_count: outcome.chunks, error: null }
+        : { status: "failed", chunk_count: 0, error: outcome.error },
+    );
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
@@ -448,7 +482,7 @@ export class FakeApi {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       return reply(200, { status: this.dataStoreStatus });
     }
-    if (path === "/api/documents" || path === "/api/search") {
+    if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {
           detail:
@@ -458,21 +492,41 @@ export class FakeApi {
           data_store_status: this.dataStoreStatus,
         });
       }
-      if (path === "/api/search") return reply(200, []);
-      if (method === "POST") {
+      if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
+      if (path === "/api/search") {
+        // A passage from each ready document whose name contains the query.
+        const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+        return reply(
+          200,
+          this.documents
+            .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+            .map((d, i) => ({
+              chunk_id: d.id * 1000,
+              document_id: d.id,
+              filename: d.filename,
+              text: `A passage from ${d.filename}.`,
+              meta: {},
+              score: 0.03 - i * 0.001,
+              semantic_rank: i + 1,
+              lexical_rank: i + 1,
+            })),
+        );
+      }
+      if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
+        const before = this.documents.length;
+        this.documents = this.documents.filter((d) => d.id !== Number(m![1]));
+        return this.documents.length < before ? reply(204) : fail(404, "Not Found");
+      }
+      if (path === "/api/documents" && method === "POST") {
         const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
-        const doc: DocumentRow = {
-          id: this.id(),
+        const doc = this.addDocument(
           filename,
-          status: "ready",
-          error: null,
-          chunk_count: 1,
-          created_at: NOW,
-        };
-        this.documents.unshift(doc);
+          this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
+        );
         return reply(201, doc);
       }
-      return reply(200, this.documents);
+      if (path === "/api/documents") return reply(200, this.documents);
+      return fail(404, "Not Found");
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {

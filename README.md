@@ -9,7 +9,10 @@ You can also define your own **agents** (a base prompt plus a set of **skills**,
 reusable instructions, and **tools** from a built-in library: web search, and document search,
 the same hybrid search as the documents chat, over the documents of the user running the agent)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
-between, and shows each passage with how the semantic and keyword branches ranked it. Each
+between, and shows each passage with how the semantic and keyword branches ranked it. The
+**Data** page shows the user's data store: its status (Overview) and its documents, with each
+one's ingest status, chunk count and upload time, upload and delete (the chat's documents panel
+uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage.
