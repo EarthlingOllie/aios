@@ -7,8 +7,9 @@ three roles named after it (never after a user):
   member, and `SET ROLE`s to it to migrate the store.
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
   it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
-  tables. Neither may create anything. Each has its own statement timeout, idle-in-transaction
-  timeout and connection limit (`data_store_*` settings).
+  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`),
+  which both only read. Neither may create anything. Each has its own statement timeout,
+  idle-in-transaction timeout and connection limit (`data_store_*` settings).
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`), and the database has no `public`
 schema. It's copied from the store template (`aios.db_roles`), which brings pgvector in an
@@ -180,16 +181,26 @@ def _set_up_database(run: _Run) -> None:
             conn.execute(sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner) + grant)
 
 
+# The platform's record of the store's schema, which the default privileges would otherwise let
+# `_rw` rewrite: only the tree, as the owner, changes them.
+BOOKKEEPING = ("aios.alembic_version", "aios.schema_history")
+
+
 def upgrade_store(names: StoreNames) -> str:
-    """Run the store tree to its head on the store's database, as its owner; returns the
-    revision it's at."""
+    """Run the store tree to its head on the store's database, as its owner, and keep `_rw` off
+    its bookkeeping (`BOOKKEEPING`); returns the revision it's at."""
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
     engine = create_engine(url, poolclass=pool.NullPool)
     try:
         with engine.connect() as conn:
-            conn.exec_driver_sql(f"SET ROLE {conn.dialect.identifier_preparer.quote(names.owner)}")
+            quote = conn.dialect.identifier_preparer.quote
+            conn.exec_driver_sql(f"SET ROLE {quote(names.owner)}")
             conn.commit()
             command.upgrade(migrations.config(conn), "head")
+            # Every time, not in a revision: the tree doesn't know the store's role names.
+            conn.exec_driver_sql(
+                f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
+            )
             revision = conn.scalar(text("SELECT version_num FROM aios.alembic_version"))
             conn.commit()
             return revision

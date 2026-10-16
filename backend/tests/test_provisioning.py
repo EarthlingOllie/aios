@@ -168,18 +168,74 @@ def test_a_stores_roles_cant_create_anything(two_stores, role):
             conn.execute("CREATE EXTENSION IF NOT EXISTS dblink")
 
 
-def test_a_stores_read_only_role_cant_write(two_stores):
-    a, _ = two_stores
-    insert = "INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')"
+@pytest.fixture
+def store_with_a_table(db, new_user, next_revision) -> DataStore:
+    """A store provisioned at `next_revision`, whose `aios.marker` is a table like any a store
+    revision makes."""
+    next_revision()
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    return store_row(db, store_id)
+
+
+def test_a_stores_read_only_role_cant_write(store_with_a_table):
+    a = store_with_a_table
+    insert = "INSERT INTO aios.marker VALUES (1)"
     with psycopg.connect(login_url(a, "ro"), autocommit=True) as conn:
-        assert conn.execute("SELECT count(*) FROM aios.schema_history").fetchone() == (0,)
-        for write in (insert, "DELETE FROM aios.schema_history", "TRUNCATE aios.schema_history"):
+        assert conn.execute("SELECT count(*) FROM aios.marker").fetchone() == (0,)
+        for write in (insert, "DELETE FROM aios.marker", "TRUNCATE aios.marker"):
             with pytest.raises(errors.InsufficientPrivilege):
                 conn.execute(write)
     # The read-write role can.
     with psycopg.connect(login_url(a, "rw"), autocommit=True) as conn:
         conn.execute(insert)
-        assert conn.execute("DELETE FROM aios.schema_history").rowcount == 1
+        assert conn.execute("UPDATE aios.marker SET id = 2").rowcount == 1
+        assert conn.execute("DELETE FROM aios.marker").rowcount == 1
+
+
+# The platform's own record of the store's schema: only its migrations (as the owner) change it.
+BOOKKEEPING_WRITES = [
+    "INSERT INTO aios.alembic_version VALUES ('x')",
+    "UPDATE aios.alembic_version SET version_num = 'x'",
+    "DELETE FROM aios.alembic_version",
+    "TRUNCATE aios.alembic_version",
+    "INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')",
+    "UPDATE aios.schema_history SET summary = 'x'",
+    "DELETE FROM aios.schema_history",
+    "TRUNCATE aios.schema_history",
+]
+
+
+def assert_cant_change_bookkeeping(store: DataStore, role: str) -> None:
+    with psycopg.connect(login_url(store, role), autocommit=True) as conn:
+        # But may read it.
+        assert conn.execute("SELECT version_num FROM aios.alembic_version").fetchone()
+        conn.execute("SELECT count(*) FROM aios.schema_history")
+        for write in BOOKKEEPING_WRITES:
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(write)
+
+
+@pytest.mark.parametrize("role", ["rw", "ro"])
+def test_a_stores_roles_cant_change_its_migration_version_or_schema_history(two_stores, role):
+    assert_cant_change_bookkeeping(two_stores[0], role)
+
+
+def test_migrate_all_takes_writes_on_the_bookkeeping_back_from_existing_stores(db, new_user):
+    """Stores provisioned before `_rw` was kept off the bookkeeping."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    row = store_row(db, store_id)
+    with admin_connect(row.dbname) as conn:
+        conn.execute(
+            sql.SQL(
+                "GRANT INSERT, UPDATE, DELETE ON aios.alembic_version, aios.schema_history TO {}"
+            ).format(sql.Identifier(f"{row.role_prefix}_rw"))
+        )
+
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+
+    assert_cant_change_bookkeeping(row, "rw")
 
 
 def test_a_stores_roles_have_their_limits(two_stores):
@@ -209,8 +265,9 @@ class Crash(Exception):
 
 @pytest.mark.parametrize("crash_after", range(len(provision.STEPS) - 1))
 def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
-    db, new_user, monkeypatch, crash_after
+    db, new_user, monkeypatch, next_revision, crash_after
 ):
+    next_revision()  # a table for the read-write role to write
     store_id = data_store_for(new_user().id)
     steps = list(provision.STEPS)
 
@@ -229,7 +286,8 @@ def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
     row = store_row(db, store_id)
     assert (row.status, row.schema_revision) == (DataStoreStatus.ready, head_revision())
     with psycopg.connect(login_url(row, "rw"), autocommit=True) as conn:
-        conn.execute("INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')")
+        conn.execute("INSERT INTO aios.marker VALUES (1)")
+    assert_cant_change_bookkeeping(row, "rw")
 
 
 def admin_connect(database: str | None = None) -> psycopg.Connection:

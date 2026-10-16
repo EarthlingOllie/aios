@@ -272,7 +272,9 @@ Each user has a data store: a Postgres database of their own on the same instanc
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
   the owner creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
-  `aios.alembic_version`) as `_owner`, and marks the store `ready` at its head revision.
+  `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
+  (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
+  at its head revision.
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After five failed tries the store is marked `failed`. Until a store is `ready`, uploads, the
