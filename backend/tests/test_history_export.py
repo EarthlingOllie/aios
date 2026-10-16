@@ -240,6 +240,47 @@ def test_delete_exported_history_empties_it(api, user, store_id, history_tasks):
     assert api.delete("/api/settings/exported-history").status_code == 204
 
 
+def test_delete_exported_history_while_exporting_starts_the_copy_over(
+    api, user, store_id, history_tasks
+):
+    agent = make_agent(api, "Bot")
+    runs = [new_run(api, agent) for _ in range(2)]
+    for run in runs:
+        chat(api, agent, run, "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    history_tasks["export"].clear()
+
+    assert api.delete("/api/settings/exported-history").status_code == 204
+
+    # Emptied, and nothing is said to have been exported since.
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+    assert settings(api)["history_exported_at"] is None
+    # Every run is copied again, not just those with a turn since.
+    assert history_tasks["export"] == [store_id]
+    history.export(store_id)
+    assert stored(store_id, "SELECT id FROM history.agent_runs ORDER BY id") == [
+        (run["id"],) for run in runs
+    ]
+    assert settings(api)["history_exported_at"] is not None
+
+
+def test_delete_exported_history_while_off_keeps_it_empty(api, user, store_id, history_tasks):
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    switch(api, False)
+    history_tasks["export"].clear()
+
+    assert api.delete("/api/settings/exported-history").status_code == 204
+    history.export(store_id)
+
+    assert history_tasks["export"] == []
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+    assert settings(api)["history_exported_at"] is None
+
+
 def test_delete_exported_history_before_the_export_ever_ran(api, user):
     assert api.delete("/api/settings/exported-history").status_code == 204
 
