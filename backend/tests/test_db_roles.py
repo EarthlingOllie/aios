@@ -362,6 +362,37 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 
+def test_refuses_an_app_role_that_can_become_a_privileged_one(cluster):
+    """Set up by hand before this command existed, say: a member of a role with CREATEDB could
+    SET ROLE to it and create databases, which NOCREATEDB on the app's role doesn't stop."""
+    admin_url, app_url, prov_url = cluster
+    app = make_url(app_url).username
+    creator = f"t_creator_{uuid.uuid4().hex[:8]}"
+    with _connect(admin_url) as conn:
+        conn.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD 'pw'").format(sql.Identifier(app)))
+        conn.execute(sql.SQL("CREATE ROLE {} CREATEDB").format(sql.Identifier(creator)))
+        conn.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(creator), sql.Identifier(app)))
+    try:
+        with pytest.raises(RuntimeError, match=creator):
+            ensure_roles(admin_url, app_url, prov_url)
+
+        assert _attrs(admin_url, make_url(prov_url).username) is None
+    finally:
+        with _connect(admin_url) as conn:
+            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(creator)))
+
+
+def test_refuses_an_app_role_that_is_a_member_of_the_provisioners(cluster):
+    admin_url, app_url, prov_url = cluster
+    ensure_roles(admin_url, app_url, prov_url)
+    app, prov = make_url(app_url).username, make_url(prov_url).username
+    with _connect(admin_url) as conn:
+        conn.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(prov), sql.Identifier(app)))
+
+    with pytest.raises(RuntimeError, match=prov):
+        ensure_roles(admin_url, app_url, prov_url)
+
+
 def test_less_common_objects_are_handed_over_too(cluster):
     """As a migration might create them, and a later one alter them (dropping them needs only
     the schema, which the app's role owns; altering them needs the object)."""

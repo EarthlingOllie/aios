@@ -2,8 +2,9 @@
 
 - The app's role (`aios_app`, DATABASE_URL's user): what the API, the workers and migrations
   connect as. It owns the platform schema (`public`, and everything in the database), may
-  create schemas, and has no `CREATEDB` or `CREATEROLE`. The database stays the master user's, so
-  the app's role can't drop or reconfigure it.
+  create schemas, and has no `CREATEDB` or `CREATEROLE` (this refuses a role that has, or may
+  `SET ROLE` to one that has, those or `SUPERUSER`, `BYPASSRLS` or `REPLICATION`). The
+  database stays the master user's, so the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
   `CREATEROLE`, for creating data stores. Only the provisioning worker is to have its
   credentials; nothing uses it yet.
@@ -46,6 +47,17 @@ def _login_role(conn: psycopg.Connection, url: str, *, privileged: bool) -> str:
         )
     )
     return u.username
+
+
+# The roles with a right the app's role mustn't have that it is, or may SET ROLE to (a member of
+# a role with CREATEDB can create databases as it). A master user that isn't a superuser can't
+# even say NOSUPERUSER, NOBYPASSRLS or NOREPLICATION, so these are reported, not cleared.
+_PRIVILEGED = """
+SELECT rolname FROM pg_roles
+ WHERE pg_has_role(%s, oid, 'SET')
+   AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls OR rolreplication)
+ ORDER BY 1
+"""
 
 
 # What the current user owns in the database's own schemas, as (the ALTER statement's object
@@ -235,6 +247,13 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
             )
         app = sql.Identifier(_login_role(conn, app_url, privileged=False))
         _login_role(conn, provisioner_url, privileged=True)
+        # Raising rolls all of this back, so nothing is half done.
+        if roles := [name for (name,) in conn.execute(_PRIVILEGED, (app_u.username,))]:
+            raise RuntimeError(
+                f"Role {app_u.username} is, or is a member of, a role with SUPERUSER, CREATEDB, "
+                "CREATEROLE, BYPASSRLS or REPLICATION, which the app's role mustn't have; take it "
+                f"away (ALTER ROLE, or REVOKE ... FROM it): {', '.join(roles)}"
+            )
         # Handing objects to a role takes membership of it, and on RDS the master user isn't a
         # superuser. It also keeps the master user able to use them, for break-glass access, and
         # so services still running as it during a deploy's switchover keep working.
@@ -254,7 +273,6 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
             conn.execute(
                 sql.SQL("ALTER {} {} OWNER TO {}").format(sql.SQL(kind), sql.SQL(name), app)
             )
-        # Raising rolls all of this back, so nothing is half done.
         if left := [name for (name,) in conn.execute(_LEFT_OVER).fetchall()]:
             raise RuntimeError(
                 "The master user still owns these, which the app's role couldn't then change; "
