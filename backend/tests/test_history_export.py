@@ -448,3 +448,44 @@ def test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned(
     finally:
         app.dependency_overrides.clear()
         delete_user(db, u)
+
+
+def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go_in(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    broken, fine = new_run(api, agent), new_run(api, agent)
+    chat(api, agent, broken, "first")
+    # Its checkpoint no longer loads (not valid msgpack), so it can't be flattened.
+    with SessionLocal() as db:
+        db.execute(
+            text(
+                "UPDATE langgraph.checkpoint_blobs SET blob = '\\xc1'::bytea"
+                " WHERE thread_id = :thread AND channel = 'messages'"
+            ),
+            {"thread": f"agent-run-{broken['id']}"},
+        )
+        db.commit()
+    chat(api, agent, fine, "second", "hello")
+
+    # The broken run is first in line; the task still succeeds and the next run goes in.
+    assert worker.export_history_task.apply(args=[str(store_id)]).successful()
+    assert stored(store_id, "SELECT id FROM history.agent_runs") == [(fine["id"],)]
+    with SessionLocal() as db:
+        row = db.query(HistoryExport).filter_by(source_id=broken["id"]).one()
+        assert row.exported_at is None and row.error
+    # Set aside: the sweep doesn't queue it again and again.
+    swept = []
+    monkeypatch.setattr(history, "enqueue_export", swept.append)
+    worker.export_pending_history_task.apply().get()
+    assert swept == []
+
+    # Until the run changes again.
+    with SessionLocal() as db:
+        history.enqueue_runs(db, AgentRun.id == broken["id"])
+        db.commit()
+        row = db.query(HistoryExport).filter_by(source_id=broken["id"]).one()
+        assert row.error is None
+    assert history.stores_to_export() == [store_id]
