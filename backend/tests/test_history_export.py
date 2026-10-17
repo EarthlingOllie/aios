@@ -867,3 +867,38 @@ def test_a_finished_workflow_run_is_exported_with_every_step_linked_to_its_agent
          "draft(topic)", "critic(draft(topic))", None, steps["review/critic"]["agent_run_id"],
          True, "critic"),
     ]  # fmt: skip
+
+
+def test_switching_it_on_backfills_existing_workflow_runs(
+    api, user, store_id, history_tasks, started
+):
+    workflow = nested_workflow(api)
+    done = workflow_runs.run(api, started, workflow, "topic")
+    failed = workflow_runs.run(api, started, workflow, "again", fail={"critic"})
+    assert failed["status"] == "failed"
+
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+
+    assert stored(store_id, "SELECT id, status, error FROM history.workflow_runs ORDER BY id") == [
+        (done["id"], "succeeded", None),
+        (failed["id"], "failed", failed["error"]),
+    ]
+    assert stored(
+        store_id,
+        "SELECT workflow_run_id, array_to_string(path, '/'), status"
+        " FROM history.workflow_run_steps ORDER BY workflow_run_id, path",
+    ) == [
+        (done["id"], "draft", "succeeded"),
+        (done["id"], "review", "succeeded"),
+        (done["id"], "review/critic", "succeeded"),
+        (failed["id"], "draft", "succeeded"),
+        (failed["id"], "review", "failed"),
+        (failed["id"], "review/critic", "failed"),
+    ]
+    # Each agent node's agent run went in too, and says which workflow run it was part of.
+    assert stored(
+        store_id,
+        "SELECT count(*) FROM history.workflow_run_steps s JOIN history.agent_runs r"
+        " ON r.id = s.agent_run_id AND r.workflow_run_id = s.workflow_run_id",
+    ) == [(4,)]
