@@ -48,13 +48,13 @@ def _forget_rolled_back(session: Session) -> None:
 
 def can_approve(user_id: int, store: DataStore) -> bool:
     """Whether the user may decide the store's schema change requests: a permission, not who
-    the store is, so teams can give it to more than the owner. Today, only the owner."""
-    return store.owner_user_id == user_id
+    the store is, so teams can give it to more than the owner. Those in `approvers`."""
+    return user_id in approvers(store)
 
 
 def approvers(store: DataStore) -> list[int]:
-    """The users who pass `can_approve` for the store, to tell about its requests. Changes with
-    it: today, only the owner."""
+    """The users who may decide the store's schema change requests (`can_approve`), whom a new
+    one notifies. Today, only the owner."""
     return [store.owner_user_id]
 
 
