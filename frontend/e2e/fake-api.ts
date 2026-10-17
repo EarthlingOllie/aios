@@ -5,7 +5,8 @@ import type { Page, Route } from "@playwright/test";
  * tests: it keeps state across requests, so a test can save and see the result, and follows
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
- * is refused), plus schedules' preview and timezones.
+ * is refused), plus schedules' preview and timezones, and chats with their members (a private
+ * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else).
  */
 
 type Kind = "agent" | "workflow";
@@ -76,6 +77,25 @@ export type RunRow = {
   steps: StepRow[];
 };
 
+export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
+type ChatVisibility = "public" | "private";
+export type ChatMemberRow = {
+  id: number;
+  role: "owner" | "member";
+  user: ChatUser;
+  added_at: string;
+};
+export type ChatRow = {
+  id: number;
+  owner: ChatUser;
+  name: string;
+  description: string;
+  visibility: ChatVisibility;
+  members: ChatMemberRow[];
+  created_at: string;
+  updated_at: string;
+};
+
 const NOW = "2026-10-14T09:00:00Z";
 
 export class FakeApi {
@@ -89,6 +109,9 @@ export class FakeApi {
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
   agentRuns = new Map<number, AgentRunRow>();
+  /** The signed-in user. */
+  me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
+  chats = new Map<number, ChatRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** Every write the app sent, for assertions: [method, path, body]. */
@@ -268,6 +291,33 @@ export class FakeApi {
     return this.workflowVersions.get(workflow.versions.at(-1)!)!;
   }
 
+  /** Adds a chat, private and owned by `me` unless said otherwise; the owner is its first member. */
+  addChat(
+    name: string,
+    { description = "", visibility = "private" as ChatVisibility, owner = this.me } = {},
+  ): ChatRow {
+    const chat: ChatRow = {
+      id: this.id(),
+      owner,
+      name,
+      description,
+      visibility,
+      members: [],
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    chat.members.push({ id: this.id(), role: "owner", user: owner, added_at: NOW });
+    this.chats.set(chat.id, chat);
+    return chat;
+  }
+
+  /** Adds a user to a chat, as the owner would. */
+  addChatMember(chat: ChatRow, user: ChatUser): ChatMemberRow {
+    const member: ChatMemberRow = { id: this.id(), role: "member", user, added_at: NOW };
+    chat.members.push(member);
+    return member;
+  }
+
   private saveVersion(workflow: WorkflowRow, nodes: NodeIn[], edges: Edge[], note: string | null) {
     const hash = (n: NodeIn[], e: Edge[]) =>
       JSON.stringify([
@@ -379,6 +429,40 @@ export class FakeApi {
     };
   }
 
+  private chatSummary(chat: ChatRow) {
+    return {
+      id: chat.id,
+      name: chat.name,
+      description: chat.description,
+      visibility: chat.visibility,
+      owner_id: chat.owner.id,
+      is_owner: chat.owner.id === this.me.id,
+      member_count: chat.members.length,
+      created_at: chat.created_at,
+      updated_at: chat.updated_at,
+    };
+  }
+
+  chatOut(chat: ChatRow) {
+    const users = [...chat.members]
+      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id)
+      .map((m) => ({
+        id: m.id,
+        kind: "user",
+        role: m.role,
+        target_id: m.user.id,
+        name: m.user.name ?? m.user.login,
+        login: m.user.login,
+        avatar_url: m.user.avatar_url ?? null,
+        added_at: m.added_at,
+      }));
+    return { ...this.chatSummary(chat), members: { users, agents: [], workflows: [] } };
+  }
+
+  private inChat(chat: ChatRow) {
+    return chat.members.some((m) => m.user.id === this.me.id);
+  }
+
   /** The workflows whose versions `version` runs, at any depth. */
   private contains(version: WorkflowVersionRow, found = new Set<number>()) {
     for (const n of version.nodes) {
@@ -420,9 +504,7 @@ export class FakeApi {
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
-    if (path === "/api/me") {
-      return reply(200, { id: 1, login: "tester", name: "Tester", avatar_url: null });
-    }
+    if (path === "/api/me") return reply(200, this.me);
     if (path === "/api/documents") return reply(200, []);
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
@@ -649,6 +731,57 @@ export class FakeApi {
         if (!m[2]) return reply(200, this.versionOut(old));
         this.saveVersion(workflow, old.nodes, old.edges, `Restored from v${old.version}`);
         return reply(200, this.workflowOut(workflow));
+      }
+    }
+    if (path === "/api/chats" && method === "GET") {
+      // Most recently active first; everything here happens at NOW, so the newest first.
+      return reply(
+        200,
+        [...this.chats.values()]
+          .filter((c) => this.inChat(c))
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
+          .map((c) => this.chatSummary(c)),
+      );
+    }
+    if (path === "/api/chats" && method === "POST") {
+      if ([...this.chats.values()].some((c) => c.name === body.name)) {
+        return fail(409, "A chat with that name already exists.");
+      }
+      const chat = this.addChat(body.name, {
+        description: body.description ?? "",
+        visibility: body.visibility ?? "private",
+      });
+      return reply(201, this.chatOut(chat));
+    }
+    if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {
+      const chat = this.chats.get(Number(m[1]));
+      const rest = m[2] ?? "";
+      if (!chat || (chat.visibility === "private" && !this.inChat(chat))) {
+        return fail(404, "Not Found");
+      }
+      if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
+      if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
+      if (rest === "" && method === "PUT") {
+        if ([...this.chats.values()].some((c) => c.name === body.name && c !== chat)) {
+          return fail(409, "A chat with that name already exists.");
+        }
+        Object.assign(chat, {
+          name: body.name,
+          description: body.description ?? "",
+          visibility: body.visibility ?? "private",
+        });
+        return reply(200, this.chatOut(chat));
+      }
+      if (rest === "" && method === "DELETE") {
+        this.chats.delete(chat.id);
+        return reply(204);
+      }
+      if ((m = rest.match(/^\/members\/(\d+)$/)) && method === "DELETE") {
+        const member = chat.members.find((x) => x.id === Number(m![1]));
+        if (!member) return fail(404, "Not Found");
+        if (member.role === "owner") return fail(422, "The owner can't be removed from the chat.");
+        chat.members = chat.members.filter((x) => x !== member);
+        return reply(204);
       }
     }
     return fail(404, `fake API: no route for ${method} ${path}`);

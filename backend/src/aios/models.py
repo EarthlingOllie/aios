@@ -626,3 +626,101 @@ class Trigger(Base):
         # What the scheduler polls for.
         Index("ix_triggers_due", "next_run_at", postgresql_where=text("next_run_at IS NOT NULL")),
     )
+
+
+# Chats are group conversations between users, agents and workflows. A member row says who is
+# in a chat; which kind it is decides which id column is set, like a trigger's target, so agents
+# and workflows can be members as well as users. Only users have a role: the owner (one per chat,
+# the user who made it) can change the chat, remove members and delete it.
+
+
+class ChatVisibility(enum.StrEnum):
+    public = "public"
+    private = "private"
+
+
+class ChatMemberKind(enum.StrEnum):
+    user = "user"
+    agent = "agent"
+    workflow = "workflow"
+
+
+class ChatMemberRole(enum.StrEnum):
+    owner = "owner"
+    member = "member"
+
+
+class Chat(Base):
+    """A group conversation. Its members are `ChatMember` rows; messages come later."""
+
+    __tablename__ = "chats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Unique among all chats: a chat is named like a channel, not like a user's own thing.
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    description: Mapped[str] = mapped_column(Text, server_default="")
+    # A private chat doesn't exist for a user who isn't a member of it.
+    visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When it was last active: for now, when it was last changed; messages will bump it.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    members: Mapped[list["ChatMember"]] = relationship(
+        back_populates="chat",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ChatMember.id",
+    )
+
+
+class ChatMember(Base):
+    """Who is in a chat: a user, an agent or a workflow. Only users are added so far."""
+
+    __tablename__ = "chat_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[ChatMemberKind] = mapped_column(Enum(ChatMemberKind, name="chat_member_kind"))
+    # Exactly one is set, matching `kind`. Agents and workflows are soft-deleted; the cascades are
+    # for deleting a user, which deletes their agents and workflows too.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), index=True
+    )
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    # Users only: the chat's owner, or an ordinary member.
+    role: Mapped[ChatMemberRole | None] = mapped_column(
+        Enum(ChatMemberRole, name="chat_member_role")
+    )
+    added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    chat: Mapped[Chat] = relationship(back_populates="members")
+    user: Mapped[User | None] = relationship(foreign_keys=[user_id])
+    agent: Mapped[Agent | None] = relationship()
+    workflow: Mapped[Workflow | None] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'user' AND user_id IS NOT NULL AND agent_id IS NULL AND workflow_id IS NULL)"
+            " OR (kind = 'agent' AND agent_id IS NOT NULL AND user_id IS NULL"
+            " AND workflow_id IS NULL)"
+            " OR (kind = 'workflow' AND workflow_id IS NOT NULL AND user_id IS NULL"
+            " AND agent_id IS NULL)",
+            name="ck_chat_members_target",
+        ),
+        CheckConstraint(
+            "(kind = 'user') = (role IS NOT NULL)",
+            name="ck_chat_members_role",
+        ),
+        UniqueConstraint("chat_id", "user_id"),
+        UniqueConstraint("chat_id", "agent_id"),
+        UniqueConstraint("chat_id", "workflow_id"),
+    )
