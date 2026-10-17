@@ -1,5 +1,6 @@
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
 
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, quota, store_session, store_status
+from aios.datastores import data_store_for, files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
 from aios.models import DataStoreStatus
@@ -81,18 +82,8 @@ def me(user: CurrentUser):
 def data_store(user: CurrentUser):
     """The user's data store's status (documents and search wait until it's `ready`), and its
     usage against its storage caps."""
-    store_id = data_store_for(user.id)
-    usage = quota.usage(store_id)
-    return DataStoreOut(
-        status=store_status(store_id),
-        usage=UsageOut(
-            db_bytes=usage.db_bytes,
-            db_quota_bytes=usage.db_quota_bytes,
-            files_bytes=usage.files_bytes,
-            files_quota_bytes=usage.files_quota_bytes,
-            measured_at=usage.measured_at,
-        ),
-    )
+    status, usage = quota.status_and_usage(data_store_for(user.id))
+    return DataStoreOut(status=status, usage=UsageOut(**asdict(usage)))
 
 
 @router.get("/documents", response_model=list[DocumentOut])

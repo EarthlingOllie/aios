@@ -159,16 +159,20 @@ def measure_all() -> None:
             dispose_engine(store_id, "ro")
 
 
-def usage(data_store_id: uuid.UUID) -> Usage:
-    """The store's usage, as last recorded, against the configured caps."""
+def status_and_usage(data_store_id: uuid.UUID) -> tuple[DataStoreStatus, Usage]:
+    """The store's status, and its usage as last recorded against the configured caps, from
+    one read of its row."""
     with SessionLocal() as db:
         row = db.execute(
-            select(DataStore.db_bytes, DataStore.files_bytes, DataStore.usage_measured_at).where(
-                DataStore.id == data_store_id
-            )
+            select(
+                DataStore.status,
+                DataStore.db_bytes,
+                DataStore.files_bytes,
+                DataStore.usage_measured_at,
+            ).where(DataStore.id == data_store_id)
         ).one()
     settings = get_settings()
-    return Usage(
+    return row.status, Usage(
         db_bytes=row.db_bytes,
         db_quota_bytes=settings.data_store_db_quota_bytes,
         files_bytes=row.files_bytes,
