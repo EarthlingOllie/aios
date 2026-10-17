@@ -8,9 +8,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentDataStore
 from aios.config import get_settings
-from aios.datastores import data_store_for, tables
+from aios.datastores import tables
 
 router = APIRouter(prefix="/api/data")
 
@@ -60,9 +60,9 @@ class RowsOut(BaseModel):
 
 
 @router.get("/tables", response_model=TablesOut)
-def list_tables(user: CurrentUser):
+def list_tables(store_id: CurrentDataStore):
     with _refusals():
-        found, truncated = tables.list_tables(data_store_for(user.id))
+        found, truncated = tables.list_tables(store_id)
     return TablesOut(
         tables=[TableOut.model_validate(t, from_attributes=True) for t in found],
         truncated=truncated,
@@ -72,7 +72,7 @@ def list_tables(user: CurrentUser):
 @router.get("/tables/{table:path}/rows", response_model=RowsOut)
 def read_rows(
     table: str,
-    user: CurrentUser,
+    store_id: CurrentDataStore,
     offset: Annotated[int, Query(ge=0, le=10**15)] = 0,
     # At most `query_data`'s row cap: more is taken as that many.
     limit: Annotated[int, Query(ge=1)] = 50,
@@ -81,7 +81,7 @@ def read_rows(
 ):
     with _refusals():
         page = tables.read_rows(
-            data_store_for(user.id),
+            store_id,
             table,
             offset=offset,
             limit=min(limit, get_settings().query_data_max_rows),
@@ -97,10 +97,10 @@ def read_rows(
 
 
 @router.get("/tables/{table:path}/value", response_model=ValueOut)
-def read_value(table: str, row: str, column: str, user: CurrentUser):
+def read_value(table: str, row: str, column: str, store_id: CurrentDataStore):
     """One value of a row in full (as far as the byte cap), where the page cut it short."""
     with _refusals():
-        value, truncated = tables.read_value(data_store_for(user.id), table, row, column)
+        value, truncated = tables.read_value(store_id, table, row, column)
     return ValueOut(value=value, truncated=truncated)
 
 

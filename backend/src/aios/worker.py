@@ -62,15 +62,24 @@ celery_app.conf.beat_schedule = {
 # marking it failed needs the connection the store hasn't got free.
 BUSY_RETRY_COUNTDOWN = 30
 
+# S3 that can't be reached (or is throttling, or failing on its side, past its client's own
+# retries) is tried again this often (seconds), up to this many times: about ten minutes. Then
+# the document fails with S3's error.
+FILES_RETRY_COUNTDOWN = 60
+FILES_RETRIES = 10
+
 
 @celery_app.task(name="aios.ingest_document", bind=True, max_retries=None)
 def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
     """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
+    from aios.datastores.files import FilesUnavailable
     from aios.ingest import ingest_document
 
     try:
         with store_session(uuid.UUID(data_store_id), "rw") as db:
-            ingest_document(db, document_id)
+            ingest_document(db, document_id, last_try=self.request.retries >= FILES_RETRIES)
+    except FilesUnavailable as exc:
+        raise self.retry(countdown=FILES_RETRY_COUNTDOWN) from exc
     except DataStoreBehind as exc:
         # Ready, but not yet at the store tree's head this code needs: the schedule brings it
         # there in minutes (`provision.retry_unfinished`).

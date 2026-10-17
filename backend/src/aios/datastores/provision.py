@@ -7,10 +7,10 @@ three roles named after it (never after a user):
   member, and `SET ROLE`s to it to migrate the store.
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
   it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
-  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`),
-  which both only read. Neither may create anything. Each has its own connection limit, and
-  default statement and idle-in-transaction timeouts, which a session may change
-  (`data_store_*` settings).
+  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`,
+  `aios.embedding_columns`), which both only read. Neither may create anything. Each has its
+  own connection limit, and default statement and idle-in-transaction timeouts, which a session
+  may change (`data_store_*` settings).
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
@@ -202,9 +202,10 @@ def _set_up_database(run: _Run) -> None:
             conn.execute(sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner) + grant)
 
 
-# The platform's record of the store's schema, which the default privileges would otherwise let
-# `_rw` rewrite: only the tree, as the owner, changes them.
-BOOKKEEPING = ("aios.alembic_version", "aios.schema_history")
+# The platform's record of the store's schema (and which `data` columns are embeddings), which
+# the default privileges would otherwise let `_rw` rewrite: only the tree and schema changes, as
+# the owner, change them.
+BOOKKEEPING = ("aios.alembic_version", "aios.schema_history", "aios.embedding_columns")
 
 
 def upgrade_store(names: StoreNames) -> str:

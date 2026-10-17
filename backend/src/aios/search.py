@@ -10,12 +10,15 @@ from sqlalchemy.orm import Session
 
 from aios.config import get_settings
 from aios.datastores import (
+    DataStoreBehind,
     DataStoreBusy,
     DataStoreNotReady,
+    store_busy,
+    store_not_ready,
     store_session,
     store_status,
+    store_upgrading,
 )
-from aios.datastores.notices import store_unusable
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
 
@@ -54,6 +57,12 @@ HYBRID_SQL = text(
     LIMIT :limit
     """
 )
+
+
+# What the search tools tell the model while the store is brought to the store tree's head,
+# or has no connections free (and, from `store_not_ready`, while it isn't ready).
+STORE_UPGRADING = store_upgrading("the search")
+STORE_BUSY = store_busy("the search")
 
 
 @dataclass
@@ -134,8 +143,12 @@ async def document_search_results(
     """Hybrid search hits in the form the search tools return to the model."""
     try:
         hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
-    except (DataStoreNotReady, DataStoreBusy) as exc:
-        return [{"error": store_unusable(exc)}]
+    except DataStoreBehind:
+        return [{"error": STORE_UPGRADING}]
+    except DataStoreNotReady as exc:
+        return [{"error": store_not_ready(exc.status)}]
+    except DataStoreBusy:
+        return [{"error": STORE_BUSY}]
     return [
         {
             "source": hit.filename,

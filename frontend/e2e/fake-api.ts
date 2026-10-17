@@ -53,6 +53,7 @@ export type DocumentRow = {
   status: "pending" | "processing" | "ready" | "failed";
   error: string | null;
   chunk_count: number;
+  size_bytes: number;
   created_at: string;
 };
 export type TableColumnRow = {
@@ -264,6 +265,7 @@ export class FakeApi {
       status: "ready",
       error: null,
       chunk_count: 1,
+      size_bytes: 2048,
       created_at: NOW,
       ...fields,
     };

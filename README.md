@@ -11,8 +11,8 @@ the same hybrid search as the documents chat, over the documents of the user run
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview) and its documents, with each
-one's ingest status, chunk count and upload time, upload and delete (the chat's documents panel
-uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+one's ingest status, chunk count, size and upload time, upload, download and delete (the chat's
+documents panel uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage.
@@ -128,6 +128,8 @@ browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ─�
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
 api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
+api, worker ──▶ S3 (RustFS locally): uploaded files, under each data store's prefix
+browser ──download link (presigned, a minute)──▶ S3
 api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
@@ -139,7 +141,7 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 | Retrieval | pgvector HNSW (cosine) + Postgres FTS (`tsvector`, GIN), RRF (k=60) |
 | Inference | LangGraph agents (LangChain `create_agent`, `anthropic:claude-sonnet-5-5` via `langchain-anthropic`), streamed to the UI by our own Vercel AI SDK adapter (`ui_stream.py`); LangGraph Postgres checkpointer for run history; `langchain-voyageai` embeddings (`voyageai:voyage-4`, 1024-d); Docling `HybridChunker` |
 | Tracing | Langfuse (open source, self-hosted) via its LangChain callback handler |
-| Infra | Docker Compose locally; Terraform on AWS: VPC, ECS Fargate, ALB, RDS Postgres, ElastiCache (Valkey), ECR, Secrets Manager |
+| Infra | Docker Compose locally (RustFS for S3); Terraform on AWS: VPC, ECS Fargate, ALB, RDS Postgres, ElastiCache (Valkey), S3 (SSE-KMS), ECR, Secrets Manager |
 
 ## Layout
 
@@ -149,7 +151,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user
     api/chat.py     POST /api/chat (AI SDK UI message stream)
-    api/documents.py upload/list/delete, GET /api/search
+    api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
@@ -171,7 +173,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
                     models.py (the tables every store has: documents, chunks),
-                    provision.py (creating and migrating each store's database), and
+                    provision.py (creating and migrating each store's database),
+                    files.py (uploaded files in S3, and download links), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -182,8 +185,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → create roles → migrate → migrate data stores → roll out
-docker-compose.yml  db, redis, db-roles, migrate, migrate-stores, api, worker, workflow-worker,
-                    provisioning-worker, web, sandbox
+docker-compose.yml  db, redis, rustfs, files-bucket, db-roles, migrate, migrate-stores, api,
+                    worker, workflow-worker, provisioning-worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -203,19 +206,22 @@ open http://localhost:8080
 
 `db-roles` creates the database roles as the master user (see [Database roles](#database-roles)),
 then `migrate` runs `alembic upgrade head` as `aios_app` before `api`/`worker` start, and
-`migrate-stores` brings the data stores to the store tree's head (see [Data stores](#data-stores)). The worker image bakes in
+`migrate-stores` brings the data stores to the store tree's head (see [Data stores](#data-stores)).
+`rustfs` stands in for S3 (its S3 API on http://localhost:9000, where download links send the
+browser), and `files-bucket` makes the bucket. The worker image bakes in
 Docling's models and the chunker tokenizer at build time, so it needs Hugging Face access
 while building but not at runtime.
 
 ## Local development
 
 ```sh
-docker compose up -d db redis
+docker compose up -d db redis rustfs
 
 cd backend
 cp .env.example .env     # PUBLIC_URL=http://localhost:5173
 uv sync --extra ingest   # drop --extra ingest if you're not running the worker
 uv run python -m aios.db_roles   # as the master user (DATABASE_ADMIN_URL); safe to re-run
+uv run python -m aios.datastores.files create-bucket   # uploaded files' bucket, in RustFS
 uv run alembic upgrade head
 uv run python -m aios.datastores.provision migrate-all   # data stores, after every upgrade
 uv run uvicorn aios.main:app --reload
@@ -229,8 +235,13 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise, and the role tests in `tests/test_db_roles.py`
-also need `DATABASE_ADMIN_URL` in the environment) and `pnpm build && pnpm test && pnpm test:e2e`
+need the migrated database: they skip when no server is listening or it isn't migrated, but fail
+when the server turns `DATABASE_URL` away (a missing role or database, a wrong password), so run
+`aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
+from the environment or `.env`, and skip without it, and the documents tests need RustFS, at
+`DATA_STORE_FILES_ENDPOINT` with `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in
+`backend/.env.example`), `terraform test` in `infra/terraform` (it plans and applies against a
+mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
 (frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
 need no backend. Run `pnpm exec playwright install chromium` once first, or point
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
@@ -248,7 +259,16 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 else reads), taking each role's name and password from its URL. It also creates the `vector`
 extension (not one a non-superuser can create), grants `aios_app` `CREATE` on the platform
 database, and makes it own `public` and anything else in the database the master user still owns, so a database that was migrated as the master user is
-handed over. It's safe to re-run: to change a password, change the URL and run it again. Compose
+handed over; the master user stays a member of `aios_app`, for break-glass access. It's safe to
+re-run: to change a password, change the URL and run it again.
+
+It changes nothing (it runs in one transaction) and exits with an error if: the server is older
+than PostgreSQL 16 (before 16, `CREATEROLE` reaches roles it didn't create); the three URLs name
+fewer than three roles, or different hosts or ports (compared as written, so not `localhost` in
+one and `127.0.0.1` in another); `aios_app` has, or may `SET ROLE` to a role that has,
+`SUPERUSER`, `CREATEDB`, `CREATEROLE`, `BYPASSRLS` or `REPLICATION` (on RDS, don't grant it
+`rds_superuser`); or the master user would still own something in the database it can't hand
+over, which it lists. Compose
 runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
 migration. The master user is otherwise for break-glass access only.
 
@@ -310,7 +330,7 @@ back, until the provisioning worker's beat brings it to head with the retries ab
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
 on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
-and the document search tools') as `_ro`. Searches have no owner filter: a store holds only its
+and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store holds only its
 owner's documents, and its roles can't connect to any other database. A store is reached at
 `DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
 database's instance, which the provisioner may know by another name (Compose's `db`, with the
@@ -432,8 +452,23 @@ Known limits:
 
 ## Notes and trade-offs
 
-- **Uploads are stored in Postgres** (`documents.data`, in the user's data store), so the API
-  and worker don't need a shared bucket. Move them to S3 if files get large.
+- **Uploaded files are in S3** (`aios.datastores.files`; RustFS locally, in Compose and the
+  tests), at `stores/<store id>/documents/<document id>`; the store's `documents` row keeps the
+  key, the size and the SHA-256. An upload streams the file to S3, then inserts the row, then
+  queues the ingest, and deletes the object again if either of those fails (unless the row is
+  still there); the ingest reads it back from S3 (when S3 can't answer for now, the document
+  waits, and the task tries again a minute later, up to ten times), and deleting a document
+  deletes its object, then its row (so should S3 refuse, the document stays to be deleted
+  again). Downloading
+  (`GET /api/documents/{id}/download`) looks the document up in the user's own store, so
+  another's is a 404, and redirects to a presigned `GetObject` link that saves it under its
+  original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding a link can use it
+  until then, so one is minted per click and never shown on the page. Links are signed for
+  `DATA_STORE_FILES_PUBLIC_ENDPOINT` when set (RustFS as the browser reaches it, while the app
+  reaches it at `DATA_STORE_FILES_ENDPOINT`). On AWS the bucket (`<name>-data-<environment>`)
+  has SSE-KMS, Block Public Access and no versioning (a delete really deletes); only the API's
+  and the ingest worker's task roles may get, put and delete objects, under `stores/*`, and the
+  app subnets reach it through an S3 gateway endpoint.
 - **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
   user, with an id of its own, created when they sign in. Document upload, listing, deletion,
   search, ingest and the document search tools open their sessions with
