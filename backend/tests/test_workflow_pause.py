@@ -16,7 +16,7 @@ from sqlalchemy import func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
-from test_workflows import agent_node, make_agent, make_workflow, workflow_body
+from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
 
 from aios import worker, workflows
 from aios.config import get_settings
@@ -79,13 +79,14 @@ def builder(api, store) -> dict:
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=TOOLS)).json()
 
 
-def start(api, queued: list, workflow: dict, flow: Flow, text: str = "go") -> dict:
-    """Start a run and run it as the worker would, up to where it ends or waits."""
+def start(api, queued: list, workflow: dict, script, text: str = "go") -> dict:
+    """Start a run and run it as the worker would (on `script`, e.g. a `Flow`), up to where it
+    ends or waits."""
     resp = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": text})
     assert resp.status_code == 201, resp.text
     task, (run_id,) = queued.pop()
     assert task is worker.run_workflow_task
-    with use_model(model(flow)):
+    with use_model(model(script)):
         asyncio.run(execute_run(run_id))
     return read(api, workflow, run_id)
 
@@ -320,3 +321,68 @@ def test_a_tool_that_left_the_library_fails_the_step_on_resume(
     assert build["status"] == "failed"
     assert build["error"].startswith("Agent Builder v2 can't run:")
     assert "describe_data" in build["error"]
+
+
+def test_a_nested_workflows_waiting_node_pauses_and_resumes_the_top_level_run(
+    api, builder, store, queued
+):
+    inner = chain(api, builder)
+    publish = make_agent(api, "Publish", base_prompt="publish")
+    outer = make_workflow(
+        api,
+        "Pipeline",
+        [workflow_node("review", inner), agent_node("publish", publish)],
+        [("review", "publish")],
+    )
+    flow = Flow()
+
+    waiting = start(api, queued, outer, flow)
+
+    assert waiting["status"] == "waiting", waiting["error"]
+    by_path = steps(waiting)
+    assert by_path["review"]["status"] == "waiting"
+    assert by_path["review"]["waiting_on_request_id"] is None
+    assert by_path["review/build"]["status"] == "waiting"
+    assert by_path["review/build"]["waiting_on_request_id"] is not None
+    assert by_path["review/other"]["status"] == "succeeded"
+    assert "publish" not in by_path
+
+    decide(api, queued, flow)
+
+    out = read(api, outer, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    by_path = steps(out)
+    assert by_path["review"]["output"] == "after(builder:built(applied))\n\nother(go)"
+    assert out["output"] == "publish(after(builder:built(applied))\n\nother(go))"
+    assert len(out["steps"]) == 5
+
+
+def test_a_node_failing_while_another_waits_fails_the_run_and_cancels_the_request(
+    api, builder, store, queued
+):
+    broken = make_agent(api, "Broken", base_prompt="broken")
+    workflow = make_workflow(
+        api, "Builders", [agent_node("build", builder), agent_node("broken", broken)]
+    )
+    flow = Flow()
+
+    async def breaks(messages, info):
+        if messages[0].content == "broken":
+            await asyncio.sleep(0.5)  # once the other node waits
+            raise RuntimeError("it broke")
+        async for item in flow(messages, info):
+            yield item
+
+    out = start(api, queued, workflow, breaks)
+
+    assert (out["status"], out["error"]) == ("failed", "broken: it broke")
+    build = steps(out)["build"]
+    assert (build["status"], build["error"]) == (
+        "failed",
+        "The run stopped before this step finished.",
+    )
+    [request] = api.get("/api/schema-changes").json()
+    assert request["status"] == "cancelled"
+    conversation = api.get(f"/api/agents/{build['agent_id']}/runs/{build['agent_run_id']}").json()
+    assert conversation["waiting"] is False
+    assert queued == []
