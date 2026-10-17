@@ -83,6 +83,9 @@ def test_the_export_is_off_until_switched_on_and_the_setting_persists(api, user)
         "export_run_history": False,
         "history_exported_at": None,
         "history_ready": False,
+        "embed_run_history": False,
+        "history_embedded_at": None,
+        "history_embed_error": None,
     }
 
     assert switch(api, True)["export_run_history"] is True

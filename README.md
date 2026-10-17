@@ -6,8 +6,9 @@ Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain'
 Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
-reusable instructions, and **tools** from a built-in library: web search, and document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent)
+reusable instructions, and **tools** from a built-in library: web search; document search,
+the same hybrid search as the documents chat, over the documents of the user running the agent;
+and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
@@ -446,6 +447,31 @@ source of truth (`aios.datastores.history`):
 - Switching it off stops the export (after the batch under way) and keeps the copy; runs
   deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
   copy; while the export is on, every run is then exported again.
+
+##### Searchable history
+
+While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+switched off with the export), embeds the exported messages so agents can search past runs:
+
+- `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
+  (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
+  (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
+- The export embeds what it has just exported once it has caught up (after letting go of the
+  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
+  keeps its embedding while its text is unchanged, so a run exported again is embedded only where
+  it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching embedding
+  on queues the export, which embeds every message already there (a backfill);
+  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
+  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
+  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
+  new embeddings and keeps the existing ones, which are still searched.
+- The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
+  search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by meaning
+  over what's embedded. If the query can't be embedded, it searches by keyword alone. Each result
+  is a message with its run's id, agent, title and when it started; the run searching is left
+  out. Like document search, it runs in the store's own database as `_ro`, so it never sees
+  another store's runs.
 
 ### Dependency policy
 
