@@ -9,7 +9,7 @@ in one transaction per call: a call is written whole, or not at all.
 - Updates and deletes must say which rows they touch, by equality on columns (the primary key,
   or any others): there's no "every row".
 - A call writes at most `WRITE_DATA_MAX_ROWS` rows. Inserts and upserts past it are refused
-  before anything is run; an update or delete that would touch more is rolled back.
+  before anything is run, as are updates and deletes that match more (they're counted first).
 - Only `data` tables: the platform's (`aios`) are never written here.
 
 Embedding columns are marked in `aios.embedding_columns`: a `vector(EMBEDDING_DIM)` column, and
@@ -386,6 +386,22 @@ def _ident(pg: psycopg.Connection, *names: str) -> sql.SQL:
     return sql.SQL(sql.Identifier(*names).as_string(pg).replace("%", "%%"))
 
 
+def _where(pg: psycopg.Connection, statement: Statement) -> sql.Composed:
+    return sql.SQL(" AND ").join(
+        sql.SQL("{} IS NULL").format(_ident(pg, name))
+        if value is None
+        else sql.SQL("{} = {}").format(_ident(pg, name), sql.Placeholder(f"w{i}"))
+        for i, (name, value) in enumerate(statement.where.items())
+    )
+
+
+def _count_sql(pg: psycopg.Connection, plan: Plan, statement: Statement, at_most: int):
+    """How many rows the update or delete matches, counting no further than `at_most`."""
+    return sql.SQL("SELECT count(*) FROM (SELECT FROM {} WHERE {} LIMIT {}) AS matched").format(
+        _ident(pg, SCHEMA, plan.table.name), _where(pg, statement), sql.Literal(at_most)
+    )
+
+
 def _sql(pg: psycopg.Connection, plan: Plan, statement: Statement) -> sql.Composed:
     def ident(*names: str) -> sql.SQL:
         return _ident(pg, *names)
@@ -393,12 +409,7 @@ def _sql(pg: psycopg.Connection, plan: Plan, statement: Statement) -> sql.Compos
     table = ident(SCHEMA, plan.table.name)
     cols = [ident(name) for name in statement.values]
     params = [sql.Placeholder(f"v{i}") for i in range(len(statement.values))]
-    filters = sql.SQL(" AND ").join(
-        sql.SQL("{} IS NULL").format(ident(name))
-        if value is None
-        else sql.SQL("{} = {}").format(ident(name), sql.Placeholder(f"w{i}"))
-        for i, (name, value) in enumerate(statement.where.items())
-    )
+    filters = _where(pg, statement)
     pk = plan.table.primary_key
     returning = (
         sql.SQL(" RETURNING {}").format(sql.SQL(", ").join(map(ident, pk))) if pk else sql.SQL("")
@@ -453,6 +464,23 @@ class NeedsEmbedding:
     texts: list[str]
 
 
+def _execute(cur: psycopg.Cursor, query: sql.Composed, params: dict, where: str) -> None:
+    """Runs one of the call's statements; a failure is the model's to fix (a constraint, a
+    value Postgres can't read...)."""
+    try:
+        cur.execute(query, params)
+    except psycopg.Error as exc:
+        detail = exc.diag.message_detail
+        raise Refused(where + pg_error(exc) + (f" {detail}" if detail else "")) from exc
+
+
+def _over_cap(plan: Plan, max_rows: int) -> Refused:
+    return Refused(
+        f"That {plan.operation} matches more than {max_rows} row{'' if max_rows == 1 else 's'};"
+        f" one call changes at most {max_rows}. Nothing was changed: narrow `where`."
+    )
+
+
 def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> Any:
     """Writes the call, or says what it needs embedding first (`NeedsEmbedding`)."""
     max_rows = get_settings().write_data_max_rows
@@ -469,20 +497,19 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
             count = 0
             with pg.cursor() as cur:
                 for i, statement in enumerate(plan.statements):
-                    try:
-                        cur.execute(_sql(pg, plan, statement), _params(statement, vectors))
-                    except psycopg.Error as exc:
-                        where = f"rows[{i}]: " if plan.operation in ("insert", "upsert") else ""
-                        detail = exc.diag.message_detail
-                        raise Refused(
-                            where + pg_error(exc) + (f" {detail}" if detail else "")
-                        ) from exc
+                    params = _params(statement, vectors)
+                    where = f"rows[{i}]: " if plan.operation in ("insert", "upsert") else ""
+                    if plan.operation in ("update", "delete"):
+                        # Counted first, so one that matches too many is never run: it would
+                        # lock every row it matched, and return them all.
+                        _execute(cur, _count_sql(pg, plan, statement, max_rows + 1), params, "")
+                        if cur.fetchone()[0] > max_rows:
+                            raise _over_cap(plan, max_rows)
+                    _execute(cur, _sql(pg, plan, statement), params, where)
                     count += cur.rowcount
+                    # Rows can match in between, as others write.
                     if count > max_rows:
-                        raise Refused(
-                            f"That {plan.operation} would touch {cur.rowcount} rows; one call"
-                            f" changes at most {max_rows}. Nothing was changed: narrow `where`."
-                        )
+                        raise _over_cap(plan, max_rows)
                     if cur.description is not None:
                         names = [d.name for d in cur.description]
                         written += [

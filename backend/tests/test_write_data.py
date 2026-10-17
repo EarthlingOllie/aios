@@ -332,10 +332,37 @@ def test_updates_and_deletes_over_the_row_cap_are_refused_and_change_nothing(
         call(table="fish", operation="delete", where={"caught_on": None}),
     )
 
-    assert "would touch 2 rows; one call changes at most 1" in updated["error"]
+    assert "matches more than 1 row; one call changes at most 1" in updated["error"]
     assert "Nothing was changed" in updated["error"]
-    assert "would touch 2 rows" in deleted["error"]
+    assert "matches more than 1 row" in deleted["error"]
     assert fish(store) == [("pike", "4.2", None), ("perch", "0.8", None)]
+
+
+def test_updates_and_deletes_over_the_row_cap_are_refused_before_they_run(
+    api, store, agent, monkeypatch
+):
+    """Not run and rolled back: an unfiltered-enough one would lock (and return) every row."""
+    monkeypatch.setattr(get_settings(), "write_data_max_rows", 1)
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE FUNCTION data.ran() RETURNS trigger LANGUAGE plpgsql AS"
+            " $$ BEGIN RAISE EXCEPTION 'the statement ran'; END $$"
+        )
+        conn.execute(
+            "CREATE TRIGGER ran BEFORE UPDATE OR DELETE ON data.fish"
+            " FOR EACH ROW EXECUTE FUNCTION data.ran()"
+        )
+
+    updated, deleted = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="update", values={"weight_kg": 0}, where={"caught_on": None}),
+        call(table="fish", operation="delete", where={"caught_on": None}),
+    )
+
+    for result in (updated, deleted):
+        assert "one call changes at most 1" in result["error"]
+        assert "the statement ran" not in result["error"]
 
 
 @pytest.mark.parametrize(
