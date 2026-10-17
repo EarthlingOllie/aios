@@ -17,9 +17,8 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   flattened from its checkpoint, or deleting the copy of a run that's gone. Copies are upserted
   by the platform's ids, so exporting again changes nothing. A run that fails to export keeps
   its error on its row and waits for its next change, or `RETRY_AFTER`, so it doesn't hold up
-  the rest. A
-  periodic sweep (`stores_to_export`) queues stores whose rows are still pending, should a
-  queued export be lost.
+  the rest. A periodic sweep (`stores_to_export`) queues stores whose rows are still pending,
+  should a queued export be lost.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
   (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
   outbox, so their copies go once it's back on.

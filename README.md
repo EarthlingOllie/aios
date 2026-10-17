@@ -340,8 +340,11 @@ truth (`aios.datastores.history`):
 - `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
   upserting each run and its messages, or deleting the copy of a run that's gone. It's queued
   when the outbox is written, and the provisioning worker's beat queues it every minute for any
-  store with rows still pending.
-- Switching it off stops the export and keeps the copy; "Delete exported history" empties it.
+  store with rows still pending. A run that fails to export keeps its error on its outbox row
+  and is tried again at its next turn, or in an hour, so it doesn't hold up the rest.
+- Switching it off stops the export (after the batch under way) and keeps the copy; runs
+  deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
+  copy; while the export is on, every run is then exported again.
 
 ### Dependency policy
 
