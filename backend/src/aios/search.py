@@ -8,7 +8,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.datastores import DataStoreNotReady, documents_session, store_owner, store_status
+from aios.datastores import (
+    DataStoreNotReady,
+    documents_session,
+    store_not_ready,
+    store_owner,
+    store_status,
+)
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
 
@@ -50,10 +56,6 @@ HYBRID_SQL = text(
     LIMIT :limit
     """
 )
-
-
-# What the search tools tell the model while the store is being set up.
-STORE_NOT_READY = "The user's data store is still being set up, so there's nothing to search yet."
 
 
 @dataclass
@@ -132,8 +134,8 @@ async def document_search_results(
     """Hybrid search hits in the form the search tools return to the model."""
     try:
         hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
-    except DataStoreNotReady:
-        return [{"error": STORE_NOT_READY}]
+    except DataStoreNotReady as exc:
+        return [{"error": store_not_ready(exc.status)}]
     return [
         {
             "source": hit.filename,
