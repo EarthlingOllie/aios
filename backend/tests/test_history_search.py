@@ -8,14 +8,20 @@ import re
 
 import pytest
 from conftest import delete_user, provisioned_user
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
-from sqlalchemy import update
+from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
+from sqlalchemy import text, update
 from test_agents import agent_body, chat_body, make_agent
 from test_history_export import chat, new_run, set_up_and_export, settings, stored, switch
 
 from aios import search, worker
 from aios.auth import current_user
-from aios.datastores import DataStoreNotReady, data_store_for, history, store_engine
+from aios.datastores import (
+    DataStoreNotReady,
+    data_store_for,
+    history,
+    store_engine,
+    store_session,
+)
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
@@ -403,3 +409,58 @@ def test_a_store_that_goes_away_while_embedding_isnt_logged_as_an_embedding_fail
     with pytest.raises(DataStoreNotReady):
         history.export(store_id)
     assert "Couldn't embed" not in caplog.text
+
+
+def test_embedding_holds_up_neither_exports_nor_deleting_exported_history(
+    api, store_id, exported_unembedded, monkeypatch
+):
+    """A backfill can embed for minutes: the export lock isn't held meanwhile."""
+    monkeypatch.setattr(history, "LOCK_WAIT", 0.2)
+    agent = make_agent(api, "Other")
+    run = new_run(api, agent)
+    with use_model(replies("ok")):
+        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("later"))
+    during = {}
+
+    async def embed_documents(batch):
+        # A run changed meanwhile: its export goes in.
+        with SessionLocal() as db:
+            history.enqueue_runs(db, AgentRun.id == run["id"])
+            db.commit()
+        during["exported"] = history.export(store_id)
+        history.delete_exported(store_id)
+        return [meaning(t) for t in batch]
+
+    monkeypatch.setattr(history, "embed_documents", embed_documents)
+    history.export(store_id)
+
+    assert during["exported"] == 1
+    # Deleted under it: what it embedded is gone with the rows.
+    assert stored(store_id, "SELECT count(*) FROM history.messages") == [(0,)]
+
+
+def test_a_message_whose_text_changed_while_embedding_isnt_given_the_old_texts_embedding(
+    store_id, exported_unembedded, monkeypatch
+):
+    async def embed_documents(batch):
+        with store_session(store_id, "rw") as store:
+            store.execute(text("UPDATE history.messages SET text = 'Sourdough' WHERE position = 1"))
+            store.commit()
+        return [meaning(t) for t in batch]
+
+    monkeypatch.setattr(history, "embed_documents", embed_documents)
+    history.export(store_id)
+    monkeypatch.setattr(history, "embed_documents", _meanings)
+
+    # Not "Felines"' embedding: it's waiting for one of its own, which the next pass gives it.
+    assert stored(store_id, "SELECT text, embedding IS NULL FROM history.messages ORDER BY 1") == [
+        ("Cats", False),
+        ("Sourdough", True),
+    ]
+    history.export(store_id)
+    assert stored(
+        store_id,
+        "SELECT embedding = CAST(:v AS vector) FROM history.messages WHERE position = 1".replace(
+            ":v", "'" + search.vector_literal(meaning("Sourdough")) + "'"
+        ),
+    ) == [(True,)]

@@ -240,13 +240,18 @@ def enqueue_everything(db: Session, user_id: int) -> None:
 
 
 @contextmanager
-def _locked(data_store_id: uuid.UUID, wait: float = 0) -> Iterator[bool]:
+def _locked(
+    data_store_id: uuid.UUID, wait: float = 0, lock: str = "history_export"
+) -> Iterator[bool]:
     """Holds the store's export lock, if it's free or frees up within `wait` seconds; whether it
     got it. One export (or delete) of a store at a time, so a run's copy is never written by
     two at once, in either order. Never waiting long, so exports queued while a long one runs
-    (a backfill) don't hold the app workers, and ingest with them."""
+    (a backfill) don't hold the app workers, and ingest with them.
+
+    `lock` names another of the store's locks: "history_embed", one embedding of it at a time
+    (`_embed`)."""
     with engine.connect() as conn:
-        key = func.hashtextextended(f"aios.history_export:{data_store_id}", 0)
+        key = func.hashtextextended(f"aios.{lock}:{data_store_id}", 0)
         deadline = time.monotonic() + wait
         while True:
             locked = conn.scalar(select(func.pg_try_advisory_lock(key)))
@@ -641,7 +646,9 @@ def export(data_store_id: uuid.UUID) -> int:
                 break
         # Caught up, even with nothing to export: the Settings page waits for this.
         _set_store(data_store_id, history_exported_at=func.now())
-        _embed(data_store_id)
+    # Once the lock is let go: embedding can take minutes (a backfill), and exports and deletes
+    # needn't wait for it.
+    _embed(data_store_id)
     return exported
 
 
@@ -684,10 +691,12 @@ def _embed_batch(data_store_id: uuid.UUID) -> int:
             .where(
                 messages.c.agent_run_id == bindparam("run"),
                 messages.c.position == bindparam("pos"),
+                # Exported again meanwhile with other text: it waits for an embedding of that.
+                messages.c.text == bindparam("embedded_text"),
             )
             .values(embedding=bindparam("vec", type_=messages.c.embedding.type)),
             [
-                {"run": m.agent_run_id, "pos": m.position, "vec": vec}
+                {"run": m.agent_run_id, "pos": m.position, "embedded_text": m.text, "vec": vec}
                 for m, vec in zip(waiting, vectors, strict=True)
             ],
         )
@@ -701,9 +710,16 @@ def _embed(data_store_id: uuid.UUID) -> None:
     backfill). For up to `EMBED_BUDGET`; it has caught up (`history_embedded_at`) once none are
     left. What it doesn't finish (out of time, or the embedding API failed) waits for the
     periodic sweep. Switched off, it stops after the batch under way, keeping what's embedded.
+    Nor while another embedding of the store runs, which embeds what's waiting as this would.
 
     Raises as `store_session` does (the store is gone, or going, or behind its head), and
     `DataStoreBusy` if it has no connections free: the export's task handles them."""
+    with _locked(data_store_id, lock="history_embed") as locked:
+        if locked:
+            _embed_locked(data_store_id)
+
+
+def _embed_locked(data_store_id: uuid.UUID) -> None:
     deadline = time.monotonic() + EMBED_BUDGET
     try:
         while True:
