@@ -435,6 +435,23 @@ def test_names_the_catalog_has_are_quoted(api, store, agent):
     assert result["row_count"] == 1, result
 
 
+def test_names_with_percent_signs_are_written_like_any_other(api, store, agent):
+    """Psycopg reads `%` as the start of a placeholder, even inside a quoted name."""
+    with as_owner(store) as conn:
+        conn.execute('CREATE TABLE data."100%" (id int PRIMARY KEY, "pct%" int, "a%sb" text)')
+
+    inserted, updated = run_tools(
+        api,
+        agent,
+        call(table="100%", operation="insert", rows=[{"id": 1, "pct%": 5, "a%sb": "x"}]),
+        call(table="100%", operation="update", values={"pct%": 6}, where={"a%sb": "x"}),
+    )
+
+    assert (inserted.get("row_count"), updated.get("row_count")) == (1, 1), (inserted, updated)
+    with as_owner(store) as conn:
+        assert conn.execute('SELECT "pct%" FROM data."100%"').fetchall() == [(6,)]
+
+
 # Embedding columns.
 
 

@@ -380,21 +380,28 @@ def _plan(pg: psycopg.Connection, call: Call) -> Plan:
     return Plan(table, call.operation, statements, conflict, texts)
 
 
-def _sql(plan: Plan, statement: Statement) -> sql.Composed:
-    table = sql.Identifier(SCHEMA, plan.table.name)
-    cols = [sql.Identifier(name) for name in statement.values]
+def _ident(pg: psycopg.Connection, *names: str) -> sql.SQL:
+    """A quoted name, with any `%` in it doubled: psycopg reads `%` as the start of a
+    placeholder even inside quotes."""
+    return sql.SQL(sql.Identifier(*names).as_string(pg).replace("%", "%%"))
+
+
+def _sql(pg: psycopg.Connection, plan: Plan, statement: Statement) -> sql.Composed:
+    def ident(*names: str) -> sql.SQL:
+        return _ident(pg, *names)
+
+    table = ident(SCHEMA, plan.table.name)
+    cols = [ident(name) for name in statement.values]
     params = [sql.Placeholder(f"v{i}") for i in range(len(statement.values))]
     filters = sql.SQL(" AND ").join(
-        sql.SQL("{} IS NULL").format(sql.Identifier(name))
+        sql.SQL("{} IS NULL").format(ident(name))
         if value is None
-        else sql.SQL("{} = {}").format(sql.Identifier(name), sql.Placeholder(f"w{i}"))
+        else sql.SQL("{} = {}").format(ident(name), sql.Placeholder(f"w{i}"))
         for i, (name, value) in enumerate(statement.where.items())
     )
     pk = plan.table.primary_key
     returning = (
-        sql.SQL(" RETURNING {}").format(sql.SQL(", ").join(map(sql.Identifier, pk)))
-        if pk
-        else sql.SQL("")
+        sql.SQL(" RETURNING {}").format(sql.SQL(", ").join(map(ident, pk))) if pk else sql.SQL("")
     )
     if plan.operation in ("insert", "upsert"):
         query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
@@ -403,7 +410,7 @@ def _sql(plan: Plan, statement: Statement) -> sql.Composed:
         if plan.operation == "upsert":
             # Every column given, the conflict's too (a no-op), so the row always comes back.
             query += sql.SQL(" ON CONFLICT ({}) DO UPDATE SET {}").format(
-                sql.SQL(", ").join(map(sql.Identifier, plan.conflict)),
+                sql.SQL(", ").join(map(ident, plan.conflict)),
                 sql.SQL(", ").join(sql.SQL("{0} = EXCLUDED.{0}").format(c) for c in cols),
             )
     elif plan.operation == "update":
@@ -463,7 +470,7 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
             with pg.cursor() as cur:
                 for i, statement in enumerate(plan.statements):
                     try:
-                        cur.execute(_sql(plan, statement), _params(statement, vectors))
+                        cur.execute(_sql(pg, plan, statement), _params(statement, vectors))
                     except psycopg.Error as exc:
                         where = f"rows[{i}]: " if plan.operation in ("insert", "upsert") else ""
                         detail = exc.diag.message_detail
