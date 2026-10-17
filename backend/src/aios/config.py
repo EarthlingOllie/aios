@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
     # past it is refused, and writes nothing.
     write_data_max_rows: int = Field(default=100, ge=1)
+    # How long (milliseconds) applying an approved schema change waits for each lock it needs,
+    # e.g. on a table in use, before failing: so it can't stall the store's other queries.
+    schema_change_lock_timeout: int = Field(default=5_000, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

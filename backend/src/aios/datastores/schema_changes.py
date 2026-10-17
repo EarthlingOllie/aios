@@ -6,17 +6,40 @@ allowlist. The spec is checked against the store's current schema (`check`) and 
 SQL (`compile_sql`) with every identifier quoted; that SQL is what the owner approves, and
 exactly what runs. Only the `data` schema is touched, apart from the platform's own
 bookkeeping: `aios.embedding_columns`, which marks embedding columns for `write_data`.
+
+The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
+
+1. `propose` checks a spec against the store's schema (read as its read-only role), compiles
+   it, and records a `SchemaChangeRequest` (platform database) at the store's current data
+   schema revision (`read_revision`: the latest `aios.schema_history` entry).
+2. The owner approves or rejects it (only users who pass `resolve.can_approve`).
+3. `apply`, on the provisioning worker (only it has the provisioner's credentials), runs an
+   approved request's SQL as the store's owner, in one transaction under a `lock_timeout`
+   (`SCHEMA_CHANGE_LOCK_TIMEOUT`), and appends it to `aios.schema_history`, which bumps the
+   revision. If the revision has moved on since the request was made, the spec is checked
+   again first, and a request that no longer applies is marked `stale` instead.
+4. The run that asked is resumed with the `outcome`.
 """
 
+import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import func, select, update
 
+from aios.config import get_settings
+from aios.datastores.connections import store_session
 from aios.datastores.models import EMBEDDING_DIM
+from aios.db import SessionLocal
+from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+
+log = logging.getLogger(__name__)
 
 SCHEMA = "data"
 
@@ -438,3 +461,179 @@ def _check_create_index(
         raise Invalid(f"{where}: `{SCHEMA}.{name}` already exists")
     relations.add(name)
     return op.model_copy(update={"name": name})
+
+
+def summarize(change: SchemaChange) -> str:
+    """What a spec does, in a line: for the store's history and the owner's list."""
+    parts = []
+    for op in change.ops:
+        if isinstance(op, CreateTable):
+            parts.append(f"create table {SCHEMA}.{op.name}")
+        elif isinstance(op, AddColumn):
+            parts.append(f"add column {op.column.name} to {SCHEMA}.{op.table}")
+        else:
+            parts.append(f"create index {op.name} on {SCHEMA}.{op.table}")
+    text = "; ".join(parts)
+    return text[:1].upper() + text[1:]
+
+
+# --- The store's schema -------------------------------------------------------------------------
+
+# Every relation in `data` (tables, indexes, sequences, views...), with a table's columns.
+_SCHEMA_SQL = """
+    SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod)
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+        AND c.relkind IN ('r', 'p')
+    WHERE n.nspname = 'data'
+    ORDER BY c.relname, a.attnum
+"""
+# And types of their own there, whose names a new table's would clash with.
+_TYPES_SQL = """
+    SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = 'data' AND t.typrelid = 0
+"""
+
+
+def read_schema(pg: psycopg.Connection) -> StoreSchema:
+    """The store's `data` schema, as specs are checked against it."""
+    schema = StoreSchema()
+    for relation, column, type_ in pg.execute(_SCHEMA_SQL):
+        schema.relations.add(relation)
+        if column is not None:
+            # pgvector's type, named with its schema unless that's on the search path.
+            schema.tables.setdefault(relation, {})[column] = type_.removeprefix("extensions.")
+    schema.relations.update(name for (name,) in pg.execute(_TYPES_SQL))
+    return schema
+
+
+def read_revision(pg: psycopg.Connection) -> int:
+    """The store's data schema revision: its latest change's (0 before any). Each applied
+    change appends to `aios.schema_history`, which bumps it."""
+    return pg.execute("SELECT coalesce(max(id), 0) FROM aios.schema_history").fetchone()[0]
+
+
+# --- Requests -----------------------------------------------------------------------------------
+
+
+def find(run_id: int, tool_call_id: str) -> SchemaChangeRequest | None:
+    """The request a run's tool call made, if it made one."""
+    with SessionLocal() as db:
+        return db.scalar(
+            select(SchemaChangeRequest).where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.tool_call_id == tool_call_id,
+            )
+        )
+
+
+def propose(
+    data_store_id: uuid.UUID,
+    change: SchemaChange,
+    reason: str,
+    *,
+    run_id: int | None,
+    tool_call_id: str | None,
+) -> SchemaChangeRequest:
+    """Check `change` against the store's schema and record it as a pending request; raises
+    `Invalid` if the schema doesn't take it, and as `store_session` does if the store can't be
+    read."""
+    with store_session(data_store_id, "ro") as session:
+        pg = session.connection().connection.driver_connection
+        schema, revision = read_schema(pg), read_revision(pg)
+    checked = check(change, schema)
+    request = SchemaChangeRequest(
+        data_store_id=data_store_id,
+        ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
+        sql=compile_sql(checked),
+        summary=summarize(checked),
+        reason=reason,
+        requested_by_run=run_id,
+        tool_call_id=tool_call_id,
+        base_revision=revision,
+    )
+    with SessionLocal() as db:
+        db.add(request)
+        db.commit()
+    return request
+
+
+def _store_error(exc: psycopg.Error) -> str:
+    """Why applying failed, for the owner and the model: Postgres's own message, but not one
+    from connecting (which names the server)."""
+    if exc.sqlstate and exc.diag.message_primary and not exc.sqlstate.startswith("08"):
+        return exc.diag.message_primary
+    return "The data store couldn't be reached"
+
+
+class _Stale(Exception):
+    pass
+
+
+def _run(names: Any, request: SchemaChangeRequest) -> None:
+    """Run the request's SQL on the store, as its owner, all or nothing; raises `_Stale` if the
+    schema has moved on and no longer takes it."""
+    from aios.datastores.provision import as_owner
+
+    timeout = f"{get_settings().schema_change_lock_timeout}ms"
+    with as_owner(names) as conn, conn.transaction():
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
+        # One change at a time, each seeing the last: the revision can't move until commit.
+        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
+        done = conn.execute(
+            "SELECT 1 FROM aios.schema_history WHERE request_id = %s", (request.id,)
+        ).fetchone()
+        if done:  # applied already, by a run of this that stopped before recording it
+            return
+        if read_revision(conn) != request.base_revision:
+            try:
+                check(SchemaChange.model_validate({"ops": request.ops}), read_schema(conn))
+            except Invalid as exc:
+                raise _Stale(str(exc)) from exc
+        conn.execute(request.sql)  # several statements: sent whole, with no parameters
+        conn.execute(
+            "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
+            (request.id, request.summary, request.sql),
+        )
+
+
+def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
+    """Apply an approved request to its store and record how it went (`applied`, `failed` or
+    `stale`); returns that, or None if the request isn't approved (there's nothing to do)."""
+    from aios.datastores.provision import StoreNames, provisioner_locked
+
+    with SessionLocal() as db:
+        request = db.get(SchemaChangeRequest, request_id)
+        if request is None or request.status != SchemaChangeStatus.approved:
+            return None
+        store = db.get(DataStore, request.data_store_id)
+        names = StoreNames.of(store)
+    error = None
+    try:
+        # Not while the store is being migrated or provisioned.
+        with provisioner_locked(request.data_store_id):
+            _run(names, request)
+        status = SchemaChangeStatus.applied
+    except _Stale as exc:
+        status, error = SchemaChangeStatus.stale, str(exc)
+    except psycopg.Error as exc:
+        status, error = SchemaChangeStatus.failed, _store_error(exc)
+    except Exception:
+        log.exception("Applying schema change request %s failed", request_id)
+        status, error = SchemaChangeStatus.failed, "Applying it failed unexpectedly"
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.id == request_id,
+                SchemaChangeRequest.status == SchemaChangeStatus.approved,
+            )
+            .values(
+                status=status,
+                error=error,
+                applied_at=func.now() if status == SchemaChangeStatus.applied else None,
+            )
+        )
+        db.commit()
+    return status
