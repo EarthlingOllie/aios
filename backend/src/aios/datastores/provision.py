@@ -170,7 +170,7 @@ def _restrict_connect(run: _Run) -> None:
 
 
 @contextmanager
-def _as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
+def as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
     """The provisioner on the store's database, acting as its owner."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(
@@ -184,7 +184,7 @@ def _as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
 
 def _set_up_database(run: _Run) -> None:
     n = run.names
-    with _as_owner(n) as conn:
+    with as_owner(n) as conn:
         # Already there from the template; a no-op unless the template lacks it.
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions")
         conn.execute("DROP SCHEMA IF EXISTS public")
@@ -265,7 +265,7 @@ STEPS: list[Callable[[_Run], None]] = [
 
 
 @contextmanager
-def _provisioner_locked(
+def provisioner_locked(
     store_id: uuid.UUID, wait: bool = True
 ) -> Iterator[psycopg.Connection | None]:
     """The provisioner on the platform database, holding the store's lock (released when the
@@ -316,7 +316,7 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
     docstring); returns the revision it's at. Does nothing (returns None) for a store that's
     gone, or that's past provisioning, or, unless `wait`, that another run is on."""
-    with _provisioner_locked(store_id, wait) as server:
+    with provisioner_locked(store_id, wait) as server:
         if server is None:
             return None
         with SessionLocal() as db:
@@ -384,7 +384,7 @@ def fail(store_id: uuid.UUID, error: str) -> None:
 def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Bring a ready store to the tree's head, and its roles to the limits configured now, and
     record its revision. Unless `wait`, does nothing (returns None) if another run is on it."""
-    with _provisioner_locked(store_id, wait) as server:
+    with provisioner_locked(store_id, wait) as server:
         if server is None:
             return None
         with SessionLocal() as db:

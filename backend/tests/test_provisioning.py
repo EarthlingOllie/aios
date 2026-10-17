@@ -827,7 +827,7 @@ def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user
     for store_id in (busy, other):
         provision.fail(store_id, "OperationalError: the instance is down")
 
-    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(busy):
+    with ThreadPoolExecutor(1) as pool, provision.provisioner_locked(busy):
         outcome = pool.submit(provision.retry_unfinished, [busy, other]).result(timeout=30)
 
     assert outcome == {other: head_revision()}
@@ -844,7 +844,7 @@ def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_use
     db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
     db.commit()
 
-    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(store_id):
+    with ThreadPoolExecutor(1) as pool, provision.provisioner_locked(store_id):
         outcome = pool.submit(provision.retry_unfinished, [store_id]).result(timeout=30)
 
     assert outcome == {}

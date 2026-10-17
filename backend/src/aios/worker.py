@@ -43,6 +43,9 @@ celery_app.conf.update(
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
         "aios.measure_data_store_usage": {"queue": "provisioning"},
+        "aios.apply_schema_change": {"queue": "provisioning"},
+        # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
+        "aios.resume_agent_run": {"queue": "workflows"},
     },
 )
 
@@ -186,4 +189,67 @@ def run_workflow_task(run_id: int) -> None:
         fail_run(run_id, time_limit_error())
     finally:
         # A worker has no app shutdown to flush traces on (see `aios.main`).
+        tracing.flush()
+
+
+# Applying a schema change takes seconds, but waits on locks (each up to its lock timeout).
+APPLY_TIME_LIMIT = 5 * 60
+
+
+# Applying a request, or resuming the run that made it, is tried this many times more if it
+# fails (the database or broker unreachable, say), further apart each time: both can be run
+# again safely.
+DECISION_RETRIES = 5
+
+
+@celery_app.task(
+    name="aios.apply_schema_change",
+    soft_time_limit=APPLY_TIME_LIMIT,
+    time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def apply_schema_change_task(request_id: str) -> None:
+    """Apply an approved schema change request to its store, then resume the run that asked
+    with how it went (`aios.datastores.schema_changes.apply`). Run again (redelivered), it
+    applies nothing twice, and queues the resume if the run hasn't been given the outcome."""
+    from aios.datastores import schema_changes
+
+    schema_changes.apply(uuid.UUID(request_id))
+    enqueue_resume(uuid.UUID(request_id))
+
+
+def enqueue_resume(request_id: uuid.UUID) -> None:
+    """Queue resuming the run that made a request, if it's decided and the run (if a run made
+    it) hasn't been given the outcome yet."""
+    from aios.db import SessionLocal
+    from aios.models import SchemaChangeRequest
+
+    with SessionLocal() as db:
+        request = db.get(SchemaChangeRequest, request_id)
+        if request is None or not request.status.decided or request.resumed_at is not None:
+            return
+        run_id = request.requested_by_run
+    if run_id is not None:
+        resume_agent_run_task.delay(run_id)
+
+
+@celery_app.task(
+    name="aios.resume_agent_run",
+    soft_time_limit=settings.workflow_run_time_limit + 60,
+    time_limit=settings.workflow_run_time_limit + 120,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def resume_agent_run_task(run_id: int) -> None:
+    """Resume an agent run waiting on schema change requests, with the outcomes of those that
+    are decided (`aios.api.agents.resume_run`)."""
+    from aios import tracing
+    from aios.api.agents import resume_run
+
+    try:
+        asyncio.run(resume_run(run_id))
+    finally:
         tracing.flush()

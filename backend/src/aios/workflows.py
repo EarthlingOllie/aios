@@ -623,7 +623,10 @@ async def _run_agent(
                 {"messages": [HumanMessage(text)]},
                 config,
                 context=ChatDeps(
-                    user_id=run.user_id, run_id=agent_run_id, data_store_id=run.data_store_id
+                    user_id=run.user_id,
+                    run_id=agent_run_id,
+                    data_store_id=run.data_store_id,
+                    workflow_run_id=run.id,
                 ),
                 # As in a chat turn: checkpointed step by step, so a failed turn's history is kept.
                 durability="sync",
