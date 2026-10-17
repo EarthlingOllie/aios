@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
 from aios.datastores import can_approve, data_store_for
-from aios.datastores.schema_changes import clear_notifications
+from aios.datastores.schema_changes import clear_notifications, restore_notifications
 from aios.db import DB
 from aios.models import AgentRun, SchemaChangeRequest, SchemaChangeStatus
 
@@ -171,19 +171,22 @@ def _decide(db: Session, user_id: int, request_id: uuid.UUID, **values) -> Schem
         setattr(request, key, value)
     request.decided_by_user_id = user_id
     request.decided_at = func.now()
+    # With the decision, so they're cleared if and only if it's made.
+    clear_notifications(db, request.id)
     db.commit()
     db.refresh(request)
     return request
 
 
 def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None]) -> None:
-    """Queue what follows a decision, and clear the request's notifications; if it can't be
-    queued (the broker is down), undo the decision, which nothing else has seen through, so it's
-    not left decided with nothing to act on it (and its notifications stay unread)."""
+    """Queue what follows a decision; if it can't be (the broker is down), undo the decision,
+    which nothing else has seen through, so it's not left decided with nothing to act on it, and
+    its notifications are unread again."""
     try:
         queue()
     except Exception as exc:
         log.exception("Couldn't queue what follows deciding schema change request %s", request.id)
+        restore_notifications(db, request.id, request.decided_at)
         db.execute(
             update(SchemaChangeRequest)
             .where(
@@ -202,8 +205,6 @@ def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None])
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "The decision couldn't be passed on just now, so it wasn't made. Try again.",
         ) from exc
-    clear_notifications(db, request.id)
-    db.commit()
 
 
 @router.post("/schema-changes/{request_id}/approve", response_model=SchemaChangeOut)

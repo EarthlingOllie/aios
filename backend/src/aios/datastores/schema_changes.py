@@ -618,6 +618,15 @@ def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
     )
 
 
+def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: datetime) -> None:
+    """Undo `clear_notifications` for a decision that was undone (the request waits again):
+    those it marked read, in the transaction that ran at `cleared_at`, are unread again; any a
+    user marked read themselves stay read. In the caller's transaction."""
+    notifications.mark_unread_about(
+        db, notifications.SCHEMA_CHANGE_REQUEST, {"request_id": str(request_id)}, cleared_at
+    )
+
+
 def _store_error(exc: psycopg.Error) -> str:
     """Why applying failed, for the owner and the model: Postgres's own message, but not one
     from connecting (which names the server)."""

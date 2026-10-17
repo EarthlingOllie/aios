@@ -9,6 +9,7 @@ email could deliver them too.
 """
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, update
@@ -36,4 +37,19 @@ def mark_read_about(db: Session, kind: str, ref: dict[str, Any]) -> None:
             Notification.read_at.is_(None),
         )
         .values(read_at=func.now())
+    )
+
+
+def mark_unread_about(db: Session, kind: str, ref: dict[str, Any], read_at: datetime) -> None:
+    """Undo `mark_read_about` run in a transaction whose `now()` was `read_at`: the
+    notifications it marked read (and only those) are unread again. In the caller's
+    transaction."""
+    db.execute(
+        update(Notification)
+        .where(
+            Notification.kind == kind,
+            Notification.ref.contains(ref),
+            Notification.read_at == read_at,
+        )
+        .values(read_at=None)
     )

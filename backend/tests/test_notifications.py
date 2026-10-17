@@ -7,6 +7,7 @@ import pytest
 from test_schema_change_requests import CONTACTS, Script, agent, queued, start, store  # noqa: F401
 
 from aios import worker
+from aios.api import schema_changes as schema_changes_api
 from aios.auth import current_user
 from aios.main import app
 
@@ -88,6 +89,29 @@ def test_deciding_the_request_marks_its_notification_read(api, agent, queued, de
     assert notification["read_at"] is not None
 
 
+def test_a_decision_and_clearing_its_notifications_commit_together(
+    api,
+    agent,  # noqa: F811
+    queued,  # noqa: F811
+    monkeypatch,
+):
+    """Clearing them can't fail after the decision is made, leaving a 500 for a decided
+    request (which a retry answers 409) and its notification unread."""
+    _, request = start(api, agent, Script(CONTACTS))
+
+    def lost_connection(db, request_id):
+        raise RuntimeError("lost the connection")
+
+    monkeypatch.setattr(schema_changes_api, "clear_notifications", lost_connection)
+    with pytest.raises(RuntimeError):
+        api.post(f"/api/schema-changes/{request['id']}/approve")
+    monkeypatch.undo()
+
+    after = api.get(f"/api/schema-changes/{request['id']}").json()
+    assert (after["status"], queued) == ("pending", [])
+    assert api.get("/api/notifications").json()["unread"] == 1
+
+
 def test_a_decision_that_cant_be_queued_leaves_the_notification_unread(
     api,
     agent,  # noqa: F811
@@ -104,3 +128,24 @@ def test_a_decision_that_cant_be_queued_leaves_the_notification_unread(
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 503
 
     assert api.get("/api/notifications").json()["unread"] == 1
+
+
+def test_an_undone_decision_leaves_one_the_user_read_themselves_read(
+    api,
+    agent,  # noqa: F811
+    queued,  # noqa: F811
+    monkeypatch,
+):
+    _, request = start(api, agent, Script(CONTACTS))
+    [notification] = api.get("/api/notifications").json()["notifications"]
+    read = api.post(f"/api/notifications/{notification['id']}/read").json()
+
+    def broker_down(*args):
+        raise ConnectionError("Redis is down")
+
+    monkeypatch.setattr(worker.apply_schema_change_task, "delay", broker_down)
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 503
+
+    listed = api.get("/api/notifications").json()
+    assert listed["unread"] == 0
+    assert listed["notifications"][0]["read_at"] == read["read_at"]
