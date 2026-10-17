@@ -428,12 +428,17 @@ def purge_all() -> dict[uuid.UUID, list[str] | BaseException]:
     from celery.exceptions import SoftTimeLimitExceeded
     from sqlalchemy import select
 
+    from aios.datastores import migrations
     from aios.models import DataStoreStatus
 
     with SessionLocal() as db:
         ready = db.scalars(
             select(DataStore.id)
-            .where(DataStore.status == DataStoreStatus.ready)
+            .where(
+                DataStore.status == DataStoreStatus.ready,
+                # Not one behind the tree's head: it may not have `aios.dropped_objects` yet.
+                DataStore.schema_revision.not_in(migrations.revisions_before_head()),
+            )
             .order_by(DataStore.created_at)
         ).all()
     outcome: dict[uuid.UUID, list[str] | BaseException] = {}

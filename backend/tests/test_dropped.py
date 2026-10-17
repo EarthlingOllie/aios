@@ -578,6 +578,21 @@ def test_a_dropped_tables_dropped_columns_go_with_it(db, api, store, monkeypatch
         assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)
 
 
+def test_the_scheduled_purge_leaves_a_store_behind_the_trees_head_for_later(
+    db, store, monkeypatch
+):
+    """Before it's migrated it may not have `aios.dropped_objects` yet."""
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 0)
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+    db.execute(update(DataStore).where(DataStore.id == store.id).values(schema_revision="0004"))
+    db.commit()
+
+    assert store.id not in dropped.purge_all()
+
+    with as_owner(store) as conn:
+        assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (1,)
+
+
 def test_the_purge_is_scheduled_on_the_provisioning_worker():
     scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
 
