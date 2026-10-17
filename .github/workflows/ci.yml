@@ -95,3 +95,5 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false
       - run: terraform validate
+      # Applies the configuration to a mocked AWS and checks it (tests/): no account needed.
+      - run: terraform test
