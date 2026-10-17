@@ -12,6 +12,7 @@ from aios.tools import (  # noqa: F401  (registers the tools)
     data,
     hybrid_search,
     run_python,
+    schema_change,
     web_search,
     write_data,
 )

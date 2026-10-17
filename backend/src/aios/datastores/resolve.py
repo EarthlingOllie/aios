@@ -46,6 +46,12 @@ def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_NEW_STORES, None)
 
 
+def can_approve(user_id: int, store: DataStore) -> bool:
+    """Whether the user may decide the store's schema change requests: a permission, not who
+    the store is, so teams can give it to more than the owner. Today, only the owner."""
+    return store.owner_user_id == user_id
+
+
 def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
     """The id of the user's data store, creating it if they don't have one yet.
 

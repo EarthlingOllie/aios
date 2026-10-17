@@ -11,23 +11,27 @@ from anyio import CancelScope
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, tracing, ui_stream
 from aios.agent import ChatDeps
+from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers
 from aios.api.workflows import workflows_using
 from aios.auth import CurrentUser
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
     AgentVersionTool,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
     Skill,
     SkillVersion,
     Trigger,
@@ -162,6 +166,10 @@ class RunOut(RunSummary):
     messages: list[dict[str, Any]]
     # The pinned version's instructions: the system prompt of every model call in the run.
     instructions: str
+    # The schema change requests the run made (oldest first), each at its tool call.
+    schema_change_requests: list[SchemaChangeOut]
+    # Whether it waits on one of them, and takes no new messages until it's resumed.
+    waiting: bool
 
 
 def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
@@ -581,6 +589,8 @@ def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
         ui_messages=ui_stream.to_ui_messages(history),
         messages=checkpoints.messages_out(history),
         instructions=run.agent_version.instructions,
+        schema_change_requests=run_requests(db, run.id, user.id),
+        waiting=waiting_on(db, run.id),
     )
 
 
@@ -679,12 +689,13 @@ def _end_turn(run_id: int, message_count: int) -> None:
         db.commit()
 
 
-async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> None:
+async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> list[str]:
     """Record a turn that failed or was stopped, so the next turn sees what the user saw.
 
     The user's message is already in the thread (it's checkpointed before the model is called).
     What's added: the reply's text so far, and, if it stopped while tools were running, a result
     for each call still waiting for one (a call without a result can't be sent to the model).
+    Returns the ids of those calls.
     """
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])
@@ -716,12 +727,32 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
     # model has finished it.
     if partial is not None and isinstance(last, HumanMessage | ToolMessage):
         await agent.aupdate_state(config, {"messages": [partial]}, as_node="model")
+    return [m.tool_call_id for m in stopped]
+
+
+def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
+    """Cancel the pending schema change requests these tool calls made: the model has been told
+    the calls didn't finish, so nothing waits on them any more."""
+    if not tool_call_ids:
+        return
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
+                SchemaChangeRequest.status == SchemaChangeStatus.pending,
+            )
+            .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
+        )
+        db.commit()
 
 
 async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -> None:
     try:
         if not finished:
-            await _keep_unfinished_turn(agent, config, partial)
+            stopped = await _keep_unfinished_turn(agent, config, partial)
+            await run_in_threadpool(_cancel_requests, run_id, stopped)
         state = await agent.aget_state(config)
         await run_in_threadpool(_end_turn, run_id, len(state.values.get("messages", [])))
     except Exception:
@@ -749,14 +780,79 @@ def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
     task.add_done_callback(_prewarming.discard)
 
 
+# What a new message to a run waiting on a schema change request is told.
+WAITING = (
+    "This run is waiting for a decision on its schema change request: approve or reject it"
+    " first, then carry on."
+)
+
+
+class RunWaiting(Exception):
+    """A new message to a run that waits on a schema change request."""
+
+    def __init__(self) -> None:
+        super().__init__(WAITING)
+
+
+@dataclass
+class Resume:
+    """A turn that resumes a run waiting on schema change requests, giving each waiting tool
+    call its request's outcome, for those decided (`resume_run`). The turn fills in which
+    requests it dealt with, once it has the run to itself."""
+
+    # The decided requests (not yet resumed) it found: given to their calls, or with no call
+    # waiting on them any more.
+    dealt_with: list[uuid.UUID] | None = None
+
+
+def _decided_requests(run_id: int) -> dict[str, dict[str, Any]]:
+    """The run's decided requests it hasn't been given yet, with their outcomes, by id."""
+    with SessionLocal() as db:
+        requests = db.scalars(
+            select(SchemaChangeRequest).where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.resumed_at.is_(None),
+            )
+        ).all()
+        return {str(r.id): schema_changes.outcome(r) for r in requests if r.status.decided}
+
+
+async def _resume_command(agent, config, run_id: int, resume: Resume) -> Command | None:
+    """The command resuming the run's waiting tool calls whose requests are decided (by
+    interrupt id, so others keep waiting); None if none are."""
+    from aios.tools.schema_change import REQUEST_KEY
+
+    state = await agent.aget_state(config)
+    waiting = {
+        i.id: i.value[REQUEST_KEY]
+        for i in state.interrupts
+        if isinstance(i.value, dict) and REQUEST_KEY in i.value
+    }
+    outcomes = await run_in_threadpool(_decided_requests, run_id)
+    # Those decided after this aren't dealt with: their own resume gives them to the run.
+    resume.dealt_with = [uuid.UUID(rid) for rid in outcomes]
+    values = {iid: outcomes[rid] for iid, rid in waiting.items() if rid in outcomes}
+    return Command(resume=values) if values else None
+
+
+def _check_not_waiting(run_id: int) -> None:
+    with SessionLocal() as db:
+        if waiting_on(db, run_id):
+            raise RunWaiting
+
+
 async def turn_stream(
-    ctx: ChatContext, user_id: int, run_id: int, prompt: HumanMessage
+    ctx: ChatContext, user_id: int, run_id: int, turn: HumanMessage | Resume
 ) -> AsyncIterator[ui_stream.Chunk]:
     """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
     the model is called, and whatever the reply got to is kept however the turn ends (it
     completes, fails, or the consumer stops it). A failure is reported as an `error` chunk.
 
-    Shared by the chat endpoint and the scheduler (`aios.scheduler`)."""
+    `turn` is the user's message, or `Resume` to carry on a run that waits on schema change
+    requests now they're decided; a message to a run still waiting is refused (an `error`
+    chunk), checked once the turn has the run to itself.
+
+    Shared by the chat endpoint, the scheduler (`aios.scheduler`) and `resume_run`."""
     config = {
         **checkpoints.thread_config(run_id),
         "callbacks": tracing.callbacks(),
@@ -777,35 +873,21 @@ async def turn_stream(
                 tools=ctx.tools,
                 checkpointer=saver,
             )
-            finished = False
-            # Closed however the turn ends, which cancels the graph's running tasks (e.g. a
-            # tool call) before the turn is recorded: a stopped turn's response can be
-            # dropped while this waits at a `yield`, which doesn't close the stream itself.
-            events = agent.astream(
-                {"messages": [prompt]},
-                config,
-                context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
-                stream_mode=["messages", "updates"],
-                # Checkpoint each step before the next starts, so the user's message is
-                # saved before the model is called.
-                durability="sync",
-            )
-            try:
-                async with aclosing(events):
-                    async for mode, data in events:
-                        for chunk in ui.feed(mode, data):
-                            yield chunk
-                finished = True
-            except Exception as exc:
-                log.exception("agent run %s failed", run_id)
-                for chunk in ui.error(exc):
-                    yield chunk
-            finally:
-                # Also when the client stops the turn, which cancels this task.
-                with CancelScope(shield=True):
-                    await _record_turn(
-                        agent, config, run_id, finished=finished, partial=ui.partial_reply()
-                    )
+            if isinstance(turn, Resume):
+                graph_input = await _resume_command(agent, config, run_id, turn)
+            else:
+                await run_in_threadpool(_check_not_waiting, run_id)
+                graph_input = {"messages": [turn]}
+            if graph_input is not None:
+                # Closed here if the consumer stops the turn, so the turn is recorded while the
+                # checkpointer's connection is still open.
+                turn_chunks = _run_turn(agent, config, ctx, ui, user_id, run_id, graph_input)
+                async with aclosing(turn_chunks):
+                    async for chunk in turn_chunks:
+                        yield chunk
+    except RunWaiting as exc:
+        for chunk in ui.error(exc):
+            yield chunk
     except Exception as exc:
         # The turn couldn't start, e.g. the database or the model's configuration.
         log.exception("agent run %s couldn't start a turn", run_id)
@@ -813,6 +895,101 @@ async def turn_stream(
             yield chunk
     for chunk in ui.finish():
         yield chunk
+
+
+async def _run_turn(
+    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, user_id: int, run_id: int, graph_input
+) -> AsyncIterator[ui_stream.Chunk]:
+    finished = False
+    # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool call)
+    # before the turn is recorded: a stopped turn's response can be dropped while this waits at
+    # a `yield`, which doesn't close the stream itself.
+    events = agent.astream(
+        graph_input,
+        config,
+        context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
+        stream_mode=["messages", "updates"],
+        # Checkpoint each step before the next starts, so the user's message is saved before
+        # the model is called.
+        durability="sync",
+    )
+    try:
+        async with aclosing(events):
+            async for mode, data in events:
+                for chunk in ui.feed(mode, data):
+                    yield chunk
+        finished = True
+    except Exception as exc:
+        log.exception("agent run %s failed", run_id)
+        for chunk in ui.error(exc):
+            yield chunk
+    finally:
+        # Also when the client stops the turn, which cancels this task.
+        with CancelScope(shield=True):
+            await _record_turn(agent, config, run_id, finished=finished, partial=ui.partial_reply())
+
+
+def _run_owner(run_id: int) -> tuple[int, int] | None:
+    """The run's agent, and its owner (who it runs for); None if it's gone."""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(Agent.id, Agent.owner_id)
+            .join(AgentRun, AgentRun.agent_id == Agent.id)
+            .where(AgentRun.id == run_id)
+        ).first()
+        return (row.id, row.owner_id) if row else None
+
+
+def _mark_resumed(run_id: int, request_ids: list[uuid.UUID] | None = None) -> None:
+    """The run has been given these requests' outcomes (None: all its decided ones'): it takes
+    new messages again, unless another still waits."""
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.resumed_at.is_(None),
+                SchemaChangeRequest.status.not_in(
+                    [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
+                ),
+                true() if request_ids is None else SchemaChangeRequest.id.in_(request_ids),
+            )
+            .values(resumed_at=func.now())
+        )
+        db.commit()
+
+
+class ResumeFailed(RuntimeError):
+    """A resume that couldn't give the run its outcomes (it never got the run to itself): worth
+    trying again."""
+
+
+async def resume_run(run_id: int) -> None:
+    """Carry on a run that waits on schema change requests, now some are decided: their tool
+    calls return the outcomes, and the turn goes on from there, as the run's owner. The rest
+    of the turn is in the run's history, for its chat to show.
+
+    Raises `ResumeFailed` if the turn couldn't start (the run stays waiting)."""
+    owner = await run_in_threadpool(_run_owner, run_id)
+    if owner is None:
+        return
+    agent_id, user_id = owner
+    try:
+        with SessionLocal() as db:
+            ctx = await run_in_threadpool(load_chat_context, db, user_id, agent_id, run_id)
+    except HTTPException as exc:
+        # Its version can't run any more (a tool left the library, say): no turn of it can, so
+        # it isn't left waiting on what can't come.
+        log.warning("agent run %s can't be resumed: %s", run_id, exc.detail)
+        await run_in_threadpool(_mark_resumed, run_id)
+        return
+    resume = Resume()
+    async for chunk in turn_stream(ctx, user_id, run_id, resume):
+        if chunk["type"] == "error":
+            log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
+    if resume.dealt_with is None:
+        raise ResumeFailed(f"Agent run {run_id} couldn't be resumed")
+    await run_in_threadpool(_mark_resumed, run_id, resume.dealt_with)
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
@@ -834,6 +1011,10 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
     if message.role != "user":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")
     prompt = ui_stream.human_message(message)
+    try:
+        await run_in_threadpool(_check_not_waiting, run_id)
+    except RunWaiting as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
     await run_in_threadpool(_start_turn, run_id, prompt.text)
 
     return ui_stream.streaming_response(turn_stream(ctx, user.id, run_id, prompt))
