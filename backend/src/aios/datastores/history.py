@@ -707,6 +707,8 @@ def stores_to_export() -> list[uuid.UUID]:
                         )
                         .exists(),
                         DataStore.history_exported_at.is_(None),
+                        # Messages still to embed (a backfill unfinished, or that failed).
+                        and_(User.embed_run_history, DataStore.history_embedded_at.is_(None)),
                     ),
                 )
             )
@@ -779,10 +781,22 @@ class ExportOff(Exception):
 
 def set_embedding(db: Session, user_id: int, on: bool) -> None:
     """Switch embedding the user's exported messages on or off, in `db`'s transaction, which
-    the caller commits. Raises `ExportOff` to switch it on while the export is off."""
-    exporting = db.scalar(
-        select(User.export_run_history).where(User.id == user_id).with_for_update()
-    )
-    if on and not exporting:
+    the caller commits. Raises `ExportOff` to switch it on while the export is off.
+
+    Switching it on (from off) backfills: the store's export is queued once committed, and
+    embeds every exported message waiting (`_embed`); it hasn't caught up until then."""
+    row = db.execute(
+        select(User.export_run_history, User.embed_run_history)
+        .where(User.id == user_id)
+        .with_for_update()
+    ).one()
+    if on and not row.export_run_history:
         raise ExportOff
     db.execute(update(User).where(User.id == user_id).values(embed_run_history=on))
+    if not on or row.embed_run_history:
+        return
+    from aios.datastores.resolve import data_store_for
+
+    store_id = data_store_for(user_id, db)
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_embedded_at=None))
+    db.info.setdefault(_TO_EXPORT, set()).add(store_id)

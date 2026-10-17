@@ -10,7 +10,7 @@ from fake_model import ToolCall, model, use_model
 from test_agents import agent_body, chat_body, make_agent
 from test_history_export import chat, new_run, set_up_and_export, settings, stored, switch
 
-from aios import search
+from aios import search, worker
 from aios.datastores import data_store_for, history
 
 DIM = 1024
@@ -130,3 +130,59 @@ def test_with_embedding_on_messages_are_embedded_as_theyre_exported(
     history.export(store_id)
     assert embedded[2:] == ["And kittens?", "Kittens purr too."]
     assert settings(api)["history_embedded_at"] is not None
+
+
+def test_switching_it_on_backfills_and_switching_it_off_keeps_what_was_embedded(
+    api, store_id, history_tasks, embedded
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    run = new_run(api, agent)
+    chat(api, agent, run, "Tell me about sourdough", "A loaf needs a starter.")
+    history.export(store_id)
+    assert [done for _, _, done in embedded_messages(store_id)] == [False, False]
+    history_tasks["export"].clear()
+
+    assert embed(api, True).json()["history_embedded_at"] is None
+    # The backfill: the store's export is queued, and embeds what's there.
+    assert history_tasks["export"] == [store_id]
+    worker.export_history_task.apply(args=[str(store_id)]).get()
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert settings(api)["history_embedded_at"] is not None
+
+    embed(api, False)
+    chat(api, agent, run, "And rye bread?", "Rye is denser.")
+    history.export(store_id)
+    # Nothing new is embedded; what was is kept.
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True, False, False]
+    assert embedded == ["Tell me about sourdough", "A loaf needs a starter."]
+
+
+async def _meanings(batch):
+    return [meaning(t) for t in batch]
+
+
+def test_a_backfill_left_unfinished_is_picked_up_by_the_sweep(
+    api, store_id, history_tasks, embedded, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "Cats", "Felines")
+    history.export(store_id)
+    assert history.stores_to_export() == []
+
+    async def down(batch):
+        raise RuntimeError("embedding API is down")
+
+    monkeypatch.setattr(history, "embed_documents", down)
+    embed(api, True)
+    history.export(store_id)
+    assert settings(api)["history_embedded_at"] is None
+    assert store_id in history.stores_to_export()
+
+    monkeypatch.setattr(history, "embed_documents", _meanings)
+    history.export(store_id)
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert store_id not in history.stores_to_export()
