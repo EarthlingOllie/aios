@@ -107,6 +107,32 @@ def test_an_upload_whose_insert_fails_leaves_no_object(api, user, queued):
     assert queued == []
 
 
+def test_an_upload_whose_row_outlives_a_failed_enqueue_keeps_its_object(api, user, monkeypatch):
+    # The broker is down, and so is the store by the time the row is to be removed again: the
+    # row stays, so its file must too, for the document to be downloaded or deleted.
+    store_id = data_store_for(user.id)
+
+    def broker_down(*args):
+        raise ConnectionError("broker unreachable")
+
+    def refuse_delete(conn, cursor, statement, *args):
+        if statement.startswith("DELETE FROM aios.documents"):
+            raise RuntimeError("store gone")
+
+    monkeypatch.setattr(documents.ingest_document_task, "delay", broker_down)
+    rw = store_engine(store_id, "rw")
+    event.listen(rw, "before_cursor_execute", refuse_delete)
+    try:
+        with pytest.raises(RuntimeError, match="store gone"):
+            upload(api)
+    finally:
+        event.remove(rw, "before_cursor_execute", refuse_delete)
+
+    with store_session(store_id, "ro") as store:
+        [row] = store.scalars(select(Document)).all()
+    assert stored_keys(store_id) == [row.s3_key]
+
+
 def test_an_upload_that_s3_refuses_answers_503_and_leaves_no_row(api, user, queued, monkeypatch):
     def s3_down(*args, **kwargs):
         raise ConnectionError("S3 unreachable")

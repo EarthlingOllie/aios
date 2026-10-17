@@ -119,7 +119,9 @@ def upload_document(file: UploadFile, user: CurrentUser):
                 "Could not store the file; please try again shortly.",
             ) from exc
         # From here, the file is deleted again unless its document makes it to the ingest
-        # queue: nothing would ever ingest, list or delete it.
+        # queue: nothing would ever ingest, list or delete it. But not while a row points to it:
+        # one the failed enqueue couldn't remove stays listed, to be downloaded or deleted.
+        row_committed = False
         try:
             doc = Document(
                 id=doc_id,
@@ -133,6 +135,7 @@ def upload_document(file: UploadFile, user: CurrentUser):
             db.flush()
             db.refresh(doc, ["created_at"])  # load the server default now, not lazily after commit
             db.commit()
+            row_committed = True
             try:
                 ingest_document_task.delay(str(store_id), doc.id)
             except Exception as exc:
@@ -140,12 +143,14 @@ def upload_document(file: UploadFile, user: CurrentUser):
                 # can simply retry without leaving an orphan stuck in `pending`.
                 db.delete(doc)
                 db.commit()
+                row_committed = False
                 raise HTTPException(
                     status.HTTP_503_SERVICE_UNAVAILABLE,
                     "Could not queue the document for processing; please try again shortly.",
                 ) from exc
         except BaseException:
-            _delete_unkept_file(key)
+            if not row_committed:
+                _delete_unkept_file(key)
             raise
     return DocumentOut(
         id=doc.id,
