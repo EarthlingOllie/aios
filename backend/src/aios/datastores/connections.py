@@ -54,7 +54,7 @@ class DataStoreNotReady(RuntimeError):
 
 class DataStoreBusy(RuntimeError):
     """The store's role already holds all the connections it may (its `CONNECTION LIMIT`), or
-    this process's pool on it does: worth trying again shortly."""
+    its instance does, or this process's pool on it does: worth trying again shortly."""
 
     def __init__(self, data_store_id: uuid.UUID):
         super().__init__(f"Data store {data_store_id} has no connections free")
@@ -96,11 +96,21 @@ _engines: OrderedDict[tuple[uuid.UUID, str], Engine] = OrderedDict()
 _engines_lock = threading.Lock()
 
 
+# How Postgres refuses a connection past a limit: the role's, or the whole instance's
+# (`max_connections`, less the slots it keeps for superusers), which frees up just the same.
+_REFUSALS = (
+    "too many connections for role",
+    "sorry, too many clients already",
+    "remaining connection slots are reserved",
+)
+
+
 def _busy(data_store_id: uuid.UUID):
     def handle_error(context: ExceptionContext) -> BaseException | None:
-        # Postgres refuses the connection: 'too many connections for role "ds_..._rw"'. By the
-        # text: psycopg gives a FATAL at connect time no SQLSTATE to check.
-        if "too many connections for role" in str(context.original_exception):
+        # By the text: psycopg gives a FATAL at connect time no SQLSTATE to check (all three are
+        # 53300), and it's in English unless the server's `lc_messages` says otherwise.
+        message = str(context.original_exception)
+        if any(refusal in message for refusal in _REFUSALS):
             return DataStoreBusy(data_store_id)
         return None
 

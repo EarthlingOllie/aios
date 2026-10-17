@@ -611,3 +611,30 @@ def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monke
 
     assert r.status_code == 503, r.text
     assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "sorry, too many clients already",
+        "remaining connection slots are reserved for roles with the SUPERUSER attribute",
+    ],
+)
+def test_a_store_on_an_instance_at_its_connection_limit_is_busy(user, refusal, monkeypatch):
+    """The instance's `max_connections` taken, rather than the store role's limit: as
+    transient, and as worth retrying. (Postgres's own words, from a server at its limit.)"""
+    store_connections.dispose_engines()
+    ro = store_engine(data_store_for(user.id), "ro")
+
+    def refuse(*args, **kwargs):
+        raise psycopg.OperationalError(
+            'connection failed: connection to server at "127.0.0.1", port 5432 failed: '
+            f"FATAL:  {refusal}"
+        )
+
+    event.listen(ro, "do_connect", refuse)
+    try:
+        with pytest.raises(DataStoreBusy), ro.connect():
+            pass
+    finally:
+        store_connections.dispose_engines()  # The engine that refuses goes with it.

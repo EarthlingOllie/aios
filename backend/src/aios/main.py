@@ -77,7 +77,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DataStoreBusy)
     async def data_store_busy(request: Request, exc: DataStoreBusy) -> JSONResponse:
-        # The store's role is at its connection limit: a moment's wait frees one.
+        # The store's role (or its instance) is at its connection limit: a moment's wait frees one.
         return JSONResponse(
             {"detail": "Your data store is busy. Try again in a moment."},
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
