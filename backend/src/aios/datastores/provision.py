@@ -21,12 +21,14 @@ Then it runs the store tree to its head, as the owner (`upgrade_store`), and mar
 `ready`. Every step checks what's already there, so after a crash running it again finishes
 the job; runs of the same store wait for each other.
 
-`migrate_all` brings every ready store to the tree's head, one at a time: a store that fails is
-reported and the rest carry on. It also finishes provisioning stores that never got there.
-`python -m aios.datastores.provision migrate-all` runs it (the deploy does, after the
-platform's migrations). Between deploys, `retry_unfinished` tries those stores again every few
-minutes, so a store whose provisioning gave up (the instance was down, say) gets there once it
-can.
+`migrate_all` brings every ready store to the tree's head, and its roles to the limits
+configured now, one at a time: a store that fails is reported and the rest carry on. It also
+finishes provisioning stores that never got there. `python -m aios.datastores.provision
+migrate-all` runs it (the deploy does, after the platform's migrations). Between deploys,
+`retry_unfinished` tries those stores again every few minutes, so a store whose provisioning
+gave up (the instance was down, say) gets there once it can. It also brings ready stores behind
+the tree's head to it: the release before a deploy can still make one after the deploy migrated
+stores, and migrating one can fail.
 """
 
 import logging
@@ -96,19 +98,14 @@ def _ident(*names: str) -> sql.Composable:
     return sql.SQL(", ").join(sql.Identifier(n) for n in names)
 
 
-def _create_roles(run: _Run) -> None:
-    conn, n, settings = run.server, run.names, get_settings()
-    for role, password in ((n.owner, None), (n.rw, run.rw_password), (n.ro, run.ro_password)):
-        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
-            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
-        if password is None:
-            continue
-        # The verifier, not the password, so no statement log ever holds it.
+def _set_limits(conn: psycopg.Connection, names: StoreNames) -> None:
+    """Give the store's login roles the limits configured now (`data_store_*` settings): when
+    they're made, and on every migration, so a changed setting reaches existing stores."""
+    settings = get_settings()
+    for role in (names.rw, names.ro):
         conn.execute(
-            sql.SQL("ALTER ROLE {} WITH LOGIN CONNECTION LIMIT {} PASSWORD {}").format(
-                sql.Identifier(role),
-                sql.Literal(settings.data_store_connection_limit),
-                sql.Literal(credentials.scram_verifier(password)),
+            sql.SQL("ALTER ROLE {} WITH CONNECTION LIMIT {}").format(
+                sql.Identifier(role), sql.Literal(settings.data_store_connection_limit)
             )
         )
         for setting, value in (
@@ -123,6 +120,22 @@ def _create_roles(run: _Run) -> None:
                     sql.Identifier(role), sql.Identifier(setting), sql.Literal(value)
                 )
             )
+
+
+def _create_roles(run: _Run) -> None:
+    conn, n = run.server, run.names
+    for role, password in ((n.owner, None), (n.rw, run.rw_password), (n.ro, run.ro_password)):
+        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+        if password is None:
+            continue
+        # The verifier, not the password, so no statement log ever holds it.
+        conn.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(credentials.scram_verifier(password))
+            )
+        )
+    _set_limits(conn, n)
     # To create the database owned by it, and to act as it inside.
     conn.execute(
         sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET TRUE").format(
@@ -367,14 +380,18 @@ def fail(store_id: uuid.UUID, error: str) -> None:
         db.commit()
 
 
-def migrate_store(store_id: uuid.UUID) -> str:
-    """Bring a ready store to the tree's head and record its revision."""
-    with _provisioner_locked(store_id):
+def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
+    """Bring a ready store to the tree's head, and its roles to the limits configured now, and
+    record its revision. Unless `wait`, does nothing (returns None) if another run is on it."""
+    with _provisioner_locked(store_id, wait) as server:
+        if server is None:
+            return None
         with SessionLocal() as db:
             store = db.get(DataStore, store_id)
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
+        _set_limits(server, names)
         revision = upgrade_store(names)
         with SessionLocal() as db:
             db.execute(
@@ -430,17 +447,55 @@ def _finish(which: ColumnElement[bool], wait: bool = True) -> dict[uuid.UUID, st
 UNFINISHED_AFTER = timedelta(minutes=5)
 
 
+def _migrate_ready(
+    which: ColumnElement[bool], skip: Collection[uuid.UUID] = (), wait: bool = True
+) -> dict[uuid.UUID, str | BaseException]:
+    """Bring the ready stores `which` picks (but `skip`) to the tree's head, one at a time;
+    returns the revision each reached, or what stopped it (recorded on the store). Unless
+    `wait`, skips a store another run is on."""
+    outcome: dict[uuid.UUID, str | BaseException] = {}
+    with SessionLocal() as db:
+        ready = db.scalars(
+            select(DataStore.id)
+            .where(which, DataStore.status == DataStoreStatus.ready)
+            .order_by(DataStore.created_at)
+        ).all()
+    for store_id in ready:
+        if store_id in skip:
+            continue
+        try:
+            revision = migrate_store(store_id, wait)
+            if revision is not None:
+                outcome[store_id] = revision
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Migrating data store %s failed", store_id)
+            _record_error(store_id, describe_error(exc))
+            outcome[store_id] = exc
+    return outcome
+
+
+def _behind_head() -> ColumnElement[bool]:
+    """Stores at an earlier revision of the tree than its head. Not one it doesn't know: the
+    release after this one has already migrated that store."""
+    return DataStore.schema_revision.in_(migrations.revisions_before_head())
+
+
 def retry_unfinished(
     store_ids: Collection[uuid.UUID] | None = None,
 ) -> dict[uuid.UUID, str | BaseException]:
     """Try once more to provision the stores whose provisioning gave up, or hasn't finished
-    (`UNFINISHED_AFTER`); the provisioning worker runs it every few minutes
-    (`aios.worker.RETRY_UNFINISHED_EVERY`). Returns the revision each reached, or what stopped
-    it. A store another run is on (a deploy's migrate-all, say) is left to it: new stores'
-    provisioning waits behind this, on the one provisioning worker."""
-    return _finish(
+    (`UNFINISHED_AFTER`), and bring ready stores behind the tree's head to it (the release
+    before this one made them after the deploy migrated stores, or migrating them failed); the
+    provisioning worker runs it every few minutes (`aios.worker.RETRY_UNFINISHED_EVERY`).
+    Returns the revision each reached, or what stopped it. A store another run is on (a
+    deploy's migrate-all, say) is left to it: new stores' provisioning waits behind this, on
+    the one provisioning worker."""
+    only = _only(store_ids)
+    outcome = _finish(
         and_(
-            _only(store_ids),
+            only,
             or_(
                 DataStore.status == DataStoreStatus.failed,
                 and_(
@@ -451,6 +506,7 @@ def retry_unfinished(
         ),
         wait=False,
     )
+    return outcome | _migrate_ready(and_(only, _behind_head()), skip=outcome, wait=False)
 
 
 def migrate_all(
@@ -465,24 +521,8 @@ def migrate_all(
     outcome = _finish(
         and_(only, DataStore.status.in_([DataStoreStatus.provisioning, DataStoreStatus.failed]))
     )
-    with SessionLocal() as db:
-        ready = db.scalars(
-            select(DataStore.id)
-            .where(only, DataStore.status == DataStoreStatus.ready)
-            .order_by(DataStore.created_at)
-        ).all()
-    for store_id in ready:
-        if store_id in outcome:  # just provisioned, so already at head
-            continue
-        try:
-            outcome[store_id] = migrate_store(store_id)
-        except SoftTimeLimitExceeded:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Migrating data store %s failed", store_id)
-            _record_error(store_id, describe_error(exc))
-            outcome[store_id] = exc
-    return outcome
+    # Those just provisioned are already at head.
+    return outcome | _migrate_ready(only, skip=outcome)
 
 
 def main(argv: list[str]) -> int:

@@ -4,6 +4,7 @@ import {
   Bot,
   CalendarClock,
   ChartLine,
+  Database,
   LogOut,
   MessageSquare,
   Search,
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { Chat } from "@/components/Chat";
-import { Documents } from "@/components/Documents";
+import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
@@ -26,6 +27,7 @@ import {
   AgentsSection,
   AgentVersionPage,
 } from "@/pages/Agents";
+import { DataPage } from "@/pages/Data";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
@@ -91,7 +93,15 @@ export default function App() {
   const signOut = () => api.logout().then(() => setAuth({ status: "anonymous" }));
   return (
     <Routes>
-      <Route element={<Shell user={auth.user} onSignOut={signOut} />}>
+      {/* Documents are held above every page, so the chat's panel and the Data page share one
+          list, and an upload in flight survives leaving either. */}
+      <Route
+        element={
+          <DocumentsProvider>
+            <Shell user={auth.user} onSignOut={signOut} />
+          </DocumentsProvider>
+        }
+      >
         {/* Chat is rendered by Shell so it stays mounted across navigation. */}
         <Route index element={null} />
         <Route path="skills" element={<SkillsSection />}>
@@ -119,6 +129,7 @@ export default function App() {
           <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
+        <Route path="data" element={<DataPage />} />
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
@@ -153,6 +164,7 @@ const navItems: NavItem[] = [
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
   { to: "/workflows", label: "Workflows", icon: Workflow, end: false },
   { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false },
+  { to: "/data", label: "Data", icon: Database, end: false },
   { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
 ];
 

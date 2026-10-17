@@ -43,7 +43,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_not_ready, store_session
+from aios.datastores import (
+    DataStoreBehind,
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_busy,
+    store_not_ready,
+    store_session,
+    store_upgrading,
+)
 from aios.datastores.connections import MAX_CONNECTIONS
 from aios.tools.registry import AgentTool, ToolSpec, register
 
@@ -367,13 +376,17 @@ async def in_store(
         return json.dumps({"error": store_not_ready(None)})
     try:
         return json.dumps(await work(store_id, *args))
+    except DataStoreBehind:
+        return json.dumps({"error": store_upgrading("the call")})
     except DataStoreNotReady as exc:
         return json.dumps({"error": store_not_ready(exc.status)})
     except DataStoreNotFound:
         return json.dumps({"error": store_not_ready(None)})
+    except DataStoreBusy:
+        return json.dumps({"error": store_busy("the call")})
     except (SQLAlchemyError, psycopg.Error):
-        # E.g. no connection to be had (the role's limit, or the pool's timeout): the model is
-        # told, rather than the turn failing. Not why: that names the store's roles.
+        # E.g. the store's server is down: the model is told, rather than the turn failing. Not
+        # why: that names the store's roles.
         log.exception("Couldn't reach data store %s", store_id)
         return json.dumps({"error": UNREACHABLE})
 

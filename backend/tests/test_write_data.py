@@ -394,16 +394,19 @@ def test_it_says_why_the_store_isnt_ready(api, db, user, agent, status):
     assert result == {"error": store_not_ready(status)}
 
 
-def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agent):
+@pytest.mark.parametrize(
+    ("change", "says"), [("NOLOGIN", "couldn't be reached"), ("CONNECTION LIMIT 0", "busy")]
+)
+def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agent, change, says):
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
-        provisioner.execute(f'ALTER ROLE "{store.role_prefix}_rw" CONNECTION LIMIT 0')
+        provisioner.execute(f'ALTER ROLE "{store.role_prefix}_rw" {change}')
     dispose_engines()
 
     result = write(api, agent, table="fish", operation="delete", where={"id": 1})
 
     assert set(result) == {"error"}
-    assert "couldn't be reached" in result["error"]
+    assert says in result["error"]
     assert store.role_prefix not in result["error"]
 
 

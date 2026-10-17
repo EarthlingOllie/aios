@@ -1,10 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
+import { formatDate, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
-import { dataStoreNotice, dataStorePollInterval } from "@/lib/data-store";
+import { DataStoreNotice } from "@/components/DataStoreNotice";
+import { Notice } from "@/components/Notice";
+import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
+import { useDataStoreStatus } from "@/lib/data-store";
 import { cn } from "@/lib/utils";
 
 const statusVariant = {
@@ -14,69 +25,65 @@ const statusVariant = {
   failed: "destructive",
 } as const;
 
-export function Documents() {
-  const [docs, setDocs] = useState<DocumentInfo[]>([]);
+/**
+ * The user's documents, read by the views that show them (`useDocumentsList`) and again while
+ * any is still being ingested, plus upload and delete. Held once, by `DocumentsProvider`.
+ */
+function useDocuments(storeStatus: DataStoreStatus | undefined) {
+  // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
+  const [docs, setDocs] = useState<DocumentInfo[]>();
+  // What to say about the last read of the list failing (e.g. the store is busy); the list
+  // keeps its last rows meanwhile.
+  const [listError, setListError] = useState<string>();
+  // Whether that failure may pass on its own: a refusal (an expired session, a store that isn't
+  // ready) answers the same however often it's asked, so it isn't asked again.
+  const [listRetrying, setListRetrying] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  // The user's data store: until it's ready there's nothing to list, and uploads are refused.
-  // Unknown (undefined) until the first answer, and uploads wait for it; a failed request keeps
-  // the last one.
-  const [storeStatus, setStoreStatus] = useState<DataStoreStatus>();
-  const storeBlocked = storeStatus !== "ready";
-  const notice = storeStatus && dataStoreNotice(storeStatus);
+  const ready = storeStatus === "ready";
 
-  // Never rejects: a failed list (API restart, expired session) keeps the last list and the
-  // poll below simply tries again.
-  const refresh = useCallback(
-    () =>
-      api
-        .listDocuments()
-        .then(setDocs)
-        .catch(() => {}),
-    [],
-  );
+  // Never rejects: a failed read keeps the last list, and the poll below tries again if the
+  // failure is transient. Only the latest read may update state: a slower, older answer (a poll
+  // sent before a delete, say) is dropped.
+  const latest = useRef(0);
+  const refresh = useCallback(() => {
+    const request = ++latest.current;
+    return api.listDocuments().then(
+      (list) => {
+        if (request !== latest.current) return;
+        setDocs(list);
+        setListError(undefined);
+        setListRetrying(false);
+      },
+      (err) => {
+        if (request !== latest.current) return;
+        // A network error, or the API restarting (502, 504) or busy (503: every connection the
+        // store allows is in use), which a moment's wait frees.
+        const transient = !(err instanceof ApiError) || [502, 503, 504].includes(err.status);
+        setListRetrying(transient);
+        const retry = transient ? " Trying again…" : "";
+        setListError(
+          err instanceof ApiError && err.status === 503
+            ? "Your data store is busy. Trying again…"
+            : `Couldn't load your documents (${describeError(err)}).${retry}`,
+        );
+      },
+    );
+  }, []);
 
-  // Ask how the store is, and again while it isn't ready; list the documents once it is (not
-  // before: the API refuses to list them until then).
-  useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const check = () =>
-      api
-        .getDataStore()
-        .then(({ status }) => {
-          if (stopped) return;
-          setStoreStatus(status);
-          const wait = dataStorePollInterval(status);
-          if (wait === null) refresh();
-          else timer = setTimeout(check, wait);
-        })
-        .catch(() => {
-          if (!stopped) timer = setTimeout(check, 5000);
-        });
-    check();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [refresh]);
+  // Poll while anything is still being ingested by the worker, or the last read failed for a
+  // reason that may pass, but not after one that won't (however much is ingesting); each read
+  // waits for the last to answer, so a slow store doesn't pile them up.
+  const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
+  usePoll(ready && (listError ? listRetrying : ingesting), refresh, 2000);
 
-  // Poll while anything is still being ingested by the worker.
-  const busy = docs.some((d) => d.status === "pending" || d.status === "processing");
-  useEffect(() => {
-    if (!busy) return;
-    const id = setInterval(refresh, 2000);
-    return () => clearInterval(id);
-  }, [busy, refresh]);
-
-  async function onFiles(files: FileList | null) {
-    if (!files?.length) return;
+  async function upload(files: File[]) {
+    if (!files.length) return;
     setUploading(true);
     setErrors([]);
     const failed: string[] = [];
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         try {
           await api.uploadDocument(file);
         } catch (err) {
@@ -86,70 +93,172 @@ export function Documents() {
     } finally {
       setErrors(failed);
       setUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
       await refresh();
     }
   }
 
-  async function onDelete(doc: DocumentInfo) {
+  async function remove(doc: DocumentInfo) {
     setErrors([]);
     try {
       await api.deleteDocument(doc.id);
     } catch (err) {
+      // Already gone (deleted twice before the list caught up, or from another tab): that's
+      // what was asked for.
+      if (err instanceof ApiError && err.status === 404) return;
       setErrors([`Couldn't delete ${doc.filename}: ${describeError(err)}`]);
     } finally {
       await refresh();
     }
   }
 
+  return {
+    docs,
+    /** Reads the list again; never rejects. */
+    refresh,
+    /** The store is ready but its list hasn't been read yet (and no read has failed). */
+    loading: ready && docs === undefined && !listError,
+    // A store that isn't ready says so itself; a list refused meanwhile adds nothing.
+    listError: ready ? listError : undefined,
+    listRetrying,
+    uploading,
+    errors,
+    dismissErrors: () => setErrors([]),
+    upload,
+    remove,
+    /** Uploads wait for the store to be ready, and for its status to be known. */
+    canUpload: ready,
+  };
+}
+
+type DocumentsState = ReturnType<typeof useDocuments>;
+
+type SharedDocuments = {
+  store: ReturnType<typeof useDataStoreStatus>;
+  documents: DocumentsState;
+};
+
+const DocumentsContext = createContext<SharedDocuments | null>(null);
+
+/**
+ * The store's status and the user's documents, held above the pages: the chat's panel, the Data
+ * page and the Search page share one status, the panel and the Data page read one list, and an
+ * upload still in flight keeps its progress and errors when you switch tabs or pages.
+ */
+export function DocumentsProvider({ children }: { children: ReactNode }) {
+  const store = useDataStoreStatus();
+  const documents = useDocuments(store.status);
+  return <DocumentsContext value={{ store, documents }}>{children}</DocumentsContext>;
+}
+
+function useShared() {
+  const shared = useContext(DocumentsContext);
+  if (!shared) throw new Error("The documents hooks need a DocumentsProvider above them");
+  return shared;
+}
+
+/**
+ * The user's data store's status (and why it couldn't be read, while it keeps trying), from the
+ * `DocumentsProvider` above. A store last seen ready is asked about again when the caller
+ * mounts, as nothing polls it once it's ready.
+ */
+export function useDataStore() {
+  const { status, error, recheck } = useShared().store;
+  // Only on mount, and only about a ready store: one still being asked about, or not ready (and
+  // so still polled), needs nothing more.
+  const recheckReady = useRef(status === "ready" ? recheck : undefined);
+  useEffect(() => recheckReady.current?.(), []);
+  return { status, error };
+}
+
+/**
+ * The store's status and the documents, from the `DocumentsProvider` above. The list is read
+ * again when the caller mounts (and when the store becomes ready), so a page or panel opened
+ * later shows documents added or deleted elsewhere since.
+ */
+function useDocumentsList() {
+  const { status: storeStatus, error: storeError } = useDataStore();
+  const { documents } = useShared();
+  const { refresh } = documents;
+  const ready = storeStatus === "ready";
+  // Not before the store is ready: the API refuses to list them until then.
+  useEffect(() => {
+    if (ready) refresh();
+  }, [ready, refresh]);
+  return { storeStatus, storeError, documents };
+}
+
+/** The Upload button, with the file picker it opens. */
+function UploadButton({ documents }: { documents: DocumentsState }) {
+  const inputRef = useRef<HTMLInputElement>(null);
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Documents</h2>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={storeBlocked}
-          onClick={() => inputRef.current?.click()}
-        >
-          {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
-          Upload
-        </Button>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          hidden
-          accept=".pdf,.docx,.pptx,.xlsx,.html,.md,.txt,.csv,.png,.jpg,.jpeg"
-          onChange={(e) => onFiles(e.target.files)}
-        />
-      </div>
-      {notice && (
-        // A store that couldn't be set up is an error, shown as the panel's other errors are;
-        // one being set up is progress.
-        <div
-          role={storeStatus === "failed" ? "alert" : "status"}
-          aria-label="Data store"
-          className={cn(
-            "flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm",
-            storeStatus === "failed"
-              ? "border-destructive/50 text-destructive"
-              : "text-muted-foreground",
-          )}
-        >
-          {storeStatus === "provisioning" && (
-            <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
-          )}
-          <span>{notice}</span>
-        </div>
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        // One batch at a time, from here or the other view, so they can't trample each other's
+        // progress and errors.
+        disabled={!documents.canUpload || documents.uploading}
+        onClick={() => inputRef.current?.click()}
+      >
+        {documents.uploading ? <Loader2 className="animate-spin" /> : <Upload />}
+        Upload
+      </Button>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        hidden
+        accept=".pdf,.docx,.pptx,.xlsx,.html,.md,.txt,.csv,.png,.jpg,.jpeg"
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          // Cleared straight away, so picking the same file again still uploads it.
+          e.target.value = "";
+          documents.upload(files);
+        }}
+      />
+    </>
+  );
+}
+
+/**
+ * What's wrong, if anything: a store that isn't ready (or whose status can't be read), a list
+ * that couldn't be read, or uploads and deletes that failed.
+ */
+function DocumentsNotices({
+  storeStatus,
+  storeError,
+  documents,
+  className,
+}: {
+  storeStatus: DataStoreStatus | undefined;
+  storeError: string | undefined;
+  documents: DocumentsState;
+  className: string;
+}) {
+  return (
+    <>
+      <DataStoreNotice
+        status={storeStatus}
+        error={storeError}
+        action="upload documents"
+        className={className}
+      />
+      {documents.listError && (
+        <Notice label="Documents list" busy={documents.listRetrying} className={className}>
+          {documents.listError}
+        </Notice>
       )}
-      {errors.length > 0 && (
+      {documents.errors.length > 0 && (
         <div
           role="alert"
-          className="border-destructive/50 text-destructive flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm"
+          className={cn(
+            "border-destructive/50 text-destructive flex items-start gap-2 rounded-md border",
+            "text-sm",
+            className,
+          )}
         >
           <ul className="min-w-0 flex-1 space-y-0.5">
-            {errors.map((msg, i) => (
+            {documents.errors.map((msg, i) => (
               <li key={i} className="break-words">
                 {msg}
               </li>
@@ -157,18 +266,58 @@ export function Documents() {
           </ul>
           <button
             className="hover:text-foreground shrink-0"
-            onClick={() => setErrors([])}
+            onClick={documents.dismissErrors}
             aria-label="Dismiss errors"
           >
             <X className="size-4" />
           </button>
         </div>
       )}
+    </>
+  );
+}
+
+const statusLabel = {
+  pending: "Waiting",
+  processing: "Processing",
+  ready: "Ready",
+  failed: "Failed",
+} as const;
+
+function DocumentsLoading() {
+  return (
+    <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading documents" />
+  );
+}
+
+/** Whether to say there are no documents: only once a read has answered with none. */
+function isEmpty(documents: DocumentsState) {
+  return documents.docs?.length === 0 && documents.canUpload && !documents.listError;
+}
+
+/** The chat's documents panel: a compact list beside the conversation it grounds. */
+export function Documents() {
+  const { storeStatus, storeError, documents } = useDocumentsList();
+  const { docs } = documents;
+
+  return (
+    <div className="flex h-full flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Documents</h2>
+        <UploadButton documents={documents} />
+      </div>
+      <DocumentsNotices
+        storeStatus={storeStatus}
+        storeError={storeError}
+        documents={documents}
+        className="px-2 py-1.5"
+      />
+      {documents.loading && <DocumentsLoading />}
       <ul className="flex-1 space-y-1 overflow-y-auto">
-        {docs.length === 0 && !storeBlocked && (
+        {isEmpty(documents) && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
         )}
-        {docs.map((doc) => (
+        {docs?.map((doc) => (
           <li
             key={doc.id}
             className="group hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-sm"
@@ -181,7 +330,7 @@ export function Documents() {
             </Badge>
             <button
               className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-              onClick={() => onDelete(doc)}
+              onClick={() => documents.remove(doc)}
               aria-label={`Delete ${doc.filename}`}
             >
               <Trash2 className="size-4" />
@@ -190,5 +339,75 @@ export function Documents() {
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * The Data page's Documents: every document with its ingest status (and why one failed), chunk
+ * count and upload time. Uploads from the chat's panel land in the same list.
+ */
+export function DocumentsSection() {
+  const { storeStatus, storeError, documents } = useDocumentsList();
+  const { docs } = documents;
+
+  const onDelete = (doc: DocumentInfo) => {
+    if (!window.confirm(`Delete ${doc.filename}? It will no longer be found by search.`)) return;
+    documents.remove(doc);
+  };
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-muted-foreground text-sm">
+          Files your agents and the chat search. You can also upload them from the chat.
+        </p>
+        <UploadButton documents={documents} />
+      </div>
+      <DocumentsNotices
+        storeStatus={storeStatus}
+        storeError={storeError}
+        documents={documents}
+        className="px-3 py-2"
+      />
+      {documents.loading && <DocumentsLoading />}
+      {isEmpty(documents) && (
+        <p className="text-muted-foreground text-sm">
+          No documents yet. Upload PDFs, Office files, web pages, text or images to search them.
+        </p>
+      )}
+      {docs && docs.length > 0 && (
+        <ul className="divide-y rounded-md border" aria-label="Documents">
+          {docs.map((doc) => (
+            <li key={doc.id} className="group flex items-start gap-3 px-3 py-2">
+              <FileText className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">{doc.filename}</p>
+                <p className="text-muted-foreground text-xs">
+                  Uploaded {formatDate(doc.created_at)}
+                  {doc.status === "ready" &&
+                    ` · ${doc.chunk_count} ${doc.chunk_count === 1 ? "chunk" : "chunks"}`}
+                </p>
+                {doc.status === "failed" && doc.error && (
+                  <p className="text-destructive mt-0.5 text-xs break-words">{doc.error}</p>
+                )}
+              </div>
+              <Badge variant={statusVariant[doc.status]}>
+                {(doc.status === "pending" || doc.status === "processing") && (
+                  <Loader2 className="animate-spin" />
+                )}
+                {statusLabel[doc.status]}
+              </Badge>
+              <button
+                className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                onClick={() => onDelete(doc)}
+                aria-label={`Delete ${doc.filename}`}
+              >
+                <Trash2 className="size-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }

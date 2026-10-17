@@ -523,6 +523,8 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
     described = describe(api, data_agent)
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "fish"),
+        ("aios", "chunks"),
+        ("aios", "documents"),
         ("aios", "embedding_columns"),
         ("aios", "schema_history"),
     }
@@ -573,6 +575,8 @@ def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent)
 
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "secrets"),
+        ("aios", "chunks"),
+        ("aios", "documents"),
         ("aios", "embedding_columns"),
         ("aios", "schema_history"),
     }
@@ -606,12 +610,22 @@ def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, stat
     assert says in described["error"]
 
 
-def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, data_agent):
+@pytest.mark.parametrize(
+    ("change", "says"),
+    [
+        ("NOLOGIN", "couldn't be reached"),
+        # The role's connections all taken: worth trying again shortly.
+        ("CONNECTION LIMIT 0", "busy"),
+    ],
+)
+def test_a_store_that_cant_be_reached_is_an_error_for_the_model(
+    api, store, data_agent, change, says
+):
     """Not a failed turn: the model is told, and can tell the user."""
     with psycopg.connect(
         libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
     ) as conn:
-        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" CONNECTION LIMIT 0')
+        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
     dispose_engines()
 
     described, queried = run_tools(
@@ -623,7 +637,7 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, data
 
     for result in (described, queried):
         assert set(result) == {"error"}
-        assert "couldn't be reached" in result["error"]
+        assert says in result["error"]
         assert store.role_prefix not in result["error"]
 
 

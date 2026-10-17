@@ -5,7 +5,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_voyageai import VoyageAIEmbeddings
 
 from aios.config import get_settings
-from aios.models import EMBEDDING_DIM
+from aios.datastores.models import EMBEDDING_DIM
 
 
 @lru_cache

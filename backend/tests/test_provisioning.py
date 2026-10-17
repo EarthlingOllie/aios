@@ -19,9 +19,12 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from celery.exceptions import SoftTimeLimitExceeded
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from celery.exceptions import Retry, SoftTimeLimitExceeded
+from conftest import delete_user, provisioned_user
 from psycopg import errors, sql
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import create_engine, insert, pool, select, text, update
 from sqlalchemy.engine import make_url
 
 from aios import worker
@@ -30,10 +33,12 @@ from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
 from aios.datastores.connections import store_url
 from aios.datastores.migrations import head_revision
+from aios.datastores.models import StoreBase
 from aios.datastores.resolve import names_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus
+from alembic import command
 
 
 def store_row(db, store_id: uuid.UUID) -> DataStore:
@@ -340,6 +345,34 @@ def test_a_store_is_dropped_while_autovacuum_works_in_it(two_stores, quick_autov
         ).fetchone()
 
 
+def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "data_store_connection_limit", 10)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+
+    monkeypatch.setattr(settings, "data_store_connection_limit", 20)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 30_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 60_000)
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    for role in ("rw", "ro"):
+        with psycopg.connect(login_url(row, role), autocommit=True) as conn:
+            limit = conn.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
+            assert limit.fetchone() == (20,)
+            timeouts = conn.execute(
+                "SELECT name, setting FROM pg_settings WHERE name IN "
+                "('statement_timeout', 'idle_in_transaction_session_timeout')"
+            )
+            assert dict(timeouts.fetchall()) == {
+                "statement_timeout": "30000",
+                "idle_in_transaction_session_timeout": "60000",
+            }
+
+
 class Crash(Exception):
     pass
 
@@ -443,13 +476,13 @@ def test_database_and_role_names_never_contain_a_user_id(two_stores):
         )
 
 
-# A second revision of the store tree, for the migration tests.
+# A revision after the store tree's head, for the migration tests.
 NEXT_REVISION = """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "t0002"
-down_revision = "{base}"
+revision = "tnext"
+down_revision = "{head}"
 branch_labels = None
 depends_on = None
 
@@ -465,14 +498,14 @@ def downgrade():
 
 @pytest.fixture
 def next_revision(tmp_path, monkeypatch) -> Callable[[], str]:
-    """Adds `t0002` to the store tree when called; returns its id."""
+    """Adds `tnext` to the store tree, after its head, when called; returns its id."""
 
     def add() -> str:
-        (tmp_path / "t0002_marker.py").write_text(NEXT_REVISION.format(base=head_revision()))
+        (tmp_path / "tnext_marker.py").write_text(NEXT_REVISION.replace("{head}", head_revision()))
         monkeypatch.setattr(
             migrations, "VERSION_LOCATIONS", [*migrations.VERSION_LOCATIONS, str(tmp_path)]
         )
-        return "t0002"
+        return "tnext"
 
     return add
 
@@ -484,21 +517,21 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
     for store_id in ids:
         provision.provision(store_id)
     broken, behind, ahead = ids
-    base = head_revision()
+    before = head_revision()
     head = next_revision()
     provision.migrate_store(ahead)
     # The broken store is first in line, and can't be migrated: the new revision's table is
     # already there.
     with admin_connect(store_row(db, broken).dbname) as conn:
         conn.execute("CREATE TABLE aios.marker (id int)")
-    assert [store_row(db, s).schema_revision for s in ids] == [base, base, head]
+    assert [store_row(db, s).schema_revision for s in ids] == [before, before, head]
 
     outcome = provision.migrate_all(ids)
 
     assert {s: outcome[s] for s in (behind, ahead)} == {behind: head, ahead: head}
     assert isinstance(outcome[broken], Exception)
     rows = {s: store_row(db, s) for s in ids}
-    assert [rows[s].schema_revision for s in ids] == [base, head, head]
+    assert [rows[s].schema_revision for s in ids] == [before, head, head]
     assert "marker" in rows[broken].error
     assert all(r.status == DataStoreStatus.ready for r in rows.values())
     with store_session(behind, "ro") as store:
@@ -521,7 +554,7 @@ def test_migrate_all_reports_failures_and_exits_non_zero(
     assert provision.main(["migrate-all"]) == 1
 
     out = capsys.readouterr().out
-    assert f"{ok}: t0002" in out
+    assert f"{ok}: tnext" in out
     assert f"{broken}: " in out and "marker" in out
 
 
@@ -753,7 +786,7 @@ def test_a_time_limit_stops_migrating_stores_without_recording_an_error(db, new_
         provision.provision(store_id)
     tries = []
 
-    def out_of_time(store_id):
+    def out_of_time(store_id, wait=True):
         tries.append(store_id)
         raise SoftTimeLimitExceeded()
 
@@ -802,6 +835,23 @@ def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user
     assert provision.retry_unfinished([busy]) == {busy: head_revision()}
 
 
+def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_user):
+    """Like provisioning, bringing a store to head on the schedule mustn't wait for another
+    run on it (a deploy's migrate-all, say)."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+    db.commit()
+
+    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(store_id):
+        outcome = pool.submit(provision.retry_unfinished, [store_id]).result(timeout=30)
+
+    assert outcome == {}
+    assert store_row(db, store_id).schema_revision == "0001"
+    # The next one gets it.
+    assert provision.retry_unfinished([store_id]) == {store_id: head_revision()}
+
+
 def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, monkeypatch):
     store_id = data_store_for(new_user().id)
     # Takes the connection (the kernel does), then says nothing.
@@ -818,3 +868,86 @@ def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, m
         run = pool.submit(provision.provision, store_id)
         with pytest.raises(psycopg.OperationalError, match="timeout"):
             run.result(timeout=30)
+
+
+def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedule(
+    db, user, api, monkeypatch
+):
+    """The release before a deploy keeps provisioning stores, at its own head, after the
+    deploy's migrate-stores has run (or migrate-stores failed for one): they're ready, but
+    behind the tree's head, which the new release's code needs."""
+    store_id = data_store_for(user.id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    # The store as the release before this one left it: at 0001, with no documents tables.
+    engine = create_engine(
+        make_url(get_settings().data_store_provisioner_url).set(database=names.dbname),
+        poolclass=pool.NullPool,
+    )
+    with engine.connect() as conn:
+        conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+        conn.commit()
+        command.downgrade(migrations.config(conn), "0001")
+        conn.commit()
+    engine.dispose()
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+    db.commit()
+    # A store already past this release's head (the next release has migrated it) is left alone.
+    ahead_user = provisioned_user(db, -2, "ahead-user")
+    ahead = data_store_for(ahead_user.id)
+    try:
+        db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))
+        db.commit()
+        # Until then it's not ready for this release: a 409, not the missing tables' 500; and
+        # an ingest waits for it. The store ahead works.
+        r = api.get("/api/documents")
+        assert (r.status_code, r.json()["detail"]) == (
+            409,
+            "Your data store is being upgraded. Try again in a moment.",
+        )
+        retried = []
+        monkeypatch.setattr(
+            worker.ingest_document_task, "retry", lambda **kw: retried.append(kw) or Retry()
+        )
+        with pytest.raises(Retry):
+            worker.ingest_document_task.run(str(store_id), 1)
+        assert retried == [{"countdown": worker.BUSY_RETRY_COUNTDOWN}]
+        with store_session(ahead, "ro") as store:
+            store.execute(text("SELECT 1"))
+        # Only this test's stores: others in the database are left alone.
+        retry = provision.retry_unfinished
+        monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id, ahead]))
+
+        worker.retry_unfinished_data_stores_task.apply().get()
+
+        assert store_row(db, store_id).schema_revision == head_revision()
+        assert api.get("/api/documents").json() == []
+        assert (store_row(db, ahead).schema_revision, store_row(db, ahead).error) == (
+            "tnext",
+            None,
+        )
+    finally:
+        delete_user(db, ahead_user)
+
+
+def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
+    """Like `alembic check` for the platform: a provisioned store's tables are what
+    `aios.datastores.models` says, so the models and the tree can't drift apart."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
+    # With `aios` off the search path, reflection names its schema as the models do.
+    engine = create_engine(
+        url, poolclass=pool.NullPool, connect_args={"options": "-c search_path=extensions"}
+    )
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            context = MigrationContext.configure(conn, opts=migrations.context_options())
+            assert compare_metadata(context, StoreBase.metadata) == []
+            tables = conn.scalars(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'aios'")
+            ).all()
+            assert {"documents", "chunks"} <= set(tables)
+    finally:
+        engine.dispose()

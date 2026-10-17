@@ -9,7 +9,10 @@ You can also define your own **agents** (a base prompt plus a set of **skills**,
 reusable instructions, and **tools** from a built-in library: web search, and document search,
 the same hybrid search as the documents chat, over the documents of the user running the agent)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
-between, and shows each passage with how the semantic and keyword branches ranked it. Each
+between, and shows each passage with how the semantic and keyword branches ranked it. The
+**Data** page shows the user's data store: its status (Overview) and its documents, with each
+one's ingest status, chunk count and upload time, upload and delete (the chat's documents panel
+uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage.
@@ -167,6 +170,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
+                    models.py (the tables every store has: documents, chunks),
                     provision.py (creating and migrating each store's database), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
@@ -298,14 +302,26 @@ after the platform's migration) finishes provisioning any store left `provisioni
 then brings every ready store to the store tree's head, one store at a time. A store that fails
 keeps its revision, gets the error on its row, and is reported; the rest carry on, and the
 command exits non-zero. Store migrations run while the previous release is still serving, so
-each must work with the code before it (expand now, contract in a later release).
+each must work with the code before it (expand now, contract in a later release). The code,
+though, needs its own head: a ready store behind it (the previous release made it after
+migrate-all ran, or migrating it failed) answers 409 ("being upgraded") and holds its ingests
+back, until the provisioning worker's beat brings it to head with the retries above.
 
-Documents and chunks are still in the platform database: `documents_session` opens a platform
-session for them, until they move into the stores. `store_session(id, role)` already opens a
-session on the store's own database, as `_rw` or `_ro`, at `DATABASE_URL`'s address (and with
-its options, like `sslmode`): stores are on the platform database's instance, which the
-provisioner may know by another name (Compose's `db`, with the API on the host). A row's `host`
-and `port` are for a store moved to another instance later; they're empty until then.
+Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
+by the store tree); the platform database has none. `store_session(id, role)` opens a session
+on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
+and the document search tools') as `_ro`. Searches have no owner filter: a store holds only its
+owner's documents, and its roles can't connect to any other database. A store is reached at
+`DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
+database's instance, which the provisioner may know by another name (Compose's `db`, with the
+API on the host). A row's `host` and `port` are for a store moved to another instance later;
+they're empty until then.
+
+Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
+pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
+role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
+`config.py`). A connection past the limit is refused: the API answers 503 to try again, the
+ingest task retries, and the search tools tell the model.
 
 ### Dependency policy
 
@@ -321,9 +337,10 @@ and `port` are for a store moved to another instance later; they're empty until 
 their `langchain-*` package). The tools and the UI stream adapter expect Anthropic's content
 format, and web search is Anthropic's server-side tool, whose version is picked from the model
 name (`llm.web_search_type`). `EMBEDDING_MODEL` is `voyageai:<model>`. The vector column is
-`vector(1024)` (`EMBEDDING_DIM` in `models.py`), and embeddings are requested at that size, so
-`EMBEDDING_MODEL` must support 1024-dimension output. To use a different size, change
-`EMBEDDING_DIM`, add a migration that changes the column size, then re-ingest documents.
+`vector(1024)` (`EMBEDDING_DIM` in `datastores/models.py`), and embeddings are requested at
+that size, so `EMBEDDING_MODEL` must support 1024-dimension output. To use a different size,
+change `EMBEDDING_DIM`, add a store tree migration that changes the column size, then re-ingest
+documents.
 
 ## Deploy to AWS
 
@@ -405,15 +422,14 @@ Known limits:
 
 ## Notes and trade-offs
 
-- **Uploads are stored in Postgres** (`documents.data`), so the API and worker don't need a
-  shared bucket. Move them to S3 if files get large.
+- **Uploads are stored in Postgres** (`documents.data`, in the user's data store), so the API
+  and worker don't need a shared bucket. Move them to S3 if files get large.
 - **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
   user, with an id of its own, created when they sign in. Document upload, listing, deletion,
   search, ingest and the document search tools open their sessions with
   `store_session(data_store_id, role)`; the run context (`ChatDeps`) and the ingest task carry
-  the `data_store_id`, not the user. For now every store is in the platform database and its
-  rows are told apart by `owner_id`; giving each store a database of its own changes only
-  what's behind the seam.
+  the `data_store_id`, not the user. Each store is a database of its own, so isolating users'
+  documents is the database's job, not a filter in every query.
 - **Torch**: Docling needs `torch`, whose PyPI wheels pull in several GB of CUDA runtime.
   `pyproject.toml` locks torch/torchvision to PyTorch's CPU-only index instead, so installs
   (the worker image and a local `uv sync --extra ingest`) need access to `download.pytorch.org`
