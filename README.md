@@ -11,7 +11,8 @@ the same hybrid search as the documents chat, over the documents of the user run
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
-asked for (Changes: those waiting for a decision, then the history), and its documents, with each
+asked for (Changes: those waiting for a decision, then the history), the tables and columns
+they dropped (Dropped: restorable until purged), and its documents, with each
 one's ingest status, chunk count and upload time, upload and delete (the chat's documents panel
 uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
@@ -494,9 +495,10 @@ Known limits:
   model their results are data, not instructions, and that the store is being set up until
   it's ready.
 - **Request schema changes** (`request_schema_change`) is how an agent gets new tables, columns
-  and indexes in `data` (`aios.datastores.schema_changes`). The model sends a spec, never SQL:
-  `create_table`, `add_column` and `create_index` operations, with types from an allowlist
-  (including `embedding`, a vector of a text column that `write_data` fills) and names that
+  and indexes in `data`, or drops tables and columns (`aios.datastores.schema_changes`). The
+  model sends a spec, never SQL: `create_table`, `add_column`, `create_index`, `drop_table`
+  and `drop_column` operations, with types from an allowlist (including `embedding`, a vector
+  of a text column that `write_data` fills) and names that
   match `^[a-z][a-z0-9_]{0,62}$` and aren't reserved words. The tool checks it against the
   store's schema, compiles it to SQL with every identifier quoted (descriptions become
   `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
@@ -512,6 +514,18 @@ Known limits:
   failed with the error, or stale), which the tool call returns to the model, and the chat
   shows the rest of the turn. Workflow runs can't wait on a request yet: in a workflow the tool
   tells the model so.
+- **Drops are reversible** (`aios.datastores.dropped`). `drop_table` and `drop_column` rename
+  the table or column to `_dropped_<timestamp>_<name>` and record it in
+  `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with
+  dropped columns keeps its privileges on its other columns only, so `SELECT *` on it is
+  refused until they're restored or purged), so it's gone from `describe_data`, `query_data`
+  and `write_data` while its data stays. The card and the Changes section show what a drop
+  would remove (row counts, the columns affected), and approving it takes the tables' names
+  typed (refused by the server otherwise). The Data page's Dropped section lists what's
+  dropped with when it's purged, and restores it (on the provisioning worker,
+  `aios.restore_dropped`), refused if its name has been taken since. The provisioning worker's
+  beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hour
+  (`aios.purge_dropped`). Restores and purges are logged in `aios.schema_history` too.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and

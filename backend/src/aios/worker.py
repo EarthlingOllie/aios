@@ -43,6 +43,7 @@ celery_app.conf.update(
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
         "aios.restore_dropped": {"queue": "provisioning"},
+        "aios.purge_dropped": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -51,12 +52,19 @@ celery_app.conf.update(
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# Dropped tables and columns past their retention (days) are purged this often (seconds).
+PURGE_DROPPED_EVERY = 3600
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "purge-dropped": {
+        "task": "aios.purge_dropped",
+        "schedule": PURGE_DROPPED_EVERY,
+        "options": {"expires": PURGE_DROPPED_EVERY},
     },
 }
 
@@ -203,6 +211,19 @@ def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
     from aios.datastores import dropped
 
     dropped.restore(uuid.UUID(data_store_id), dropped_id)
+
+
+@celery_app.task(
+    name="aios.purge_dropped",
+    soft_time_limit=PURGE_DROPPED_EVERY,
+    time_limit=PURGE_DROPPED_EVERY + 60,
+)
+def purge_dropped_task() -> None:
+    """Drop for good, in every ready store, the tables and columns dropped longer ago than
+    `DATA_STORE_DROPPED_RETENTION_DAYS` (`aios.datastores.dropped`)."""
+    from aios.datastores import dropped
+
+    dropped.purge_all()
 
 
 def enqueue_resume(request_id: uuid.UUID) -> None:

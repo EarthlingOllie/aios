@@ -13,7 +13,7 @@ from test_data_tools import as_owner, provisioned, run_tools
 from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for, schema_changes
+from aios.datastores import data_store_for, dropped, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
@@ -455,3 +455,83 @@ def test_only_the_stores_owner_sees_and_restores_its_dropped_objects(
     assert listed(api) == []
     assert api.post(f"/api/dropped/{table['id']}/restore").status_code == 404
     assert restores == []
+
+
+# --- Purging ------------------------------------------------------------------------------------
+
+
+def age(store: DataStore, dropped_name: str, days: float) -> None:
+    """Make a dropped table or column look `days` old."""
+    with as_owner(store) as conn:
+        conn.execute(
+            "UPDATE aios.dropped_objects SET dropped_at = now() - make_interval(secs => %s)"
+            " WHERE dropped_name = %s",
+            (days * 86400, dropped_name),
+        )
+
+
+def test_the_purge_removes_only_what_is_past_the_retention_period(
+    db, api, agent, store, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 1)
+    eels = {"op": "create_table", "name": "eels", "columns": [{"name": "x", "type": "text"}]}
+    apply(db, store, eels)
+    column = apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    old_table = apply(db, store, {"op": "drop_table", "table": "eels"})
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
+    for request in (column, old_table):
+        age(store, request.ops[0]["dropped_as"], 1.01)
+
+    purged = dropped.purge(store.id)
+
+    assert purged == ["Purge dropped table data.eels", "Purge dropped column name of data.fish"]
+    [kept] = listed(api)
+    assert (kept["table"], kept["column"]) == ("fish", "weight_kg")
+    with as_owner(store) as conn:
+        columns = conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = 'data.fish'::regclass"
+            " AND attnum > 0 AND NOT attisdropped ORDER BY attnum"
+        ).fetchall()
+        assert [c for (c,) in columns] == ["id", kept["dropped_name"]]
+        tables = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'data'")
+        assert [t for (t,) in tables] == ["fish"]
+        summaries = conn.execute(
+            "SELECT summary FROM aios.schema_history ORDER BY id DESC LIMIT 2"
+        ).fetchall()
+    assert [s for (s,) in summaries] == purged[::-1]
+    # Nothing's left to purge yet.
+    assert dropped.purge(store.id) == []
+
+
+def test_once_a_tables_last_dropped_column_is_purged_select_star_reads_it_again(
+    db, api, agent, store, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 0)
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
+
+    dropped.purge(store.id)
+
+    read = tool(api, agent, "query_data", sql="SELECT * FROM data.fish ORDER BY id")
+    assert read["columns"] == ["id", "name"]
+
+
+def test_a_dropped_tables_dropped_columns_go_with_it(db, api, store, monkeypatch):
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 0)
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+
+    assert dropped.purge(store.id) == ["Purge dropped table data.fish"]
+
+    assert listed(api) == []
+    with as_owner(store) as conn:
+        assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)
+
+
+def test_the_scheduled_purge_goes_through_every_ready_store(db, store, monkeypatch):
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 0)
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+
+    worker.purge_dropped_task.run()
+
+    with as_owner(store) as conn:
+        assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)

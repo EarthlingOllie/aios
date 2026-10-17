@@ -341,3 +341,108 @@ def restore(data_store_id: uuid.UUID, dropped_id: int) -> str | None:
             return str(exc)
     log.info("Restored dropped %s %s in data store %s", item.kind, dropped_id, data_store_id)
     return None
+
+
+# --- Purging ------------------------------------------------------------------------------------
+
+
+def _purge_sql(item: Dropped) -> tuple[list[sql.Composable], str, str | None]:
+    """The statements that purge it for good, what they're summed up as, and the table whose
+    access to grant afterwards (a column's)."""
+    q, lit = sql.Identifier, sql.Literal
+    if item.column is None:
+        name = lit(item.dropped_name)
+        return (
+            [
+                sql.SQL("DROP TABLE {}").format(q(SCHEMA, item.dropped_name)),
+                sql.SQL("DELETE FROM aios.embedding_columns WHERE table_name = {}").format(name),
+                # With its own dropped columns.
+                sql.SQL(
+                    "DELETE FROM aios.dropped_objects"
+                    " WHERE id = {} OR (column_name IS NOT NULL AND table_name = {})"
+                ).format(lit(item.id), name),
+            ],
+            f"Purge dropped table {SCHEMA}.{item.table}",
+            None,
+        )
+    return (
+        [
+            sql.SQL("ALTER TABLE {} DROP COLUMN {}").format(
+                q(SCHEMA, item.table), q(item.dropped_name)
+            ),
+            sql.SQL(
+                "DELETE FROM aios.embedding_columns WHERE table_name = {} AND column_name = {}"
+            ).format(lit(item.table), lit(item.dropped_name)),
+            sql.SQL("DELETE FROM aios.dropped_objects WHERE id = {}").format(lit(item.id)),
+        ],
+        f"Purge dropped column {item.column} of {SCHEMA}.{item.table}",
+        item.table,
+    )
+
+
+def purge(data_store_id: uuid.UUID, wait: bool = True) -> list[str]:
+    """Drop for good the store's tables and columns dropped longer ago than
+    `DATA_STORE_DROPPED_RETENTION_DAYS`, each in a transaction of its own, recorded in
+    `aios.schema_history`; on the provisioning worker, as the store's owner. Returns what it
+    purged. Unless `wait`, does nothing if another run (a migration, say) is on the store."""
+    from aios.datastores.provision import StoreNames, as_owner, provisioner_locked
+
+    with SessionLocal() as db:
+        names = StoreNames.of(db.get(DataStore, data_store_id))
+    retention = timedelta(days=get_settings().data_store_dropped_retention_days)
+    purged: list[str] = []
+    with provisioner_locked(data_store_id, wait) as server:
+        if server is None:
+            return purged
+        with as_owner(names) as conn:
+            # Tables first: their dropped columns go with them.
+            expired = conn.execute(
+                "SELECT id FROM aios.dropped_objects WHERE dropped_at <= now() - %s"
+                " ORDER BY column_name IS NOT NULL, dropped_at, id",
+                (retention,),
+            ).fetchall()
+            for (dropped_id,) in expired:
+                with _schema_transaction(conn):
+                    row = conn.execute(
+                        f"SELECT {_FIELDS} FROM aios.dropped_objects WHERE id = %s FOR UPDATE",
+                        (dropped_id,),
+                    ).fetchone()
+                    if row is None:  # went with its table
+                        continue
+                    statements, summary, table = _purge_sql(_row(row))
+                    for statement in statements:
+                        conn.execute(statement)
+                    if table is not None and _exists(conn, table):
+                        grant_access(conn, names.rw, names.ro, table)
+                    _record(conn, summary, statements)
+                purged.append(summary)
+    if purged:
+        log.info("Purged %d dropped objects in data store %s", len(purged), data_store_id)
+    return purged
+
+
+def purge_all() -> dict[uuid.UUID, list[str] | BaseException]:
+    """Purge what's past retention in every ready store, one at a time (`purge`); returns what
+    each purged, or what stopped it, without stopping the rest. A store another run is on is
+    left for next time."""
+    from celery.exceptions import SoftTimeLimitExceeded
+    from sqlalchemy import select
+
+    from aios.models import DataStoreStatus
+
+    with SessionLocal() as db:
+        ready = db.scalars(
+            select(DataStore.id)
+            .where(DataStore.status == DataStoreStatus.ready)
+            .order_by(DataStore.created_at)
+        ).all()
+    outcome: dict[uuid.UUID, list[str] | BaseException] = {}
+    for store_id in ready:
+        try:
+            outcome[store_id] = purge(store_id, wait=False)
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
+            log.exception("Purging dropped objects in data store %s failed", store_id)
+            outcome[store_id] = exc
+    return outcome
