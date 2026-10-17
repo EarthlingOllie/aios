@@ -258,6 +258,16 @@ test("deleting a document removes it from the list and from search", async ({ pa
   await expect(page.getByText("No passages matched.")).toBeVisible();
 });
 
+test("a search that matches nothing points to the Data page's Documents", async ({ page }) => {
+  await fakeApi(page);
+  await page.goto("/search?q=fish");
+  await expect(page.getByText("No passages matched.")).toBeVisible();
+
+  await page.getByRole("link", { name: "Data page" }).click();
+  await expect(page).toHaveURL(/\/data\?tab=documents$/);
+  await expect(page.getByText("No documents yet.")).toBeVisible();
+});
+
 test("cancelling a delete keeps the document", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("keep.md");

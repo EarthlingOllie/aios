@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { FileText, Search as SearchIcon } from "lucide-react";
 
 import { ErrorBanner, Placeholder, useLoad } from "@/components/crud";
@@ -139,7 +139,13 @@ function Results({ query, hits }: { query: string; hits: SearchHit[] | null | un
   if (hits.length === 0) {
     return (
       <Placeholder>
-        No passages matched. Try different wording, or upload documents from the Chat page.
+        <span>
+          No passages matched. Try different wording, or upload documents on the{" "}
+          <Link to="/data?tab=documents" className="underline underline-offset-2">
+            Data page
+          </Link>
+          .
+        </span>
       </Placeholder>
     );
   }
