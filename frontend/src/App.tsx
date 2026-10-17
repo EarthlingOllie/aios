@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { Chat } from "@/components/Chat";
-import { Documents } from "@/components/Documents";
+import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
@@ -93,7 +93,15 @@ export default function App() {
   const signOut = () => api.logout().then(() => setAuth({ status: "anonymous" }));
   return (
     <Routes>
-      <Route element={<Shell user={auth.user} onSignOut={signOut} />}>
+      {/* Documents are held above every page, so the chat's panel and the Data page share one
+          list, and an upload in flight survives leaving either. */}
+      <Route
+        element={
+          <DocumentsProvider>
+            <Shell user={auth.user} onSignOut={signOut} />
+          </DocumentsProvider>
+        }
+      >
         {/* Chat is rendered by Shell so it stays mounted across navigation. */}
         <Route index element={null} />
         <Route path="skills" element={<SkillsSection />}>

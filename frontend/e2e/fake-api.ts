@@ -109,11 +109,59 @@ export class FakeApi {
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
   documentLists = 0;
+  /**
+   * The status an upload starts in: "ready" (with one chunk) skips the worker; "pending" waits
+   * for the test to finish its ingest with `finishIngest`.
+   */
+  ingestAs: "ready" | "pending" = "ready";
+  /** Uploads of these filenames answer 413, as the proxy does for a file over its size limit. */
+  tooLarge = new Set<string>();
+  /** While set (by `holdUploads`), uploads wait for `releaseUploads` before they answer. */
+  private uploadGate?: { wait: Promise<void>; release: () => void };
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
   private id() {
     return this.nextId++;
+  }
+
+  /** Adds a document, as if uploaded earlier. */
+  addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
+    const doc: DocumentRow = {
+      id: this.id(),
+      filename,
+      status: "ready",
+      error: null,
+      chunk_count: 1,
+      created_at: NOW,
+      ...fields,
+    };
+    this.documents.unshift(doc);
+    return doc;
+  }
+
+  /** Uploads wait, as if still on the wire, until `releaseUploads`. */
+  holdUploads() {
+    let release = () => {};
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    this.uploadGate = { wait, release };
+  }
+
+  releaseUploads() {
+    this.uploadGate?.release();
+    this.uploadGate = undefined;
+  }
+
+  /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
+  finishIngest(filename: string, outcome: { chunks: number } | { error: string }) {
+    const doc = this.documents.find((d) => d.filename === filename);
+    if (!doc) throw new Error(`No document ${filename}`);
+    Object.assign(
+      doc,
+      "chunks" in outcome
+        ? { status: "ready", chunk_count: outcome.chunks, error: null }
+        : { status: "failed", chunk_count: 0, error: outcome.error },
+    );
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
@@ -454,7 +502,7 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
-    if (path === "/api/documents" || path === "/api/search") {
+    if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {
           detail:
@@ -464,21 +512,42 @@ export class FakeApi {
           data_store_status: this.dataStoreStatus,
         });
       }
-      if (path === "/api/search") return reply(200, []);
-      if (method === "POST") {
+      if (path === "/api/search") {
+        // A passage from each ready document whose name contains the query.
+        const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+        return reply(
+          200,
+          this.documents
+            .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+            .map((d, i) => ({
+              chunk_id: d.id * 1000,
+              document_id: d.id,
+              filename: d.filename,
+              text: `A passage from ${d.filename}.`,
+              meta: {},
+              score: 0.03 - i * 0.001,
+              semantic_rank: i + 1,
+              lexical_rank: i + 1,
+            })),
+        );
+      }
+      if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
+        const before = this.documents.length;
+        this.documents = this.documents.filter((d) => d.id !== Number(m![1]));
+        return this.documents.length < before ? reply(204) : fail(404, "Not Found");
+      }
+      if (path === "/api/documents" && method === "POST") {
         const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
-        const doc: DocumentRow = {
-          id: this.id(),
+        await this.uploadGate?.wait;
+        if (this.tooLarge.has(filename)) return reply(413);
+        const doc = this.addDocument(
           filename,
-          status: "ready",
-          error: null,
-          chunk_count: 1,
-          created_at: NOW,
-        };
-        this.documents.unshift(doc);
+          this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
+        );
         return reply(201, doc);
       }
-      return reply(200, this.documents);
+      if (path === "/api/documents") return reply(200, this.documents);
+      return fail(404, "Not Found");
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
