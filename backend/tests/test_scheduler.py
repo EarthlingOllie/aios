@@ -228,6 +228,25 @@ def test_a_failed_workflow_run_shows_on_its_schedule(api, db, queued):
     assert shown["last_workflow_run_id"] == queued[-1]
 
 
+def test_a_workflow_run_waiting_for_a_decision_shows_its_schedule_running(api, db, queued):
+    workflow = make_runnable_workflow(api)
+    t = make_trigger(api, schedule("workflow", workflow["id"]))
+    now = datetime.now(UTC)
+    make_due(db, t["id"], now - timedelta(seconds=1))
+    tick(now)
+    db.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == queued[-1])
+        .values(status=WorkflowRunStatus.waiting, started_at=func.now())
+    )
+    db.commit()
+
+    resp = api.get(f"/api/triggers/{t['id']}")
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["last_status"], resp.json()["last_error"]) == ("running", None)
+    assert api.get("/api/triggers").status_code == 200
+
+
 def test_a_workflow_that_cant_run_fails_without_a_run(api, db, queued):
     # Refused as starting it by hand would be: here, it has no nodes.
     workflow = workflow_tests.make_workflow(api, "Empty")

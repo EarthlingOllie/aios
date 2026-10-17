@@ -82,6 +82,8 @@ class PreviewOut(BaseModel):
 RUN_STATUS = {
     WorkflowRunStatus.queued: TriggerStatus.running,
     WorkflowRunStatus.running: TriggerStatus.running,
+    # Still going: paused for a schema change decision.
+    WorkflowRunStatus.waiting: TriggerStatus.running,
     WorkflowRunStatus.succeeded: TriggerStatus.succeeded,
     WorkflowRunStatus.failed: TriggerStatus.failed,
 }
