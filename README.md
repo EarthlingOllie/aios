@@ -321,7 +321,17 @@ Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and e
 pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
 role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
-ingest task retries, and the search tools tell the model.
+ingest task retries, and the search and data tools tell the model.
+
+The Data page's **Tables** (`GET /api/data/tables`, `.../tables/{table}/rows` and
+`.../tables/{table}/value`, in `aios.api.data` and `aios.datastores.tables`) show the store's
+`data` tables, with their columns and row counts (the planner's estimate for a big table), and
+their rows a page at a time. They read as `_ro` through `aios.datastores.reads`, as
+`query_data` does, so under the same statement timeout and row and byte caps. No SQL is taken:
+a table, a sort column or a value's column is a name looked up in the catalog (404 or 422 if
+it isn't there), and only then quoted into a statement. Values come as text, cut to 200
+characters (read in full, as far as the byte cap, on asking); embeddings come as their type and
+dimension (`vector(1024)`), never their numbers, and `jsonb` pretty-printed.
 
 ### Dependency policy
 
