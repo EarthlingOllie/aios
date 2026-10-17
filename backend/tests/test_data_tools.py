@@ -5,6 +5,7 @@ These run against real, provisioned stores. Nothing can change a store's `data` 
 owner role.
 """
 
+import json
 import threading
 import time
 import tracemalloc
@@ -159,6 +160,26 @@ def test_a_partitioned_table_is_described_once_without_its_partitions(api, store
     names = [t["name"] for t in describe(api, data_agent)["tables"] if t["schema"] == "data"]
 
     assert names == ["catches", "fish"]
+
+
+def test_a_description_over_the_byte_cap_comes_back_truncated(api, store, data_agent, monkeypatch):
+    """However many tables there are, it fits the model's context, and says what's left out."""
+    with as_owner(store) as conn:
+        for i in range(30):
+            conn.execute(f"CREATE TABLE data.t{i:02} (id int, name text)")
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 2000)
+
+    described = describe(api, data_agent)
+
+    assert 0 < len(described["tables"]) < 32
+    assert len(json.dumps(described["tables"])) <= 2000
+    # The first in the order they're listed, whole.
+    names = [t["name"] for t in described["tables"]]
+    assert names == ["fish", *(f"t{i:02}" for i in range(len(names) - 1))]
+    assert described["truncated"] is True
+    assert "information_schema" in described["note"]
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 1_000_000)
+    assert describe(api, data_agent)["truncated"] is False
 
 
 @pytest.mark.parametrize(

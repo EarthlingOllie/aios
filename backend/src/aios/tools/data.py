@@ -144,7 +144,23 @@ def _describe(data_store_id: uuid.UUID) -> dict:
                     "description": r["column_description"],
                 }
             )
-    return {"tables": list(tables.values())}
+    # As many whole tables as fit the byte cap, in order: the owner's first.
+    max_bytes = get_settings().query_data_max_bytes
+    shown: list[dict] = []
+    size = 2  # the list's brackets
+    for table in tables.values():
+        size += len(json.dumps(table)) + 2
+        if size > max_bytes:
+            break
+        shown.append(table)
+    result: dict = {"tables": shown, "truncated": len(shown) < len(tables)}
+    if result["truncated"]:
+        result["note"] = (
+            f"Only the first {len(shown)} of {len(tables)} tables are described (at most"
+            f" {max_bytes} bytes). Query `information_schema.columns` with `query_data` for"
+            " the rest."
+        )
+    return result
 
 
 def _exact_float(literal: str) -> float | str:
@@ -337,7 +353,8 @@ def _describe_description() -> str:
 descriptions.
 
 The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only).
-Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`.
+Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. If there
+are too many to describe at once, `truncated` is true and the rest are left out.
 
 {DATA_NOT_INSTRUCTIONS}"""
 
