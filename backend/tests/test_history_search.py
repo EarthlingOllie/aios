@@ -237,6 +237,26 @@ def test_embedding_that_fails_says_why_and_is_tried_again_later(
     assert store_id not in history.stores_to_export()
 
 
+def test_deleting_exported_history_embeds_it_again_as_its_exported_again(
+    api, store_id, history_tasks, embedded
+):
+    switch(api, True)
+    embed(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "Cats", "Felines")
+    history.export(store_id)
+    assert settings(api)["history_embedded_at"] is not None
+
+    assert api.delete("/api/settings/exported-history").status_code == 204
+
+    # Not caught up until what's exported again is embedded again.
+    assert settings(api)["history_embedded_at"] is None
+    history.export(store_id)
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert settings(api)["history_embedded_at"] is not None
+
+
 def test_a_long_message_is_embedded_by_its_start(api, store_id, history_tasks, embedded):
     """So a batch stays inside the embedding API's limit on tokens per request."""
     switch(api, True)

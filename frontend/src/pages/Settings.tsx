@@ -40,9 +40,10 @@ export function SettingsPage() {
   function onDelete() {
     // While the export is on, deleting starts it over: every run is exported again.
     const on = settings?.export_run_history;
+    const again = settings?.embed_run_history ? "exported and embedded again" : "exported again";
     const question = on
       ? "Delete the run history exported to your data store? Your runs stay here. The export is " +
-        "on, so all your runs are exported again: to keep it empty, switch the export off first."
+        `on, so all your runs are ${again}: to keep it empty, switch the export off first.`
       : "Delete the run history exported to your data store? Your runs stay here.";
     if (!window.confirm(question)) {
       return;

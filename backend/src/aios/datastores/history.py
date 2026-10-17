@@ -821,8 +821,11 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             store.commit()
     # Once the lock is let go: the export this queues may start at once, and would find it held.
     with SessionLocal() as db:
+        # Nor has embedding caught up, while it's on, until what's exported again is embedded.
         db.execute(
-            update(DataStore).where(DataStore.id == data_store_id).values(history_exported_at=None)
+            update(DataStore)
+            .where(DataStore.id == data_store_id)
+            .values(history_exported_at=None, history_embedded_at=None)
         )
         enqueue_everything(db, owner_id)
         db.commit()
