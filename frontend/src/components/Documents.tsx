@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
+import { Download, FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
 import { formatDate, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { DataStoreNotice } from "@/components/DataStoreNotice";
 import { Notice } from "@/components/Notice";
 import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
 import { useDataStoreStatus } from "@/lib/data-store";
+import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 
 const statusVariant = {
@@ -344,7 +345,8 @@ export function Documents() {
 
 /**
  * The Data page's Documents: every document with its ingest status (and why one failed), chunk
- * count and upload time. Uploads from the chat's panel land in the same list.
+ * count, size and upload time, to download or delete. Uploads from the chat's panel land in the
+ * same list.
  */
 export function DocumentsSection() {
   const { storeStatus, storeError, documents } = useDocumentsList();
@@ -391,12 +393,26 @@ export function DocumentsSection() {
                   <p className="text-destructive mt-0.5 text-xs break-words">{doc.error}</p>
                 )}
               </div>
+              <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
+                {formatBytes(doc.size_bytes)}
+              </span>
               <Badge variant={statusVariant[doc.status]}>
                 {(doc.status === "pending" || doc.status === "processing") && (
                   <Loader2 className="animate-spin" />
                 )}
                 {statusLabel[doc.status]}
               </Badge>
+              {/* The API redirects to a link to the file that lasts a minute, minted per click,
+                  which saves it under its own name; the page never holds one. A download, not a
+                  navigation, so a refusal leaves the page (and any upload in flight) be. */}
+              <a
+                href={`/api/documents/${doc.id}/download`}
+                download
+                className="text-muted-foreground hover:text-foreground focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                aria-label={`Download ${doc.filename}`}
+              >
+                <Download className="size-4" />
+              </a>
               <button
                 className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
                 onClick={() => onDelete(doc)}
