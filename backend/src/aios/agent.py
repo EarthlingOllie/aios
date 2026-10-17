@@ -15,6 +15,9 @@ class ChatDeps:
 
     # The user the run is for. Also the context of user-defined agents' runs (`aios.runner`).
     user_id: int
+    # Where the user's data is (`aios.datastores`), resolved when the run or chat turn starts.
+    # Tools reach the user's documents through this, never through `user_id`.
+    data_store_id: uuid.UUID
     # The agent run (user-defined agents only), e.g. for the run's sandbox (`run_python`).
     run_id: int | None = None
     # The data store the run's tools read and write (`aios.datastores`), resolved when the run

@@ -2,13 +2,12 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, status
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import data_store_for, documents_session, store_owner, store_status
+from aios.datastores import documents_session, store_owner, store_status
 from aios.db import DbId
 from aios.models import Chunk, DataStoreStatus, Document, DocumentStatus
 from aios.search import hybrid_search
@@ -55,14 +54,14 @@ def me(user: CurrentUser):
 
 
 @router.get("/data-store", response_model=DataStoreOut)
-def data_store(user: CurrentUser):
+def data_store(store_id: CurrentDataStore):
     """The user's data store's status: documents and search wait until it's `ready`."""
-    return DataStoreOut(status=store_status(data_store_for(user.id)))
+    return DataStoreOut(status=store_status(store_id))
 
 
 @router.get("/documents", response_model=list[DocumentOut])
-def list_documents(user: CurrentUser):
-    with documents_session(data_store_for(user.id), "ro") as db:
+def list_documents(store_id: CurrentDataStore):
+    with documents_session(store_id, "ro") as db:
         rows = db.execute(
             select(Document, func.count(Chunk.id))
             .outerjoin(Chunk)
@@ -84,14 +83,13 @@ def list_documents(user: CurrentUser):
 
 
 @router.post("/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-def upload_document(file: UploadFile, user: CurrentUser):
+def upload_document(file: UploadFile, store_id: CurrentDataStore):
     # Plain `def`: FastAPI runs it in the threadpool, so the blocking file read, DB commit
     # and broker publish below don't stall the event loop (SSE streams, health checks).
     max_bytes = get_settings().max_upload_bytes
     data = file.file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
-    store_id = data_store_for(user.id)
     with documents_session(store_id, "rw") as db:
         doc = Document(
             owner_id=store_owner(db),
@@ -125,8 +123,8 @@ def upload_document(file: UploadFile, user: CurrentUser):
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: DbId, user: CurrentUser) -> None:
-    with documents_session(data_store_for(user.id), "rw") as db:
+def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
+    with documents_session(store_id, "rw") as db:
         doc = db.get(Document, document_id)
         if doc is None or doc.owner_id != store_owner(db):
             raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -136,10 +134,9 @@ def delete_document(document_id: DbId, user: CurrentUser) -> None:
 
 @router.get("/search", response_model=list[SearchHitOut])
 async def search(
-    user: CurrentUser,
+    store_id: CurrentDataStore,
     # At least one non-whitespace character; blank queries would fail at the embedding API.
     q: Annotated[str, Query(min_length=1, pattern=r"\S")],
     limit: Annotated[int, Query(ge=1, le=50)] = 8,
 ):
-    store_id = await run_in_threadpool(data_store_for, user.id)
     return await hybrid_search(data_store_id=store_id, query=q, limit=limit)

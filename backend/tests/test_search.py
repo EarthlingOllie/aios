@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from aios.auth import current_user
+from aios.auth import current_data_store, current_user
 from aios.main import app
 from aios.models import Chunk, Document, DocumentStatus, User
 from aios.search import hybrid_search, hybrid_search_with_vector
@@ -72,6 +72,7 @@ def test_hybrid_search_is_scoped_to_owner(db, user):
 )
 def test_search_endpoint_rejects_bad_params(client, params):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         resp = client.get("/api/search", params=params)
     finally:

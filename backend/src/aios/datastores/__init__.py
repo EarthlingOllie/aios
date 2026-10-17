@@ -15,13 +15,14 @@ from aios.datastores.connections import (
     store_session,
     store_status,
 )
-from aios.datastores.resolve import data_store_for
+from aios.datastores.resolve import data_store_for, data_store_for_request
 
 __all__ = [
     "DataStoreNotFound",
     "DataStoreNotReady",
     "Role",
     "data_store_for",
+    "data_store_for_request",
     "documents_session",
     "store_owner",
     "store_session",
