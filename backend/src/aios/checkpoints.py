@@ -68,6 +68,16 @@ async def setup(conn: AsyncConnection) -> None:
     _ready = True
 
 
+async def ensure_ready() -> None:
+    """Set up the checkpointer's tables now, if this process hasn't yet, rather than in its
+    first turn (see `setup`)."""
+    if _ready:
+        return
+    conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
+    async with conn:
+        await setup(conn)
+
+
 @asynccontextmanager
 async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
     """A checkpointer for one turn of a run, on a connection of its own.

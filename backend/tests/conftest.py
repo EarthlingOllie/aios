@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import uuid
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
+from aios import checkpoints
 from aios.auth import current_user
 from aios.datastores import data_store_for, provision, resolve
 from aios.datastores.connections import dispose_engines
@@ -44,6 +46,10 @@ def db():
         if isinstance(exc, OperationalError) or "data_stores" in str(exc):
             pytest.skip(f"database not available: {exc.__class__.__name__}")
         raise
+    # Before any test holds a transaction open: on a fresh database the checkpointer's setup
+    # creates its indexes CONCURRENTLY, which waits for every older transaction in the
+    # database, so the first turn would otherwise wait for ever on a test's own open session.
+    asyncio.run(checkpoints.ensure_ready())
     with SessionLocal() as session:
         yield session
         session.rollback()
