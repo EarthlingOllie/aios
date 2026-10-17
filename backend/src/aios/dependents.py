@@ -14,10 +14,11 @@ Finished runs and older versions don't count: they keep pinning the agent's vers
 outlive it (it's soft-deleted).
 """
 
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, false, literal, select
+from sqlalchemy import ColumnElement, false, literal, or_, select
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, cron, workflows
@@ -27,14 +28,26 @@ from aios.models import (
     AgentRun,
     AgentVersion,
     SchemaChangeRequest,
+    SchemaChangeStatus,
     Trigger,
     Workflow,
     WorkflowNode,
+    WorkflowNodeKind,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowRunStep,
+    WorkflowStepStatus,
     WorkflowVersion,
 )
+
+
+class DependentRequest(BaseModel):
+    """A schema change request a run waits on: deleting or cancelling the run cancels it, if
+    it's still pending."""
+
+    id: uuid.UUID
+    summary: str
+    status: SchemaChangeStatus
 
 
 class DependentAgentRun(BaseModel):
@@ -48,6 +61,8 @@ class DependentAgentRun(BaseModel):
     running: bool
     trigger_id: int | None
     updated_at: datetime
+    # The requests it waits on, oldest first.
+    requests: list[DependentRequest]
 
 
 class DependentWorkflowRun(BaseModel):
@@ -58,6 +73,10 @@ class DependentWorkflowRun(BaseModel):
     workflow_name: str
     status: WorkflowRunStatus
     created_at: datetime
+    # Its agent nodes that wait on a request, by path ("review/critic"), in the order they
+    # started; and the requests they wait on, oldest first.
+    waiting_nodes: list[str]
+    requests: list[DependentRequest]
 
 
 class DependentTrigger(BaseModel):
@@ -89,6 +108,10 @@ class Dependents(BaseModel):
     triggers: list[DependentTrigger] = []
 
 
+def _request_out(request: SchemaChangeRequest) -> DependentRequest:
+    return DependentRequest(id=request.id, summary=request.summary, status=request.status)
+
+
 def _chat_runs(db: Session, agent: Agent) -> list[DependentAgentRun]:
     """The agent's chat runs (not a workflow node's) that are waiting or have a turn underway."""
     runs = db.execute(
@@ -104,13 +127,14 @@ def _chat_runs(db: Session, agent: Agent) -> list[DependentAgentRun]:
         .order_by(AgentRun.updated_at.desc(), AgentRun.id.desc())
     ).all()
     ids = [r.id for r in runs]
-    waiting = set(
-        db.scalars(
-            select(SchemaChangeRequest.requested_by_run).where(
-                SchemaChangeRequest.requested_by_run.in_(ids), *not_given()
-            )
-        )
-    )
+    requests: dict[int, list[DependentRequest]] = {}
+    for request in db.scalars(
+        select(SchemaChangeRequest)
+        .where(SchemaChangeRequest.requested_by_run.in_(ids), *not_given())
+        .order_by(SchemaChangeRequest.created_at, SchemaChangeRequest.id)
+    ):
+        requests.setdefault(request.requested_by_run, []).append(_request_out(request))
+    waiting = set(requests)
     running = checkpoints.turns_underway(db, ids)
     return [
         DependentAgentRun(
@@ -120,6 +144,7 @@ def _chat_runs(db: Session, agent: Agent) -> list[DependentAgentRun]:
             running=r.id in running,
             trigger_id=r.trigger_id,
             updated_at=r.updated_at,
+            requests=requests.get(r.id, []),
         )
         for r in runs
         if r.id in waiting or r.id in running
@@ -163,6 +188,41 @@ def _workflow_runs(db: Session, agent: Agent) -> list[DependentWorkflowRun]:
         .where(WorkflowRun.id.in_(ids))
         .order_by(WorkflowRun.created_at, WorkflowRun.id)
     ).all()
+    # Its agent nodes' steps that wait, and the requests they wait on: by their agent runs, or
+    # the request recorded on the step (as `aios.api.workflows.waiting_requests` finds them).
+    steps = db.execute(
+        select(
+            WorkflowRunStep.run_id,
+            WorkflowRunStep.path,
+            WorkflowRunStep.agent_run_id,
+            WorkflowRunStep.waiting_on_request_id,
+        )
+        .where(
+            WorkflowRunStep.run_id.in_([run.id for run, _ in rows]),
+            WorkflowRunStep.status == WorkflowStepStatus.waiting,
+            WorkflowRunStep.kind == WorkflowNodeKind.agent,
+        )
+        .order_by(WorkflowRunStep.id)
+    ).all()
+    nodes: dict[int, list[str]] = {}
+    for step in steps:
+        nodes.setdefault(step.run_id, []).append("/".join(step.path))
+    by_agent_run = {s.agent_run_id: s.run_id for s in steps if s.agent_run_id is not None}
+    by_id = {s.waiting_on_request_id: s.run_id for s in steps if s.waiting_on_request_id}
+    requests: dict[int, list[DependentRequest]] = {}
+    for request in db.scalars(
+        select(SchemaChangeRequest)
+        .where(
+            or_(
+                SchemaChangeRequest.requested_by_run.in_(by_agent_run),
+                SchemaChangeRequest.id.in_(by_id),
+            ),
+            *not_given(),
+        )
+        .order_by(SchemaChangeRequest.created_at, SchemaChangeRequest.id)
+    ):
+        run_id = by_id.get(request.id) or by_agent_run[request.requested_by_run]
+        requests.setdefault(run_id, []).append(_request_out(request))
     return [
         DependentWorkflowRun(
             id=run.id,
@@ -170,6 +230,8 @@ def _workflow_runs(db: Session, agent: Agent) -> list[DependentWorkflowRun]:
             workflow_name=name,
             status=run.status,
             created_at=run.created_at,
+            waiting_nodes=nodes.get(run.id, []),
+            requests=requests.get(run.id, []),
         )
         for run, name in rows
     ]

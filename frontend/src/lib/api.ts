@@ -453,6 +453,9 @@ export type DependentTrigger = {
   next_run_at: string | null;
 };
 
+/** A schema change request a run that depends on an agent waits on. */
+export type DependentRequest = { id: string; summary: string; status: SchemaChangeStatus };
+
 /** What depends on an agent: what deleting it would cut off (GET /api/agents/{id}/dependents). */
 export type AgentDependents = {
   /** Its chat runs still going: waiting on a schema change request, or with a turn underway. */
@@ -463,6 +466,7 @@ export type AgentDependents = {
     running: boolean;
     trigger_id: number | null;
     updated_at: string;
+    requests: DependentRequest[];
   }[];
   /** Workflow runs still going (queued, running or waiting) that run it, at any depth. */
   workflow_runs: {
@@ -471,6 +475,9 @@ export type AgentDependents = {
     workflow_name: string;
     status: WorkflowRunStatus;
     created_at: string;
+    /** Its agent nodes waiting on a request, by path ("review/critic"). */
+    waiting_nodes: string[];
+    requests: DependentRequest[];
   }[];
   /** Live workflows whose current version runs it, directly or through a nested workflow. */
   workflows: {

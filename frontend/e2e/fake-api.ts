@@ -120,6 +120,8 @@ type DependentTriggerRow = {
   next_run_at: string | null;
 };
 
+type DependentRequestRow = { id: string; summary: string; status: "pending" };
+
 /** What depends on an agent, as GET /api/agents/{id}/dependents answers. */
 export type AgentDependentsRow = {
   agent_runs: {
@@ -129,6 +131,7 @@ export type AgentDependentsRow = {
     running: boolean;
     trigger_id: number | null;
     updated_at: string;
+    requests: DependentRequestRow[];
   }[];
   workflow_runs: {
     id: number;
@@ -136,6 +139,8 @@ export type AgentDependentsRow = {
     workflow_name: string;
     status: RunStatus;
     created_at: string;
+    waiting_nodes: string[];
+    requests: DependentRequestRow[];
   }[];
   workflows: {
     id: number;

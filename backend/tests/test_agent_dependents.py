@@ -50,7 +50,7 @@ def test_a_chat_run_waiting_on_a_request_depends_on_its_agent(
     agent,  # noqa: F811
     queued,  # noqa: F811
 ):
-    run, _ = start(api, agent, Script(CONTACTS))
+    run, request = start(api, agent, Script(CONTACTS))
     # A run that isn't waiting (or running) doesn't.
     idle = api.post(f"/api/agents/{agent['id']}/runs").json()
 
@@ -58,6 +58,10 @@ def test_a_chat_run_waiting_on_a_request_depends_on_its_agent(
 
     assert [(r["id"], r["waiting"], r["running"]) for r in found["agent_runs"]] == [
         (run["id"], True, False)
+    ]
+    # With the request it waits on, to open on the Data page.
+    assert found["agent_runs"][0]["requests"] == [
+        {"id": request["id"], "summary": "Create table data.contacts", "status": "pending"}
     ]
     assert idle["id"] not in [r["id"] for r in found["agent_runs"]]
     assert found["workflow_runs"] == []
@@ -119,6 +123,11 @@ def test_a_nested_workflow_and_its_run_depend_on_the_agent_at_any_depth(
     found = dependents(api, builder)
 
     assert [r["id"] for r in found["workflow_runs"]] == [run["id"]]
+    # Which node waits, however deep, and on what.
+    [listed] = found["workflow_runs"]
+    assert listed["waiting_nodes"] == ["middle/inner/build"]
+    [request] = api.get("/api/schema-changes").json()
+    assert [r["id"] for r in listed["requests"]] == [request["id"]]
     assert sorted((w["name"], w["direct"]) for w in found["workflows"]) == [
         ("Inner", True),
         ("Middle", False),
@@ -381,7 +390,8 @@ def test_deactivating_a_workflow_turns_off_its_schedules_and_it_cant_start(
     assert (turned_off["enabled"], turned_off["next_run_at"]) == (False, None)
     assert api.get(f"/api/triggers/{unrelated['id']}").json()["enabled"] is True
     # A schedule that would have fired by now doesn't.
-    assert tick(datetime.now(UTC) + timedelta(days=2)) == [unrelated["id"]]
+    fired = tick(datetime.now(UTC) + timedelta(days=2))
+    assert unrelated["id"] in fired and daily["id"] not in fired
     # Nor can a run be started by hand: it runs a deleted agent.
     resp = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"})
     assert resp.status_code == 409

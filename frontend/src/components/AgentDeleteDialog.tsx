@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 
 import { ErrorBanner } from "@/components/crud";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,14 @@ import {
   resolutions,
   unresolved,
 } from "@/lib/agent-delete";
-import { api, describeError, type AgentDependents } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type AgentDependents,
+  type DependentRequest,
+  type DependentTrigger,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -19,12 +26,60 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 const runKeys = (d?: AgentDependents) =>
   d ? [...d.agent_runs.map((r) => `a${r.id}`), ...d.workflow_runs.map((r) => `w${r.id}`)].join() : "";
 
+/** A link out of the dialog: it opens in a new tab, so the dialog keeps what's been chosen (and
+ * checks again when the user comes back). */
+function Out({ to, className, children }: { to: string; className?: string; children: ReactNode }) {
+  return (
+    <Link
+      to={to}
+      target="_blank"
+      rel="noopener"
+      className={cn("inline-flex min-w-0 items-center gap-1 hover:underline", className)}
+    >
+      <span className="truncate">{children}</span>
+      <ExternalLink className="text-muted-foreground size-3 shrink-0" aria-hidden />
+    </Link>
+  );
+}
+
+function Requests({ requests }: { requests: DependentRequest[] }) {
+  if (!requests.length) return null;
+  return (
+    <ul className="mt-1 flex flex-col gap-0.5 pl-3 text-xs">
+      {requests.map((r) => (
+        <li key={r.id}>
+          <Out to={`/data?tab=changes&request=${encodeURIComponent(r.id)}`}>
+            Schema change: {r.summary}
+          </Out>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Schedules({ triggers, to }: { triggers: DependentTrigger[]; to: string }) {
+  if (!triggers.length) return null;
+  return (
+    <ul className="mt-1 flex flex-col gap-0.5 text-xs">
+      {triggers.map((t) => (
+        <li key={t.id}>
+          <Out to={to}>
+            Schedule: {t.description} ({t.timezone}){t.enabled ? "" : " · paused"}
+          </Out>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
  * Deleting an agent: first checks what depends on it (`GET /api/agents/{id}/dependents`). With
- * nothing, a simple confirm. Otherwise it lists the runs still going and the workflows that run
- * the agent, and Delete stays disabled until each has a resolution: cancel the runs, and for
- * each workflow, deactivate it or edit it to stop running the agent (which takes it off the
- * list once it's done).
+ * nothing, a simple confirm. Otherwise it lists the runs still going (with the requests they
+ * wait on), the workflows that run the agent and the schedules that would start them, each a
+ * link that opens in a new tab, and Delete stays disabled until each has a resolution: cancel
+ * the runs, and for each workflow, deactivate it or edit it to stop running the agent (which
+ * takes it off the list once it's done; the list is checked again when the window regains
+ * focus, or on "Check again").
  */
 export function AgentDeleteDialog({
   agent,
@@ -69,6 +124,9 @@ export function AgentDeleteDialog({
 
   useEffect(() => {
     load();
+    // Back from a link (a workflow edited in another tab, say): check again.
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
   }, [load]);
 
   const deactivate = new Set([...choice].filter(([, c]) => c === "deactivate").map(([id]) => id));
@@ -95,7 +153,7 @@ export function AgentDeleteDialog({
   }
 
   const runs = dependents ? dependents.agent_runs.length + dependents.workflow_runs.length : 0;
-  const own = dependents?.triggers.length ?? 0;
+  const own = dependents?.triggers ?? [];
 
   return (
     <dialog
@@ -105,147 +163,164 @@ export function AgentDeleteDialog({
       onClose={onClose}
       className="bg-background text-foreground m-auto w-[min(36rem,calc(100vw-2rem))] rounded-lg border p-0 shadow-lg backdrop:bg-black/40"
     >
-      <div className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto p-5">
-        <h2 id="agent-delete-title" className="text-lg font-semibold">
-          Delete “{agent.name}”?
-        </h2>
-        <ErrorBanner message={loadError} />
-        <ErrorBanner message={refusal} onDismiss={() => setRefusal(undefined)} />
-        {!dependents && !loadError && (
-          <p className="text-muted-foreground text-sm">Checking what uses this agent…</p>
-        )}
-        {dependents && !hasDependents(dependents) && (
-          <p className="text-sm">
-            Delete the agent “{agent.name}”, its versions and all of its runs?
-          </p>
-        )}
-        {dependents && hasDependents(dependents) && (
-          <p className="text-sm">
-            Some things still use “{agent.name}”. Choose what happens to each before deleting it,
-            with its versions and all of its runs.
-          </p>
-        )}
+      <div className="flex max-h-[80vh] flex-col">
+        {/* Only the body scrolls: the actions stay in view however long the list. */}
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5 pb-3">
+          <h2 id="agent-delete-title" className="text-lg font-semibold">
+            Delete “{agent.name}”?
+          </h2>
+          <ErrorBanner message={loadError} />
+          <ErrorBanner message={refusal} onDismiss={() => setRefusal(undefined)} />
+          {!dependents && !loadError && (
+            <p className="text-muted-foreground text-sm">Checking what uses this agent…</p>
+          )}
+          {dependents && !hasDependents(dependents) && (
+            <p className="text-sm">
+              Delete the agent “{agent.name}”, its versions and all of its runs?
+            </p>
+          )}
+          {dependents && hasDependents(dependents) && (
+            <p className="text-sm">
+              Some things still use “{agent.name}”. Choose what happens to each before deleting
+              it, with its versions and all of its runs. Links open in a new tab.
+            </p>
+          )}
 
-        {dependents && runs > 0 && (
-          <section className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
-              Runs still going
-            </h3>
-            <ul className="divide-y rounded-md border text-sm">
-              {dependents.agent_runs.map((r) => (
-                <li key={`a${r.id}`} className="flex items-center gap-2 px-3 py-2">
-                  <Link
-                    to={`/agents/${agent.id}/runs/${r.id}`}
-                    className="min-w-0 flex-1 truncate hover:underline"
-                  >
-                    {r.title ?? "Untitled run"}
-                  </Link>
-                  <span className="text-muted-foreground shrink-0 text-xs">
-                    {r.waiting ? "Waiting for a decision" : "Running a turn"}
+          {dependents && runs > 0 && (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+                Runs still going
+              </h3>
+              <ul aria-label="Runs still going" className="divide-y rounded-md border text-sm">
+                {dependents.agent_runs.map((r) => (
+                  <li key={`a${r.id}`} className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Out to={`/agents/${agent.id}/runs/${r.id}`} className="flex-1">
+                        {r.title ?? "Untitled run"}
+                      </Out>
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {r.waiting ? "Waiting for a decision" : "Running a turn"}
+                      </span>
+                    </div>
+                    <Requests requests={r.requests} />
+                  </li>
+                ))}
+                {dependents.workflow_runs.map((r) => (
+                  <li key={`w${r.id}`} className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Out to={`/workflows/${r.workflow_id}/runs/${r.id}`} className="flex-1">
+                        {r.workflow_name} · run {r.id}
+                      </Out>
+                      <RunStatusBadge status={r.status} />
+                    </div>
+                    {r.waiting_nodes.length > 0 && (
+                      <p className="text-muted-foreground mt-1 pl-3 text-xs">
+                        Waiting at {r.waiting_nodes.join(", ")}
+                      </p>
+                    )}
+                    <Requests requests={r.requests} />
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={cancelRuns}
+                  onChange={(e) => setCancelRuns(e.target.checked)}
+                />
+                <span>
+                  Cancel these runs
+                  <span className="text-muted-foreground block text-xs">
+                    Workflow runs fail and chat runs are deleted with the agent; a turn underway
+                    stops, their pending schema change requests are cancelled, and nothing
+                    resumes.
                   </span>
-                </li>
-              ))}
-              {dependents.workflow_runs.map((r) => (
-                <li key={`w${r.id}`} className="flex items-center gap-2 px-3 py-2">
-                  <Link
-                    to={`/workflows/${r.workflow_id}/runs/${r.id}`}
-                    className="min-w-0 flex-1 truncate hover:underline"
-                  >
-                    {r.workflow_name} · run {r.id}
-                  </Link>
-                  <RunStatusBadge status={r.status} />
-                </li>
-              ))}
-            </ul>
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={cancelRuns}
-                onChange={(e) => setCancelRuns(e.target.checked)}
-              />
-              <span>
-                Cancel these runs
-                <span className="text-muted-foreground block text-xs">
-                  Workflow runs fail and chat runs are deleted with the agent; a turn underway
-                  stops, their pending schema change requests are cancelled, and nothing
-                  resumes.
                 </span>
-              </span>
-            </label>
-          </section>
-        )}
+              </label>
+            </section>
+          )}
 
-        {dependents && dependents.workflows.length > 0 && (
-          <section className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
-              Workflows that run it
-            </h3>
-            {dependents.workflows.map((w) => {
-              const chosen = choice.get(w.id);
-              const set = (c: "deactivate" | "edit") =>
-                setChoice((prev) => new Map(prev).set(w.id, c));
-              return (
-                <fieldset key={w.id} className="rounded-md border px-3 py-2 text-sm">
-                  <legend className="sr-only">{w.name}</legend>
-                  <div className="flex items-center gap-2">
-                    <Link to={`/workflows/${w.id}`} className="min-w-0 flex-1 truncate font-medium hover:underline">
-                      {w.name}
-                    </Link>
-                    <span className="text-muted-foreground shrink-0 text-xs">
-                      {w.direct ? "runs it" : "runs it through a nested workflow"} ·{" "}
-                      {plural(w.triggers.filter((t) => t.enabled).length, "schedule")}
-                    </span>
+          {dependents && dependents.workflows.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+                Workflows that run it
+              </h3>
+              {dependents.workflows.map((w) => {
+                const chosen = choice.get(w.id);
+                const scheduled = w.triggers.filter((t) => t.enabled).length;
+                const set = (c: "deactivate" | "edit") =>
+                  setChoice((prev) => new Map(prev).set(w.id, c));
+                return (
+                  <div
+                    key={w.id}
+                    role="group"
+                    aria-label={w.name}
+                    className="rounded-md border px-3 py-2 text-sm"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Out to={`/workflows/${w.id}/edit`} className="flex-1 font-medium">
+                        {w.name}
+                      </Out>
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {w.direct ? "runs it" : "runs it through a nested workflow"} ·{" "}
+                        {plural(scheduled, "schedule")}
+                      </span>
+                    </div>
+                    <Schedules triggers={w.triggers} to={`/workflows/${w.id}`} />
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant={chosen === "deactivate" ? "default" : "outline"}
+                        aria-pressed={chosen === "deactivate"}
+                        onClick={() => set("deactivate")}
+                      >
+                        Deactivate
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={chosen === "edit" ? "default" : "outline"}
+                        aria-pressed={chosen === "edit"}
+                        onClick={() => set("edit")}
+                      >
+                        Edit workflow
+                      </Button>
+                    </div>
+                    {chosen === "deactivate" && (
+                      <p className="text-muted-foreground mt-1 text-xs">
+                        {scheduled === 0
+                          ? "No run of it can start"
+                          : `${scheduled === 1 ? "Its schedule is" : `Its ${scheduled} schedules are`} turned off, and no run of it can start`}{" "}
+                        until it's edited to stop running this agent.
+                      </p>
+                    )}
+                    {chosen === "edit" && (
+                      <p className="text-muted-foreground mt-1 text-xs">
+                        Edit it to stop running this agent
+                        {w.direct ? "" : " (take the nested workflow's newer version, or remove it)"}
+                        ; it leaves this list once it's saved.{" "}
+                        <Out to={`/workflows/${w.id}/edit`} className="text-foreground underline">
+                          Open the editor
+                        </Out>
+                      </p>
+                    )}
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="radio"
-                        name={`workflow-${w.id}`}
-                        checked={chosen === "deactivate"}
-                        onChange={() => set("deactivate")}
-                      />
-                      Deactivate
-                    </label>
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="radio"
-                        name={`workflow-${w.id}`}
-                        checked={chosen === "edit"}
-                        onChange={() => set("edit")}
-                      />
-                      Edit workflow
-                    </label>
-                  </div>
-                  {chosen === "deactivate" && (
-                    <p className="text-muted-foreground mt-1 text-xs">
-                      Its schedules are turned off, and no run of it can start until it's edited
-                      to stop running this agent.
-                    </p>
-                  )}
-                  {chosen === "edit" && (
-                    <p className="text-muted-foreground mt-1 text-xs">
-                      Edit it to stop running this agent
-                      {w.direct ? "" : " (take the nested workflow's newer version, or remove it)"},
-                      then check again.{" "}
-                      <Link to={`/workflows/${w.id}/edit`} className="text-foreground underline">
-                        Open the editor
-                      </Link>
-                    </p>
-                  )}
-                </fieldset>
-              );
-            })}
-          </section>
-        )}
+                );
+              })}
+            </section>
+          )}
 
-        {dependents && own > 0 && (
-          <p className="text-muted-foreground text-xs">
-            Its {plural(own, "schedule")} {own === 1 ? "is" : "are"} deleted with it.
-          </p>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2">
+          {dependents && own.length > 0 && (
+            <section className="flex flex-col gap-1">
+              <p className="text-muted-foreground text-xs">
+                Its {plural(own.length, "schedule")} {own.length === 1 ? "is" : "are"} deleted
+                with it.
+              </p>
+              <Schedules triggers={own} to={`/agents/${agent.id}?tab=schedule`} />
+            </section>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3">
           <Button variant="destructive" disabled={blocked || busy} onClick={onDelete}>
             Delete agent
           </Button>

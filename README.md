@@ -91,7 +91,13 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   agent. It stays, to be edited (removing the node, or taking a nested workflow's newer
   version) or deleted; its schedules can be turned back on once it runs. It all happens in one
   transaction, with the agent and the workflows that run it locked, so a run being started is
-  either seen (and refuses the delete) or waits and then can't start.
+  either seen (and refuses the delete) or waits and then can't start. On the agent's page,
+  Delete opens a dialog that loads the list: with nothing in it, a simple confirm; otherwise
+  each run (with the node it waits at and its requests), workflow and schedule links to where
+  it's seen or managed, in a new tab, with a "Cancel these runs" box and Deactivate or Edit
+  workflow for each workflow. Delete stays disabled until each has a resolution, and the list
+  is checked again when the window regains focus (or on "Check again"), so a workflow edited
+  meanwhile leaves it.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it

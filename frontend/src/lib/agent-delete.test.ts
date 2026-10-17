@@ -9,10 +9,10 @@ const trigger = { id: 9, enabled: true, cron: "0 9 * * *", description: "At 09:0
 
 const some: AgentDependents = {
   agent_runs: [
-    { id: 1, title: "Chat", waiting: true, running: false, trigger_id: null, updated_at: "2026-10-14T09:00:00Z" },
+    { id: 1, title: "Chat", waiting: true, running: false, trigger_id: null, updated_at: "2026-10-14T09:00:00Z", requests: [] },
   ],
   workflow_runs: [
-    { id: 2, workflow_id: 5, workflow_name: "Builds", status: "waiting", created_at: "2026-10-14T09:00:00Z" },
+    { id: 2, workflow_id: 5, workflow_name: "Builds", status: "waiting", created_at: "2026-10-14T09:00:00Z", waiting_nodes: [], requests: [] },
   ],
   workflows: [
     { id: 5, name: "Builds", version: 1, direct: true, triggers: [trigger] },
