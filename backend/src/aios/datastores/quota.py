@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
@@ -147,6 +148,9 @@ def measure_all() -> None:
     for store_id in ids:
         try:
             measure(store_id)
+        except SoftTimeLimitExceeded:
+            # The run is out of time (not this store): it stops, and the next carries on.
+            raise
         except Exception:
             log.exception("Couldn't measure data store %s", store_id)
         finally:

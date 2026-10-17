@@ -3,6 +3,7 @@ against two configured caps, and the writes refused past either."""
 
 import psycopg
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from conftest import add_document
 from sqlalchemy import select
 from test_documents import PDF, stored_keys, upload
@@ -221,3 +222,20 @@ def test_measuring_leaves_no_connection_open_on_the_stores(db, user):
             (f"{row.role_prefix}_ro",),
         ).fetchone()[0]
     assert held == 0
+
+
+def test_a_run_past_its_time_limit_stops_rather_than_measure_on(db, user, new_user, monkeypatch):
+    """The soft time limit raises in the task, which must not be taken for one store failing:
+    the next run, due by then, carries on."""
+    provision.provision(data_store_for(new_user().id))
+    measured = []
+
+    def measure(store_id):
+        measured.append(store_id)
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(quota, "measure", measure)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        quota.measure_all()
+    assert len(measured) == 1
