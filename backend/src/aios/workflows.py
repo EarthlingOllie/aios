@@ -820,6 +820,10 @@ async def _run_agent(
             graph_input = await _resume_command(graph, config, agent_run_id, resume)
         else:
             graph_input = {"messages": [HumanMessage(text)]}
+        if graph_input is None and resume.dealt_with:
+            # Decided, but no call waits on them any more (given just before a worker died,
+            # say): they count as given, rather than having the run queued again for them.
+            await asyncio.to_thread(_mark_resumed, agent_run_id, resume.dealt_with)
         if graph_input is not None:
             finished = False
             try:

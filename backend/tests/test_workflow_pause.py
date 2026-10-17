@@ -23,7 +23,13 @@ from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.db import SessionLocal
-from aios.models import DataStore, WorkflowRun, WorkflowRunStatus
+from aios.models import (
+    DataStore,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
 
@@ -523,3 +529,40 @@ def test_a_run_shows_no_stale_pins_unless_its_waiting(api, builder, store, queue
     api.put(f"/api/agents/{builder['id']}", json=agent_body(builder, base_prompt="builder-v2"))
     decide(api, queued, Flow())
     assert read(api, workflow, waiting["id"])["stale_pins"] == []
+
+
+def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the_run(
+    api, builder, store, queued
+):
+    """E.g. one whose outcome its call was given just before a worker died: resuming finds no
+    call waiting for it, and counts it given rather than queuing the run again and again."""
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    build = steps(waiting)["build"]
+    [pending] = api.get("/api/schema-changes").json()
+    with SessionLocal() as db:
+        orphan = SchemaChangeRequest(
+            data_store_id=store.id,
+            ops=[],
+            sql="",
+            summary="Create table data.gone",
+            reason="Already answered",
+            requested_by_run=build["agent_run_id"],
+            tool_call_id="call_gone",
+            base_revision=0,
+            status=SchemaChangeStatus.rejected,
+        )
+        db.add(orphan)
+        db.commit()
+        orphan_id = orphan.id
+    queued.append((worker.run_workflow_task, (waiting["id"],)))
+
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "waiting"
+    assert steps(out)["build"]["waiting_on_request_id"] == pending["id"]
+    assert api.get(f"/api/schema-changes/{orphan_id}").json()["resumed_at"] is not None
+    assert queued == []
