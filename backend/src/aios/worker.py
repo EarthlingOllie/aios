@@ -46,6 +46,8 @@ celery_app.conf.update(
         "aios.apply_schema_change": {"queue": "provisioning"},
         "aios.restore_dropped": {"queue": "provisioning"},
         "aios.purge_dropped": {"queue": "provisioning"},
+        # Run by the provisioning worker's beat, next to the store retries.
+        "aios.expire_schema_change_requests": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -75,6 +77,12 @@ celery_app.conf.beat_schedule = {
         "task": "aios.purge_dropped",
         "schedule": PURGE_DROPPED_EVERY,
         "options": {"expires": PURGE_DROPPED_EVERY},
+    },
+    # Schema change requests nobody decided in time (`SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`).
+    "expire-schema-change-requests": {
+        "task": "aios.expire_schema_change_requests",
+        "schedule": settings.schema_change_expiry_check_seconds,
+        "options": {"expires": settings.schema_change_expiry_check_seconds},
     },
 }
 
@@ -256,6 +264,17 @@ def purge_dropped_task() -> None:
     from aios.datastores import dropped
 
     dropped.purge_all()
+
+
+@celery_app.task(name="aios.expire_schema_change_requests")
+def expire_schema_change_requests_task() -> None:
+    """Expire the schema change requests nobody decided in time, and resume the runs that asked
+    with that, as a rejection would (`aios.datastores.schema_changes.expire`)."""
+    from aios.datastores import schema_changes
+
+    schema_changes.expire()
+    for request_id in schema_changes.expired_not_resumed():
+        enqueue_resume(request_id)
 
 
 def enqueue_resume(request_id: uuid.UUID) -> None:

@@ -383,6 +383,55 @@ def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store,
     [request] = api.get("/api/schema-changes").json()
     assert request["status"] == "cancelled"
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
+    assert api.get("/api/notifications").json()["unread"] == 0
+    assert queued == []
+    assert data_tables(store) == []
+
+
+def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
+    api, builder, store, queued
+):
+    """The node's agent run went with its agent, so only the step knows the request."""
+    workflow = chain(api, builder)
+    waiting = start(api, queued, workflow, Flow())
+    api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
+    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+
+    r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
+
+    assert r.status_code == 204, r.text
+    [request] = api.get("/api/schema-changes").json()
+    assert request["status"] == "cancelled"
+    assert api.get("/api/notifications").json()["unread"] == 0
+
+
+def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
+    api, builder, store, queued
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    [request] = api.get("/api/schema-changes").json()
+    age = timedelta(days=get_settings().schema_change_request_expiry_days, minutes=1)
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(SchemaChangeRequest.id == request["id"])
+            .values(created_at=func.now() - age)
+        )
+        db.commit()
+
+    worker.expire_schema_change_requests_task.run()
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    [(_, outcome)] = flow.results
+    assert outcome["status"] == "expired"
+    assert steps(out)["after"]["input"] == "builder:built(expired)"
+    assert data_tables(store) == []
+    assert api.get("/api/notifications").json()["unread"] == 0
 
 
 def test_a_nested_workflows_waiting_node_pauses_and_resumes_the_top_level_run(

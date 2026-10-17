@@ -7,10 +7,18 @@ export type RequestSummary = {
   message: string;
   /** Whether the platform is still working on it: worth asking again shortly. */
   inFlight: boolean;
+  /** What its `decided_at` marks: a decision, or its expiry or cancellation. */
+  decidedLabel: "Decided" | "Expired" | "Cancelled";
 };
 
 /** How a schema change request stands, as its card and the Changes list show it. */
 export function requestSummary(request: SchemaChangeRequest): RequestSummary {
+  const decidedLabel =
+    request.status === "expired" ? "Expired" : request.status === "cancelled" ? "Cancelled" : "Decided";
+  return { ...describe(request), decidedLabel };
+}
+
+function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLabel"> {
   const resuming = !request.resumed_at && !!request.run;
   switch (request.status) {
     case "pending":
@@ -61,11 +69,20 @@ export function requestSummary(request: SchemaChangeRequest): RequestSummary {
         }`.trim(),
         inFlight: resuming,
       };
-    default:
+    case "expired":
       return {
-        label: request.status === "expired" ? "Expired" : "Cancelled",
+        label: "Expired",
         variant: "outline",
-        message: "It wasn't applied. Nothing changed.",
+        message:
+          "Nobody decided in time, so it expired, which counts as rejected. Nothing changed." +
+          (resuming ? " The agent is carrying on." : ""),
+        inFlight: resuming,
+      };
+    case "cancelled":
+      return {
+        label: "Cancelled",
+        variant: "outline",
+        message: "Cancelled: the run that asked was deleted or stopped. Nothing changed.",
         inFlight: false,
       };
   }

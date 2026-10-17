@@ -206,6 +206,36 @@ test("deciding from the Changes section moves the request to the history", async
   await expect(history).toContainText("Applied to your data store.");
 });
 
+test("the history shows expired and cancelled requests, with no controls", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addSchemaChange({
+    summary: "Create table data.places",
+    status: "expired",
+    decided_at: "2026-10-14T10:00:00Z",
+    resumed_at: "2026-10-14T10:00:01Z",
+  });
+  api.addSchemaChange({
+    summary: "Create table data.things",
+    status: "cancelled",
+    decided_at: "2026-10-15T10:00:00Z",
+    resumed_at: "2026-10-15T10:00:00Z",
+  });
+  await page.goto("/data?tab=changes");
+
+  const history = page.getByRole("region", { name: "Change history" });
+  const expired = history.getByRole("region", { name: "Schema change: Create table data.places" });
+  const cancelled = history.getByRole("region", { name: "Schema change: Create table data.things" });
+  await expect(expired).toContainText("Expired");
+  await expect(expired).toContainText("so it expired, which counts as rejected. Nothing changed.");
+  await expect(expired).toContainText(/Expired \w/);
+  await expect(cancelled).toContainText("Cancelled: the run that asked was deleted or stopped.");
+  await expect(cancelled).toContainText(/Cancelled \w/);
+  await expect(history.getByRole("button", { name: "Approve" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Pending changes" })).toContainText(
+    "No changes are waiting.",
+  );
+});
+
 test("a request the user may not decide has no controls", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSchemaChange({ decider: false });

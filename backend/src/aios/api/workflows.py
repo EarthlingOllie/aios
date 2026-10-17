@@ -933,7 +933,7 @@ def delete_workflow_run(
     )
     sandboxes = run_sandboxes(db, agent_run_ids)
     # Before they go (their requests keep no link to them): a pending one can't be approved.
-    close_requests(db, agent_run_ids)
+    close_requests(db, [run.id])
     db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     db.delete(run)  # and its steps
     db.commit()
