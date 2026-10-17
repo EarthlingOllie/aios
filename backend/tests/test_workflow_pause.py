@@ -8,6 +8,7 @@ gives the waiting node its outcome on its own thread.
 The queued tasks are run here by hand, in order, standing in for the workers."""
 
 import asyncio
+import threading
 from datetime import timedelta
 
 import pytest
@@ -52,9 +53,9 @@ def run_queued(queued: list) -> None:
 
 
 class Flow:
-    """The model. An agent whose base prompt is `builder` asks for `ops`, then, given the
-    outcome, answers `built(<status>)`. Any other agent answers `<base prompt>(<message>)`.
-    Records each tool result it's given."""
+    """The model. An agent whose base prompt is `builder` asks for `ops` (`builder-<name>`: a
+    table `<name>`), then, given the outcome, answers `<base prompt>:built(<status>)`. Any other
+    agent answers `<base prompt>(<message>)`. Records each tool result it's given."""
 
     def __init__(self, *ops: dict):
         self.ops = list(ops) or [CONTACTS]
@@ -68,7 +69,9 @@ class Flow:
         results = last_tool_results(messages)
         self.results.extend((m.name, tool_output(m)) for m in results)
         if not results:
-            yield ToolCall("request_schema_change", {"ops": self.ops, "reason": "For people"})
+            _, _, table = name.partition("-")
+            ops = [{**CONTACTS, "name": table}] if table else self.ops
+            yield ToolCall("request_schema_change", {"ops": ops, "reason": "For people"})
         else:
             yield f"{name}:built({tool_output(results[-1])['status']})"
 
@@ -386,3 +389,39 @@ def test_a_node_failing_while_another_waits_fails_the_run_and_cancels_the_reques
     conversation = api.get(f"/api/agents/{build['agent_id']}/runs/{build['agent_run_id']}").json()
     assert conversation["waiting"] is False
     assert queued == []
+
+
+def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, store, queued):
+    """Its queuing finds the run running, and leaves it; the run, pausing, queues itself."""
+    places = make_agent(api, "Places", base_prompt="builder-places")
+    places = api.put(f"/api/agents/{places['id']}", json=agent_body(places, tools=TOOLS)).json()
+    workflow = make_workflow(
+        api, "Builders", [agent_node("contacts", builder), agent_node("places", places)]
+    )
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    assert [s["status"] for s in waiting["steps"]] == ["waiting", "waiting"]
+    by_table = {r["summary"]: r for r in api.get("/api/schema-changes").json()}
+    contacts = by_table["Create table data.contacts"]
+    places_request = by_table["Create table data.places"]
+    api.post(f"/api/schema-changes/{contacts['id']}/reject", json={})
+
+    async def decide_meanwhile(messages, info):
+        if messages[0].content == "builder" and last_tool_results(messages):
+            # The places node has found nothing decided, and waits again, by now.
+            await asyncio.sleep(0.5)
+            api.post(f"/api/schema-changes/{places_request['id']}/reject", json={})
+            # That decision's task, run now: it finds the run running, and does nothing.
+            task, args = queued.pop()
+            thread = threading.Thread(target=task.run, args=args)
+            thread.start()
+            thread.join()
+        async for item in flow(messages, info):
+            yield item
+
+    with use_model(model(decide_meanwhile)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", (out["status"], out["error"])
+    assert out["output"] == "builder:built(rejected)\n\nbuilder-places:built(rejected)"
