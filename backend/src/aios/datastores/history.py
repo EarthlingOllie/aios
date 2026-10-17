@@ -20,6 +20,7 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
 """
 
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,7 +32,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
-from aios.datastores.connections import store_session
+from aios.datastores.connections import DataStoreBusy, store_session
 from aios.datastores.models import HistoryAgentRun, HistoryMessage
 from aios.db import SessionLocal, engine
 from aios.models import (
@@ -53,6 +54,9 @@ BATCH = 50
 
 # Messages per insert: well inside Postgres's limit on a statement's parameters.
 MESSAGES_PER_INSERT = 1000
+
+# How long deleting a store's exported history waits for an export of it to finish (seconds).
+LOCK_WAIT = 5
 
 # Stores a session queued runs of, to export once it commits (see `_export_committed`).
 _TO_EXPORT = "aios.history_exports"
@@ -120,16 +124,23 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool]) -> None:
 
 
 @contextmanager
-def _locked(data_store_id: uuid.UUID) -> Iterator[None]:
-    """Holds the store's export lock: one export (or delete) of a store at a time, so a run's
-    copy is never written by two at once, in either order."""
+def _locked(data_store_id: uuid.UUID, wait: float = 0) -> Iterator[bool]:
+    """Holds the store's export lock, if it's free or frees up within `wait` seconds; whether it
+    got it. One export (or delete) of a store at a time, so a run's copy is never written by
+    two at once, in either order. Never waiting long, so exports queued while a long one runs
+    (a backfill) don't hold the app workers, and ingest with them."""
     with engine.connect() as conn:
         key = func.hashtextextended(f"aios.history_export:{data_store_id}", 0)
-        conn.execute(select(func.pg_advisory_lock(key)))
+        deadline = time.monotonic() + wait
+        while not (locked := conn.scalar(select(func.pg_try_advisory_lock(key)))):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
         try:
-            yield
+            yield bool(locked)
         finally:
-            conn.execute(select(func.pg_advisory_unlock(key)))
+            if locked:
+                conn.execute(select(func.pg_advisory_unlock(key)))
             conn.commit()
 
 
@@ -298,11 +309,15 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
 
 def export(data_store_id: uuid.UUID) -> int:
     """Drain the store's outbox into its `history` tables; returns how many runs it exported.
-    Does nothing unless the store is exporting (see `_exporting`): its rows wait.
+    Does nothing unless the store is exporting (see `_exporting`): its rows wait. Nor while
+    another export (or delete) of the store runs: what that one leaves pending, the periodic
+    sweep queues again.
 
     Raises `DataStoreBusy` if the store has no connections free."""
     exported = 0
-    with _locked(data_store_id):
+    with _locked(data_store_id) as locked:
+        if not locked:
+            return 0
         with SessionLocal() as db:
             if not _exporting(db, data_store_id):
                 return 0
@@ -339,8 +354,11 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
     """Empty the store's `history` tables (if it has them). The outbox is left as it is: runs
     pending still go in, if the export is on.
 
-    Raises as `store_session` does."""
-    with _locked(data_store_id):
+    Raises as `store_session` does, and `DataStoreBusy` if an export of the store is still
+    running after `LOCK_WAIT` (a backfill can take minutes)."""
+    with _locked(data_store_id, LOCK_WAIT) as locked:
+        if not locked:
+            raise DataStoreBusy(data_store_id)
         with SessionLocal() as db:
             store = db.get(DataStore, data_store_id)
             has_history = store is not None and store.history_revision is not None
