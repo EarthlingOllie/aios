@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,23 @@ def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
         doc.sha256 = files.put(doc.s3_key, io.BytesIO(data), None).sha256
         store.commit()
         return doc.id
+
+
+@pytest.fixture
+def new_user(db) -> Iterator[Callable[[], User]]:
+    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+    made: list[User] = []
+
+    def make() -> User:
+        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
+        db.add(u)
+        db.commit()
+        made.append(u)
+        return u
+
+    yield make
+    for u in made:
+        delete_user(db, u)
 
 
 @pytest.fixture

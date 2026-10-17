@@ -3,7 +3,7 @@ already on the store's database as its owner role."""
 
 from sqlalchemy import text
 
-from aios.datastores.migrations import context_options
+from aios.datastores.migrations import adopt_write_data_side, context_options
 from aios.datastores.models import SCHEMA
 from alembic import context
 
@@ -13,6 +13,7 @@ if connection is None:
 
 # The version table lives in `aios`, so the schema has to exist before Alembic looks for it.
 connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+adopt_write_data_side(connection)
 connection.commit()
 
 context.configure(connection=connection, **context_options())

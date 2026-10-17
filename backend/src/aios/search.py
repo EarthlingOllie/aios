@@ -10,9 +10,12 @@ from sqlalchemy.orm import Session
 
 from aios.config import get_settings
 from aios.datastores import (
+    STORE_BUSY,
+    STORE_UPGRADING,
     DataStoreBehind,
     DataStoreBusy,
     DataStoreNotReady,
+    store_not_ready,
     store_session,
     store_status,
 )
@@ -54,19 +57,6 @@ HYBRID_SQL = text(
     LIMIT :limit
     """
 )
-
-
-# What the search tools tell the model while the store is being set up.
-STORE_NOT_READY = "The user's data store is still being set up, so there's nothing to search yet."
-# Or when setting it up failed (as the API words it: a retry follows, later).
-STORE_FAILED = (
-    "The user's data store couldn't be set up, so there's nothing to search. "
-    "It will be tried again; they can check back later."
-)
-# Or while it's brought to the store tree's head (made by the release before, during a deploy).
-STORE_UPGRADING = "The user's data store is being upgraded. Try the search again in a moment."
-# And while it has no connections free.
-STORE_BUSY = "The user's data store is busy. Try the search again in a moment."
 
 
 @dataclass
@@ -150,8 +140,7 @@ async def document_search_results(
     except DataStoreBehind:
         return [{"error": STORE_UPGRADING}]
     except DataStoreNotReady as exc:
-        failed = exc.status == DataStoreStatus.failed
-        return [{"error": STORE_FAILED if failed else STORE_NOT_READY}]
+        return [{"error": store_not_ready(exc.status)}]
     except DataStoreBusy:
         return [{"error": STORE_BUSY}]
     return [

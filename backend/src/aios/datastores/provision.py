@@ -7,10 +7,10 @@ three roles named after it (never after a user):
   member, and `SET ROLE`s to it to migrate the store.
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
   it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
-  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`),
-  which both only read. Neither may create anything. Each has its own connection limit, and
-  default statement and idle-in-transaction timeouts, which a session may change
-  (`data_store_*` settings).
+  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`,
+  `aios.embedding_columns`), which both only read. Neither may create anything. Each has its
+  own connection limit, and default statement and idle-in-transaction timeouts, which a session
+  may change (`data_store_*` settings).
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
@@ -33,7 +33,6 @@ stores, and migrating one can fail.
 
 import logging
 import sys
-import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
@@ -42,7 +41,7 @@ from datetime import timedelta
 
 import psycopg
 from celery.exceptions import SoftTimeLimitExceeded
-from psycopg import errors, sql
+from psycopg import sql
 from sqlalchemy import (
     ColumnElement,
     and_,
@@ -203,9 +202,10 @@ def _set_up_database(run: _Run) -> None:
             conn.execute(sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner) + grant)
 
 
-# The platform's record of the store's schema, which the default privileges would otherwise let
-# `_rw` rewrite: only the tree, as the owner, changes them.
-BOOKKEEPING = ("aios.alembic_version", "aios.schema_history")
+# The platform's record of the store's schema (and which `data` columns are embeddings), which
+# the default privileges would otherwise let `_rw` rewrite: only the tree and schema changes, as
+# the owner, change them.
+BOOKKEEPING = ("aios.alembic_version", "aios.schema_history", "aios.embedding_columns")
 
 
 def upgrade_store(names: StoreNames) -> str:
@@ -336,28 +336,32 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     return run.revision
 
 
-# Tries at dropping a store's database (see `drop`).
-DROP_TRIES = 10
-
-
 def drop(names: StoreNames) -> None:
     """Drop a store's database and roles, if they exist. Only tests use it for now: deleting
     users' stores (after a retention period) is to come."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
-        drop_database = sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-            sql.Identifier(names.dbname)
-        )
-        for attempt in range(DROP_TRIES):
-            try:
-                conn.execute(drop_database)
-                break
-            except errors.InsufficientPrivilege:
-                # Autovacuum is working in it (a new store's tables get analyzed), and only a
-                # superuser may end that: it's done in a moment.
-                if attempt == DROP_TRIES - 1:
-                    raise
-                time.sleep(0.5)
+        if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)).fetchone():
+            db = sql.Identifier(names.dbname)
+            conn.execute(sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS false").format(db))
+            # End its sessions. Ending the login roles' takes their privileges: the provisioner
+            # only has ADMIN on them, from creating them.
+            for role in (names.rw, names.ro):
+                if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+                    conn.execute(
+                        sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET FALSE").format(
+                            sql.Identifier(role)
+                        )
+                    )
+            conn.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+                " WHERE datname = %s AND pg_has_role(usesysid, 'USAGE')",
+                (names.dbname,),
+            )
+            # Not WITH (FORCE), which refuses while an autovacuum worker is in the database (it
+            # has no role, so only a superuser may end it). A plain drop stops the worker
+            # itself, and waits a few seconds for the sessions ended above to exit.
+            conn.execute(sql.SQL("DROP DATABASE {}").format(db))
         for role in (names.rw, names.ro, names.owner):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
