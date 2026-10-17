@@ -149,6 +149,19 @@ def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_
     assert seen and all("still being set up" in str(r) for r in seen)
 
 
+def test_the_search_tools_tell_the_model_a_store_that_failed_couldnt_be_set_up(db, user):
+    store_id = data_store_for(user.id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+    )
+    db.commit()
+
+    results = asyncio.run(search.document_search_results(data_store_id=store_id, query="fish"))
+
+    assert results == [{"error": search.STORE_FAILED}]
+    assert "couldn't be set up" in search.STORE_FAILED
+
+
 def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
     queued = []
     monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *a: queued.append(a))
