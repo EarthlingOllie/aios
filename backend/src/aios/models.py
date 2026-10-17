@@ -93,7 +93,7 @@ class DataStore(Base):
     # The revision of the tree's `history` branch it's at: null until its owner first switches
     # the run history export on, which creates the `history` schema.
     history_revision: Mapped[str | None] = mapped_column(String(64))
-    # When the run history export last copied runs into it.
+    # When the run history export last caught up (copied in whatever runs were pending).
     history_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)

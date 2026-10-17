@@ -28,7 +28,7 @@ class SettingsOut(BaseModel):
     export_run_history: bool
     # The store has its `history` tables (they're made once the export is first switched on).
     history_ready: bool
-    # When the export last copied runs into the store.
+    # When the export last caught up (copied in whatever runs were pending).
     history_exported_at: datetime | None
 
 

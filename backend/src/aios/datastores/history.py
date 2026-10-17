@@ -328,11 +328,6 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
                 db.execute(update(HistoryExport).where(*same).values(exported_at=func.now()))
             else:
                 db.execute(delete(HistoryExport).where(*same))
-        db.execute(
-            update(DataStore)
-            .where(DataStore.id == data_store_id)
-            .values(history_exported_at=func.now())
-        )
         db.commit()
     return len(pending)
 
@@ -355,11 +350,20 @@ def export(data_store_id: uuid.UUID) -> int:
             exported += count
             if count < BATCH:
                 break
+        # Caught up, even with nothing to export: the Settings page waits for this.
+        with SessionLocal() as db:
+            db.execute(
+                update(DataStore)
+                .where(DataStore.id == data_store_id)
+                .values(history_exported_at=func.now())
+            )
+            db.commit()
     return exported
 
 
 def stores_to_export() -> list[uuid.UUID]:
-    """Exporting stores with runs still pending (for the periodic sweep)."""
+    """Exporting stores with runs still pending, or that have never exported (for the
+    periodic sweep): one set up as it was provisioned has had no export queued."""
     with SessionLocal() as db:
         return list(
             db.scalars(
@@ -369,13 +373,16 @@ def stores_to_export() -> list[uuid.UUID]:
                     User.export_run_history,
                     DataStore.status == DataStoreStatus.ready,
                     DataStore.history_revision.is_not(None),
-                    select(HistoryExport.id)
-                    .where(
-                        HistoryExport.data_store_id == DataStore.id,
-                        HistoryExport.exported_at.is_(None),
-                        HistoryExport.error.is_(None),
-                    )
-                    .exists(),
+                    or_(
+                        select(HistoryExport.id)
+                        .where(
+                            HistoryExport.data_store_id == DataStore.id,
+                            HistoryExport.exported_at.is_(None),
+                            HistoryExport.error.is_(None),
+                        )
+                        .exists(),
+                        DataStore.history_exported_at.is_(None),
+                    ),
                 )
             )
         )
