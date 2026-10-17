@@ -335,12 +335,19 @@ def test_refuses_a_url_without_a_password(cluster):
     _connect(app_url).close()
 
 
-def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template):
-    """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
+def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template, capsys):
+    """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted.
+
+    Like RDS's, it may not connect to data stores (only theirs roles may), so it can't give
+    pgstattuple to one made before the template had it: it says so, and carries on."""
     _, app_url, prov_url = cluster
     tag = uuid.uuid4().hex[:8]
     master, dbname = f"T_Master_{tag}", f"t_roles_q_{tag}"
+    store = f"ds_{uuid.uuid4().hex}"
     with _connect(admin_url) as conn:
+        # A data store from before the template had pgstattuple.
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(store)))
+        conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(store)))
         conn.execute(
             sql.SQL("CREATE ROLE {} LOGIN CREATEDB CREATEROLE PASSWORD 'pw'").format(
                 sql.Identifier(master)
@@ -370,6 +377,10 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
                 sql.SQL("CREATE SCHEMA extensions AUTHORIZATION {}").format(sql.Identifier(master))
             )
             conn.execute("CREATE EXTENSION vector SCHEMA extensions")
+            conn.execute("CREATE EXTENSION pgstattuple SCHEMA extensions")
+            conn.execute(
+                "GRANT EXECUTE ON FUNCTION extensions.pgstattuple_approx(regclass) TO PUBLIC"
+            )
         with _connect(master_url) as conn:
             conn.execute("CREATE TABLE things (id int)")
         app_q = make_url(app_url).set(database=dbname).render_as_string(hide_password=False)
@@ -379,6 +390,7 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
 
         with _connect(app_q) as conn:
             conn.execute("ALTER TABLE things ADD COLUMN name text")
+        assert f"Couldn't check pgstattuple is in data store {store}" in capsys.readouterr().err
     finally:
         # As its owner: a master user that isn't a superuser couldn't drop it.
         with _connect(master_url, database="postgres") as conn:
@@ -399,6 +411,7 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
                 )
             )
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
+            conn.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(store)))
 
 
 def test_less_common_objects_are_handed_over_too(cluster):

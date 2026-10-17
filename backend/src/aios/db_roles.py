@@ -270,6 +270,7 @@ def ensure_roles(
             )
         )
     _ensure_store_template(admin_url, dbname, store_template)
+    _add_pgstattuple_to_stores(admin_url, dbname)
     return left_open
 
 
@@ -281,11 +282,54 @@ SELECT 1 FROM pg_database d, pg_roles me
 """
 
 
+def _add_pgstattuple(conn: psycopg.Connection) -> None:
+    """pgstattuple in the database's `extensions` schema, for measuring the data a store holds
+    (`aios.datastores.quota`). Only a superuser may create it, and only `pg_stat_scan_tables`
+    may run its functions until `pgstattuple_approx` is granted to everyone here: a store's
+    roles are the only others who may connect, and it only gives sizes."""
+    conn.execute("CREATE EXTENSION IF NOT EXISTS pgstattuple SCHEMA extensions")
+    approx = "extensions.pgstattuple_approx(regclass)"
+    # Only its owner may grant it: a master user who didn't create it (it was there already)
+    # leaves it as it is.
+    granted = conn.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')", (approx,))
+    if not granted.fetchone()[0]:
+        conn.execute(f"GRANT EXECUTE ON FUNCTION {approx} TO PUBLIC")
+
+
+# Data stores' databases (`aios.datastores.provision`), which take connections once made.
+_STORES = r"""
+SELECT datname FROM pg_database
+ WHERE datname ~ '^ds_[0-9a-f]{32}$' AND datallowconn AND NOT datistemplate
+"""
+
+
+def _add_pgstattuple_to_stores(admin_url: str, platform_db: str) -> None:
+    """pgstattuple in each data store made from the template before it had it."""
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db)) as conn:
+        stores = [name for (name,) in conn.execute(_STORES).fetchall()]
+    for store in stores:
+        try:
+            conn = psycopg.connect(libpq_conninfo(admin_url, database=store))
+        except psycopg.OperationalError as exc:
+            # Only its own roles may connect, which a master user that isn't a superuser (RDS's)
+            # needs granting. Until a superuser adds pgstattuple, it's measured by its size.
+            print(
+                f"Warning: Couldn't check pgstattuple is in data store {store}, so it's measured"
+                f" by its database's size: {str(exc).strip()}",
+                file=sys.stderr,
+            )
+            continue
+        with conn:
+            has = conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple'")
+            if not has.fetchone():
+                _add_pgstattuple(conn)
+
+
 def _ensure_store_template(admin_url: str, platform_db: str, template: str) -> None:
     """The database data stores are copied from (`aios.datastores.provision`): empty but for
-    pgvector, which the provisioner can't install itself (it isn't a trusted extension), in an
-    `extensions` schema every store's roles may use. Nobody may connect to it; the provisioner
-    may copy it because it's marked a template."""
+    pgvector and pgstattuple, which the provisioner can't install itself (they aren't trusted
+    extensions), in an `extensions` schema every store's roles may use. Nobody may connect to
+    it; the provisioner may copy it because it's marked a template."""
     name = sql.Identifier(template)
     with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:
         exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (template,))
@@ -294,6 +338,7 @@ def _ensure_store_template(admin_url: str, platform_db: str, template: str) -> N
     with psycopg.connect(libpq_conninfo(admin_url, database=template)) as conn:
         conn.execute("CREATE SCHEMA IF NOT EXISTS extensions")
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions")
+        _add_pgstattuple(conn)
         conn.execute("REVOKE ALL ON SCHEMA extensions FROM PUBLIC")
         conn.execute("GRANT USAGE ON SCHEMA extensions TO PUBLIC")
     with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:

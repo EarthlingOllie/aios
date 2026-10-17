@@ -1,4 +1,4 @@
-"""Each data store's storage cap: its database's size (`pg_database_size`) and its documents'
+"""Each data store's storage cap: the data its tables hold (`_DB_BYTES`) and its documents'
 files' bytes, against `data_store_db_quota_bytes` and `data_store_files_quota_bytes`.
 
 Over either cap, uploads and `write_data`'s inserts and updates are refused; reads, searches and
@@ -27,9 +27,51 @@ from aios.models import DataStore, DataStoreStatus
 
 log = logging.getLogger(__name__)
 
-# Either login role may ask (each may connect to its store's database).
-_DB_BYTES = text("SELECT pg_database_size(current_database())")
+# The data the store's tables hold, which deleting rows brings down at once (the database's
+# size, `pg_database_size`, keeps the space they took until their table is rewritten). For each
+# table, `pgstattuple_approx` (the template's, which either login role may run) gives the bytes
+# its live rows take, in the table's own pages and in its TOAST table (values over about 2 KB,
+# kept apart). Its indexes count in proportion: each index's size times the share of its
+# table's pages holding live rows rather than dead ones or free space, since an index doesn't
+# shrink as rows go either. Pages vacuum marks all-visible are estimated from the free space it
+# recorded, the rest read, so it's close rather than exact. The system catalogs don't count.
+_DB_BYTES = text("""
+SELECT coalesce(sum(
+         heap.approx_tuple_len + coalesce(toast.approx_tuple_len, 0)
+         + (SELECT coalesce(sum(pg_relation_size(i.indexrelid)), 0)
+              FROM pg_index i WHERE i.indrelid = c.oid)
+           * heap.approx_tuple_len
+           / greatest(heap.approx_tuple_len + heap.dead_tuple_len + heap.approx_free_space, 1)
+       ), 0)::bigint
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ CROSS JOIN LATERAL extensions.pgstattuple_approx(c.oid) heap
+ -- A table without one has 0, and the function gives a row of nulls for a null.
+ CROSS JOIN LATERAL extensions.pgstattuple_approx(nullif(c.reltoastrelid, 0)::regclass) toast
+ WHERE c.relkind IN ('r', 'm') AND c.relpersistence <> 't'
+   AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+""")
+# The database's size, all its files: never less than the data in it.
+_DB_SIZE = text("SELECT pg_database_size(current_database())")
+_HAS_PGSTATTUPLE = text("SELECT to_regprocedure('extensions.pgstattuple_approx(regclass)')")
 _FILES_BYTES = text("SELECT coalesce(sum(size_bytes), 0) FROM aios.documents")
+
+
+def _db_bytes(store: Session) -> int:
+    """The data the store holds (`_DB_BYTES`). A store made before the template had pgstattuple,
+    which the roles command couldn't give it (`aios.db_roles`), is measured by its size."""
+    if store.scalar(_HAS_PGSTATTUPLE) is None:
+        return store.scalar(_DB_SIZE)
+    return store.scalar(_DB_BYTES)
+
+
+def _db_full(store: Session, quota: int) -> int | None:
+    """What the store holds, if it's at `quota` or past it; None if it isn't. The database's
+    size is no less, and quick to read: under the quota, there's no need to measure."""
+    if store.scalar(_DB_SIZE) < quota:
+        return None
+    used = _db_bytes(store)
+    return used if used >= quota else None
 
 
 @dataclass(frozen=True)
@@ -75,8 +117,7 @@ def upload_refusal(store: Session, filename: str, size: int) -> str | None:
         settings.data_store_files_quota_bytes,
     )
     # Ingesting it writes its chunks to the database.
-    db_bytes = store.scalar(_DB_BYTES)
-    if db_bytes >= db_quota:
+    if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
             f"Your data store is full: its database uses {_of(db_bytes, db_quota)}, so documents"
             " can't be uploaded."
@@ -103,8 +144,7 @@ def write_refusal(store: Session) -> str | None:
         settings.data_store_db_quota_bytes,
         settings.data_store_files_quota_bytes,
     )
-    db_bytes = store.scalar(_DB_BYTES)
-    if db_bytes >= db_quota:
+    if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
             f"The user's data store is full: its database uses {_of(db_bytes, db_quota)}, so rows"
             " can't be inserted or updated. Reading and deleting rows still work. Tell the user:"
@@ -135,7 +175,7 @@ def record_files(data_store_id: uuid.UUID, store: Session) -> None:
 def measure(data_store_id: uuid.UUID) -> None:
     """Measure what the store uses now, and record it on its row."""
     with store_session(data_store_id, "ro") as store:
-        db_bytes, files_bytes = store.scalar(_DB_BYTES), store.scalar(_FILES_BYTES)
+        db_bytes, files_bytes = _db_bytes(store), store.scalar(_FILES_BYTES)
     _record(data_store_id, db_bytes=db_bytes, files_bytes=files_bytes, usage_measured_at=func.now())
 
 
