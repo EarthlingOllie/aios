@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
+    # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
+    # either is cut short there, and says so (`truncated`).
+    query_data_max_rows: int = Field(default=200, ge=1)
+    query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

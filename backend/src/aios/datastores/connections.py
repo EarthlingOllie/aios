@@ -36,6 +36,9 @@ Role = Literal["rw", "ro"]
 
 # Engines kept open at once (each up to 3 connections); past it the least recently used goes.
 MAX_ENGINES = 64
+# The connections each store engine pools, at most: one kept, two more while busy.
+POOL_SIZE, MAX_OVERFLOW = 1, 2
+MAX_CONNECTIONS = POOL_SIZE + MAX_OVERFLOW
 
 # Seconds to wait for one of those connections when all are in use.
 POOL_TIMEOUT = 30
@@ -153,15 +156,19 @@ def _engine(store: DataStore, role: Role) -> Engine:
         if engine is not None:
             _engines.move_to_end(key)
             return engine
-        # Up to 3 connections per (store, role) in each process: the roles' connection limit is
-        # budgeted from it (`data_store_connection_limit`).
+        # Up to `MAX_CONNECTIONS` per (store, role) in each process: the roles' connection limit
+        # is budgeted from it (`data_store_connection_limit`). `query_data` resets read-only
+        # connections with `DISCARD ALL`, which drops prepared statements, so psycopg mustn't
+        # make any on them (it prepares those it runs often).
+        connect_args = {"prepare_threshold": None} if role == "ro" else {}
         engine = create_engine(
             store_url(store, role),
             poolclass=_pool_class(store.id),
-            pool_size=1,
-            max_overflow=2,
+            pool_size=POOL_SIZE,
+            max_overflow=MAX_OVERFLOW,
             pool_timeout=POOL_TIMEOUT,
             pool_pre_ping=True,
+            connect_args=connect_args,
         )
         event.listen(engine, "handle_error", _busy(store.id))
         _engines[key] = engine
