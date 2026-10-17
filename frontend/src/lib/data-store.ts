@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { api, type DataStoreStatus } from "@/lib/api";
+import { api, describeError, type DataStoreStatus } from "@/lib/api";
+
+// The notice and the Data page's Overview say the same thing about a store that failed or is
+// otherwise unavailable (the failed wording also matches the API's 409). They differ only while
+// it's being set up.
+const FAILED_MESSAGE =
+  "Your data store couldn't be set up. We'll try again; please check back later.";
+const UNAVAILABLE_MESSAGE = "Your data store isn't available.";
 
 /**
  * What to say about a data store that isn't ready, with what the user can do once it is (e.g.
@@ -13,9 +20,31 @@ export function dataStoreNotice(status: DataStoreStatus, action: string): string
     case "provisioning":
       return `Setting up your data store. You can ${action} once it's ready.`;
     case "failed":
-      return "Your data store couldn't be set up. We'll try again; please check back later.";
+      return FAILED_MESSAGE;
     default:
-      return "Your data store isn't available.";
+      return UNAVAILABLE_MESSAGE;
+  }
+}
+
+/** How the Data page's Overview names a store's status, and what it says about it. */
+export function dataStoreSummary(status: DataStoreStatus): { label: string; message: string } {
+  switch (status) {
+    case "ready":
+      return {
+        label: "Ready",
+        message:
+          "Your data store is ready. Your agents can keep data in it, and you can upload documents.",
+      };
+    case "provisioning":
+      return {
+        label: "Being set up",
+        message:
+          "We're setting up your data store. This usually takes a few seconds; you can upload documents once it's ready.",
+      };
+    case "failed":
+      return { label: "Failed", message: FAILED_MESSAGE };
+    default:
+      return { label: "Unavailable", message: UNAVAILABLE_MESSAGE };
   }
 }
 
@@ -27,11 +56,20 @@ export function dataStorePollInterval(status: DataStoreStatus): number | null {
 }
 
 /**
- * The user's data store's status, asked again while it isn't ready. Undefined until the first
- * answer; a failed request keeps the last one and tries again.
+ * The user's data store's status, asked again while it isn't ready. `status` is undefined until
+ * the first answer; a failed request keeps the last one, says what went wrong in `error`, and
+ * tries again. `recheck` asks again straight away, e.g. about a store last seen ready, which
+ * nothing polls.
  */
-export function useDataStoreStatus(): DataStoreStatus | undefined {
+export function useDataStoreStatus(): {
+  status?: DataStoreStatus;
+  error?: string;
+  recheck: () => void;
+} {
   const [status, setStatus] = useState<DataStoreStatus>();
+  const [error, setError] = useState<string>();
+  // Bumped by `recheck`: starts the checks over, dropping any still waiting or in flight.
+  const [round, setRound] = useState(0);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -41,17 +79,21 @@ export function useDataStoreStatus(): DataStoreStatus | undefined {
         .then(({ status }) => {
           if (stopped) return;
           setStatus(status);
+          setError(undefined);
           const wait = dataStorePollInterval(status);
           if (wait !== null) timer = setTimeout(check, wait);
         })
-        .catch(() => {
-          if (!stopped) timer = setTimeout(check, 5000);
+        .catch((err) => {
+          if (stopped) return;
+          setError(`Couldn't check your data store (${describeError(err)}). Trying again…`);
+          timer = setTimeout(check, 5000);
         });
     check();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
-  return status;
+  }, [round]);
+  const recheck = useCallback(() => setRound((n) => n + 1), []);
+  return { status, error, recheck };
 }

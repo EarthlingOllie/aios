@@ -75,6 +75,35 @@ test("a store that couldn't be set up says so", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
 
+test("a busy store doesn't tell the chat panel there are no documents", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.dataStoreBusy = true;
+  await page.goto("/");
+
+  await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
+    "Your data store is busy.",
+  );
+  await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+
+  api.dataStoreBusy = false;
+  await expect(page.getByText("report.pdf")).toBeVisible();
+  await expect(page.getByRole("status", { name: "Documents list" })).toBeHidden();
+});
+
+test("the chat's panel shows it's loading, not an invitation to upload", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.documentsDelay = 1500;
+  await page.goto("/");
+
+  await expect(page.getByLabel("Loading documents")).toBeVisible();
+  await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
+
+  await expect(page.getByText("report.pdf")).toBeVisible();
+  await expect(page.getByLabel("Loading documents")).toBeHidden();
+});
+
 test("search waits for a store that's being set up, then searches", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "provisioning";
