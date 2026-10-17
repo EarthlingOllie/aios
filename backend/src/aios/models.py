@@ -101,6 +101,10 @@ class DataStore(Base):
     # When embedding the exported messages last caught up (embedded every one waiting); null
     # while it hasn't since it was switched on, or since it last failed.
     history_embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why embedding last failed, and when it's tried again (unless the store's export runs
+    # first, after a turn); both cleared once it catches up.
+    history_embed_error: Mapped[str | None] = mapped_column(Text)
+    history_embed_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

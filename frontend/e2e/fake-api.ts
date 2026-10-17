@@ -111,6 +111,7 @@ export class FakeApi {
     history_exported_at: null as string | null,
     embed_run_history: false,
     history_embedded_at: null as string | null,
+    history_embed_error: null as string | null,
   };
   /** Times "delete exported history" was asked for. */
   exportedHistoryDeletes = 0;

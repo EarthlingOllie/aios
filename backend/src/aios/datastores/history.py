@@ -118,6 +118,15 @@ EMBED_BATCH = 128
 # waits for the periodic sweep, which queues the store's export again.
 EMBED_BUDGET = 5 * 60
 
+# How long embedding that failed waits before the sweep tries it again (seconds), unless an
+# export of the store runs first: the embedding API may be down for a while, or keep refusing.
+EMBED_RETRY_AFTER = 10 * 60
+
+# How much of a message is embedded (characters, from its start): a batch then stays well inside
+# the embedding API's tokens per request. A long message is found by meaning through its start;
+# by keyword, through all of it.
+EMBED_MAX_CHARS = 4000
+
 # How long deleting a store's exported history waits for an export of it to finish (seconds).
 LOCK_WAIT = 5
 
@@ -684,7 +693,7 @@ def _embed_batch(data_store_id: uuid.UUID) -> int:
     if not waiting:
         return 0
     # With no session open on the store: its engine may be evicted while the API answers.
-    vectors = asyncio.run(embed_documents([m.text for m in waiting]))
+    vectors = asyncio.run(embed_documents([m.text[:EMBED_MAX_CHARS] for m in waiting]))
     with store_session(data_store_id, "rw") as store:
         store.execute(
             messages.update()
@@ -726,15 +735,28 @@ def _embed_locked(data_store_id: uuid.UUID) -> None:
             if not _embedding(data_store_id):
                 return  # switched off: what's embedded is kept
             if _embed_batch(data_store_id) < EMBED_BATCH:
-                _set_store(data_store_id, history_embedded_at=func.now())
+                _set_store(
+                    data_store_id,
+                    history_embedded_at=func.now(),
+                    history_embed_error=None,
+                    history_embed_retry_at=None,
+                )
                 return
             if time.monotonic() >= deadline:
                 break
     except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
         raise
-    except Exception:
+    except Exception as exc:
         log.exception("Couldn't embed the exported history of data store %s", data_store_id)
-    # Not caught up: the sweep queues the store's export again (`stores_to_export`).
+        _set_store(
+            data_store_id,
+            history_embedded_at=None,
+            history_embed_error=f"{type(exc).__name__}: {exc}"[:2000],
+            history_embed_retry_at=func.now()
+            + func.make_interval(0, 0, 0, 0, 0, 0, EMBED_RETRY_AFTER),
+        )
+        return
+    # Out of time: the sweep queues the store's export again (`stores_to_export`).
     _set_store(data_store_id, history_embedded_at=None)
 
 
@@ -759,7 +781,14 @@ def stores_to_export() -> list[uuid.UUID]:
                         .exists(),
                         DataStore.history_exported_at.is_(None),
                         # Messages still to embed (a backfill unfinished, or that failed).
-                        and_(User.embed_run_history, DataStore.history_embedded_at.is_(None)),
+                        and_(
+                            User.embed_run_history,
+                            DataStore.history_embedded_at.is_(None),
+                            or_(
+                                DataStore.history_embed_retry_at.is_(None),
+                                DataStore.history_embed_retry_at <= func.now(),
+                            ),
+                        ),
                     ),
                 )
             )
@@ -849,5 +878,9 @@ def set_embedding(db: Session, user_id: int, on: bool) -> None:
     from aios.datastores.resolve import data_store_for
 
     store_id = data_store_for(user_id, db)
-    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_embedded_at=None))
+    db.execute(
+        update(DataStore)
+        .where(DataStore.id == store_id)
+        .values(history_embedded_at=None, history_embed_error=None, history_embed_retry_at=None)
+    )
     db.info.setdefault(_TO_EXPORT, set()).add(store_id)

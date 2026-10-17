@@ -9,7 +9,7 @@ import re
 import pytest
 from conftest import delete_user, provisioned_user
 from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
-from sqlalchemy import text, update
+from sqlalchemy import func, text, update
 from test_agents import agent_body, chat_body, make_agent
 from test_history_export import chat, new_run, set_up_and_export, settings, stored, switch
 
@@ -177,7 +177,7 @@ async def _meanings(batch):
     return [meaning(t) for t in batch]
 
 
-def test_a_backfill_left_unfinished_is_picked_up_by_the_sweep(
+def test_a_backfill_out_of_time_is_picked_up_by_the_sweep(
     api, store_id, history_tasks, embedded, monkeypatch
 ):
     switch(api, True)
@@ -187,6 +187,30 @@ def test_a_backfill_left_unfinished_is_picked_up_by_the_sweep(
     history.export(store_id)
     assert history.stores_to_export() == []
 
+    # One message per batch, and no time for a second.
+    monkeypatch.setattr(history, "EMBED_BATCH", 1)
+    monkeypatch.setattr(history, "EMBED_BUDGET", 0)
+    embed(api, True)
+    history.export(store_id)
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, False]
+    assert settings(api)["history_embedded_at"] is None
+    assert store_id in history.stores_to_export()
+
+    monkeypatch.setattr(history, "EMBED_BATCH", 128)
+    history.export(store_id)
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert store_id not in history.stores_to_export()
+
+
+def test_embedding_that_fails_says_why_and_is_tried_again_later(
+    api, store_id, history_tasks, embedded, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "Cats", "Felines")
+    history.export(store_id)
+
     async def down(batch):
         raise RuntimeError("embedding API is down")
 
@@ -194,12 +218,36 @@ def test_a_backfill_left_unfinished_is_picked_up_by_the_sweep(
     embed(api, True)
     history.export(store_id)
     assert settings(api)["history_embedded_at"] is None
+    assert settings(api)["history_embed_error"] == "RuntimeError: embedding API is down"
+    # Not every minute: after `EMBED_RETRY_AFTER`.
+    assert store_id not in history.stores_to_export()
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == store_id)
+            .values(history_embed_retry_at=func.now())
+        )
+        db.commit()
     assert store_id in history.stores_to_export()
 
     monkeypatch.setattr(history, "embed_documents", _meanings)
     history.export(store_id)
     assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert settings(api)["history_embed_error"] is None
     assert store_id not in history.stores_to_export()
+
+
+def test_a_long_message_is_embedded_by_its_start(api, store_id, history_tasks, embedded):
+    """So a batch stays inside the embedding API's limit on tokens per request."""
+    switch(api, True)
+    embed(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    long = "cats " * history.EMBED_MAX_CHARS
+    chat(api, agent, new_run(api, agent), long, "ok")
+    history.export(store_id)
+
+    assert embedded == [long[: history.EMBED_MAX_CHARS], "ok"]
 
 
 HISTORY_TOOL = {"key": "history_search", "config": {"max_results": 3}}

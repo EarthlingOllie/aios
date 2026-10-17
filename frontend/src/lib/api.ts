@@ -23,6 +23,8 @@ export type Settings = {
   embed_run_history: boolean;
   /** When embedding last caught up (embedded every exported message waiting). */
   history_embedded_at: string | null;
+  /** Why embedding last failed, if it hasn't caught up since (it's tried again later). */
+  history_embed_error: string | null;
 };
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";

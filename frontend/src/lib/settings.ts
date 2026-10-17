@@ -19,6 +19,12 @@ export function historyEmbeddingStatus(s: Settings, formatDate: (iso: string) =>
   if (!s.embed_run_history) {
     return "Off. Agents can search your past runs by keyword. Messages already embedded are kept.";
   }
+  if (s.history_embed_error) {
+    return (
+      `Couldn't embed your exported messages (${s.history_embed_error}). ` +
+      "It's tried again in a few minutes."
+    );
+  }
   if (!s.history_embedded_at) return "Embedding your exported messages…";
   return (
     "Agents can search your past runs by meaning and by keyword. " +
@@ -33,6 +39,7 @@ export function historyExportPending(s: Settings): boolean {
   return (
     !s.history_ready ||
     s.history_exported_at === null ||
-    (s.embed_run_history && s.history_embedded_at === null)
+    // Not while it's failed: it's tried again in minutes, not seconds.
+    (s.embed_run_history && s.history_embedded_at === null && !s.history_embed_error)
   );
 }

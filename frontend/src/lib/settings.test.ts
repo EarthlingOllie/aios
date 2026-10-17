@@ -14,6 +14,7 @@ const settings = (s: Partial<Settings>): Settings => ({
   history_exported_at: null,
   embed_run_history: false,
   history_embedded_at: null,
+  history_embed_error: null,
   ...s,
 });
 
@@ -79,6 +80,20 @@ describe("historyEmbeddingStatus", () => {
     });
     expect(historyEmbeddingStatus(s, at)).toBe(
       "Agents can search your past runs by meaning and by keyword. Last embedded <2026-10-16T11:00:00Z>.",
+    );
+    expect(historyExportPending(s)).toBe(false);
+  });
+
+  it("says why it failed, without asking again every few seconds", () => {
+    const s = settings({
+      ...exported,
+      history_exported_at: done,
+      embed_run_history: true,
+      history_embed_error: "RuntimeError: embedding API is down",
+    });
+    expect(historyEmbeddingStatus(s, at)).toBe(
+      "Couldn't embed your exported messages (RuntimeError: embedding API is down). " +
+        "It's tried again in a few minutes.",
     );
     expect(historyExportPending(s)).toBe(false);
   });

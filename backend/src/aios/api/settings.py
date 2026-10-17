@@ -37,6 +37,8 @@ class SettingsOut(BaseModel):
     embed_run_history: bool
     # When embedding last caught up (embedded every exported message waiting).
     history_embedded_at: datetime | None
+    # Why it last failed, if it hasn't caught up since (it's tried again in a few minutes).
+    history_embed_error: str | None
 
 
 def settings_out(db: DB, user_id: int) -> SettingsOut:
@@ -47,6 +49,7 @@ def settings_out(db: DB, user_id: int) -> SettingsOut:
             DataStore.history_revision,
             DataStore.history_exported_at,
             DataStore.history_embedded_at,
+            DataStore.history_embed_error,
         )
         .outerjoin(DataStore, DataStore.owner_user_id == User.id)
         .where(User.id == user_id)
@@ -57,6 +60,7 @@ def settings_out(db: DB, user_id: int) -> SettingsOut:
         history_exported_at=row.history_exported_at,
         embed_run_history=row.embed_run_history,
         history_embedded_at=row.history_embedded_at,
+        history_embed_error=row.history_embed_error,
     )
 
 
