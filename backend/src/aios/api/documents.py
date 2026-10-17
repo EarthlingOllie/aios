@@ -1,5 +1,4 @@
 import logging
-import os
 from datetime import datetime
 from typing import Annotated
 
@@ -97,10 +96,9 @@ def list_documents(user: CurrentUser):
 def upload_document(file: UploadFile, user: CurrentUser):
     # Plain `def`: FastAPI runs it in the threadpool, so the blocking upload to S3, DB commits
     # and broker publish below don't stall the event loop (SSE streams, health checks).
-    # The file has been spooled (to disk, if large), so its size is known before it's sent on.
-    size = file.file.seek(0, os.SEEK_END)
-    file.file.seek(0)
-    if size > get_settings().max_upload_bytes:
+    # The file has been spooled (to disk, if large), so its size is known before it's sent on
+    # (Starlette counts it while parsing the form; one it didn't isn't taken on trust).
+    if file.size is None or file.size > get_settings().max_upload_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     store_id = data_store_for(user.id)
     with store_session(store_id, "rw") as db:
