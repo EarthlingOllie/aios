@@ -8,6 +8,7 @@ it.
 """
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -650,8 +651,10 @@ def _setup_checkpointer(database_url: str, monkeypatch) -> None:
     monkeypatch.setattr(get_settings(), "database_url", database_url)
 
     async def turn() -> None:
-        async with checkpoints.turn(run_id=0):
-            pass
+        # Run 0 doesn't exist, so the turn itself is refused, once the setup has run.
+        with contextlib.suppress(checkpoints.RunGone):
+            async with checkpoints.turn(run_id=0):
+                pass
 
     asyncio.run(turn())
 

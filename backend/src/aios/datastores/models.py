@@ -1,5 +1,6 @@
-"""The tables every data store has, in its `aios` schema (the store tree, `migrations/`, makes
-them). Sessions on them come from `store_session`, on the store's own database: they're never
+"""The tables every data store has, in its `aios` schema, and the run history export's, in its
+`history` schema once its owner first switches the export on (the store tree, `migrations/`,
+makes them). Sessions on them come from `store_session`, on the store's own database: they're never
 in the platform database (`aios.models`), and a store's rows are all its own, so nothing here
 says whose they are.
 """
@@ -20,17 +21,24 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Text,
     false,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024
 
 SCHEMA = "aios"
+# The run history export's tables (`aios.datastores.history`).
+HISTORY_SCHEMA = "history"
+# The exported messages worth embedding, and searching: what the user and the assistant said
+# (not tool results, which are the tools' own, nor the empty text of a turn of only tool calls).
+EMBEDDABLE = "role IN ('user', 'assistant') AND btrim(text) <> ''"
 
 
 class StoreBase(DeclarativeBase):
@@ -153,3 +161,162 @@ class Chunk(StoreBase):
         ),
         Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
     )
+
+
+# The run history export: a copy of the owner's agent and workflow runs, keyed by the platform's
+# ids. The platform database stays the source of truth; these are only ever written by the
+# export.
+
+
+class HistoryAgentRun(StoreBase):
+    __tablename__ = "agent_runs"
+    __table_args__ = {
+        "schema": HISTORY_SCHEMA,
+        "comment": "A copy of an agent run (one conversation with an agent), from the platform.",
+    }
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
+    )
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    agent_name: Mapped[str] = mapped_column(Text)
+    agent_version: Mapped[int] = mapped_column(Integer, comment="The agent version it ran.")
+    model: Mapped[str | None] = mapped_column(
+        Text, comment="The version's model; null means the deployment's default."
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    trigger_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The schedule that started it, if one did."
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The workflow run whose agent node it was, if any."
+    )
+    message_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), comment="When its last turn ended."
+    )
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HistoryMessage(StoreBase):
+    __tablename__ = "messages"
+
+    agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{HISTORY_SCHEMA}.agent_runs.id", ondelete="CASCADE")
+    )
+    position: Mapped[int] = mapped_column(Integer, comment="Its place in the run, from 0.")
+    message_id: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(Text, comment="user, assistant, tool or system.")
+    text: Mapped[str] = mapped_column(Text, comment="Its text, without tool calls.")
+    tool_calls: Mapped[list | None] = mapped_column(
+        JSONB, comment="An assistant message's tool calls: [{id, name, args}]."
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(
+        Text, comment="A tool message's call, in its run's tool_calls."
+    )
+    tool_name: Mapped[str | None] = mapped_column(Text)
+    is_error: Mapped[bool | None] = mapped_column(Boolean, comment="A tool message that failed.")
+    usage: Mapped[dict | None] = mapped_column(
+        JSONB, comment="An assistant message's token usage: {input_tokens, output_tokens, ...}."
+    )
+    model: Mapped[str | None] = mapped_column(Text, comment="The model that wrote it.")
+    # For searching past runs (`aios.search`): the text's embedding, while the owner has
+    # embedding on, and its full-text vector, always.
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM),
+        comment="Its text's embedding, for search: a user's or assistant's message with text, "
+        "once embedded (only while embedding is on).",
+    )
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', text)", persisted=True),
+        comment="Its text's full-text search vector.",
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("agent_run_id", "position"),
+        Index(
+            "ix_messages_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index("ix_messages_tsv", "tsv", postgresql_using="gin"),
+        # The messages waiting to be embedded (`EMBEDDABLE`), for the embedding to find.
+        Index(
+            "ix_messages_unembedded",
+            "agent_run_id",
+            "position",
+            postgresql_where=sql_text(f"embedding IS NULL AND {EMBEDDABLE}"),
+        ),
+        {
+            "schema": HISTORY_SCHEMA,
+            "comment": "The messages of the agent runs in history.agent_runs, in order.",
+        },
+    )
+
+
+class HistoryWorkflowRun(StoreBase):
+    __tablename__ = "workflow_runs"
+    __table_args__ = {
+        "schema": HISTORY_SCHEMA,
+        "comment": "A copy of a workflow run, from the platform.",
+    }
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
+    )
+    workflow_id: Mapped[int] = mapped_column(BigInteger)
+    workflow_name: Mapped[str] = mapped_column(Text)
+    workflow_version: Mapped[int] = mapped_column(Integer, comment="The workflow version it ran.")
+    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    # Text, not an enum: a status the platform adds later is copied as it is.
+    status: Mapped[str] = mapped_column(
+        Text, comment="queued, running, succeeded or failed, as on the platform when exported."
+    )
+    input: Mapped[str] = mapped_column(Text, comment="What it was given.")
+    output: Mapped[str | None] = mapped_column(Text, comment="Its final nodes' outputs, once done.")
+    error: Mapped[str | None] = mapped_column(Text, comment="Why it failed.")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HistoryWorkflowRunStep(StoreBase):
+    __tablename__ = "workflow_run_steps"
+    __table_args__ = (
+        Index("ix_workflow_run_steps_workflow_run_id", "workflow_run_id"),
+        {
+            "schema": HISTORY_SCHEMA,
+            "comment": "The steps of the workflow runs in history.workflow_runs: a node, at any "
+            "depth.",
+        },
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The step's id on the platform."
+    )
+    workflow_run_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{HISTORY_SCHEMA}.workflow_runs.id", ondelete="CASCADE")
+    )
+    path: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        comment="Node keys from the run's workflow down to the node: {review,critic} is "
+        "node critic of the subworkflow at node review.",
+    )
+    kind: Mapped[str] = mapped_column(Text, comment="agent or workflow.")
+    status: Mapped[str] = mapped_column(
+        Text, comment="running, succeeded or failed, as on the platform when exported."
+    )
+    input: Mapped[str] = mapped_column(Text)
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    # Not a foreign key: agent runs and workflow runs are exported apart, in either order.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="An agent node's conversation: history.agent_runs.id."
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

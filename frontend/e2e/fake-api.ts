@@ -160,6 +160,47 @@ export type StalePinRow = {
   pinned_version: number;
   current_version: number | null;
 };
+type DependentTriggerRow = {
+  id: number;
+  enabled: boolean;
+  cron: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+};
+
+type DependentRequestRow = { id: string; summary: string; status: "pending" };
+
+/** What depends on an agent, as GET /api/agents/{id}/dependents answers. */
+export type AgentDependentsRow = {
+  agent_runs: {
+    id: number;
+    title: string | null;
+    waiting: boolean;
+    running: boolean;
+    trigger_id: number | null;
+    updated_at: string;
+    requests: DependentRequestRow[];
+  }[];
+  workflow_runs: {
+    id: number;
+    workflow_id: number;
+    workflow_name: string;
+    status: RunStatus;
+    created_at: string;
+    waiting_nodes: string[];
+    requests: DependentRequestRow[];
+  }[];
+  workflows: {
+    id: number;
+    name: string;
+    version: number;
+    direct: boolean;
+    triggers: DependentTriggerRow[];
+  }[];
+  triggers: DependentTriggerRow[];
+};
+
 export type RunRow = {
   id: number;
   workflow_id: number;
@@ -190,6 +231,12 @@ export class FakeApi {
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
   agentRuns = new Map<number, AgentRunRow>();
+  /**
+   * What depends on each agent, by agent id (none if unset). As on the server, deleting one is
+   * refused until each listed run is named to cancel and each workflow to deactivate; a test
+   * "edits" a workflow by taking it off the list.
+   */
+  agentDependents = new Map<number, AgentDependentsRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
@@ -215,6 +262,18 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
   dataStoreFails = false;
+  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
+   * a test says so, as the provisioning worker would. */
+  settings = {
+    export_run_history: false,
+    history_ready: false,
+    history_exported_at: null as string | null,
+    embed_run_history: false,
+    history_embedded_at: null as string | null,
+    history_embed_error: null as string | null,
+  };
+  /** Times "delete exported history" was asked for. */
+  exportedHistoryDeletes = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
@@ -821,6 +880,17 @@ export class FakeApi {
 
   // --- Routing ---------------------------------------------------------------------------------
 
+  private dependentsOf(agentId: number): AgentDependentsRow {
+    return (
+      this.agentDependents.get(agentId) ?? {
+        agent_runs: [],
+        workflow_runs: [],
+        workflows: [],
+        triggers: [],
+      }
+    );
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -859,6 +929,31 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
+    if (path === "/api/settings") {
+      if (method === "PUT") {
+        // As the API: embedding only while the export is on, and off with it.
+        if (body?.export_run_history !== undefined) {
+          this.settings.export_run_history = Boolean(body.export_run_history);
+          if (!this.settings.export_run_history) this.settings.embed_run_history = false;
+        }
+        if (body?.embed_run_history !== undefined) {
+          if (body.embed_run_history && !this.settings.export_run_history) {
+            return reply(409, { detail: "Switch the run history export on first." });
+          }
+          if (body.embed_run_history && !this.settings.embed_run_history) {
+            this.settings.history_embedded_at = null;
+          }
+          this.settings.embed_run_history = Boolean(body.embed_run_history);
+        }
+      }
+      return reply(200, this.settings);
+    }
+    if (path === "/api/settings/exported-history" && method === "DELETE") {
+      this.exportedHistoryDeletes++;
+      // Emptied: nothing exported since (while it's on, the export starts over).
+      this.settings.history_exported_at = null;
+      return reply(204);
+    }
     if (
       path === "/api/documents" ||
       path.startsWith("/api/documents/") ||
@@ -1035,6 +1130,31 @@ export class FakeApi {
       if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
       this.agentRuns.delete(run.id);
       return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)$/)) && method === "DELETE") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      const dependents = this.dependentsOf(agent.id);
+      const asked = (body ?? {}) as Partial<Record<string, number[]>>;
+      const named = (key: string, id: number) => (asked[key] ?? []).includes(id);
+      const left = [
+        ...dependents.agent_runs.filter((r) => !named("cancel_agent_runs", r.id)),
+        ...dependents.workflow_runs.filter((r) => !named("cancel_workflow_runs", r.id)),
+        ...dependents.workflows.filter((w) => !named("deactivate_workflows", w.id)),
+      ];
+      if (left.length) {
+        return reply(409, {
+          detail: { message: "This agent is still in use: resolve what depends on it.", dependents },
+        });
+      }
+      this.agents.delete(agent.id);
+      this.agentDependents.delete(agent.id);
+      for (const run of this.agentRunsOf(agent)) this.agentRuns.delete(run.id);
+      return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/dependents$/)) && method === "GET") {
+      if (!this.agents.has(Number(m[1]))) return fail(404, "Not Found");
+      return reply(200, this.dependentsOf(Number(m[1])));
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));

@@ -127,9 +127,12 @@ def test_deleting_an_agent_whose_run_waits_cancels_its_request(
     store,  # noqa: F811
     queued,  # noqa: F811
 ):
-    _, request = start(api, agent, Script(CONTACTS))
+    run, request = start(api, agent, Script(CONTACTS))
+    url = f"/api/agents/{agent['id']}"
 
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
+    # Once the user has agreed to cancel the run (see `test_agent_dependents`).
+    assert api.delete(url).status_code == 409
+    assert api.request("DELETE", url, json={"cancel_agent_runs": [run["id"]]}).status_code == 204
 
     assert request_of(api, request)["status"] == "cancelled"
     assert api.get("/api/notifications").json()["unread"] == 0

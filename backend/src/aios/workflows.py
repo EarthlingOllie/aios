@@ -55,7 +55,7 @@ from aios import checkpoints, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
-from aios.datastores import data_store_for, schema_changes
+from aios.datastores import data_store_for, history, schema_changes
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -618,27 +618,43 @@ def _load(version_id: int, strict: bool = True) -> Graph:
         return load_graph(db, version_id, strict=strict)
 
 
+# A run that hasn't ended: what a worker ends itself, and a run waiting for a decision.
+NOT_ENDED = (WorkflowRunStatus.queued, WorkflowRunStatus.running, WorkflowRunStatus.waiting)
+
+
 def _end_runs(
     db: Session,
     where: Sequence[ColumnElement[bool]],
     status: WorkflowRunStatus,
     output: str | None,
     error: str | None,
+    *,
+    waiting_too: bool = False,
 ) -> None:
-    """End the runs matching `where` that haven't ended, and fail their steps still running."""
+    """End the runs matching `where` that haven't ended, and fail their steps still running.
+    A waiting run is left be (it isn't the worker's to end) unless `waiting_too`."""
+    going = [s for s in NOT_ENDED if waiting_too or s != WorkflowRunStatus.waiting]
+    waited = func.coalesce(func.extract("epoch", func.now() - WorkflowRun.waiting_since), 0)
     ended = db.scalars(
         update(WorkflowRun)
-        .where(
-            *where,
-            WorkflowRun.status.in_([WorkflowRunStatus.queued, WorkflowRunStatus.running]),
+        .where(*where, WorkflowRun.status.in_(going))
+        .values(
+            status=status,
+            output=output,
+            error=error,
+            finished_at=func.now(),
+            waited_seconds=WorkflowRun.waited_seconds + waited,
+            waiting_since=None,
         )
-        .values(status=status, output=output, error=error, finished_at=func.now())
         .returning(WorkflowRun.id)
     ).all()
     if not ended:
         return
     # Before the steps forget the requests they wait on.
     close_requests(db, ended)
+    # However it ended (finished, failed, stopped), it goes in the run history export's outbox,
+    # with its own update: once its row is locked, as deleting it locks it first.
+    history.enqueue_workflow_runs(db, WorkflowRun.id.in_(ended))
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
     db.execute(
@@ -653,6 +669,22 @@ def _end_runs(
             finished_at=func.now(),
             waiting_on_request_id=None,
         )
+    )
+
+
+def cancel_runs(db: Session, run_ids: Sequence[int], error: str) -> None:
+    """Stop these runs, however far they've got: queued, running or waiting. Each fails with
+    `error`, its steps still going fail, and its requests are closed out (`close_requests`), so
+    nothing resumes it. A worker running one finds it ended at its next beat and stops it
+    (`_Heartbeat`), and starts no step after (`_start_step` needs the run). In the caller's
+    transaction."""
+    _end_runs(
+        db,
+        [WorkflowRun.id.in_(run_ids)],
+        WorkflowRunStatus.failed,
+        None,
+        error,
+        waiting_too=True,
     )
 
 
@@ -714,11 +746,26 @@ def _start_step(
 
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
-    agent run, or wins and this fails (a `RunError`), leaving no agent run behind.
+    agent run, or wins and this fails (a `RunError`), leaving no agent run behind. Nor does a
+    node start once the run has ended without it (cancelled, say: `cancel_runs`): the run's row
+    is share-locked, so an end being committed is waited for and then seen. The agent is locked
+    first, as deleting it locks the agent and then ends its runs, so the two queue rather than
+    deadlock.
     """
     with SessionLocal() as db:
+        live = node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True)
+        # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
+        # worker went on), whose steps, and their exported copy, are final. Share-locked, so
+        # ending it waits for this, or this for that.
+        status = db.scalar(
+            select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
+        )
+        if status is None:
+            raise RunError("The run has been deleted")
+        if status != WorkflowRunStatus.running:
+            raise RunError("The run has ended")
         agent_run_id = None
-        if node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True):
+        if live:
             agent_run = AgentRun(
                 agent_id=node.agent.agent_id,
                 agent_version_id=node.agent.agent_version_id,
@@ -827,7 +874,7 @@ async def _run_agent(
     the same thread: each waiting tool call whose request is decided gets its outcome, as a chat
     resumes (`aios.api.agents.resume_run`), and the agent goes on from there.
     """
-    # Imported here: the agents API imports the workflows API, which imports this module.
+    # Imported here: the agents API imports this module.
     from aios.api.agents import Resume, _mark_resumed, _record_turn, _resume_command
 
     config = {
