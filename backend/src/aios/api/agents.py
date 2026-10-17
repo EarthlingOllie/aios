@@ -576,11 +576,11 @@ def create_run(agent_id: DbId, user: CurrentUser, db: DB):
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
-    history = checkpoints.history(run.id)
+    messages = checkpoints.history(run.id)
     return RunOut(
         **RunSummary.model_validate(row, from_attributes=True).model_dump(),
-        ui_messages=ui_stream.to_ui_messages(history),
-        messages=checkpoints.messages_out(history),
+        ui_messages=ui_stream.to_ui_messages(messages),
+        messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
     )
 
