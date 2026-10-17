@@ -614,7 +614,7 @@ def _end_runs(
         return
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
-    stopped = db.execute(
+    db.execute(
         update(WorkflowRunStep)
         .where(
             WorkflowRunStep.run_id.in_(ended),
@@ -626,19 +626,30 @@ def _end_runs(
             finished_at=func.now(),
             waiting_on_request_id=None,
         )
-        .returning(WorkflowRunStep.agent_run_id)
-    ).scalars()
-    # Nothing waits on their requests any more (as when a chat turn stops before its request).
-    agent_run_ids = [i for i in stopped if i is not None]
-    if agent_run_ids:
-        db.execute(
-            update(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
-                SchemaChangeRequest.status == SchemaChangeStatus.pending,
-            )
-            .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
-        )
+    )
+    close_requests(
+        db,
+        select(WorkflowRunStep.agent_run_id).where(
+            WorkflowRunStep.run_id.in_(ended), WorkflowRunStep.agent_run_id.is_not(None)
+        ),
+    )
+
+
+def close_requests(db: Session, agent_run_ids) -> None:
+    """Close out the schema change requests these agent runs (a workflow run's nodes) made and
+    haven't been given: their workflow run has ended or is being deleted, so nothing will give
+    them their outcomes. Pending ones are cancelled, so they can't be approved; the others count
+    as given, so the conversations don't wait on them (one being applied still is)."""
+    not_given = [
+        SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
+        SchemaChangeRequest.resumed_at.is_(None),
+    ]
+    db.execute(
+        update(SchemaChangeRequest)
+        .where(*not_given, SchemaChangeRequest.status == SchemaChangeStatus.pending)
+        .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
+    )
+    db.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
 
 
 def _finish_run(

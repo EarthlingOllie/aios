@@ -22,7 +22,8 @@ from test_workflows import agent_node, make_agent, make_workflow, workflow_body,
 from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import data_store_for
-from aios.models import DataStore, WorkflowRun
+from aios.db import SessionLocal
+from aios.models import DataStore, WorkflowRun, WorkflowRunStatus
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
 
@@ -324,6 +325,51 @@ def test_a_tool_that_left_the_library_fails_the_step_on_resume(
     assert build["status"] == "failed"
     assert build["error"].startswith("Agent Builder v2 can't run:")
     assert "describe_data" in build["error"]
+    # Its request has been dealt with: the conversation isn't left waiting for it.
+    assert conversation_of(api, build)["waiting"] is False
+
+
+def conversation_of(api, step: dict) -> dict:
+    return api.get(f"/api/agents/{step['agent_id']}/runs/{step['agent_run_id']}").json()
+
+
+def test_a_run_ending_while_its_request_is_applied_leaves_no_conversation_waiting(
+    api, builder, store, queued
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    [request] = api.get("/api/schema-changes").json()
+    api.post(f"/api/schema-changes/{request['id']}/approve")
+    # Before it's applied, the run is resumed by another decision and ends: failed, say.
+    with SessionLocal() as db:
+        db.execute(
+            update(WorkflowRun)
+            .where(WorkflowRun.id == waiting["id"])
+            .values(status=WorkflowRunStatus.running)
+        )
+        db.commit()
+    workflows.fail_run(waiting["id"], "Something else broke")
+
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "failed"
+    assert data_tables(store) == ["contacts"]
+    assert conversation_of(api, steps(out)["build"])["waiting"] is False
+
+
+def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store, queued):
+    workflow = chain(api, builder)
+    waiting = start(api, queued, workflow, Flow())
+
+    r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
+
+    assert r.status_code == 204, r.text
+    [request] = api.get("/api/schema-changes").json()
+    assert request["status"] == "cancelled"
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
 
 
 def test_a_nested_workflows_waiting_node_pauses_and_resumes_the_top_level_run(
