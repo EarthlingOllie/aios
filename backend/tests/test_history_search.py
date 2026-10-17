@@ -15,10 +15,11 @@ from test_history_export import chat, new_run, set_up_and_export, settings, stor
 
 from aios import search, worker
 from aios.auth import current_user
-from aios.datastores import data_store_for, history
+from aios.datastores import DataStoreNotReady, data_store_for, history, store_engine
+from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, DataStore
+from aios.models import AgentRun, DataStore, DataStoreStatus
 
 DIM = 1024
 
@@ -351,3 +352,54 @@ def test_searching_history_behind_its_lines_head_says_to_try_again(
     results = asyncio.run(search.history_search_results(data_store_id=store_id, query="bread"))
 
     assert results == [{"error": search.STORE_UPGRADING}]
+
+
+@pytest.fixture
+def exported_unembedded(api, store_id, history_tasks):
+    """The export on, a run exported, and embedding switched on but not yet run."""
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "Cats", "Felines")
+    history.export(store_id)
+    embed(api, True)
+
+
+def test_embedding_holds_no_store_session_while_the_embedding_api_answers(
+    store_id, exported_unembedded, monkeypatch
+):
+    """As for search (test_search_opens_its_session_after_embedding): the store's engine may be
+    evicted, and disposed of, meanwhile."""
+    evicted = store_engine(store_id, "rw")
+
+    async def embed_documents(batch):
+        dispose_engines()  # as `MAX_ENGINES` newer engines would
+        return [meaning(t) for t in batch]
+
+    monkeypatch.setattr(history, "embed_documents", embed_documents)
+    history.export(store_id)
+
+    assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
+    assert evicted.pool.checkedin() == 0
+
+
+def test_a_store_that_goes_away_while_embedding_isnt_logged_as_an_embedding_failure(
+    store_id, exported_unembedded, monkeypatch, caplog
+):
+    """The export task handles a store that's gone (or going), or behind: `_embed` mustn't
+    swallow it."""
+
+    async def embed_documents(batch):
+        with SessionLocal() as db:
+            db.execute(
+                update(DataStore)
+                .where(DataStore.id == store_id)
+                .values(status=DataStoreStatus.deleting)
+            )
+            db.commit()
+        return [meaning(t) for t in batch]
+
+    monkeypatch.setattr(history, "embed_documents", embed_documents)
+    with pytest.raises(DataStoreNotReady):
+        history.export(store_id)
+    assert "Couldn't embed" not in caplog.text

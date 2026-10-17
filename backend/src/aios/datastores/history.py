@@ -640,12 +640,13 @@ def export(data_store_id: uuid.UUID) -> int:
             if count < BATCH:
                 break
         # Caught up, even with nothing to export: the Settings page waits for this.
-        _caught_up(data_store_id, history_exported_at=func.now())
+        _set_store(data_store_id, history_exported_at=func.now())
         _embed(data_store_id)
     return exported
 
 
-def _caught_up(data_store_id: uuid.UUID, **values: Any) -> None:
+def _set_store(data_store_id: uuid.UUID, **values: Any) -> None:
+    """Set the store's `values` (on `data_stores`)."""
     with SessionLocal() as db:
         db.execute(update(DataStore).where(DataStore.id == data_store_id).values(**values))
         db.commit()
@@ -673,11 +674,11 @@ def _embed_batch(data_store_id: uuid.UUID) -> int:
             .order_by(messages.c.agent_run_id, messages.c.position)
             .limit(EMBED_BATCH)
         ).all()
-        # Not left idle in a transaction while the embedding API answers.
-        store.rollback()
-        if not waiting:
-            return 0
-        vectors = asyncio.run(embed_documents([m.text for m in waiting]))
+    if not waiting:
+        return 0
+    # With no session open on the store: its engine may be evicted while the API answers.
+    vectors = asyncio.run(embed_documents([m.text for m in waiting]))
+    with store_session(data_store_id, "rw") as store:
         store.execute(
             messages.update()
             .where(
@@ -701,23 +702,24 @@ def _embed(data_store_id: uuid.UUID) -> None:
     left. What it doesn't finish (out of time, or the embedding API failed) waits for the
     periodic sweep. Switched off, it stops after the batch under way, keeping what's embedded.
 
-    Raises `DataStoreBusy` if the store has no connections free."""
+    Raises as `store_session` does (the store is gone, or going, or behind its head), and
+    `DataStoreBusy` if it has no connections free: the export's task handles them."""
     deadline = time.monotonic() + EMBED_BUDGET
     try:
-        while _embedding(data_store_id):
+        while True:
+            if not _embedding(data_store_id):
+                return  # switched off: what's embedded is kept
             if _embed_batch(data_store_id) < EMBED_BATCH:
-                _caught_up(data_store_id, history_embedded_at=func.now())
+                _set_store(data_store_id, history_embedded_at=func.now())
                 return
             if time.monotonic() >= deadline:
                 break
-        else:
-            return
-    except DataStoreBusy:
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
         raise
     except Exception:
         log.exception("Couldn't embed the exported history of data store %s", data_store_id)
     # Not caught up: the sweep queues the store's export again (`stores_to_export`).
-    _caught_up(data_store_id, history_embedded_at=None)
+    _set_store(data_store_id, history_embedded_at=None)
 
 
 def stores_to_export() -> list[uuid.UUID]:
