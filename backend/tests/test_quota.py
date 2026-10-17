@@ -165,3 +165,18 @@ def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
         "measured_at": row.usage_measured_at.isoformat().replace("+00:00", "Z"),
     }
     assert row.db_bytes > 0
+
+
+def test_measuring_leaves_no_connection_open_on_the_stores(db, user):
+    """The provisioning worker measures every store, and would otherwise keep a connection to
+    each (up to the engines it caches) between runs."""
+    row = store_row(db, data_store_for(user.id))
+
+    worker.measure_data_store_usage_task.apply().get()
+
+    with admin_connect() as admin:
+        held = admin.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE usename = %s",
+            (f"{row.role_prefix}_ro",),
+        ).fetchone()[0]
+    assert held == 0

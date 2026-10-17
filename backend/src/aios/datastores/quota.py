@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy import func, select, text, update
 
 from aios.config import get_settings
-from aios.datastores.connections import store_session
+from aios.datastores.connections import dispose_engine, store_session
 from aios.db import SessionLocal
 from aios.models import DataStore, DataStoreStatus
 
@@ -109,6 +109,9 @@ def measure_all() -> None:
             measure(store_id)
         except Exception:
             log.exception("Couldn't measure data store %s", store_id)
+        finally:
+            # Not kept for the next run, minutes away: a connection to every store adds up.
+            dispose_engine(store_id, "ro")
 
 
 def usage(data_store_id: uuid.UUID) -> Usage:

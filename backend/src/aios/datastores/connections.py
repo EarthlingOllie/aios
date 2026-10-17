@@ -186,6 +186,15 @@ def dispose_engines() -> None:
             engine.dispose()
 
 
+def dispose_engine(data_store_id: uuid.UUID, role: Role) -> None:
+    """Close the store's cached engine as `role`, if there is one: for a process that visits
+    every store in turn (measuring them), and would otherwise hold a connection to each."""
+    with _engines_lock:
+        engine = _engines.pop((data_store_id, role), None)
+    if engine is not None:
+        engine.dispose()
+
+
 def store_engine(data_store_id: uuid.UUID, role: Role = "rw") -> Engine:
     """The engine on the data store's database, as its `role`.
 
