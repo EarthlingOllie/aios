@@ -147,9 +147,11 @@ test("a store that couldn't be set up can't take uploads", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
 
-test("lists each document's status, error, chunk count and upload time", async ({ page }) => {
+test("lists each document's status, error, chunk count, size and upload time", async ({
+  page,
+}) => {
   const api = await fakeApi(page);
-  api.addDocument("report.pdf", { chunk_count: 12 });
+  api.addDocument("report.pdf", { chunk_count: 12, size_bytes: 2.5 * 1024 * 1024 });
   api.addDocument("scan.png", { status: "failed", chunk_count: 0, error: "Unsupported image" });
   api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
   await page.goto("/data?tab=documents");
@@ -158,6 +160,7 @@ test("lists each document's status, error, chunk count and upload time", async (
   await expect(row(page, "report.pdf")).toContainText("Ready");
   await expect(row(page, "report.pdf")).toContainText("12 chunks");
   await expect(row(page, "report.pdf")).toContainText("Uploaded Oct 14, 2026");
+  await expect(row(page, "report.pdf")).toContainText("2.5 MB");
   await expect(row(page, "scan.png")).toContainText("Failed");
   await expect(row(page, "scan.png")).toContainText("Unsupported image");
   await expect(row(page, "slides.pptx")).toContainText("Processing");
@@ -167,6 +170,19 @@ test("lists each document's status, error, chunk count and upload time", async (
   api.finishIngest("slides.pptx", { chunks: 4 });
   await expect(row(page, "slides.pptx")).toContainText("4 chunks");
   await expect(row(page, "slides.pptx")).toContainText("Ready");
+});
+
+test("each document links to its download", async ({ page }) => {
+  const api = await fakeApi(page);
+  const doc = api.addDocument("Résumé (final), 2026.pdf");
+  await page.goto("/data?tab=documents");
+
+  const link = row(page, doc.filename).getByRole("link", { name: `Download ${doc.filename}` });
+  // The API's address, never a file's link itself: the API mints one per click, which saves
+  // the file under its name. A download (not a navigation), so a refusal leaves the page be.
+  // (The browser following the API's redirect to the file is tested against the real app.)
+  await expect(link).toHaveAttribute("href", `/api/documents/${doc.id}/download`);
+  await expect(link).toHaveAttribute("download");
 });
 
 test("an upload from the Data page shows its status until it's ready or failed", async ({

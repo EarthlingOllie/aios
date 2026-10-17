@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -138,7 +139,7 @@ def test_one_sandbox_per_run(api, backend, db, monkeypatch):
     agent, run = python_agent(api, timeout_seconds=30)
     spy = spy_run(monkeypatch)
     seen = chat(api, agent, run, "print('hi')")
-    assert spy["deps"] == ChatDeps(user_id=spy["deps"].user_id, run_id=run["id"])
+    assert spy["deps"].run_id == run["id"]
     assert seen["result"] == {
         "exit_code": 0,
         "stdout": "ran in sandbox-1\n",
@@ -444,7 +445,7 @@ def test_only_agent_runs_have_a_sandbox(backend):
     [tool] = TOOLS["run_python"].build(RunPythonConfig())
 
     class Runtime:
-        context = ChatDeps(user_id=1)
+        context = ChatDeps(user_id=1, data_store_id=uuid.uuid4())
 
     assert asyncio.run(tool.coroutine("print(1)", Runtime())) == {
         "error": "Running Python is only available in agent runs."

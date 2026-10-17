@@ -18,7 +18,6 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
-    LargeBinary,
     MetaData,
     String,
     Text,
@@ -79,8 +78,11 @@ class Document(StoreBase):
     id: Mapped[int] = mapped_column(primary_key=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(255))
-    # Raw upload, kept in Postgres so the API and worker need no shared filesystem/bucket.
-    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    # Where the upload is, in S3 (`aios.datastores.files.document_key`), its size and its
+    # SHA-256 (hex).
+    s3_key: Mapped[str] = mapped_column(String(1024))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus, name="document_status"), default=DocumentStatus.pending
     )
