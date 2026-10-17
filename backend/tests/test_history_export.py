@@ -772,3 +772,18 @@ def test_an_export_reads_a_batch_of_runs_on_one_connection(
 
     assert history.export(store_id) == 3
     assert len(connects) == 1
+
+
+def test_an_export_under_way_leaves_no_platform_transaction_open(
+    api, user, store_id, export_running
+):
+    # Its lock is the session's, not a transaction's: holding it needn't hold one open.
+    with SessionLocal() as db:
+        idle = db.scalars(
+            text(
+                "SELECT query FROM pg_stat_activity"
+                " WHERE datname = current_database() AND state = 'idle in transaction'"
+                " AND pid <> pg_backend_pid()"
+            )
+        ).all()
+    assert idle == []

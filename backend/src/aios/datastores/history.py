@@ -162,8 +162,11 @@ def _locked(data_store_id: uuid.UUID, wait: float = 0) -> Iterator[bool]:
     with engine.connect() as conn:
         key = func.hashtextextended(f"aios.history_export:{data_store_id}", 0)
         deadline = time.monotonic() + wait
-        while not (locked := conn.scalar(select(func.pg_try_advisory_lock(key)))):
-            if time.monotonic() >= deadline:
+        while True:
+            locked = conn.scalar(select(func.pg_try_advisory_lock(key)))
+            # The lock is the session's: no transaction need stay open (idle) while it's held.
+            conn.commit()
+            if locked or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
         try:
