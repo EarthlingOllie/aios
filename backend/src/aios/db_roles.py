@@ -2,8 +2,9 @@
 
 - The app's role (`aios_app`, DATABASE_URL's user): what the API, the workers and migrations
   connect as. It owns the platform schema (`public`, and everything in the database), may
-  create schemas, and has no `CREATEDB` or `CREATEROLE`. The database stays the master user's, so
-  the app's role can't drop or reconfigure it.
+  create schemas, and has no `CREATEDB` or `CREATEROLE` (this refuses a role that has, or may
+  `SET ROLE` to one that has, those or `SUPERUSER`, `BYPASSRLS` or `REPLICATION`). The
+  database stays the master user's, so the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
   `CREATEROLE`, for creating and migrating data stores (`aios.datastores.provision`). Only the
   provisioning worker and the deploy's store migration have its credentials.
@@ -51,15 +52,45 @@ def _login_role(conn: psycopg.Connection, url: str, *, privileged: bool) -> str:
     return u.username
 
 
+# The roles with a right the app's role mustn't have that it is, or may SET ROLE to (a member of
+# a role with CREATEDB can create databases as it). A master user that isn't a superuser can't
+# even say NOSUPERUSER, NOBYPASSRLS or NOREPLICATION, so these are reported, not cleared.
+_PRIVILEGED = """
+SELECT rolname FROM pg_roles
+ WHERE pg_has_role(%s, oid, 'SET')
+   AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls OR rolreplication)
+ ORDER BY 1
+"""
+
+
+# Extensions' members, and what is part of one (`pg_depend`'s 'i', recursively): a member type's
+# array type, a range's multirange and its array, which whoever ran CREATE EXTENSION owns but
+# which aren't members themselves and can't be altered on their own. The server records 'i' only
+# for what it made as part of another object, so this reaches nothing a user created.
+_EXTENSIONS = """
+ext (cls, oid) AS (
+    SELECT classid, objid FROM pg_depend WHERE deptype = 'e'
+    UNION
+    SELECT d.classid, d.objid FROM pg_depend d
+      JOIN ext ON d.refclassid = ext.cls AND d.refobjid = ext.oid
+     WHERE d.deptype = 'i'
+)
+"""
+
+
 # What the current user owns in the database's own schemas, as (the ALTER statement's object
 # kind, the object's name as SQL). Only objects whose owner can be changed on their own: a
 # table's indexes, row type, TOAST table and column sequences, and a type's array type, follow
-# it. Extensions' members (pgvector's) are left alone.
-_OWNED = """
-WITH me AS (
+# it. Extensions' members (pgvector's), and what is part of them, are left alone.
+_OWNED = (
+    """
+WITH RECURSIVE me AS (
     -- Not current_user::regrole, which reads the name as an unquoted identifier.
     SELECT oid FROM pg_roles WHERE rolname = current_user
 ),
+"""
+    + _EXTENSIONS
+    + """,
 own AS (
     SELECT n.oid AS nsp FROM pg_namespace n
      WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
@@ -77,10 +108,14 @@ SELECT kind, name FROM (
       FROM pg_class c
      WHERE c.relnamespace IN (SELECT nsp FROM own) AND c.relowner = (SELECT oid FROM me)
        AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-       -- A column's sequence (serial or identity) follows its table.
-       AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                        WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-                          AND d.deptype IN ('a', 'i'))
+       -- A column's sequence (serial or identity) follows its table. Only sequences: a
+       -- partition depends on its parent in the same way, and a partitioned table on itself
+       -- (its partition key), but neither follows anything.
+       AND NOT (c.relkind = 'S'
+                AND EXISTS (SELECT 1 FROM pg_depend d
+                             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                               AND d.refclassid = 'pg_class'::regclass
+                               AND d.refobjsubid <> 0 AND d.deptype IN ('a', 'i')))
     UNION ALL
     SELECT CASE t.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END,
            t.oid::regtype::text, 'pg_type'::regclass, t.oid
@@ -138,16 +173,23 @@ SELECT kind, name FROM (
       FROM pg_ts_dict d
      WHERE d.dictnamespace IN (SELECT nsp FROM own) AND d.dictowner = (SELECT oid FROM me)
 ) o
-WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
-                   WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+WHERE NOT EXISTS (SELECT 1 FROM ext WHERE ext.cls = o.cls AND ext.oid = o.oid)
+-- Schemas first: a master user that isn't a superuser can only give an object to a role that
+-- may create in its schema. UNION ALL keeps no order of its own (a merge join sorts by catalog).
+ORDER BY kind <> 'SCHEMA'
 """
+)
 
 # After the hand-over: anything in the database the current user still owns, from every catalog
-# with an owner, but extensions and their members (and initdb's objects, below
-# FirstNormalObjectId). Whatever `_OWNED` doesn't cover ends up here, and is reported rather than
-# left for a migration to trip over.
-_LEFT_OVER = """
-WITH me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+# with an owner, but extensions and their members and what is part of them (and initdb's
+# objects, below FirstNormalObjectId). Whatever `_OWNED` doesn't cover ends up here, and is
+# reported rather than left for a migration to trip over.
+_LEFT_OVER = (
+    """
+WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+"""
+    + _EXTENSIONS
+    + """,
 own AS (
     SELECT n.oid AS nsp FROM pg_namespace n
      WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
@@ -181,19 +223,10 @@ SELECT pg_describe_object(o.cls, o.oid, 0)
  WHERE o.owner = (SELECT oid FROM me)
    AND o.oid >= 16384
    AND (o.nsp IS NULL OR o.nsp IN (SELECT nsp FROM own))
-   AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.classid = o.cls AND d.objid = o.oid
-                      AND (d.deptype = 'e'
-                           -- Part of an extension's member, e.g. the array type of
-                           -- pgvector's `vector`, which Postgres 16 doesn't record as a
-                           -- member itself (17 does).
-                           OR (d.deptype = 'i'
-                               AND EXISTS (SELECT 1 FROM pg_depend m
-                                            WHERE m.classid = d.refclassid
-                                              AND m.objid = d.refobjid
-                                              AND m.deptype = 'e'))))
+   AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.cls = o.cls AND ext.oid = o.oid)
  ORDER BY 1
 """
+)
 
 
 def ensure_roles(
@@ -218,6 +251,16 @@ def ensure_roles(
             "The master user's, the app's and the provisioner's URLs must name three different "
             f"roles, not {names}"
         )
+    # The roles are made on the master user's server, so a URL for another (a stale host in a
+    # .env) would report success and leave the app unable to log in. Compose, CI and Terraform
+    # write the same host and port into all three, so this compares them as written: the same
+    # server under another name (localhost and 127.0.0.1) is refused too.
+    servers = [((u.host or "").lower(), u.port or 5432) for u in (admin, app_u, prov_u)]
+    if len(set(servers)) != 1:
+        raise ValueError(
+            "The master user's, the app's and the provisioner's URLs must be for the same server "
+            f"(host and port), not {[f'{h}:{p}' for h, p in servers]}"
+        )
     for u in (app_u, prov_u):
         if not u.password:
             raise ValueError(f"The URL for role {u.username} has no password")
@@ -225,8 +268,24 @@ def ensure_roles(
     if not dbname:
         raise ValueError("The app's URL names no database")
     with psycopg.connect(libpq_conninfo(admin_url, database=dbname)) as conn:
+        # Before 16, CREATEROLE lets a role alter (and so reset the password of) and grant
+        # itself membership in any role but a superuser: the app's role, and on RDS the master
+        # user and rds_superuser. From 16 it covers only roles it has ADMIN OPTION on, which by
+        # default are the ones it created.
+        if conn.info.server_version < 160000:
+            raise RuntimeError(
+                "The provisioner's role needs PostgreSQL 16 or later, where CREATEROLE no longer "
+                f"reaches roles it didn't create; this server is {conn.info.server_version}"
+            )
         app = sql.Identifier(_login_role(conn, app_url, privileged=False))
         _login_role(conn, provisioner_url, privileged=True)
+        # Raising rolls all of this back, so nothing is half done.
+        if roles := [name for (name,) in conn.execute(_PRIVILEGED, (app_u.username,))]:
+            raise RuntimeError(
+                f"Role {app_u.username} is, or is a member of, a role with SUPERUSER, CREATEDB, "
+                "CREATEROLE, BYPASSRLS or REPLICATION, which the app's role mustn't have; take it "
+                f"away (ALTER ROLE, or REVOKE ... FROM it): {', '.join(roles)}"
+            )
         # Handing objects to a role takes membership of it, and on RDS the master user isn't a
         # superuser. It also keeps the master user able to use them, for break-glass access, and
         # so services still running as it during a deploy's switchover keep working.
@@ -246,7 +305,6 @@ def ensure_roles(
             conn.execute(
                 sql.SQL("ALTER {} {} OWNER TO {}").format(sql.SQL(kind), sql.SQL(name), app)
             )
-        # Raising rolls all of this back, so nothing is half done.
         if left := [name for (name,) in conn.execute(_LEFT_OVER).fetchall()]:
             raise RuntimeError(
                 "The master user still owns these, which the app's role couldn't then change; "

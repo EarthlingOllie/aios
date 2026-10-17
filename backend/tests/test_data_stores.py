@@ -45,6 +45,7 @@ from aios.models import (
     WorkflowRunStatus,
 )
 from aios.tools import hybrid_search
+from aios.ui_stream import error_text
 from aios.workflows import execute_run
 
 
@@ -131,7 +132,8 @@ def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
     assert api.get("/api/data-store").json() == {"status": "failed"}
 
 
-def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_user):
+def search_tool_results(api) -> list:
+    """What the model sees from one `search_documents` call in a chat."""
     body = chat_body("fish?")
     body["messages"][0]["role"] = "user"
     seen = []
@@ -145,21 +147,27 @@ def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_
 
     with use_model(model(search_then_answer_seeing)):
         assert api.post("/api/chat", json=body).status_code == 200
+    return seen
+
+
+def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_user):
+    seen = search_tool_results(api)
 
     assert seen and all("still being set up" in str(r) for r in seen)
 
 
-def test_the_search_tools_tell_the_model_a_store_that_failed_couldnt_be_set_up(db, user):
-    store_id = data_store_for(user.id)
+def test_the_search_tools_tell_the_model_the_store_couldnt_be_set_up(api, db, unready_user):
+    """Not "being set up", which would have the user wait for what may never come."""
     db.execute(
-        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+        update(DataStore)
+        .where(DataStore.owner_user_id == unready_user.id)
+        .values(status=DataStoreStatus.failed)
     )
     db.commit()
 
-    results = asyncio.run(search.document_search_results(data_store_id=store_id, query="fish"))
+    seen = search_tool_results(api)
 
-    assert results == [{"error": search.STORE_FAILED}]
-    assert "couldn't be set up" in search.STORE_FAILED
+    assert seen and all("couldn't be set up" in r.content for r in seen)
 
 
 def test_the_search_tools_tell_the_model_a_store_behind_the_trees_head_is_being_upgraded(
@@ -329,9 +337,10 @@ def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypat
     assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
 
 
-def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, monkeypatch):
-    """Resolving the store is part of claiming the run, so if it fails the run isn't left
-    `running` with no worker (a redelivery could never start it)."""
+def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db, monkeypatch):
+    """Resolving the store is part of claiming the run, so if it fails the run is never left
+    `running` with no worker (a redelivery could never start it), nor `queued` with nothing to
+    run it: it's failed then and there, with the real error."""
     monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
     workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
@@ -340,11 +349,11 @@ def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, mon
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
     monkeypatch.setattr(workflows, "data_store_for", unavailable)
-    with pytest.raises(OperationalError):
-        asyncio.run(execute_run(started["id"]))
+    asyncio.run(execute_run(started["id"]))
 
     run = db.get(WorkflowRun, started["id"])
-    assert (run.status, run.started_at) == (WorkflowRunStatus.queued, None)
+    assert (run.status, run.started_at) == (WorkflowRunStatus.failed, None)
+    assert run.error == error_text(OperationalError("SELECT", {}, Exception("connection lost")))
 
 
 @contextmanager

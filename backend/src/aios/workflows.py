@@ -306,7 +306,7 @@ def fail_stopped_runs(db: Session, *where: ColumnElement[bool]) -> None:
 
 def _claim(run_id: int) -> tuple[RunState, int, str] | None:
     """Mark a queued run running; return it, its version id and its input. None if it isn't
-    queued (deleted, or already started).
+    queued (deleted, or already started), or if it's failed because it couldn't start.
 
     A run is queued once, and its task acked only when it ends, so a run found running was
     started by an earlier delivery. If that's still going (its heartbeat is fresh), this one
@@ -332,9 +332,20 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
             .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
             .where(WorkflowVersion.id == version_id)
         ).one()
-        # In the claim's transaction: if the store can't be resolved, the run isn't claimed.
-        data_store_id = data_store_for(workflow.owner_id, db)
-        db.commit()
+        # In the claim's transaction: if the store can't be resolved, the run isn't claimed...
+        try:
+            data_store_id = data_store_for(workflow.owner_id, db)
+        except Exception as exc:
+            db.rollback()
+            error = exc
+        else:
+            error = None
+            db.commit()
+    if error is not None:
+        # ...and it's failed now, with the real error: nothing else would ever run or end it.
+        log.exception("workflow run %s: couldn't resolve its data store", run_id, exc_info=error)
+        fail_run(run_id, error_text(error))
+        return None
     state = RunState(
         id=run_id,
         user_id=workflow.owner_id,

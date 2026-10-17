@@ -3,14 +3,13 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, status
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, store_session, store_status
+from aios.datastores import files, store_session, store_status
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
 from aios.models import DataStoreStatus
@@ -65,14 +64,14 @@ def me(user: CurrentUser):
 
 
 @router.get("/data-store", response_model=DataStoreOut)
-def data_store(user: CurrentUser):
+def data_store(store_id: CurrentDataStore):
     """The user's data store's status: documents and search wait until it's `ready`."""
-    return DataStoreOut(status=store_status(data_store_for(user.id)))
+    return DataStoreOut(status=store_status(store_id))
 
 
 @router.get("/documents", response_model=list[DocumentOut])
-def list_documents(user: CurrentUser):
-    with store_session(data_store_for(user.id), "ro") as db:
+def list_documents(store_id: CurrentDataStore):
+    with store_session(store_id, "ro") as db:
         rows = db.execute(
             select(Document, func.count(Chunk.id))
             .outerjoin(Chunk)
@@ -94,14 +93,13 @@ def list_documents(user: CurrentUser):
 
 
 @router.post("/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-def upload_document(file: UploadFile, user: CurrentUser):
+def upload_document(file: UploadFile, store_id: CurrentDataStore):
     # Plain `def`: FastAPI runs it in the threadpool, so the blocking upload to S3, DB commits
     # and broker publish below don't stall the event loop (SSE streams, health checks).
     # The file has been spooled (to disk, if large), so its size is known before it's sent on
     # (Starlette counts it while parsing the form; one it didn't isn't taken on trust).
     if file.size is None or file.size > get_settings().max_upload_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
-    store_id = data_store_for(user.id)
     with store_session(store_id, "rw") as db:
         # The document's id first, since its file's key holds it. Committed, so no transaction
         # is left open through the upload.
@@ -172,11 +170,11 @@ def _delete_unkept_file(key: str) -> None:
 
 
 @router.get("/documents/{document_id}/download")
-def download_document(document_id: DbId, user: CurrentUser) -> RedirectResponse:
+def download_document(document_id: DbId, store_id: CurrentDataStore) -> RedirectResponse:
     """Redirects to a link that downloads the document's file under its original name. The link
     is minted for this download, and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS`."""
     # Only the user's own store is looked in, as its read-only role.
-    with store_session(data_store_for(user.id), "ro") as db:
+    with store_session(store_id, "ro") as db:
         doc = db.get(Document, document_id)
         if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -186,8 +184,8 @@ def download_document(document_id: DbId, user: CurrentUser) -> RedirectResponse:
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: DbId, user: CurrentUser) -> None:
-    with store_session(data_store_for(user.id), "rw") as db:
+def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
+    with store_session(store_id, "rw") as db:
         key = db.scalar(select(Document.s3_key).where(Document.id == document_id))
         if key is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -209,10 +207,9 @@ def delete_document(document_id: DbId, user: CurrentUser) -> None:
 
 @router.get("/search", response_model=list[SearchHitOut])
 async def search(
-    user: CurrentUser,
+    store_id: CurrentDataStore,
     # At least one non-whitespace character; blank queries would fail at the embedding API.
     q: Annotated[str, Query(min_length=1, pattern=r"\S")],
     limit: Annotated[int, Query(ge=1, le=50)] = 8,
 ):
-    store_id = await run_in_threadpool(data_store_for, user.id)
     return await hybrid_search(data_store_id=store_id, query=q, limit=limit)

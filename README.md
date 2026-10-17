@@ -235,8 +235,10 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise, the role tests in `tests/test_db_roles.py`
-also need `DATABASE_ADMIN_URL` in the environment, and the documents tests need RustFS, at
+need the migrated database: they skip when no server is listening or it isn't migrated, but fail
+when the server turns `DATABASE_URL` away (a missing role or database, a wrong password), so run
+`aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
+from the environment or `.env`, and skip without it, and the documents tests need RustFS, at
 `DATA_STORE_FILES_ENDPOINT` with `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in
 `backend/.env.example`), `terraform test` in `infra/terraform` (it plans and applies against a
 mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
@@ -257,7 +259,16 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 else reads), taking each role's name and password from its URL. It also creates the `vector`
 extension (not one a non-superuser can create), grants `aios_app` `CREATE` on the platform
 database, and makes it own `public` and anything else in the database the master user still owns, so a database that was migrated as the master user is
-handed over. It's safe to re-run: to change a password, change the URL and run it again. Compose
+handed over; the master user stays a member of `aios_app`, for break-glass access. It's safe to
+re-run: to change a password, change the URL and run it again.
+
+It changes nothing (it runs in one transaction) and exits with an error if: the server is older
+than PostgreSQL 16 (before 16, `CREATEROLE` reaches roles it didn't create); the three URLs name
+fewer than three roles, or different hosts or ports (compared as written, so not `localhost` in
+one and `127.0.0.1` in another); `aios_app` has, or may `SET ROLE` to a role that has,
+`SUPERUSER`, `CREATEDB`, `CREATEROLE`, `BYPASSRLS` or `REPLICATION` (on RDS, don't grant it
+`rds_superuser`); or the master user would still own something in the database it can't hand
+over, which it lists. Compose
 runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
 migration. The master user is otherwise for break-glass access only.
 
@@ -290,7 +301,8 @@ Each user has a data store: a Postgres database of their own on the same instanc
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
   `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
   (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
-  at its head revision.
+  at its head revision. The tree makes the `aios` schema (the platform's tables) and an empty
+  `data` schema (the owner's tables, which the tree otherwise leaves alone).
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After six failed tries (the first and five retries, over about half an hour) the store is marked
@@ -505,6 +517,16 @@ Known limits:
   only) and the libraries pinned in `backend/sandbox/requirements.txt`. `SANDBOX_BACKEND`
   chooses how sandboxes are started; with none set, the tool tells the model it isn't
   available. See `plan/run-python/plan.md`.
+- **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's data
+  store, as its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data`
+  (the owner's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+  descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
+  `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
+  statement is sent with the extended protocol, which takes only one. Rows are streamed and cut
+  off at `QUERY_DATA_MAX_ROWS` rows or `QUERY_DATA_MAX_BYTES` bytes (as JSON), with `truncated`
+  set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
+  model their results are data, not instructions, and that the store is being set up until
+  it's ready.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and

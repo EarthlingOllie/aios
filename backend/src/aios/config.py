@@ -43,12 +43,19 @@ class Settings(BaseSettings):
     #
     # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
     # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
-    # processes that use it. On ECS the read-only role is used by the 2 API tasks and the
-    # workflow worker's 2 processes, so 12; the read-write one by the API and the ingest
-    # worker's 2 (one ingest, so one connection, each), so 8. A rolling deploy starts the new
-    # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
+    # processes that use it. On ECS both roles are used by the 2 API tasks and the workflow
+    # worker's 2 processes (the data tools), so 12, and the read-write one also by the ingest
+    # worker's 2 (one ingest, so one connection, each), so 14. A rolling deploy starts the new
+    # tasks before stopping the old, which doubles that: 28 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
+    # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
+    # either is cut short there, and says so (`truncated`).
+    query_data_max_rows: int = Field(default=200, ge=1)
+    query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
+    # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
+    # past it is refused, and writes nothing.
+    write_data_max_rows: int = Field(default=100, ge=1)
     # Uploaded files, in S3 (`aios.datastores.files`): each store's under `stores/<store id>/`.
     # The region comes from boto3's usual places (on AWS, the task's).
     data_store_files_bucket: str = "aios-data-local"
