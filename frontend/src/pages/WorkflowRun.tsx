@@ -25,18 +25,11 @@ import {
   type WorkflowRunStep,
   type WorkflowVersion,
 } from "@/lib/api";
+import { formatDuration as duration } from "@/lib/agent-runs";
 import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
 
 // The layout to use when the workflow's own can't be read: one object, so it's not new each render.
 const noLayout: Record<string, NodePosition> = {};
-
-function duration(from: string, to: string | null) {
-  const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
 
 /** One level of the graph being shown: the run's workflow, or a subworkflow inside it. */
 type Level = {

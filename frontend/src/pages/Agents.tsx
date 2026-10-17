@@ -20,6 +20,7 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -316,10 +317,12 @@ export function AgentDetail() {
                                 <span className="text-muted-foreground">Untitled run</span>
                               )}
                             </span>
-                            <span className="text-muted-foreground block text-xs">
-                              {formatDate(run.updated_at)}
+                            <span className="text-muted-foreground block truncate text-xs">
+                              {formatDate(run.updated_at)} ·{" "}
+                              <RunCountersLine run={run} compact />
                             </span>
                           </span>
+                          <AgentRunStatusBadge run={run} />
                           <VersionBadge version={run.agent_version} />
                           <Badge variant="secondary">{run.message_count} msgs</Badge>
                         </Link>
