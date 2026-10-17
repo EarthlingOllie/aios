@@ -46,23 +46,6 @@ def store_row(db, store_id: uuid.UUID) -> DataStore:
     return db.scalar(select(DataStore).where(DataStore.id == store_id))
 
 
-@pytest.fixture
-def new_user(db) -> Iterator[Callable[[], User]]:
-    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
-    made: list[User] = []
-
-    def make() -> User:
-        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
-        db.add(u)
-        db.commit()
-        made.append(u)
-        return u
-
-    yield make
-    for u in made:
-        delete_user(db, u)
-
-
 def test_a_new_users_store_is_provisioned_ready_at_the_store_trees_head(db, new_user, provisioning):
     store_id = data_store_for(new_user().id)
 
@@ -222,7 +205,8 @@ def test_a_stores_read_only_role_cant_write(store_with_a_table):
         assert conn.execute("DELETE FROM aios.marker").rowcount == 1
 
 
-# The platform's own record of the store's schema: only its migrations (as the owner) change it.
+# The platform's own record of the store's schema: only its migrations and schema changes (as
+# the owner) change it.
 BOOKKEEPING_WRITES = [
     "INSERT INTO aios.alembic_version VALUES ('x')",
     "UPDATE aios.alembic_version SET version_num = 'x'",
@@ -232,6 +216,12 @@ BOOKKEEPING_WRITES = [
     "UPDATE aios.schema_history SET summary = 'x'",
     "DELETE FROM aios.schema_history",
     "TRUNCATE aios.schema_history",
+    # Which `data` columns are embeddings of which (`write_data` fills them): schema changes
+    # mark them.
+    "INSERT INTO aios.embedding_columns VALUES ('t', 'e', 's')",
+    "UPDATE aios.embedding_columns SET source_column = 'x'",
+    "DELETE FROM aios.embedding_columns",
+    "TRUNCATE aios.embedding_columns",
 ]
 
 
@@ -240,6 +230,7 @@ def assert_cant_change_bookkeeping(store: DataStore, role: str) -> None:
         # But may read it.
         assert conn.execute("SELECT version_num FROM aios.alembic_version").fetchone()
         conn.execute("SELECT count(*) FROM aios.schema_history")
+        conn.execute("SELECT count(*) FROM aios.embedding_columns")
         for write in BOOKKEEPING_WRITES:
             with pytest.raises(errors.InsufficientPrivilege):
                 conn.execute(write)
@@ -286,6 +277,72 @@ def test_a_stores_roles_have_their_limits(two_stores):
             # pgvector works without naming the schema it's in.
             distance = conn.execute("SELECT '[1,0]'::vector <=> '[0,1]'::vector")
             assert distance.fetchone() == (1.0,)
+
+
+def test_a_store_is_dropped_with_its_roles_still_connected(two_stores):
+    a, b = two_stores
+    names = provision.StoreNames.of(a)
+    with (
+        psycopg.connect(login_url(a, "ro"), autocommit=True) as ro,
+        psycopg.connect(login_url(a, "rw"), autocommit=True) as rw,
+    ):
+        provision.drop(names)
+
+        for conn in (ro, rw):
+            with pytest.raises(psycopg.OperationalError):
+                conn.execute("SELECT 1")
+    with admin_connect() as admin:
+        assert not admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)
+        ).fetchone()
+        roles = admin.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+            ([names.owner, names.rw, names.ro],),
+        )
+        assert not roles.fetchall()
+    # The other store is untouched.
+    psycopg.connect(login_url(b, "ro")).close()
+
+
+@pytest.fixture
+def quick_autovacuum() -> Iterator[None]:
+    """Autovacuum looking at each database every second, instead of every minute."""
+    with admin_connect() as admin:
+        admin.execute("ALTER SYSTEM SET autovacuum_naptime = 1")
+        admin.execute("SELECT pg_reload_conf()")
+        try:
+            yield
+        finally:
+            admin.execute("ALTER SYSTEM RESET autovacuum_naptime")
+            admin.execute("SELECT pg_reload_conf()")
+
+
+def test_a_store_is_dropped_while_autovacuum_works_in_it(two_stores, quick_autovacuum):
+    a, _ = two_stores
+    names = provision.StoreNames.of(a)
+    with admin_connect(names.dbname) as conn:
+        # Enough dead rows for autovacuum to take on, and slow to get through.
+        conn.execute(
+            "CREATE TABLE aios.slow (i int) WITH (autovacuum_vacuum_cost_delay = 100,"
+            " autovacuum_vacuum_cost_limit = 1)"
+        )
+        conn.execute("INSERT INTO aios.slow SELECT generate_series(1, 100000)")
+        conn.execute("DELETE FROM aios.slow WHERE i % 2 = 0")
+    with admin_connect() as admin:
+        deadline = time.monotonic() + 30
+        while not admin.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE datname = %s"
+            " AND backend_type = 'autovacuum worker'",
+            (names.dbname,),
+        ).fetchone():
+            assert time.monotonic() < deadline, "autovacuum never got to the store"
+            time.sleep(0.05)
+
+        provision.drop(names)
+
+        assert not admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)
+        ).fetchone()
 
 
 def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
@@ -614,7 +671,8 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
         response = client.get("/api/data-store")
     finally:
         app.dependency_overrides.clear()
-    assert response.json() == {"status": "ready"}
+    assert response.json()["status"] == "ready"
+    assert set(response.json()) == {"status", "usage"}
     for password in passwords:
         assert password not in caplog.text
         assert password not in response.text
@@ -677,8 +735,8 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     # Its own provisioning task may still be trying: it's left to that.
     assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
     # The provisioning worker runs it (`celery worker -B`), as the provisioner.
-    scheduled = [e for e in worker.celery_app.conf.beat_schedule.values()]
-    assert "aios.retry_unfinished_data_stores" in [e["task"] for e in scheduled]
+    scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
+    assert "aios.retry_unfinished_data_stores" in scheduled
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
@@ -769,7 +827,7 @@ def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user
     for store_id in (busy, other):
         provision.fail(store_id, "OperationalError: the instance is down")
 
-    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(busy):
+    with ThreadPoolExecutor(1) as pool, provision.provisioner_locked(busy):
         outcome = pool.submit(provision.retry_unfinished, [busy, other]).result(timeout=30)
 
     assert outcome == {other: head_revision()}
@@ -786,7 +844,7 @@ def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_use
     db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
     db.commit()
 
-    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(store_id):
+    with ThreadPoolExecutor(1) as pool, provision.provisioner_locked(store_id):
         outcome = pool.submit(provision.retry_unfinished, [store_id]).result(timeout=30)
 
     assert outcome == {}

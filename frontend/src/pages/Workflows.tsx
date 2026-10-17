@@ -26,7 +26,7 @@ import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
-import { isActive } from "@/lib/runs";
+import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -122,8 +122,15 @@ function WorkflowDetailView({ id }: { id: number }) {
   const [runInput, setRunInput] = useState<string>();
   const [starting, setStarting] = useState(false);
 
-  // Keep the list's statuses current while any run is still going, as the run page does.
-  usePoll(!!runs.data?.some((r) => isActive(r.status)), runs.reload);
+  // Keep the list's statuses current while any run is still going, as the run page does (less
+  // often while those left only wait for the user).
+  usePoll(
+    !!runs.data?.some((r) => isActive(r.status)),
+    runs.reload,
+    runs.data?.some((r) => r.status === "queued" || r.status === "running")
+      ? undefined
+      : WAITING_POLL_MS,
+  );
 
   if (workflow.error) return <Placeholder>{workflow.error}</Placeholder>;
   if (!workflow.data) return null;

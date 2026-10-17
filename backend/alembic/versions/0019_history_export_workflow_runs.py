@@ -3,8 +3,8 @@
 The run history export also copies workflow runs (`aios.datastores.history`): their rows in its
 outbox (`history_exports`) are of a kind of their own.
 
-Revision ID: 0015
-Revises: 0014
+Revision ID: 0019
+Revises: 0018
 Create Date: 2026-10-17 12:00:00
 """
 
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0015"
-down_revision: str | None = "0014"
+revision: str = "0019"
+down_revision: str | None = "0018"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

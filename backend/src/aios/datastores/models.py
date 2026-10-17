@@ -20,11 +20,11 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
-    LargeBinary,
     MetaData,
     PrimaryKeyConstraint,
     String,
     Text,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
@@ -56,6 +56,46 @@ class SchemaHistory(StoreBase):
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EmbeddingColumn(StoreBase):
+    """A `vector(EMBEDDING_DIM)` column of a table in `data`, and the text column in the same
+    table it's the embedding of: `write_data` fills it. Schema changes add a row as they add
+    such a column; only the owner writes it (`provision.BOOKKEEPING`)."""
+
+    __tablename__ = "embedding_columns"
+    __table_args__ = {
+        "comment": "Columns in data that write_data fills with embeddings of a text column"
+    }
+
+    table_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    column_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_column: Mapped[str] = mapped_column(Text)
+
+
+class DroppedObject(StoreBase):
+    """A table or column in `data` that an approved drop renamed out of the way, until it's
+    restored or purged (`aios.datastores.dropped`). Only the owner writes it
+    (`provision.BOOKKEEPING`)."""
+
+    __tablename__ = "dropped_objects"
+    __table_args__ = {
+        "comment": "Tables and columns in data that were dropped, until restored or purged"
+    }
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # A dropped table: its name before it was dropped. A dropped column: the table it's in, as
+    # that's named now (a dropped table's new name, if the table was dropped after it).
+    table_name: Mapped[str] = mapped_column(Text)
+    # A dropped column: its name before it was dropped. None for a table.
+    column_name: Mapped[str | None] = mapped_column(Text)
+    # What it was renamed to.
+    dropped_name: Mapped[str] = mapped_column(Text)
+    # A column that was NOT NULL (dropping it lifts that, so new rows can leave it out).
+    not_null: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    dropped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Why the last restore the owner asked for was refused, if it was.
+    restore_error: Mapped[str | None] = mapped_column(Text)
+
+
 class DocumentStatus(enum.StrEnum):
     pending = "pending"
     processing = "processing"
@@ -69,8 +109,11 @@ class Document(StoreBase):
     id: Mapped[int] = mapped_column(primary_key=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(255))
-    # Raw upload, kept in Postgres so the API and worker need no shared filesystem/bucket.
-    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    # Where the upload is, in S3 (`aios.datastores.files.document_key`), its size and its
+    # SHA-256 (hex).
+    s3_key: Mapped[str] = mapped_column(String(1024))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus, name="document_status"), default=DocumentStatus.pending
     )

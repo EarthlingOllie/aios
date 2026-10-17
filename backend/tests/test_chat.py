@@ -1,9 +1,10 @@
 import json
+import uuid
 
 from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 
 from aios import agent as agent_module
-from aios.auth import current_user
+from aios.auth import current_data_store, current_user
 from aios.datastores import data_store_for
 from aios.main import app
 from aios.models import User
@@ -134,6 +135,7 @@ def test_chat_replays_the_clients_conversation(client, user):
 
 def test_chat_rejects_a_malformed_body(client):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         assert client.post("/api/chat", json={"messages": []}).status_code == 422
         blank = {"messages": [{"id": "m", "role": "user", "parts": [{"type": "text", "text": ""}]}]}

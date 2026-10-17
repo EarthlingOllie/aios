@@ -6,7 +6,7 @@ import pytest
 from conftest import delete_user, provisioned_user
 
 from aios import search
-from aios.auth import current_user
+from aios.auth import current_data_store, current_user
 from aios.datastores import data_store_for, store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus
@@ -33,7 +33,9 @@ def add_chunks(
     store_id: uuid.UUID, filename: str, chunks: list[tuple[str, list[float]]], **meta
 ) -> None:
     """A ready document in the store, of these chunks (text, embedding)."""
-    doc = Document(filename=filename, data=b"", status=DocumentStatus.ready)
+    doc = Document(
+        filename=filename, s3_key="", size_bytes=0, sha256="", status=DocumentStatus.ready
+    )
     doc.chunks = [
         Chunk(ordinal=i, text=t, contextualized=t, meta=meta, embedding=vec)
         for i, (t, vec) in enumerate(chunks)
@@ -115,6 +117,7 @@ def test_search_opens_its_session_after_embedding(user, monkeypatch):
 )
 def test_search_endpoint_rejects_bad_params(client, params):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         resp = client.get("/api/search", params=params)
     finally:
