@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import uuid
 from dataclasses import dataclass
 
 import psycopg
@@ -41,7 +42,9 @@ def spy_run(monkeypatch) -> dict:
     @dataclass
     class SpyDeps(ChatDeps):
         def __post_init__(self):
-            seen["deps"] = ChatDeps(user_id=self.user_id, run_id=self.run_id)
+            seen["deps"] = ChatDeps(
+                user_id=self.user_id, data_store_id=self.data_store_id, run_id=self.run_id
+            )
 
     monkeypatch.setattr(agents_api, "load_chat_context", spy_load)
     monkeypatch.setattr(agents_api, "ChatDeps", SpyDeps)
@@ -517,7 +520,9 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
 
     def fake_load(db, user_id, agent_id, run_id):
         events.append(("load on loop", on_event_loop()))
-        return agents_api.ChatContext(model=None, instructions="Hi.", metadata={})
+        return agents_api.ChatContext(
+            model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()
+        )
 
     def fake_start(run_id, prompt):
         events.append(("title on loop", on_event_loop()))

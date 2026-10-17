@@ -1,11 +1,18 @@
 """Schema change requests: how an agent changes the tables in its store's `data` schema.
 
-The model never sends SQL. It sends a spec (`SchemaChange`): a list of additive operations
-(`create_table`, `add_column`, `create_index`), each naming tables, columns and types from an
-allowlist. The spec is checked against the store's current schema (`check`) and compiled to
-SQL (`compile_sql`) with every identifier quoted; that SQL is what the owner approves, and
-exactly what runs. Only the `data` schema is touched, apart from the platform's own
-bookkeeping: `aios.embedding_columns`, which marks embedding columns for `write_data`.
+The model never sends SQL. It sends a spec (`SchemaChange`): a list of operations
+(`create_table`, `add_column`, `create_index`, `drop_table`, `drop_column`), each naming
+tables, columns and types from an allowlist. The spec is checked against the store's current
+schema (`check`) and compiled to SQL (`compile_sql`) with every identifier quoted; that SQL is
+what the owner approves, and exactly what runs. Only the `data` schema is touched, apart from
+the platform's own bookkeeping: `aios.embedding_columns`, which marks embedding columns for
+`write_data`, and `aios.dropped_objects`.
+
+Drops are reversible: they rename the table or column to `_dropped_<timestamp>_<name>` and
+record it in `aios.dropped_objects`, and applying one takes the store's login roles' access
+to it away (`aios.datastores.dropped`), so the data tools no longer see it. The owner can
+restore it until it's purged, `DATA_STORE_DROPPED_RETENTION_DAYS` later. Approving a request
+that drops anything takes the names of the tables it drops from, typed (`confirmation`).
 
 The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
 
@@ -23,16 +30,20 @@ The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
 4. The run that asked is resumed with the `outcome`.
 """
 
+import copy
 import logging
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.orm import Session
 
@@ -43,6 +54,9 @@ from aios.datastores.models import EMBEDDING_DIM
 from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus, WorkflowRunStep
+
+if TYPE_CHECKING:
+    from aios.datastores.provision import StoreNames
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +201,58 @@ class CreateIndex(BaseModel):
     name: Name | None = None
 
 
-Operation = Annotated[CreateTable | AddColumn | CreateIndex, Field(discriminator="op")]
+# What a dropped table or column is renamed to: `_dropped_<when it was asked for>_<its name>`
+# (cut short to fit Postgres's 63 characters). Never a name the model can give anything else,
+# which starts with a letter (`NAME_PATTERN`).
+DROPPED_PREFIX = "_dropped_"
+DROPPED_PATTERN = re.compile(r"^_dropped_\d{14}_[a-z0-9_]{1,39}$")
+
+
+def _dropped_name(value: str | None) -> str | None:
+    if value is not None and not DROPPED_PATTERN.match(value):
+        raise ValueError(f"{value!r} isn't a name a dropped table or column is given")
+    return value
+
+
+# Filled in by `check`, never by the model (so not in the schema it's shown).
+DroppedName = SkipJsonSchema[Annotated[str | None, AfterValidator(_dropped_name)]]
+Found = SkipJsonSchema[bool]
+
+
+class DropTable(BaseModel):
+    """Renames the table out of the way (`dropped_as`) rather than dropping it: the owner can
+    restore it until it's purged (`aios.datastores.dropped`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["drop_table"]
+    table: Name
+    dropped_as: DroppedName = None
+    # What `check` found: whether embedding columns are marked in it, and whether it has
+    # dropped columns (both follow it to its new name).
+    has_embeddings: Found = False
+    has_dropped_columns: Found = False
+
+
+class DropColumn(BaseModel):
+    """Renames the column out of the way (`dropped_as`), as `DropTable` does a table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["drop_column"]
+    table: Name
+    column: Name
+    dropped_as: DroppedName = None
+    # What `check` found: whether it's NOT NULL (it stops being, so new rows can leave it
+    # out), and whether it's an embedding column (its marker follows it).
+    not_null: Found = False
+    is_embedding: Found = False
+
+
+Operation = Annotated[
+    CreateTable | AddColumn | CreateIndex | DropTable | DropColumn, Field(discriminator="op")
+]
+Op = CreateTable | AddColumn | CreateIndex | DropTable | DropColumn
 
 
 class SchemaChange(BaseModel):
@@ -204,10 +269,16 @@ class Invalid(ValueError):
 class StoreSchema:
     """What a spec is checked against: the `data` schema's tables, each column's type (as
     `format_type` writes it), and every name taken in the schema (tables, indexes,
-    sequences...)."""
+    sequences...); each table's primary key and NOT NULL columns, the embedding columns (and
+    the text column each is of), and each table's dropped columns. Dropped tables and columns
+    aren't among `tables` or their columns, but a dropped table's name is still taken."""
 
     tables: dict[str, dict[str, str]] = field(default_factory=dict)
     relations: set[str] = field(default_factory=set)
+    primary_keys: dict[str, list[str]] = field(default_factory=dict)
+    not_null: dict[str, set[str]] = field(default_factory=dict)
+    embeddings: dict[tuple[str, str], str] = field(default_factory=dict)
+    dropped_columns: dict[str, set[str]] = field(default_factory=dict)
 
 
 def _quote(name: str) -> str:
@@ -337,6 +408,52 @@ def _create_index_sql(op: CreateIndex) -> list[str]:
     return [f"CREATE {unique}INDEX {_quote(op.name)} ON {_qualified(op.table)} USING {using};"]
 
 
+_DROPPED_OBJECTS = f"{_quote('aios')}.{_quote('dropped_objects')}"
+_EMBEDDING_COLUMNS = f"{_quote('aios')}.{_quote('embedding_columns')}"
+
+
+def _record_dropped_sql(table: str, column: str | None, dropped_as: str, not_null: bool) -> str:
+    return (
+        f"INSERT INTO {_DROPPED_OBJECTS} (table_name, column_name, dropped_name, not_null)"
+        f" VALUES ({_literal(table)}, {_literal(column) if column else 'NULL'},"
+        f" {_literal(dropped_as)}, {'TRUE' if not_null else 'FALSE'});"
+    )
+
+
+def _drop_table_sql(op: DropTable) -> list[str]:
+    new, old = _literal(op.dropped_as), _literal(op.table)
+    statements = [f"ALTER TABLE {_qualified(op.table)} RENAME TO {_quote(op.dropped_as)};"]
+    if op.has_embeddings:
+        statements.append(
+            f"UPDATE {_EMBEDDING_COLUMNS} SET table_name = {new} WHERE table_name = {old};"
+        )
+    if op.has_dropped_columns:
+        statements.append(
+            f"UPDATE {_DROPPED_OBJECTS} SET table_name = {new}"
+            f" WHERE table_name = {old} AND column_name IS NOT NULL;"
+        )
+    statements.append(_record_dropped_sql(op.table, None, op.dropped_as, False))
+    return statements
+
+
+def _drop_column_sql(op: DropColumn) -> list[str]:
+    table = _qualified(op.table)
+    statements = [
+        f"ALTER TABLE {table} RENAME COLUMN {_quote(op.column)} TO {_quote(op.dropped_as)};"
+    ]
+    if op.not_null:
+        statements.append(
+            f"ALTER TABLE {table} ALTER COLUMN {_quote(op.dropped_as)} DROP NOT NULL;"
+        )
+    if op.is_embedding:
+        statements.append(
+            f"UPDATE {_EMBEDDING_COLUMNS} SET column_name = {_literal(op.dropped_as)}"
+            f" WHERE table_name = {_literal(op.table)} AND column_name = {_literal(op.column)};"
+        )
+    statements.append(_record_dropped_sql(op.table, op.column, op.dropped_as, op.not_null))
+    return statements
+
+
 def compile_sql(change: SchemaChange) -> str:
     """The SQL a checked spec (`check`) runs: what the owner approves."""
     statements: list[str] = []
@@ -345,27 +462,136 @@ def compile_sql(change: SchemaChange) -> str:
             statements += _create_table_sql(op)
         elif isinstance(op, AddColumn):
             statements += _add_column_sql(op)
-        else:
+        elif isinstance(op, CreateIndex):
             statements += _create_index_sql(op)
+        elif isinstance(op, DropTable):
+            statements += _drop_table_sql(op)
+        else:
+            statements += _drop_column_sql(op)
     return "\n".join(statements)
 
 
-def check(change: SchemaChange, schema: StoreSchema) -> SchemaChange:
+def confirmation(change: SchemaChange) -> str | None:
+    """What the owner types to approve a request that drops anything: the names of the tables
+    it drops, or drops columns from, in order; None for one that drops nothing."""
+    tables = [op.table for op in change.ops if isinstance(op, (DropTable, DropColumn))]
+    return ", ".join(dict.fromkeys(tables)) or None
+
+
+def check(change: SchemaChange, schema: StoreSchema, now: datetime | None = None) -> SchemaChange:
     """The spec, checked against `schema` op by op (each seeing the ones before it), with
-    the index names it left out filled in; raises `Invalid` if the schema doesn't take it."""
-    tables = {name: dict(columns) for name, columns in schema.tables.items()}
-    relations = set(schema.relations)
-    checked: list[CreateTable | AddColumn | CreateIndex] = []
+    what it leaves to the platform filled in: index names it left out, the names drops rename
+    to (from `now`, the time it's asked for, unless they have them already), and what drops
+    found. Raises `Invalid` if the schema doesn't take it."""
+    state = copy.deepcopy(schema)
+    tables, relations = state.tables, state.relations
+    now = now or datetime.now(UTC)
+    checked: list[Op] = []
     for i, op in enumerate(change.ops, start=1):
         where = f"Operation {i} ({op.op})"
         if isinstance(op, CreateTable):
             _check_create_table(op, tables, relations, where)
+            state.primary_keys[op.name] = op.primary_key or ["id"]
+            state.not_null[op.name] = {c.name for c in op.columns if not c.nullable}
+            state.not_null[op.name].update(state.primary_keys[op.name])
+            for c in op.columns:
+                if c.embedding_of:
+                    state.embeddings[op.name, c.name] = c.embedding_of
         elif isinstance(op, AddColumn):
             _check_add_column(op, tables, where, existing=op.table in schema.tables)
-        else:
+            if not op.column.nullable:
+                state.not_null.setdefault(op.table, set()).add(op.column.name)
+            if op.column.embedding_of:
+                state.embeddings[op.table, op.column.name] = op.column.embedding_of
+        elif isinstance(op, CreateIndex):
             op = _check_create_index(op, tables, relations, where)
+        elif isinstance(op, DropTable):
+            op = _check_drop_table(op, state, now, where)
+        else:
+            op = _check_drop_column(op, state, now, where)
         checked.append(op)
     return SchemaChange(ops=checked)
+
+
+def _dropped_as(op: DropTable | DropColumn, now: datetime, name: str, taken: set[str]) -> str:
+    """The name it's renamed to: the one it has (checked again), or one from `now` and its name
+    that isn't `taken` (a later second's, if it was dropped once already this second)."""
+    if op.dropped_as:
+        return op.dropped_as
+    while True:
+        stamp = f"{DROPPED_PREFIX}{now:%Y%m%d%H%M%S}_"
+        dropped_as = stamp + name[: 63 - len(stamp)]
+        if dropped_as not in taken:
+            return dropped_as
+        now += timedelta(seconds=1)
+
+
+def _check_drop_table(op: DropTable, state: StoreSchema, now: datetime, where: str) -> DropTable:
+    if op.table not in state.tables:
+        raise Invalid(f"{where}: there's no table `{SCHEMA}.{op.table}`")
+    dropped_as = _dropped_as(op, now, op.table, state.relations)
+    if dropped_as in state.relations:
+        raise Invalid(f"{where}: `{SCHEMA}.{dropped_as}` already exists")
+    checked = op.model_copy(
+        update={
+            "dropped_as": dropped_as,
+            "has_embeddings": any(t == op.table for t, _ in state.embeddings),
+            "has_dropped_columns": bool(state.dropped_columns.get(op.table)),
+        }
+    )
+    del state.tables[op.table]
+    state.relations.discard(op.table)
+    state.relations.add(dropped_as)
+    state.embeddings = {k: v for k, v in state.embeddings.items() if k[0] != op.table}
+    state.dropped_columns.pop(op.table, None)
+    return checked
+
+
+def _check_drop_column(op: DropColumn, state: StoreSchema, now: datetime, where: str) -> DropColumn:
+    columns = state.tables.get(op.table)
+    if columns is None:
+        raise Invalid(f"{where}: there's no table `{SCHEMA}.{op.table}`")
+    if op.column not in columns:
+        raise Invalid(f"{where}: `{SCHEMA}.{op.table}` has no column `{op.column}`")
+    if op.column in state.primary_keys.get(op.table, []):
+        raise Invalid(
+            f"{where}: `{op.column}` is in `{SCHEMA}.{op.table}`'s primary key, so it can't be"
+            " dropped"
+        )
+    # A live embedding of it (one that's dropped too keeps its marker, but needs nothing).
+    embedding = next(
+        (
+            c
+            for (t, c), source in state.embeddings.items()
+            if t == op.table and source == op.column and not c.startswith(DROPPED_PREFIX)
+        ),
+        None,
+    )
+    if embedding is not None:
+        raise Invalid(
+            f"{where}: `{embedding}` is its embedding: drop `{embedding}` first (in this request"
+            " or before)"
+        )
+    dropped = state.dropped_columns.setdefault(op.table, set())
+    dropped_as = _dropped_as(op, now, op.column, dropped | set(columns))
+    if dropped_as in dropped or dropped_as in columns:
+        raise Invalid(f"{where}: `{SCHEMA}.{op.table}` already has a column `{dropped_as}`")
+    not_null = state.not_null.get(op.table, set())
+    checked = op.model_copy(
+        update={
+            "dropped_as": dropped_as,
+            "not_null": op.column in not_null,
+            "is_embedding": (op.table, op.column) in state.embeddings,
+        }
+    )
+    del columns[op.column]
+    not_null.discard(op.column)
+    # Its marker stays, under its new name (and follows the table if that's dropped).
+    source = state.embeddings.pop((op.table, op.column), None)
+    if source is not None:
+        state.embeddings[op.table, dropped_as] = source
+    dropped.add(dropped_as)
+    return checked
 
 
 def _check_embedding(column: Column, columns: dict[str, str], table: str, where: str) -> None:
@@ -489,8 +715,12 @@ def summarize(change: SchemaChange) -> str:
             parts.append(f"create table {SCHEMA}.{op.name}")
         elif isinstance(op, AddColumn):
             parts.append(f"add column {op.column.name} to {SCHEMA}.{op.table}")
-        else:
+        elif isinstance(op, CreateIndex):
             parts.append(f"create index {op.name} on {SCHEMA}.{op.table}")
+        elif isinstance(op, DropTable):
+            parts.append(f"drop table {SCHEMA}.{op.table}")
+        else:
+            parts.append(f"drop column {op.column} from {SCHEMA}.{op.table}")
     text = "; ".join(parts)
     return text[:1].upper() + text[1:]
 
@@ -499,11 +729,13 @@ def summarize(change: SchemaChange) -> str:
 
 # Every relation in `data` (tables, indexes, sequences, views...), with a table's columns.
 _SCHEMA_SQL = """
-    SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod)
+    SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+           coalesce(a.attnum = ANY(pk.indkey), false)
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
         AND c.relkind IN ('r', 'p')
+    LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
     WHERE n.nspname = 'data'
     ORDER BY c.relname, a.attnum
 """
@@ -512,17 +744,27 @@ _TYPES_SQL = """
     SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = 'data' AND t.typrelid = 0
 """
+_EMBEDDINGS_SQL = "SELECT table_name, column_name, source_column FROM aios.embedding_columns"
 
 
 def read_schema(pg: psycopg.Connection) -> StoreSchema:
     """The store's `data` schema, as specs are checked against it."""
     schema = StoreSchema()
-    for relation, column, type_ in pg.execute(_SCHEMA_SQL):
+    for relation, column, type_, not_null, in_key in pg.execute(_SCHEMA_SQL):
         schema.relations.add(relation)
-        if column is not None:
-            # pgvector's type, named with its schema unless that's on the search path.
-            schema.tables.setdefault(relation, {})[column] = type_.removeprefix("extensions.")
+        if column is None or relation.startswith(DROPPED_PREFIX):
+            continue
+        if column.startswith(DROPPED_PREFIX):
+            schema.dropped_columns.setdefault(relation, set()).add(column)
+            continue
+        # pgvector's type, named with its schema unless that's on the search path.
+        schema.tables.setdefault(relation, {})[column] = type_.removeprefix("extensions.")
+        if not_null:
+            schema.not_null.setdefault(relation, set()).add(column)
+        if in_key:
+            schema.primary_keys.setdefault(relation, []).append(column)
     schema.relations.update(name for (name,) in pg.execute(_TYPES_SQL))
+    schema.embeddings = {(t, c): source for t, c, source in pg.execute(_EMBEDDINGS_SQL)}
     return schema
 
 
@@ -563,7 +805,13 @@ def propose(
         # revision, which only means it's checked again when it's applied.
         revision = read_revision(pg)
         schema = read_schema(pg)
-    checked = check(change, schema)
+    # The names drops rename to are the platform's to pick, never the model's.
+    drops = (DropTable, DropColumn)
+    fresh = [
+        op.model_copy(update={"dropped_as": None}) if isinstance(op, drops) else op
+        for op in change.ops
+    ]
+    checked = check(SchemaChange(ops=fresh), schema)
     request = SchemaChangeRequest(
         data_store_id=data_store_id,
         ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
@@ -716,31 +964,79 @@ class _Stale(Exception):
     pass
 
 
-def _run(names: Any, request: SchemaChangeRequest) -> None:
+def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
     """Run the request's SQL on the store, as its owner, all or nothing; raises `_Stale` if the
     schema has moved on and no longer takes it."""
+    from aios.datastores import dropped
     from aios.datastores.provision import as_owner
 
-    timeout = f"{get_settings().schema_change_lock_timeout}ms"
-    with as_owner(names) as conn, conn.transaction():
-        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
-        # One change at a time, each seeing the last: the revision can't move until commit.
-        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
+    with as_owner(names) as conn, schema_transaction(conn):
         done = conn.execute(
             "SELECT 1 FROM aios.schema_history WHERE request_id = %s", (request.id,)
         ).fetchone()
         if done:  # applied already, by a run of this that stopped before recording it
             return
+        spec = SchemaChange.model_validate({"ops": request.ops})
         if read_revision(conn) != request.base_revision:
             try:
-                check(SchemaChange.model_validate({"ops": request.ops}), read_schema(conn))
+                rechecked = check(spec, read_schema(conn))
             except Invalid as exc:
                 raise _Stale(str(exc)) from exc
+            # What it found to drop, say, has changed: the SQL approved isn't what it takes now.
+            if compile_sql(rechecked) != request.sql:
+                raise _Stale(
+                    "the tables it changes have changed since it was asked for, so the SQL"
+                    " approved isn't what it would take now"
+                )
         conn.execute(request.sql)  # several statements: sent whole, with no parameters
-        conn.execute(
-            "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
-            (request.id, request.summary, request.sql),
-        )
+        for table in _access_changed(spec):
+            if table_exists(conn, table):
+                dropped.grant_access(conn, names.rw, names.ro, table)
+        record_history(conn, request.summary, request.sql, request.id)
+
+
+@contextmanager
+def schema_transaction(conn: psycopg.Connection) -> Iterator[None]:
+    """A transaction (as the store's owner) that changes its schema: applying a request, or
+    restoring or purging what was dropped. It waits for each lock no longer than
+    `SCHEMA_CHANGE_LOCK_TIMEOUT`, so it can't stall the store's other queries for long, and
+    holds `aios.schema_history`'s, so changes run one at a time, each seeing the last (the
+    revision can't move until it commits)."""
+    with conn.transaction():
+        timeout = f"{get_settings().schema_change_lock_timeout}ms"
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
+        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
+        yield
+
+
+def record_history(
+    conn: psycopg.Connection, summary: str, sql: str, request_id: uuid.UUID | None = None
+) -> None:
+    """Log a change in `aios.schema_history` (in its `schema_transaction`), which bumps the
+    store's data schema revision."""
+    conn.execute(
+        "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
+        (request_id, summary, sql),
+    )
+
+
+def _access_changed(change: SchemaChange) -> list[str]:
+    """The tables (as they're named once it's applied) whose login roles' access a change
+    sets anew (`dropped.grant_access`): those it drops, drops columns from, or adds columns to
+    (which may have dropped columns, so get their privileges column by column)."""
+    tables: list[str] = []
+    for op in change.ops:
+        if isinstance(op, DropTable):
+            tables.append(op.dropped_as)
+        elif isinstance(op, (DropColumn, AddColumn)):
+            tables.append(op.table)
+    return list(dict.fromkeys(tables))
+
+
+def table_exists(pg: psycopg.Connection, table: str) -> bool:
+    """Whether `data.<table>` is there."""
+    qualified = f"{_quote(SCHEMA)}.{_quote(table)}"
+    return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]
 
 
 def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
@@ -793,6 +1089,11 @@ def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
             f"The user approved it, and it's applied: {request.summary}. `describe_data`"
             " shows the store's tables as they are now."
         )
+        if confirmation(SchemaChange.model_validate({"ops": request.ops})):
+            out["message"] += (
+                " What it dropped is kept for a while: the user can restore it from the Data"
+                " page until it's purged."
+            )
     elif status == SchemaChangeStatus.rejected:
         out["note"] = request.note
         out["message"] = "The user rejected it, and nothing changed" + (

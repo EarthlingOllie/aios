@@ -21,6 +21,7 @@ function request(fields: Partial<SchemaChangeRequest>): SchemaChangeRequest {
     applied_at: null,
     resumed_at: null,
     can_decide: true,
+    confirm_with: null,
     ...fields,
   };
 }
