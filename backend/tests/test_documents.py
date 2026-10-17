@@ -5,6 +5,8 @@ import time
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from celery.exceptions import Retry
 from conftest import delete_user, provisioned_user
 from pydantic import SecretStr
 from sqlalchemy import event, select
@@ -206,6 +208,88 @@ def test_ingest_fails_a_document_whose_object_is_gone(api, user, queued, monkeyp
         row = store.get(Document, doc["id"])
         assert row.status == DocumentStatus.failed
         assert "NoSuchKey" in row.error
+
+
+@pytest.fixture
+def offline_chunks(monkeypatch):
+    """Ingest with no Docling or embeddings: one chunk per file."""
+
+    async def embed_documents(texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr(
+        ingest, "chunk_document", lambda *a: [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
+    )
+    monkeypatch.setattr(ingest, "embed_documents", embed_documents)
+
+
+def s3_down_for(monkeypatch, times: int, error: Exception) -> None:
+    """S3 fails reads `times` times with `error`, then answers again."""
+    s3 = files.client()
+    get_object = s3.get_object
+    failures = [error] * times
+
+    def flaky_get_object(**kwargs):
+        if failures:
+            raise failures.pop()
+        return get_object(**kwargs)
+
+    monkeypatch.setattr(s3, "get_object", flaky_get_object)
+
+
+S3_UNREACHABLE = EndpointConnectionError(endpoint_url="http://s3.test")
+S3_SLOW_DOWN = ClientError(
+    {"Error": {"Code": "SlowDown"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "GetObject"
+)
+
+
+@pytest.mark.parametrize("error", [S3_UNREACHABLE, S3_SLOW_DOWN], ids=["unreachable", "slow-down"])
+def test_an_ingest_that_cant_reach_s3_is_tried_again(
+    api, user, queued, offline_chunks, monkeypatch, error
+):
+    doc = upload(api).json()
+    store_id = data_store_for(user.id)
+    retried = []
+
+    def retry(**kwargs):
+        retried.append(kwargs)
+        return Retry()
+
+    monkeypatch.setattr(worker.ingest_document_task, "retry", retry)
+    s3_down_for(monkeypatch, 1, error)
+
+    with pytest.raises(Retry):
+        worker.ingest_document_task.run(str(store_id), doc["id"])
+
+    assert retried == [{"countdown": worker.FILES_RETRY_COUNTDOWN}]
+    with store_session(store_id, "ro") as store:
+        row = store.get(Document, doc["id"])
+        # Left for the retry, which the failure doesn't count against: it never got the file.
+        assert (row.status, row.attempts) == (DocumentStatus.processing, 0)
+    worker.ingest_document_task.run(str(store_id), doc["id"])  # the retry
+    [listed] = api.get("/api/documents").json()
+    assert (listed["status"], listed["chunk_count"]) == ("ready", 1)
+
+
+def test_an_ingest_that_still_cant_reach_s3_on_its_last_try_fails(
+    api, user, queued, offline_chunks, monkeypatch
+):
+    doc = upload(api).json()
+    store_id = data_store_for(user.id)
+    s3_down_for(monkeypatch, 1, S3_UNREACHABLE)
+    worker.ingest_document_task.push_request(
+        id="last", retries=worker.FILES_RETRIES, called_directly=False
+    )
+    try:
+        with pytest.raises(EndpointConnectionError):
+            worker.ingest_document_task.run(str(store_id), doc["id"])
+    finally:
+        worker.ingest_document_task.pop_request()
+
+    with store_session(store_id, "ro") as store:
+        row = store.get(Document, doc["id"])
+        assert row.status == DocumentStatus.failed
+        assert "Could not connect" in row.error
 
 
 def test_deleting_a_document_deletes_its_object(api, user, queued):

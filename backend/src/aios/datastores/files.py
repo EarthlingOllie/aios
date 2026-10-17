@@ -16,6 +16,7 @@ from typing import BinaryIO
 from urllib.parse import quote
 
 import boto3
+import botocore.exceptions
 from botocore.client import BaseClient
 from botocore.config import Config
 
@@ -100,7 +101,35 @@ def put(key: str, file: BinaryIO, content_type: str | None) -> Stored:
     return Stored(size_bytes=measured.size, sha256=measured.sha256.hexdigest())
 
 
+class FilesUnavailable(RuntimeError):
+    """S3 couldn't be reached, or asked to slow down, or failed on its side (after the client's
+    own retries): worth trying again later. The original error is the cause."""
+
+
+# S3 (or KMS, behind it) refusing for now rather than for good.
+_TRANSIENT_CODES = {"SlowDown", "RequestTimeout", "Throttling", "ThrottlingException"}
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, (botocore.exceptions.ConnectionError, botocore.exceptions.HTTPClientError)):
+        return True
+    if isinstance(exc, botocore.exceptions.ClientError):
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+        return status >= 500 or exc.response.get("Error", {}).get("Code") in _TRANSIENT_CODES
+    return False
+
+
 def read(key: str) -> bytes:
+    """The object's bytes. Raises `FilesUnavailable` when S3 can't answer for now."""
+    try:
+        return _read(key)
+    except Exception as exc:
+        if _is_transient(exc):
+            raise FilesUnavailable(f"Couldn't read {key} from S3 for now") from exc
+        raise
+
+
+def _read(key: str) -> bytes:
     return (
         client().get_object(Bucket=get_settings().data_store_files_bucket, Key=key)["Body"].read()
     )
