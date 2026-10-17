@@ -16,12 +16,13 @@ from sqlalchemy import func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
-from test_workflows import agent_node, make_agent, make_workflow
+from test_workflows import agent_node, make_agent, make_workflow, workflow_body
 
 from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.models import DataStore, WorkflowRun
+from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
 
 
@@ -257,3 +258,65 @@ def test_a_run_resumes_with_only_what_was_left_of_its_time_limit(
 
     out = read(api, workflow, waiting["id"])
     assert (out["status"], out["error"]) == ("failed", workflows.time_limit_error())
+
+
+def decide(api, queued: list, flow: Flow, decision: str = "approve") -> None:
+    """Decide the one pending request, and run what that queues."""
+    [request] = [r for r in api.get("/api/schema-changes").json() if r["status"] == "pending"]
+    r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+    assert r.status_code == 200, r.text
+    with use_model(model(flow)):
+        run_queued(queued)
+
+
+def test_editing_the_agent_while_the_run_waits_doesnt_change_what_it_resumes_on(
+    api, builder, store, queued
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    api.put(f"/api/agents/{builder['id']}", json=agent_body(builder, base_prompt="builder-v2"))
+
+    decide(api, queued, flow)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert steps(out)["build"]["output"] == "builder:built(applied)"
+
+
+def test_deleting_the_agent_while_the_run_waits_fails_its_step_on_resume(
+    api, builder, store, queued
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    # It can only be deleted once no workflow's current version uses it.
+    api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
+    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+
+    decide(api, queued, flow)
+
+    out = read(api, workflow, waiting["id"])
+    reason = "Agent Builder v2 can't run: it has been deleted"
+    assert (out["status"], out["error"]) == ("failed", f"build: {reason}")
+    build = steps(out)["build"]
+    assert (build["status"], build["error"]) == ("failed", reason)
+    assert "after" not in steps(out)
+
+
+def test_a_tool_that_left_the_library_fails_the_step_on_resume(
+    api, builder, store, queued, monkeypatch
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    monkeypatch.delitem(TOOL_LIBRARY, "describe_data")
+
+    decide(api, queued, flow)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "failed"
+    build = steps(out)["build"]
+    assert build["status"] == "failed"
+    assert build["error"].startswith("Agent Builder v2 can't run:")
+    assert "describe_data" in build["error"]
