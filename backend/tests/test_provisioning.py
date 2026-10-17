@@ -200,7 +200,8 @@ def test_a_stores_read_only_role_cant_write(store_with_a_table):
         assert conn.execute("DELETE FROM aios.marker").rowcount == 1
 
 
-# The platform's own record of the store's schema: only its migrations (as the owner) change it.
+# The platform's own record of the store's schema: only its migrations and schema changes (as
+# the owner) change it.
 BOOKKEEPING_WRITES = [
     "INSERT INTO aios.alembic_version VALUES ('x')",
     "UPDATE aios.alembic_version SET version_num = 'x'",
@@ -210,6 +211,12 @@ BOOKKEEPING_WRITES = [
     "UPDATE aios.schema_history SET summary = 'x'",
     "DELETE FROM aios.schema_history",
     "TRUNCATE aios.schema_history",
+    # Which `data` columns are embeddings of which (`write_data` fills them): schema changes
+    # mark them.
+    "INSERT INTO aios.embedding_columns VALUES ('t', 'e', 's')",
+    "UPDATE aios.embedding_columns SET source_column = 'x'",
+    "DELETE FROM aios.embedding_columns",
+    "TRUNCATE aios.embedding_columns",
 ]
 
 
@@ -218,6 +225,7 @@ def assert_cant_change_bookkeeping(store: DataStore, role: str) -> None:
         # But may read it.
         assert conn.execute("SELECT version_num FROM aios.alembic_version").fetchone()
         conn.execute("SELECT count(*) FROM aios.schema_history")
+        conn.execute("SELECT count(*) FROM aios.embedding_columns")
         for write in BOOKKEEPING_WRITES:
             with pytest.raises(errors.InsufficientPrivilege):
                 conn.execute(write)
