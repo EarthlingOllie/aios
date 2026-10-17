@@ -618,6 +618,8 @@ def _end_runs(
     ).all()
     if not ended:
         return
+    # Before the steps forget the requests they wait on.
+    close_requests(db, ended)
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
     db.execute(
@@ -633,22 +635,27 @@ def _end_runs(
             waiting_on_request_id=None,
         )
     )
-    close_requests(
-        db,
-        select(WorkflowRunStep.agent_run_id).where(
-            WorkflowRunStep.run_id.in_(ended), WorkflowRunStep.agent_run_id.is_not(None)
-        ),
-    )
 
 
-def close_requests(db: Session, agent_run_ids) -> None:
-    """Close out the schema change requests these agent runs (a workflow run's nodes) made and
-    haven't been given: their workflow run has ended or is being deleted, so nothing will give
-    them their outcomes. Pending ones are cancelled, so they can't be approved, and their
-    notifications cleared (`schema_changes.cancel`); the others count
-    as given, so the conversations don't wait on them (one being applied still is)."""
+def close_requests(db: Session, workflow_run_ids) -> None:
+    """Close out the schema change requests these workflow runs' agent nodes made and haven't
+    been given: the runs have ended or are being deleted, so nothing will give them their
+    outcomes. Pending ones are cancelled, so they can't be approved, and their notifications
+    cleared (`schema_changes.cancel`); the others count as given, so the conversations don't
+    wait on them (one being applied still is). Found by the steps' agent runs, or, for one
+    whose agent run went with its agent, by the request the step waits on."""
+    steps = select(WorkflowRunStep).where(WorkflowRunStep.run_id.in_(workflow_run_ids)).subquery()
     not_given = [
-        SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
+        or_(
+            SchemaChangeRequest.requested_by_run.in_(
+                select(steps.c.agent_run_id).where(steps.c.agent_run_id.is_not(None))
+            ),
+            SchemaChangeRequest.id.in_(
+                select(steps.c.waiting_on_request_id).where(
+                    steps.c.waiting_on_request_id.is_not(None)
+                )
+            ),
+        ),
         SchemaChangeRequest.resumed_at.is_(None),
     ]
     schema_changes.cancel(db, *not_given)

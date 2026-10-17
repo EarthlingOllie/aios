@@ -388,6 +388,23 @@ def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store,
     assert data_tables(store) == []
 
 
+def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
+    api, builder, store, queued
+):
+    """The node's agent run went with its agent, so only the step knows the request."""
+    workflow = chain(api, builder)
+    waiting = start(api, queued, workflow, Flow())
+    api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
+    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+
+    r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
+
+    assert r.status_code == 204, r.text
+    [request] = api.get("/api/schema-changes").json()
+    assert request["status"] == "cancelled"
+    assert api.get("/api/notifications").json()["unread"] == 0
+
+
 def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
     api, builder, store, queued
 ):
