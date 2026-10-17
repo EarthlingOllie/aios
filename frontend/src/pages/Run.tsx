@@ -4,12 +4,21 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
-import { ErrorBanner, formatDate, Placeholder, useLoad, type ListContext } from "@/components/crud";
+import { ErrorBanner, formatDate, Placeholder, useLoad, usePoll, type ListContext } from "@/components/crud";
 import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
+import { Notice } from "@/components/Notice";
+import { SchemaChangeCard } from "@/components/SchemaChanges";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, describeError, type ContentBlock, type ModelMessage, type Run } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type ContentBlock,
+  type ModelMessage,
+  type Run,
+  type SchemaChangeRequest,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Tab = "conversation" | "events";
@@ -23,6 +32,9 @@ export function RunPage() {
   const run = useLoad(useCallback(() => api.getRun(agentId, runId), [agentId, runId]));
   const [tab, setTab] = useState<Tab>("conversation");
   const [deleteError, setDeleteError] = useState<string>();
+  // While the run waits on a schema change request, read it again: to see the request
+  // decided, and the rest of the turn once the run carries on.
+  usePoll(!!run.data?.waiting, run.reload, 2000);
 
   if (run.error) return <Placeholder>{run.error}</Placeholder>;
   if (!run.data) return null;
@@ -90,6 +102,7 @@ export function RunPage() {
             run.reload();
             reloadList();
           }}
+          onDecided={() => run.reload()}
         />
       </div>
       {tab === "events" && (
@@ -101,7 +114,15 @@ export function RunPage() {
   );
 }
 
-function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
+function RunChat({
+  run,
+  onFinish,
+  onDecided,
+}: {
+  run: Run;
+  onFinish: () => void;
+  onDecided: () => void;
+}) {
   const [transport] = useState(
     () =>
       new DefaultChatTransport({
@@ -113,7 +134,7 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
         }),
       }),
   );
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, setMessages, sendMessage, status, stop, error } = useChat({
     id: `run-${run.id}`,
     messages: run.ui_messages,
     transport,
@@ -123,13 +144,23 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
 
+  // Each time a run that waited on a schema change request has carried on (on the server, not
+  // in this chat's stream), show the conversation as it is now: also when it carried on into
+  // another request, and so is waiting still.
+  const resumed = run.schema_change_requests.filter((r) => r.resumed_at).length;
+  const shownResumed = useRef(resumed);
+  useEffect(() => {
+    if (resumed > shownResumed.current) setMessages(run.ui_messages);
+    shownResumed.current = resumed;
+  }, [resumed, run.ui_messages, setMessages]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   function submit() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || run.waiting) return;
     sendMessage({ text });
     setInput("");
   }
@@ -144,15 +175,30 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
             </p>
           )}
           {messages.map((message) => (
-            <MessageView key={message.id} message={message} />
+            <MessageView
+              key={message.id}
+              message={message}
+              requests={run.schema_change_requests}
+              onDecided={onDecided}
+            />
           ))}
           {status === "submitted" && <p className="text-muted-foreground text-sm">Thinking…</p>}
           {error && <p className="text-destructive text-sm">Something went wrong: {error.message}</p>}
           <div ref={bottomRef} />
         </div>
       </div>
+      {run.waiting && !busy && (
+        <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+          <Notice label="Waiting" busy className="px-3 py-2">
+            {run.schema_change_requests.some((r) => r.status === "pending")
+              ? "The agent is waiting for you to approve or reject its schema change."
+              : "The agent will carry on in a moment."}
+          </Notice>
+        </div>
+      )}
       <ChatComposer
         id="run-input"
+        disabled={run.waiting}
         placeholder="Message this agent…"
         value={input}
         onChange={setInput}
@@ -164,7 +210,15 @@ function RunChat({ run, onFinish }: { run: Run; onFinish: () => void }) {
   );
 }
 
-function MessageView({ message }: { message: UIMessage }) {
+function MessageView({
+  message,
+  requests,
+  onDecided,
+}: {
+  message: UIMessage;
+  requests: SchemaChangeRequest[];
+  onDecided: () => void;
+}) {
   return (
     <div
       className={cn(
@@ -190,12 +244,17 @@ function MessageView({ message }: { message: UIMessage }) {
         if (part.type === "dynamic-tool" || part.type.startsWith("tool-")) {
           const tool = part as {
             type: string;
+            toolCallId?: string;
             toolName?: string;
             state?: string;
             input?: unknown;
             output?: unknown;
             errorText?: string;
           };
+          const request = requests.find((r) => r.tool_call_id && r.tool_call_id === tool.toolCallId);
+          if (request) {
+            return <SchemaChangeCard key={i} request={request} onDecided={onDecided} />;
+          }
           return (
             <ToolCall
               key={i}

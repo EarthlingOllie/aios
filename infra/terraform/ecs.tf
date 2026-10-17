@@ -99,15 +99,23 @@ resource "aws_iam_role_policy" "execution_provisioner_secrets" {
   policy = data.aws_iam_policy_document.read_provisioner_secrets.json
 }
 
-# Runtime role for the worker, web and migrate containers. It has no permissions: they make no
-# AWS calls (their secrets come in through the execution role).
+# Runtime role for the web, migrate and provisioning containers. It has no permissions: they
+# make no AWS calls (their secrets come in through the execution role).
 resource "aws_iam_role" "task" {
   name               = "${var.name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
+# Runtime role for the ingest worker. Its only permissions are for reading (and writing and
+# deleting) uploaded files (data_store_files.tf).
+resource "aws_iam_role" "worker" {
+  name               = "${var.name}-ecs-worker"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
 # Runtime role for the api and workflow-worker containers. Its only permissions are for starting
-# and stopping sandboxes (sandbox.tf), for the run_python tool. Agent runs execute in the API
+# and stopping sandboxes (sandbox.tf), for the run_python tool, and for uploaded files
+# (data_store_files.tf). Agent runs execute in the API
 # process, and a workflow's agent nodes in the workflow worker, so only those need them; the
 # ingest worker, which parses untrusted uploads, can't start or stop tasks. The sandbox and egress
 # proxy tasks have no task role at all.
@@ -126,6 +134,8 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # Uploaded files (data_store_files.tf).
+      DATA_STORE_FILES_BUCKET = aws_s3_bucket.data_store_files.bucket
       # run_python: one Fargate task per agent run (sandbox.tf).
       SANDBOX_BACKEND         = "fargate"
       SANDBOX_CLUSTER         = aws_ecs_cluster.main.name
@@ -244,7 +254,7 @@ resource "aws_ecs_task_definition" "worker" {
   cpu                      = var.worker.cpu
   memory                   = var.worker.memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = aws_iam_role.worker.arn
 
   runtime_platform {
     operating_system_family = "LINUX"

@@ -46,6 +46,18 @@ def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_NEW_STORES, None)
 
 
+def can_approve(user_id: int, store: DataStore) -> bool:
+    """Whether the user may decide the store's schema change requests: a permission, not who
+    the store is, so teams can give it to more than the owner. Those in `approvers`."""
+    return user_id in approvers(store)
+
+
+def approvers(store: DataStore) -> list[int]:
+    """The users who may decide the store's schema change requests (`can_approve`), whom a new
+    one notifies. Today, only the owner."""
+    return [store.owner_user_id]
+
+
 def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
     """The id of the user's data store, creating it if they don't have one yet.
 
@@ -86,4 +98,18 @@ def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
             store_id = db.scalar(select(DataStore.id).where(DataStore.owner_user_id == user_id))
         else:
             db.info.setdefault(_NEW_STORES, []).append(store_id)
+    return store_id
+
+
+def data_store_for_request(user_id: int, db: Session) -> uuid.UUID:
+    """The signed-in user's data store, for an endpoint that reaches data only through it.
+
+    Resolved on `db`, the request's session (which loaded the user), which is then committed
+    (queuing a new store's provisioning) and closed, returning its connection to the pool before
+    the store is opened. Held while a store session waits for a connection, enough requests at
+    once would exhaust the pool waiting on each other. Blocking: call it from the threadpool in
+    async code."""
+    store_id = data_store_for(user_id, db)
+    db.commit()
+    db.close()
     return store_id
