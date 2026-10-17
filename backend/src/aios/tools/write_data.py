@@ -576,12 +576,17 @@ async def _embed(texts: list[str]) -> Embedded | dict:
     return Embedded(texts, vectors)
 
 
+def _refusal(data_store_id: uuid.UUID) -> str | None:
+    with store_session(data_store_id, "rw") as session:
+        return quota.write_refusal(session)
+
+
 async def _write(data_store_id: uuid.UUID, call: Call) -> dict:
-    # A store at its database cap takes no more rows, nor changes to them; deletes go ahead.
+    # A store at its storage cap takes no more rows, nor changes to them; deletes go ahead.
     if call.operation != "delete":
-        usage = await in_thread(data_store_id, quota.usage)
-        if usage.db_full:
-            return {"error": quota.db_full(usage)}
+        refusal = await in_thread(data_store_id, _refusal)
+        if refusal:
+            return {"error": refusal}
     result = await in_thread(data_store_id, _apply, call, None)
     if not isinstance(result, NeedsEmbedding):
         return result

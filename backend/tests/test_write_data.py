@@ -8,13 +8,13 @@ import math
 
 import psycopg
 import pytest
+from conftest import add_document
 from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
 from test_provisioning import login_url
 
-from aios import worker
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import data_store_for, store_not_ready
 from aios.datastores.connections import dispose_engines
@@ -806,9 +806,9 @@ def test_arguments_of_the_wrong_shape_are_refused_by_the_tools_schema(api, store
 def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and_reads(
     api, store, agent, monkeypatch
 ):
+    """Checked as the call comes in, not against the last measurement."""
     # Any store's database is bigger than this.
     monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 1024 * 1024)
-    worker.measure_data_store_usage_task.apply().get()
 
     inserted, upserted, updated, deleted, queried = run_tools(
         api,
@@ -828,3 +828,25 @@ def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and
     assert deleted["row_count"] == 1
     assert queried["rows"] == [["pike"]]
     assert fish(store) == [("pike", "4.2", None)]
+
+
+def test_a_store_at_its_file_cap_refuses_inserts_and_updates_too(
+    api, store, agent, files_bucket, monkeypatch
+):
+    """Either cap is the store's: past it, writes stop."""
+    monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", 100)
+    add_document(store.id, b"x" * 100)
+
+    inserted, deleted = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+        call(table="fish", operation="delete", where={"name": "perch"}),
+    )
+
+    assert inserted == {
+        "error": "The user's data store is full: its documents use 100 B of the 100 B allowed,"
+        " so rows can't be inserted or updated. Reading and deleting rows still work. Tell the"
+        " user: deleting documents on the Data page makes room."
+    }
+    assert deleted["row_count"] == 1

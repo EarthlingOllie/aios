@@ -1,10 +1,13 @@
 """Each data store's storage cap: its database's size (`pg_database_size`) and its documents'
 files' bytes, against `data_store_db_quota_bytes` and `data_store_files_quota_bytes`.
 
-`measure_all`, on a schedule (`aios.worker`), records what each ready store uses on its
-`data_stores` row; the checks read that record, so a store is over its cap from the first
-measurement past it until one back under it (its owner deleted something). Over either cap,
-uploads and `write_data`'s inserts and updates are refused; reads, searches and deletes carry on.
+Over either cap, uploads and `write_data`'s inserts and updates are refused; reads, searches and
+deletes carry on. The checks measure the store as the write comes in (`upload_refusal`,
+`write_refusal`), so a store not yet measured, or filled since, is held to its cap all the same.
+
+What each store uses is also recorded on its `data_stores` row, for the Data page: both sizes by
+`measure_all`, on a schedule (`aios.worker`), and the documents' bytes again after each upload
+and delete (`record_files`), so room made shows straight away.
 """
 
 import logging
@@ -14,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import func, select, text, update
+from sqlalchemy.orm import Session
 
 from aios.config import get_settings
 from aios.datastores.connections import dispose_engine, store_session
@@ -22,30 +26,20 @@ from aios.models import DataStore, DataStoreStatus
 
 log = logging.getLogger(__name__)
 
-# One query, as the store's read-only role (which may connect to its own database).
-_MEASURE = text(
-    "SELECT pg_database_size(current_database()),"
-    " (SELECT coalesce(sum(size_bytes), 0) FROM aios.documents)"
-)
+# Either login role may ask (each may connect to its store's database).
+_DB_BYTES = text("SELECT pg_database_size(current_database())")
+_FILES_BYTES = text("SELECT coalesce(sum(size_bytes), 0) FROM aios.documents")
 
 
 @dataclass(frozen=True)
 class Usage:
-    """What a store uses, as last measured (None until it's first measured), and its caps."""
+    """What a store uses, as last recorded (None until it's first measured), and its caps."""
 
     db_bytes: int | None
     db_quota_bytes: int
     files_bytes: int | None
     files_quota_bytes: int
     measured_at: datetime | None
-
-    @property
-    def db_full(self) -> bool:
-        return self.db_bytes is not None and self.db_bytes >= self.db_quota_bytes
-
-    @property
-    def files_full(self) -> bool:
-        return self.files_bytes is not None and self.files_bytes >= self.files_quota_bytes
 
 
 _UNITS = ("B", "KB", "MB", "GB", "TB")
@@ -66,35 +60,81 @@ def format_bytes(n: int) -> str:
     return f"{value:.1f} {_UNITS[unit]}" if value < 9.95 else f"{whole} {_UNITS[unit]}"
 
 
-def files_full(usage: Usage) -> str:
-    """Why an upload is refused, for the user."""
-    return (
-        f"Your data store is full: its documents use {format_bytes(usage.files_bytes or 0)} of"
-        f" the {format_bytes(usage.files_quota_bytes)} allowed. Delete some to upload more."
-    )
+def _of(used: int, quota: int) -> str:
+    return f"{format_bytes(used)} of the {format_bytes(quota)} allowed"
 
 
-def db_full(usage: Usage) -> str:
-    """Why `write_data` refuses an insert or update, for the model (which tells the user)."""
-    return (
-        f"The user's data store is full: its database uses {format_bytes(usage.db_bytes or 0)}"
-        f" of the {format_bytes(usage.db_quota_bytes)} allowed, so rows can't be inserted or"
-        " updated. Reading and deleting rows still work. Tell the user: the Data page shows"
-        " their usage."
+def upload_refusal(store: Session, filename: str, size: int) -> str | None:
+    """Why an upload of `size` bytes is refused, for the user; None if there's room. `store` is
+    a session on the store."""
+    settings = get_settings()
+    db_quota, files_quota = (
+        settings.data_store_db_quota_bytes,
+        settings.data_store_files_quota_bytes,
     )
+    # Ingesting it writes its chunks to the database.
+    db_bytes = store.scalar(_DB_BYTES)
+    if db_bytes >= db_quota:
+        return (
+            f"Your data store is full: its database uses {_of(db_bytes, db_quota)}, so documents"
+            " can't be uploaded."
+        )
+    files_bytes = store.scalar(_FILES_BYTES)
+    if files_bytes >= files_quota:
+        return (
+            f"Your data store is full: its documents use {_of(files_bytes, files_quota)}."
+            " Delete some to make room."
+        )
+    if files_bytes + size > files_quota:
+        return (
+            f"There's no room for {filename}: your documents use {_of(files_bytes, files_quota)},"
+            f" and it's {format_bytes(size)}. Delete some to make room."
+        )
+    return None
+
+
+def write_refusal(store: Session) -> str | None:
+    """Why `write_data` refuses an insert or update, for the model (which tells the user); None
+    if there's room. `store` is a session on the store."""
+    settings = get_settings()
+    db_quota, files_quota = (
+        settings.data_store_db_quota_bytes,
+        settings.data_store_files_quota_bytes,
+    )
+    db_bytes = store.scalar(_DB_BYTES)
+    if db_bytes >= db_quota:
+        return (
+            f"The user's data store is full: its database uses {_of(db_bytes, db_quota)}, so rows"
+            " can't be inserted or updated. Reading and deleting rows still work. Tell the user:"
+            " the Data page shows their usage."
+        )
+    files_bytes = store.scalar(_FILES_BYTES)
+    if files_bytes >= files_quota:
+        return (
+            f"The user's data store is full: its documents use {_of(files_bytes, files_quota)},"
+            " so rows can't be inserted or updated. Reading and deleting rows still work. Tell"
+            " the user: deleting documents on the Data page makes room."
+        )
+    return None
+
+
+def _record(data_store_id: uuid.UUID, **values) -> None:
+    with SessionLocal() as db:
+        db.execute(update(DataStore).where(DataStore.id == data_store_id).values(**values))
+        db.commit()
+
+
+def record_files(data_store_id: uuid.UUID, store: Session) -> None:
+    """Record the store's documents' bytes now, after an upload or delete. `store` is a session
+    on it."""
+    _record(data_store_id, files_bytes=store.scalar(_FILES_BYTES))
 
 
 def measure(data_store_id: uuid.UUID) -> None:
     """Measure what the store uses now, and record it on its row."""
     with store_session(data_store_id, "ro") as store:
-        db_bytes, files_bytes = store.execute(_MEASURE).one()
-    with SessionLocal() as db:
-        db.execute(
-            update(DataStore)
-            .where(DataStore.id == data_store_id)
-            .values(db_bytes=db_bytes, files_bytes=files_bytes, usage_measured_at=func.now())
-        )
-        db.commit()
+        db_bytes, files_bytes = store.scalar(_DB_BYTES), store.scalar(_FILES_BYTES)
+    _record(data_store_id, db_bytes=db_bytes, files_bytes=files_bytes, usage_measured_at=func.now())
 
 
 def measure_all() -> None:
@@ -115,7 +155,7 @@ def measure_all() -> None:
 
 
 def usage(data_store_id: uuid.UUID) -> Usage:
-    """The store's usage, as last measured, against the configured caps."""
+    """The store's usage, as last recorded, against the configured caps."""
     with SessionLocal() as db:
         row = db.execute(
             select(DataStore.db_bytes, DataStore.files_bytes, DataStore.usage_measured_at).where(

@@ -334,14 +334,15 @@ ingest task retries, and the search and data tools tell the model.
 
 Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
 1 GiB) for its database, as `pg_database_size` measures it, and `DATA_STORE_FILES_QUOTA_BYTES`
-(default 5 GiB) for its documents' files, the sum of their `size_bytes`. The provisioning
-worker's beat measures every ready store every five minutes, as its `_ro` role, and records both
-on its `data_stores` row. The checks read that record: at the file cap an upload answers 507,
-and at the database cap `write_data` refuses inserts, upserts and updates, telling the model;
-reads, searches, downloads and deletes carry on. Deleting documents brings the files under the
-cap at the next measurement; deleted rows only free space once vacuum gives it back to the
-system, so a store at its database cap may stay there. The Data page's Overview shows both
-against their caps, warning from 80%.
+(default 5 GiB) for its documents' files, the sum of their `size_bytes`. Over either, uploads
+answer 507 (as does an upload that wouldn't fit) and `write_data` refuses inserts, upserts and
+updates, telling the model; reads, searches, downloads and deletes carry on. The checks measure
+the store as the write comes in. What each store uses is also recorded on its `data_stores` row
+for the Data page's Overview, which shows both against their caps, warning from 80%: the
+provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
+and uploads and deletes record the documents' bytes straight away. Deleting documents makes room
+at once; deleted rows only free space once vacuum gives it back to the system, so a store at its
+database cap may stay there.
 
 ### Dependency policy
 

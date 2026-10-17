@@ -92,27 +92,68 @@ def test_the_schedule_runs_every_few_minutes_on_the_provisioning_worker():
 def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
     api, user, queued, monkeypatch
 ):
+    """Checked as the upload comes in, not against the last measurement: a store not yet
+    measured, or filled since, is held to its cap all the same."""
     monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", len(PDF))
     store_id = data_store_for(user.id)
     first = upload(api).json()
-    # Under the cap until it's measured at it.
-    worker.measure_data_store_usage_task.apply().get()
 
     r = upload(api, name="more.pdf")
 
     assert r.status_code == 507
     assert r.json()["detail"] == (
         "Your data store is full: its documents use 47 B of the 47 B allowed. "
-        "Delete some to upload more."
+        "Delete some to make room."
     )
     assert stored_keys(store_id) == [f"stores/{store_id}/documents/{first['id']}"]
-    # Reading and deleting carry on.
+    # Reading and deleting carry on, and a delete makes room straight away.
     assert [d["id"] for d in api.get("/api/documents").json()] == [first["id"]]
     assert api.delete(f"/api/documents/{first['id']}").status_code == 204
-
-    worker.measure_data_store_usage_task.apply().get()
-
     assert upload(api, name="more.pdf").status_code == 201
+
+
+def test_an_upload_that_would_take_the_documents_past_their_cap_is_refused(
+    api, user, queued, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", 70)
+    assert upload(api).status_code == 201
+
+    r = upload(api, name="more.pdf")
+
+    assert r.status_code == 507
+    assert r.json()["detail"] == (
+        "There's no room for more.pdf: your documents use 47 B of the 70 B allowed, and it's"
+        " 47 B. Delete some to make room."
+    )
+    assert upload(api, name="small.txt", data=b"x" * 23).status_code == 201
+
+
+def test_a_store_at_its_database_cap_refuses_uploads(api, user, queued, monkeypatch):
+    """Ingesting a document writes its chunks to the store's database."""
+    # Any store's database is bigger than this.
+    monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 1024 * 1024)
+    store_id = data_store_for(user.id)
+
+    r = upload(api)
+
+    assert r.status_code == 507
+    assert r.json()["detail"].startswith("Your data store is full: its database uses ")
+    assert r.json()["detail"].endswith(" of the 1.0 MB allowed, so documents can't be uploaded.")
+    assert stored_keys(store_id) == []
+    assert queued == []
+
+
+def test_uploads_and_deletes_record_the_documents_bytes_straight_away(
+    api, user, queued, monkeypatch
+):
+    """So the Data page sees room made (or taken) without waiting for the schedule."""
+    first = upload(api).json()
+    upload(api, name="more.pdf", data=b"x" * 3)
+    assert api.get("/api/data-store").json()["usage"]["files_bytes"] == 50
+
+    api.delete(f"/api/documents/{first['id']}")
+
+    assert api.get("/api/data-store").json()["usage"]["files_bytes"] == 3
 
 
 @pytest.mark.parametrize(

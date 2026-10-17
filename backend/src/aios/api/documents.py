@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime
 from typing import Annotated
 
@@ -7,6 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
@@ -126,9 +128,9 @@ def upload_document(file: UploadFile, user: CurrentUser):
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     store_id = data_store_for(user.id)
     with store_session(store_id, "rw") as db:
-        usage = quota.usage(store_id)
-        if usage.files_full:
-            raise HTTPException(status.HTTP_507_INSUFFICIENT_STORAGE, quota.files_full(usage))
+        refusal = quota.upload_refusal(db, file.filename or "upload", file.size)
+        if refusal:
+            raise HTTPException(status.HTTP_507_INSUFFICIENT_STORAGE, refusal)
         # The document's id first, since its file's key holds it. Committed, so no transaction
         # is left open through the upload.
         doc_id = db.scalar(select(func.nextval(DOCUMENT_IDS)))
@@ -177,6 +179,7 @@ def upload_document(file: UploadFile, user: CurrentUser):
             if not row_committed:
                 _delete_unkept_file(key)
             raise
+        _record_files(store_id, db)
     return DocumentOut(
         id=doc.id,
         filename=doc.filename,
@@ -186,6 +189,15 @@ def upload_document(file: UploadFile, user: CurrentUser):
         size_bytes=doc.size_bytes,
         created_at=doc.created_at,
     )
+
+
+def _record_files(store_id: uuid.UUID, db: Session) -> None:
+    """Records the store's documents' bytes after an upload or delete, for the Data page. Should
+    that fail, it's logged: the upload or delete went through, and the schedule records them."""
+    try:
+        quota.record_files(store_id, db)
+    except Exception:
+        logger.exception("Couldn't record data store %s's documents' bytes", store_id)
 
 
 def _delete_unkept_file(key: str) -> None:
@@ -213,7 +225,8 @@ def download_document(document_id: DbId, user: CurrentUser) -> RedirectResponse:
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: DbId, user: CurrentUser) -> None:
-    with store_session(data_store_for(user.id), "rw") as db:
+    store_id = data_store_for(user.id)
+    with store_session(store_id, "rw") as db:
         key = db.scalar(select(Document.s3_key).where(Document.id == document_id))
         if key is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -231,6 +244,7 @@ def delete_document(document_id: DbId, user: CurrentUser) -> None:
             ) from exc
         db.execute(delete(Document).where(Document.id == document_id))  # its chunks cascade
         db.commit()
+        _record_files(store_id, db)
 
 
 @router.get("/search", response_model=list[SearchHitOut])
