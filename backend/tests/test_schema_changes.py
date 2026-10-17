@@ -1,6 +1,8 @@
 """Schema change specs: what agents may ask for, checked against a store's schema, and the SQL
 they compile to (`aios.datastores.schema_changes`). Pure: no database."""
 
+from datetime import UTC, datetime
+
 import pytest
 
 from aios.datastores.schema_changes import (
@@ -12,6 +14,8 @@ from aios.datastores.schema_changes import (
     StoreSchema,
     check,
     compile_sql,
+    confirmation,
+    summarize,
 )
 
 
@@ -253,14 +257,14 @@ def test_columns_take_only_the_allowlisted_types_and_their_own_defaults(column):
         change({"op": "add_column", "table": "fish", "column": column})
 
 
-def test_a_spec_has_one_to_twenty_operations_of_the_three_kinds():
+def test_a_spec_has_one_to_twenty_operations_of_the_known_kinds():
     add = {"op": "add_column", "table": "fish", "column": {"name": "x", "type": "text"}}
     with pytest.raises(ValueError):
         change()
     with pytest.raises(ValueError):
         change(*[add] * 21)
     with pytest.raises(ValueError):
-        change({"op": "drop_table", "table": "fish"})
+        change({"op": "truncate_table", "table": "fish"})
 
 
 def table(name: str, *columns: dict, **more) -> dict:
@@ -409,3 +413,219 @@ def test_a_not_null_column_added_to_an_existing_table_needs_a_default():
         ),
         FISH,
     )
+
+
+# --- Drops --------------------------------------------------------------------------------------
+
+AT = datetime(2026, 10, 17, 12, 30, 5, tzinfo=UTC)
+
+# `data.fish`, its `name` NOT NULL, with an embedding of `notes_text`; `data.eels`, with a
+# dropped column.
+POND = StoreSchema(
+    tables={
+        "fish": {
+            "id": "bigint",
+            "name": "text",
+            "notes_text": "text",
+            "notes_embedding": "vector(1024)",
+        },
+        "eels": {"id": "bigint", "length": "numeric"},
+    },
+    relations={"fish", "fish_pkey", "fish_id_seq", "eels", "eels_pkey"},
+    primary_keys={"fish": ["id"], "eels": ["id"]},
+    not_null={"fish": {"id", "name"}, "eels": {"id"}},
+    embeddings={("fish", "notes_embedding"): "notes_text"},
+    dropped_columns={"eels": {"_dropped_20261001000000_colour"}},
+)
+
+
+def test_drop_table_compiles_to_a_rename_recorded_as_dropped():
+    spec = check(change({"op": "drop_table", "table": "fish"}), POND, now=AT)
+
+    assert spec.ops[0].dropped_as == "_dropped_20261017123005_fish"
+    assert compile_sql(spec) == (
+        'ALTER TABLE "data"."fish" RENAME TO "_dropped_20261017123005_fish";\n'
+        'UPDATE "aios"."embedding_columns" SET table_name = \'_dropped_20261017123005_fish\''
+        " WHERE table_name = 'fish';\n"
+        'INSERT INTO "aios"."dropped_objects" (table_name, column_name, dropped_name, not_null)'
+        " VALUES ('fish', NULL, '_dropped_20261017123005_fish', FALSE);"
+    )
+    assert summarize(spec) == "Drop table data.fish"
+
+
+def test_a_dropped_tables_dropped_columns_follow_it():
+    sql = compile_sql(check(change({"op": "drop_table", "table": "eels"}), POND, now=AT))
+
+    assert sql.splitlines()[1] == (
+        'UPDATE "aios"."dropped_objects" SET table_name = \'_dropped_20261017123005_eels\''
+        " WHERE table_name = 'eels' AND column_name IS NOT NULL;"
+    )
+
+
+def test_drop_column_compiles_to_a_rename_that_lets_new_rows_leave_it_empty():
+    spec = check(change({"op": "drop_column", "table": "fish", "column": "name"}), POND, now=AT)
+
+    assert compile_sql(spec) == (
+        'ALTER TABLE "data"."fish" RENAME COLUMN "name" TO "_dropped_20261017123005_name";\n'
+        'ALTER TABLE "data"."fish" ALTER COLUMN "_dropped_20261017123005_name" DROP NOT NULL;\n'
+        'INSERT INTO "aios"."dropped_objects" (table_name, column_name, dropped_name, not_null)'
+        " VALUES ('fish', 'name', '_dropped_20261017123005_name', TRUE);"
+    )
+    assert summarize(spec) == "Drop column name from data.fish"
+
+
+def test_a_dropped_embedding_column_keeps_its_marker_under_its_new_name():
+    sql = compile_sql(
+        check(
+            change({"op": "drop_column", "table": "fish", "column": "notes_embedding"}),
+            POND,
+            now=AT,
+        )
+    )
+
+    assert (
+        'UPDATE "aios"."embedding_columns" SET column_name = '
+        "'_dropped_20261017123005_notes_embedding'"
+        " WHERE table_name = 'fish' AND column_name = 'notes_embedding';"
+    ) in sql.splitlines()
+
+
+def test_a_dropped_name_fits_postgres_63_characters():
+    long = "f" * 63
+    schema = StoreSchema(tables={long: {"id": "bigint"}}, relations={long})
+
+    [op] = check(change({"op": "drop_table", "table": long}), schema, now=AT).ops
+
+    assert op.dropped_as == "_dropped_20261017123005_" + "f" * 39
+
+
+@pytest.mark.parametrize(
+    ("op", "says"),
+    [
+        ({"op": "drop_table", "table": "pike"}, "no table `data.pike`"),
+        ({"op": "drop_column", "table": "pike", "column": "x"}, "no table `data.pike`"),
+        ({"op": "drop_column", "table": "fish", "column": "gills"}, "no column `gills`"),
+        ({"op": "drop_column", "table": "fish", "column": "id"}, "primary key"),
+        (
+            {"op": "drop_column", "table": "fish", "column": "notes_text"},
+            "`notes_embedding` is its embedding",
+        ),
+        # Already dropped: it's not there to drop.
+        (
+            {"op": "drop_column", "table": "eels", "column": "_dropped_20261001000000_colour"},
+            "isn't a valid name",
+        ),
+    ],
+)
+def test_a_drop_the_stores_schema_doesnt_take_is_invalid(op, says):
+    with pytest.raises(ValueError) as exc:  # `Invalid` is one
+        check(change(op), POND, now=AT)
+    assert says in str(exc.value)
+
+
+def test_each_operation_sees_the_drops_before_it():
+    drop_fish = {"op": "drop_table", "table": "fish"}
+
+    with pytest.raises(Invalid, match="Operation 2.*no table `data.fish`"):
+        check(
+            change(drop_fish, {"op": "add_column", "table": "fish", "column": TEXT_X}), POND, now=AT
+        )
+    # Its name is free again, and so is a dropped column's.
+    check(change(drop_fish, table("fish", TEXT_X)), POND, now=AT)
+    check(
+        change(
+            {"op": "drop_column", "table": "eels", "column": "length"},
+            {"op": "add_column", "table": "eels", "column": {"name": "length", "type": "text"}},
+        ),
+        POND,
+        now=AT,
+    )
+    # An embedding dropped first lets its text column go too.
+    check(
+        change(
+            {"op": "drop_column", "table": "fish", "column": "notes_embedding"},
+            {"op": "drop_column", "table": "fish", "column": "notes_text"},
+        ),
+        POND,
+        now=AT,
+    )
+
+
+def test_a_name_dropped_twice_in_a_second_gets_a_dropped_name_of_its_own_each_time():
+    schema = StoreSchema(
+        tables={"fish": {"id": "bigint", "x": "text"}},
+        relations={"fish", "_dropped_20261017123005_fish"},
+        dropped_columns={"fish": {"_dropped_20261017123005_x"}},
+    )
+
+    spec = check(
+        change(
+            {"op": "drop_column", "table": "fish", "column": "x"},
+            {"op": "drop_table", "table": "fish"},
+        ),
+        schema,
+        now=AT,
+    )
+
+    assert [op.dropped_as for op in spec.ops] == [
+        "_dropped_20261017123006_x",
+        "_dropped_20261017123006_fish",
+    ]
+
+
+def test_the_model_cant_pick_the_dropped_name():
+    """It's the platform's: the time it was asked for, and the name, nothing else."""
+    for name in ("fish", "_dropped_x_fish", "_dropped_20261017123005_FISH"):
+        with pytest.raises(ValueError):
+            change({"op": "drop_table", "table": "fish", "dropped_as": name})
+    shown = SchemaChange.model_json_schema()["$defs"]
+    assert set(shown["DropTable"]["properties"]) == {"op", "table"}
+    assert set(shown["DropColumn"]["properties"]) == {"op", "table", "column"}
+
+
+def test_a_request_with_drops_is_confirmed_with_the_names_of_the_tables_it_drops_from():
+    assert confirmation(change(table("t", TEXT_X))) is None
+    assert confirmation(change({"op": "drop_table", "table": "fish"})) == "fish"
+    assert (
+        confirmation(
+            change(
+                {"op": "drop_column", "table": "fish", "column": "name"},
+                {"op": "drop_table", "table": "eels"},
+                {"op": "drop_column", "table": "fish", "column": "notes_text"},
+            )
+        )
+        == "fish, eels"
+    )
+
+
+def test_a_dropped_embedding_columns_marker_follows_its_table_when_that_is_dropped_too():
+    """Its marker is the table's still, under its new name: dropping the table moves it."""
+    spec = check(
+        change(
+            {"op": "drop_column", "table": "fish", "column": "notes_embedding"},
+            {"op": "drop_table", "table": "fish"},
+        ),
+        POND,
+        now=AT,
+    )
+
+    assert spec.ops[1].has_embeddings
+    already_dropped = StoreSchema(
+        tables={"fish": {"id": "bigint", "notes_text": "text"}},
+        relations={"fish"},
+        embeddings={("fish", "_dropped_20261001000000_notes_embedding"): "notes_text"},
+        dropped_columns={"fish": {"_dropped_20261001000000_notes_embedding"}},
+    )
+    [op] = check(change({"op": "drop_table", "table": "fish"}), already_dropped, now=AT).ops
+    assert op.has_embeddings
+
+
+def test_a_text_column_whose_embedding_is_dropped_already_can_be_dropped():
+    schema = StoreSchema(
+        tables={"fish": {"id": "bigint", "notes_text": "text"}},
+        relations={"fish"},
+        embeddings={("fish", "_dropped_20261001000000_notes_embedding"): "notes_text"},
+        dropped_columns={"fish": {"_dropped_20261001000000_notes_embedding"}},
+    )
+
+    check(change({"op": "drop_column", "table": "fish", "column": "notes_text"}), schema, now=AT)

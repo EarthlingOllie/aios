@@ -4,7 +4,8 @@ Both read the store as its read-only role (`ro`), on the store's own database, s
 they can see is that store: the role may connect to no other database, and Postgres has no
 cross-database queries (nor `dblink` or `postgres_fdw`, which stores don't get).
 
-`query_data` runs SQL the model wrote, so on top of the role's privileges (`SELECT` only):
+`query_data` runs SQL the model wrote, so on top of the role's privileges (`SELECT` only), it
+reads through `aios.datastores.reads` (as the Data page's Tables do):
 
 - It runs inside a `READ ONLY` transaction, which is always rolled back, under the role's
   statement timeout (`DATA_STORE_STATEMENT_TIMEOUT`).
@@ -23,10 +24,8 @@ run just gets an error. Revoking those functions would take a superuser, which R
 
 import json
 import logging
-import math
 import uuid
 from collections.abc import Awaitable, Callable
-from decimal import Decimal
 from typing import Annotated, Any
 from weakref import WeakValueDictionary
 
@@ -34,9 +33,6 @@ import psycopg
 from anyio import CapacityLimiter, to_thread
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
-from psycopg import adapt, pq
-from psycopg.types.json import set_json_loads
-from psycopg.types.string import TextLoader
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -54,6 +50,8 @@ from aios.datastores import (
     store_upgrading,
 )
 from aios.datastores.connections import MAX_CONNECTIONS
+from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
+from aios.datastores.reads import read_capped, read_only, statement_columns
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -65,6 +63,13 @@ DATA_NOT_INSTRUCTIONS = (
 )
 
 UNREACHABLE = "The user's data store couldn't be reached just now. Try again in a moment."
+
+# What a query refused a privilege is told: it read the platform's bookkeeping, or something the
+# user dropped, or (most likely) used `SELECT *` on a table with dropped columns.
+NOT_READABLE = (
+    "Tables and columns the user dropped can't be read, and nor can a whole table with dropped"
+    " columns: name the columns you want instead of `*` (`describe_data` lists them)."
+)
 
 # The worker threads the tools may hold at once, in this process. A call holds one for as long
 # as its query runs (up to the statement timeout), and a model can make many calls at once:
@@ -84,9 +89,10 @@ def _store_limiter(store_id: uuid.UUID) -> CapacityLimiter:
 
 
 # The store's tables, with their columns: the owner's (`data`) first, then the platform's
-# (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions.
+# (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions, nor what
+# the owner dropped.
 DESCRIBE_SQL = text(
-    """
+    f"""
     SELECT n.nspname AS schema, c.relname AS name,
            obj_description(c.oid, 'pg_class') AS description,
            a.attname AS column, format_type(a.atttypid, a.atttypmod) AS type,
@@ -98,8 +104,11 @@ DESCRIBE_SQL = text(
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       -- A partitioned table is one table: its partitions are how it's stored.
       AND NOT c.relispartition
-      AND has_table_privilege(c.oid, 'SELECT')
-      AND NOT (n.nspname = 'aios' AND c.relname = 'alembic_version')
+      -- Only the columns it may read (all of a table's, unless it has dropped columns).
+      AND has_column_privilege(c.oid, a.attnum, 'SELECT')
+      -- Not dropped (`aios.datastores.dropped`): the role can't read those anyway.
+      AND {VISIBLE_TABLE} AND {VISIBLE_COLUMN}
+      AND NOT (n.nspname = 'aios' AND c.relname IN ('alembic_version', 'dropped_objects'))
     ORDER BY n.nspname <> 'data', n.nspname, c.relname, a.attnum
     """
 )
@@ -123,25 +132,6 @@ def embedding_markers(
     else:
         rows = pg.execute(MARKERS_SQL + " WHERE table_name = %s", (table,))
     return {(t, c): source for t, c, source in rows}
-
-
-# Types `query_data` reads as Postgres writes them, not as Python values: Python's can't hold
-# some legal ones (infinities, years past 9999 or BC, 24:00, huge intervals), and one such
-# value would fail the whole query. Also in arrays, whose loaders look these up.
-TEXT_TYPES = (
-    "date",
-    "time",
-    "timetz",
-    "timestamp",
-    "timestamptz",
-    "interval",
-    "daterange",
-    "tsrange",
-    "tstzrange",
-    "datemultirange",
-    "tsmultirange",
-    "tstzmultirange",
-)
 
 
 class DescribeDataConfig(BaseModel):
@@ -195,34 +185,6 @@ def _describe(data_store_id: uuid.UUID) -> dict:
     return result
 
 
-def _exact_float(literal: str) -> float | str:
-    """A number in a JSON value, as a float if one holds it exactly, else as its text."""
-    number = float(literal)
-    if math.isfinite(number) and Decimal(repr(number)) == Decimal(literal):
-        return number
-    return literal
-
-
-def _json_loads(data: str | bytes) -> Any:
-    return json.loads(data, parse_float=_exact_float)
-
-
-def jsonable(value: Any) -> Any:
-    """A value as the model is shown it: JSON, losing no precision (numerics as text)."""
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else str(value)
-    if isinstance(value, (list, tuple)):
-        return [jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): jsonable(v) for k, v in value.items()}
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return "\\x" + bytes(value).hex()
-    # Numerics, UUIDs, ranges, and types psycopg doesn't know (e.g. `vector`), as text.
-    return str(value)
-
-
 def pg_error(exc: psycopg.Error) -> str:
     message = exc.diag.message_primary or str(exc)
     # Cancelled by the timeout, rather than by someone else (an operator, say).
@@ -231,92 +193,17 @@ def pg_error(exc: psycopg.Error) -> str:
     return message if exc.diag.sqlstate is None else f"{message} (SQLSTATE {exc.diag.sqlstate})"
 
 
-def _columns(pg: psycopg.Connection, sql: str) -> tuple[list[str], list[int]]:
-    """The names and type OIDs of the columns the statement returns, from parsing it (as one
-    statement: the extended protocol takes no more) without running it."""
-    pgconn = pg.pgconn
-    for res in (pgconn.prepare(b"", sql.encode()), pgconn.describe_prepared(b"")):
-        if res.status != pq.ExecStatus.COMMAND_OK:
-            raise psycopg.errors.error_from_result(res, encoding=pg.info.encoding)
-    names = [(res.fname(i) or b"").decode(pg.info.encoding) for i in range(res.nfields)]
-    return names, [res.ftype(i) for i in range(res.nfields)]
-
-
-class _RowTooBig(Exception):
-    pass
-
-
-class _RowBudget:
-    """The bytes of text the row being loaded has taken so far."""
-
-    def __init__(self, max_bytes: int):
-        self.max_bytes = max_bytes
-        self.used = 0
-
-    def take(self, size: int) -> None:
-        self.used += size
-        if self.used > self.max_bytes:
-            raise _RowTooBig
-
-
-def _cap_values(cur: psycopg.Cursor, types: list[int], budget: _RowBudget) -> None:
-    """Makes `cur` refuse a row whose text is over the budget before loading the value that
-    takes it over, as it can't fit the result anyway: a row is unbounded (one huge value, or
-    many big ones), and loading a huge one (then dumping it as JSON) would take several times
-    its size in memory."""
-    for oid in set(types):
-        # As psycopg loads it otherwise; types it doesn't know (e.g. `vector`), as text.
-        loader = cur.adapters.get_loader(oid, pq.Format.TEXT) or cur.adapters.get_loader(
-            0, pq.Format.TEXT
-        )
-
-        class Capped(adapt.Loader):
-            def __init__(self, oid: int, context: Any = None, loader: Any = loader):
-                super().__init__(oid, context)
-                self._loader = loader(oid, context)
-
-            def load(self, data: Any) -> Any:
-                budget.take(len(data))
-                return self._loader.load(data)
-
-        cur.adapters.register_loader(oid, Capped)
-
-
 def _read(pg: psycopg.Connection, sql: str) -> dict:
     """Runs the statement in the open transaction, reading its rows up to the caps."""
     settings = get_settings()
     max_rows, max_bytes = settings.query_data_max_rows, settings.query_data_max_bytes
-    columns, types = _columns(pg, sql)
-    if not columns:
+    columns = statement_columns(pg, sql)
+    if not columns[0]:
         # So nothing that returns no rows (SET, COMMIT, DO, ...) is run at all.
         return {"error": "Only queries that return rows can be run (SELECT, WITH, VALUES)."}
-    cur = pg.cursor()
-    for name in TEXT_TYPES:
-        cur.adapters.register_loader(name, TextLoader)
-    set_json_loads(_json_loads, cur)
-    # After the text loaders, so the cap wraps them.
-    budget = _RowBudget(max_bytes)
-    _cap_values(cur, types, budget)
-    rows: list[list] = []
-    size, truncated = 0, False
-    # `stream` sends it with the extended protocol too, and reads it a row at a time; leaving
-    # early cancels the rest.
-    try:
-        for row in cur.stream(sql):
-            budget.used = 0  # this row is loaded: the next starts afresh
-            value = [jsonable(v) for v in row]
-            row_size = len(json.dumps(value)) + 1
-            if len(rows) == max_rows or size + row_size > max_bytes:
-                truncated = True
-                break
-            rows.append(value)
-            size += row_size
-    except _RowTooBig:
-        truncated = True
-        # libpq keeps the buffer it read the value into for as long as the connection is open,
-        # so it's closed rather than pooled (`_query` throws away one it can't roll back).
-        pg.close()
-    result: dict = {"columns": columns, "rows": rows, "row_count": len(rows)}
+    read = read_capped(pg, sql, max_rows=max_rows, max_bytes=max_bytes, columns=columns)
+    rows, truncated = read.rows, read.truncated
+    result: dict = {"columns": read.columns, "rows": rows, "row_count": len(rows)}
     result["truncated"] = truncated
     if truncated and not rows:
         # Only bytes can stop it at no rows: narrowing the query wouldn't help.
@@ -333,29 +220,22 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
 
 
 def _query(data_store_id: uuid.UUID, sql: str) -> dict:
-    with store_session(data_store_id, "ro") as session:
-        # Autocommit at the driver, so the transaction below is the only one, and is ours.
-        conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
-        # Read-only connections never prepare statements, which `DISCARD ALL` below would drop
-        # (see `datastores.connections`).
-        pg: psycopg.Connection = conn.connection.driver_connection
-        try:
-            pg.execute("BEGIN READ ONLY")
-            return _read(pg, sql)
-        except psycopg.Error as exc:
-            return {"error": pg_error(exc)}
-        except Exception as exc:
-            # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode: the
-            # model is told, so it can try again, rather than the turn failing.
-            log.exception("query_data failed outside Postgres")
-            return {"error": f"The query failed: {exc}"}
-        finally:
+    try:
+        with read_only(data_store_id) as pg:
             try:
-                pg.execute("ROLLBACK")
-                pg.execute("DISCARD ALL")
-            except psycopg.Error:
-                # Never pool a connection in a state we don't know.
-                conn.invalidate()
+                return _read(pg, sql)
+            except Exception as exc:
+                if isinstance(exc, psycopg.Error):
+                    raise
+                # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode:
+                # the model is told, so it can try again, rather than the turn failing.
+                log.exception("query_data failed outside Postgres")
+                return {"error": f"The query failed: {exc}"}
+    except psycopg.errors.InsufficientPrivilege as exc:
+        return {"error": f"{pg_error(exc)}. {NOT_READABLE}"}
+    except psycopg.Error as exc:
+        # The query's, or starting its transaction's (e.g. the session was ended).
+        return {"error": pg_error(exc)}
 
 
 async def in_thread(data_store_id: uuid.UUID, fn: Callable[..., Any], *args) -> Any:

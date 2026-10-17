@@ -370,7 +370,7 @@ class Claimed:
 
 def _claim(run_id: int) -> Claimed | None:
     """Mark a queued or waiting run running; return it. None if it's neither (deleted, ended,
-    or already running).
+    or already running), or if it's failed because it couldn't start.
 
     A waiting run is queued again once a request it waits on is decided (`enqueue_resume`);
     claimed, it adds the time it waited to `waited_seconds` and carries on from the steps it
@@ -420,9 +420,28 @@ def _claim(run_id: int) -> Claimed | None:
             )
             for step in db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id))
         }
-        # In the claim's transaction: if the store can't be resolved, the run isn't claimed.
-        data_store_id = data_store_for(workflow.owner_id, db)
-        db.commit()
+        # In the claim's transaction: if the store can't be resolved, the run isn't claimed...
+        try:
+            data_store_id = data_store_for(workflow.owner_id, db)
+        except Exception as exc:
+            db.rollback()
+            error = exc
+        else:
+            error = None
+            db.commit()
+    if error is not None:
+        # ...and it's failed now, with the real error: nothing else would ever run or end it. A
+        # waiting run (being resumed) is failed too, rather than left waiting for good.
+        log.exception("workflow run %s: couldn't resolve its data store", run_id, exc_info=error)
+        with SessionLocal() as db:
+            db.execute(
+                update(WorkflowRun)
+                .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.waiting)
+                .values(status=WorkflowRunStatus.running, waiting_since=None)
+            )
+            db.commit()
+        fail_run(run_id, error_text(error))
+        return None
     state = RunState(
         id=run_id,
         user_id=workflow.owner_id,

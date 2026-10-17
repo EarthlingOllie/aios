@@ -92,6 +92,11 @@ class DataStore(Base):
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # What it uses, as last measured (`aios.datastores.quota`, on a schedule): the data its
+    # tables hold and its documents' files' bytes. NULL until first measured.
+    db_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    files_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    usage_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # Agents and skills are split into an editable identity row (name, description) and a chain of

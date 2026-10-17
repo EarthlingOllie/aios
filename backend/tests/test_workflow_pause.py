@@ -551,7 +551,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     with SessionLocal() as db:
         orphan = SchemaChangeRequest(
             data_store_id=store.id,
-            ops=[],
+            ops=[{**CONTACTS, "name": "gone"}],
             sql="",
             summary="Create table data.gone",
             reason="Already answered",
@@ -630,3 +630,23 @@ def test_reading_a_waiting_run_doesnt_load_its_agents_tools_and_takes_fixed_quer
         assert not [q for q in statements if "agent_version_tools" in q], statements
         counts.append(len(statements))
     assert counts[0] == counts[1]
+
+
+def test_a_waiting_run_whose_store_cant_be_resolved_on_resume_fails(
+    api, builder, store, queued, monkeypatch
+):
+    """Rather than stay waiting for good: nothing else would resume or end it."""
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    assert waiting["status"] == "waiting"
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    decide(api, queued, flow, "reject")
+
+    out = read(api, workflow, waiting["id"])
+    assert (out["status"], out["error"]) == ("failed", "store unavailable")
+    assert out["finished_at"]
