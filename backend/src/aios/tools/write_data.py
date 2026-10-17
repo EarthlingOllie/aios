@@ -416,7 +416,9 @@ def _where(pg: psycopg.Connection, statement: Statement) -> sql.Composed:
     )
 
 
-def _count_sql(pg: psycopg.Connection, plan: Plan, statement: Statement, at_most: int):
+def _count_sql(
+    pg: psycopg.Connection, plan: Plan, statement: Statement, at_most: int
+) -> sql.Composed:
     """How many rows the update or delete matches, counting no further than `at_most`."""
     return sql.SQL("SELECT count(*) FROM (SELECT FROM {} WHERE {} LIMIT {}) AS matched").format(
         _ident(pg, SCHEMA, plan.table.name), _where(pg, statement), sql.Literal(at_most)
