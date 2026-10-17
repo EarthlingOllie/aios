@@ -35,7 +35,7 @@ export function SearchPage() {
 
   // The API refuses to search a data store that isn't ready, so wait for it (and say why) rather
   // than show that refusal as a failed search.
-  const storeStatus = useDataStoreStatus();
+  const { status: storeStatus } = useDataStoreStatus();
   const storeReady = storeStatus === "ready";
 
   // Bumped to run the search already shown again. A new loader makes useLoad drop the old hits

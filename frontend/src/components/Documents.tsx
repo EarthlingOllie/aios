@@ -21,7 +21,7 @@ export function Documents() {
   const inputRef = useRef<HTMLInputElement>(null);
   // The user's data store: until it's ready there's nothing to list, and uploads are refused.
   // Unknown (undefined) until the first answer, and uploads wait for it.
-  const storeStatus = useDataStoreStatus();
+  const { status: storeStatus } = useDataStoreStatus();
   const storeBlocked = storeStatus !== "ready";
 
   // Never rejects: a failed list (API restart, expired session) keeps the last list and the
