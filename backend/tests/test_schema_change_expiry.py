@@ -256,6 +256,45 @@ def test_an_expired_request_nothing_can_resume_isnt_queued_again_and_again(
     assert str(request["id"]) not in {str(i) for i in looked_at}
 
 
+def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+    queued,  # noqa: F811
+):
+    """The turn's request is recorded while the delete runs: the delete waits for it."""
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    deleted: list = []
+    with SessionLocal() as asking:
+        # As `schema_changes.propose` records it, not yet committed.
+        asking.add(
+            SchemaChangeRequest(
+                data_store_id=store.id,
+                ops=[CONTACTS],
+                sql="SELECT 1",
+                summary="Create table data.contacts",
+                reason="For people",
+                requested_by_run=run["id"],
+                tool_call_id="call_1",
+                base_revision=0,
+            )
+        )
+        asking.flush()
+        deleting = threading.Thread(
+            target=lambda: deleted.append(
+                api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code
+            )
+        )
+        deleting.start()
+        deleting.join(1)
+        asking.commit()
+    deleting.join(10)
+
+    assert deleted == [204]
+    [request] = api.get("/api/schema-changes").json()
+    assert request["status"] == "cancelled"
+
+
 def test_the_expiry_period_is_configuration(
     api,
     agent,  # noqa: F811

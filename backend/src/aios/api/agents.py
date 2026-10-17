@@ -752,7 +752,12 @@ def cancel_chat_requests(db: Session, run_ids: list[int]) -> None:
     pending requests their chats wait on, so none can be approved with nothing left to resume.
     A workflow node's run is left alone: its workflow run still waits on the request and resumes
     on its decision (`aios.workflows.workflow_run_waiting_on`), and ending or deleting that run
-    closes it out (`aios.workflows.close_requests`). In the caller's transaction."""
+    closes it out (`aios.workflows.close_requests`). In the caller's transaction.
+
+    The runs are locked first: a turn recording a request meanwhile holds a key share on its
+    run until it commits, so this waits and then sees it; one that starts later fails to
+    record it once the run has gone."""
+    db.execute(select(AgentRun.id).where(AgentRun.id.in_(run_ids)).with_for_update())
     schema_changes.cancel(
         db,
         SchemaChangeRequest.requested_by_run.in_(run_ids),
