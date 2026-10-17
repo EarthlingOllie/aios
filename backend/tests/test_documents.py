@@ -21,3 +21,18 @@ def test_upload_enqueue_failure_returns_503_and_leaves_no_row(client, db, user, 
     assert resp.status_code == 503
     with store_session(data_store_for(user.id), "ro") as store:
         assert store.scalars(select(Document)).all() == []
+
+
+def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *args: queued.append(args))
+
+    doc = api.post("/api/documents", files={"file": ("a.txt", b"hello", "text/plain")}).json()
+
+    assert queued == [(str(data_store_for(user.id)), doc["id"])]
+    listed = api.get("/api/documents").json()
+    assert [(d["id"], d["filename"], d["status"]) for d in listed] == [
+        (doc["id"], "a.txt", "pending")
+    ]
+    assert api.delete(f"/api/documents/{doc['id']}").status_code == 204
+    assert api.get("/api/documents").json() == []
