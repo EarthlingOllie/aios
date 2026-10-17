@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import type { Settings } from "@/lib/api";
-import { historyExportPending, historyExportStatus } from "@/lib/settings";
+import {
+  historyEmbeddingStatus,
+  historyExportPending,
+  historyExportStatus,
+} from "@/lib/settings";
 
 const at = (iso: string) => `<${iso}>`;
 const settings = (s: Partial<Settings>): Settings => ({
   export_run_history: false,
   history_ready: false,
   history_exported_at: null,
+  embed_run_history: false,
+  history_embedded_at: null,
   ...s,
 });
 
@@ -42,6 +48,38 @@ describe("historyExportStatus", () => {
   it("says the store has no exported history once it's deleted while off", () => {
     const s = settings({ history_ready: true });
     expect(historyExportStatus(s, at)).toBe("Off. Your data store has no exported history.");
+    expect(historyExportPending(s)).toBe(false);
+  });
+});
+
+describe("historyEmbeddingStatus", () => {
+  const exported = { export_run_history: true, history_ready: true };
+  const done = "2026-10-16T10:00:00Z";
+
+  it("says search is by keyword only while it's off, keeping what was embedded", () => {
+    const s = settings({ ...exported, history_exported_at: done });
+    expect(historyEmbeddingStatus(s, at)).toBe(
+      "Off. Agents can search your past runs by keyword. Messages already embedded are kept.",
+    );
+    expect(historyExportPending(s)).toBe(false);
+  });
+
+  it("says it's embedding until it has caught up, asking again meanwhile", () => {
+    const s = settings({ ...exported, history_exported_at: done, embed_run_history: true });
+    expect(historyEmbeddingStatus(s, at)).toBe("Embedding your exported messages…");
+    expect(historyExportPending(s)).toBe(true);
+  });
+
+  it("says when it last caught up", () => {
+    const s = settings({
+      ...exported,
+      history_exported_at: done,
+      embed_run_history: true,
+      history_embedded_at: "2026-10-16T11:00:00Z",
+    });
+    expect(historyEmbeddingStatus(s, at)).toBe(
+      "Agents can search your past runs by meaning and by keyword. Last embedded <2026-10-16T11:00:00Z>.",
+    );
     expect(historyExportPending(s)).toBe(false);
   });
 });

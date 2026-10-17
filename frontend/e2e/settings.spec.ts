@@ -60,6 +60,7 @@ test("with no runs to export, the page settles once the store is set up", async 
 test("switching it off keeps what was exported, which can then be deleted", async ({ page }) => {
   const api = await fakeApi(page);
   api.settings = {
+    ...api.settings,
     export_run_history: true,
     history_ready: true,
     history_exported_at: "2026-10-16T10:00:00Z",
@@ -85,6 +86,7 @@ test("switching it off keeps what was exported, which can then be deleted", asyn
 test("deleting exported history while it's on starts the export over", async ({ page }) => {
   const api = await fakeApi(page);
   api.settings = {
+    ...api.settings,
     export_run_history: true,
     history_ready: true,
     history_exported_at: "2026-10-16T10:00:00Z",
@@ -113,13 +115,51 @@ test("deleting exported history while it's on starts the export over", async ({ 
 
 test("deleting exported history asks first", async ({ page }) => {
   const api = await fakeApi(page);
-  api.settings = { export_run_history: false, history_ready: true, history_exported_at: null };
+  api.settings = { ...api.settings, history_ready: true };
   await page.goto("/settings");
 
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Delete exported history" }).click();
   await expect(page.getByText("Exported history deleted.")).toBeHidden();
   expect(api.exportedHistoryDeletes).toBe(0);
+});
+
+test("embedding is offered only while the export is on, and says when it caught up", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  await page.goto("/settings");
+  const exportToggle = page.getByRole("checkbox", {
+    name: "Export my run history to my data store",
+  });
+  const embedToggle = page.getByRole("checkbox", {
+    name: "Embed exported messages so agents can search past runs by meaning",
+  });
+  const status = page.getByRole("status", { name: "Run history embedding" });
+  await expect(exportToggle).not.toBeChecked();
+  await expect(embedToggle).toBeHidden();
+
+  await exportToggle.check();
+  api.settings.history_ready = true;
+  api.settings.history_exported_at = "2026-10-16T10:00:00Z";
+  await expect(embedToggle).toBeVisible();
+  await expect(embedToggle).not.toBeChecked();
+  await expect(status).toHaveText(
+    "Off. Agents can search your past runs by keyword. Messages already embedded are kept.",
+  );
+
+  await embedToggle.check();
+  await expect(embedToggle).toBeChecked();
+  expect(api.writes.at(-1)).toEqual(["PUT", "/api/settings", { embed_run_history: true }]);
+  // The backfill: the page keeps asking until it's caught up.
+  await expect(status).toHaveText("Embedding your exported messages…");
+  api.settings.history_embedded_at = "2026-10-16T11:00:00Z";
+  await expect(status).toContainText("Last embedded");
+
+  // Switching the export off switches embedding off, and no longer offers it.
+  await exportToggle.uncheck();
+  await expect(embedToggle).toBeHidden();
+  expect(api.settings.embed_run_history).toBe(false);
 });
 
 test("the Settings link opens the page", async ({ page }) => {
