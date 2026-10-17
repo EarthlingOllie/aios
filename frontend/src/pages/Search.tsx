@@ -1,15 +1,15 @@
 import { useCallback, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { FileText, Search as SearchIcon } from "lucide-react";
 
 import { ErrorBanner, Placeholder, useLoad } from "@/components/crud";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
+import { useDataStore } from "@/components/Documents";
 import { MarkdownView } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, type SearchHit } from "@/lib/api";
-import { useDataStoreStatus } from "@/lib/data-store";
 import { stripMarkdown } from "@/lib/markdown";
 
 // The result counts offered. GET /api/search takes any count from 1 to 50: the first here is its
@@ -35,7 +35,7 @@ export function SearchPage() {
 
   // The API refuses to search a data store that isn't ready, so wait for it (and say why) rather
   // than show that refusal as a failed search.
-  const storeStatus = useDataStoreStatus();
+  const { status: storeStatus } = useDataStore();
   const storeReady = storeStatus === "ready";
 
   // Bumped to run the search already shown again. A new loader makes useLoad drop the old hits
@@ -139,7 +139,13 @@ function Results({ query, hits }: { query: string; hits: SearchHit[] | null | un
   if (hits.length === 0) {
     return (
       <Placeholder>
-        No passages matched. Try different wording, or upload documents from the Chat page.
+        <span>
+          No passages matched. Try different wording, or upload documents on the{" "}
+          <Link to="/data?tab=documents" className="underline underline-offset-2">
+            Data page
+          </Link>
+          .
+        </span>
       </Placeholder>
     );
   }

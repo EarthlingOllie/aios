@@ -103,15 +103,80 @@ export class FakeApi {
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
   /** How long GET /api/data-store takes to answer (ms). */
   dataStoreDelay = 0;
+  /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
+  dataStoreFails = false;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
   documentLists = 0;
+  /**
+   * The status an upload starts in: "ready" (with one chunk) skips the worker; "pending" waits
+   * for the test to finish its ingest with `finishIngest`.
+   */
+  ingestAs: "ready" | "pending" = "ready";
+  /** Uploads of these filenames answer 413, as the proxy does for a file over its size limit. */
+  tooLarge = new Set<string>();
+  /** While set (by `holdUploads`), uploads wait for `releaseUploads` before they answer. */
+  private uploadGate?: { wait: Promise<void>; release: () => void };
+  /** How long GET /api/documents takes to answer (ms). */
+  documentsDelay = 0;
+  /** While true, the documents endpoints answer 503, as when every store connection is in use. */
+  dataStoreBusy = false;
+  /** Reads of the list being held back by `holdDocumentLists`, oldest first. */
+  heldDocumentLists: (() => void)[] = [];
+  private holdingLists = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
   private id() {
     return this.nextId++;
+  }
+
+  /** Adds a document, as if uploaded earlier. */
+  addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
+    const doc: DocumentRow = {
+      id: this.id(),
+      filename,
+      status: "ready",
+      error: null,
+      chunk_count: 1,
+      created_at: NOW,
+      ...fields,
+    };
+    this.documents.unshift(doc);
+    return doc;
+  }
+
+  /** Uploads wait, as if still on the wire, until `releaseUploads`. */
+  holdUploads() {
+    let release = () => {};
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    this.uploadGate = { wait, release };
+  }
+
+  releaseUploads() {
+    this.uploadGate?.release();
+    this.uploadGate = undefined;
+  }
+
+  /**
+   * Until called again with false, each GET /api/documents reads the list when it arrives but
+   * waits to answer until the test calls its entry in `heldDocumentLists`: a slow response.
+   */
+  holdDocumentLists(hold = true) {
+    this.holdingLists = hold;
+  }
+
+  /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
+  finishIngest(filename: string, outcome: { chunks: number } | { error: string }) {
+    const doc = this.documents.find((d) => d.filename === filename);
+    if (!doc) throw new Error(`No document ${filename}`);
+    Object.assign(
+      doc,
+      "chunks" in outcome
+        ? { status: "ready", chunk_count: outcome.chunks, error: null }
+        : { status: "failed", chunk_count: 0, error: outcome.error },
+    );
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
@@ -448,10 +513,11 @@ export class FakeApi {
     }
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
+      if (this.dataStoreFails) return fail(500, "Internal Server Error");
       return reply(200, { status: this.dataStoreStatus });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
-    if (path === "/api/documents" || path === "/api/search") {
+    if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {
           detail:
@@ -461,21 +527,50 @@ export class FakeApi {
           data_store_status: this.dataStoreStatus,
         });
       }
-      if (path === "/api/search") return reply(200, []);
-      if (method === "POST") {
+      if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
+      if (path === "/api/search") {
+        // A passage from each ready document whose name contains the query.
+        const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+        return reply(
+          200,
+          this.documents
+            .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+            .map((d, i) => ({
+              chunk_id: d.id * 1000,
+              document_id: d.id,
+              filename: d.filename,
+              text: `A passage from ${d.filename}.`,
+              meta: {},
+              score: 0.03 - i * 0.001,
+              semantic_rank: i + 1,
+              lexical_rank: i + 1,
+            })),
+        );
+      }
+      if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
+        const before = this.documents.length;
+        this.documents = this.documents.filter((d) => d.id !== Number(m![1]));
+        return this.documents.length < before ? reply(204) : fail(404, "Not Found");
+      }
+      if (path === "/api/documents" && method === "POST") {
         const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
-        const doc: DocumentRow = {
-          id: this.id(),
+        await this.uploadGate?.wait;
+        if (this.tooLarge.has(filename)) return reply(413);
+        const doc = this.addDocument(
           filename,
-          status: "ready",
-          error: null,
-          chunk_count: 1,
-          created_at: NOW,
-        };
-        this.documents.unshift(doc);
+          this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
+        );
         return reply(201, doc);
       }
-      return reply(200, this.documents);
+      if (path === "/api/documents") {
+        await new Promise((resolve) => setTimeout(resolve, this.documentsDelay));
+        const list = [...this.documents];
+        if (this.holdingLists) {
+          await new Promise<void>((release) => this.heldDocumentLists.push(release));
+        }
+        return reply(200, list);
+      }
+      return fail(404, "Not Found");
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
