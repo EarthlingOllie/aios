@@ -53,24 +53,30 @@ SELECT coalesce(sum(
 """)
 # The database's size, all its files: never less than the data in it.
 _DB_SIZE = text("SELECT pg_database_size(current_database())")
-_HAS_PGSTATTUPLE = text("SELECT to_regprocedure('extensions.pgstattuple_approx(regclass)')")
+# Whether this role may run `pgstattuple_approx` here (it's there, and granted to it).
+_MAY_MEASURE = text("""
+SELECT coalesce(has_function_privilege(to_regprocedure('extensions.pgstattuple_approx(regclass)'),
+                                       'EXECUTE'), false)
+""")
 _FILES_BYTES = text("SELECT coalesce(sum(size_bytes), 0) FROM aios.documents")
 
 
-def _db_bytes(store: Session) -> int:
+def _db_bytes(store: Session, size: int | None = None) -> int:
     """The data the store holds (`_DB_BYTES`). A store made before the template had pgstattuple,
-    which the roles command couldn't give it (`aios.db_roles`), is measured by its size."""
-    if store.scalar(_HAS_PGSTATTUPLE) is None:
-        return store.scalar(_DB_SIZE)
+    which the roles command couldn't give it (`aios.db_roles`), is measured by its size (`size`,
+    if it's been read already)."""
+    if not store.scalar(_MAY_MEASURE):
+        return store.scalar(_DB_SIZE) if size is None else size
     return store.scalar(_DB_BYTES)
 
 
 def _db_full(store: Session, quota: int) -> int | None:
     """What the store holds, if it's at `quota` or past it; None if it isn't. The database's
     size is no less, and quick to read: under the quota, there's no need to measure."""
-    if store.scalar(_DB_SIZE) < quota:
+    size = store.scalar(_DB_SIZE)
+    if size < quota:
         return None
-    used = _db_bytes(store)
+    used = _db_bytes(store, size)
     return used if used >= quota else None
 
 

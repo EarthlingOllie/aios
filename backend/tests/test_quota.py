@@ -146,11 +146,21 @@ def test_the_roles_command_brings_measuring_to_stores_made_before_it(db, user):
     assert measured(db, store.id) > 1000 * 1024
 
 
-def test_a_store_without_pgstattuple_is_measured_by_its_databases_size(api, db, user, queued):
+@pytest.mark.parametrize(
+    "without",
+    [
+        "DROP EXTENSION pgstattuple",
+        # Added by a superuser who didn't grant it on.
+        "REVOKE EXECUTE ON FUNCTION extensions.pgstattuple_approx(regclass) FROM PUBLIC",
+    ],
+)
+def test_a_store_without_pgstattuple_is_measured_by_its_databases_size(
+    api, db, user, queued, without
+):
     """One the roles command couldn't reach (see `test_db_roles`): its cap still holds."""
     store = store_row(db, data_store_for(user.id))
     with admin_connect(store.dbname) as admin:
-        admin.execute("DROP EXTENSION pgstattuple")
+        admin.execute(without)
 
     assert measured(db, store.id) == pytest.approx(database_size(store), abs=1024 * 1024)
     assert upload(api).status_code == 201
