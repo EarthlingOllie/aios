@@ -53,7 +53,7 @@ def chunk_document(filename: str, data: bytes) -> list[dict]:
     return chunks
 
 
-def _set_status(db: Session, document_id: int, status: DocumentStatus, error: str | None) -> bool:
+def set_status(db: Session, document_id: int, status: DocumentStatus, error: str | None) -> bool:
     """UPDATE by id (no ORM instance), so a row deleted meanwhile is a no-op, not StaleDataError."""
     result = db.execute(
         update(Document).where(Document.id == document_id).values(status=status, error=error)
@@ -80,7 +80,7 @@ def ingest_document(db: Session, document_id: int) -> None:
         return
     if claimed.attempts > MAX_ATTEMPTS:
         # Earlier deliveries died without reaching the except below (OOM kill, hard time limit).
-        _set_status(
+        set_status(
             db,
             document_id,
             DocumentStatus.failed,
@@ -97,10 +97,10 @@ def ingest_document(db: Session, document_id: int) -> None:
             Chunk(document_id=document_id, ordinal=i, embedding=vec, **piece)
             for i, (piece, vec) in enumerate(zip(pieces, vectors, strict=True))
         )
-        _set_status(db, document_id, DocumentStatus.ready, None)
+        set_status(db, document_id, DocumentStatus.ready, None)
     except Exception as exc:
         db.rollback()
-        if not _set_status(
+        if not set_status(
             db, document_id, DocumentStatus.failed, f"{type(exc).__name__}: {exc}"[:2000]
         ):
             return  # Deleted mid-ingest (the chunk insert hit the FK); nothing left to record.

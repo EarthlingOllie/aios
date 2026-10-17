@@ -52,7 +52,6 @@ from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
-    User,
     Workflow,
     WorkflowNode,
     WorkflowNodeKind,
@@ -265,7 +264,7 @@ class RunState:
     workflow_id: int
     workflow_name: str
     workflow_version: int
-    # The user's data store, which the run's agents' tools reach (`ChatDeps.data_store_id`).
+    # The data store its agents' tools use: the workflow owner's.
     data_store_id: uuid.UUID
     # The first node to fail, and why. Once set, no more nodes start.
     error: str | None = None
@@ -333,22 +332,27 @@ def _claim(run_id: int) -> tuple[RunState, int, str] | None:
             .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
             .where(WorkflowVersion.id == version_id)
         ).one()
-        db.commit()
+        # In the claim's transaction: if the store can't be resolved, the run isn't claimed...
         try:
-            store = data_store_for(db.get_one(User, workflow.owner_id))
+            data_store_id = data_store_for(workflow.owner_id, db)
         except Exception as exc:
-            # It's claimed, so fail it now: left running without a worker, it would only be
-            # failed as stopped once its heartbeat went stale.
-            log.exception("workflow run %s: couldn't resolve its data store", run_id)
-            fail_run(run_id, error_text(exc))
-            return None
+            db.rollback()
+            error = exc
+        else:
+            error = None
+            db.commit()
+    if error is not None:
+        # ...and it's failed now, with the real error: nothing else would ever run or end it.
+        log.exception("workflow run %s: couldn't resolve its data store", run_id, exc_info=error)
+        fail_run(run_id, error_text(error))
+        return None
     state = RunState(
         id=run_id,
         user_id=workflow.owner_id,
         workflow_id=workflow.id,
         workflow_name=workflow.name,
         workflow_version=version,
-        data_store_id=store.id,
+        data_store_id=data_store_id,
     )
     return state, version_id, text
 
@@ -619,7 +623,7 @@ async def _run_agent(
                 {"messages": [HumanMessage(text)]},
                 config,
                 context=ChatDeps(
-                    user_id=run.user_id, data_store_id=run.data_store_id, run_id=agent_run_id
+                    user_id=run.user_id, run_id=agent_run_id, data_store_id=run.data_store_id
                 ),
                 # As in a chat turn: checkpointed step by step, so a failed turn's history is kept.
                 durability="sync",

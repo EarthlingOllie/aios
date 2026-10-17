@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import psycopg
@@ -42,6 +43,27 @@ def admin_url() -> str:
     except psycopg.OperationalError as exc:
         pytest.skip(f"master user can't connect: {exc}")
     return url
+
+
+@pytest.fixture(autouse=True)
+def store_template(monkeypatch) -> Iterator[str]:
+    """A data store template of the test's own (rather than the real one, DATA_STORE_TEMPLATE),
+    dropped afterwards."""
+    name = f"t_tmpl_{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(get_settings(), "data_store_template", name)
+    yield name
+    url = os.environ.get("DATABASE_ADMIN_URL")
+    if not url:
+        return
+    with _connect(url) as conn:
+        if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,)).fetchone():
+            _drop_template(conn, name)
+
+
+def _drop_template(conn: psycopg.Connection, name: str) -> None:
+    db = sql.Identifier(name)
+    conn.execute(sql.SQL("ALTER DATABASE {} IS_TEMPLATE false").format(db))
+    conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(db))
 
 
 @pytest.fixture
@@ -90,13 +112,67 @@ def test_app_role_cannot_drop_or_reconfigure_the_platform_database(cluster):
     ensure_roles(admin_url, app_url, prov_url)
     db = sql.Identifier(make_url(app_url).database)
 
+    with _connect(app_url) as conn:
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(sql.SQL("ALTER DATABASE {} SET statement_timeout = 0").format(db))
+        # Ownership is checked before whether it's the database in use.
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(sql.SQL("DROP DATABASE {}").format(db))
+
+
+def test_only_the_two_roles_may_connect_to_the_platform_database(cluster):
+    admin_url, app_url, prov_url = cluster
+    platform = make_url(app_url).database
+
+    assert ensure_roles(admin_url, app_url, prov_url) == []
+
+    tag = uuid.uuid4().hex[:8]
+    other = make_url(admin_url).set(username=f"t_other_{tag}", password="pw")
+    with _connect(admin_url) as conn:
+        conn.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD 'pw'").format(sql.Identifier(other.username))
+        )
+    try:
+        for db in (platform, "postgres", "template1"):
+            with pytest.raises(psycopg.OperationalError, match="permission denied"):
+                _connect(other.render_as_string(hide_password=False), database=db).close()
+        _connect(app_url).close()
+        _connect(prov_url).close()
+    finally:
+        with _connect(admin_url) as conn:
+            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(other.username)))
+
+
+def test_the_store_template_has_pgvector_and_only_the_provisioner_copies_it(
+    cluster, store_template
+):
+    admin_url, app_url, prov_url = cluster
+    ensure_roles(admin_url, app_url, prov_url)
+    copy_name = f"t_copy_{uuid.uuid4().hex[:8]}"
+    copy = sql.Identifier(copy_name)
+
     with _connect(app_url) as conn, pytest.raises(errors.InsufficientPrivilege):
-        conn.execute(sql.SQL("ALTER DATABASE {} SET statement_timeout = 0").format(db))
-    with (
-        _connect(app_url, database="postgres") as conn,
-        pytest.raises(errors.InsufficientPrivilege),
-    ):
-        conn.execute(sql.SQL("DROP DATABASE {}").format(db))
+        conn.execute(
+            sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(copy, sql.Identifier(store_template))
+        )
+    with pytest.raises(psycopg.OperationalError, match="permission denied"):
+        _connect(prov_url, database=store_template).close()
+    with _connect(prov_url) as conn:
+        conn.execute(
+            sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(copy, sql.Identifier(store_template))
+        )
+        try:
+            with _connect(admin_url, database=copy_name) as copied:
+                extension = copied.execute(
+                    "SELECT n.nspname FROM pg_extension e"
+                    " JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'"
+                )
+                assert extension.fetchone() == ("extensions",)
+        finally:
+            conn.execute(sql.SQL("DROP DATABASE {}").format(copy))
+
+    # Running it again changes nothing.
+    ensure_roles(admin_url, app_url, prov_url)
 
 
 def test_provisioner_role_can_create_databases_and_roles(cluster):
@@ -324,7 +400,7 @@ def test_refuses_to_grant_createrole_before_postgres_16(cluster, monkeypatch):
     assert _attrs(admin_url, make_url(prov_url).username) is None
 
 
-def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
+def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template):
     """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
     _, app_url, prov_url = cluster
     tag = uuid.uuid4().hex[:8]
@@ -337,11 +413,28 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
         )
     master_url = make_url(admin_url).set(username=master, password="pw", database=dbname)
     master_url = master_url.render_as_string(hide_password=False)
+    with _connect(admin_url) as conn:
+        # As on RDS, where the master user owns `postgres` (whose CONNECT ensure_roles revokes
+        # from PUBLIC).
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE postgres TO {}").format(sql.Identifier(master))
+        )
     try:
         with _connect(master_url, database="postgres") as conn:
             conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
         with _connect(admin_url, database=dbname) as conn:
             conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # The same for the store template, which it owns.
+        tmpl = sql.Identifier(store_template)
+        with _connect(admin_url) as conn:
+            conn.execute(
+                sql.SQL("CREATE DATABASE {} OWNER {}").format(tmpl, sql.Identifier(master))
+            )
+        with _connect(admin_url, database=store_template) as conn:
+            conn.execute(
+                sql.SQL("CREATE SCHEMA extensions AUTHORIZATION {}").format(sql.Identifier(master))
+            )
+            conn.execute("CREATE EXTENSION vector SCHEMA extensions")
         with _connect(master_url) as conn:
             conn.execute("CREATE TABLE things (id int)")
         app_q = make_url(app_url).set(database=dbname).render_as_string(hide_password=False)
@@ -361,6 +454,15 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url):
             for role in (make_url(app_url).username, make_url(prov_url).username):
                 conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
         with _connect(admin_url) as conn:
+            if conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (store_template,)
+            ).fetchone():
+                _drop_template(conn, store_template)
+            conn.execute(
+                sql.SQL("REVOKE CONNECT ON DATABASE postgres FROM {}").format(
+                    sql.Identifier(master)
+                )
+            )
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 
@@ -574,7 +676,14 @@ SELECT kind, name FROM (
 ) o
 WHERE owner = (SELECT oid FROM pg_roles WHERE rolname = %s)
   AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                   WHERE d.classid = o.cls AND d.objid = o.oid AND d.deptype = 'e')
+                   WHERE d.classid = o.cls AND d.objid = o.oid
+                     AND (d.deptype = 'e'
+                          -- An extension type's array type (a member itself only from 17).
+                          OR (d.deptype = 'i'
+                              AND EXISTS (SELECT 1 FROM pg_depend m
+                                           WHERE m.classid = d.refclassid
+                                             AND m.objid = d.refobjid
+                                             AND m.deptype = 'e'))))
 ORDER BY 1, 2
 """
 

@@ -378,7 +378,7 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
         resp = api.post(url, json=chat_body("what about zebrafish?"))
     assert resp.status_code == 200
     assert spy["deps"] == ChatDeps(
-        user_id=user.id, data_store_id=data_store_for(user).id, run_id=run["id"]
+        user_id=user.id, data_store_id=data_store_for(user.id), run_id=run["id"]
     )
     assert seen["tools"] == ["search_documents"]
     assert "hybrid (semantic + keyword)" in seen["description"]

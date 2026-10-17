@@ -1,0 +1,445 @@
+import ast
+import asyncio
+import re
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+from fake_model import ToolCall, last_tool_results, model, use_model
+from sqlalchemy import event, select, text, update
+from sqlalchemy.exc import OperationalError
+from test_agents import agent_body, chat_body, make_agent
+from test_workflows import agent_node, make_workflow
+
+import aios
+from aios import agent as agent_module
+from aios import auth, ingest, worker, workflows
+from aios.api import agents as agents_api
+from aios.api import documents
+from aios.api import workflows as workflows_api
+from aios.datastores import (
+    DataStoreNotFound,
+    DataStoreNotReady,
+    data_store_for,
+    documents_session,
+    store_session,
+)
+from aios.db import SessionLocal, engine
+from aios.models import (
+    DataStore,
+    DataStoreStatus,
+    Document,
+    DocumentStatus,
+    User,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
+from aios.tools import hybrid_search
+from aios.ui_stream import error_text
+from aios.workflows import execute_run
+
+
+def test_a_user_becomes_a_store_of_its_own(db, user):
+    store_id = data_store_for(user.id)
+
+    assert isinstance(store_id, uuid.UUID)
+    # The same store every time.
+    assert data_store_for(user.id) == store_id
+
+    other = User(github_id=-2, login="other-user")
+    db.add(other)
+    db.commit()
+    try:
+        assert data_store_for(other.id) != store_id
+    finally:
+        db.delete(other)
+        db.commit()
+
+
+def test_a_session_is_opened_only_on_a_store_that_exists_and_is_ready(db, user):
+    """(Sessions on a provisioned store's own database: see test_provisioning.)"""
+    store_id = data_store_for(user.id)
+    with documents_session(store_id, "ro") as store:
+        assert store.scalar(text("SELECT 1")) == 1
+
+    for opener in (store_session, documents_session):
+        with pytest.raises(DataStoreNotFound), opener(uuid.uuid4(), "rw"):
+            pass
+        with pytest.raises(ValueError, match="role"), opener(store_id, "admin"):
+            pass
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+    )
+    db.commit()
+    for opener in (store_session, documents_session):
+        with pytest.raises(DataStoreNotReady), opener(store_id, "ro"):
+            pass
+
+
+@pytest.fixture
+def unready_user(db, user) -> User:
+    """`user`, with a store that's still being provisioned."""
+    db.execute(
+        update(DataStore)
+        .where(DataStore.owner_user_id == user.id)
+        .values(status=DataStoreStatus.provisioning)
+    )
+    db.commit()
+    return user
+
+
+def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *a: queued.append(a))
+
+    responses = [
+        api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")}),
+        api.get("/api/documents"),
+        api.get("/api/search", params={"q": "fish"}),
+    ]
+
+    for r in responses:
+        assert r.status_code == 409, r.text
+        assert r.json() == {
+            "detail": "Your data store is being set up. Try again in a moment.",
+            "data_store_status": "provisioning",
+        }
+    assert queued == []
+    assert api.get("/api/data-store").json() == {"status": "provisioning"}
+
+
+def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
+    db.execute(
+        update(DataStore)
+        .where(DataStore.owner_user_id == unready_user.id)
+        .values(status=DataStoreStatus.failed, error="boom")
+    )
+    db.commit()
+
+    r = api.get("/api/documents")
+
+    assert r.status_code == 409
+    assert r.json()["data_store_status"] == "failed"
+    assert "boom" not in r.text
+    assert api.get("/api/data-store").json() == {"status": "failed"}
+
+
+def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_user):
+    body = chat_body("fish?")
+    body["messages"][0]["role"] = "user"
+    seen = []
+
+    async def search_then_answer_seeing(messages, info):
+        if results := last_tool_results(messages):
+            seen.extend(results)
+            yield "done"
+        else:
+            yield ToolCall("search_documents", {"query": "fish"})
+
+    with use_model(model(search_then_answer_seeing)):
+        assert api.post("/api/chat", json=body).status_code == 200
+
+    assert seen and all("still being set up" in str(r) for r in seen)
+
+
+def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *a: queued.append(a))
+
+    doc = api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")}).json()
+
+    assert queued == [(str(data_store_for(user.id)), doc["id"])]
+
+
+@pytest.fixture
+def offline_ingest(monkeypatch):
+    def chunk_document(filename, data):
+        return [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
+
+    async def embed_documents(texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr(ingest, "chunk_document", chunk_document)
+    monkeypatch.setattr(ingest, "embed_documents", embed_documents)
+
+
+def test_the_ingest_task_ingests_in_the_store_it_is_given(db, user, offline_ingest):
+    doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+
+    worker.ingest_document_task.run(str(data_store_for(user.id)), doc.id)
+
+    db.refresh(doc)
+    assert doc.status == DocumentStatus.ready
+    assert [c.text for c in doc.chunks] == ["Hi"]
+
+
+def test_the_ingest_task_takes_messages_queued_before_data_stores(db, user, offline_ingest):
+    """Uploads queued while the previous release was running carry only the document's id."""
+    doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+
+    worker.ingest_document_task.run(doc.id)
+    worker.ingest_document_task.run(2**31 - 1)  # deleted since: nothing to do
+
+    db.refresh(doc)
+    assert doc.status == DocumentStatus.ready
+    assert [c.text for c in doc.chunks] == ["Hi"]
+
+
+def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
+    """As for a document deleted before its ingest: there's nothing left to ingest."""
+    owner = User(github_id=-4, login="gone")
+    db.add(owner)
+    db.commit()
+    doc = Document(owner_id=owner.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+    store_id, doc_id = data_store_for(owner.id), doc.id
+    db.delete(owner)  # and, by the database's cascade, their store and documents
+    db.commit()
+
+    worker.ingest_document_task.run(str(store_id), doc_id)
+
+
+def test_the_ingest_task_fails_a_document_its_store_never_got_ready_for(db, user):
+    """Messages queued before data stores wait for the user's store; if it's still not ready
+    once they stop retrying, nothing would ever ingest the document, so it's failed, not left
+    pending."""
+    doc = Document(owner_id=user.id, filename="a.md", data=b"# Hi")
+    db.add(doc)
+    db.commit()
+    store_id = data_store_for(user.id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.failed)
+    )
+    db.commit()
+
+    # Eagerly, each retry runs at once (no countdown), until the last gives up.
+    result = worker.ingest_document_task.apply(args=(doc.id,))
+
+    assert result.failed()
+    db.refresh(doc)
+    assert doc.status == DocumentStatus.failed
+    assert "upload it again" in doc.error
+
+
+@pytest.fixture
+def searches(monkeypatch) -> list[dict]:
+    """What the document search tools search (the documents chat's and the agents' tool)."""
+    calls = []
+
+    async def results(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(agent_module, "document_search_results", results)
+    monkeypatch.setattr(hybrid_search, "document_search_results", results)
+    return calls
+
+
+async def search_then_answer(messages, info):
+    if last_tool_results(messages):
+        yield "done"
+    else:
+        yield ToolCall("search_documents", {"query": "fish"})
+
+
+def librarian(api) -> dict:
+    agent = make_agent(api, "Librarian")
+    tools = [{"key": "hybrid_search", "config": {"max_results": 3}}]
+    return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools)).json()
+
+
+def test_the_documents_chat_searches_the_users_store(api, user, searches):
+    body = chat_body("fish?")
+    body["messages"][0]["role"] = "user"
+    with use_model(model(search_then_answer)):
+        assert api.post("/api/chat", json=body).status_code == 200
+
+    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish"}]
+
+
+def test_an_agent_run_searches_the_users_store(api, user, searches):
+    agent = librarian(api)
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with use_model(model(search_then_answer)):
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        assert api.post(url, json=chat_body("fish?")).status_code == 200
+
+    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
+
+
+def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypatch):
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+    agent = librarian(api)
+    workflow = make_workflow(api, "Library", [agent_node("look", agent)])
+    started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
+    with use_model(model(search_then_answer)):
+        asyncio.run(execute_run(started["id"]))
+
+    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
+
+
+def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db, monkeypatch):
+    """Resolving the store is part of claiming the run, so if it fails the run is never left
+    `running` with no worker (a redelivery could never start it), nor `queued` with nothing to
+    run it: it's failed then and there, with the real error."""
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+    workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
+    started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
+
+    def unavailable(*args, **kwargs):
+        raise OperationalError("SELECT", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    asyncio.run(execute_run(started["id"]))
+
+    run = db.get(WorkflowRun, started["id"])
+    assert (run.status, run.started_at) == (WorkflowRunStatus.failed, None)
+    assert run.error == error_text(OperationalError("SELECT", {}, Exception("connection lost")))
+
+
+@contextmanager
+def connections() -> Iterator[dict]:
+    """Counts the most pooled connections checked out at once inside the block (`most`)."""
+    out = {"now": 0, "most": 0}
+
+    def checkout(*args):
+        out["now"] += 1
+        out["most"] = max(out["most"], out["now"])
+
+    def checkin(*args):
+        out["now"] -= 1
+
+    event.listen(engine, "checkout", checkout)
+    event.listen(engine, "checkin", checkin)
+    try:
+        yield out
+    finally:
+        event.remove(engine, "checkout", checkout)
+        event.remove(engine, "checkin", checkin)
+
+
+def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user):
+    """A turn's context is loaded on the request's session, without taking a second pooled
+    connection while it holds the first (a burst of turns could otherwise exhaust the pool)."""
+    agent = librarian(api)
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with connections() as used, SessionLocal() as session:
+        ctx = agents_api.load_chat_context(session, user.id, agent["id"], run["id"])
+
+    assert ctx.data_store_id == data_store_for(user.id)
+    assert used["most"] == 1
+
+
+SRC = Path(aios.__file__).parent
+# How a module opens a platform database session.
+PLATFORM_SESSIONS = {"SessionLocal", "get_db", "DB", "engine"}
+
+
+def touches_user_data(tree: ast.Module, source: str) -> bool:
+    """Whether a module uses the documents or chunks tables, by model or in SQL."""
+    models = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "aios.models"
+        for alias in node.names
+    }
+    return bool(models & {"Document", "Chunk"}) or re.search(
+        r"\b(FROM|JOIN)\s+(documents|chunks)\b", source, re.IGNORECASE
+    )
+
+
+def platform_sessions(tree: ast.Module) -> set[str]:
+    return {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "aios.db"
+        for alias in node.names
+    } & PLATFORM_SESSIONS
+
+
+def test_only_the_seam_opens_sessions_on_user_data():
+    offenders = {}
+    for path in SRC.rglob("*.py"):
+        module = path.relative_to(SRC)
+        if module.parts[0] == "datastores" or module.name == "models.py":
+            continue
+        source = path.read_text()
+        tree = ast.parse(source)
+        if touches_user_data(tree, source) and (opened := platform_sessions(tree)):
+            offenders[str(module)] = sorted(opened)
+    assert offenders == {}
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def json(self):
+        return self.body
+
+
+def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
+    client, db, monkeypatch, provisioning
+):
+    github = auth.oauth.github
+
+    async def authorize_access_token(request):
+        return {"access_token": "t"}
+
+    async def get(path, token):
+        assert path == "user"
+        return FakeResponse({"id": -3, "login": "new-user", "email": "new@example.com"})
+
+    monkeypatch.setattr(github, "authorize_access_token", authorize_access_token)
+    monkeypatch.setattr(github, "get", get)
+
+    resp = client.get("/auth/callback?code=x&state=y", follow_redirects=False)
+
+    assert resp.status_code == 303
+    user = db.scalar(select(User).where(User.github_id == -3))
+    try:
+        stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id)).all()
+        assert [s.status for s in stores] == [DataStoreStatus.provisioning]
+        assert provisioning == [stores[0].id]
+    finally:
+        db.delete(user)
+        db.commit()
+
+
+def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, provisioning):
+    owner = User(github_id=-5, login="later")
+    db.add(owner)
+    db.commit()
+    try:
+        store_id = data_store_for(owner.id, db)
+        assert provisioning == []
+        db.commit()
+        assert provisioning == [store_id]
+        # Not again for a store that exists.
+        assert data_store_for(owner.id, db) == store_id
+        db.commit()
+        assert provisioning == [store_id]
+    finally:
+        db.delete(owner)
+        db.commit()
+
+
+def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(db, provisioning):
+    owner = User(github_id=-6, login="undone")
+    db.add(owner)
+    db.commit()
+    try:
+        data_store_for(owner.id, db)
+        db.rollback()
+        db.commit()
+        assert provisioning == []
+    finally:
+        db.delete(owner)
+        db.commit()

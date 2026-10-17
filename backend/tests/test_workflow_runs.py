@@ -322,7 +322,7 @@ def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, q
     wf = make_workflow(api, "w", [agent_node("a", make_agent(api, "a"))])
     started = start(api, wf)
 
-    def broken(user):
+    def broken(*args):
         raise RuntimeError("store unavailable")
 
     monkeypatch.setattr(workflows, "data_store_for", broken)
@@ -393,7 +393,7 @@ def test_an_agent_nodes_tools_search_the_owners_data_store(api, user, queued, mo
     with use_model(model(script)):
         asyncio.run(execute_run(started["id"]))
 
-    assert searched == [data_store_for(user).id]
+    assert searched == [data_store_for(user.id)]
 
 
 def test_get_shows_the_pinned_version_and_runs_list_newest_first(api, queued):

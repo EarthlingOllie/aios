@@ -22,7 +22,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024
@@ -44,22 +44,57 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class DataStore(Base):
-    """Where a user's data lives: their documents and chunks. Only `aios.datastores` turns a user
-    into a store, and everything below it takes the store's id, so a store can later belong to a
-    team rather than a user.
+class DataStoreStatus(enum.StrEnum):
+    # Its database is being created (`aios.datastores.provision`); nothing can use it yet.
+    provisioning = "provisioning"
+    ready = "ready"
+    # Provisioning gave up; re-running it (`aios.datastores.provision.retry_unfinished` does, every
+    # few minutes, as does the deploy's `migrate_all`) carries on.
+    failed = "failed"
+    # For deleting users' stores (not yet used).
+    deleting = "deleting"
+    deleted = "deleted"
 
-    For now every store is in the platform database (see `aios.datastores.store_session`)."""
+
+class DataStore(Base):
+    """Where a user's data lives: a database of its own (see `aios.datastores`).
+
+    It has an id of its own, rather than being the user's, so a store can later change hands
+    (to a team) without renaming anything named after it: its database and roles are named
+    after this id, never a user's. Its documents and chunks are still in the platform database,
+    told apart by their `owner_id`, until they move into it.
+    """
 
     __tablename__ = "data_stores"
 
-    # Its own id, not the user's: anything named after a store (its database, roles, S3 prefix)
-    # is named after this.
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
-    # Unique while each user has one store. Teams will add `owner_team_id`.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    # One store per user, for now. Teams will own stores too (an `owner_team_id`).
     owner_user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True
     )
+    status: Mapped[DataStoreStatus] = mapped_column(
+        Enum(DataStoreStatus, name="data_store_status"),
+        default=DataStoreStatus.provisioning,
+        server_default=DataStoreStatus.provisioning.value,
+    )
+    # Where its database is, if not on the platform database's instance (where every store is,
+    # for now, and NULL says so): kept so a store can later move to another instance.
+    host: Mapped[str | None] = mapped_column(String(255))
+    port: Mapped[int | None] = mapped_column(Integer)
+    # `ds_<id as hex>`, and its roles `<role_prefix>_owner`, `_rw` and `_ro`.
+    dbname: Mapped[str] = mapped_column(String(63), unique=True)
+    role_prefix: Mapped[str] = mapped_column(String(56), unique=True)
+    # The login roles' passwords, encrypted (`aios.datastores.credentials`). Never logged, and
+    # never returned by the API.
+    rw_password: Mapped[str | None] = mapped_column(Text)
+    ro_password: Mapped[str | None] = mapped_column(Text)
+    # The store tree's Alembic revision its database is at (`aios.datastores.migrations`).
+    schema_revision: Mapped[str | None] = mapped_column(String(64))
+    # Why provisioning, or the last migration, failed.
+    error: Mapped[str | None] = mapped_column(Text)
+    delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

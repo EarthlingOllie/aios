@@ -47,6 +47,14 @@ type WorkflowRow = {
   updated_at: string;
 };
 
+export type DocumentRow = {
+  id: number;
+  filename: string;
+  status: "pending" | "processing" | "ready" | "failed";
+  error: string | null;
+  chunk_count: number;
+  created_at: string;
+};
 type RunStatus = "queued" | "running" | "succeeded" | "failed";
 type StepStatus = "running" | "succeeded" | "failed";
 export type StepRow = {
@@ -91,6 +99,14 @@ export class FakeApi {
   agentRuns = new Map<number, AgentRunRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
+  /** The user's data store's status: documents and search answer 409 until it's "ready". */
+  dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
+  /** How long GET /api/data-store takes to answer (ms). */
+  dataStoreDelay = 0;
+  /** The user's documents, newest first. */
+  documents: DocumentRow[] = [];
+  /** How many times the app asked for the list of documents. */
+  documentLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -409,7 +425,14 @@ export class FakeApi {
     const request = route.request();
     const method = request.method();
     const path = new URL(request.url()).pathname;
-    const body = request.postDataJSON?.() ?? null;
+    // As postDataJSON gives it (`any`), or a placeholder for an upload.
+    let body: ReturnType<typeof request.postDataJSON> = null;
+    try {
+      body = request.postDataJSON?.() ?? null;
+    } catch {
+      // Not JSON: an upload's multipart form.
+      body = "(form)";
+    }
     if (method !== "GET") this.writes.push([method, path, body]);
     const reply = (status: number, json?: unknown) =>
       route.fulfill({
@@ -423,7 +446,37 @@ export class FakeApi {
     if (path === "/api/me") {
       return reply(200, { id: 1, login: "tester", name: "Tester", avatar_url: null });
     }
-    if (path === "/api/documents") return reply(200, []);
+    if (path === "/api/data-store") {
+      await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
+      return reply(200, { status: this.dataStoreStatus });
+    }
+    if (path === "/api/documents" && method === "GET") this.documentLists++;
+    if (path === "/api/documents" || path === "/api/search") {
+      if (this.dataStoreStatus !== "ready") {
+        return reply(409, {
+          detail:
+            this.dataStoreStatus === "failed"
+              ? "Your data store couldn't be set up. We'll try again; please check back later."
+              : "Your data store is being set up. Try again in a moment.",
+          data_store_status: this.dataStoreStatus,
+        });
+      }
+      if (path === "/api/search") return reply(200, []);
+      if (method === "POST") {
+        const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
+        const doc: DocumentRow = {
+          id: this.id(),
+          filename,
+          status: "ready",
+          error: null,
+          chunk_count: 1,
+          created_at: NOW,
+        };
+        this.documents.unshift(doc);
+        return reply(201, doc);
+      }
+      return reply(200, this.documents);
+    }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
       return reply(

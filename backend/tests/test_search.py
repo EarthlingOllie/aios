@@ -4,8 +4,7 @@ import uuid
 
 import pytest
 
-from aios import search
-from aios.auth import current_user
+from aios.auth import current_data_store, current_user
 from aios.main import app
 from aios.models import Chunk, Document, DocumentStatus, User
 from aios.search import hybrid_search, hybrid_search_with_vector
@@ -73,6 +72,7 @@ def test_hybrid_search_is_scoped_to_owner(db, user):
 )
 def test_search_endpoint_rejects_bad_params(client, params):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         resp = client.get("/api/search", params=params)
     finally:
@@ -83,27 +83,3 @@ def test_search_endpoint_rejects_bad_params(client, params):
 def test_hybrid_search_blank_query_skips_embedding():
     # Would hit the embedding API (and fail without a key) if not short-circuited.
     assert asyncio.run(hybrid_search(data_store_id=uuid.uuid4(), query="  ")) == []
-
-
-def test_search_endpoint_searches_only_the_users_documents(api, db, user, monkeypatch):
-    other = User(github_id=-2, login="other-user")
-    db.add(other)
-    db.flush()
-    for owner, filename in [(user, "mine.md"), (other, "theirs.md")]:
-        doc = Document(owner_id=owner.id, filename=filename, data=b"", status=DocumentStatus.ready)
-        text = f"Zebrafish notes in {filename}."
-        doc.chunks = [Chunk(ordinal=0, text=text, contextualized=text, meta={}, embedding=unit(0))]
-        db.add(doc)
-    db.commit()
-
-    async def embed_query(text):
-        return unit(0)
-
-    monkeypatch.setattr(search, "embed_query", embed_query)
-    try:
-        hits = api.get("/api/search", params={"q": "zebrafish"}).json()
-        assert [h["filename"] for h in hits] == ["mine.md"]
-    finally:
-        db.query(Document).filter_by(owner_id=user.id).delete()
-        db.delete(other)
-        db.commit()

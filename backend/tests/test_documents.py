@@ -29,7 +29,7 @@ def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, 
 
     doc = api.post("/api/documents", files={"file": ("a.txt", b"hello", "text/plain")}).json()
 
-    assert queued == [(str(data_store_for(user).id), doc["id"])]
+    assert queued == [(str(data_store_for(user.id)), doc["id"])]
     listed = api.get("/api/documents").json()
     assert [(d["id"], d["filename"], d["status"]) for d in listed] == [
         (doc["id"], "a.txt", "pending")

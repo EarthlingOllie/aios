@@ -1,44 +1,154 @@
+"""Opening sessions on a data store.
+
+`store_session(data_store_id, role)` opens a session on the store's own database, as its
+read-write (`rw`) or read-only (`ro`) role, once the store is ready. Engines are cached per
+(store, role), each with a small pool, and the least recently used are disposed of beyond
+`MAX_ENGINES`.
+
+Until documents and chunks move into the stores' databases, they're still in the platform
+database, told apart there by the user who owns them: `documents_session` opens a platform
+session for them (also only once the store is ready, as they'll need it), and `store_owner`
+says whose rows are the store's. Both go once documents move.
+"""
+
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Literal
+from typing import Literal, get_args
 
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import Engine, create_engine, select
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.orm import Session
 
-from aios.db import SessionLocal, engine
-from aios.models import DataStore
+from aios.config import get_settings
+from aios.datastores import credentials
+from aios.db import SessionLocal
+from aios.models import DataStore, DataStoreStatus
 
-# The roles a store is opened as: `rw` writes (uploads, ingest), `ro` only reads (search).
-# For now both are the platform's own connection; each store will get a login role of each kind.
-StoreRole = Literal["rw", "ro"]
+# Read-write, or read-only (search, and queries agents write).
+Role = Literal["rw", "ro"]
+
+# Engines kept open at once (each up to 3 connections); past it the least recently used goes.
+MAX_ENGINES = 64
+
+_OWNER = "data_store_owner_id"
 
 
 class DataStoreNotFound(LookupError):
-    pass
+    """No data store has this id."""
 
 
-class StoreSession(Session):
-    """A session on one data store."""
+class DataStoreNotReady(RuntimeError):
+    """The data store is still being set up (or setting it up failed)."""
 
-    # The user who owns the store. While documents and chunks live in the platform database
-    # they're keyed by owner, so this scopes them to the store; once each store has a database
-    # of its own, that database is the scope.
-    owner_user_id: int
+    def __init__(self, data_store_id: uuid.UUID, status: DataStoreStatus):
+        super().__init__(f"Data store {data_store_id} is {status.value}")
+        self.data_store_id = data_store_id
+        self.status = status
 
 
-_store_sessions = sessionmaker(engine, class_=StoreSession, expire_on_commit=False)
+def _check_role(role: str) -> None:
+    if role not in get_args(Role):
+        raise ValueError(f"Unknown data store role: {role!r}")
+
+
+def _ready_store(db: Session, data_store_id: uuid.UUID) -> DataStore:
+    store = db.get(DataStore, data_store_id)
+    if store is None:
+        raise DataStoreNotFound(data_store_id)
+    if store.status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, store.status)
+    return store
+
+
+def store_url(store: DataStore, role: Role) -> URL:
+    """Where the app reaches the store's database, as its `role`.
+
+    A store with no host of its own is on the platform database's instance, so it's reached at
+    DATABASE_URL's address, with its options (e.g. `sslmode`): where the provisioner reached it
+    from may not resolve here (Compose's `db`, with the API on the host)."""
+    url = make_url(get_settings().database_url)
+    if store.host is not None:
+        url = url.set(host=store.host, port=store.port)
+    password = store.rw_password if role == "rw" else store.ro_password
+    return url.set(
+        username=f"{store.role_prefix}_{role}",
+        password=credentials.decrypt(password),
+        database=store.dbname,
+    )
+
+
+_engines: OrderedDict[tuple[uuid.UUID, str], Engine] = OrderedDict()
+_engines_lock = threading.Lock()
+
+
+def _engine(store: DataStore, role: Role) -> Engine:
+    key = (store.id, role)
+    with _engines_lock:
+        engine = _engines.get(key)
+        if engine is not None:
+            _engines.move_to_end(key)
+            return engine
+        engine = create_engine(
+            store_url(store, role), pool_size=1, max_overflow=2, pool_pre_ping=True
+        )
+        _engines[key] = engine
+        while len(_engines) > MAX_ENGINES:
+            _, evicted = _engines.popitem(last=False)
+            evicted.dispose()
+        return engine
+
+
+def dispose_engines() -> None:
+    """Close every cached store engine (e.g. in tests, before dropping a store)."""
+    with _engines_lock:
+        while _engines:
+            _, engine = _engines.popitem()
+            engine.dispose()
 
 
 @contextmanager
-def store_session(data_store_id: uuid.UUID, role: StoreRole = "rw") -> Iterator[StoreSession]:
-    """A session on the data store's database, as `role`. The only way to reach a store's
-    documents and chunks.
+def store_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
+    """A session on the data store's database, as its `role`, closed on exit.
 
-    For now every store is in the platform database, so `role` doesn't change anything yet."""
+    Raises `DataStoreNotFound` if there's no such store, and `DataStoreNotReady` until it's
+    ready."""
+    _check_role(role)
     with SessionLocal() as db:
-        store = db.get(DataStore, data_store_id)
-    if store is None:
-        raise DataStoreNotFound(f"No data store {data_store_id}")
-    with _store_sessions() as session:
-        session.owner_user_id = store.owner_user_id
+        store = _ready_store(db, data_store_id)
+    with Session(_engine(store, role)) as session:
         yield session
+
+
+@contextmanager
+def documents_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Session]:
+    """A platform session for the store's documents and chunks, which are still in the
+    platform database (see the module docstring), closed on exit.
+
+    Raises as `store_session` does."""
+    _check_role(role)
+    with SessionLocal() as db:
+        owner_id = _ready_store(db, data_store_id).owner_user_id
+        # End the lookup's transaction, so the caller starts from a clean session.
+        db.commit()
+        db.info[_OWNER] = owner_id
+        yield db
+
+
+def store_owner(db: Session) -> int:
+    """The user whose documents in the platform database are the store's (see the module
+    docstring).
+
+    Only for sessions from `documents_session`."""
+    return db.info[_OWNER]
+
+
+def store_status(data_store_id: uuid.UUID) -> DataStoreStatus:
+    """The store's status. Raises `DataStoreNotFound` if there's no such store."""
+    with SessionLocal() as db:
+        status = db.scalar(select(DataStore.status).where(DataStore.id == data_store_id))
+    if status is None:
+        raise DataStoreNotFound(data_store_id)
+    return status

@@ -1,11 +1,30 @@
-"""Data stores: where users' data lives, and the only way code reaches it.
+"""Data stores: where users' data lives, each a database of its own.
 
-- `data_store_for(user)` is the only place a user becomes a store. Everything below it takes the
-  store's id: the run context (`ChatDeps.data_store_id`), Celery tasks and the session opener.
-- `store_session(data_store_id, role)` opens a session on a store, for its documents and chunks.
+Nothing reaches user data except through here. `data_store_for` turns a user into a store id
+(and creates the store, queuing its provisioning), and `store_session` opens a session on a
+store's database; everything in between takes a data store id. Documents and chunks are still
+in the platform database for now (`documents_session`).
 """
 
-from aios.datastores.connections import DataStoreNotFound, StoreRole, StoreSession, store_session
-from aios.datastores.resolve import data_store_for
+from aios.datastores.connections import (
+    DataStoreNotFound,
+    DataStoreNotReady,
+    Role,
+    documents_session,
+    store_owner,
+    store_session,
+    store_status,
+)
+from aios.datastores.resolve import data_store_for, data_store_for_request
 
-__all__ = ["DataStoreNotFound", "StoreRole", "StoreSession", "data_store_for", "store_session"]
+__all__ = [
+    "DataStoreNotFound",
+    "DataStoreNotReady",
+    "Role",
+    "data_store_for",
+    "data_store_for_request",
+    "documents_session",
+    "store_owner",
+    "store_session",
+    "store_status",
+]

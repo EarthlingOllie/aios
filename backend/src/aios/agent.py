@@ -20,6 +20,10 @@ class ChatDeps:
     data_store_id: uuid.UUID
     # The agent run (user-defined agents only), e.g. for the run's sandbox (`run_python`).
     run_id: int | None = None
+    # The data store the run's tools read and write (`aios.datastores`), resolved when the run
+    # or chat turn starts. Tools take it rather than the user, so they needn't change when a
+    # run's store isn't its user's (teams).
+    data_store_id: uuid.UUID | None = None
 
 
 INSTRUCTIONS = (

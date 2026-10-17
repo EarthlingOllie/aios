@@ -31,7 +31,6 @@ from aios.models import (
     Skill,
     SkillVersion,
     Trigger,
-    User,
     WorkflowNode,
     agent_version_skills,
 )
@@ -617,13 +616,13 @@ class ChatContext:
     model: str | None
     instructions: str
     metadata: dict[str, Any]
-    # The run's user's data store (`ChatDeps.data_store_id`).
-    data_store_id: uuid.UUID
     # The version's tools, built from their stored settings.
     tools: list[AgentTool] = field(default_factory=list)
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
     # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
+    # The data store the turn's tools use: the user's.
+    data_store_id: uuid.UUID | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
@@ -644,13 +643,16 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
+    # On this session, rather than one of its own alongside it; committed in case it's created.
+    data_store_id = data_store_for(user_id, db)
+    db.commit()
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         metadata=trace_metadata(run, user_id),
-        data_store_id=data_store_for(db.get_one(User, user_id)).id,
         tools=tools,
         sandbox_domains=sandbox_domains,
+        data_store_id=data_store_id,
     )
 
 
@@ -782,7 +784,7 @@ async def turn_stream(
             events = agent.astream(
                 {"messages": [prompt]},
                 config,
-                context=ChatDeps(user_id=user_id, data_store_id=ctx.data_store_id, run_id=run_id),
+                context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
                 stream_mode=["messages", "updates"],
                 # Checkpoint each step before the next starts, so the user's message is
                 # saved before the model is called.

@@ -20,12 +20,27 @@ class Settings(BaseSettings):
     # The platform database, as the app's role (`aios_app`, created by `aios.db_roles`): the API,
     # the workers and migrations all connect as it.
     database_url: str = "postgresql+psycopg://aios_app:aios_app@localhost:5432/aios"
-    # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), for creating data
-    # stores. Read by `aios.db_roles` (to create the role) only, for now; on AWS only the
-    # provisioning worker is to be given it.
+    # The provisioner's role (`aios_provisioner`: CREATEDB and CREATEROLE), which creates data
+    # stores and migrates them (`aios.datastores.provision`). New stores are created on its
+    # instance, which must be DATABASE_URL's: the app reaches them at DATABASE_URL's address
+    # (they may know the instance by different names, as in Compose). On AWS only the
+    # provisioning worker (and the deploy's store migration) has it.
     data_store_provisioner_url: str = (
         "postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios"
     )
+    # Encrypts data stores' passwords on their `data_stores` rows. Any string: the encryption
+    # key is derived from it, so a long random one (as on AWS) is a strong key. Changing it makes
+    # existing stores' passwords unreadable.
+    data_store_credentials_key: SecretStr = SecretStr("dev-insecure-change-me")
+    # The database new stores are copied from, made by `aios.db_roles`: it holds pgvector (in
+    # an `extensions` schema), which the provisioner, not being a superuser, can't install.
+    data_store_template: str = "aios_store_template"
+    # For each store's login roles: a query's longest run, the longest a session may sit idle in
+    # a transaction (both in milliseconds, and defaults a session may change), and how many
+    # connections the role may hold.
+    data_store_statement_timeout: int = Field(default=30_000, ge=1)
+    data_store_idle_in_transaction_timeout: int = Field(default=60_000, ge=1)
+    data_store_connection_limit: int = Field(default=10, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).
