@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-# Where documents' ids come from: an upload takes its id before its row is inserted.
-DOCUMENT_IDS = f"{Document.__table__.fullname}_id_seq"
+# Where documents' ids come from (an upload takes its id before its row is inserted): the id
+# column's own sequence, as Postgres knows it.
+DOCUMENT_IDS = func.pg_get_serial_sequence(Document.__table__.fullname, "id")
 
 
 class DocumentOut(BaseModel):
