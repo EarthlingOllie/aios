@@ -694,3 +694,18 @@ def test_a_run_set_aside_by_an_error_is_tried_again_later(
     with SessionLocal() as db:
         row = db.query(HistoryExport).filter_by(source_id=run["id"]).one()
         assert (row.error, row.retry_at) == (None, None) and row.exported_at is not None
+
+
+def test_switching_it_back_on_says_its_exporting_until_the_backfill_is_done(
+    api, user, store_id, history_tasks
+):
+    agent = make_agent(api, "Bot")
+    chat(api, agent, new_run(api, agent), "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    switch(api, False)
+
+    # Not a date from before: the Settings page waits for the backfill.
+    assert switch(api, True)["history_exported_at"] is None
+    set_up_and_export(store_id, history_tasks)
+    assert settings(api)["history_exported_at"] is not None

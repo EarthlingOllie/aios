@@ -451,8 +451,9 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
 def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     """Switch the user's export on or off, in `db`'s transaction, which the caller commits.
 
-    Switching it on (from off) backfills: every run of theirs goes in the outbox. It returns
-    their store, to queue its set-up once committed (`enqueue_set_up`)."""
+    Switching it on (from off) backfills: every run of theirs goes in the outbox, and the store
+    hasn't caught up until they're exported. It returns their store, to queue its set-up once
+    committed (`enqueue_set_up`)."""
     # Locked, so two switches at once don't both backfill, or both miss it.
     was_on = db.scalar(select(User.export_run_history).where(User.id == user_id).with_for_update())
     db.execute(update(User).where(User.id == user_id).values(export_run_history=on))
@@ -462,4 +463,5 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
 
     store_id = data_store_for(user_id, db)
     enqueue_runs(db, Agent.owner_id == user_id)
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_exported_at=None))
     return store_id
