@@ -425,3 +425,55 @@ def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, stor
     out = read(api, workflow, waiting["id"])
     assert out["status"] == "succeeded", (out["status"], out["error"])
     assert out["output"] == "builder:built(rejected)\n\nbuilder-places:built(rejected)"
+
+
+def test_a_waiting_run_shows_which_of_its_pins_are_no_longer_current(api, builder, store, queued):
+    inner = chain(api, builder)
+    outer = make_workflow(api, "Pipeline", [workflow_node("review", inner)])
+    waiting = start(api, queued, outer, Flow())
+    assert waiting["stale_pins"] == []
+
+    api.put(f"/api/agents/{builder['id']}", json=agent_body(builder, base_prompt="builder-v2"))
+    api.put(f"/api/workflows/{inner['id']}", json=workflow_body("Builders", []))
+    after = make_agent(api, "Gone", base_prompt="gone")
+    api.delete(f"/api/agents/{after['id']}")  # not pinned: not shown
+
+    out = read(api, outer, waiting["id"])
+    assert out["stale_pins"] == [
+        {
+            "path": ["review"],
+            "kind": "workflow",
+            "name": "Builders",
+            "pinned_version": 1,
+            "current_version": 2,
+        },
+        {
+            "path": ["review", "build"],
+            "kind": "agent",
+            "name": "Builder",
+            "pinned_version": 2,
+            "current_version": 3,
+        },
+    ]
+
+    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+    [_, build] = read(api, outer, waiting["id"])["stale_pins"]
+    assert (build["path"], build["current_version"]) == (["review", "build"], None)
+    # And the run's own workflow, at the top.
+    api.put(f"/api/workflows/{outer['id']}", json=workflow_body("Pipeline", []))
+    [own, *_] = read(api, outer, waiting["id"])["stale_pins"]
+    assert own == {
+        "path": [],
+        "kind": "workflow",
+        "name": "Pipeline",
+        "pinned_version": 1,
+        "current_version": 2,
+    }
+
+
+def test_a_run_shows_no_stale_pins_unless_its_waiting(api, builder, store, queued):
+    workflow = chain(api, builder)
+    waiting = start(api, queued, workflow, Flow())
+    api.put(f"/api/agents/{builder['id']}", json=agent_body(builder, base_prompt="builder-v2"))
+    decide(api, queued, Flow())
+    assert read(api, workflow, waiting["id"])["stale_pins"] == []

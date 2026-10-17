@@ -36,6 +36,7 @@ from aios.workflows import (
     alive,
     fail_stopped_runs,
     load_graph,
+    prefetch_graph,
     validate_graph,
 )
 
@@ -633,11 +634,84 @@ class WorkflowRunStepOut(BaseModel):
     finished_at: datetime | None
 
 
+class StalePin(BaseModel):
+    """A version a waiting run pins that's no longer its agent's or workflow's current one: the
+    run resumes on it regardless."""
+
+    # The node pinning it, from the run's workflow down.
+    path: list[str]
+    kind: WorkflowNodeKind
+    name: str
+    pinned_version: int
+    # None once the agent or workflow has been deleted.
+    current_version: int | None
+
+
 class WorkflowRunOut(WorkflowRunSummary):
     # The pinned version's graph.
     version: WorkflowVersionOut
     # In the order they started.
     steps: list[WorkflowRunStepOut]
+    # While it waits: the pins, at any depth, it would resume on that are no longer current.
+    stale_pins: list[StalePin]
+
+
+def stale_pins(db: Session, version_id: int) -> list[StalePin]:
+    """The versions a run of a workflow version pins that are no longer current: the version
+    itself first (path `[]`), then its nodes' at any depth, in node order, each subworkflow's
+    after its node. In a fixed number of queries."""
+    versions = prefetch_graph(db, version_id)
+    agent_ids = {
+        n.agent_version.agent_id for v in versions.values() for n in v.nodes if n.agent_version
+    }
+    workflow_ids = {v.workflow_id for v in versions.values()}
+
+    def current(model, ids: set[int], version_model) -> dict[int, tuple[str, int | None]]:
+        rows = db.execute(
+            select(model.id, model.name, model.deleted_at, version_model.version)
+            .join(version_model, version_model.id == model.current_version_id)
+            .where(model.id.in_(ids))
+        )
+        return {r.id: (r.name, None if r.deleted_at else r.version) for r in rows}
+
+    agents = current(Agent, agent_ids, AgentVersion)
+    workflows = current(Workflow, workflow_ids, WorkflowVersion)
+    stale: list[StalePin] = []
+
+    def walk(version: WorkflowVersion, path: list[str]) -> None:
+        for node in version.nodes:
+            if node.kind == WorkflowNodeKind.agent:
+                pinned, (name, now) = node.agent_version, agents[node.agent_version.agent_id]
+            else:
+                pinned = versions[node.subworkflow_version_id]
+                name, now = workflows[pinned.workflow_id]
+            if now != pinned.version:
+                stale.append(
+                    StalePin(
+                        path=[*path, node.key],
+                        kind=node.kind,
+                        name=name,
+                        pinned_version=pinned.version,
+                        current_version=now,
+                    )
+                )
+            if node.kind == WorkflowNodeKind.workflow:
+                walk(pinned, [*path, node.key])
+
+    top = versions[version_id]
+    name, now = workflows[top.workflow_id]
+    if now != top.version:
+        stale.append(
+            StalePin(
+                path=[],
+                kind=WorkflowNodeKind.workflow,
+                name=name,
+                pinned_version=top.version,
+                current_version=now,
+            )
+        )
+    walk(top, [])
+    return stale
 
 
 def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
@@ -774,6 +848,9 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
             )
             for step, agent_id in steps
         ],
+        stale_pins=stale_pins(db, summary.workflow_version_id)
+        if summary.status == WorkflowRunStatus.waiting
+        else [],
     )
 
 
