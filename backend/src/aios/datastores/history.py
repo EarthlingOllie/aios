@@ -19,8 +19,9 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   its error on its row and waits for its next change, so it doesn't hold up the rest. A
   periodic sweep (`stores_to_export`) queues stores whose rows are still pending, should a
   queued export be lost.
-- **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it.
-  Runs deleted meanwhile still go in the outbox, so their copies go once it's back on.
+- **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
+  (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
+  outbox, so their copies go once it's back on.
 """
 
 import logging
@@ -389,8 +390,9 @@ def stores_to_export() -> list[uuid.UUID]:
 
 
 def delete_exported(data_store_id: uuid.UUID) -> None:
-    """Empty the store's `history` tables (if it has them). The outbox is left as it is: runs
-    pending still go in, if the export is on.
+    """Empty the store's `history` tables (if it has them). If the export is on, it starts
+    over: every run of the owner's goes in the outbox again, so the whole copy comes back
+    rather than only runs that change. To keep it empty, switch the export off first.
 
     Raises as `store_session` does, and `DataStoreBusy` if an export of the store is still
     running after `LOCK_WAIT` (a backfill can take minutes)."""
@@ -399,13 +401,21 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             raise DataStoreBusy(data_store_id)
         with SessionLocal() as db:
             store = db.get(DataStore, data_store_id)
-            has_history = store is not None and store.history_revision is not None
-        if not has_history:
+            owner_id = store.owner_user_id if store and store.history_revision else None
+        if owner_id is None:
             return
         with store_session(data_store_id, "rw") as store:
             store.execute(delete(HistoryMessage))
             store.execute(delete(HistoryAgentRun))
             store.commit()
+        with SessionLocal() as db:
+            db.execute(
+                update(DataStore)
+                .where(DataStore.id == data_store_id)
+                .values(history_exported_at=None)
+            )
+            enqueue_runs(db, Agent.owner_id == owner_id)
+            db.commit()
 
 
 def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
