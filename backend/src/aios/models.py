@@ -263,9 +263,20 @@ class AgentVersionTool(Base):
     position: Mapped[int] = mapped_column(Integer)
 
 
+class AgentRunStatus(enum.StrEnum):
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
 class AgentRun(Base):
     """One conversation with an agent. Its history is the LangGraph thread `agent-run-<id>`
-    (`aios.checkpoints`)."""
+    (`aios.checkpoints`).
+
+    How it went and what it cost are written by its turns (`aios.api.agents.turn_stream`): the
+    status and times are its latest turn's, the counters add up over all of them. Null for runs
+    from before they were kept, which are shown as not tracked rather than as zero.
+    """
 
     __tablename__ = "agent_runs"
 
@@ -282,6 +293,22 @@ class AgentRun(Base):
     )
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Running while a turn of it is in progress, then how that turn ended.
+    status: Mapped[AgentRunStatus | None] = mapped_column(
+        Enum(AgentRunStatus, name="agent_run_status")
+    )
+    # When its latest turn began and ended.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The model's tool calls, and the tokens of each model call, summed: input tokens count the
+    # context again at each step, as bills do.
+    tool_call_count: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # While a turn runs outside a request (`aios.firing`), refreshed by the process running it;
+    # a running run whose heartbeat has stopped has lost its process, and is failed
+    # (`aios.firing.fail_stalled`). Null for a turn bound to a request, which ends with it.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -289,6 +316,15 @@ class AgentRun(Base):
 
     agent: Mapped[Agent] = relationship(back_populates="runs")
     agent_version: Mapped[AgentVersion] = relationship()
+
+    __table_args__ = (
+        # What the stall sweep looks at.
+        Index(
+            "ix_agent_runs_running_heartbeat",
+            "heartbeat_at",
+            postgresql_where=text("status = 'running' AND heartbeat_at IS NOT NULL"),
+        ),
+    )
 
 
 class SandboxSession(Base):
