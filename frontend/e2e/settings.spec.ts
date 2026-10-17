@@ -35,6 +35,28 @@ test("switching the export on sets the store up, then says when it last ran", as
   await expect(status).toContainText("Last exported");
 });
 
+test("with no runs to export, the page settles once the store is set up", async ({ page }) => {
+  const api = await fakeApi(page);
+  let asked = 0;
+  page.on("request", (r) => {
+    if (r.method() === "GET" && new URL(r.url()).pathname === "/api/settings") asked++;
+  });
+  await page.goto("/settings");
+  await page.getByRole("checkbox", { name: "Export my run history to my data store" }).check();
+  const status = page.getByRole("status", { name: "Run history export" });
+  await expect(status).toHaveText("Setting up the history tables in your data store…");
+
+  // The export, with nothing pending, still records that it caught up.
+  api.settings.history_ready = true;
+  api.settings.history_exported_at = "2026-10-16T10:00:00Z";
+  await expect(status).toContainText("Last exported");
+
+  // And the page stops asking.
+  const settled = asked;
+  await page.waitForTimeout(2500);
+  expect(asked).toBe(settled);
+});
+
 test("switching it off keeps what was exported, which can then be deleted", async ({ page }) => {
   const api = await fakeApi(page);
   api.settings = {
