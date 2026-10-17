@@ -8,6 +8,8 @@ const overview = (page: Page) => page.getByRole("region", { name: "Data store" }
 const documentList = (page: Page) => page.getByRole("list", { name: "Documents" });
 const row = (page: Page, filename: string) =>
   documentList(page).getByRole("listitem").filter({ hasText: filename });
+/** When the tests that drive the page's clock start it. */
+const START = new Date("2026-10-15T09:00:00Z");
 const file = (name: string) => ({
   name,
   mimeType: "text/markdown",
@@ -22,7 +24,10 @@ test("Data is in the navigation and opens on the Overview", async ({ page }) => 
 
   await expect(page).toHaveURL(/\/data$/);
   await expect(page.getByRole("heading", { name: "Data", level: 1 })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(overview(page)).toContainText("Ready");
   await expect(overview(page)).toContainText("Your data store is ready.");
 });
@@ -73,7 +78,10 @@ test("each section has its own URL", async ({ page }) => {
 
   // A link (or a reload) opens straight on the section.
   await page.goto("/data?tab=documents");
-  await expect(page.getByRole("tab", { name: "Documents" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Documents" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(row(page, "plan.md")).toBeVisible();
 
   await page.getByRole("tab", { name: "Overview" }).click();
@@ -210,7 +218,7 @@ test("uploads still in flight when you switch tabs keep their progress and error
   await expect(upload.locator(".animate-spin")).toBeHidden();
 });
 
-test("an upload from the chat that finishes after you open the Data page still appears there", async ({
+test("an upload from the chat that lands after you open the Data page appears there", async ({
   page,
 }) => {
   const api = await fakeApi(page);
@@ -240,7 +248,11 @@ test("deleting a document removes it from the list and from search", async ({ pa
   await page.getByRole("button", { name: "Delete drop.md" }).click();
   await expect(row(page, "drop.md")).toHaveCount(0);
   await expect(row(page, "keep.md")).toBeVisible();
-  expect(api.writes).toContainEqual(["DELETE", expect.stringMatching(/^\/api\/documents\/\d+$/), null]);
+  expect(api.writes).toContainEqual([
+    "DELETE",
+    expect.stringMatching(/^\/api\/documents\/\d+$/),
+    null,
+  ]);
 
   await page.goto("/search?q=drop");
   await expect(page.getByText("No passages matched.")).toBeVisible();
@@ -255,4 +267,124 @@ test("cancelling a delete keeps the document", async ({ page }) => {
   await page.getByRole("button", { name: "Delete keep.md" }).click();
   await expect(row(page, "keep.md")).toBeVisible();
   expect(api.writes).toEqual([]);
+});
+
+test("a slow list shows it's loading, not that there are no documents", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.documentsDelay = 1500;
+  await page.goto("/data?tab=documents");
+
+  await expect(page.getByLabel("Loading documents")).toBeVisible();
+  await expect(page.getByText("No documents yet")).toBeHidden();
+
+  await expect(row(page, "report.pdf")).toBeVisible();
+  await expect(page.getByLabel("Loading documents")).toBeHidden();
+});
+
+test("a busy store says so, and the list loads once it's free", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  api.dataStoreBusy = true;
+  await page.goto("/data?tab=documents");
+
+  await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
+    "Your data store is busy.",
+  );
+  await expect(page.getByText("No documents yet.")).toBeHidden();
+
+  api.dataStoreBusy = false;
+  await expect(row(page, "report.pdf")).toBeVisible();
+  await expect(page.getByRole("status", { name: "Documents list" })).toBeHidden();
+});
+
+test("an upload refused by a busy store says so", async ({ page }) => {
+  const api = await fakeApi(page);
+  await page.goto("/data?tab=documents");
+  await expect(page.getByText("No documents yet.")).toBeVisible();
+
+  api.dataStoreBusy = true;
+  await page.locator('input[type="file"]').setInputFiles(file("notes.md"));
+  await expect(page.getByRole("alert")).toContainText(
+    "notes.md: Your data store is busy. Try again in a moment.",
+  );
+});
+
+test("a list refused for good says so once, without asking again", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("report.pdf");
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "report.pdf")).toBeVisible();
+
+  // The session expires: the next read of the list is refused, and so would every later one be.
+  let reads = 0;
+  await page.route("**/api/documents", (route) => {
+    reads++;
+    return route.fulfill({ status: 401, body: '{"detail":"Not authenticated"}' });
+  });
+  await page.locator('input[type="file"]').setInputFiles(file("notes.md"));
+
+  const notice = page.getByRole("status", { name: "Documents list" });
+  await expect(notice).toContainText(
+    "Couldn't load your documents (session expired, sign in again).",
+  );
+  await expect(notice).not.toContainText("Trying again");
+  const after = reads;
+  await page.waitForTimeout(5000);
+  expect(reads).toBe(after);
+});
+
+test("a slow poll that answers after a delete doesn't bring the document back", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  // Something still ingesting keeps the list polling.
+  api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
+  api.addDocument("drop.md");
+  // Timers only move when the test says, so no other poll can hide (or cause) a stale list.
+  await page.clock.install({ time: START });
+  await page.clock.pauseAt(START);
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "drop.md")).toBeVisible();
+
+  // A poll reads the list (drop.md still in it), but its answer is slow to arrive.
+  api.holdDocumentLists();
+  await page.clock.runFor(2000);
+  await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+  api.holdDocumentLists(false);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete drop.md" }).click();
+  await expect(row(page, "drop.md")).toHaveCount(0);
+
+  // The slow poll answers last, with the list from before the delete.
+  const stale = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/documents");
+  api.heldDocumentLists[0]();
+  await stale;
+  await page.waitForTimeout(300);
+  await expect(row(page, "drop.md")).toHaveCount(0);
+  await expect(row(page, "slides.pptx")).toBeVisible();
+});
+
+test("a slow list doesn't stack up polls behind it", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
+  await page.clock.install({ time: START });
+  await page.clock.pauseAt(START);
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "slides.pptx")).toBeVisible();
+
+  // The store is slow to answer: while a read is out, no more are sent.
+  api.holdDocumentLists();
+  await page.clock.runFor(10_000);
+  await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+  await page.waitForTimeout(300);
+  expect(api.heldDocumentLists).toHaveLength(1);
+
+  // Once it answers, polling carries on.
+  api.holdDocumentLists(false);
+  api.heldDocumentLists[0]();
+  api.finishIngest("slides.pptx", { chunks: 4 });
+  await page.clock.runFor(10_000);
+  await expect(row(page, "slides.pptx")).toContainText("4 chunks");
 });

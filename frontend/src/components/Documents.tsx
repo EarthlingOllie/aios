@@ -9,11 +9,11 @@ import {
 } from "react";
 import { FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
-import { formatDate } from "@/components/crud";
+import { formatDate, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
-import { api, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
+import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
 import { useDataStoreStatus } from "@/lib/data-store";
 import { cn } from "@/lib/utils";
 
@@ -29,21 +29,46 @@ const statusVariant = {
  * ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
 function useDocuments(storeStatus: DataStoreStatus | undefined) {
-  const [docs, setDocs] = useState<DocumentInfo[]>([]);
+  // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
+  const [docs, setDocs] = useState<DocumentInfo[]>();
+  // What to say about the last read of the list failing (e.g. the store is busy); the list
+  // keeps its last rows meanwhile.
+  const [listError, setListError] = useState<string>();
+  // Whether that failure may pass on its own: a refusal (an expired session, a store that isn't
+  // ready) answers the same however often it's asked, so it isn't asked again.
+  const [listRetrying, setListRetrying] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const ready = storeStatus === "ready";
 
-  // Never rejects: a failed list (API restart, expired session) keeps the last list and the
-  // poll below simply tries again.
-  const refresh = useCallback(
-    () =>
-      api
-        .listDocuments()
-        .then(setDocs)
-        .catch(() => {}),
-    [],
-  );
+  // Never rejects: a failed read keeps the last list, and the poll below tries again if the
+  // failure is transient. Only the latest read may update state: a slower, older answer (a poll
+  // sent before a delete, say) is dropped.
+  const latest = useRef(0);
+  const refresh = useCallback(() => {
+    const request = ++latest.current;
+    return api.listDocuments().then(
+      (list) => {
+        if (request !== latest.current) return;
+        setDocs(list);
+        setListError(undefined);
+        setListRetrying(false);
+      },
+      (err) => {
+        if (request !== latest.current) return;
+        // A network error, or the API restarting (502, 504) or busy (503: every connection the
+        // store allows is in use), which a moment's wait frees.
+        const transient = !(err instanceof ApiError) || [502, 503, 504].includes(err.status);
+        setListRetrying(transient);
+        const retry = transient ? " Trying again…" : "";
+        setListError(
+          err instanceof ApiError && err.status === 503
+            ? "Your data store is busy. Trying again…"
+            : `Couldn't load your documents (${describeError(err)}).${retry}`,
+        );
+      },
+    );
+  }, []);
 
   // List the documents once the store is ready (not before: the API refuses to list them until
   // then).
@@ -51,13 +76,11 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     if (ready) refresh();
   }, [ready, refresh]);
 
-  // Poll while anything is still being ingested by the worker.
-  const ingesting = docs.some((d) => d.status === "pending" || d.status === "processing");
-  useEffect(() => {
-    if (!ingesting) return;
-    const id = setInterval(refresh, 2000);
-    return () => clearInterval(id);
-  }, [ingesting, refresh]);
+  // Poll while anything is still being ingested by the worker, or the last read failed for a
+  // reason that may pass; each read waits for the last to answer, so a slow store doesn't pile
+  // them up.
+  const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
+  usePoll(ready && (ingesting || listRetrying), refresh, 2000);
 
   async function upload(files: File[]) {
     if (!files.length) return;
@@ -92,6 +115,10 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
 
   return {
     docs,
+    /** The store is ready but its list hasn't been read yet (and no read has failed). */
+    loading: ready && docs === undefined && !listError,
+    listError,
+    listRetrying,
     uploading,
     errors,
     dismissErrors: () => setErrors([]),
@@ -164,7 +191,10 @@ function UploadButton({ documents }: { documents: DocumentsState }) {
   );
 }
 
-/** What's wrong, if anything: a store that isn't ready, or uploads and deletes that failed. */
+/**
+ * What's wrong, if anything: a store that isn't ready, a list that couldn't be read, or uploads
+ * and deletes that failed.
+ */
 function DocumentsNotices({
   storeStatus,
   documents,
@@ -177,11 +207,25 @@ function DocumentsNotices({
   return (
     <>
       <DataStoreNotice status={storeStatus} action="upload documents" className={className} />
+      {documents.listError && (
+        <div
+          role="status"
+          aria-label="Documents list"
+          className={cn(
+            "text-muted-foreground flex items-start gap-2 rounded-md border text-sm",
+            className,
+          )}
+        >
+          {documents.listRetrying && <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />}
+          <span>{documents.listError}</span>
+        </div>
+      )}
       {documents.errors.length > 0 && (
         <div
           role="alert"
           className={cn(
-            "border-destructive/50 text-destructive flex items-start gap-2 rounded-md border text-sm",
+            "border-destructive/50 text-destructive flex items-start gap-2 rounded-md border",
+            "text-sm",
             className,
           )}
         >
@@ -212,6 +256,17 @@ const statusLabel = {
   failed: "Failed",
 } as const;
 
+function DocumentsLoading() {
+  return (
+    <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading documents" />
+  );
+}
+
+/** Whether to say there are no documents: only once a read has answered with none. */
+function isEmpty(documents: DocumentsState) {
+  return documents.docs?.length === 0 && documents.canUpload && !documents.listError;
+}
+
 /** The chat's documents panel: a compact list beside the conversation it grounds. */
 export function Documents() {
   const { storeStatus, documents } = useSharedDocuments();
@@ -224,11 +279,12 @@ export function Documents() {
         <UploadButton documents={documents} />
       </div>
       <DocumentsNotices storeStatus={storeStatus} documents={documents} className="px-2 py-1.5" />
+      {documents.loading && <DocumentsLoading />}
       <ul className="flex-1 space-y-1 overflow-y-auto">
-        {docs.length === 0 && documents.canUpload && (
+        {isEmpty(documents) && (
           <li className="text-muted-foreground text-sm">Upload files to search them in chat.</li>
         )}
-        {docs.map((doc) => (
+        {docs?.map((doc) => (
           <li
             key={doc.id}
             className="group hover:bg-accent flex items-center gap-2 rounded-md px-2 py-1.5 text-sm"
@@ -275,12 +331,13 @@ export function DocumentsSection() {
         <UploadButton documents={documents} />
       </div>
       <DocumentsNotices storeStatus={storeStatus} documents={documents} className="px-3 py-2" />
-      {docs.length === 0 && documents.canUpload && (
+      {documents.loading && <DocumentsLoading />}
+      {isEmpty(documents) && (
         <p className="text-muted-foreground text-sm">
           No documents yet. Upload PDFs, Office files, web pages, text or images to search them.
         </p>
       )}
-      {docs.length > 0 && (
+      {docs && docs.length > 0 && (
         <ul className="divide-y rounded-md border" aria-label="Documents">
           {docs.map((doc) => (
             <li key={doc.id} className="group flex items-start gap-3 px-3 py-2">

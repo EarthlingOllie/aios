@@ -118,6 +118,13 @@ export class FakeApi {
   tooLarge = new Set<string>();
   /** While set (by `holdUploads`), uploads wait for `releaseUploads` before they answer. */
   private uploadGate?: { wait: Promise<void>; release: () => void };
+  /** How long GET /api/documents takes to answer (ms). */
+  documentsDelay = 0;
+  /** While true, the documents endpoints answer 503, as when every store connection is in use. */
+  dataStoreBusy = false;
+  /** Reads of the list being held back by `holdDocumentLists`, oldest first. */
+  heldDocumentLists: (() => void)[] = [];
+  private holdingLists = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -150,6 +157,14 @@ export class FakeApi {
   releaseUploads() {
     this.uploadGate?.release();
     this.uploadGate = undefined;
+  }
+
+  /**
+   * Until called again with false, each GET /api/documents reads the list when it arrives but
+   * waits to answer until the test calls its entry in `heldDocumentLists`: a slow response.
+   */
+  holdDocumentLists(hold = true) {
+    this.holdingLists = hold;
   }
 
   /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
@@ -512,6 +527,7 @@ export class FakeApi {
           data_store_status: this.dataStoreStatus,
         });
       }
+      if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
       if (path === "/api/search") {
         // A passage from each ready document whose name contains the query.
         const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
@@ -546,7 +562,14 @@ export class FakeApi {
         );
         return reply(201, doc);
       }
-      if (path === "/api/documents") return reply(200, this.documents);
+      if (path === "/api/documents") {
+        await new Promise((resolve) => setTimeout(resolve, this.documentsDelay));
+        const list = [...this.documents];
+        if (this.holdingLists) {
+          await new Promise<void>((release) => this.heldDocumentLists.push(release));
+        }
+        return reply(200, list);
+      }
       return fail(404, "Not Found");
     }
     if (path === "/api/tools") return reply(200, []);
