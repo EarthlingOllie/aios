@@ -383,8 +383,8 @@ def test_numbers_in_json_lose_no_precision(api, store, data_agent):
     result = query(
         api,
         data_agent,
-        "SELECT '{\"amount\": 0.12345678901234567890123, \"weight\": 1.5,"
-        " \"count\": 12345678901234567890}'::jsonb AS j,"
+        'SELECT \'{"amount": 0.12345678901234567890123, "weight": 1.5,'
+        ' "count": 12345678901234567890}\'::jsonb AS j,'
         " '[0.30000000000000000001, 2.50]'::json AS k",
     )
 
