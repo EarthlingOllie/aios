@@ -74,6 +74,8 @@ export type DroppedRow = {
   restore_error: string | null;
   /** If set, a restore is refused once it runs (the worker's check), with this. */
   refuseRestore?: string;
+  /** If set, a restore is accepted but never happens (the worker gave up without a word). */
+  stallRestore?: boolean;
 };
 type WorkflowVersionRow = {
   id: number;
@@ -294,7 +296,7 @@ export class FakeApi {
   }
 
   private droppedOut(item: DroppedRow) {
-    const { purge_in_days, refuseRestore: _, ...fields } = item;
+    const { purge_in_days, refuseRestore: _, stallRestore: __, ...fields } = item;
     return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
   }
 
@@ -745,7 +747,7 @@ export class FakeApi {
       const out = this.droppedOut(item);
       // What the provisioning worker then does.
       if (item.refuseRestore) item.restore_error = item.refuseRestore;
-      else this.dropped = this.dropped.filter((d) => d !== item);
+      else if (!item.stallRestore) this.dropped = this.dropped.filter((d) => d !== item);
       return reply(202, { ...out, blocked: null });
     }
     if (path === "/api/tools") return reply(200, []);

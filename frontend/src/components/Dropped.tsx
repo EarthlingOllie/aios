@@ -9,6 +9,11 @@ import { droppedLabel, purgeIn } from "@/lib/dropped";
 
 /** How often the list is read again while a restore is on its way (ms). */
 const POLL_MS = 2000;
+/** How long a restore is waited for before the page stops expecting it (ms). */
+const RESTORE_WAIT_MS = 30_000;
+
+/** A restore asked for: the item's restore error then, and when to stop waiting for it. */
+type Restoring = { error: string | null; until: number };
 
 /**
  * The Data page's Dropped section: the tables and columns approved drops took away, with how
@@ -17,16 +22,23 @@ const POLL_MS = 2000;
  */
 export function DroppedSection() {
   const list = useLoad(useCallback(() => api.listDropped(), []));
-  // Restores on their way: id -> the item's restore error when it was asked for.
-  const [restoring, setRestoring] = useState<Map<number, string | null>>(new Map());
+  const [restoring, setRestoring] = useState<Map<number, Restoring>>(new Map());
   const [error, setError] = useState<string>();
   const items = list.data ?? [];
-  const waiting = items.some((d) => restoring.has(d.id) && restoring.get(d.id) === d.restore_error);
-  usePoll(waiting, list.reload, POLL_MS);
+  // A restore is on its way while the item's still listed with no new reason it was refused,
+  // until it's been waited for long enough (the platform may have given up without one).
+  const asked = (item: DroppedObject) => {
+    const r = restoring.get(item.id);
+    return r && r.error === item.restore_error ? r : undefined;
+  };
+  const busy = (item: DroppedObject) => (asked(item)?.until ?? 0) > Date.now();
+  const overdue = (item: DroppedObject) => !!asked(item) && !busy(item);
+  usePoll(items.some(busy), list.reload, POLL_MS);
 
   async function restore(item: DroppedObject) {
     setError(undefined);
-    setRestoring((r) => new Map(r).set(item.id, item.restore_error));
+    const until = Date.now() + RESTORE_WAIT_MS;
+    setRestoring((r) => new Map(r).set(item.id, { error: item.restore_error, until }));
     try {
       await api.restoreDropped(item.id);
     } catch (err) {
@@ -62,7 +74,7 @@ export function DroppedSection() {
         <ul className="flex flex-col gap-2">
           {items.map((item) => {
             const label = droppedLabel(item);
-            const busy = restoring.has(item.id) && restoring.get(item.id) === item.restore_error;
+            const waiting = busy(item);
             return (
               <li
                 key={item.id}
@@ -75,10 +87,10 @@ export function DroppedSection() {
                     size="sm"
                     variant="outline"
                     className="ml-auto"
-                    disabled={!!item.blocked || busy}
+                    disabled={!!item.blocked || waiting}
                     onClick={() => restore(item)}
                   >
-                    {busy ? <Loader2 className="animate-spin" /> : <RotateCcw />} Restore
+                    {waiting ? <Loader2 className="animate-spin" /> : <RotateCcw />} Restore
                   </Button>
                 </div>
                 <div className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
@@ -86,7 +98,13 @@ export function DroppedSection() {
                   <span title={formatDate(item.purge_at)}>{purgeIn(item.purge_at)}</span>
                 </div>
                 {item.blocked && <p className="text-muted-foreground text-xs">{item.blocked}</p>}
-                {item.restore_error && !busy && (
+                {overdue(item) && (
+                  <p className="text-muted-foreground text-xs">
+                    It hasn't been restored yet. Reload the page in a while to see if it has, or
+                    try again.
+                  </p>
+                )}
+                {item.restore_error && !waiting && (
                   <p className="text-destructive text-xs">
                     Couldn't restore it: {item.restore_error}
                   </p>

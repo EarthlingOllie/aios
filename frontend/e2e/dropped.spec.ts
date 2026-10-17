@@ -122,3 +122,21 @@ test("a restore refused once it ran says why", async ({ page }) => {
     "Couldn't restore it: `data.eels` exists again.",
   );
 });
+
+test("a restore that never comes stops being waited for, and can be tried again", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  // The worker gives up without a word (it couldn't reach the store, say).
+  api.addDropped({ kind: "table", table: "eels", stallRestore: true });
+  await page.clock.install();
+
+  await page.goto("/data?tab=dropped");
+  const eels = page.getByRole("listitem", { name: "Table data.eels" });
+  await eels.getByRole("button", { name: "Restore" }).click();
+  await expect(eels.getByRole("button", { name: "Restore" })).toBeDisabled();
+  await page.clock.runFor("01:00");
+
+  await expect(eels).toContainText("It hasn't been restored yet");
+  await expect(eels.getByRole("button", { name: "Restore" })).toBeEnabled();
+});
