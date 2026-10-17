@@ -46,8 +46,23 @@ function seconds(total: number) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+function elapsed(from: string, to: string | null) {
+  return Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
+}
+
 function duration(from: string, to: string | null) {
-  return seconds(Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000));
+  return seconds(elapsed(from, to));
+}
+
+/** How long a run has run, and, if it waited, how long apart from that (which isn't running). */
+function ranFor(from: string, to: string | null, waited: number) {
+  if (waited <= 0) return duration(from, to);
+  return `ran ${seconds(Math.max(0, elapsed(from, to) - waited))} · waited ${seconds(waited)}`;
+}
+
+/** A step's duration so far; a waiting one is paused, so it doesn't count up. */
+function stepDuration(step: WorkflowRunStep) {
+  return step.status === "waiting" ? "paused" : duration(step.started_at, step.finished_at);
 }
 
 /** One level of the graph being shown: the run's workflow, or a subworkflow inside it. */
@@ -164,8 +179,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         r.status === "waiting" && r.waiting_since
           ? `Started ${formatDate(r.started_at!)} · waiting since ${formatDate(r.waiting_since)}`
           : r.started_at
-          ? `Started ${formatDate(r.started_at)} · ${duration(r.started_at, r.finished_at)}` +
-            (r.waited_seconds > 0 ? ` · waited ${seconds(r.waited_seconds)}` : "")
+            ? `Started ${formatDate(r.started_at)} · ${ranFor(r.started_at, r.finished_at, r.waited_seconds)}`
           : r.finished_at
             ? // E.g. its worker died while it was still queued.
               `${statusLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
@@ -321,7 +335,7 @@ function StepDetails({
       {step ? (
         <>
           <p className="text-muted-foreground text-xs">
-            Started {formatDate(step.started_at)} · {duration(step.started_at, step.finished_at)}
+            Started {formatDate(step.started_at)} · {stepDuration(step)}
           </p>
           {step.error && <p className="text-destructive text-sm break-words">{step.error}</p>}
           {step.status === "waiting" && (
@@ -372,7 +386,7 @@ function StepList({ run }: { run: WorkflowRun }) {
         <li key={step.id} className="flex items-center gap-3 px-3 py-2">
           <span className="min-w-0 flex-1 truncate font-mono">{step.path.join(" / ")}</span>
           <span className="text-muted-foreground text-xs">
-            {duration(step.started_at, step.finished_at)}
+            {stepDuration(step)}
           </span>
           <StateBadge state={step.status} />
         </li>

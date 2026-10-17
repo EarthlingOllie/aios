@@ -161,3 +161,27 @@ test("a request decided elsewhere stops offering approve and reject", async ({ p
   await expect(card).toContainText("Applying", { timeout: 10_000 });
   await expect(card.getByRole("button", { name: "Approve" })).toHaveCount(0);
 });
+
+test("a run that waited shows how long it ran apart from how long it waited", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { workflow, run } = waitingRun(api);
+  Object.assign(run, {
+    status: "succeeded",
+    output: "done",
+    started_at: "2026-10-14T09:00:00Z",
+    finished_at: "2026-10-14T10:00:00Z",
+    waiting_since: null,
+    waited_seconds: 3540,
+  });
+  Object.assign(run.steps[0], { status: "succeeded", waiting_on_request_ids: [] });
+  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await expect(page.getByText(/ran 1m 0s · waited 59m 0s/)).toBeVisible();
+});
+
+test("a waiting step says so in the step list rather than counting up", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { workflow, run } = waitingRun(api);
+  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  const build = page.getByRole("listitem").filter({ hasText: /^build/ });
+  await expect(build).toContainText("paused");
+});
