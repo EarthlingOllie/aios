@@ -12,7 +12,7 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from aios import auth, scheduler, tracing
-from aios.api import agents, chat, documents, skills, tools, triggers, workflows
+from aios.api import agents, chat, data, documents, skills, tools, triggers, workflows
 from aios.config import get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(documents.router)
+    app.include_router(data.router)
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(agents.router)
