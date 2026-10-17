@@ -165,6 +165,8 @@ export type AgentInput = {
   note?: string;
 };
 
+export type AgentRunStatus = "running" | "succeeded" | "failed";
+
 export type RunSummary = {
   id: number;
   agent_id: number;
@@ -174,6 +176,15 @@ export type RunSummary = {
   message_count: number;
   /** The trigger (e.g. a schedule) that started the run, if one did and it still exists. */
   trigger_id: number | null;
+  /** How its latest turn is going or went, and when it began and ended. Null, with the
+   * counters, for a run from before these were kept (see `lib/agent-runs`). */
+  status: AgentRunStatus | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Over all its turns: the model's tool calls, and the tokens of each model call. */
+  tool_call_count: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   created_at: string;
   updated_at: string;
 };
