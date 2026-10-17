@@ -55,7 +55,7 @@ from aios import checkpoints, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
-from aios.datastores import data_store_for, schema_changes
+from aios.datastores import data_store_for, history, schema_changes
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -652,6 +652,9 @@ def _end_runs(
         return
     # Before the steps forget the requests they wait on.
     close_requests(db, ended)
+    # However it ended (finished, failed, stopped), it goes in the run history export's outbox,
+    # with its own update: once its row is locked, as deleting it locks it first.
+    history.enqueue_workflow_runs(db, WorkflowRun.id.in_(ended))
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
     db.execute(
@@ -751,6 +754,9 @@ def _start_step(
     """
     with SessionLocal() as db:
         live = node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True)
+        # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
+        # worker went on), whose steps, and their exported copy, are final. Share-locked, so
+        # ending it waits for this, or this for that.
         status = db.scalar(
             select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
         )

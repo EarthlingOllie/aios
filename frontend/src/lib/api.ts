@@ -19,6 +19,23 @@ export type DataStoreUsage = {
   measured_at: string | null;
 };
 
+/** The user's settings (the Settings page). */
+export type Settings = {
+  /** Copy agent and workflow runs into the data store's `history` tables. */
+  export_run_history: boolean;
+  /** The data store has its `history` tables (made once the export is first switched on). */
+  history_ready: boolean;
+  /** When the export last copied runs into the data store. */
+  history_exported_at: string | null;
+  /** Embed the exported messages, so agents can search past runs by meaning (only while the
+   * export is on). */
+  embed_run_history: boolean;
+  /** When embedding last caught up (embedded every exported message waiting). */
+  history_embedded_at: string | null;
+  /** Why embedding last failed, if it hasn't caught up since (it's tried again later). */
+  history_embed_error: string | null;
+};
+
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
@@ -628,6 +645,11 @@ export const api = {
   logout: () => request<void>("/logout", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
+  getSettings: () => request<Settings>("/api/settings"),
+  updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
+    request<Settings>("/api/settings", json("PUT", body)),
+  deleteExportedHistory: () =>
+    request<void>("/api/settings/exported-history", { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {

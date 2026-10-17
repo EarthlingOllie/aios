@@ -262,6 +262,18 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
   dataStoreFails = false;
+  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
+   * a test says so, as the provisioning worker would. */
+  settings = {
+    export_run_history: false,
+    history_ready: false,
+    history_exported_at: null as string | null,
+    embed_run_history: false,
+    history_embedded_at: null as string | null,
+    history_embed_error: null as string | null,
+  };
+  /** Times "delete exported history" was asked for. */
+  exportedHistoryDeletes = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
@@ -917,6 +929,31 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
+    if (path === "/api/settings") {
+      if (method === "PUT") {
+        // As the API: embedding only while the export is on, and off with it.
+        if (body?.export_run_history !== undefined) {
+          this.settings.export_run_history = Boolean(body.export_run_history);
+          if (!this.settings.export_run_history) this.settings.embed_run_history = false;
+        }
+        if (body?.embed_run_history !== undefined) {
+          if (body.embed_run_history && !this.settings.export_run_history) {
+            return reply(409, { detail: "Switch the run history export on first." });
+          }
+          if (body.embed_run_history && !this.settings.embed_run_history) {
+            this.settings.history_embedded_at = null;
+          }
+          this.settings.embed_run_history = Boolean(body.embed_run_history);
+        }
+      }
+      return reply(200, this.settings);
+    }
+    if (path === "/api/settings/exported-history" && method === "DELETE") {
+      this.exportedHistoryDeletes++;
+      // Emptied: nothing exported since (while it's on, the export starts over).
+      this.settings.history_exported_at = null;
+      return reply(204);
+    }
     if (
       path === "/api/documents" ||
       path.startsWith("/api/documents/") ||

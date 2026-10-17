@@ -32,6 +32,7 @@ import { DataPage } from "@/pages/Data";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
+import { SettingsPage } from "@/pages/Settings";
 import {
   SkillDetail,
   SkillForm,
@@ -133,6 +134,7 @@ export default function App() {
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data" element={<DataPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
@@ -168,7 +170,7 @@ const navItems: NavItem[] = [
   { to: "/workflows", label: "Workflows", icon: Workflow, end: false },
   { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false },
   { to: "/data", label: "Data", icon: Database, end: false },
-  { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
+  { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
