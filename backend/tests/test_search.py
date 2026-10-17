@@ -7,7 +7,8 @@ from conftest import delete_user, provisioned_user
 
 from aios import search
 from aios.auth import current_user
-from aios.datastores import data_store_for, store_session
+from aios.datastores import data_store_for, store_engine, store_session
+from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.main import app
 from aios.models import User
@@ -82,6 +83,24 @@ def test_search_never_returns_another_users_documents(db, user, monkeypatch):
             assert [h.filename for h in hits] == [filename]
     finally:
         delete_user(db, other)
+
+
+def test_search_opens_its_session_after_embedding(user, monkeypatch):
+    """The store's engine can be evicted (and disposed of) while the query is embedded: the
+    search mustn't then open connections on it, in a pool nothing tracks or disposes of."""
+    store_id = data_store_for(user.id)
+    add_chunks(store_id, "notes.md", [("Zebrafish fins.", unit(0))])
+    evicted = store_engine(store_id, "ro")
+
+    async def embed_query(text):
+        dispose_engines()  # as `MAX_ENGINES` newer engines would
+        return unit(0)
+
+    monkeypatch.setattr(search, "embed_query", embed_query)
+    hits = asyncio.run(hybrid_search(data_store_id=store_id, query="fish"))
+
+    assert [h.filename for h in hits] == ["notes.md"]
+    assert evicted.pool.checkedin() == 0
 
 
 @pytest.mark.parametrize(

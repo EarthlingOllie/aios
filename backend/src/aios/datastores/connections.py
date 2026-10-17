@@ -3,8 +3,10 @@
 `store_session(data_store_id, role)` opens a session on the store's own database, as its
 read-write (`rw`) or read-only (`ro`) role, once the store is ready. Engines are cached per
 (store, role), each with a small pool, and the least recently used are disposed of beyond
-`MAX_ENGINES`. `store_engine` is the lookup on its own, for a caller that wants to know the
-store is ready before doing something costly (search, before it pays to embed the query).
+`MAX_ENGINES`, so hold an engine (or session) no longer than the work on it: one disposed of
+while held starts a new pool nothing here tracks. A caller that wants to know the store is
+ready before something costly (search, before it pays to embed the query) checks
+`store_status` first, then opens its session.
 
 Each login role may hold only so many connections (`data_store_connection_limit`). Past it, or
 when this process's pool on the store stays full for `POOL_TIMEOUT` seconds, opening a

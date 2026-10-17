@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.datastores import DataStoreBusy, DataStoreNotReady, store_engine
+from aios.datastores import DataStoreBusy, DataStoreNotReady, store_session, store_status
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
 
@@ -117,13 +117,15 @@ async def hybrid_search(*, data_store_id: uuid.UUID, query: str, limit: int = 8)
     """Search the data store's documents."""
     if not query.strip():  # e.g. a blank query from the agent's tool call
         return []
-    # Raises `DataStoreNotReady` before the query is embedded, which would be wasted on a store
-    # that isn't ready.
-    engine = await to_thread.run_sync(store_engine, data_store_id, "ro")
+    # Embedding the query would be wasted on a store that isn't ready. The session is opened
+    # only after it: an engine held across the embed may have been evicted by then.
+    status = await to_thread.run_sync(store_status, data_store_id)
+    if status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, status)
     query_vector = await embed_query(query)
 
     def run() -> list[SearchHit]:
-        with Session(engine) as db:
+        with store_session(data_store_id, "ro") as db:
             return hybrid_search_with_vector(
                 db, query=query, query_vector=query_vector, limit=limit
             )
