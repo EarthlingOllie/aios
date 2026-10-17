@@ -14,8 +14,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
 import { Notice } from "@/components/Notice";
-import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
-import { useDataStoreStatus } from "@/lib/data-store";
+import {
+  api,
+  ApiError,
+  describeError,
+  type DataStoreStatus,
+  type DataStoreUsage,
+  type DocumentInfo,
+} from "@/lib/api";
+import { filesFull, storageMeters, useDataStoreStatus } from "@/lib/data-store";
 import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +37,11 @@ const statusVariant = {
  * The user's documents, read by the views that show them (`useDocumentsList`) and again while
  * any is still being ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
-function useDocuments(storeStatus: DataStoreStatus | undefined) {
+function useDocuments(
+  storeStatus: DataStoreStatus | undefined,
+  usage: DataStoreUsage | undefined,
+  recheckStore: () => void,
+) {
   // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
   const [docs, setDocs] = useState<DocumentInfo[]>();
   // What to say about the last read of the list failing (e.g. the store is busy); the list
@@ -83,17 +94,25 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     setUploading(true);
     setErrors([]);
     const failed: string[] = [];
+    let full = false;
     try {
       for (const file of files) {
         try {
           await api.uploadDocument(file);
         } catch (err) {
           failed.push(`${file.name}: ${describeError(err)}`);
+          // At the file cap since the store was last asked about: the rest would be refused too.
+          if (err instanceof ApiError && err.status === 507) {
+            full = true;
+            break;
+          }
         }
       }
     } finally {
       setErrors(failed);
       setUploading(false);
+      // Its usage, which now stops uploads (until the documents are measured under the cap).
+      if (full) recheckStore();
       await refresh();
     }
   }
@@ -127,7 +146,9 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     upload,
     remove,
     /** Uploads wait for the store to be ready, and for its status to be known. */
-    canUpload: ready,
+    canUpload: ready && !filesFull(usage),
+    /** What uploads at the file cap are refused for; null below it. */
+    filesFullWarning: ready && filesFull(usage) ? storageMeters(usage!)[1].warning : null,
   };
 }
 
@@ -147,7 +168,7 @@ const DocumentsContext = createContext<SharedDocuments | null>(null);
  */
 export function DocumentsProvider({ children }: { children: ReactNode }) {
   const store = useDataStoreStatus();
-  const documents = useDocuments(store.status);
+  const documents = useDocuments(store.status, store.usage, store.recheck);
   return <DocumentsContext value={{ store, documents }}>{children}</DocumentsContext>;
 }
 
@@ -163,12 +184,12 @@ function useShared() {
  * mounts, as nothing polls it once it's ready.
  */
 export function useDataStore() {
-  const { status, error, recheck } = useShared().store;
+  const { status, usage, error, recheck } = useShared().store;
   // Only on mount, and only about a ready store: one still being asked about, or not ready (and
   // so still polled), needs nothing more.
   const recheckReady = useRef(status === "ready" ? recheck : undefined);
   useEffect(() => recheckReady.current?.(), []);
-  return { status, error };
+  return { status, usage, error, recheck };
 }
 
 /**
@@ -244,6 +265,11 @@ function DocumentsNotices({
         action="upload documents"
         className={className}
       />
+      {documents.filesFullWarning && (
+        <Notice label="Storage" error className={className}>
+          {documents.filesFullWarning}
+        </Notice>
+      )}
       {documents.listError && (
         <Notice label="Documents list" busy={documents.listRetrying} className={className}>
           {documents.listError}

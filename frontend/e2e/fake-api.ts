@@ -102,6 +102,20 @@ export class FakeApi {
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
+  /** What the store uses, as last measured, and its caps. Uploads answer 507 at the file cap. */
+  dataStoreUsage: {
+    db_bytes: number | null;
+    db_quota_bytes: number;
+    files_bytes: number | null;
+    files_quota_bytes: number;
+    measured_at: string | null;
+  } = {
+    db_bytes: 8 * 1024 ** 2,
+    db_quota_bytes: 1024 ** 3,
+    files_bytes: 0,
+    files_quota_bytes: 5 * 1024 ** 3,
+    measured_at: "2026-10-15T08:55:00Z",
+  };
   /** How long GET /api/data-store takes to answer (ms). */
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
@@ -516,7 +530,7 @@ export class FakeApi {
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       if (this.dataStoreFails) return fail(500, "Internal Server Error");
-      return reply(200, { status: this.dataStoreStatus });
+      return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
     if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
@@ -558,6 +572,15 @@ export class FakeApi {
         const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
         await this.uploadGate?.wait;
         if (this.tooLarge.has(filename)) return reply(413);
+        const { files_bytes, files_quota_bytes } = this.dataStoreUsage;
+        if (files_bytes !== null && files_bytes >= files_quota_bytes) {
+          const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+          return fail(
+            507,
+            `Your data store is full: its documents use ${gb(files_bytes)} of the` +
+              ` ${gb(files_quota_bytes)} allowed. Delete some to upload more.`,
+          );
+        }
         const doc = this.addDocument(
           filename,
           this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
