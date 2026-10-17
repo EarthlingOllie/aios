@@ -18,6 +18,7 @@ export type DocumentInfo = {
   status: DocumentStatus;
   error: string | null;
   chunk_count: number;
+  size_bytes: number;
   created_at: string;
 };
 
