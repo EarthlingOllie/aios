@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -622,6 +623,8 @@ class WorkflowRunStepOut(BaseModel):
     # the agent run has been deleted (with its agent).
     agent_id: int | None
     agent_run_id: int | None
+    # While a waiting agent node waits: the schema change request it waits on.
+    waiting_on_request_id: uuid.UUID | None
     started_at: datetime
     finished_at: datetime | None
 
@@ -759,6 +762,7 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
                 error=step.error,
                 agent_id=agent_id,
                 agent_run_id=step.agent_run_id,
+                waiting_on_request_id=step.waiting_on_request_id,
                 started_at=step.started_at,
                 finished_at=step.finished_at,
             )
