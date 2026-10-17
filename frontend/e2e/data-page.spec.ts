@@ -401,6 +401,26 @@ test("a list refused for good says so once, without asking again", async ({ page
   expect(reads).toBe(after);
 });
 
+test("a list refused for good stops polling, even with an ingest still running", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "slides.pptx")).toContainText("Processing");
+
+  let reads = 0;
+  await page.route("**/api/documents", (route) => {
+    reads++;
+    return route.fulfill({ status: 401, body: '{"detail":"Not authenticated"}' });
+  });
+  const notice = page.getByRole("status", { name: "Documents list" });
+  await expect(notice).toContainText("session expired, sign in again");
+  const after = reads;
+  await page.waitForTimeout(5000);
+  expect(reads).toBe(after);
+});
+
 test("a slow poll that answers after a delete doesn't bring the document back", async ({
   page,
 }) => {

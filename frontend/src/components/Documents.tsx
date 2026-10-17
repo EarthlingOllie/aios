@@ -71,10 +71,10 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
   }, []);
 
   // Poll while anything is still being ingested by the worker, or the last read failed for a
-  // reason that may pass; each read waits for the last to answer, so a slow store doesn't pile
-  // them up.
+  // reason that may pass, but not after one that won't (however much is ingesting); each read
+  // waits for the last to answer, so a slow store doesn't pile them up.
   const ingesting = Boolean(docs?.some((d) => d.status === "pending" || d.status === "processing"));
-  usePoll(ready && (ingesting || listRetrying), refresh, 2000);
+  usePoll(ready && (listError ? listRetrying : ingesting), refresh, 2000);
 
   async function upload(files: File[]) {
     if (!files.length) return;
