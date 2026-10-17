@@ -17,7 +17,10 @@ export function historyExportStatus(s: Settings, formatDate: (iso: string) => st
  * is on). */
 export function historyEmbeddingStatus(s: Settings, formatDate: (iso: string) => string): string {
   if (!s.embed_run_history) {
-    return "Off. Agents can search your past runs by keyword. Messages already embedded are kept.";
+    return (
+      "Off. New messages aren't embedded: agents find them by keyword. " +
+      "Those embedded before are kept, and still found by meaning."
+    );
   }
   if (s.history_embed_error) {
     return (

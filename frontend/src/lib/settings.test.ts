@@ -57,10 +57,10 @@ describe("historyEmbeddingStatus", () => {
   const exported = { export_run_history: true, history_ready: true };
   const done = "2026-10-16T10:00:00Z";
 
-  it("says search is by keyword only while it's off, keeping what was embedded", () => {
+  it("says new messages are found by keyword only while it's off, and what was embedded is kept", () => {
     const s = settings({ ...exported, history_exported_at: done });
     expect(historyEmbeddingStatus(s, at)).toBe(
-      "Off. Agents can search your past runs by keyword. Messages already embedded are kept.",
+      "Off. New messages aren't embedded: agents find them by keyword. Those embedded before are kept, and still found by meaning.",
     );
     expect(historyExportPending(s)).toBe(false);
   });

@@ -145,7 +145,7 @@ test("embedding is offered only while the export is on, and says when it caught 
   await expect(embedToggle).toBeVisible();
   await expect(embedToggle).not.toBeChecked();
   await expect(status).toHaveText(
-    "Off. Agents can search your past runs by keyword. Messages already embedded are kept.",
+    "Off. New messages aren't embedded: agents find them by keyword. Those embedded before are kept, and still found by meaning.",
   );
 
   await embedToggle.check();
