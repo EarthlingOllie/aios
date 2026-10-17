@@ -189,14 +189,10 @@ def test_rejecting_resumes_the_run_with_the_note_and_changes_nothing(api, agent,
 def test_a_failed_apply_resumes_the_run_with_the_error(api, agent, store, queued):
     with as_owner(store) as conn:
         conn.execute("CREATE TABLE data.fish (id int)")
-        conn.execute("INSERT INTO data.fish VALUES (1)")
+        conn.execute("INSERT INTO data.fish VALUES (1), (1)")
     script = Script(
         {"op": "add_column", "table": "fish", "column": {"name": "kg", "type": "numeric"}},
-        {
-            "op": "add_column",
-            "table": "fish",
-            "column": {"name": "n", "type": "text", "nullable": False},
-        },
+        {"op": "create_index", "table": "fish", "columns": ["id"], "unique": True},
     )
     _, request = start(api, agent, script)
 
@@ -206,7 +202,7 @@ def test_a_failed_apply_resumes_the_run_with_the_error(api, agent, store, queued
 
     (_, outcome), _ = script.results
     assert outcome["status"] == "failed"
-    assert "null values" in outcome["error"]
+    assert "could not create unique index" in outcome["error"]
     with as_owner(store) as conn:
         columns = conn.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'fish'"

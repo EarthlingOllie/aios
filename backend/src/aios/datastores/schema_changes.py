@@ -356,7 +356,7 @@ def check(change: SchemaChange, schema: StoreSchema) -> SchemaChange:
         if isinstance(op, CreateTable):
             _check_create_table(op, tables, relations, where)
         elif isinstance(op, AddColumn):
-            _check_add_column(op, tables, where)
+            _check_add_column(op, tables, where, existing=op.table in schema.tables)
         else:
             op = _check_create_index(op, tables, relations, where)
         checked.append(op)
@@ -404,26 +404,39 @@ def _check_create_table(
     for column in op.columns:
         _check_embedding(column, columns, op.name, where)
     tables[op.name] = columns
-    relations.add(op.name)
+    # And the names Postgres gives its key's index and identity's sequence (unless they're
+    # taken, when it picks others): later operations can't have them.
+    relations.update({op.name, f"{op.name[:58]}_pkey"})
+    if op.primary_key is None:
+        relations.add(f"{op.name[:56]}_id_seq")
 
 
-def _check_add_column(op: AddColumn, tables: dict[str, dict[str, str]], where: str) -> None:
+def _check_add_column(
+    op: AddColumn, tables: dict[str, dict[str, str]], where: str, *, existing: bool
+) -> None:
     columns = tables.get(op.table)
     if columns is None:
         raise Invalid(f"{where}: there's no table `{SCHEMA}.{op.table}`")
     if op.column.name in columns:
         raise Invalid(f"{where}: `{SCHEMA}.{op.table}` already has a column `{op.column.name}`")
+    if existing and not op.column.nullable and op.column.default is None:
+        raise Invalid(
+            f"{where}: `{op.column.name}` isn't nullable, so it needs a default: the rows"
+            f" `{SCHEMA}.{op.table}` already has need a value"
+        )
     _check_embedding(op.column, columns, op.table, where)
     columns[op.column.name] = op.column.pg_type
 
 
 def _index_name(op: CreateIndex, relations: set[str]) -> str:
-    base = "_".join([op.table, *op.columns])[:59]
-    name, n = f"{base}_idx", 2
-    while name in relations or name in RESERVED:
-        name = f"{base}_idx{n}"
+    base, n = "_".join([op.table, *op.columns]), 1
+    while True:
+        suffix = "_idx" if n == 1 else f"_idx{n}"
+        # Within Postgres's 63 characters, which it would otherwise cut it down to.
+        name = base[: 63 - len(suffix)] + suffix
+        if name not in relations:
+            return name
         n += 1
-    return name
 
 
 def _check_create_index(

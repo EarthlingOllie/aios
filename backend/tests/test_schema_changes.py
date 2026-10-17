@@ -362,3 +362,50 @@ def test_each_operation_sees_the_ones_before_it():
     assert [op.name for op in checked.ops[2:]] == ["eels_length_idx", "eels_length_idx2"]
     with pytest.raises(Invalid, match="Operation 1"):
         check(change(ops[1]), FISH)
+
+
+def test_a_made_up_index_name_fits_postgres_63_characters_however_it_is_numbered():
+    """Postgres cuts longer names short, which could make them clash after all."""
+    long_table, long_column = "t" * 40, "c" * 30
+    schema = StoreSchema(
+        tables={long_table: {long_column: "text"}},
+        relations={long_table, f"{long_table}_{long_column}"[:59] + "_idx"},
+    )
+    index = {"op": "create_index", "table": long_table, "columns": [long_column]}
+
+    checked = check(change(index, index), schema)
+
+    names = [op.name for op in checked.ops]
+    assert all(len(n) <= 63 for n in names)
+    assert len(set(names) | schema.relations) == len(schema.relations) + 2
+
+
+def test_the_names_a_new_table_takes_for_its_key_are_taken_for_later_operations():
+    """Its primary key's index (`<table>_pkey`) and identity's sequence (`<table>_id_seq`)."""
+    orders = table("orders", TEXT_X)
+
+    for clash in (
+        table("orders_pkey", TEXT_X),
+        table("orders_id_seq", TEXT_X),
+        {"op": "create_index", "table": "orders", "columns": ["x"], "name": "orders_pkey"},
+    ):
+        with pytest.raises(Invalid, match="Operation 2.*already exists"):
+            check(change(orders, clash), FISH)
+
+
+def test_a_not_null_column_added_to_an_existing_table_needs_a_default():
+    """Its rows need a value: without one, applying it fails on any table with rows."""
+    column = {"name": "kind", "type": "text", "nullable": False}
+
+    with pytest.raises(Invalid, match="needs a default"):
+        check(change({"op": "add_column", "table": "fish", "column": column}), FISH)
+    with_default = {**column, "default": "pike"}
+    check(change({"op": "add_column", "table": "fish", "column": with_default}), FISH)
+    # A table made in the same request has no rows yet.
+    check(
+        change(
+            table("eels", TEXT_X),
+            {"op": "add_column", "table": "eels", "column": column},
+        ),
+        FISH,
+    )

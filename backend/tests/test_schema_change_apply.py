@@ -138,22 +138,20 @@ def _login(store: DataStore, role: str) -> str:
 
 
 def test_a_failed_apply_leaves_the_schema_unchanged(db, store):
-    """The new table is made, then adding a NOT NULL column to a table with rows fails: the
+    """The new table is made, then a unique index on a column with duplicates fails: the
     table goes too, as nothing of the request is kept."""
+    with as_owner(store) as conn:
+        conn.execute("INSERT INTO data.fish VALUES (2, 'pike')")
     request = propose(
         store,
         CONTACTS,
-        {
-            "op": "add_column",
-            "table": "fish",
-            "column": {"name": "weight_kg", "type": "numeric", "nullable": False},
-        },
+        {"op": "create_index", "table": "fish", "columns": ["name"], "unique": True},
     )
 
     failed = approve(db, request)
 
     assert failed.status == SchemaChangeStatus.failed
-    assert "weight_kg" in failed.error and "null" in failed.error
+    assert failed.error == 'could not create unique index "fish_name_idx"'
     assert tables(store) == {"fish": ["id", "name"]}
     assert history(store) == []
     with as_owner(store) as conn:
