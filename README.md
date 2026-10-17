@@ -363,17 +363,22 @@ switched off with the export), embeds the exported messages so agents can search
 - `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
   (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
   (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
-- The export embeds what it has just exported once it has caught up, and a message keeps its
-  embedding while its text is unchanged, so a run exported again is embedded only where it's new.
-  Switching embedding on queues the export, which embeds every message already there (a
-  backfill); `data_stores.history_embedded_at` is when it last caught up. An export embeds for at
-  most `EMBED_BUDGET`; what's left, or what failed (the embedding API was down, say), is picked up
-  by the every-minute sweep. Switching it off stops new embeddings and keeps the existing ones.
+- The export embeds what it has just exported once it has caught up (after letting go of the
+  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
+  keeps its embedding while its text is unchanged, so a run exported again is embedded only where
+  it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching embedding
+  on queues the export, which embeds every message already there (a backfill);
+  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
+  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
+  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
+  new embeddings and keeps the existing ones, which are still searched.
 - The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
   search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by meaning
-  over what's embedded. Each result is a message with its run's id, agent, title and when it
-  started; the run searching is left out. Like document search, it runs in the store's own
-  database as `_ro`, so it never sees another store's runs.
+  over what's embedded. If the query can't be embedded, it searches by keyword alone. Each result
+  is a message with its run's id, agent, title and when it started; the run searching is left
+  out. Like document search, it runs in the store's own database as `_ro`, so it never sees
+  another store's runs.
 
 ### Dependency policy
 
