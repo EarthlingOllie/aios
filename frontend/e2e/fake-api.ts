@@ -21,7 +21,24 @@ type AgentRow = {
   base_prompt: string;
   versions: number[];
 };
-type AgentRunRow = {
+/** What a run records about how it went; all null for a run from before it was kept. */
+export type AgentRunCounters = {
+  status: "running" | "succeeded" | "failed" | null;
+  started_at: string | null;
+  finished_at: string | null;
+  tool_call_count: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+};
+const NOT_TRACKED: AgentRunCounters = {
+  status: null,
+  started_at: null,
+  finished_at: null,
+  tool_call_count: null,
+  input_tokens: null,
+  output_tokens: null,
+};
+type AgentRunRow = AgentRunCounters & {
   id: number;
   agent_id: number;
   agent_version_id: number;
@@ -138,14 +155,21 @@ export class FakeApi {
     return agent;
   }
 
-  /** Adds a chat run of the agent, at its current version. */
-  addAgentRun(agent: AgentRow, title: string | null = null, message_count = 0): AgentRunRow {
+  /** Adds a chat run of the agent, at its current version; not tracked unless `counters` say. */
+  addAgentRun(
+    agent: AgentRow,
+    title: string | null = null,
+    message_count = 0,
+    counters: Partial<AgentRunCounters> = {},
+  ): AgentRunRow {
     const run: AgentRunRow = {
       id: this.id(),
       agent_id: agent.id,
       agent_version_id: agent.versions.at(-1)!,
       title,
       message_count,
+      ...NOT_TRACKED,
+      ...counters,
     };
     this.agentRuns.set(run.id, run);
     return run;

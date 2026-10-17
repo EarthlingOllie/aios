@@ -10,7 +10,7 @@ from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
-from aios import checkpoints, scheduler
+from aios import checkpoints, firing, scheduler
 from aios.api.agents import new_agent_run
 from aios.cron import next_run
 from aios.db import SessionLocal
@@ -547,14 +547,14 @@ def test_the_loop_beats_the_fires_in_flight(api, db, monkeypatch):
     async def go():
         # A fire of this trigger is in flight in this process.
         in_flight = asyncio.create_task(asyncio.Event().wait())
-        scheduler._firing[in_flight] = (t["id"], now)
+        firing._in_flight[in_flight] = firing.Fire(scheduler.ScheduleFiring(t["id"], now))
         loop = asyncio.create_task(scheduler.run_forever(interval=10))
         await asyncio.sleep(0.3)
         loop.cancel()
         await asyncio.gather(loop, in_flight, return_exceptions=True)
 
     asyncio.run(go())
-    scheduler._firing.clear()
+    firing._in_flight.clear()
     with SessionLocal() as s:
         scheduler.fail_stalled(s)
     assert load(db, t["id"]).last_status == TriggerStatus.running
@@ -600,13 +600,14 @@ def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch)
 
     async def go():
         busy = asyncio.create_task(asyncio.Event().wait())
-        scheduler._firing[busy] = (0, now)  # this process's one slot is taken
+        # This process's one slot is taken.
+        firing._in_flight[busy] = firing.Fire(scheduler.ScheduleFiring(0, now))
         try:
             assert await scheduler.tick(now) == {}
         finally:
             busy.cancel()
             await asyncio.gather(busy, return_exceptions=True)
-            scheduler._firing.clear()
+            firing._in_flight.clear()
 
     asyncio.run(go())
     assert load(db, stopped["id"]).last_status == TriggerStatus.failed

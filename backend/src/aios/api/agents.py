@@ -24,6 +24,7 @@ from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
+    AgentRunStatus,
     AgentVersion,
     AgentVersionTool,
     Skill,
@@ -149,6 +150,14 @@ class RunSummary(BaseModel):
     message_count: int
     # The trigger that started the run (e.g. a schedule), if one did and it still exists.
     trigger_id: int | None
+    # How its latest turn is going or went, and when it began and ended; the model's tool calls
+    # and tokens over all its turns. All null for a run from before these were kept.
+    status: AgentRunStatus | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    tool_call_count: int | None
+    input_tokens: int | None
+    output_tokens: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -513,6 +522,12 @@ def run_summary_query():
         AgentRun.title,
         AgentRun.message_count,
         AgentRun.trigger_id,
+        AgentRun.status,
+        AgentRun.started_at,
+        AgentRun.finished_at,
+        AgentRun.tool_call_count,
+        AgentRun.input_tokens,
+        AgentRun.output_tokens,
         AgentRun.created_at,
         AgentRun.updated_at,
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
@@ -648,27 +663,79 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
     )
 
 
-def _start_turn(run_id: int, prompt: str) -> None:
-    """Title an untitled run after its first message."""
-    title = run_title(prompt)
-    with SessionLocal() as db:
-        db.execute(
-            update(AgentRun)
-            .where(AgentRun.id == run_id, AgentRun.title.is_(None))
-            .values(title=title)
-        )
-        db.commit()
+def _start_turn(run_id: int, prompt: str, *, heartbeat: bool = False) -> None:
+    """Mark the run running as a turn begins, and title it after its first message.
 
-
-def _end_turn(run_id: int, message_count: int) -> None:
+    With `heartbeat`, the turn runs outside a request and its process will keep the run's
+    heartbeat (`aios.firing`); without, any earlier one is cleared, so a request's turn isn't
+    failed as stalled."""
     with SessionLocal() as db:
-        # A no-op if the run was deleted mid-turn.
         db.execute(
             update(AgentRun)
             .where(AgentRun.id == run_id)
-            .values(message_count=message_count, updated_at=func.now())
+            .values(
+                title=func.coalesce(AgentRun.title, run_title(prompt)),
+                status=AgentRunStatus.running,
+                started_at=func.now(),
+                finished_at=None,
+                heartbeat_at=func.now() if heartbeat else None,
+            )
         )
         db.commit()
+
+
+def tool_call_count(response: AIMessage) -> int:
+    """The tool calls in a model response: the agent's, and the provider's own (e.g. web
+    search), which are content blocks of the response (as the run page counts them)."""
+    blocks = response.content if isinstance(response.content, list) else []
+    server = sum(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in blocks)
+    return len(response.tool_calls) + server
+
+
+def _count_step(run_id: int, response: AIMessage) -> None:
+    """Add a model step to the run's counters: its tool calls, and what the call cost."""
+    usage = response.usage_metadata or {}
+    with SessionLocal() as db:
+        db.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(
+                tool_call_count=func.coalesce(AgentRun.tool_call_count, 0)
+                + tool_call_count(response),
+                input_tokens=func.coalesce(AgentRun.input_tokens, 0) + usage.get("input_tokens", 0),
+                output_tokens=func.coalesce(AgentRun.output_tokens, 0)
+                + usage.get("output_tokens", 0),
+            )
+        )
+        db.commit()
+
+
+def _end_turn(run_id: int, *, failed: bool, message_count: int | None = None) -> None:
+    """Record how the turn ended; `message_count` is left as it was if the turn never started."""
+    values: dict[str, Any] = {
+        "status": AgentRunStatus.failed if failed else AgentRunStatus.succeeded,
+        "finished_at": func.now(),
+        "updated_at": func.now(),
+    }
+    if message_count is not None:
+        values["message_count"] = message_count
+    with SessionLocal() as db:
+        # A no-op if the run was deleted mid-turn.
+        db.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
+        db.commit()
+
+
+def model_responses(mode: str, data: Any) -> list[AIMessage]:
+    """The model's finished responses in one item of the agent's stream: each is a step."""
+    if mode != "updates":
+        return []
+    return [
+        message
+        for node, update in data.items()
+        if node == "model"
+        for message in (update or {}).get("messages", [])
+        if isinstance(message, AIMessage)
+    ]
 
 
 async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> None:
@@ -715,7 +782,12 @@ async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -
         if not finished:
             await _keep_unfinished_turn(agent, config, partial)
         state = await agent.aget_state(config)
-        await run_in_threadpool(_end_turn, run_id, len(state.values.get("messages", [])))
+        await run_in_threadpool(
+            _end_turn,
+            run_id,
+            failed=not finished,
+            message_count=len(state.values.get("messages", [])),
+        )
     except Exception:
         log.exception("couldn't record the end of a turn of run %s", run_id)
 
@@ -787,6 +859,9 @@ async def turn_stream(
                     async for mode, data in events:
                         for chunk in ui.feed(mode, data):
                             yield chunk
+                        # One small update per model step, so the run's counters are live.
+                        for response in model_responses(mode, data):
+                            await run_in_threadpool(_count_step, run_id, response)
                 finished = True
             except Exception as exc:
                 log.exception("agent run %s failed", run_id)
@@ -801,6 +876,11 @@ async def turn_stream(
     except Exception as exc:
         # The turn couldn't start, e.g. the database or the model's configuration.
         log.exception("agent run %s couldn't start a turn", run_id)
+        with CancelScope(shield=True):
+            try:
+                await run_in_threadpool(_end_turn, run_id, failed=True)
+            except Exception:
+                log.exception("couldn't record the end of a turn of run %s", run_id)
         for chunk in ui.error(exc):
             yield chunk
     for chunk in ui.finish():
