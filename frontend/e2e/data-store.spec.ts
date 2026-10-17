@@ -14,6 +14,8 @@ test("documents wait for a store that's being set up, then can be uploaded", asy
   const upload = page.getByRole("button", { name: "Upload" });
   await expect(upload).toBeDisabled();
   expect(api.writes).toEqual([]);
+  // Nothing to list until the store is ready: asking would only be refused.
+  expect(api.documentLists).toBe(0);
 
   api.dataStoreStatus = "ready";
   await expect(notice).toBeHidden();
@@ -27,6 +29,25 @@ test("documents wait for a store that's being set up, then can be uploaded", asy
   });
   await expect(page.getByText("notes.md")).toBeVisible();
   await expect(page.getByText("1 chunks")).toBeVisible();
+});
+
+test("a ready store's documents are listed once", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.documents.push({
+    id: 1,
+    filename: "notes.md",
+    status: "ready",
+    error: null,
+    chunk_count: 3,
+    created_at: "2026-10-14T09:00:00Z",
+  });
+  await page.goto("/");
+
+  await expect(page.getByText("notes.md")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
+  // Give a second request, if one were coming, time to arrive.
+  await page.waitForTimeout(500);
+  expect(api.documentLists).toBe(1);
 });
 
 test("uploads wait until the store's status is known", async ({ page }) => {
@@ -46,9 +67,11 @@ test("a store that couldn't be set up says so", async ({ page }) => {
   api.dataStoreStatus = "failed";
   await page.goto("/");
 
-  await expect(page.getByRole("status", { name: "Data store" })).toContainText(
+  // An error, not news of progress.
+  await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
     "Your data store couldn't be set up",
   );
+  await expect(page.getByRole("status", { name: "Data store" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
 

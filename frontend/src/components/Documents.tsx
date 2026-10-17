@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
 import { dataStoreNotice, dataStorePollInterval } from "@/lib/data-store";
+import { cn } from "@/lib/utils";
 
 const statusVariant = {
   pending: "secondary",
@@ -36,11 +37,8 @@ export function Documents() {
     [],
   );
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Ask how the store is, and again while it isn't ready; list the documents once it is.
+  // Ask how the store is, and again while it isn't ready; list the documents once it is (not
+  // before: the API refuses to list them until then).
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -127,10 +125,17 @@ export function Documents() {
         />
       </div>
       {notice && (
+        // A store that couldn't be set up is an error, shown as the panel's other errors are;
+        // one being set up is progress.
         <div
-          role="status"
+          role={storeStatus === "failed" ? "alert" : "status"}
           aria-label="Data store"
-          className="text-muted-foreground flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm"
+          className={cn(
+            "flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm",
+            storeStatus === "failed"
+              ? "border-destructive/50 text-destructive"
+              : "text-muted-foreground",
+          )}
         >
           {storeStatus === "provisioning" && (
             <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />

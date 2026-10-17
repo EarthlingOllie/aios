@@ -6,6 +6,9 @@ is never touched by it. `aios.datastores.provision` runs it, as the store's owne
 no alembic.ini for it. To add a revision, copy the latest file in versions/ and set its
 `down_revision` to that file's `revision`.
 
+A table it makes is readable by `_ro` and writable by `_rw`, but for its own bookkeeping
+(`provision.BOOKKEEPING`), which only it writes: add any new such table there.
+
 Stores are upgraded one at a time while the new release is already running, so every revision
 must work with the code before it (expand now, contract in a later release).
 """

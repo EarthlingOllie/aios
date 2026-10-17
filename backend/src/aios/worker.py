@@ -37,7 +37,6 @@ celery_app.conf.update(
         "aios.run_workflow": {"queue": "workflows"},
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
-        "aios.migrate_data_stores": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
     },
 )
@@ -94,12 +93,24 @@ def ingest_document_task(self, data_store_id: str | int, document_id: int | None
         raise self.retry(countdown=60) from exc
 
 
-# Provisioning gives up after this many tries (a minute apart, then longer), and marks the store
-# failed; `retry_unfinished_data_stores_task` tries again, every `RETRY_UNFINISHED_EVERY`.
+# Provisioning is retried this many times after its first try (a minute apart, then longer:
+# about half an hour in all), then marks the store failed; `retry_unfinished_data_stores_task`
+# tries again, every `RETRY_UNFINISHED_EVERY`.
 PROVISION_RETRIES = 5
 
 
-@celery_app.task(name="aios.provision_data_store", bind=True, max_retries=PROVISION_RETRIES)
+# Provisioning a store takes seconds: these stop a stuck run (waiting on a lock, say) holding
+# the provisioning worker for ingest's half hour. A run cut short is finished by running it again.
+PROVISION_TIME_LIMIT = 5 * 60
+
+
+@celery_app.task(
+    name="aios.provision_data_store",
+    bind=True,
+    max_retries=PROVISION_RETRIES,
+    soft_time_limit=PROVISION_TIME_LIMIT,
+    time_limit=PROVISION_TIME_LIMIT + 60,
+)
 def provision_data_store_task(self, data_store_id: str) -> None:
     """Create the store's database (`aios.datastores.provision`). Safe to run again, or at once
     with another run for the same store."""
@@ -115,20 +126,17 @@ def provision_data_store_task(self, data_store_id: str) -> None:
         raise self.retry(countdown=60 * 2**self.request.retries) from exc
 
 
-@celery_app.task(name="aios.retry_unfinished_data_stores")
+@celery_app.task(
+    name="aios.retry_unfinished_data_stores",
+    # One that runs over (stores failing slowly, say) stops: the next, due by then, carries on.
+    soft_time_limit=RETRY_UNFINISHED_EVERY,
+    time_limit=RETRY_UNFINISHED_EVERY + 60,
+)
 def retry_unfinished_data_stores_task() -> None:
     """Try once more to provision stores that never got there (`aios.datastores.provision`)."""
     from aios.datastores import provision
 
     provision.retry_unfinished()
-
-
-@celery_app.task(name="aios.migrate_data_stores")
-def migrate_data_stores_task() -> None:
-    """Bring every ready store to the store tree's head (`aios.datastores.provision`)."""
-    from aios.datastores import provision
-
-    provision.migrate_all()
 
 
 @celery_app.task(

@@ -217,7 +217,7 @@ uv run python -m aios.datastores.provision migrate-all   # data stores, after ev
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
 uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
-uv run celery -A aios.worker worker -Q provisioning --loglevel=INFO   # and data stores
+uv run celery -A aios.worker worker -Q provisioning -B --loglevel=INFO   # and data stores (-B: their retries)
 
 cd frontend
 pnpm install
@@ -264,25 +264,33 @@ Each user has a data store: a Postgres database of their own on the same instanc
 `aios_provisioner`:
 
 - creates the roles `ds_<id>_owner` (no login), `ds_<id>_rw` and `ds_<id>_ro`, named after the
-  store's id (a UUID, never the user's), with a statement timeout, an idle-in-transaction
-  timeout and a connection limit each (`DATA_STORE_STATEMENT_TIMEOUT`,
-  `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in milliseconds, and `DATA_STORE_CONNECTION_LIMIT`);
-- creates the database `ds_<id>` from the template, owned by `_owner`, revokes `CONNECT` (and
-  `TEMPORARY`) from `PUBLIC` and grants `CONNECT` to `_rw` and `_ro`;
+  store's id (a UUID, never the user's), with a connection limit each
+  (`DATA_STORE_CONNECTION_LIMIT`), and a default statement timeout and idle-in-transaction
+  timeout (`DATA_STORE_STATEMENT_TIMEOUT`, `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in
+  milliseconds): role defaults, which a session may `SET` otherwise, so code running queries it
+  doesn't control sets its own;
+- creates the database `ds_<id>` from the template, owned by `_owner` and taking no
+  connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw` and
+  `_ro`, and only then lets them connect;
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
   the owner creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
-  `aios.alembic_version`) as `_owner`, and marks the store `ready` at its head revision. The
-  tree makes the `aios` schema (the platform's tables) and an empty `data` schema (the owner's
-  tables, which the tree otherwise leaves alone).
+  `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
+  (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
+  at its head revision. The tree makes the `aios` schema (the platform's tables) and an empty
+  `data` schema (the owner's tables, which the tree otherwise leaves alone).
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
-After five failed tries the store is marked `failed`. Until a store is `ready`, uploads, the
-document list and search answer 409 ("being set up"), and the UI says so.
+After six failed tries (the first and five retries, over about half an hour) the store is marked
+`failed`. The provisioning worker's beat (`-B`) tries `failed` stores again every ten minutes,
+along with any still `provisioning` five minutes after they were made (their task was lost with a
+worker, say). Until a store is `ready`, uploads, the document list and search answer 409 ("being
+set up"), and the UI says so.
 
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
-`DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so neither the app's
-logs nor a server logging statements ever has them. The API returns only a store's status
+`DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
+never have them, and a server logging statements has only the encrypted ones (in the
+`data_stores` insert), useless without the key. The API returns only a store's status
 (`GET /api/data-store`).
 
 `python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
@@ -294,7 +302,10 @@ each must work with the code before it (expand now, contract in a later release)
 
 Documents and chunks are still in the platform database: `documents_session` opens a platform
 session for them, until they move into the stores. `store_session(id, role)` already opens a
-session on the store's own database, as `_rw` or `_ro`.
+session on the store's own database, as `_rw` or `_ro`, at `DATABASE_URL`'s address (and with
+its options, like `sslmode`): stores are on the platform database's instance, which the
+provisioner may know by another name (Compose's `db`, with the API on the host). A row's `host`
+and `port` are for a store moved to another instance later; they're empty until then.
 
 ### Dependency policy
 

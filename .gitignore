@@ -24,3 +24,9 @@ crash.log
 # Playwright
 frontend/test-results/
 frontend/playwright-report/
+
+# Redis snapshots from local redis-server runs
+dump.rdb
+
+# Celery beat's schedule, from running the provisioning worker locally (-B)
+celerybeat-schedule*

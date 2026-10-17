@@ -8,24 +8,29 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import psycopg
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from psycopg import errors, sql
-from sqlalchemy import select, text, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.engine import make_url
 
 from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
+from aios.datastores.connections import store_url
 from aios.datastores.migrations import head_revision
+from aios.datastores.resolve import names_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus
@@ -52,6 +57,53 @@ def test_a_new_users_store_is_provisioned_ready_at_the_store_trees_head(db, new_
         assert store.scalar(text("SELECT current_database()")) == row.dbname
 
 
+def test_a_store_is_reached_at_the_platform_databases_address_not_the_provisioners(
+    db, new_user, monkeypatch
+):
+    """The provisioner may know the instance by a name the app can't resolve (Compose's `db`,
+    with the API on the host): the app reaches a store where it reaches the platform database."""
+    settings = get_settings()
+    prov = make_url(settings.data_store_provisioner_url)
+    # A name only the provisioner can resolve: libpq connects to `hostaddr` instead.
+    as_db = prov.set(host="db.invalid").update_query_dict({"hostaddr": "127.0.0.1"})
+    monkeypatch.setattr(
+        settings, "data_store_provisioner_url", as_db.render_as_string(hide_password=False)
+    )
+    store_id = data_store_for(new_user().id)
+
+    provision.provision(store_id)
+
+    with store_session(store_id, "ro") as store:
+        assert store.scalar(text("SELECT current_database()")) == store_row(db, store_id).dbname
+
+
+def test_a_store_moved_to_another_instance_is_reached_there_with_the_apps_options(monkeypatch):
+    monkeypatch.setattr(
+        get_settings(),
+        "database_url",
+        "postgresql+psycopg://app:pw@platform:5432/aios?sslmode=require",
+    )
+    store = DataStore(
+        dbname="ds_x",
+        role_prefix="ds_x",
+        rw_password=credentials.encrypt("rw-secret"),
+        ro_password=credentials.encrypt("ro-secret"),
+    )
+    here = store_url(store, "ro")
+    store.host, store.port = "elsewhere", 6543
+    moved = store_url(store, "ro")
+
+    assert (here.host, here.port, here.database, here.username, here.password) == (
+        "platform",
+        5432,
+        "ds_x",
+        "ds_x_ro",
+        "ro-secret",
+    )
+    assert (moved.host, moved.port) == ("elsewhere", 6543)
+    assert here.query == moved.query == {"sslmode": "require"}
+
+
 @pytest.fixture
 def two_stores(db, new_user) -> tuple[DataStore, DataStore]:
     """Two provisioned stores, A and B."""
@@ -65,17 +117,9 @@ def two_stores(db, new_user) -> tuple[DataStore, DataStore]:
 
 def login_url(store: DataStore, role: str, database: str | None = None) -> str:
     """Store `store`'s `role`, as the app connects as it, to `database` (by default its own)."""
-    password = credentials.decrypt(store.rw_password if role == "rw" else store.ro_password)
     return (
-        make_url(get_settings().database_url)
-        .set(
-            drivername="postgresql",
-            username=f"{store.role_prefix}_{role}",
-            password=password,
-            host=store.host,
-            port=store.port,
-            database=database or store.dbname,
-        )
+        store_url(store, role)
+        .set(drivername="postgresql", database=database or store.dbname)
         .render_as_string(hide_password=False)
     )
 
@@ -90,6 +134,27 @@ def test_a_stores_roles_cant_connect_to_another_store_or_the_platform(two_stores
             psycopg.connect(login_url(a, role, database)).close()
     # But it can connect to its own.
     psycopg.connect(login_url(a, role)).close()
+
+
+def test_no_other_role_can_connect_to_a_new_store_before_its_access_is_set(
+    db, new_user, two_stores, monkeypatch
+):
+    """A new database lets every role connect, until `_restrict_connect` says who may: one let
+    in before then would stay connected."""
+    other, _ = two_stores
+    store_id = data_store_for(new_user().id)
+    steps = list(provision.STEPS)
+    monkeypatch.setattr(provision, "STEPS", steps[: steps.index(provision._create_database) + 1])
+    provision.provision(store_id)
+    dbname = store_row(db, store_id).dbname
+
+    for role in ("rw", "ro"):
+        with pytest.raises(psycopg.OperationalError):
+            psycopg.connect(login_url(other, role, dbname)).close()
+
+    monkeypatch.setattr(provision, "STEPS", steps)
+    provision.provision(store_id)
+    psycopg.connect(login_url(store_row(db, store_id), "rw")).close()
 
 
 @pytest.mark.parametrize("role", ["rw", "ro"])
@@ -110,18 +175,74 @@ def test_a_stores_roles_cant_create_anything(two_stores, role):
             conn.execute("CREATE EXTENSION IF NOT EXISTS dblink")
 
 
-def test_a_stores_read_only_role_cant_write(two_stores):
-    a, _ = two_stores
-    insert = "INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')"
+@pytest.fixture
+def store_with_a_table(db, new_user, next_revision) -> DataStore:
+    """A store provisioned at `next_revision`, whose `aios.marker` is a table like any a store
+    revision makes."""
+    next_revision()
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    return store_row(db, store_id)
+
+
+def test_a_stores_read_only_role_cant_write(store_with_a_table):
+    a = store_with_a_table
+    insert = "INSERT INTO aios.marker VALUES (1)"
     with psycopg.connect(login_url(a, "ro"), autocommit=True) as conn:
-        assert conn.execute("SELECT count(*) FROM aios.schema_history").fetchone() == (0,)
-        for write in (insert, "DELETE FROM aios.schema_history", "TRUNCATE aios.schema_history"):
+        assert conn.execute("SELECT count(*) FROM aios.marker").fetchone() == (0,)
+        for write in (insert, "DELETE FROM aios.marker", "TRUNCATE aios.marker"):
             with pytest.raises(errors.InsufficientPrivilege):
                 conn.execute(write)
     # The read-write role can.
     with psycopg.connect(login_url(a, "rw"), autocommit=True) as conn:
         conn.execute(insert)
-        assert conn.execute("DELETE FROM aios.schema_history").rowcount == 1
+        assert conn.execute("UPDATE aios.marker SET id = 2").rowcount == 1
+        assert conn.execute("DELETE FROM aios.marker").rowcount == 1
+
+
+# The platform's own record of the store's schema: only its migrations (as the owner) change it.
+BOOKKEEPING_WRITES = [
+    "INSERT INTO aios.alembic_version VALUES ('x')",
+    "UPDATE aios.alembic_version SET version_num = 'x'",
+    "DELETE FROM aios.alembic_version",
+    "TRUNCATE aios.alembic_version",
+    "INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')",
+    "UPDATE aios.schema_history SET summary = 'x'",
+    "DELETE FROM aios.schema_history",
+    "TRUNCATE aios.schema_history",
+]
+
+
+def assert_cant_change_bookkeeping(store: DataStore, role: str) -> None:
+    with psycopg.connect(login_url(store, role), autocommit=True) as conn:
+        # But may read it.
+        assert conn.execute("SELECT version_num FROM aios.alembic_version").fetchone()
+        conn.execute("SELECT count(*) FROM aios.schema_history")
+        for write in BOOKKEEPING_WRITES:
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(write)
+
+
+@pytest.mark.parametrize("role", ["rw", "ro"])
+def test_a_stores_roles_cant_change_its_migration_version_or_schema_history(two_stores, role):
+    assert_cant_change_bookkeeping(two_stores[0], role)
+
+
+def test_migrate_all_takes_writes_on_the_bookkeeping_back_from_existing_stores(db, new_user):
+    """Stores provisioned before `_rw` was kept off the bookkeeping."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    row = store_row(db, store_id)
+    with admin_connect(row.dbname) as conn:
+        conn.execute(
+            sql.SQL(
+                "GRANT INSERT, UPDATE, DELETE ON aios.alembic_version, aios.schema_history TO {}"
+            ).format(sql.Identifier(f"{row.role_prefix}_rw"))
+        )
+
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+
+    assert_cant_change_bookkeeping(row, "rw")
 
 
 def test_a_stores_roles_have_their_limits(two_stores):
@@ -217,8 +338,9 @@ class Crash(Exception):
 
 @pytest.mark.parametrize("crash_after", range(len(provision.STEPS) - 1))
 def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
-    db, new_user, monkeypatch, crash_after
+    db, new_user, monkeypatch, next_revision, crash_after
 ):
+    next_revision()  # a table for the read-write role to write
     store_id = data_store_for(new_user().id)
     steps = list(provision.STEPS)
 
@@ -237,7 +359,8 @@ def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
     row = store_row(db, store_id)
     assert (row.status, row.schema_revision) == (DataStoreStatus.ready, head_revision())
     with psycopg.connect(login_url(row, "rw"), autocommit=True) as conn:
-        conn.execute("INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')")
+        conn.execute("INSERT INTO aios.marker VALUES (1)")
+    assert_cant_change_bookkeeping(row, "rw")
 
 
 def admin_connect(database: str | None = None) -> psycopg.Connection:
@@ -439,6 +562,53 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
         assert conn.execute("SELECT current_user").fetchone() == (f"{row.role_prefix}_rw",)
 
 
+def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provisioned(db, new_user):
+    """While a deploy migrates, the release before migration 0012 still serves, and makes a
+    new user's store with only its owner: the row gets its names from its id."""
+    user = new_user()
+    store_id = db.scalar(insert(DataStore).values(owner_user_id=user.id).returning(DataStore.id))
+    db.commit()
+
+    row = store_row(db, store_id)
+    assert (row.dbname, row.role_prefix) == names_for(store_id)
+    assert row.status == DataStoreStatus.provisioning
+
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    assert row.status == DataStoreStatus.ready
+    with psycopg.connect(login_url(row, "rw")) as conn:
+        assert conn.execute("SELECT current_database()").fetchone() == (row.dbname,)
+
+
+def test_passwords_another_run_gave_a_store_meanwhile_are_kept(db, new_user, monkeypatch):
+    """Another run (or a deploy's migrate-all) may give the store its passwords between our
+    first look and taking the row's lock: those win, not new ones."""
+    store_id = data_store_for(new_user().id)
+    db.execute(
+        update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
+    )
+    db.commit()
+    theirs = credentials.encrypt("theirs")
+    real_select = provision.select
+
+    def meanwhile(*args):
+        with SessionLocal() as other:
+            other.execute(
+                update(DataStore)
+                .where(DataStore.id == store_id)
+                .values(rw_password=theirs, ro_password=theirs)
+            )
+            other.commit()
+        return real_select(*args)
+
+    monkeypatch.setattr(provision, "select", meanwhile)
+
+    assert provision._passwords(store_id) == ("theirs", "theirs")
+    row = store_row(db, store_id)
+    assert (row.rw_password, row.ro_password) == (theirs, theirs)
+
+
 def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
     db, new_user, caplog, client
 ):
@@ -499,25 +669,27 @@ def test_the_provisioning_task_retries_then_marks_the_store_failed(db, new_user,
 
 
 def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user, monkeypatch):
-    gave_up, never_queued, just_signed_up = [data_store_for(new_user().id) for _ in range(3)]
+    gave_up, lost, just_signed_up = [data_store_for(new_user().id) for _ in range(3)]
     provision.fail(gave_up, "OperationalError: the instance is down")
+    # Its task was never queued, or was lost with a worker that was killed (the broker only
+    # redelivers that after its visibility timeout, over an hour): it needn't wait for that.
     db.execute(
         update(DataStore)
-        .where(DataStore.id == never_queued)
-        .values(created_at=text("now() - interval '2 hours'"))
+        .where(DataStore.id == lost)
+        .values(created_at=text("now() - interval '10 minutes'"))
     )
     db.commit()
     # Only this test's stores: others in the database are left alone.
     retry = provision.retry_unfinished
     monkeypatch.setattr(
-        provision, "retry_unfinished", lambda: retry([gave_up, never_queued, just_signed_up])
+        provision, "retry_unfinished", lambda: retry([gave_up, lost, just_signed_up])
     )
 
     worker.retry_unfinished_data_stores_task.apply().get()
 
     assert store_row(db, gave_up).status == DataStoreStatus.ready
     assert store_row(db, gave_up).error is None
-    assert store_row(db, never_queued).status == DataStoreStatus.ready
+    assert store_row(db, lost).status == DataStoreStatus.ready
     # Its own provisioning task may still be trying: it's left to that.
     assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
     # The provisioning worker runs it (`celery worker -B`), as the provisioner.
@@ -526,3 +698,115 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
+
+
+def test_runs_of_a_store_at_once_wait_for_each_other(db, new_user):
+    """So the sweep can provision a store whose own task is running, or about to."""
+    store_id = data_store_for(new_user().id)
+
+    with ThreadPoolExecutor(2) as pool:
+        revisions = list(pool.map(provision.provision, [store_id, store_id]))
+
+    # One provisioned it; the other found it ready and left it.
+    assert sorted(revisions, key=str) == [head_revision(), None]
+    assert store_row(db, store_id).status == DataStoreStatus.ready
+
+
+def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short(
+    db, new_user, monkeypatch
+):
+    """The provisioning worker's time limits stop the whole run, not just one store's."""
+    stores = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in stores:
+        provision.fail(store_id, "OperationalError: the instance is down")
+    tries = []
+
+    def out_of_time(store_id, wait=True):
+        tries.append(store_id)
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(provision, "provision", out_of_time)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        provision.retry_unfinished(stores)
+
+    assert len(tries) == 1
+    for store_id in stores:
+        row = store_row(db, store_id)
+        assert (row.status, row.error) == (
+            DataStoreStatus.failed,
+            "OperationalError: the instance is down",
+        )
+
+
+def test_a_time_limit_stops_migrating_stores_without_recording_an_error(db, new_user, monkeypatch):
+    stores = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in stores:
+        provision.provision(store_id)
+    tries = []
+
+    def out_of_time(store_id):
+        tries.append(store_id)
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr(provision, "migrate_store", out_of_time)
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        provision.migrate_all(stores)
+
+    assert len(tries) == 1
+    assert [store_row(db, s).error for s in stores] == [None, None]
+
+
+def test_provisioning_tasks_have_time_limits_of_their_own():
+    """Not ingest's half hour: provisioning a store takes seconds."""
+    for task in (worker.provision_data_store_task, worker.retry_unfinished_data_stores_task):
+        assert task.soft_time_limit < task.time_limit < get_settings().ingest_time_limit
+
+
+def test_running_migrate_all_as_a_module_gives_no_import_warning():
+    """`python -m` runs a fresh copy of the module; one imported before it is a second copy."""
+    result = subprocess.run(
+        [sys.executable, "-m", "aios.datastores.provision"],
+        cwd=BACKEND,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2  # usage: no command given
+    assert "RuntimeWarning" not in result.stderr
+
+
+def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user):
+    """New stores' provisioning queues behind it on the one provisioning worker: it mustn't
+    wait for a deploy's migrate-all, say, to finish a store."""
+    busy, other = [data_store_for(new_user().id) for _ in range(2)]
+    for store_id in (busy, other):
+        provision.fail(store_id, "OperationalError: the instance is down")
+
+    with ThreadPoolExecutor(1) as pool, provision._provisioner_locked(busy):
+        outcome = pool.submit(provision.retry_unfinished, [busy, other]).result(timeout=30)
+
+    assert outcome == {other: head_revision()}
+    assert store_row(db, busy).status == DataStoreStatus.failed
+    # The next one gets it.
+    assert provision.retry_unfinished([busy]) == {busy: head_revision()}
+
+
+def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, monkeypatch):
+    store_id = data_store_for(new_user().id)
+    # Takes the connection (the kernel does), then says nothing.
+    silent = socket.create_server(("127.0.0.1", 0))
+    url = make_url(get_settings().data_store_provisioner_url).set(
+        host="127.0.0.1", port=silent.getsockname()[1]
+    )
+    # Undone before the store is dropped, which needs the real instance.
+    with monkeypatch.context() as m, ThreadPoolExecutor(1) as pool, silent:
+        m.setattr(
+            get_settings(), "data_store_provisioner_url", url.render_as_string(hide_password=False)
+        )
+        m.setattr(provision, "CONNECT_TIMEOUT", 1)
+        run = pool.submit(provision.provision, store_id)
+        with pytest.raises(psycopg.OperationalError, match="timeout"):
+            run.result(timeout=30)
