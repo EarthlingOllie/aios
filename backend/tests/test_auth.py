@@ -46,14 +46,14 @@ def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
 
     on_loop = []
 
-    def data_store_for(user):
+    def data_store_for(user_id, *args):
         # Blocking: must run in the threadpool, not on the event loop.
         try:
             asyncio.get_running_loop()
             on_loop.append(True)
         except RuntimeError:
             on_loop.append(False)
-        return real_data_store_for(user)
+        return real_data_store_for(user_id, *args)
 
     real_data_store_for = auth.data_store_for
     monkeypatch.setattr(auth.oauth.github, "authorize_access_token", authorize_access_token)

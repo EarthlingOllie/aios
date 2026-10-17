@@ -1,16 +1,17 @@
 from dataclasses import replace
 
 import pytest
+from conftest import delete_user, provisioned_user
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
-from test_search import unit
+from test_search import add_chunks, unit
 
 from aios import llm, search
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import data_store_for
-from aios.models import Agent, Chunk, Document, DocumentStatus, User
+from aios.datastores import data_store_for, store_session
+from aios.models import Agent
 from aios.runner import server_tools
 from aios.tools import TOOLS, ToolSpec, register
 from aios.tools.hybrid_search import HybridSearchConfig
@@ -312,34 +313,19 @@ def test_no_new_run_while_the_current_version_uses_a_removed_tool(api, monkeypat
 
 @pytest.fixture
 def documents(db, user):
-    """Three chunks of `user`'s, plus one of another user's that matches the same query."""
-    other = User(github_id=-2, login="other-user")
-    db.add(other)
-    db.flush()
-    docs = [
-        Document(owner_id=user.id, filename="fish.md", data=b"", status=DocumentStatus.ready),
-        Document(owner_id=other.id, filename="theirs.md", data=b"", status=DocumentStatus.ready),
-    ]
-    texts = [
-        ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."],
-        ["Their zebrafish notes."],
-    ]
-    for doc, chunks in zip(docs, texts, strict=True):
-        doc.chunks = [
-            Chunk(
-                ordinal=i, text=t, contextualized=t, meta={"headings": ["Fish"]}, embedding=unit(0)
-            )
-            for i, t in enumerate(chunks)
-        ]
-    docs[0].chunks.append(
-        Chunk(ordinal=2, text="Cats purr.", contextualized="Cats purr.", meta={}, embedding=unit(1))
+    """Three chunks in `user`'s store, plus one in another user's that matches the same query."""
+    other = provisioned_user(db, -2, "other-user")
+    fish = ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."]
+    add_chunks(data_store_for(user.id), "fish.md", [(t, unit(0)) for t in fish], headings=["Fish"])
+    add_chunks(data_store_for(user.id), "cats.md", [("Cats purr.", unit(1))])
+    add_chunks(
+        data_store_for(other.id),
+        "theirs.md",
+        [("Their zebrafish notes.", unit(0))],
+        headings=["Fish"],
     )
-    db.add_all(docs)
-    db.commit()
     yield
-    db.delete(docs[0])
-    db.delete(other)  # and, by the database's cascade, their document
-    db.commit()
+    delete_user(db, other)
 
 
 def search_once(query: str):
@@ -378,7 +364,7 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
         resp = api.post(url, json=chat_body("what about zebrafish?"))
     assert resp.status_code == 200
     assert spy["deps"] == ChatDeps(
-        user_id=user.id, data_store_id=data_store_for(user).id, run_id=run["id"]
+        user_id=user.id, data_store_id=data_store_for(user.id), run_id=run["id"]
     )
     assert seen["tools"] == ["search_documents"]
     assert "hybrid (semantic + keyword)" in seen["description"]
@@ -412,10 +398,11 @@ def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
     assert seen["results"] == []
 
 
-def test_hybrid_search_fills_a_limit_above_its_candidates(db, user, documents, monkeypatch):
+def test_hybrid_search_fills_a_limit_above_its_candidates(user, documents, monkeypatch):
     # A query with no keyword matches, so every result comes from the semantic branch.
     monkeypatch.setattr(get_settings(), "search_candidates", 1)
-    hits = search.hybrid_search_with_vector(
-        db, owner_id=user.id, query="xylophone", query_vector=unit(0), limit=3
-    )
+    with store_session(data_store_for(user.id), "ro") as store:
+        hits = search.hybrid_search_with_vector(
+            store, query="xylophone", query_vector=unit(0), limit=3
+        )
     assert len(hits) == 3

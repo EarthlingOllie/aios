@@ -109,7 +109,7 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
   await expect(page).toHaveURL(/\/workflows\/\d+\/runs\/\d+$/);
   const status = page.getByTestId("run-status");
   await expect(status).toHaveText("Queued");
-  await expect(node(page, "publisher")).toHaveAttribute("data-state", "waiting");
+  await expect(node(page, "publisher")).toHaveAttribute("data-state", "pending");
   const run = [...api.runs.values()].at(-1)!;
   expect(run.workflow_version_id).toBe(weekly.versions[1]);
 
@@ -122,7 +122,7 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
   api.advance(run);
   await expect(status).toHaveText("Running");
   await isNode("research", "running");
-  await isNode("draft", "waiting");
+  await isNode("draft", "pending");
 
   api.advance(run);
   await isNode("research", "succeeded");

@@ -11,6 +11,7 @@ from uuid import uuid4
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.chat_models import agenerate_from_stream
 from langchain_core.messages import AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 
@@ -25,6 +26,14 @@ class ToolCall:
 
 
 @dataclass
+class Usage:
+    """What a response cost, as the provider reports it in the message's usage metadata."""
+
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
 class Info:
     """What the model was given besides the messages."""
 
@@ -33,8 +42,8 @@ class Info:
     server_tools: list[dict[str, Any]]
 
 
-# Called with the messages the model is sent; yields text deltas and tool calls.
-Script = Callable[[list[BaseMessage], Info], AsyncIterator[str | ToolCall]]
+# Called with the messages the model is sent; yields text deltas, tool calls and usage.
+Script = Callable[[list[BaseMessage], Info], AsyncIterator[str | ToolCall | Usage]]
 
 
 class FakeChatModel(BaseChatModel):
@@ -65,6 +74,15 @@ class FakeChatModel(BaseChatModel):
         async for item in self.script(messages, info):
             if isinstance(item, str):
                 chunk = AIMessageChunk(content=item)
+            elif isinstance(item, Usage):
+                chunk = AIMessageChunk(
+                    content="",
+                    usage_metadata=UsageMetadata(
+                        input_tokens=item.input_tokens,
+                        output_tokens=item.output_tokens,
+                        total_tokens=item.input_tokens + item.output_tokens,
+                    ),
+                )
             else:
                 index += 1
                 chunk = AIMessageChunk(

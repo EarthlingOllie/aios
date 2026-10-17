@@ -527,16 +527,21 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     def fake_start(run_id, prompt):
         events.append(("title on loop", on_event_loop()))
 
-    def fake_end(run_id, count):
-        events.append(("count on loop", on_event_loop(), count))
+    def fake_end(run_id, *, failed, message_count=None):
+        events.append(("count on loop", on_event_loop(), message_count))
 
     async def script(messages, info):
         events.append("model")
         yield "arr"
 
+    async def run_there(conn, run_id):
+        return False
+
     monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
     monkeypatch.setattr(agents_api, "_start_turn", fake_start)
     monkeypatch.setattr(agents_api, "_end_turn", fake_end)
+    # Run 1 is made up, like the rest of what the turn loads.
+    monkeypatch.setattr(checkpoints, "_run_gone", run_there)
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
     app.dependency_overrides[get_db] = fake_db
     try:
