@@ -938,6 +938,10 @@ def exporting_user(db, new_user) -> User:
     return u
 
 
+# The run history export's tables, at the `history` line's head.
+HISTORY_TABLES = {"agent_runs", "messages", "workflow_runs", "workflow_run_steps"}
+
+
 def store_tables(dbname: str, schema: str) -> set[str]:
     with admin_connect(dbname) as conn:
         rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (schema,))
@@ -964,7 +968,7 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
     finally:
         engine.dispose()
     assert {"documents", "chunks"} <= store_tables(names.dbname, "aios")
-    assert store_tables(names.dbname, "history") == {"agent_runs", "messages"}
+    assert store_tables(names.dbname, "history") == HISTORY_TABLES
 
 
 def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export_on(db, new_user):
@@ -984,7 +988,7 @@ def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export
 
     row = store_row(db, store_id)
     assert (row.schema_revision, row.history_revision) == (head_revision(), history_head())
-    assert store_tables(row.dbname, "history") == {"agent_runs", "messages"}
+    assert store_tables(row.dbname, "history") == HISTORY_TABLES
     # Switched off again, the store keeps them, and they're kept at their head.
     owner.export_run_history = False
     db.commit()
@@ -1043,3 +1047,28 @@ def test_the_history_set_up_task_leaves_a_store_not_ready_yet_to_its_provisionin
 
     assert history_tasks["export"] == []
     assert store_row(db, store_id).status == DataStoreStatus.provisioning
+
+
+def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_user):
+    """A store set up for the export before workflow runs were exported (at h0001) gets their
+    tables as it's migrated."""
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
+    engine = create_engine(url, poolclass=pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            command.upgrade(migrations.config(conn), "h0001")
+            conn.commit()
+    finally:
+        engine.dispose()
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_revision="h0001"))
+    db.commit()
+    assert store_tables(names.dbname, "history") == {"agent_runs", "messages"}
+
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+
+    assert store_row(db, store_id).history_revision == history_head() == "h0002"
+    assert store_tables(names.dbname, "history") == HISTORY_TABLES

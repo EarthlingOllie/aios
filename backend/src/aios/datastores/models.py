@@ -27,7 +27,7 @@ from sqlalchemy import (
     false,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024
@@ -159,8 +159,9 @@ class Chunk(StoreBase):
     )
 
 
-# The run history export: a copy of the owner's agent runs, keyed by the platform's ids. The
-# platform database stays the source of truth; these are only ever written by the export.
+# The run history export: a copy of the owner's agent and workflow runs, keyed by the platform's
+# ids. The platform database stays the source of truth; these are only ever written by the
+# export.
 
 
 class HistoryAgentRun(StoreBase):
@@ -225,3 +226,67 @@ class HistoryMessage(StoreBase):
             "comment": "The messages of the agent runs in history.agent_runs, in order.",
         },
     )
+
+
+class HistoryWorkflowRun(StoreBase):
+    __tablename__ = "workflow_runs"
+    __table_args__ = {
+        "schema": HISTORY_SCHEMA,
+        "comment": "A copy of a workflow run, from the platform.",
+    }
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
+    )
+    workflow_id: Mapped[int] = mapped_column(BigInteger)
+    workflow_name: Mapped[str] = mapped_column(Text)
+    workflow_version: Mapped[int] = mapped_column(Integer, comment="The workflow version it ran.")
+    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    # Text, not an enum: a status the platform adds later is copied as it is.
+    status: Mapped[str] = mapped_column(
+        Text, comment="queued, running, succeeded or failed, as on the platform when exported."
+    )
+    input: Mapped[str] = mapped_column(Text, comment="What it was given.")
+    output: Mapped[str | None] = mapped_column(Text, comment="Its final nodes' outputs, once done.")
+    error: Mapped[str | None] = mapped_column(Text, comment="Why it failed.")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HistoryWorkflowRunStep(StoreBase):
+    __tablename__ = "workflow_run_steps"
+    __table_args__ = (
+        Index("ix_workflow_run_steps_workflow_run_id", "workflow_run_id"),
+        {
+            "schema": HISTORY_SCHEMA,
+            "comment": "The steps of the workflow runs in history.workflow_runs: a node, at any "
+            "depth.",
+        },
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False, comment="The step's id on the platform."
+    )
+    workflow_run_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{HISTORY_SCHEMA}.workflow_runs.id", ondelete="CASCADE")
+    )
+    path: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        comment="Node keys from the run's workflow down to the node: {review,critic} is "
+        "node critic of the subworkflow at node review.",
+    )
+    kind: Mapped[str] = mapped_column(Text, comment="agent or workflow.")
+    status: Mapped[str] = mapped_column(
+        Text, comment="running, succeeded or failed, as on the platform when exported."
+    )
+    input: Mapped[str] = mapped_column(Text)
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    # Not a foreign key: agent runs and workflow runs are exported apart, in either order.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="An agent node's conversation: history.agent_runs.id."
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

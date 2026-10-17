@@ -21,7 +21,7 @@ export type DataStoreUsage = {
 
 /** The user's settings (the Settings page). */
 export type Settings = {
-  /** Copy agent runs into the data store's `history` tables. */
+  /** Copy agent and workflow runs into the data store's `history` tables. */
   export_run_history: boolean;
   /** The data store has its `history` tables (made once the export is first switched on). */
   history_ready: boolean;

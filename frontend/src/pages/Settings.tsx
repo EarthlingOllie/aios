@@ -60,8 +60,9 @@ export function SettingsPage() {
         <ErrorBanner message={loadError} />
         <Section title="Run history export">
           <p className="text-muted-foreground text-sm">
-            Copy your agent runs (each conversation, with its messages, tool calls and usage) into
-            your data store, where your agents can query them in its <code>history</code> tables.
+            Copy your agent runs (each conversation, with its messages, tool calls and usage) and
+            workflow runs (with every step, at every depth) into your data store, where your
+            agents can query them in its <code>history</code> tables.
             Your runs here stay as they are: switching the export off keeps what was copied, and
             deleting a run deletes its copy while the export is on.
           </p>

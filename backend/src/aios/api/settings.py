@@ -24,7 +24,7 @@ class SettingsIn(BaseModel):
 
 
 class SettingsOut(BaseModel):
-    # Copy agent runs into the data store's `history` schema.
+    # Copy agent and workflow runs into the data store's `history` schema.
     export_run_history: bool
     # The store has its `history` tables (they're made once the export is first switched on).
     history_ready: bool

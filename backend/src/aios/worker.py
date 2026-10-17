@@ -228,13 +228,14 @@ def export_history_task(self, data_store_id: str) -> None:
 
     try:
         history.export(uuid.UUID(data_store_id))
+    # Before `DataStoreNotReady`, which a store behind is too.
+    except (DataStoreBehind, DataStoreBusy) as exc:
+        # Its rows are still pending; this delivery's retry picks them up (a store behind the
+        # tree's head, on either line, is brought there by `retry_unfinished_data_stores_task`).
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
     except (DataStoreNotFound, DataStoreNotReady):
         # Deleted, or being deleted, since: its outbox goes with it.
         return
-    except (DataStoreBehind, DataStoreBusy) as exc:
-        # Its rows are still pending; this delivery's retry picks them up (a store behind the
-        # tree's head is brought there by `retry_unfinished_data_stores_task`).
-        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
 
 
 @celery_app.task(name="aios.export_pending_history")

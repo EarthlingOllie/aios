@@ -416,25 +416,33 @@ written or deleted from since.
 #### Run history export
 
 On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
-their agent runs into their store's `history` schema (`history.agent_runs`, keyed by the
-platform's run ids and recording who ran each, and `history.messages`: role, text, tool calls
-and usage, flattened from the run's checkpoint). The platform database stays the source of
-truth (`aios.datastores.history`):
+their runs into their store's `history` schema, keyed by the platform's ids and recording who
+ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
+with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
+input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
+key: the two are exported apart). Statuses are copied as text. The platform database stays the
+source of truth (`aios.datastores.history`):
 
 - The `history` tables are the store tree's second line (branch label `history`, revisions
   `h0001`, ...), which a store gets only once its owner first switches the export on:
   `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
   migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
-  same default privileges on it as on `aios`.
-- Switching it on backfills: every run of the user's goes in the outbox, `history_exports` (a row
-  per run and store). Every agent turn ends in `_end_turn` (chats, schedules and workflow agent
-  nodes alike, failed or stopped too), which writes the run's row in the same transaction as the
-  run's own update; deleting a run, its agent or its workflow run writes it too.
+  same default privileges on it as on `aios`. A store behind the line's head isn't exported
+  until it's brought there.
+- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+  outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
+  `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
+  every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
+  the run's row in the same transaction as the run's own update. Deleting a run, its agent or
+  its workflow run writes it too, and deleting an agent writes the workflow runs whose steps
+  held its runs. Pausing and resuming a workflow run will write it too, once runs can pause.
 - `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
-  upserting each run and its messages, or deleting the copy of a run that's gone. It's queued
-  when the outbox is written, and the provisioning worker's beat queues it every minute for any
-  store with rows still pending. A run that fails to export keeps its error on its outbox row
-  and is tried again at its next turn, or in an hour, so it doesn't hold up the rest.
+  upserting each run with its messages or steps, or deleting the copy of a run that's gone.
+  It's queued when the outbox is written, and the provisioning worker's beat queues it every
+  minute for any store with rows still pending. A run that fails to export keeps its error on
+  its outbox row and is tried again at its next change, or in an hour, so it doesn't hold up
+  the rest.
 - Switching it off stops the export (after the batch under way) and keeps the copy; runs
   deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
   copy; while the export is on, every run is then exported again.
