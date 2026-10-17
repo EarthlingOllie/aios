@@ -123,27 +123,14 @@ resource "aws_iam_role_policy" "worker_data_store_files" {
 # --- Network ---
 
 # The app subnets reach S3 through a gateway endpoint of their own (free, and no NAT charges),
-# apart from the sandboxes', whose policy stays limited to ECR's image layers. Its policy allows
-# this account's principals only, on the files bucket and ECR's layers (which Fargate pulls the
-# app's images from): with the route, all of the region's S3 traffic from these subnets goes
-# through it.
+# apart from the sandboxes', whose policy stays limited to ECR's image layers. With the route,
+# all of the region's S3 traffic from these subnets goes through it: the egress proxy's too
+# (sandboxes downloading from allowed sites hosted on S3), so it lets everything through, as the
+# NAT did. The task roles' policies limit what the app itself may do.
 data "aws_iam_policy_document" "app_s3_endpoint" {
   statement {
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
-    resources = ["${aws_s3_bucket.data_store_files.arn}/stores/*"]
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "aws:PrincipalAccount"
-      values   = [local.account_id]
-    }
-  }
-  statement {
-    actions   = ["s3:GetObject"]
-    resources = ["arn:aws:s3:::prod-${var.region}-starport-layer-bucket/*"]
+    actions   = ["s3:*"]
+    resources = ["*"]
     principals {
       type        = "*"
       identifiers = ["*"]

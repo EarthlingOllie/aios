@@ -130,6 +130,16 @@ run "data_store_files" {
     condition     = contains(aws_vpc_endpoint.app_s3.route_table_ids, aws_route_table.private.id)
     error_message = "The app subnets should have a route to S3's gateway endpoint."
   }
+  # ... which takes all of the region's S3 traffic from them, the egress proxy's (sandboxes
+  # downloading from allowed sites hosted on S3) included, so it must let that through as the
+  # NAT did: the task roles' policies, not the endpoint, limit what the app may do.
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.app_s3_endpoint.statement :
+      contains(s.actions, "s3:*") && contains(s.resources, "*") && length(s.condition) == 0
+    ])
+    error_message = "The app subnets' S3 endpoint should let all S3 traffic through."
+  }
   # ... without opening the sandboxes' endpoint to the files bucket.
   assert {
     condition     = !contains(aws_vpc_endpoint.s3.route_table_ids, aws_route_table.private.id)
