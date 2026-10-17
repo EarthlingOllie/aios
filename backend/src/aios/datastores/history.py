@@ -366,19 +366,20 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
 
 def export(data_store_id: uuid.UUID) -> int:
     """Drain the store's outbox into its `history` tables; returns how many runs it exported.
-    Does nothing unless the store is exporting (see `_exporting`): its rows wait. Nor while
-    another export (or delete) of the store runs: what that one leaves pending, the periodic
-    sweep queues again.
+    Does nothing unless the store is exporting (see `_exporting`): its rows wait; switched off
+    while it runs, it stops after the batch under way. Nor while another export (or delete) of
+    the store runs: what that one leaves pending, the periodic sweep queues again.
 
     Raises `DataStoreBusy` if the store has no connections free."""
     exported = 0
     with _locked(data_store_id) as locked:
         if not locked:
             return 0
-        with SessionLocal() as db:
-            if not _exporting(db, data_store_id):
-                return 0
-        while count := _export_batch(data_store_id):
+        while True:
+            with SessionLocal() as db:
+                if not _exporting(db, data_store_id):
+                    return exported
+            count = _export_batch(data_store_id)
             exported += count
             if count < BATCH:
                 break

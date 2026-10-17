@@ -725,3 +725,27 @@ def test_the_export_delete_exported_history_queues_can_start_at_once(
     assert api.delete("/api/settings/exported-history").status_code == 204
 
     assert stored(store_id, "SELECT id FROM history.agent_runs") == [(run["id"],)]
+
+
+def test_switching_it_off_stops_an_export_under_way(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    agent = make_agent(api, "Bot")
+    runs = [new_run(api, agent) for _ in range(3)]
+    for run in runs:
+        chat(api, agent, run, "hi")
+    switch(api, True)
+    for queued in history_tasks["set_up"]:
+        provision.migrate_store(queued)
+    monkeypatch.setattr(history, "BATCH", 1)
+    read = history.checkpoints.history
+
+    def switched_off_while_reading(run_id):
+        switch(api, False)
+        return read(run_id)
+
+    monkeypatch.setattr(history.checkpoints, "history", switched_off_while_reading)
+
+    # The batch under way finishes; no other starts.
+    assert history.export(store_id) == 1
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(1,)]
