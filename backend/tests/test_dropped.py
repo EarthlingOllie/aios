@@ -8,6 +8,7 @@ from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
 
+from aios import worker
 from aios.datastores import data_store_for, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
@@ -196,3 +197,71 @@ def test_the_model_cant_name_what_a_drop_renames_to(db, store):
     )
 
     assert request.ops[0]["dropped_as"].endswith("_fish")
+
+
+# --- Approving ----------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def queued(monkeypatch) -> list:
+    """The schema changes queued to be applied, instead of sent to the broker."""
+    applies: list = []
+    monkeypatch.setattr(worker.apply_schema_change_task, "delay", applies.append)
+    return applies
+
+
+def test_approving_a_drop_takes_the_tables_names_typed(api, store, queued):
+    request = propose(
+        store,
+        {"op": "drop_column", "table": "fish", "column": "weight_kg"},
+        {"op": "create_table", "name": "eels", "columns": [{"name": "x", "type": "text"}]},
+    )
+    url = f"/api/schema-changes/{request.id}"
+    assert api.get(url).json()["confirm_with"] == "fish"
+
+    for body in (None, {}, {"confirm": ""}, {"confirm": "eels"}, {"confirm": "Fish"}):
+        r = api.post(f"{url}/approve", json=body)
+        assert r.status_code == 422, (body, r.text)
+        assert "Type `fish` to confirm" in r.json()["detail"]
+    assert api.get(url).json()["status"] == "pending"
+    assert queued == []
+
+    r = api.post(f"{url}/approve", json={"confirm": " fish "})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+    assert queued == [str(request.id)]
+
+
+def test_a_request_that_drops_nothing_needs_no_confirmation(api, store, queued):
+    request = propose(
+        store, {"op": "add_column", "table": "fish", "column": {"name": "x", "type": "text"}}
+    )
+
+    assert api.get(f"/api/schema-changes/{request.id}").json()["confirm_with"] is None
+    assert api.post(f"/api/schema-changes/{request.id}/approve").status_code == 200
+
+
+def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
+    request = propose(
+        store,
+        {"op": "drop_column", "table": "fish", "column": "weight_kg"},
+        {"op": "drop_table", "table": "fish"},
+    )
+    with as_owner(store) as conn:
+        conn.execute("INSERT INTO data.fish (name) VALUES ('eel')")
+
+    r = api.get(f"/api/schema-changes/{request.id}/impact")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "removes": [
+            {"table": "fish", "column": "weight_kg", "rows": 3, "values": 2, "columns": None},
+            {
+                "table": "fish",
+                "column": None,
+                "rows": 3,
+                "values": None,
+                "columns": ["id", "name", "weight_kg"],
+            },
+        ]
+    }

@@ -16,9 +16,14 @@ What reads the store's catalog to show its tables keeps out dropped ones with th
 here (`VISIBLE_TABLE`, `VISIBLE_COLUMN`) as well as by the roles' privileges.
 """
 
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
 import psycopg
 from psycopg import sql
 
+from aios.datastores.connections import store_session
 from aios.datastores.schema_changes import DROPPED_PREFIX, SCHEMA
 
 # For catalog queries, on `pg_class c` and `pg_attribute a`: not a dropped table or column.
@@ -29,6 +34,57 @@ VISIBLE_COLUMN = f"NOT starts_with(a.attname, '{DROPPED_PREFIX}')"
 def is_dropped(name: str) -> bool:
     return name.startswith(DROPPED_PREFIX)
 
+
+@dataclass
+class Removal:
+    """What one drop would take out of the tools' reach, as the store is now: a table's rows
+    and columns, or a column's rows and how many of them have a value in it. `rows` is None if
+    the table isn't there (any more)."""
+
+    table: str
+    column: str | None
+    rows: int | None
+    values: int | None
+    columns: list[str] | None
+
+
+def impact(data_store_id: uuid.UUID, ops: list[dict[str, Any]]) -> list[Removal]:
+    """What a request's drops would remove, read as the store's read-only role, for the owner
+    deciding it."""
+    drops = [op for op in ops if op["op"] in ("drop_table", "drop_column")]
+    if not drops:
+        return []
+    out: list[Removal] = []
+    with store_session(data_store_id, "ro") as session:
+        pg: psycopg.Connection = session.connection().connection.driver_connection
+        for op in drops:
+            table, column = op["table"], op.get("column")
+            relation = sql.Identifier(SCHEMA, table)
+            qualified = relation.as_string(pg)
+            columns = [c for (c,) in pg.execute(_READABLE_SQL, (qualified,))]
+            if not columns or (column is not None and column not in columns):
+                out.append(Removal(table, column, None, None, None))
+                continue
+            if column is None:
+                (rows,) = pg.execute(sql.SQL("SELECT count(*) FROM {}").format(relation)).fetchone()
+                out.append(Removal(table, None, rows, None, columns))
+            else:
+                rows, values = pg.execute(
+                    sql.SQL("SELECT count(*), count({}) FROM {}").format(
+                        sql.Identifier(column), relation
+                    )
+                ).fetchone()
+                out.append(Removal(table, column, rows, values, None))
+    return out
+
+
+# A `data` table's columns the role reading it may read, but none that are dropped.
+_READABLE_SQL = f"""
+    SELECT a.attname FROM pg_attribute a
+    WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped
+      AND has_column_privilege(a.attrelid, a.attnum, 'SELECT') AND {VISIBLE_COLUMN}
+    ORDER BY a.attnum
+"""
 
 _COLUMNS_SQL = """
     SELECT a.attname FROM pg_attribute a

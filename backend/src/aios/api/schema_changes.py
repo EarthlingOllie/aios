@@ -18,7 +18,16 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
-from aios.datastores import can_approve, data_store_for
+from aios.datastores import (
+    DataStoreBehind,
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    can_approve,
+    data_store_for,
+    dropped,
+)
+from aios.datastores.schema_changes import SchemaChange, confirmation
 from aios.db import DB
 from aios.models import AgentRun, SchemaChangeRequest, SchemaChangeStatus
 
@@ -56,6 +65,32 @@ class SchemaChangeOut(BaseModel):
     resumed_at: datetime | None
     # Whether the signed-in user may approve or reject it (and it's still pending).
     can_decide: bool
+    # What approving it takes typed, if it drops anything: the names of the tables it drops
+    # from (`schema_changes.confirmation`).
+    confirm_with: str | None
+
+
+class Approval(BaseModel):
+    # For a request that drops anything, its `confirm_with`, typed.
+    confirm: str | None = Field(None, max_length=1000)
+
+
+class RemovalOut(BaseModel):
+    """What one of a request's drops would remove, as the store is now."""
+
+    table: str
+    # The column it drops; None for a whole table.
+    column: str | None
+    # The table's rows; None if it isn't there (any more).
+    rows: int | None
+    # A column's: how many rows have a value in it.
+    values: int | None
+    # A table's: its columns.
+    columns: list[str] | None
+
+
+class ImpactOut(BaseModel):
+    removes: list[RemovalOut]
 
 
 class Rejection(BaseModel):
@@ -83,7 +118,12 @@ def request_out(
         resumed_at=request.resumed_at,
         can_decide=request.status == SchemaChangeStatus.pending
         and can_approve(user_id, request.data_store),
+        confirm_with=confirmation_for(request),
     )
+
+
+def confirmation_for(request: SchemaChangeRequest) -> str | None:
+    return confirmation(SchemaChange.model_validate({"ops": request.ops}))
 
 
 def _query():
@@ -202,10 +242,32 @@ def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None])
         ) from exc
 
 
+@router.get("/schema-changes/{request_id}/impact", response_model=ImpactOut)
+def get_impact(request_id: uuid.UUID, user: CurrentUser, db: DB):
+    """What the request's drops would remove from the store as it is now (row counts, the
+    columns affected), for the owner deciding it; nothing for one that drops nothing."""
+    request = _get(db, user.id, request_id)
+    try:
+        removes = dropped.impact(request.data_store_id, request.ops)
+    except (DataStoreBehind, DataStoreBusy, DataStoreNotFound, DataStoreNotReady) as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Your data store can't be read just now."
+        ) from exc
+    return ImpactOut(removes=[RemovalOut(**vars(r)) for r in removes])
+
+
 @router.post("/schema-changes/{request_id}/approve", response_model=SchemaChangeOut)
-def approve(request_id: uuid.UUID, user: CurrentUser, db: DB):
+def approve(request_id: uuid.UUID, user: CurrentUser, db: DB, body: Approval | None = None):
     from aios.worker import apply_schema_change_task
 
+    # Typed by the owner, so a drop is never approved by a stray click (its ops never change).
+    required = confirmation_for(_get(db, user.id, request_id))
+    typed = ((body.confirm if body else None) or "").strip()
+    if required is not None and typed != required:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"This request drops data: Type `{required}` to confirm.",
+        )
     request = _decide(db, user.id, request_id, status=SchemaChangeStatus.approved)
     _queue(db, request, lambda: apply_schema_change_task.delay(str(request.id)))
     return _out(db, request, user.id)
