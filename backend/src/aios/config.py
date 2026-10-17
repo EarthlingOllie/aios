@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
+    # Uploaded files, in S3 (`aios.datastores.files`): each store's under `stores/<store id>/`.
+    # Credentials and the region come from boto3's usual places (on AWS, the task's role).
+    data_store_files_bucket: str = "aios-data-local"
+    # An S3-compatible server to use instead of AWS's (RustFS, locally), as the app reaches it.
+    # Empty on AWS.
+    data_store_files_endpoint: str = ""
+    # The same server as the browser reaches it, which download links are signed for (a link
+    # names its host): e.g. http://localhost:9000 while the app reaches it at http://rustfs:9000.
+    # Empty: the same as data_store_files_endpoint.
+    data_store_files_public_endpoint: str = ""
+    # How long a download link lasts, in seconds. Each is a bearer link (anyone holding it can
+    # download the file until then), minted per click, so a minute is plenty.
+    document_download_url_seconds: int = Field(default=60, ge=1, le=7 * 24 * 60 * 60)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

@@ -1,16 +1,20 @@
+import io
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
 from aios.auth import current_user
-from aios.datastores import data_store_for, provision, resolve
+from aios.config import get_settings
+from aios.datastores import data_store_for, files, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
+from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
@@ -88,8 +92,36 @@ def user(db):
     delete_user(db, u)
 
 
+@pytest.fixture(scope="session")
+def files_bucket() -> str:
+    """The bucket uploads go to (on RustFS, locally and in CI), made if it's missing."""
+    try:
+        files.create_bucket()
+    except (BotoCoreError, ClientError) as exc:
+        pytest.fail(
+            f"Can't reach the files bucket ({exc}). Start RustFS and point "
+            "DATA_STORE_FILES_ENDPOINT and AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY at it "
+            "(see the README's Checks)."
+        )
+    return get_settings().data_store_files_bucket
+
+
+def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
+    """A document in the store, with its file in S3, as an upload leaves it; returns its id."""
+    with store_session(store_id, "rw") as store:
+        doc = Document(
+            **{"filename": "a.md", "s3_key": "", "size_bytes": len(data), "sha256": "", **values}
+        )
+        store.add(doc)
+        store.flush()
+        doc.s3_key = files.document_key(store_id, doc.id)
+        doc.sha256 = files.put(doc.s3_key, io.BytesIO(data), None).sha256
+        store.commit()
+        return doc.id
+
+
 @pytest.fixture
-def api(client, user):
+def api(client, user, files_bucket):
     """A client signed in as `user`."""
     app.dependency_overrides[current_user] = lambda: user
     yield client
