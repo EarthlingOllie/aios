@@ -100,7 +100,11 @@ export function SchemaChangeCard({
       )}
       <div className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
         <span>Asked {formatDate(request.created_at)}</span>
-        {request.decided_at && <span>Decided {formatDate(request.decided_at)}</span>}
+        {request.decided_at && (
+          <span>
+            {summary.decidedLabel} {formatDate(request.decided_at)}
+          </span>
+        )}
         {showRun && request.run && (
           <Link
             to={`/agents/${request.run.agent_id}/runs/${request.run.run_id}`}

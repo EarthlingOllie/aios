@@ -19,6 +19,23 @@ export type DataStoreUsage = {
   measured_at: string | null;
 };
 
+/** The user's settings (the Settings page). */
+export type Settings = {
+  /** Copy agent and workflow runs into the data store's `history` tables. */
+  export_run_history: boolean;
+  /** The data store has its `history` tables (made once the export is first switched on). */
+  history_ready: boolean;
+  /** When the export last copied runs into the data store. */
+  history_exported_at: string | null;
+  /** Embed the exported messages, so agents can search past runs by meaning (only while the
+   * export is on). */
+  embed_run_history: boolean;
+  /** When embedding last caught up (embedded every exported message waiting). */
+  history_embedded_at: string | null;
+  /** Why embedding last failed, if it hasn't caught up since (it's tried again later). */
+  history_embed_error: string | null;
+};
+
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
@@ -529,6 +546,61 @@ export type TriggerInput = {
 
 export type SchedulePreview = { description: string; next_runs: string[] };
 
+/** A schedule that would start runs of an agent, or of a workflow that runs it. */
+export type DependentTrigger = {
+  id: number;
+  enabled: boolean;
+  cron: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+};
+
+/** A schema change request a run that depends on an agent waits on. */
+export type DependentRequest = { id: string; summary: string; status: SchemaChangeStatus };
+
+/** What depends on an agent: what deleting it would cut off (GET /api/agents/{id}/dependents). */
+export type AgentDependents = {
+  /** Its chat runs still going: waiting on a schema change request, or with a turn underway. */
+  agent_runs: {
+    id: number;
+    title: string | null;
+    waiting: boolean;
+    running: boolean;
+    trigger_id: number | null;
+    updated_at: string;
+    requests: DependentRequest[];
+  }[];
+  /** Workflow runs still going (queued, running or waiting) that run it, at any depth. */
+  workflow_runs: {
+    id: number;
+    workflow_id: number;
+    workflow_name: string;
+    status: WorkflowRunStatus;
+    created_at: string;
+    /** Its agent nodes waiting on a request, by path ("review/critic"). */
+    waiting_nodes: string[];
+    requests: DependentRequest[];
+  }[];
+  /** Live workflows whose current version runs it, directly or through a nested workflow. */
+  workflows: {
+    id: number;
+    name: string;
+    version: number;
+    direct: boolean;
+    triggers: DependentTrigger[];
+  }[];
+  /** Its own schedules, deleted with it. */
+  triggers: DependentTrigger[];
+};
+
+/** How to resolve what depends on an agent as it's deleted (DELETE /api/agents/{id}). */
+export type AgentDeleteResolutions = {
+  cancel_agent_runs: number[];
+  cancel_workflow_runs: number[];
+  deactivate_workflows: number[];
+};
+
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -573,6 +645,11 @@ export const api = {
   logout: () => request<void>("/logout", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
+  getSettings: () => request<Settings>("/api/settings"),
+  updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
+    request<Settings>("/api/settings", json("PUT", body)),
+  deleteExportedHistory: () =>
+    request<void>("/api/settings/exported-history", { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
@@ -631,7 +708,13 @@ export const api = {
   createAgent: (body: AgentInput) => request<Agent>("/api/agents", json("POST", body)),
   updateAgent: (id: number, body: AgentInput) =>
     request<Agent>(`/api/agents/${id}`, json("PUT", body)),
-  deleteAgent: (id: number) => request<void>(`/api/agents/${id}`, { method: "DELETE" }),
+  getAgentDependents: (id: number) => request<AgentDependents>(`/api/agents/${id}/dependents`),
+  /** Refused (409, see `parseDeleteRefusal`) until what depends on it is resolved. */
+  deleteAgent: (id: number, resolutions?: AgentDeleteResolutions) =>
+    request<void>(
+      `/api/agents/${id}`,
+      resolutions ? json("DELETE", resolutions) : { method: "DELETE" },
+    ),
   listAgentVersions: (id: number) =>
     request<AgentVersionSummary[]>(`/api/agents/${id}/versions`),
   getAgentVersion: (id: number, version: number) =>

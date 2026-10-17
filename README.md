@@ -6,8 +6,9 @@ Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain'
 Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
-reusable instructions, and **tools** from a built-in library: web search, and document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent)
+reusable instructions, and **tools** from a built-in library: web search; document search,
+the same hybrid search as the documents chat, over the documents of the user running the agent;
+and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
@@ -61,10 +62,44 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
 - Agents and workflows are soft-deleted too: older workflow versions keep pinning their versions,
-  and stay readable (a node whose agent or workflow is gone shows no latest version). One can't
-  be deleted while a live workflow's current version runs it; older versions don't count, but
-  restoring one that runs something since deleted is refused. Deleting an agent still deletes
-  its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
+  and stay readable (a node whose agent or workflow is gone shows no latest version). A workflow
+  can't be deleted while a live workflow's current version runs it; older versions don't count,
+  but restoring one that runs something since deleted is refused. Deleting an agent still
+  deletes its runs, their threads and sandboxes. Names are unique among live rows, so they can
+  be reused.
+- An agent is deleted only once what depends on it is resolved (`aios.dependents`).
+  `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
+  have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
+  version runs it at any depth, the live workflows whose current version runs it (directly, or
+  through a nested workflow's pinned version) with their schedules, and its own schedules.
+  `DELETE /api/agents/{id}` answers 409 with that list (`detail.dependents`, and a
+  `detail.message`) until its body resolves each: `cancel_agent_runs` and
+  `cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
+  deactivate; any other workflow must first be edited to stop running the agent (the agent's
+  page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
+  that starts waiting, after the user looked refuses the delete rather than being cancelled
+  unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
+  failed first, as reading it would. Cancelling a workflow run fails it
+  (`aios.workflows.cancel_runs`), closes out its requests (pending ones cancelled, their
+  notifications cleared) and starts no more of its nodes; a worker running it stops at its next
+  beat. A chat run is deleted with the agent, as before, cancelling its requests. Any turn still
+  underway on the agent's runs (a chat's, a schedule's, a cancelled workflow run's node) is
+  stopped: the connection holding its turn lock is ended (`checkpoints.stop_turns`), so it fails
+  at its next write, and a model or tool call already underway finishes unrecorded. A turn that
+  only takes its run's lock after the run has gone finds it gone and does nothing, so no thread
+  is left behind. **Deactivating** a workflow turns off its schedules (as
+  pausing each would, dropping a firing claimed but not started), and with the agent gone no
+  run of it can start, by hand or by schedule: starting one is refused as running a deleted
+  agent. It stays, to be edited (removing the node, or taking a nested workflow's newer
+  version) or deleted; its schedules can be turned back on once it runs. It all happens in one
+  transaction, with the agent and the workflows that run it locked, so a run being started is
+  either seen (and refuses the delete) or waits and then can't start. On the agent's page,
+  Delete opens a dialog that loads the list: with nothing in it, a simple confirm; otherwise
+  each run (with the node it waits at and its requests), workflow and schedule links to where
+  it's seen or managed, in a new tab, with a "Cancel these runs" box and Deactivate or Edit
+  workflow for each workflow. Delete stays disabled until each has a resolution, and the list
+  is checked again when the window regains focus (or on "Check again"), so a workflow edited
+  meanwhile leaves it.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
@@ -161,6 +196,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     scheduler.py    fires due schedules (runs in each API process)
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
+    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -174,7 +210,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
-                    models.py (the tables every store has: documents, chunks),
+                    models.py (the tables every store has: documents, chunks; and the
+                    run history export's), history.py (the run history export),
                     provision.py (creating and migrating each store's database),
                     files.py (uploaded files in S3, and download links), and
                     migrations/ (the store Alembic tree)
@@ -376,6 +413,65 @@ the database's size, which is never less than the data, and only measure the dat
 size reaches the cap. Deleting rows doesn't bring the size back down, so from then on each check
 measures: `pgstattuple_approx` reads the pages vacuum hasn't marked all-visible, the ones
 written or deleted from since.
+
+#### Run history export
+
+On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
+their runs into their store's `history` schema, keyed by the platform's ids and recording who
+ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
+with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
+input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
+key: the two are exported apart). Statuses are copied as text. The platform database stays the
+source of truth (`aios.datastores.history`):
+
+- The `history` tables are the store tree's second line (branch label `history`, revisions
+  `h0001`, ...), which a store gets only once its owner first switches the export on:
+  `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
+  migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
+  same default privileges on it as on `aios`. A store behind the line's head isn't exported
+  until it's brought there.
+- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+  outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
+  `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
+  every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
+  the run's row in the same transaction as the run's own update. Deleting a run, its agent or
+  its workflow run writes it too, and deleting an agent writes the workflow runs whose steps
+  held its runs. Pausing and resuming a workflow run will write it too, once runs can pause.
+- `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
+  upserting each run with its messages or steps, or deleting the copy of a run that's gone.
+  It's queued when the outbox is written, and the provisioning worker's beat queues it every
+  minute for any store with rows still pending. A run that fails to export keeps its error on
+  its outbox row and is tried again at its next change, or in an hour, so it doesn't hold up
+  the rest.
+- Switching it off stops the export (after the batch under way) and keeps the copy; runs
+  deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
+  copy; while the export is on, every run is then exported again.
+
+##### Searchable history
+
+While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+switched off with the export), embeds the exported messages so agents can search past runs:
+
+- `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
+  (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
+  (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
+- The export embeds what it has just exported once it has caught up (after letting go of the
+  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
+  keeps its embedding while its text is unchanged, so a run exported again is embedded only where
+  it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching embedding
+  on queues the export, which embeds every message already there (a backfill);
+  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
+  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
+  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
+  new embeddings and keeps the existing ones, which are still searched.
+- The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
+  search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by meaning
+  over what's embedded. If the query can't be embedded, it searches by keyword alone. Each result
+  is a message with its run's id, agent, title and when it started; the run searching is left
+  out. Like document search, it runs in the store's own database as `_ro`, so it never sees
+  another store's runs.
 
 ### Dependency policy
 
@@ -594,7 +690,15 @@ Known limits:
   the run from `waiting`, rebuilds its state from the recorded steps, and resumes the waiting
   node on its own agent run's thread, on the versions the run pinned (a pin that can no longer
   run fails its step with the reason). The run page shows the waiting node with the request's
-  card, and the pins that are no longer current.
+  card, and the pins that are no longer current. A request nobody decides within
+  `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` (7) expires: the provisioning worker's beat
+  (`aios.expire_schema_change_requests`, every `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour)
+  marks it `expired`, which counts as a rejection, and the chat or workflow run that asked
+  resumes with it. Deleting a chat run, an agent with a waiting chat, or a waiting workflow run
+  marks its pending request `cancelled` instead, and nothing resumes (`schema_changes.cancel`).
+  An agent whose workflow node waits can only be deleted by cancelling that workflow run, which
+  cancels the request the same way (see deleting an agent, above). Either way the request's
+  notifications are marked read, nothing is applied, and the Data page's history shows it.
 - **Drops are reversible** (`aios.datastores.dropped`). `drop_table` and `drop_column` rename
   the table or column to `_dropped_<timestamp>_<name>` and record it in
   `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with

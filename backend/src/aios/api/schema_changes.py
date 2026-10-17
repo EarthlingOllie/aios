@@ -31,6 +31,7 @@ from aios.datastores.schema_changes import (
     SchemaChange,
     clear_notifications,
     confirmation,
+    not_given,
     restore_notifications,
 )
 from aios.db import DB
@@ -155,11 +156,7 @@ def waiting_on(db: Session, run_id: int) -> bool:
         db.scalar(
             select(func.count())
             .select_from(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.requested_by_run == run_id,
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
-            )
+            .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
         )
         > 0
     )
