@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
@@ -189,20 +189,22 @@ def download_document(document_id: DbId, user: CurrentUser) -> RedirectResponse:
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: DbId, user: CurrentUser) -> None:
     with store_session(data_store_for(user.id), "rw") as db:
-        doc = db.get(Document, document_id)
-        if doc is None:
+        key = db.scalar(select(Document.s3_key).where(Document.id == document_id))
+        if key is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        db.delete(doc)
-        db.flush()
-        # The file goes before the row's delete is committed: should S3 refuse, the document
-        # stays, to be deleted again, rather than leave a file nothing points to.
+        # Ended, so no transaction (or lock on the row) is held while S3 is slow.
+        db.commit()
+        # The file goes before the row: should S3 refuse, the document stays, to be deleted
+        # again, rather than leave a file nothing points to. (Deleting a file already gone, as
+        # that would be, is no error.)
         try:
-            files.delete(doc.s3_key)
+            files.delete(key)
         except Exception as exc:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "Could not delete the file; please try again shortly.",
             ) from exc
+        db.execute(delete(Document).where(Document.id == document_id))  # its chunks cascade
         db.commit()
 
 

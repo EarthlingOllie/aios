@@ -219,6 +219,34 @@ def test_deleting_a_document_deletes_its_object(api, user, queued):
     assert api.get("/api/documents").json() == []
 
 
+def test_a_delete_holds_no_lock_on_the_document_while_s3_deletes_its_object(
+    api, user, queued, monkeypatch
+):
+    # S3 can be slow (its client's retries take minutes): meanwhile the document's ingest must
+    # still be able to claim it, and no transaction sit idle into the store's timeout.
+    doc = upload(api).json()
+    store_id = data_store_for(user.id)
+    delete = files.delete
+    claimable = []
+
+    def delete_and_check_the_row_is_free(key):
+        with store_session(store_id, "rw") as other:
+            other.execute(
+                select(Document.id).where(Document.id == doc["id"]).with_for_update(nowait=True)
+            ).all()
+            claimable.append(True)
+            other.rollback()
+        delete(key)
+
+    monkeypatch.setattr(files, "delete", delete_and_check_the_row_is_free)
+
+    assert api.delete(f"/api/documents/{doc['id']}").status_code == 204
+
+    assert claimable == [True]
+    assert stored_keys(store_id) == []
+    assert api.get("/api/documents").json() == []
+
+
 def test_a_delete_that_s3_refuses_keeps_the_document(api, user, queued, monkeypatch):
     doc = upload(api).json()
 
