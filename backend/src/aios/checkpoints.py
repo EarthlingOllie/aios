@@ -16,6 +16,8 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, Connection
 from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from aios.config import get_settings, libpq_conninfo
 
@@ -66,6 +68,16 @@ async def setup(conn: AsyncConnection) -> None:
     _ready = True
 
 
+async def ensure_ready() -> None:
+    """Set up the checkpointer's tables now, if this process hasn't yet, rather than in its
+    first turn (see `setup`)."""
+    if _ready:
+        return
+    conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
+    async with conn:
+        await setup(conn)
+
+
 @asynccontextmanager
 async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
     """A checkpointer for one turn of a run, on a connection of its own.
@@ -78,8 +90,53 @@ async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
     async with conn:
         await setup(conn)
         await conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))
+        # A run deleted before this took the lock (its agent, say) is gone: its thread has been
+        # deleted, or will be once this lets go, so nothing written now would be kept, or
+        # would outlive it. One deleted later ends this turn (`stop_turns`).
+        if await _run_gone(conn, run_id):
+            raise RunGone(f"Agent run {run_id} has been deleted")
         # Closing the connection releases the lock, however the turn ends.
         yield AsyncPostgresSaver(conn)
+
+
+async def _run_gone(conn: AsyncConnection, run_id: int) -> bool:
+    cursor = await conn.execute("SELECT 1 FROM public.agent_runs WHERE id = %s", (run_id,))
+    return await cursor.fetchone() is None
+
+
+class RunGone(Exception):
+    """A turn of a run that has been deleted."""
+
+
+# The turns held on this database: advisory locks are per database, but pg_locks lists them all.
+_TURN_LOCKS = (
+    "FROM pg_locks WHERE locktype = 'advisory' AND granted"
+    " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+    # The two-int form of an advisory lock shows its keys as classid and objid (objsubid 2).
+    " AND objsubid = 2 AND classid = CAST(:key AS oid) AND objid::bigint = ANY(:ids)"
+)
+
+
+def stop_turns(db: Session, run_ids: list[int]) -> None:
+    """End the turns underway of these runs, which have been deleted, wherever they run: their
+    connections, which hold them, are closed, so each fails at its next write and nothing more
+    of it happens (a model or tool call already underway finishes, unrecorded). Only for runs
+    that are gone, once that's committed (a turn starting later finds its run gone)."""
+    if run_ids:
+        db.execute(
+            text(f"SELECT pg_terminate_backend(pid) {_TURN_LOCKS}"),
+            {"key": _TURN_LOCK, "ids": list(run_ids)},
+        )
+
+
+def turns_underway(db: Session, run_ids: list[int]) -> set[int]:
+    """Those of these runs with a turn underway, in any process: their turn lock is held."""
+    if not run_ids:
+        return set()
+    rows = db.execute(
+        text(f"SELECT objid::bigint {_TURN_LOCKS}"), {"key": _TURN_LOCK, "ids": list(run_ids)}
+    )
+    return {row[0] for row in rows}
 
 
 @contextmanager

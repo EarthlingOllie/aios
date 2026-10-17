@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import tempfile
@@ -12,6 +13,7 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from aios import checkpoints
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, provision, resolve, store_session
@@ -50,6 +52,10 @@ def db():
         if isinstance(exc.orig, errors.UndefinedTable):
             pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
+    # Before any test holds a transaction open: on a fresh database the checkpointer's setup
+    # creates its indexes CONCURRENTLY, which waits for every older transaction in the
+    # database, so the first turn would otherwise wait for ever on a test's own open session.
+    asyncio.run(checkpoints.ensure_ready())
     with SessionLocal() as session:
         yield session
         session.rollback()

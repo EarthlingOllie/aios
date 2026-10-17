@@ -186,9 +186,9 @@ def fail_stopped_last_runs(db: Session, *where) -> None:
     fail_stopped_runs(db, WorkflowRun.id.in_(select(Trigger.last_workflow_run_id).where(*where)))
 
 
-def cancel_unstarted_firing(db: Session, trigger_id: int) -> None:
-    """Drop the trigger's firing if it has been claimed but hasn't started its run, as it's
-    edited: that firing was for the old settings, and pausing must stop it.
+def cancel_unstarted_firing(db: Session, *where) -> None:
+    """Drop the firing of each trigger matching `where` if it has been claimed but hasn't
+    started its run, as it's edited: that firing was for the old settings, and pausing must stop it.
 
     It's cleared as if it never fired (its previous outcome was already replaced when it was
     claimed), which `aios.scheduler` sees as it having fired again, and so skips. A firing that
@@ -198,7 +198,7 @@ def cancel_unstarted_firing(db: Session, trigger_id: int) -> None:
     db.execute(
         update(Trigger)
         .where(
-            Trigger.id == trigger_id,
+            *where,
             Trigger.last_status == TriggerStatus.running,
             Trigger.last_run_id.is_(None),
             Trigger.last_workflow_run_id.is_(None),
@@ -212,6 +212,19 @@ def load(db: Session, trigger_id: int) -> Trigger:
     fail_stopped_last_runs(db, Trigger.id == trigger_id)
     db.expire_all()
     return db.scalars(select(Trigger).where(Trigger.id == trigger_id).options(*LOAD)).one()
+
+
+def disable_triggers(db: Session, condition) -> None:
+    """Turn off the triggers matching `condition`, as pausing each would: none fires again until
+    it's turned back on, and a firing claimed but not started is dropped. Lock their targets
+    first (see `aios.scheduler._claimed`)."""
+    db.execute(
+        update(Trigger)
+        .where(condition)
+        .values(enabled=False, next_run_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    cancel_unstarted_firing(db, condition)
 
 
 def delete_triggers(db: Session, condition) -> None:
@@ -283,7 +296,7 @@ def update_trigger(trigger_id: DbId, body: TriggerIn, user: CurrentUser, db: DB)
     hasn't started its run yet is dropped (see `cancel_unstarted_firing`)."""
     trigger = get_owned_trigger(db, user.id, trigger_id)
     apply(db, user.id, trigger, body)
-    cancel_unstarted_firing(db, trigger.id)
+    cancel_unstarted_firing(db, Trigger.id == trigger.id)
     db.commit()
     return trigger_out(load(db, trigger.id))
 

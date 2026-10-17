@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pytest
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
-from sqlalchemy import func, update
+from sqlalchemy import delete, func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
@@ -31,6 +31,8 @@ from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.models import (
+    Agent,
+    AgentRun,
     DataStore,
     SchemaChangeRequest,
     SchemaChangeStatus,
@@ -302,15 +304,24 @@ def test_editing_the_agent_while_the_run_waits_doesnt_change_what_it_resumes_on(
     assert steps(out)["build"]["output"] == "builder:built(applied)"
 
 
-def test_deleting_the_agent_while_the_run_waits_fails_its_step_on_resume(
-    api, builder, store, queued
-):
+def delete_behind_the_api(agent: dict) -> None:
+    """Delete the agent as deleting one did before it checked what depends on it (now a run
+    waiting on it refuses the delete until it's cancelled): soft-deleted, its runs gone. Data
+    from then can still be like this."""
+    with SessionLocal() as db:
+        db.execute(delete(AgentRun).where(AgentRun.agent_id == agent["id"]))
+        db.execute(update(Agent).where(Agent.id == agent["id"]).values(deleted_at=func.now()))
+        db.commit()
+
+
+def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, builder, store, queued):
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
-    # It can only be deleted once no workflow's current version uses it.
     api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
-    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+    # The run depends on it, so the API refuses (see `test_agent_dependents`).
+    assert api.delete(f"/api/agents/{builder['id']}").status_code == 409
+    delete_behind_the_api(builder)
 
     decide(api, queued, flow)
 
@@ -395,7 +406,7 @@ def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
     workflow = chain(api, builder)
     waiting = start(api, queued, workflow, Flow())
     api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
-    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+    delete_behind_the_api(builder)
 
     r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
 
@@ -564,7 +575,7 @@ def test_a_waiting_run_shows_which_of_its_pins_are_no_longer_current(api, builde
         },
     ]
 
-    assert api.delete(f"/api/agents/{builder['id']}").status_code == 204
+    delete_behind_the_api(builder)
     [_, build] = read(api, outer, waiting["id"])["stale_pins"]
     assert (build["path"], build["current_version"]) == (["review", "build"], None)
     # And the run's own workflow, at the top.

@@ -549,9 +549,12 @@ def test_an_agent_deleted_since_a_subworkflow_version_pinned_it_cant_run(api, qu
     a = agents(api, "retired")
     inner = make_workflow(api, "inner", [agent_node("old", a["retired"])])
     outer = make_workflow(api, "outer", [workflow_node("inner", inner)])
-    # Only the subworkflow's current version counts for deleting the agent; outer keeps v1.
+    # Outer keeps inner v1, which runs the agent: it can only be deleted with outer deactivated.
     api.put(f"/api/workflows/{inner['id']}", json=workflow_body("inner", []))
-    assert api.delete(f"/api/agents/{a['retired']['id']}").status_code == 204
+    url = f"/api/agents/{a['retired']['id']}"
+    assert api.delete(url).status_code == 409
+    resolved = {"deactivate_workflows": [outer["id"]]}
+    assert api.request("DELETE", url, json=resolved).status_code == 204
 
     resp = api.post(f"/api/workflows/{outer['id']}/runs", json={"input": "x"})
     assert (resp.status_code, resp.json()["detail"]) == (

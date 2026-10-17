@@ -61,10 +61,44 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
 - Agents and workflows are soft-deleted too: older workflow versions keep pinning their versions,
-  and stay readable (a node whose agent or workflow is gone shows no latest version). One can't
-  be deleted while a live workflow's current version runs it; older versions don't count, but
-  restoring one that runs something since deleted is refused. Deleting an agent still deletes
-  its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
+  and stay readable (a node whose agent or workflow is gone shows no latest version). A workflow
+  can't be deleted while a live workflow's current version runs it; older versions don't count,
+  but restoring one that runs something since deleted is refused. Deleting an agent still
+  deletes its runs, their threads and sandboxes. Names are unique among live rows, so they can
+  be reused.
+- An agent is deleted only once what depends on it is resolved (`aios.dependents`).
+  `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
+  have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
+  version runs it at any depth, the live workflows whose current version runs it (directly, or
+  through a nested workflow's pinned version) with their schedules, and its own schedules.
+  `DELETE /api/agents/{id}` answers 409 with that list (`detail.dependents`, and a
+  `detail.message`) until its body resolves each: `cancel_agent_runs` and
+  `cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
+  deactivate; any other workflow must first be edited to stop running the agent (the agent's
+  page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
+  that starts waiting, after the user looked refuses the delete rather than being cancelled
+  unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
+  failed first, as reading it would. Cancelling a workflow run fails it
+  (`aios.workflows.cancel_runs`), closes out its requests (pending ones cancelled, their
+  notifications cleared) and starts no more of its nodes; a worker running it stops at its next
+  beat. A chat run is deleted with the agent, as before, cancelling its requests. Any turn still
+  underway on the agent's runs (a chat's, a schedule's, a cancelled workflow run's node) is
+  stopped: the connection holding its turn lock is ended (`checkpoints.stop_turns`), so it fails
+  at its next write, and a model or tool call already underway finishes unrecorded. A turn that
+  only takes its run's lock after the run has gone finds it gone and does nothing, so no thread
+  is left behind. **Deactivating** a workflow turns off its schedules (as
+  pausing each would, dropping a firing claimed but not started), and with the agent gone no
+  run of it can start, by hand or by schedule: starting one is refused as running a deleted
+  agent. It stays, to be edited (removing the node, or taking a nested workflow's newer
+  version) or deleted; its schedules can be turned back on once it runs. It all happens in one
+  transaction, with the agent and the workflows that run it locked, so a run being started is
+  either seen (and refuses the delete) or waits and then can't start. On the agent's page,
+  Delete opens a dialog that loads the list: with nothing in it, a simple confirm; otherwise
+  each run (with the node it waits at and its requests), workflow and schedule links to where
+  it's seen or managed, in a new tab, with a "Cancel these runs" box and Deactivate or Edit
+  workflow for each workflow. Delete stays disabled until each has a resolution, and the list
+  is checked again when the window regains focus (or on "Check again"), so a workflow edited
+  meanwhile leaves it.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
@@ -161,6 +195,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     scheduler.py    fires due schedules (runs in each API process)
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
+    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -600,9 +635,9 @@ Known limits:
   marks it `expired`, which counts as a rejection, and the chat or workflow run that asked
   resumes with it. Deleting a chat run, an agent with a waiting chat, or a waiting workflow run
   marks its pending request `cancelled` instead, and nothing resumes (`schema_changes.cancel`).
-  (Deleting the agent of a waiting workflow node leaves the request pending: the workflow run
-  still waits on it, and fails that step on resume.) Either way the request's notifications
-  are marked read, nothing is applied, and the Data page's history shows it.
+  An agent whose workflow node waits can only be deleted by cancelling that workflow run, which
+  cancels the request the same way (see deleting an agent, above). Either way the request's
+  notifications are marked read, nothing is applied, and the Data page's history shows it.
 - **Drops are reversible** (`aios.datastores.dropped`). `drop_table` and `drop_column` rename
   the table or column to `_dropped_<timestamp>_<name>` and record it in
   `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with

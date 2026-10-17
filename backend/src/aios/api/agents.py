@@ -16,12 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, tracing, ui_stream
+from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
-from aios.api.triggers import delete_triggers
-from aios.api.workflows import workflows_using
+from aios.api.triggers import delete_triggers, disable_triggers
 from aios.auth import CurrentUser
 from aios.datastores import data_store_for, schema_changes
 from aios.db import DB, DbId, SessionLocal
@@ -35,7 +34,7 @@ from aios.models import (
     Skill,
     SkillVersion,
     Trigger,
-    WorkflowNode,
+    Workflow,
     WorkflowRunStep,
     agent_version_skills,
 )
@@ -56,6 +55,7 @@ from aios.tools import (
     validate_tool,
 )
 from aios.versioning import save_agent_version
+from aios.workflows import cancel_runs
 
 log = logging.getLogger(__name__)
 
@@ -417,23 +417,74 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
     return agent_out(agent)
 
 
-@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
+@router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
+def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
+    """What depends on the agent: what deleting it would cut off, and so has to be resolved
+    first (see `delete_agent`)."""
     agent = get_owned_agent(db, user.id, agent_id)
-    # Hold the row lock across the usage check and the delete; workflow saves that run the agent
-    # take it too (`aios.api.workflows.lock_graph`), and so does starting a run.
+    dependents.fail_stopped_runs(db, agent)
+    return dependents.find(db, agent)
+
+
+class AgentDeleteIn(BaseModel):
+    """How to resolve what depends on the agent (`GET /api/agents/{id}/dependents`), as the user
+    chose. Runs are named one by one, so one that starts after the user looked isn't cancelled
+    unseen: the delete is refused, listing it."""
+
+    # Chat runs to stop (they're deleted with the agent, and their requests cancelled).
+    cancel_agent_runs: list[DbId] = []
+    # Workflow runs to stop: they fail, and their requests are cancelled.
+    cancel_workflow_runs: list[DbId] = []
+    # Workflows to deactivate: their schedules are turned off. Any other workflow that runs the
+    # agent must be edited to stop running it first.
+    deactivate_workflows: list[DbId] = []
+
+
+@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent(
+    agent_id: DbId,
+    user: CurrentUser,
+    db: DB,
+    background: BackgroundTasks,
+    body: AgentDeleteIn | None = None,
+) -> None:
+    """Delete the agent once what depends on it is resolved: the runs still going are named in
+    `cancel_*`, and each workflow that runs it is deactivated or has been edited. Otherwise a
+    409 whose detail has a `message` and the `dependents`. All in one transaction: refused,
+    nothing changes."""
+    body = body or AgentDeleteIn()
+    agent = get_owned_agent(db, user.id, agent_id)
+    dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
+    # Hold the row lock across the check and the delete; workflow saves that run the agent take
+    # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
     lock_live_agent(db, agent)
-    used_by = workflows_using(
-        db,
-        WorkflowNode.agent_version_id.in_(
-            select(AgentVersion.id).where(AgentVersion.agent_id == agent.id)
-        ),
+    # Starting a run of a workflow share-locks the workflow (`new_workflow_run`), so with the
+    # workflows that run the agent locked, a run being started is waited for and then seen,
+    # and one started after waits for this, and then can't (it would run a deleted agent).
+    # Until none is found that isn't locked: a save waited for meanwhile may nest one in another.
+    locked: set[int] = set()
+    while unlocked := dependents.workflow_ids(db, agent) - locked:
+        lock_live(db, Workflow, unlocked)
+        locked |= unlocked
+    found = dependents.find(db, agent)
+    refusal = dependents.unresolved(
+        found,
+        cancel_agent_runs=set(body.cancel_agent_runs),
+        cancel_workflow_runs=set(body.cancel_workflow_runs),
+        deactivate_workflows=set(body.deactivate_workflows),
     )
-    if used_by:
+    if refusal is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Remove this agent from these workflows first: {', '.join(used_by)}.",
+            {"message": refusal, "dependents": found.model_dump(mode="json")},
         )
+    # Before the agent runs go: found by their steps, their requests are cancelled.
+    cancel_runs(
+        db,
+        [r.id for r in found.workflow_runs],
+        f"Cancelled: the agent {agent.name} was deleted.",
+    )
+    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]))
     # Soft delete: older workflow versions may still pin its versions, so the agent and its
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
@@ -442,6 +493,10 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
+    db.commit()
+    # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
+    # rather than carrying on with tool calls for runs that are gone.
+    checkpoints.stop_turns(db, run_ids)
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
