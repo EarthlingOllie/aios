@@ -662,3 +662,35 @@ def test_a_run_deleted_as_its_turn_ends_doesnt_deadlock(api, user, store_id, his
     assert errors == []
     history.export(store_id)
     assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+
+
+def test_a_run_set_aside_by_an_error_is_tried_again_later(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    """A run that will have no other turn (a backfilled one, say) isn't left out for good by an
+    error that passes (a statement timeout, a dropped connection)."""
+    agent = make_agent(api, "Bot")
+    run = new_run(api, agent)
+    chat(api, agent, run, "hi")
+    switch(api, True)
+    read = history.checkpoints.history
+
+    def fails(run_id):
+        raise RuntimeError("connection dropped")
+
+    monkeypatch.setattr(history.checkpoints, "history", fails)
+    set_up_and_export(store_id, history_tasks)
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
+    assert history.stores_to_export() == []
+    monkeypatch.setattr(history.checkpoints, "history", read)
+
+    # Once its retry is due, the sweep queues the store and the run goes in.
+    with SessionLocal() as db:
+        db.execute(text("UPDATE history_exports SET retry_at = now() - interval '1 second'"))
+        db.commit()
+    assert history.stores_to_export() == [store_id]
+    history.export(store_id)
+    assert stored(store_id, "SELECT id FROM history.agent_runs") == [(run["id"],)]
+    with SessionLocal() as db:
+        row = db.query(HistoryExport).filter_by(source_id=run["id"]).one()
+        assert (row.error, row.retry_at) == (None, None) and row.exported_at is not None

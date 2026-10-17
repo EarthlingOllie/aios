@@ -49,6 +49,7 @@ def upgrade() -> None:
         ),
         sa.Column("exported_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["data_store_id"], ["data_stores.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("data_store_id", "kind", "source_id"),
@@ -57,7 +58,7 @@ def upgrade() -> None:
         "ix_history_exports_pending",
         "history_exports",
         ["data_store_id", "enqueued_at"],
-        postgresql_where=sa.text("exported_at IS NULL AND error IS NULL"),
+        postgresql_where=sa.text("exported_at IS NULL"),
     )
 
 

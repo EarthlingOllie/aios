@@ -16,7 +16,8 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   the store's `rw` role) drains the store's outbox, copying each run and its messages,
   flattened from its checkpoint, or deleting the copy of a run that's gone. Copies are upserted
   by the platform's ids, so exporting again changes nothing. A run that fails to export keeps
-  its error on its row and waits for its next change, so it doesn't hold up the rest. A
+  its error on its row and waits for its next change, or `RETRY_AFTER`, so it doesn't hold up
+  the rest. A
   periodic sweep (`stores_to_export`) queues stores whose rows are still pending, should a
   queued export be lost.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
@@ -32,7 +33,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from sqlalchemy import ColumnElement, delete, event, func, literal, or_, select, update
+from sqlalchemy import ColumnElement, and_, delete, event, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,10 @@ BATCH = 50
 
 # Messages per insert: well inside Postgres's limit on a statement's parameters.
 MESSAGES_PER_INSERT = 1000
+
+# How long a run that failed to export waits before it's tried again (seconds), unless it changes
+# first: what failed may pass (a statement timeout, a dropped connection), or may not.
+RETRY_AFTER = 60 * 60
 
 # How long deleting a store's exported history waits for an export of it to finish (seconds).
 LOCK_WAIT = 5
@@ -129,7 +134,12 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
                 HistoryExport.kind,
                 HistoryExport.source_id,
             ],
-            set_={"enqueued_at": func.clock_timestamp(), "exported_at": None, "error": None},
+            set_={
+                "enqueued_at": func.clock_timestamp(),
+                "exported_at": None,
+                "error": None,
+                "retry_at": None,
+            },
         ).returning(HistoryExport.data_store_id)
     ).all()
     if stores and deleting:
@@ -287,6 +297,14 @@ def _write_run(store: Session, run: dict[str, Any], messages: list[dict[str, Any
     )
 
 
+def _pending() -> ColumnElement[bool]:
+    """Outbox rows waiting to be exported: not yet, and not set aside by an error until later."""
+    return and_(
+        HistoryExport.exported_at.is_(None),
+        or_(HistoryExport.retry_at.is_(None), HistoryExport.retry_at <= func.now()),
+    )
+
+
 def _export_batch(data_store_id: uuid.UUID) -> int:
     """Export the store's oldest pending runs; how many there were."""
     with SessionLocal() as db:
@@ -294,8 +312,7 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
             select(HistoryExport.id, HistoryExport.source_id, HistoryExport.enqueued_at)
             .where(
                 HistoryExport.data_store_id == data_store_id,
-                HistoryExport.exported_at.is_(None),
-                HistoryExport.error.is_(None),
+                _pending(),
             )
             .order_by(HistoryExport.enqueued_at)
             .limit(BATCH)
@@ -316,7 +333,7 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
                     _write_run(store, run, flatten(run["id"], checkpoints.history(run["id"])))
             except Exception as exc:
                 # E.g. its checkpoint won't load. Set aside with its error (until the run
-                # changes again), so the runs after it still go in.
+                # changes again, or RETRY_AFTER), so the runs after it still go in.
                 log.exception(
                     "Couldn't export agent run %s to data store %s", p.source_id, data_store_id
                 )
@@ -327,9 +344,20 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
             # Only as it was read: a run changed since is pending again, for the next batch.
             same = (HistoryExport.id == p.id, HistoryExport.enqueued_at == p.enqueued_at)
             if p.id in errors:
-                db.execute(update(HistoryExport).where(*same).values(error=errors[p.id]))
+                db.execute(
+                    update(HistoryExport)
+                    .where(*same)
+                    .values(
+                        error=errors[p.id],
+                        retry_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, RETRY_AFTER),
+                    )
+                )
             elif p.source_id in runs:
-                db.execute(update(HistoryExport).where(*same).values(exported_at=func.now()))
+                db.execute(
+                    update(HistoryExport)
+                    .where(*same)
+                    .values(exported_at=func.now(), error=None, retry_at=None)
+                )
             else:
                 db.execute(delete(HistoryExport).where(*same))
         db.commit()
@@ -381,8 +409,7 @@ def stores_to_export() -> list[uuid.UUID]:
                         select(HistoryExport.id)
                         .where(
                             HistoryExport.data_store_id == DataStore.id,
-                            HistoryExport.exported_at.is_(None),
-                            HistoryExport.error.is_(None),
+                            _pending(),
                         )
                         .exists(),
                         DataStore.history_exported_at.is_(None),
