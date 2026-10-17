@@ -17,6 +17,7 @@ from aios.api import (
     chat,
     data,
     documents,
+    dropped,
     schema_changes,
     skills,
     tools,
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router)
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
+    app.include_router(dropped.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

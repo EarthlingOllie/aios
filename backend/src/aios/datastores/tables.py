@@ -17,6 +17,7 @@ import psycopg
 from psycopg import sql
 
 from aios.config import get_settings
+from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.reads import read_capped, read_only
 
 SCHEMA = "data"
@@ -36,8 +37,10 @@ MIN_PREVIEW_CHARS = 16
 _ROW_KEY = re.compile(r"(?P<table>[0-9]{1,10}):\((?P<block>[0-9]{1,10}),(?P<place>[0-9]{1,5})\)")
 
 # The store's tables (or the one named), with their columns, in order: only the owner's
-# (`data`), and a partitioned table once, not each partition.
-TABLES_SQL = """
+# (`data`), and a partitioned table once, not each partition. Not what the owner dropped
+# (`aios.datastores.dropped`): a dropped table, which the read-only role has no privileges on,
+# nor a dropped column, which it can't read (it has `SELECT` on a table's other columns only).
+TABLES_SQL = f"""
     SELECT c.relname AS name, obj_description(c.oid, 'pg_class') AS description,
            col.name AS column, col.type, col.nullable, col.description AS column_description,
            col.base_type, col.in_array,
@@ -75,12 +78,13 @@ TABLES_SQL = """
             LIMIT 1
         ) base
         WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+          AND has_column_privilege(c.oid, a.attnum, 'SELECT') AND {VISIBLE_COLUMN}
     ) col ON true
     WHERE n.nspname = %(schema)s
       AND (%(name)s::text IS NULL OR c.relname = %(name)s::text)
       AND c.relkind IN ('r', 'p')
       AND NOT c.relispartition
-      AND has_table_privilege(c.oid, 'SELECT')
+      AND has_any_column_privilege(c.oid, 'SELECT') AND {VISIBLE_TABLE}
     ORDER BY c.relname, col.attnum
 """
 

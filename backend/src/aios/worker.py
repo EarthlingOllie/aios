@@ -44,6 +44,8 @@ celery_app.conf.update(
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
         "aios.measure_data_store_usage": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
+        "aios.restore_dropped": {"queue": "provisioning"},
+        "aios.purge_dropped": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -55,6 +57,8 @@ RETRY_UNFINISHED_EVERY = 600
 # What each store uses is measured this often (seconds), for its storage cap
 # (`aios.datastores.quota`): a store past it is refused writes from the next measurement.
 MEASURE_USAGE_EVERY = 300
+# Dropped tables and columns past their retention (days) are purged this often (seconds).
+PURGE_DROPPED_EVERY = 3600
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
@@ -66,6 +70,11 @@ celery_app.conf.beat_schedule = {
         "task": "aios.measure_data_store_usage",
         "schedule": MEASURE_USAGE_EVERY,
         "options": {"expires": MEASURE_USAGE_EVERY},
+    },
+    "purge-dropped": {
+        "task": "aios.purge_dropped",
+        "schedule": PURGE_DROPPED_EVERY,
+        "options": {"expires": PURGE_DROPPED_EVERY},
     },
 }
 
@@ -218,6 +227,35 @@ def apply_schema_change_task(request_id: str) -> None:
 
     schema_changes.apply(uuid.UUID(request_id))
     enqueue_resume(uuid.UUID(request_id))
+
+
+@celery_app.task(
+    name="aios.restore_dropped",
+    soft_time_limit=APPLY_TIME_LIMIT,
+    time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
+    """Restore a dropped table or column the owner asked for (`aios.datastores.dropped`). Run
+    again (redelivered), it finds nothing left to restore."""
+    from aios.datastores import dropped
+
+    dropped.restore(uuid.UUID(data_store_id), dropped_id)
+
+
+@celery_app.task(
+    name="aios.purge_dropped",
+    soft_time_limit=PURGE_DROPPED_EVERY,
+    time_limit=PURGE_DROPPED_EVERY + 60,
+)
+def purge_dropped_task() -> None:
+    """Drop for good, in every ready store, the tables and columns dropped longer ago than
+    `DATA_STORE_DROPPED_RETENTION_DAYS` (`aios.datastores.dropped`)."""
+    from aios.datastores import dropped
+
+    dropped.purge_all()
 
 
 def enqueue_resume(request_id: uuid.UUID) -> None:

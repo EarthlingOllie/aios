@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 
 import { DocumentsSection, useDataStore } from "@/components/Documents";
 import { TablesSection } from "@/components/Tables";
+import { DroppedSection } from "@/components/Dropped";
 import { ChangesSection } from "@/components/SchemaChanges";
 import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -24,8 +25,8 @@ const statusVariant = {
 
 /**
  * What's in the user's data store. Each section is a tab with its own URL (`/data` for the
- * Overview, `/data?tab=tables`, `/data?tab=changes`, `/data?tab=documents`), so other pages and
- * notifications can link straight to one.
+ * Overview, `/data?tab=tables`, `/data?tab=changes`, `/data?tab=dropped`,
+ * `/data?tab=documents`), so other pages and notifications can link straight to one.
  */
 export function DataPage() {
   // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.
@@ -51,6 +52,7 @@ export function DataPage() {
             },
             { id: "tables", label: "Tables", content: <TablesSection /> },
             { id: "changes", label: "Changes", content: <ChangesSection /> },
+            { id: "dropped", label: "Dropped", content: <DroppedSection /> },
             { id: "documents", label: "Documents", content: <DocumentsSection /> },
           ]}
         />
