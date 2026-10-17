@@ -183,11 +183,17 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
 
     For runs being deleted, call it before deleting them, with `deleting`: they're found
     through their rows. Their copies are kept while the export is off, so they go in the outbox
-    then too, if the store has its `history` tables, and are deleted once it's back on."""
+    then too, if the store has its `history` tables, and are deleted once it's back on. The
+    workflow runs whose steps held them go in too: the steps stay, without them."""
     runs = (
         select(AgentRun.id, Agent.owner_id).join(Agent, Agent.id == AgentRun.agent_id).where(*where)
     )
     _enqueue(db, HistoryExportKind.agent_run, runs, deleting)
+    if deleting:
+        held = select(WorkflowRunStep.run_id).where(
+            WorkflowRunStep.agent_run_id.in_(select(runs.subquery().c.id))
+        )
+        enqueue_workflow_runs(db, WorkflowRun.id.in_(held))
 
 
 def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:

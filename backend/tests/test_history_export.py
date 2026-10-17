@@ -1140,3 +1140,23 @@ def test_delete_exported_history_empties_the_workflow_runs_and_while_on_brings_t
     history.export(store_id)
     assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(run["id"],)]
     assert stored(store_id, counts) == [(1, 3)]
+
+
+def test_deleting_a_workflow_steps_agent_run_unlinks_it_from_the_exported_step(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    run = workflow_runs.run(api, started, nested_workflow(api), "topic")
+    history.export(store_id)
+    critic = next(s for s in run["steps"] if s["path"] == ["review", "critic"])
+
+    url = f"/api/agents/{critic['agent_id']}/runs/{critic['agent_run_id']}"
+    assert api.delete(url).status_code == 204
+    history.export(store_id)
+
+    assert stored(
+        store_id,
+        "SELECT array_to_string(path, '/'), agent_run_id IS NOT NULL"
+        " FROM history.workflow_run_steps ORDER BY path",
+    ) == [("draft", True), ("review", False), ("review/critic", False)]
