@@ -4,7 +4,11 @@ import { Loader2, Trash2 } from "lucide-react";
 import { ErrorBanner, formatDate, Section, useLoad, usePoll } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { api, describeError } from "@/lib/api";
-import { historyExportPending, historyExportStatus } from "@/lib/settings";
+import {
+  historyEmbeddingStatus,
+  historyExportPending,
+  historyExportStatus,
+} from "@/lib/settings";
 
 /** The user's settings. So far, the run history export. */
 export function SettingsPage() {
@@ -14,6 +18,7 @@ export function SettingsPage() {
   const [notice, setNotice] = useState<string>();
   // What the switch was just set to, shown until the saved setting is read back.
   const [switching, setSwitching] = useState<boolean>();
+  const [embedSwitching, setEmbedSwitching] = useState<boolean>();
   // Ask again while the store is being set up, or until the first export has run.
   usePoll(settings !== undefined && historyExportPending(settings), reload);
 
@@ -35,9 +40,10 @@ export function SettingsPage() {
   function onDelete() {
     // While the export is on, deleting starts it over: every run is exported again.
     const on = settings?.export_run_history;
+    const again = settings?.embed_run_history ? "exported and embedded again" : "exported again";
     const question = on
       ? "Delete the run history exported to your data store? Your runs stay here. The export is " +
-        "on, so all your runs are exported again: to keep it empty, switch the export off first."
+        `on, so all your runs are ${again}: to keep it empty, switch the export off first.`
       : "Delete the run history exported to your data store? Your runs stay here.";
     if (!window.confirm(question)) {
       return;
@@ -60,8 +66,10 @@ export function SettingsPage() {
         <ErrorBanner message={loadError} />
         <Section title="Run history export">
           <p className="text-muted-foreground text-sm">
-            Copy your agent runs (each conversation, with its messages, tool calls and usage) into
-            your data store, where your agents can query them in its <code>history</code> tables.
+            Copy your agent runs (each conversation, with its messages, tool calls and usage) and
+            workflow runs (with every step, at every depth) into your data store, where your
+            agents can query them in its <code>history</code> tables, and search them with the
+            Run history search tool.
             Your runs here stay as they are: switching the export off keeps what was copied, and
             deleting a run deletes its copy while the export is on.
           </p>
@@ -91,6 +99,33 @@ export function SettingsPage() {
               >
                 {historyExportStatus(settings, formatDate)}
               </p>
+              {/* Embedding is offered only while the export is on. */}
+              {settings.export_run_history && (
+                <div className="flex flex-col gap-1 border-t pt-3">
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      checked={embedSwitching ?? settings.embed_run_history}
+                      disabled={busy}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setEmbedSwitching(on);
+                        act(() => api.updateSettings({ embed_run_history: on })).finally(() =>
+                          setEmbedSwitching(undefined),
+                        );
+                      }}
+                    />
+                    Embed exported messages so agents can search past runs by meaning
+                  </label>
+                  <p
+                    role="status"
+                    aria-label="Run history embedding"
+                    className="text-muted-foreground text-sm"
+                  >
+                    {historyEmbeddingStatus(settings, formatDate)}
+                  </p>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   variant="outline"

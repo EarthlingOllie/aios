@@ -1034,15 +1034,17 @@ def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(api, que
 
 
 def test_a_run_awaiting_a_slow_node_isnt_failed_for_making_no_progress(api, queued, monkeypatch):
-    # A node waiting on a long model or tool call leaves the loop free to make progress.
+    # A node waiting on a long model or tool call leaves the loop free to make progress. The
+    # limit is 1s and the wait 3s: a wait well past the limit, with room for a loaded machine
+    # to stall a beat now and then (0.3s wasn't, on CI).
     monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
-    monkeypatch.setattr(get_settings(), "workflow_run_no_progress_limit", 0.3)
+    monkeypatch.setattr(get_settings(), "workflow_run_no_progress_limit", 1.0)
     a = agents(api, "slow")
     wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
     started = start(api, wf)
 
     async def script(messages, info):
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(3.0)
         yield "done"
 
     with use_model(model(script)):

@@ -10,6 +10,7 @@ To add a tool, write a module that calls `register(ToolSpec(...))` and import it
 
 from aios.tools import (  # noqa: F401  (registers the tools)
     data,
+    history_search,
     hybrid_search,
     run_python,
     schema_change,

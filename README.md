@@ -6,8 +6,9 @@ Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain'
 Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
-reusable instructions, and **tools** from a built-in library: web search, and document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent)
+reusable instructions, and **tools** from a built-in library: web search; document search,
+the same hybrid search as the documents chat, over the documents of the user running the agent;
+and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
@@ -416,28 +417,61 @@ written or deleted from since.
 #### Run history export
 
 On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
-their agent runs into their store's `history` schema (`history.agent_runs`, keyed by the
-platform's run ids and recording who ran each, and `history.messages`: role, text, tool calls
-and usage, flattened from the run's checkpoint). The platform database stays the source of
-truth (`aios.datastores.history`):
+their runs into their store's `history` schema, keyed by the platform's ids and recording who
+ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
+with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
+input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
+key: the two are exported apart). Statuses are copied as text. The platform database stays the
+source of truth (`aios.datastores.history`):
 
 - The `history` tables are the store tree's second line (branch label `history`, revisions
   `h0001`, ...), which a store gets only once its owner first switches the export on:
   `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
   migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
-  same default privileges on it as on `aios`.
-- Switching it on backfills: every run of the user's goes in the outbox, `history_exports` (a row
-  per run and store). Every agent turn ends in `_end_turn` (chats, schedules and workflow agent
-  nodes alike, failed or stopped too), which writes the run's row in the same transaction as the
-  run's own update; deleting a run, its agent or its workflow run writes it too.
+  same default privileges on it as on `aios`. A store behind the line's head isn't exported
+  until it's brought there.
+- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+  outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
+  `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
+  every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
+  the run's row in the same transaction as the run's own update. Deleting a run, its agent or
+  its workflow run writes it too, and deleting an agent writes the workflow runs whose steps
+  held its runs. Pausing and resuming a workflow run will write it too, once runs can pause.
 - `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
-  upserting each run and its messages, or deleting the copy of a run that's gone. It's queued
-  when the outbox is written, and the provisioning worker's beat queues it every minute for any
-  store with rows still pending. A run that fails to export keeps its error on its outbox row
-  and is tried again at its next turn, or in an hour, so it doesn't hold up the rest.
+  upserting each run with its messages or steps, or deleting the copy of a run that's gone.
+  It's queued when the outbox is written, and the provisioning worker's beat queues it every
+  minute for any store with rows still pending. A run that fails to export keeps its error on
+  its outbox row and is tried again at its next change, or in an hour, so it doesn't hold up
+  the rest.
 - Switching it off stops the export (after the batch under way) and keeps the copy; runs
   deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
   copy; while the export is on, every run is then exported again.
+
+##### Searchable history
+
+While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+switched off with the export), embeds the exported messages so agents can search past runs:
+
+- `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
+  (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
+  (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
+- The export embeds what it has just exported once it has caught up (after letting go of the
+  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
+  keeps its embedding while its text is unchanged, so a run exported again is embedded only where
+  it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching embedding
+  on queues the export, which embeds every message already there (a backfill);
+  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
+  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
+  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
+  new embeddings and keeps the existing ones, which are still searched.
+- The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
+  search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by meaning
+  over what's embedded. If the query can't be embedded, it searches by keyword alone. Each result
+  is a message with its run's id, agent, title and when it started; the run searching is left
+  out. Like document search, it runs in the store's own database as `_ro`, so it never sees
+  another store's runs.
 
 ### Dependency policy
 
