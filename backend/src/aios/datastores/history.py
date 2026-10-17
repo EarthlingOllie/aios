@@ -29,16 +29,36 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from sqlalchemy import ColumnElement, and_, delete, event, func, literal, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Row,
+    Select,
+    Text,
+    and_,
+    cast,
+    delete,
+    event,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
 from aios.datastores.connections import DataStoreBusy, store_session
-from aios.datastores.models import HistoryAgentRun, HistoryMessage
+from aios.datastores.models import (
+    HistoryAgentRun,
+    HistoryMessage,
+    HistoryWorkflowRun,
+    HistoryWorkflowRunStep,
+)
 from aios.db import SessionLocal, engine
 from aios.models import (
     Agent,
@@ -49,7 +69,10 @@ from aios.models import (
     HistoryExport,
     HistoryExportKind,
     User,
+    Workflow,
+    WorkflowRun,
     WorkflowRunStep,
+    WorkflowVersion,
 )
 
 log = logging.getLogger(__name__)
@@ -57,8 +80,8 @@ log = logging.getLogger(__name__)
 # Runs exported per round trip to the store.
 BATCH = 50
 
-# Messages per insert: well inside Postgres's limit on a statement's parameters.
-MESSAGES_PER_INSERT = 1000
+# Rows (messages, steps) per insert: well inside Postgres's limit on a statement's parameters.
+ROWS_PER_INSERT = 1000
 
 # How long a run that failed to export waits before it's tried again (seconds), unless it changes
 # first: what failed may pass (a statement timeout, a dropped connection), or may not.
@@ -100,31 +123,24 @@ def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_TO_EXPORT, None)
 
 
-def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:
-    """Put the agent runs matching `where` in their stores' outbox, if their owner has the
-    export on; in `db`'s transaction, which the caller commits (the stores' exports are queued
-    then). A run already there is pending again.
-
-    For runs being deleted, call it before deleting them, with `deleting`: they're found
-    through their rows. Their copies are kept while the export is off, so they go in the outbox
-    then too, if the store has its `history` tables, and are deleted once it's back on."""
+def _enqueue(db: Session, kind: HistoryExportKind, runs: Select, deleting: bool) -> None:
+    """Put `runs` (selecting each one's id and its owner's, `owner_id`) in their stores'
+    outbox, if their owner has the export on; see `enqueue_runs`."""
+    runs = runs.subquery()
     exporting: ColumnElement[bool] = User.export_run_history
     if deleting:
         exporting = or_(exporting, DataStore.history_revision.is_not(None))
-    runs = (
-        select(
-            DataStore.id, literal(HistoryExportKind.agent_run, HistoryExport.kind.type), AgentRun.id
-        )
-        .join(Agent, Agent.id == AgentRun.agent_id)
-        .join(User, User.id == Agent.owner_id)
-        .join(DataStore, DataStore.owner_user_id == User.id)
-        .where(exporting, *where)
+    rows = (
+        select(DataStore.id, literal(kind, HistoryExport.kind.type), runs.c.id)
+        .join(User, User.id == DataStore.owner_user_id)
+        .join(runs, runs.c.owner_id == User.id)
+        .where(exporting)
         # Rows are locked in run order, as the export marks them, so two writers of several
         # don't each hold one the other wants.
-        .order_by(AgentRun.id)
+        .order_by(runs.c.id)
     )
     stmt = insert(HistoryExport).from_select(
-        [HistoryExport.data_store_id, HistoryExport.kind, HistoryExport.source_id], runs
+        [HistoryExport.data_store_id, HistoryExport.kind, HistoryExport.source_id], rows
     )
     stores = db.scalars(
         stmt.on_conflict_do_update(
@@ -150,6 +166,40 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
         ).all()
     if stores:
         db.info.setdefault(_TO_EXPORT, set()).update(stores)
+
+
+def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:
+    """Put the agent runs matching `where` in their stores' outbox, if their owner has the
+    export on; in `db`'s transaction, which the caller commits (the stores' exports are queued
+    then). A run already there is pending again.
+
+    For runs being deleted, call it before deleting them, with `deleting`: they're found
+    through their rows. Their copies are kept while the export is off, so they go in the outbox
+    then too, if the store has its `history` tables, and are deleted once it's back on."""
+    runs = (
+        select(AgentRun.id, Agent.owner_id).join(Agent, Agent.id == AgentRun.agent_id).where(*where)
+    )
+    _enqueue(db, HistoryExportKind.agent_run, runs, deleting)
+
+
+def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:
+    """Put the workflow runs matching `where` in their stores' outbox, as `enqueue_runs` does
+    agent runs. Whatever changes a workflow run's status calls it, in the same transaction:
+    ending it (`aios.workflows._end_runs`), deleting it, and pausing and resuming it, once runs
+    can pause. A writer of both kinds writes its agent runs' rows first, as the export marks
+    them."""
+    runs = (
+        select(WorkflowRun.id, Workflow.owner_id)
+        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+        .where(*where)
+    )
+    _enqueue(db, HistoryExportKind.workflow_run, runs, deleting)
+
+
+def enqueue_everything(db: Session, user_id: int) -> None:
+    """Put every run of the user's, of each kind, in their store's outbox (a backfill)."""
+    enqueue_runs(db, Agent.owner_id == user_id)
+    enqueue_workflow_runs(db, Workflow.owner_id == user_id)
 
 
 @contextmanager
@@ -278,8 +328,8 @@ def _write_run(store: Session, run: dict[str, Any], messages: list[dict[str, Any
             set_={c: stmt.excluded[c] for c in [*run, "exported_at"] if c != "id"},
         )
     )
-    for start in range(0, len(messages), MESSAGES_PER_INSERT):
-        stmt = insert(HistoryMessage).values(messages[start : start + MESSAGES_PER_INSERT])
+    for start in range(0, len(messages), ROWS_PER_INSERT):
+        stmt = insert(HistoryMessage).values(messages[start : start + ROWS_PER_INSERT])
         store.execute(
             stmt.on_conflict_do_update(
                 index_elements=[HistoryMessage.agent_run_id, HistoryMessage.position],
@@ -307,11 +357,142 @@ def _pending() -> ColumnElement[bool]:
     )
 
 
+def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """The workflow runs that still exist, as `history.workflow_runs` rows, each with its
+    steps (at every depth) as `history.workflow_run_steps` rows under "steps"."""
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(
+                WorkflowRun.id,
+                WorkflowRun.workflow_id,
+                Workflow.name.label("workflow_name"),
+                WorkflowVersion.version.label("workflow_version"),
+                # Who ran it: today, a workflow's runs are its owner's.
+                Workflow.owner_id.label("user_id"),
+                cast(WorkflowRun.status, Text).label("status"),
+                WorkflowRun.input,
+                WorkflowRun.output,
+                WorkflowRun.error,
+                WorkflowRun.created_at,
+                WorkflowRun.started_at,
+                WorkflowRun.finished_at,
+            )
+            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+            .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+            .where(WorkflowRun.id.in_(run_ids))
+        ).mappings()
+        runs = {r["id"]: {**_clean(dict(r)), "steps": []} for r in rows}
+        steps = db.execute(
+            select(
+                WorkflowRunStep.id,
+                WorkflowRunStep.run_id.label("workflow_run_id"),
+                WorkflowRunStep.path,
+                cast(WorkflowRunStep.kind, Text).label("kind"),
+                cast(WorkflowRunStep.status, Text).label("status"),
+                WorkflowRunStep.input,
+                WorkflowRunStep.output,
+                WorkflowRunStep.error,
+                WorkflowRunStep.agent_run_id,
+                WorkflowRunStep.started_at,
+                WorkflowRunStep.finished_at,
+            )
+            .where(WorkflowRunStep.run_id.in_(list(runs)))
+            .order_by(WorkflowRunStep.id)
+        ).mappings()
+        for step in steps:
+            runs[step["workflow_run_id"]]["steps"].append(_clean(dict(step)))
+        return runs
+
+
+def _upsert(store: Session, table: type, rows: list[dict[str, Any]]) -> None:
+    """Insert `rows` into `table`, or update the rows already there with their ids."""
+    if not rows:
+        return
+    stmt = insert(table).values(rows)
+    store.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[table.id], set_={c: stmt.excluded[c] for c in rows[0] if c != "id"}
+        )
+    )
+
+
+def _write_workflow_run(store: Session, run: dict[str, Any]) -> None:
+    steps = run["steps"]
+    row = {k: v for k, v in run.items() if k != "steps"}
+    _upsert(store, HistoryWorkflowRun, [{**row, "exported_at": func.now()}])
+    for start in range(0, len(steps), ROWS_PER_INSERT):
+        _upsert(store, HistoryWorkflowRunStep, steps[start : start + ROWS_PER_INSERT])
+
+
+@dataclass
+class _Batch:
+    """A batch of a store's pending outbox rows, as it's exported: what still exists of each
+    kind, read from the platform, and the rows that failed."""
+
+    pending: list[Row]
+    # Of each kind, the runs that still exist, as their copies' rows, by id.
+    found: dict[HistoryExportKind, dict[int, Any]] = field(default_factory=dict)
+    # Each agent run's messages, as `history.messages` rows.
+    messages: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    # Outbox row ids that failed, with their errors.
+    errors: dict[int, str] = field(default_factory=dict)
+
+    def of(self, kind: HistoryExportKind) -> list[Row]:
+        return [p for p in self.pending if p.kind == kind]
+
+    def exists(self, p: Row) -> bool:
+        return p.source_id in self.found[p.kind]
+
+    def failed(self, p: Row, exc: Exception, data_store_id: uuid.UUID) -> None:
+        log.exception("Couldn't export %s %s to data store %s", p.kind, p.source_id, data_store_id)
+        self.errors[p.id] = f"{type(exc).__name__}: {exc}"
+
+
+# How each kind's copy is deleted, once its run has gone (its child rows go with it, by their
+# foreign keys).
+_COPIES = {
+    HistoryExportKind.agent_run: HistoryAgentRun,
+    HistoryExportKind.workflow_run: HistoryWorkflowRun,
+}
+
+
+def _read(batch: _Batch, data_store_id: uuid.UUID) -> None:
+    """Read what the batch's runs are now, from the platform."""
+    agent_runs = batch.of(HistoryExportKind.agent_run)
+    batch.found[HistoryExportKind.agent_run] = _load_runs([p.source_id for p in agent_runs])
+    batch.found[HistoryExportKind.workflow_run] = _load_workflow_runs(
+        [p.source_id for p in batch.of(HistoryExportKind.workflow_run)]
+    )
+    # Every thread read first, on one connection, so the store's transaction isn't left idle.
+    with checkpoints.sync_saver() as saver:
+        for p in agent_runs:
+            if batch.exists(p):
+                try:
+                    batch.messages[p.source_id] = flatten(
+                        p.source_id, checkpoints.history(p.source_id, saver)
+                    )
+                except Exception as exc:
+                    batch.failed(p, exc, data_store_id)
+
+
+def _write(store: Session, batch: _Batch, p: Row) -> None:
+    run = batch.found[p.kind][p.source_id]
+    if p.kind == HistoryExportKind.agent_run:
+        _write_run(store, run, batch.messages[p.source_id])
+    else:
+        _write_workflow_run(store, run)
+
+
 def _export_batch(data_store_id: uuid.UUID) -> int:
-    """Export the store's oldest pending runs; how many there were."""
+    """Export the store's oldest pending runs, of any kind; how many there were."""
     with SessionLocal() as db:
         pending = db.execute(
-            select(HistoryExport.id, HistoryExport.source_id, HistoryExport.enqueued_at)
+            select(
+                HistoryExport.id,
+                HistoryExport.kind,
+                HistoryExport.source_id,
+                HistoryExport.enqueued_at,
+            )
             .where(
                 HistoryExport.data_store_id == data_store_id,
                 _pending(),
@@ -321,53 +502,37 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
         ).all()
     if not pending:
         return 0
-    runs = _load_runs([p.source_id for p in pending])
+    batch = _Batch(pending)
     # A run that fails (its checkpoint won't load, its copy won't write) is set aside with its
     # error, until it changes again or RETRY_AFTER, so the runs after it still go in.
-    errors: dict[int, str] = {}
-
-    def failed(p, exc: Exception) -> None:
-        log.exception("Couldn't export agent run %s to data store %s", p.source_id, data_store_id)
-        errors[p.id] = f"{type(exc).__name__}: {exc}"
-
-    # Every thread read first, on one connection, so the store's transaction isn't left idle.
-    messages: dict[int, list[dict[str, Any]]] = {}
-    with checkpoints.sync_saver() as saver:
-        for p in pending:
-            if p.source_id in runs:
-                try:
-                    messages[p.source_id] = flatten(
-                        p.source_id, checkpoints.history(p.source_id, saver)
-                    )
-                except Exception as exc:
-                    failed(p, exc)
+    _read(batch, data_store_id)
     with store_session(data_store_id, "rw") as store:
         for p in pending:
-            run = runs.get(p.source_id)
-            if run is None:
-                # Deleted (its messages go with it, by their foreign key).
-                store.execute(delete(HistoryAgentRun).where(HistoryAgentRun.id == p.source_id))
-            elif p.id not in errors:
+            if not batch.exists(p):
+                copy = _COPIES[p.kind]
+                store.execute(delete(copy).where(copy.id == p.source_id))
+            elif p.id not in batch.errors:
                 try:
                     with store.begin_nested():
-                        _write_run(store, run, messages[p.source_id])
+                        _write(store, batch, p)
                 except Exception as exc:
-                    failed(p, exc)
+                    batch.failed(p, exc, data_store_id)
         store.commit()
     with SessionLocal() as db:
-        for p in sorted(pending, key=lambda p: p.source_id):  # in run order, as enqueue_runs
+        # In kind then run order, as writers enqueue them (`enqueue_workflow_runs`).
+        for p in sorted(pending, key=lambda p: (p.kind, p.source_id)):
             # Only as it was read: a run changed since is pending again, for the next batch.
             same = (HistoryExport.id == p.id, HistoryExport.enqueued_at == p.enqueued_at)
-            if p.id in errors:
+            if p.id in batch.errors:
                 db.execute(
                     update(HistoryExport)
                     .where(*same)
                     .values(
-                        error=errors[p.id],
+                        error=batch.errors[p.id],
                         retry_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, RETRY_AFTER),
                     )
                 )
-            elif p.source_id in runs:
+            elif batch.exists(p):
                 db.execute(
                     update(HistoryExport)
                     .where(*same)
@@ -453,13 +618,15 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
         with store_session(data_store_id, "rw") as store:
             store.execute(delete(HistoryMessage))
             store.execute(delete(HistoryAgentRun))
+            store.execute(delete(HistoryWorkflowRunStep))
+            store.execute(delete(HistoryWorkflowRun))
             store.commit()
     # Once the lock is let go: the export this queues may start at once, and would find it held.
     with SessionLocal() as db:
         db.execute(
             update(DataStore).where(DataStore.id == data_store_id).values(history_exported_at=None)
         )
-        enqueue_runs(db, Agent.owner_id == owner_id)
+        enqueue_everything(db, owner_id)
         db.commit()
 
 
@@ -477,6 +644,6 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     from aios.datastores.resolve import data_store_for
 
     store_id = data_store_for(user_id, db)
-    enqueue_runs(db, Agent.owner_id == user_id)
+    enqueue_everything(db, user_id)
     db.execute(update(DataStore).where(DataStore.id == store_id).values(history_exported_at=None))
     return store_id

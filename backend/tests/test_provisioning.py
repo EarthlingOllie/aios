@@ -906,7 +906,12 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
     finally:
         engine.dispose()
     assert {"documents", "chunks"} <= store_tables(names.dbname, "aios")
-    assert store_tables(names.dbname, "history") == {"agent_runs", "messages"}
+    assert store_tables(names.dbname, "history") == {
+        "agent_runs",
+        "messages",
+        "workflow_runs",
+        "workflow_run_steps",
+    }
 
 
 def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export_on(db, new_user):

@@ -103,6 +103,7 @@ class DataStore(Base):
 
 class HistoryExportKind(enum.StrEnum):
     agent_run = "agent_run"
+    workflow_run = "workflow_run"
 
 
 class HistoryExport(Base):

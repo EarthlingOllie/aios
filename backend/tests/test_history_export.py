@@ -7,12 +7,13 @@ import time
 import uuid
 
 import pytest
+import test_workflow_runs as workflow_runs
 from conftest import delete_user
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text
 from test_agents import chat_body, make_agent, stop_during_searches
-from test_workflows import agent_node, make_workflow
+from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios import worker
 from aios.api import agents as agents_api
@@ -455,7 +456,7 @@ def test_a_workflow_runs_agent_turns_are_exported_and_go_with_the_workflow_run(
     with use_model(replies("went")):
         asyncio.run(execute_run(started["id"]))
 
-    assert history_tasks["export"] == [store_id]
+    assert set(history_tasks["export"]) == {store_id}
     history.export(store_id)
     assert stored(
         store_id, "SELECT workflow_run_id, user_id, title, message_count FROM history.agent_runs"
@@ -787,3 +788,82 @@ def test_an_export_under_way_leaves_no_platform_transaction_open(
             )
         ).all()
     assert idle == []
+
+
+# Workflow runs: `history.workflow_runs` and `history.workflow_run_steps`.
+
+
+@pytest.fixture
+def started(monkeypatch) -> list[int]:
+    """The ids of the workflow runs the API starts, instead of sending them to the worker."""
+    ids = []
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", ids.append)
+    return ids
+
+
+def nested_workflow(api) -> dict:
+    """ "pipeline": agent node "draft", then workflow node "review" (agent node "critic")."""
+    a = workflow_runs.agents(api, "draft", "critic")
+    inner = make_workflow(api, "review", [agent_node("critic", a["critic"])])
+    return make_workflow(
+        api,
+        "pipeline",
+        [agent_node("draft", a["draft"]), workflow_node("review", inner)],
+        [("draft", "review")],
+    )
+
+
+def test_a_finished_workflow_run_is_exported_with_every_step_linked_to_its_agent_runs(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    history_tasks["export"].clear()
+
+    done = workflow_runs.run(api, started, workflow, "topic")
+
+    assert done["status"] == "succeeded"
+    # The run's end wrote its row in the outbox: the export was queued once that committed.
+    with SessionLocal() as db:
+        row = db.query(HistoryExport).filter_by(kind="workflow_run", source_id=done["id"]).one()
+        assert row.exported_at is None
+    assert store_id in history_tasks["export"]
+    history.export(store_id)
+
+    assert stored(
+        store_id,
+        "SELECT id, workflow_id, workflow_name, workflow_version, user_id, status, input, output,"
+        " error, started_at IS NOT NULL, finished_at IS NOT NULL FROM history.workflow_runs",
+    ) == [
+        (
+            done["id"],
+            workflow["id"],
+            "pipeline",
+            1,
+            user.id,
+            "succeeded",
+            "topic",
+            "critic(draft(topic))",
+            None,
+            True,
+            True,
+        )
+    ]
+    steps = {"/".join(s["path"]): s for s in done["steps"]}
+    # Every step at every depth, each agent node's joining its exported agent run.
+    assert stored(
+        store_id,
+        "SELECT s.id, s.workflow_run_id, array_to_string(s.path, '/'), s.kind, s.status,"
+        " s.input, s.output, s.error, s.agent_run_id, s.finished_at IS NOT NULL, r.agent_name"
+        " FROM history.workflow_run_steps s"
+        " LEFT JOIN history.agent_runs r ON r.id = s.agent_run_id ORDER BY s.path",
+    ) == [
+        (steps["draft"]["id"], done["id"], "draft", "agent", "succeeded", "topic",
+         "draft(topic)", None, steps["draft"]["agent_run_id"], True, "draft"),
+        (steps["review"]["id"], done["id"], "review", "workflow", "succeeded",
+         "draft(topic)", "critic(draft(topic))", None, None, True, None),
+        (steps["review/critic"]["id"], done["id"], "review/critic", "agent", "succeeded",
+         "draft(topic)", "critic(draft(topic))", None, steps["review/critic"]["agent_run_id"],
+         True, "critic"),
+    ]  # fmt: skip
