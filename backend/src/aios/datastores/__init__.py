@@ -17,7 +17,7 @@ from aios.datastores.connections import (
     store_status,
 )
 from aios.datastores.notices import store_busy, store_not_ready, store_upgrading
-from aios.datastores.resolve import data_store_for
+from aios.datastores.resolve import can_approve, data_store_for
 
 __all__ = [
     "DataStoreBehind",
@@ -25,6 +25,7 @@ __all__ = [
     "DataStoreNotFound",
     "DataStoreNotReady",
     "Role",
+    "can_approve",
     "data_store_for",
     "store_busy",
     "store_engine",

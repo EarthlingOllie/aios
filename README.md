@@ -10,7 +10,8 @@ reusable instructions, and **tools** from a built-in library: web search, and do
 the same hybrid search as the documents chat, over the documents of the user running the agent)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
-**Data** page shows the user's data store: its status (Overview) and its documents, with each
+**Data** page shows the user's data store: its status (Overview), the schema changes its agents
+asked for (Changes: those waiting for a decision, then the history), and its documents, with each
 one's ingest status, chunk count and upload time, upload and delete (the chat's documents panel
 uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
@@ -492,6 +493,25 @@ Known limits:
   set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
   model their results are data, not instructions, and that the store is being set up until
   it's ready.
+- **Request schema changes** (`request_schema_change`) is how an agent gets new tables, columns
+  and indexes in `data` (`aios.datastores.schema_changes`). The model sends a spec, never SQL:
+  `create_table`, `add_column` and `create_index` operations, with types from an allowlist
+  (including `embedding`, a vector of a text column that `write_data` fills) and names that
+  match `^[a-z][a-z0-9_]{0,62}$` and aren't reserved words. The tool checks it against the
+  store's schema, compiles it to SQL with every identifier quoted (descriptions become
+  `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
+  `interrupt()`: the turn ends with a card of the agent's reason and the exact SQL, and the run
+  takes no new messages until it's decided. The store's owner (`can_approve`) approves or
+  rejects it (with an optional note) there or in the Data page's Changes section. An approved
+  request is applied on the provisioning worker (`aios.apply_schema_change`), as the
+  provisioner `SET ROLE` to the store's owner, in one transaction under
+  `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the
+  store's data schema revision; if the revision moved on since the request was made, the spec
+  is checked again, and one that no longer applies is marked `stale`. Then the workflow worker
+  resumes the run (`aios.resume_agent_run`) with the outcome (applied, rejected with the note,
+  failed with the error, or stale), which the tool call returns to the model, and the chat
+  shows the rest of the turn. Workflow runs can't wait on a request yet: in a workflow the tool
+  tells the model so.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and

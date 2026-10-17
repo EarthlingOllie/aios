@@ -21,6 +21,9 @@ class ChatDeps:
     # or chat turn starts. Tools take it rather than the user, so they needn't change when a
     # run's store isn't its user's (teams).
     data_store_id: uuid.UUID | None = None
+    # The workflow run the agent run is a node of, if it is one: such a run can't wait for a
+    # schema change request to be decided yet (`request_schema_change`).
+    workflow_run_id: int | None = None
 
 
 INSTRUCTIONS = (

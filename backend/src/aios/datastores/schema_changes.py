@@ -637,3 +637,33 @@ def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
         )
         db.commit()
     return status
+
+
+def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
+    """What the run that asked is resumed with, and its tool call returns to the model."""
+    status = request.status
+    out: dict[str, Any] = {"status": status.value, "request_id": str(request.id)}
+    if status == SchemaChangeStatus.applied:
+        out["message"] = (
+            f"The user approved it, and it's applied: {request.summary}. `describe_data`"
+            " shows the store's tables as they are now."
+        )
+    elif status == SchemaChangeStatus.rejected:
+        out["note"] = request.note
+        out["message"] = "The user rejected it, and nothing changed" + (
+            f". Their note: {request.note}" if request.note else "."
+        )
+    elif status == SchemaChangeStatus.stale:
+        out["error"] = request.error
+        out["message"] = (
+            "The store's schema changed after the request was made, and it no longer applies,"
+            f" so nothing changed: {request.error}"
+        )
+    elif status == SchemaChangeStatus.failed:
+        out["error"] = request.error
+        out["message"] = (
+            f"The user approved it, but applying it failed, and nothing changed: {request.error}"
+        )
+    else:  # expired or cancelled
+        out["message"] = f"The request was {status.value} without being applied: nothing changed."
+    return out
