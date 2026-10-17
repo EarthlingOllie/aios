@@ -599,6 +599,10 @@ def _load(version_id: int, strict: bool = True) -> Graph:
         return load_graph(db, version_id, strict=strict)
 
 
+# A run that hasn't ended: what a worker ends itself, and a run waiting for a decision.
+NOT_ENDED = (WorkflowRunStatus.queued, WorkflowRunStatus.running, WorkflowRunStatus.waiting)
+
+
 def _end_runs(
     db: Session,
     where: Sequence[ColumnElement[bool]],
@@ -610,9 +614,7 @@ def _end_runs(
 ) -> None:
     """End the runs matching `where` that haven't ended, and fail their steps still running.
     A waiting run is left be (it isn't the worker's to end) unless `waiting_too`."""
-    going = [WorkflowRunStatus.queued, WorkflowRunStatus.running]
-    if waiting_too:
-        going.append(WorkflowRunStatus.waiting)
+    going = [s for s in NOT_ENDED if waiting_too or s != WorkflowRunStatus.waiting]
     waited = func.coalesce(func.extract("epoch", func.now() - WorkflowRun.waiting_since), 0)
     ended = db.scalars(
         update(WorkflowRun)
@@ -723,10 +725,13 @@ def _start_step(
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
     agent run, or wins and this fails (a `RunError`), leaving no agent run behind. Nor does a
-    node start once the run has ended without it (cancelled, say: `cancel_runs`); the run's row
-    is share-locked first, so an end being committed is waited for and then seen.
+    node start once the run has ended without it (cancelled, say: `cancel_runs`): the run's row
+    is share-locked, so an end being committed is waited for and then seen. The agent is locked
+    first, as deleting it locks the agent and then ends its runs, so the two queue rather than
+    deadlock.
     """
     with SessionLocal() as db:
+        live = node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True)
         status = db.scalar(
             select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
         )
@@ -735,7 +740,7 @@ def _start_step(
         if status != WorkflowRunStatus.running:
             raise RunError("The run has ended")
         agent_run_id = None
-        if node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True):
+        if live:
             agent_run = AgentRun(
                 agent_id=node.agent.agent_id,
                 agent_version_id=node.agent.agent_version_id,

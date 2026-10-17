@@ -17,16 +17,16 @@ outlive it (it's soft-deleted).
 from datetime import datetime
 
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, false, literal, or_, select
+from sqlalchemy import ColumnElement, false, literal, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, cron
+from aios import checkpoints, cron, workflows
+from aios.datastores.schema_changes import not_given
 from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
     SchemaChangeRequest,
-    SchemaChangeStatus,
     Trigger,
     Workflow,
     WorkflowNode,
@@ -35,10 +35,6 @@ from aios.models import (
     WorkflowRunStep,
     WorkflowVersion,
 )
-from aios.workflows import alive
-
-# A workflow run that hasn't ended.
-GOING = [WorkflowRunStatus.queued, WorkflowRunStatus.running, WorkflowRunStatus.waiting]
 
 
 class DependentAgentRun(BaseModel):
@@ -108,13 +104,10 @@ def _chat_runs(db: Session, agent: Agent) -> list[DependentAgentRun]:
         .order_by(AgentRun.updated_at.desc(), AgentRun.id.desc())
     ).all()
     ids = [r.id for r in runs]
-    # As `aios.api.schema_changes.waiting_on`: not yet given its outcome.
     waiting = set(
         db.scalars(
             select(SchemaChangeRequest.requested_by_run).where(
-                SchemaChangeRequest.requested_by_run.in_(ids),
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+                SchemaChangeRequest.requested_by_run.in_(ids), *not_given()
             )
         )
     )
@@ -162,12 +155,7 @@ def _workflow_runs(db: Session, agent: Agent) -> list[DependentWorkflowRun]:
         WorkflowRun.id.label("root_id"),
         WorkflowRun.workflow_version_id.label("version_id"),
         literal(True).label("top"),
-    ).where(
-        WorkflowRun.status.in_(GOING),
-        # One running whose worker died isn't going any more: it's failed once it's read.
-        or_(WorkflowRun.status != WorkflowRunStatus.running, alive()),
-        WorkflowRun.workflow_id.in_(owned),
-    )
+    ).where(WorkflowRun.status.in_(workflows.NOT_ENDED), WorkflowRun.workflow_id.in_(owned))
     ids = select(_running_the_agent(agent, roots).subquery().c.root_id)
     rows = db.execute(
         select(WorkflowRun, Workflow.name)
@@ -198,13 +186,34 @@ def _trigger_out(trigger: Trigger) -> DependentTrigger:
     )
 
 
-def _workflows(db: Session, agent: Agent) -> list[DependentWorkflow]:
+def _workflows_running(agent: Agent):
+    """The live workflows whose current version runs the agent: `root_id`, and `top` for each
+    of their own nodes that does (see `_running_the_agent`)."""
     roots = select(
         Workflow.id.label("root_id"),
         Workflow.current_version_id.label("version_id"),
         literal(True).label("top"),
     ).where(Workflow.owner_id == agent.owner_id, Workflow.deleted_at.is_(None))
-    using = _running_the_agent(agent, roots).subquery()
+    return _running_the_agent(agent, roots).subquery()
+
+
+def workflow_ids(db: Session, agent: Agent) -> set[int]:
+    """The ids of the live workflows whose current version runs the agent."""
+    return set(db.scalars(select(_workflows_running(agent).c.root_id)))
+
+
+def fail_stopped_runs(db: Session, agent: Agent) -> None:
+    """Fail the owner's workflow runs whose worker died, as reading them would, so they're
+    neither listed as going nor left to carry on if the worker was only slow (its next beat
+    stops it). Commits."""
+    workflows.fail_stopped_runs(
+        db,
+        WorkflowRun.workflow_id.in_(select(Workflow.id).where(Workflow.owner_id == agent.owner_id)),
+    )
+
+
+def _workflows(db: Session, agent: Agent) -> list[DependentWorkflow]:
+    using = _workflows_running(agent)
     direct: dict[int, bool] = {}
     for workflow_id, top in db.execute(select(using.c.root_id, using.c.top)):
         direct[workflow_id] = direct.get(workflow_id, False) or top

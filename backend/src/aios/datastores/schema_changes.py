@@ -610,6 +610,15 @@ def summaries(db: Session, request_ids: set[str]) -> dict[str, str]:
     return {str(request_id): summary for request_id, summary in rows}
 
 
+def not_given() -> list[ColumnElement[bool]]:
+    """A request the run that asked still waits on: not yet given its outcome, nor cancelled
+    (whose run has been told, or is gone)."""
+    return [
+        SchemaChangeRequest.resumed_at.is_(None),
+        SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+    ]
+
+
 def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
     """Mark the request's notifications read, for everyone it notified: it no longer waits for
     a decision (it's decided, cancelled or expired). In the caller's transaction."""

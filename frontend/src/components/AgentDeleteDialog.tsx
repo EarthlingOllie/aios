@@ -167,8 +167,9 @@ export function AgentDeleteDialog({
               <span>
                 Cancel these runs
                 <span className="text-muted-foreground block text-xs">
-                  Workflow runs fail and chat runs are deleted with the agent; their pending
-                  schema change requests are cancelled, and nothing resumes.
+                  Workflow runs fail and chat runs are deleted with the agent; a turn underway
+                  stops, their pending schema change requests are cancelled, and nothing
+                  resumes.
                 </span>
               </span>
             </label>

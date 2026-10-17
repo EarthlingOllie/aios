@@ -19,7 +19,11 @@ from sqlalchemy.orm import Session
 
 from aios.auth import CurrentUser
 from aios.datastores import can_approve, data_store_for
-from aios.datastores.schema_changes import clear_notifications, restore_notifications
+from aios.datastores.schema_changes import (
+    clear_notifications,
+    not_given,
+    restore_notifications,
+)
 from aios.db import DB
 from aios.models import AgentRun, SchemaChangeRequest, SchemaChangeStatus
 
@@ -109,11 +113,7 @@ def waiting_on(db: Session, run_id: int) -> bool:
         db.scalar(
             select(func.count())
             .select_from(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.requested_by_run == run_id,
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
-            )
+            .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
         )
         > 0
     )

@@ -12,8 +12,12 @@ import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 
+import psycopg
+import pytest
 from fake_model import model, use_model
+from langchain_core.messages import HumanMessage
 from sqlalchemy import func, update
+from test_data_tools import as_owner
 from test_scheduler import tick
 from test_schema_change_requests import (  # noqa: F401
     CONTACTS,
@@ -29,6 +33,7 @@ from test_workflow_pause import start as start_flow
 from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
 
 from aios import checkpoints, workflows
+from aios.api import agents as agents_api
 from aios.api.skills import lock_live
 from aios.db import SessionLocal
 from aios.models import Agent, Workflow, WorkflowRun, WorkflowRunStatus
@@ -459,3 +464,120 @@ def test_a_run_starting_during_the_delete_is_seen_or_waits_and_then_cant(
     assert result["start"].status_code == 409
     runs = api.get(f"/api/workflows/{workflow['id']}/runs").json()
     assert [r["id"] for r in runs] == [run["id"]]
+
+
+def running(workflow: dict, heartbeat=None) -> int:
+    """A run of the workflow that a worker has claimed (beating now, or at `heartbeat`)."""
+    with SessionLocal() as db:
+        run = WorkflowRun(
+            workflow_id=workflow["id"],
+            workflow_version_id=workflow["current_version"]["id"],
+            input="go",
+            status=WorkflowRunStatus.running,
+            heartbeat_at=func.now() if heartbeat is None else heartbeat,
+        )
+        db.add(run)
+        db.commit()
+        return run.id
+
+
+def test_a_node_starting_as_its_agent_is_deleted_waits_rather_than_deadlocking(
+    api,
+    builder,  # noqa: F811
+):
+    workflow = make_workflow(api, "Builds", [agent_node("build", builder)])
+    run_id = running(workflow)
+    with SessionLocal() as db:
+        [node] = workflows.load_graph(db, workflow["current_version"]["id"]).nodes
+    result: dict = {}
+
+    def start_node():
+        try:
+            result["step"] = workflows._start_step(run_id, ("build",), node, "go")
+        except Exception as exc:
+            result["error"] = exc
+
+    with SessionLocal() as session:
+        # The delete: it holds the agent, then cancels the run.
+        assert lock_live(session, Agent, [builder["id"]])
+        starter = threading.Thread(target=start_node)
+        starter.start()
+        starter.join(timeout=0.5)
+        assert starter.is_alive(), "the node should wait for the agent"
+        workflows.cancel_runs(session, [run_id], "Cancelled")
+        session.get(Agent, builder["id"]).deleted_at = func.now()
+        session.commit()
+    starter.join(timeout=10)
+
+    assert isinstance(result.get("error"), workflows.RunError), result
+    assert str(result["error"]) == "The run has ended"
+
+
+def test_cancelling_a_chat_run_mid_turn_stops_the_turn(
+    api,
+    agent,  # noqa: F811
+):
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    async def scenario() -> None:
+        async with checkpoints.turn(run["id"]) as saver:
+            found = await asyncio.to_thread(dependents, api, agent)
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(delete, api, agent, **cancelling(found)), timeout=10
+            )
+            assert resp.status_code == 204, resp.text
+            # Its connection, which holds the turn, was ended: the turn's next write fails.
+            with pytest.raises(psycopg.OperationalError):
+                await saver.conn.execute("SELECT 1")
+
+    asyncio.run(scenario())
+
+
+def test_a_turn_starting_on_a_run_deleted_meanwhile_writes_nothing(
+    api,
+    user,
+    agent,  # noqa: F811
+):
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with SessionLocal() as db:
+        ctx = agents_api.load_chat_context(db, user.id, agent["id"], run["id"])
+    # Deleted after the turn loaded the run, before it took the run's turn lock.
+    assert delete(api, agent).status_code == 204
+
+    async def turn() -> list[dict]:
+        stream = agents_api.turn_stream(ctx, user.id, run["id"], HumanMessage("hi"))
+        return [chunk async for chunk in stream]
+
+    with use_model(model(Script(CONTACTS))):
+        chunks = asyncio.run(turn())
+
+    assert any(c["type"] == "error" for c in chunks)
+    # No thread left behind for a run that's gone.
+    assert checkpoints.history(run["id"]) == []
+
+
+def test_a_turn_lock_in_another_database_isnt_a_turn_here(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+):
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with as_owner(store) as conn:
+        # The same advisory lock key, held on the store's database.
+        conn.execute("SELECT pg_advisory_lock(%s, %s)", (checkpoints._TURN_LOCK, run["id"]))
+        assert dependents(api, agent)["agent_runs"] == []
+
+
+def test_a_run_whose_worker_died_is_failed_not_left_going(
+    api,
+    builder,  # noqa: F811
+):
+    workflow = make_workflow(api, "Builds", [agent_node("build", builder)])
+    api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builds", []))
+    run_id = running(workflow, heartbeat=func.now() - timedelta(hours=1))
+
+    assert dependents(api, builder)["workflow_runs"] == []
+    assert delete(api, builder).status_code == 204
+
+    # Failed, as reading it would: if its worker was only slow, its next beat stops it.
+    assert workflows._beat(run_id) is False

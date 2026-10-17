@@ -74,13 +74,18 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   `detail.message`) until its body resolves each: `cancel_agent_runs` and
   `cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
   deactivate; any other workflow must first be edited to stop running the agent (the agent's
-  page links to its editor). Runs are named one by one, so one that starts after the user looked
-  refuses the delete rather than being cancelled unseen. Finished runs and older versions don't
-  count. Cancelling a workflow run fails it (`aios.workflows.cancel_runs`), closes out its
-  requests (pending ones cancelled, their notifications cleared) and starts no more of its
-  nodes; a worker running it stops at its next beat. A chat run is deleted with the agent, as
-  before, cancelling its requests; a turn underway can't be interrupted from another request,
-  but nothing it does after is kept. **Deactivating** a workflow turns off its schedules (as
+  page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
+  that starts waiting, after the user looked refuses the delete rather than being cancelled
+  unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
+  failed first, as reading it would. Cancelling a workflow run fails it
+  (`aios.workflows.cancel_runs`), closes out its requests (pending ones cancelled, their
+  notifications cleared) and starts no more of its nodes; a worker running it stops at its next
+  beat. A chat run is deleted with the agent, as before, cancelling its requests. Any turn still
+  underway on the agent's runs (a chat's, a schedule's, a cancelled workflow run's node) is
+  stopped: the connection holding its turn lock is ended (`checkpoints.stop_turns`), so it fails
+  at its next write, and a model or tool call already underway finishes unrecorded. A turn that
+  only takes its run's lock after the run has gone finds it gone and does nothing, so no thread
+  is left behind. **Deactivating** a workflow turns off its schedules (as
   pausing each would, dropping a firing claimed but not started), and with the agent gone no
   run of it can start, by hand or by schedule: starting one is refused as running a deleted
   agent. It stays, to be edited (removing the node, or taking a nested workflow's newer

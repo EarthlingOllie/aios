@@ -421,7 +421,9 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
 def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
     """What depends on the agent: what deleting it would cut off, and so has to be resolved
     first (see `delete_agent`)."""
-    return dependents.find(db, get_owned_agent(db, user.id, agent_id))
+    agent = get_owned_agent(db, user.id, agent_id)
+    dependents.fail_stopped_runs(db, agent)
+    return dependents.find(db, agent)
 
 
 class AgentDeleteIn(BaseModel):
@@ -452,14 +454,18 @@ def delete_agent(
     nothing changes."""
     body = body or AgentDeleteIn()
     agent = get_owned_agent(db, user.id, agent_id)
+    dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
     # Hold the row lock across the check and the delete; workflow saves that run the agent take
     # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
     lock_live_agent(db, agent)
     # Starting a run of a workflow share-locks the workflow (`new_workflow_run`), so with the
     # workflows that run the agent locked, a run being started is waited for and then seen,
     # and one started after waits for this, and then can't (it would run a deleted agent).
-    workflow_ids = {w.id for w in dependents.find(db, agent).workflows}
-    lock_live(db, Workflow, workflow_ids)
+    # Until none is found that isn't locked: a save waited for meanwhile may nest one in another.
+    locked: set[int] = set()
+    while unlocked := dependents.workflow_ids(db, agent) - locked:
+        lock_live(db, Workflow, unlocked)
+        locked |= unlocked
     found = dependents.find(db, agent)
     refusal = dependents.unresolved(
         found,
@@ -487,6 +493,10 @@ def delete_agent(
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
+    db.commit()
+    # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
+    # rather than carrying on with tool calls for runs that are gone.
+    checkpoints.stop_turns(db, run_ids)
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
