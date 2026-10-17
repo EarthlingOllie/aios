@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # either is cut short there, and says so (`truncated`).
     query_data_max_rows: int = Field(default=200, ge=1)
     query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
+    # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
+    # past it is refused, and writes nothing.
+    write_data_max_rows: int = Field(default=100, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).
