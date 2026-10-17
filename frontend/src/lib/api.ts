@@ -443,6 +443,54 @@ export type TriggerInput = {
 
 export type SchedulePreview = { description: string; next_runs: string[] };
 
+/** A schedule that would start runs of an agent, or of a workflow that runs it. */
+export type DependentTrigger = {
+  id: number;
+  enabled: boolean;
+  cron: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+};
+
+/** What depends on an agent: what deleting it would cut off (GET /api/agents/{id}/dependents). */
+export type AgentDependents = {
+  /** Its chat runs still going: waiting on a schema change request, or with a turn underway. */
+  agent_runs: {
+    id: number;
+    title: string | null;
+    waiting: boolean;
+    running: boolean;
+    trigger_id: number | null;
+    updated_at: string;
+  }[];
+  /** Workflow runs still going (queued, running or waiting) that run it, at any depth. */
+  workflow_runs: {
+    id: number;
+    workflow_id: number;
+    workflow_name: string;
+    status: WorkflowRunStatus;
+    created_at: string;
+  }[];
+  /** Live workflows whose current version runs it, directly or through a nested workflow. */
+  workflows: {
+    id: number;
+    name: string;
+    version: number;
+    direct: boolean;
+    triggers: DependentTrigger[];
+  }[];
+  /** Its own schedules, deleted with it. */
+  triggers: DependentTrigger[];
+};
+
+/** How to resolve what depends on an agent as it's deleted (DELETE /api/agents/{id}). */
+export type AgentDeleteResolutions = {
+  cancel_agent_runs: number[];
+  cancel_workflow_runs: number[];
+  deactivate_workflows: number[];
+};
+
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -523,7 +571,13 @@ export const api = {
   createAgent: (body: AgentInput) => request<Agent>("/api/agents", json("POST", body)),
   updateAgent: (id: number, body: AgentInput) =>
     request<Agent>(`/api/agents/${id}`, json("PUT", body)),
-  deleteAgent: (id: number) => request<void>(`/api/agents/${id}`, { method: "DELETE" }),
+  getAgentDependents: (id: number) => request<AgentDependents>(`/api/agents/${id}/dependents`),
+  /** Refused (409, see `parseDeleteRefusal`) until what depends on it is resolved. */
+  deleteAgent: (id: number, resolutions?: AgentDeleteResolutions) =>
+    request<void>(
+      `/api/agents/${id}`,
+      resolutions ? json("DELETE", resolutions) : { method: "DELETE" },
+    ),
   listAgentVersions: (id: number) =>
     request<AgentVersionSummary[]>(`/api/agents/${id}/versions`),
   getAgentVersion: (id: number, version: number) =>
