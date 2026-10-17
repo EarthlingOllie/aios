@@ -12,6 +12,12 @@ x-backend: &backend
     DATABASE_URL: postgresql+psycopg://aios_app:aios_app@db:5432/aios
     REDIS_URL: redis://redis:6379/0
     PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    # Uploaded files, in RustFS (standing in for S3). Download links are signed for the address
+    # the browser reaches it at.
+    DATA_STORE_FILES_ENDPOINT: http://rustfs:9000
+    DATA_STORE_FILES_PUBLIC_ENDPOINT: http://localhost:9000
+    DATA_STORE_FILES_ACCESS_KEY: rustfsadmin
+    DATA_STORE_FILES_SECRET_KEY: rustfsadmin
   depends_on:
     db:
       condition: service_healthy
@@ -42,6 +48,31 @@ services:
       interval: 2s
       retries: 30
 
+  # Stands in for S3 (uploaded files, `aios.datastores.files`): single node, S3 API on 9000,
+  # which download links send the browser to.
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    ports: ["9000:9000"]
+    volumes: [rustfsdata:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/health"]
+      interval: 2s
+      retries: 30
+
+  # Creates the files bucket in RustFS if it's missing (Terraform makes it on AWS).
+  files-bucket:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command: ["python", "-m", "aios.datastores.files", "create-bucket"]
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
   # Creates the app's and the provisioner's roles as the master user (`aios.db_roles`), and
   # hands the app's role anything the master user still owns. Reuses the api image (built
   # once, by the api service), as does migrate.
@@ -71,6 +102,37 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Brings every ready data store to the store tree's head, and finishes provisioning any left
+  # provisioning, as the provisioner (`aios.datastores.provision`), as the deploy does. A store
+  # that fails is reported in its log; the rest of the stack starts regardless.
+  migrate-stores:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command: ["python", "-m", "aios.datastores.provision", "migrate-all"]
+    environment: &provisioner-env
+      <<: *backend-env
+      # The provisioner's role (made by `db-roles`): only these two services have it.
+      DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@db:5432/aios
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Creates data stores (the provisioning queue, see aios.worker) as users sign up, and (-B)
+  # retries any that gave up every few minutes. It needs no Docling, so this reuses the api image.
+  provisioning-worker:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "provisioning", "--loglevel=INFO", "--concurrency=1",
+       "-B", "--schedule=/tmp/celerybeat-schedule"]
+    environment: *provisioner-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api:
     <<: *backend
     image: aios-api:local
@@ -86,6 +148,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      files-bucket:
+        condition: service_completed_successfully
       sandbox:
         condition: service_started
     ports: ["8000:8000"]
@@ -98,6 +162,8 @@ services:
       target: worker
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      files-bucket:
         condition: service_completed_successfully
 
   # Workflow runs, on their own queue so ingests don't wait behind them (see aios.worker).
@@ -152,3 +218,4 @@ services:
 
 volumes:
   pgdata:
+  rustfsdata:

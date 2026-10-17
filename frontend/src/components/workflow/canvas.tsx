@@ -89,7 +89,8 @@ const stateClass: Record<NodeState, string> = {
   running: "border-sky-500 ring-4 ring-sky-500/25",
   succeeded: "border-emerald-500",
   failed: "border-red-500 ring-2 ring-red-500/30",
-  waiting: "opacity-60 border-dashed",
+  waiting: "border-amber-500 ring-4 ring-amber-500/25",
+  pending: "opacity-60 border-dashed",
   "not-run": "opacity-40 border-dashed",
 };
 
@@ -98,7 +99,8 @@ const selectedStateClass: Record<NodeState, string> = {
   running: "border-2 ring-6",
   succeeded: "border-2 ring-4 ring-emerald-500/25",
   failed: "border-2 ring-4",
-  waiting: "border-2 ring-ring ring-2",
+  waiting: "border-2 ring-6",
+  pending: "border-2 ring-ring ring-2",
   "not-run": "border-2 ring-ring ring-2",
 };
 

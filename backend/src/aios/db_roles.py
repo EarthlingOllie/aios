@@ -6,8 +6,11 @@
   `SET ROLE` to one that has, those or `SUPERUSER`, `BYPASSRLS` or `REPLICATION`). The
   database stays the master user's, so the app's role can't drop or reconfigure it.
 - The provisioner's role (`aios_provisioner`, DATA_STORE_PROVISIONER_URL's user): `CREATEDB` and
-  `CREATEROLE`, for creating data stores. Only the provisioning worker is to have its
-  credentials; nothing uses it yet.
+  `CREATEROLE`, for creating and migrating data stores (`aios.datastores.provision`). Only the
+  provisioning worker and the deploy's store migration have its credentials.
+
+It also keeps every other role (data stores' roles included) from connecting to the platform
+database, `postgres` and `template1`, and makes the template data stores are copied from.
 
 The names and passwords come from those two URLs, and the master user's from
 DATABASE_ADMIN_URL, which nothing else is given: past this one-off, the master user is for
@@ -24,7 +27,7 @@ from psycopg import sql
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from aios.config import Settings, libpq_conninfo
+from aios.config import Settings, get_settings, libpq_conninfo
 
 
 class _BootstrapSettings(Settings):
@@ -226,12 +229,18 @@ SELECT pg_describe_object(o.cls, o.oid, 0)
 )
 
 
-def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
-    """Create or update both roles, and make the app's role own the platform schema.
+def ensure_roles(
+    admin_url: str, app_url: str, provisioner_url: str, store_template: str | None = None
+) -> list[str]:
+    """Create or update both roles, make the app's role own the platform schema, keep every
+    other role out of the platform database, `postgres` and `template1`, and make the data
+    stores' template (`store_template`, by default DATA_STORE_TEMPLATE).
 
     The platform database is `app_url`'s; the master user connects to it whatever database
-    `admin_url` names.
+    `admin_url` names. Returns the databases of those three it couldn't keep others out of,
+    not owning them.
     """
+    store_template = store_template or get_settings().data_store_template
     admin, app_u, prov_u = make_url(admin_url), make_url(app_url), make_url(provisioner_url)
     # Before anything changes: the same role twice would end with the last ALTER ROLE's
     # attributes and password (an app role with CREATEDB, or a master user without it), and a
@@ -301,6 +310,102 @@ def ensure_roles(admin_url: str, app_url: str, provisioner_url: str) -> None:
                 "The master user still owns these, which the app's role couldn't then change; "
                 f"hand them over (ALTER ... OWNER TO) or drop them: {', '.join(left)}"
             )
+        # Every role may connect to every database unless told otherwise, data stores' roles
+        # included: only the two roles may connect to the platform database, and nobody but its
+        # owner to `postgres` and `template1`. Only a database's owner (or a superuser) may
+        # revoke that, so one the master user doesn't own is left as it is, and reported.
+        left_open = []
+        for db in (dbname, "postgres", "template1"):
+            if conn.execute(_MAY_REVOKE, (db,)).fetchone():
+                conn.execute(
+                    sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(sql.Identifier(db))
+                )
+            else:
+                left_open.append(db)
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}").format(
+                sql.Identifier(dbname), app, sql.Identifier(prov_u.username)
+            )
+        )
+    _ensure_store_template(admin_url, dbname, store_template)
+    _add_pgstattuple_to_stores(admin_url, dbname)
+    return left_open
+
+
+# Whether the current user may change who can connect to a database: its owner, or a superuser.
+_MAY_REVOKE = """
+SELECT 1 FROM pg_database d, pg_roles me
+ WHERE d.datname = %s AND me.rolname = current_user
+   AND (me.rolsuper OR pg_has_role(me.oid, d.datdba, 'MEMBER'))
+"""
+
+
+def _add_pgstattuple(conn: psycopg.Connection) -> None:
+    """pgstattuple in the database's `extensions` schema, for measuring the data a store holds
+    (`aios.datastores.quota`). Only a superuser may create it, and only `pg_stat_scan_tables`
+    may run its functions until `pgstattuple_approx` is granted to everyone here: a store's
+    roles are the only others who may connect, and it only gives sizes."""
+    conn.execute("CREATE EXTENSION IF NOT EXISTS pgstattuple SCHEMA extensions")
+    approx = "extensions.pgstattuple_approx(regclass)"
+    # Only its owner may grant it: a master user who didn't create it (it was there already)
+    # leaves it as it is.
+    granted = conn.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')", (approx,))
+    if not granted.fetchone()[0]:
+        conn.execute(f"GRANT EXECUTE ON FUNCTION {approx} TO PUBLIC")
+
+
+# Data stores' databases (`aios.datastores.provision`), which take connections once made.
+_STORES = r"""
+SELECT datname FROM pg_database
+ WHERE datname ~ '^ds_[0-9a-f]{32}$' AND datallowconn AND NOT datistemplate
+"""
+
+
+def _add_pgstattuple_to_stores(admin_url: str, platform_db: str) -> None:
+    """pgstattuple in each data store made from the template before it had it.
+
+    Only a store's own roles may connect to it, and only a superuser may create pgstattuple: a
+    master user that isn't one (RDS's) can't, and says so, once for all the stores it couldn't
+    check. Those lacking it are measured by their size until a superuser adds it."""
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db)) as conn:
+        stores = [name for (name,) in conn.execute(_STORES).fetchall()]
+    missed = []
+    for store in stores:
+        try:
+            with psycopg.connect(libpq_conninfo(admin_url, database=store)) as conn:
+                has = conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple'")
+                if not has.fetchone():
+                    _add_pgstattuple(conn)
+        except psycopg.Error as exc:
+            missed.append(f"{store} ({str(exc).strip().splitlines()[-1]})")
+    if missed:
+        print(
+            f"Warning: Couldn't give pgstattuple to {len(missed)} data stores, or check they have"
+            " it: any without it is measured by its database's size, which deleting rows doesn't"
+            f" bring down, until a superuser adds it. {', '.join(missed)}",
+            file=sys.stderr,
+        )
+
+
+def _ensure_store_template(admin_url: str, platform_db: str, template: str) -> None:
+    """The database data stores are copied from (`aios.datastores.provision`): empty but for
+    pgvector and pgstattuple, which the provisioner can't install itself (they aren't trusted
+    extensions), in an `extensions` schema every store's roles may use. Nobody may connect to
+    it; the provisioner may copy it because it's marked a template."""
+    name = sql.Identifier(template)
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:
+        exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (template,))
+        if not exists.fetchone():
+            conn.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(name))
+    with psycopg.connect(libpq_conninfo(admin_url, database=template)) as conn:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS extensions")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions")
+        _add_pgstattuple(conn)
+        conn.execute("REVOKE ALL ON SCHEMA extensions FROM PUBLIC")
+        conn.execute("GRANT USAGE ON SCHEMA extensions TO PUBLIC")
+    with psycopg.connect(libpq_conninfo(admin_url, database=platform_db), autocommit=True) as conn:
+        conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(name))
+        conn.execute(sql.SQL("ALTER DATABASE {} IS_TEMPLATE true").format(name))
 
 
 def main() -> None:
@@ -310,9 +415,15 @@ def main() -> None:
         sys.exit(str(exc))
     if not settings.database_admin_url:
         sys.exit("DATABASE_ADMIN_URL (the master user's DSN) is required")
-    ensure_roles(
+    left_open = ensure_roles(
         settings.database_admin_url, settings.database_url, settings.data_store_provisioner_url
     )
+    for db in left_open:
+        print(
+            f"Warning: every role may still connect to {db}: the master user doesn't own it, so "
+            "it can't revoke CONNECT from PUBLIC there",
+            file=sys.stderr,
+        )
     print(
         f"Roles {make_url(settings.database_url).username} and "
         f"{make_url(settings.data_store_provisioner_url).username} are ready"

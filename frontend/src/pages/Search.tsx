@@ -1,8 +1,10 @@
 import { useCallback, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { FileText, Search as SearchIcon } from "lucide-react";
 
 import { ErrorBanner, Placeholder, useLoad } from "@/components/crud";
+import { DataStoreNotice } from "@/components/DataStoreNotice";
+import { useDataStore } from "@/components/Documents";
 import { MarkdownView } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +33,11 @@ export function SearchPage() {
     setDraft(query);
   }
 
+  // The API refuses to search a data store that isn't ready, so wait for it (and say why) rather
+  // than show that refusal as a failed search.
+  const { status: storeStatus } = useDataStore();
+  const storeReady = storeStatus === "ready";
+
   // Bumped to run the search already shown again. A new loader makes useLoad drop the old hits
   // and error, so a re-run shows as loading and a failed one doesn't leave stale results up.
   const [run, setRun] = useState(0);
@@ -38,10 +45,10 @@ export function SearchPage() {
   const { data: hits, error } = useLoad(
     useCallback(() => {
       const text = stripMarkdown(query);
-      return text ? api.search(text, limit) : Promise.resolve(null);
-    }, [query, limit, run]),
+      return text && storeReady ? api.search(text, limit) : Promise.resolve(null);
+    }, [query, limit, run, storeReady]),
   );
-  const loading = Boolean(query) && hits === undefined && !error;
+  const loading = Boolean(query) && storeReady && hits === undefined && !error;
 
   function search(next: { q?: string; limit?: number }) {
     const q = (next.q ?? draft).trim();
@@ -77,8 +84,8 @@ export function SearchPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                // Like the disabled button: don't start another search while one is running.
-                if (!loading) search({});
+                // Like the disabled button: not mid-search, nor before the store is ready.
+                if (!loading && storeReady) search({});
               }
             }}
             placeholder="Describe what you're looking for, or use keywords, quoted phrases and -exclusions…"
@@ -113,12 +120,13 @@ export function SearchPage() {
             <span className="text-muted-foreground ml-auto text-xs max-sm:hidden">
               Enter to search, Shift+Enter for a new line
             </span>
-            <Button type="submit" disabled={!stripMarkdown(draft) || loading} className="max-sm:ml-auto">
+            <Button type="submit" disabled={!stripMarkdown(draft) || loading || !storeReady} className="max-sm:ml-auto">
               <SearchIcon />
               {loading ? "Searching…" : "Search"}
             </Button>
           </div>
         </form>
+        <DataStoreNotice status={storeStatus} action="search" className="px-3 py-2" />
         <ErrorBanner message={error && `Search failed: ${error}`} />
         <Results query={query} hits={hits} />
       </div>
@@ -131,7 +139,13 @@ function Results({ query, hits }: { query: string; hits: SearchHit[] | null | un
   if (hits.length === 0) {
     return (
       <Placeholder>
-        No passages matched. Try different wording, or upload documents from the Chat page.
+        <span>
+          No passages matched. Try different wording, or upload documents on the{" "}
+          <Link to="/data?tab=documents" className="underline underline-offset-2">
+            Data page
+          </Link>
+          .
+        </span>
       </Placeholder>
     );
   }

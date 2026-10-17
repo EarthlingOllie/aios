@@ -44,6 +44,67 @@ type AgentRunRow = AgentRunCounters & {
   agent_version_id: number;
   title: string | null;
   message_count: number;
+  /** Its conversation, as AI SDK UIMessages. */
+  ui_messages: unknown[];
+};
+
+export type SchemaChangeRow = {
+  id: string;
+  data_store_id: string;
+  status: "pending" | "approved" | "rejected" | "expired" | "applied" | "failed" | "stale" | "cancelled";
+  summary: string;
+  reason: string;
+  sql: string;
+  ops: Record<string, unknown>[];
+  run_id: number | null;
+  tool_call_id: string | null;
+  note: string | null;
+  error: string | null;
+  created_at: string;
+  decided_at: string | null;
+  applied_at: string | null;
+  resumed_at: string | null;
+  /** Whether the signed-in user may decide it (the store's owner), while it's pending. */
+  decider: boolean;
+  /** What approving it takes typed, if it drops anything. */
+  confirm_with: string | null;
+  /** What its drops would remove (GET .../impact). */
+  impact: {
+    table: string;
+    column: string | null;
+    rows: number | null;
+    values: number | null;
+    columns: string[] | null;
+    estimated: boolean;
+  }[];
+};
+
+export type DroppedRow = {
+  id: number;
+  kind: "table" | "column";
+  table: string;
+  column: string | null;
+  dropped_name: string;
+  dropped_at: string;
+  /** How long until it's purged, from now (days). */
+  purge_in_days: number;
+  blocked: string | null;
+  restore_error: string | null;
+  /** If set, a restore is refused once it runs (the worker's check), with this. */
+  refuseRestore?: string;
+  /** If set, a restore is accepted but never happens (the worker gave up without a word). */
+  stallRestore?: boolean;
+};
+export type NotificationRow = {
+  id: string;
+  kind: string;
+  ref: Record<string, string>;
+  /** For a kind other than a schema change request (whose title is its summary). */
+  title: string | null;
+  created_at: string;
+  read_at: string | null;
+  /** Whether it's the signed-in user's; the API never shows them another user's. */
+  mine: boolean;
 };
 type WorkflowVersionRow = {
   id: number;
@@ -65,8 +126,37 @@ type WorkflowRow = {
   updated_at: string;
 };
 
-type RunStatus = "queued" | "running" | "succeeded" | "failed";
-type StepStatus = "running" | "succeeded" | "failed";
+export type DocumentRow = {
+  id: number;
+  filename: string;
+  status: "pending" | "processing" | "ready" | "failed";
+  error: string | null;
+  chunk_count: number;
+  size_bytes: number;
+  created_at: string;
+};
+export type TableColumnRow = {
+  name: string;
+  type: string;
+  nullable: boolean;
+  description: string | null;
+  embedding: boolean;
+};
+/** A `data` table, with its values as the server sends them (as text, an embedding as its type). */
+export type TableRow = {
+  name: string;
+  description: string | null;
+  columns: TableColumnRow[];
+  rows: (string | null)[][];
+  /** Sent as the planner's estimate rather than a count. */
+  estimated?: boolean;
+  /** The row count sent, if not how many `rows` there are (e.g. an estimate of millions). */
+  rowCount?: number;
+};
+/** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
+const PREVIEW_CHARS = 200;
+type RunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
+type StepStatus = "running" | "waiting" | "succeeded" | "failed";
 export type StepRow = {
   id: number;
   path: string[];
@@ -77,9 +167,58 @@ export type StepRow = {
   error: string | null;
   agent_id: number | null;
   agent_run_id: number | null;
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
 };
+export type StalePinRow = {
+  path: string[];
+  kind: Kind;
+  name: string;
+  pinned_version: number;
+  current_version: number | null;
+};
+type DependentTriggerRow = {
+  id: number;
+  enabled: boolean;
+  cron: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+};
+
+type DependentRequestRow = { id: string; summary: string; status: "pending" };
+
+/** What depends on an agent, as GET /api/agents/{id}/dependents answers. */
+export type AgentDependentsRow = {
+  agent_runs: {
+    id: number;
+    title: string | null;
+    waiting: boolean;
+    running: boolean;
+    trigger_id: number | null;
+    updated_at: string;
+    requests: DependentRequestRow[];
+  }[];
+  workflow_runs: {
+    id: number;
+    workflow_id: number;
+    workflow_name: string;
+    status: RunStatus;
+    created_at: string;
+    waiting_nodes: string[];
+    requests: DependentRequestRow[];
+  }[];
+  workflows: {
+    id: number;
+    name: string;
+    version: number;
+    direct: boolean;
+    triggers: DependentTriggerRow[];
+  }[];
+  triggers: DependentTriggerRow[];
+};
+
 export type RunRow = {
   id: number;
   workflow_id: number;
@@ -91,7 +230,10 @@ export type RunRow = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  waiting_since: string | null;
+  waited_seconds: number;
   steps: StepRow[];
+  stale_pins: StalePinRow[];
 };
 
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
@@ -126,16 +268,246 @@ export class FakeApi {
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
   agentRuns = new Map<number, AgentRunRow>();
+  /**
+   * What depends on each agent, by agent id (none if unset). As on the server, deleting one is
+   * refused until each listed run is named to cancel and each workflow to deactivate; a test
+   * "edits" a workflow by taking it off the list.
+   */
+  agentDependents = new Map<number, AgentDependentsRow>();
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
+  /** The user's data store's status: documents and search answer 409 until it's "ready". */
+  dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
+  /**
+   * What the store uses, as last recorded, and its caps. Uploads answer 507 at either cap; as
+   * the API does, uploads and deletes record the documents' bytes again.
+   */
+  dataStoreUsage: {
+    db_bytes: number | null;
+    db_quota_bytes: number;
+    files_bytes: number | null;
+    files_quota_bytes: number;
+    measured_at: string | null;
+  } = {
+    db_bytes: 8 * 1024 ** 2,
+    db_quota_bytes: 1024 ** 3,
+    files_bytes: 0,
+    files_quota_bytes: 5 * 1024 ** 3,
+    measured_at: "2026-10-15T08:55:00Z",
+  };
+  /** How long GET /api/data-store takes to answer (ms). */
+  dataStoreDelay = 0;
+  /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
+  dataStoreFails = false;
+  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
+   * a test says so, as the provisioning worker would. */
+  settings = {
+    export_run_history: false,
+    history_ready: false,
+    history_exported_at: null as string | null,
+    embed_run_history: false,
+    history_embedded_at: null as string | null,
+    history_embed_error: null as string | null,
+  };
+  /** Times "delete exported history" was asked for. */
+  exportedHistoryDeletes = 0;
+  /** The user's documents, newest first. */
+  documents: DocumentRow[] = [];
+  /** How many times the app asked for the list of documents. */
+  documentLists = 0;
+  /**
+   * The status an upload starts in: "ready" (with one chunk) skips the worker; "pending" waits
+   * for the test to finish its ingest with `finishIngest`.
+   */
+  ingestAs: "ready" | "pending" = "ready";
+  /** Uploads of these filenames answer 413, as the proxy does for a file over its size limit. */
+  tooLarge = new Set<string>();
+  /** While set (by `holdUploads`), uploads wait for `releaseUploads` before they answer. */
+  private uploadGate?: { wait: Promise<void>; release: () => void };
+  /** How long GET /api/documents takes to answer (ms). */
+  documentsDelay = 0;
+  /** While true, the documents endpoints answer 503, as when every store connection is in use. */
+  dataStoreBusy = false;
+  /** Reads of the list being held back by `holdDocumentLists`, oldest first. */
+  heldDocumentLists: (() => void)[] = [];
+  private holdingLists = false;
+  /** Schema change requests in the user's store, oldest first. */
+  schemaChanges: SchemaChangeRow[] = [];
+  /** Dropped tables and columns in the user's store, newest first. */
+  dropped: DroppedRow[] = [];
+  /**
+   * Notifications, oldest first. As on the server, a pending request the user may decide
+   * notifies them, and deciding it marks that read; `mine: false` ones are another user's.
+   */
+  notifications: NotificationRow[] = [];
+  /** How many times the app asked for the user's notifications. */
+  notificationLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
+  /** The store's `data` tables, by name. */
+  dataTables: TableRow[] = [];
+  /** While true, the tables endpoints answer 500. */
+  tablesFail = false;
+  /** Every page of rows the app asked for, as its query string. */
+  rowReads: string[] = [];
 
   private id() {
     return this.nextId++;
+  }
+
+  /**
+   * Adds a `data` table. A column given as `name:type` is of that type (`vector(3)` is an
+   * embedding), as `name` alone, text.
+   */
+  addTable(
+    name: string,
+    columns: (string | Partial<TableColumnRow>)[],
+    rows: (string | null)[][] = [],
+    fields: Partial<TableRow> = {},
+  ): TableRow {
+    const table: TableRow = {
+      name,
+      description: null,
+      columns: columns.map((c) => {
+        if (typeof c !== "string") {
+          const defaults = { name: "", type: "text", nullable: true, description: null };
+          return { ...defaults, embedding: false, ...c };
+        }
+        const [column, type = "text"] = c.split(":");
+        return {
+          name: column,
+          type,
+          nullable: true,
+          description: null,
+          embedding: /^(vector|halfvec|sparsevec)\b/.test(type),
+        };
+      }),
+      rows,
+      ...fields,
+    };
+    this.dataTables.push(table);
+    this.dataTables.sort((a, b) => a.name.localeCompare(b.name));
+    return table;
+  }
+
+  /** The tables endpoints, as `aios.api.data` answers them. */
+  private tablesResponse(path: string, params: URLSearchParams): [number, unknown] {
+    if (path === "/api/data/tables") {
+      return [
+        200,
+        {
+          tables: this.dataTables.map((t) => ({
+            name: t.name,
+            description: t.description,
+            columns: t.columns,
+            row_count: t.rowCount ?? t.rows.length,
+            row_count_estimated: t.estimated ?? false,
+          })),
+          truncated: false,
+        },
+      ];
+    }
+    const m = path.match(/^\/api\/data\/tables\/([^/]+)\/(rows|value)$/);
+    const table = m && this.dataTables.find((t) => t.name === decodeURIComponent(m[1]));
+    if (!m || !table) return [404, { detail: "No such table" }];
+    const columnIndex = (name: string | null) => table.columns.findIndex((c) => c.name === name);
+    if (m[2] === "value") {
+      const column = columnIndex(params.get("column"));
+      if (column < 0) return [422, { detail: `The table has no column '${params.get("column")}'` }];
+      const row = table.rows[Number(params.get("row"))];
+      if (!row) return [404, { detail: "No such row (any more)" }];
+      return [200, { value: row[column], truncated: false }];
+    }
+    this.rowReads.push(params.toString());
+    const offset = Number(params.get("offset") ?? 0);
+    const limit = Number(params.get("limit") ?? 50);
+    const sort = params.get("sort");
+    let order = table.rows.map((_, i) => i);
+    if (sort !== null) {
+      const column = columnIndex(sort);
+      if (column < 0) return [422, { detail: `The table has no column '${sort}'` }];
+      const sign = params.get("order") === "desc" ? -1 : 1;
+      // Nulls last either way, as the server sorts them.
+      order = order.sort((a, b) => {
+        const x = table.rows[a][column];
+        const y = table.rows[b][column];
+        if (x === null || y === null) return x === y ? a - b : x === null ? 1 : -1;
+        return sign * x.localeCompare(y, undefined, { numeric: true }) || a - b;
+      });
+    }
+    const page = order.slice(offset, offset + limit);
+    return [
+      200,
+      {
+        columns: table.columns.map((c) => c.name),
+        rows: page.map((i) => ({
+          key: String(i),
+          values: table.rows[i].map((v) => (v === null ? null : v.slice(0, PREVIEW_CHARS))),
+          truncated: table.rows[i].flatMap((v, j) =>
+            v !== null && v.length > PREVIEW_CHARS ? [j] : [],
+          ),
+        })),
+        offset,
+        has_more: offset + limit < order.length,
+      },
+    ];
+  }
+
+  /** Adds a document, as if uploaded earlier. */
+  addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
+    const doc: DocumentRow = {
+      id: this.id(),
+      filename,
+      status: "ready",
+      error: null,
+      chunk_count: 1,
+      size_bytes: 2048,
+      created_at: NOW,
+      ...fields,
+    };
+    this.documents.unshift(doc);
+    return doc;
+  }
+
+  /** Records the documents' bytes, as the API does after an upload or delete. */
+  private recordFiles() {
+    const files_bytes = this.documents.reduce((sum, d) => sum + d.size_bytes, 0);
+    this.dataStoreUsage = { ...this.dataStoreUsage, files_bytes };
+  }
+
+  /** Uploads wait, as if still on the wire, until `releaseUploads`. */
+  holdUploads() {
+    let release = () => {};
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    this.uploadGate = { wait, release };
+  }
+
+  releaseUploads() {
+    this.uploadGate?.release();
+    this.uploadGate = undefined;
+  }
+
+  /**
+   * Until called again with false, each GET /api/documents reads the list when it arrives but
+   * waits to answer until the test calls its entry in `heldDocumentLists`: a slow response.
+   */
+  holdDocumentLists(hold = true) {
+    this.holdingLists = hold;
+  }
+
+  /** The worker finishes ingesting the document called `filename`: into chunks, or failing. */
+  finishIngest(filename: string, outcome: { chunks: number } | { error: string }) {
+    const doc = this.documents.find((d) => d.filename === filename);
+    if (!doc) throw new Error(`No document ${filename}`);
+    Object.assign(
+      doc,
+      "chunks" in outcome
+        ? { status: "ready", chunk_count: outcome.chunks, error: null }
+        : { status: "failed", chunk_count: 0, error: outcome.error },
+    );
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
@@ -155,6 +527,110 @@ export class FakeApi {
     return agent;
   }
 
+  /** Adds a schema change request, pending unless `fields` say otherwise. */
+  addSchemaChange(fields: Partial<SchemaChangeRow> = {}): SchemaChangeRow {
+    const request: SchemaChangeRow = {
+      id: `req-${this.id()}`,
+      data_store_id: "store-1",
+      status: "pending",
+      summary: "Create table data.contacts",
+      reason: "To keep track of the people you meet",
+      sql: 'CREATE TABLE "data"."contacts" (\n    "id" bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,\n    "name" text NOT NULL\n);',
+      ops: [],
+      run_id: null,
+      tool_call_id: null,
+      note: null,
+      error: null,
+      created_at: NOW,
+      decided_at: null,
+      applied_at: null,
+      resumed_at: null,
+      decider: true,
+      confirm_with: null,
+      impact: [],
+      ...fields,
+    };
+    this.schemaChanges.push(request);
+    if (request.status === "pending" && request.decider) {
+      this.addNotification({ ref: { request_id: request.id, data_store_id: request.data_store_id } });
+    }
+    return request;
+  }
+
+  /** Adds a dropped table or column, as if a drop was approved earlier. */
+  addDropped(fields: Partial<DroppedRow> & Pick<DroppedRow, "kind" | "table">): DroppedRow {
+    const name = fields.column ?? fields.table;
+    const item: DroppedRow = {
+      id: this.id(),
+      column: null,
+      dropped_name: `_dropped_20261014090000_${name}`,
+      dropped_at: NOW,
+      purge_in_days: 30,
+      blocked: null,
+      restore_error: null,
+      ...fields,
+    };
+    this.dropped.unshift(item);
+    return item;
+  }
+
+  private droppedOut(item: DroppedRow) {
+    const { purge_in_days, refuseRestore: _, stallRestore: __, ...fields } = item;
+    return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
+  }
+
+  /** Adds a notification: the user's own, about a schema change request, unless told otherwise. */
+  addNotification(fields: Partial<NotificationRow> = {}): NotificationRow {
+    const notification: NotificationRow = {
+      id: `note-${this.id()}`,
+      kind: "schema_change_request",
+      ref: {},
+      title: null,
+      // Later ones are newer, so they list first.
+      created_at: new Date(Date.parse(NOW) + this.notifications.length * 1000).toISOString(),
+      read_at: null,
+      mine: true,
+      ...fields,
+    };
+    this.notifications.push(notification);
+    return notification;
+  }
+
+  private notificationOut({ mine: _mine, ...n }: NotificationRow) {
+    const request = n.kind === "schema_change_request"
+      ? this.schemaChanges.find((r) => r.id === n.ref.request_id)
+      : undefined;
+    return { ...n, title: request ? request.summary : n.title };
+  }
+
+  /**
+   * What the workers do after a decision: the request ends `status` (applied, failed or stale;
+   * a rejection keeps its own), and the run that asked carries on, its conversation ending with
+   * `messages`.
+   */
+  finishSchemaChange(
+    id: string,
+    outcome: { status?: SchemaChangeRow["status"]; error?: string; messages?: unknown[] } = {},
+  ) {
+    const request = this.schemaChanges.find((r) => r.id === id)!;
+    if (outcome.status) request.status = outcome.status;
+    if (outcome.error) request.error = outcome.error;
+    if (request.status === "applied") request.applied_at = NOW;
+    request.resumed_at = NOW;
+    const run = request.run_id === null ? undefined : this.agentRuns.get(request.run_id);
+    if (run && outcome.messages) run.ui_messages = [...run.ui_messages, ...outcome.messages];
+  }
+
+  private schemaChangeOut(request: SchemaChangeRow) {
+    const { run_id, decider, impact: _, ...fields } = request;
+    const run = run_id === null ? undefined : this.agentRuns.get(run_id);
+    return {
+      ...fields,
+      run: run ? { agent_id: run.agent_id, run_id: run.id, title: run.title } : null,
+      can_decide: decider && request.status === "pending",
+    };
+  }
+
   /** Adds a chat run of the agent, at its current version; not tracked unless `counters` say. */
   addAgentRun(
     agent: AgentRow,
@@ -168,6 +644,7 @@ export class FakeApi {
       agent_version_id: agent.versions.at(-1)!,
       title,
       message_count,
+      ui_messages: [],
       ...NOT_TRACKED,
       ...counters,
     };
@@ -241,6 +718,9 @@ export class FakeApi {
       created_at: NOW,
       started_at: NOW,
       finished_at: null,
+      waiting_since: null,
+      waited_seconds: 0,
+      stale_pins: [],
       ...run,
       steps: [],
     };
@@ -260,6 +740,7 @@ export class FakeApi {
       error: null,
       agent_id: null,
       agent_run_id: null,
+      waiting_on_request_ids: [],
       started_at: NOW,
       finished_at: null,
       ...step,
@@ -372,8 +853,9 @@ export class FakeApi {
   }
 
   private agentRunOut(run: AgentRunRow) {
+    const { ui_messages: _, ...summary } = run;
     return {
-      ...run,
+      ...summary,
       agent_version: this.agentVersions.get(run.agent_version_id)![1],
       created_at: NOW,
       updated_at: NOW,
@@ -506,6 +988,17 @@ export class FakeApi {
 
   // --- Routing ---------------------------------------------------------------------------------
 
+  private dependentsOf(agentId: number): AgentDependentsRow {
+    return (
+      this.agentDependents.get(agentId) ?? {
+        agent_runs: [],
+        workflow_runs: [],
+        workflows: [],
+        triggers: [],
+      }
+    );
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -517,7 +1010,14 @@ export class FakeApi {
     const request = route.request();
     const method = request.method();
     const path = new URL(request.url()).pathname;
-    const body = request.postDataJSON?.() ?? null;
+    // As postDataJSON gives it (`any`), or a placeholder for an upload.
+    let body: ReturnType<typeof request.postDataJSON> = null;
+    try {
+      body = request.postDataJSON?.() ?? null;
+    } catch {
+      // Not JSON: an upload's multipart form.
+      body = "(form)";
+    }
     if (method !== "GET") this.writes.push([method, path, body]);
     const reply = (status: number, json?: unknown) =>
       route.fulfill({
@@ -529,7 +1029,191 @@ export class FakeApi {
     let m: RegExpMatchArray | null;
 
     if (path === "/api/me") return reply(200, this.me);
-    if (path === "/api/documents") return reply(200, []);
+    if (path === "/api/data-store") {
+      await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
+      if (this.dataStoreFails) return fail(500, "Internal Server Error");
+      return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
+    }
+    if (path === "/api/documents" && method === "GET") this.documentLists++;
+    if (path === "/api/settings") {
+      if (method === "PUT") {
+        // As the API: embedding only while the export is on, and off with it.
+        if (body?.export_run_history !== undefined) {
+          this.settings.export_run_history = Boolean(body.export_run_history);
+          if (!this.settings.export_run_history) this.settings.embed_run_history = false;
+        }
+        if (body?.embed_run_history !== undefined) {
+          if (body.embed_run_history && !this.settings.export_run_history) {
+            return reply(409, { detail: "Switch the run history export on first." });
+          }
+          if (body.embed_run_history && !this.settings.embed_run_history) {
+            this.settings.history_embedded_at = null;
+          }
+          this.settings.embed_run_history = Boolean(body.embed_run_history);
+        }
+      }
+      return reply(200, this.settings);
+    }
+    if (path === "/api/settings/exported-history" && method === "DELETE") {
+      this.exportedHistoryDeletes++;
+      // Emptied: nothing exported since (while it's on, the export starts over).
+      this.settings.history_exported_at = null;
+      return reply(204);
+    }
+    if (
+      path === "/api/documents" ||
+      path.startsWith("/api/documents/") ||
+      path === "/api/search" ||
+      path.startsWith("/api/data/")
+    ) {
+      if (this.dataStoreStatus !== "ready") {
+        return reply(409, {
+          detail:
+            this.dataStoreStatus === "failed"
+              ? "Your data store couldn't be set up. We'll try again; please check back later."
+              : "Your data store is being set up. Try again in a moment.",
+          data_store_status: this.dataStoreStatus,
+        });
+      }
+      if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
+      if (path.startsWith("/api/data/")) {
+        if (this.tablesFail) return fail(500, "Internal Server Error");
+        const [status, json] = this.tablesResponse(path, new URL(request.url()).searchParams);
+        return reply(status, json);
+      }
+      if (path === "/api/search") {
+        // A passage from each ready document whose name contains the query.
+        const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+        return reply(
+          200,
+          this.documents
+            .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+            .map((d, i) => ({
+              chunk_id: d.id * 1000,
+              document_id: d.id,
+              filename: d.filename,
+              text: `A passage from ${d.filename}.`,
+              meta: {},
+              score: 0.03 - i * 0.001,
+              semantic_rank: i + 1,
+              lexical_rank: i + 1,
+            })),
+        );
+      }
+      if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
+        const before = this.documents.length;
+        this.documents = this.documents.filter((d) => d.id !== Number(m![1]));
+        if (this.documents.length === before) return fail(404, "Not Found");
+        this.recordFiles();
+        return reply(204);
+      }
+      if (path === "/api/documents" && method === "POST") {
+        const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
+        await this.uploadGate?.wait;
+        if (this.tooLarge.has(filename)) return reply(413);
+        const { db_bytes, db_quota_bytes, files_bytes, files_quota_bytes } = this.dataStoreUsage;
+        const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+        if (db_bytes !== null && db_bytes >= db_quota_bytes) {
+          return fail(
+            507,
+            `Your data store is full: its data takes up ${gb(db_bytes)} of the` +
+              ` ${gb(db_quota_bytes)} allowed, so documents can't be uploaded.`,
+          );
+        }
+        if (files_bytes !== null && files_bytes >= files_quota_bytes) {
+          return fail(
+            507,
+            `Your data store is full: its documents use ${gb(files_bytes)} of the` +
+              ` ${gb(files_quota_bytes)} allowed. Delete some to make room.`,
+          );
+        }
+        const doc = this.addDocument(
+          filename,
+          this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
+        );
+        this.recordFiles();
+        return reply(201, doc);
+      }
+      if (path === "/api/documents") {
+        await new Promise((resolve) => setTimeout(resolve, this.documentsDelay));
+        const list = [...this.documents];
+        if (this.holdingLists) {
+          await new Promise<void>((release) => this.heldDocumentLists.push(release));
+        }
+        return reply(200, list);
+      }
+      return fail(404, "Not Found");
+    }
+    if (path === "/api/schema-changes" && method === "GET") {
+      const pending = this.schemaChanges.filter((r) => r.status === "pending");
+      const decided = this.schemaChanges.filter((r) => r.status !== "pending").reverse();
+      return reply(
+        200,
+        [...pending, ...decided].map((r) => this.schemaChangeOut(r)),
+      );
+    }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/impact$/)) && method === "GET") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      return reply(200, { removes: request.impact });
+    }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)$/)) && method === "GET") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      return reply(200, this.schemaChangeOut(request));
+    }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      if (request.status !== "pending") {
+        return fail(409, `This request has already been ${request.status}`);
+      }
+      const typed = (body?.confirm ?? "").trim();
+      if (m[2] === "approve" && request.confirm_with && typed !== request.confirm_with) {
+        return fail(422, `This request drops data: Type \`${request.confirm_with}\` to confirm.`);
+      }
+      request.decided_at = NOW;
+      if (m[2] === "approve") {
+        request.status = "approved";
+      } else {
+        request.status = "rejected";
+        request.note = (body?.note ?? "").trim() || null;
+      }
+      for (const n of this.notifications) {
+        if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
+      }
+      return reply(200, this.schemaChangeOut(request));
+    }
+    if (path === "/api/dropped" && method === "GET") {
+      return reply(200, this.dropped.map((d) => this.droppedOut(d)));
+    }
+    if ((m = path.match(/^\/api\/dropped\/(\d+)\/restore$/)) && method === "POST") {
+      const item = this.dropped.find((d) => d.id === Number(m![1]));
+      if (!item) return fail(404, "Nothing dropped by that id");
+      if (item.blocked) return fail(409, item.blocked);
+      const out = this.droppedOut(item);
+      // What the provisioning worker then does.
+      if (item.refuseRestore) item.restore_error = item.refuseRestore;
+      else if (!item.stallRestore) this.dropped = this.dropped.filter((d) => d !== item);
+      return reply(202, { ...out, blocked: null });
+    }
+    if (path === "/api/notifications" && method === "GET") {
+      this.notificationLists++;
+      const mine = this.notifications.filter((n) => n.mine).reverse();
+      const unread = mine.filter((n) => !n.read_at);
+      return reply(200, {
+        unread: unread.length,
+        notifications: [...unread, ...mine.filter((n) => n.read_at)].map((n) =>
+          this.notificationOut(n),
+        ),
+      });
+    }
+    if ((m = path.match(/^\/api\/notifications\/([\w-]+)\/read$/)) && method === "POST") {
+      const notification = this.notifications.find((n) => n.id === m![1] && n.mine);
+      if (!notification) return fail(404, "Notification not found");
+      notification.read_at ??= NOW;
+      return reply(200, this.notificationOut(notification));
+    }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
       return reply(
@@ -552,6 +1236,31 @@ export class FakeApi {
       if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
       this.agentRuns.delete(run.id);
       return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)$/)) && method === "DELETE") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      const dependents = this.dependentsOf(agent.id);
+      const asked = (body ?? {}) as Partial<Record<string, number[]>>;
+      const named = (key: string, id: number) => (asked[key] ?? []).includes(id);
+      const left = [
+        ...dependents.agent_runs.filter((r) => !named("cancel_agent_runs", r.id)),
+        ...dependents.workflow_runs.filter((r) => !named("cancel_workflow_runs", r.id)),
+        ...dependents.workflows.filter((w) => !named("deactivate_workflows", w.id)),
+      ];
+      if (left.length) {
+        return reply(409, {
+          detail: { message: "This agent is still in use: resolve what depends on it.", dependents },
+        });
+      }
+      this.agents.delete(agent.id);
+      this.agentDependents.delete(agent.id);
+      for (const run of this.agentRunsOf(agent)) this.agentRuns.delete(run.id);
+      return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/dependents$/)) && method === "GET") {
+      if (!this.agents.has(Number(m[1]))) return fail(404, "Not Found");
+      return reply(200, this.dependentsOf(Number(m[1])));
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));
@@ -579,9 +1288,15 @@ export class FakeApi {
         if (!run || run.agent_id !== agent.id) return fail(404, "Not Found");
         return reply(200, {
           ...this.agentRunOut(run),
-          ui_messages: [],
+          ui_messages: run.ui_messages,
           messages: [],
           instructions: agent.base_prompt,
+          schema_change_requests: this.schemaChanges
+            .filter((r) => r.run_id === run.id)
+            .map((r) => this.schemaChangeOut(r)),
+          waiting: this.schemaChanges.some(
+            (r) => r.run_id === run.id && !r.resumed_at && r.status !== "cancelled",
+          ),
         });
       }
       if (rest === "/versions") {
@@ -731,6 +1446,7 @@ export class FakeApi {
           ...this.runSummary(run),
           version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
           steps: run.steps,
+          stale_pins: run.stale_pins,
         });
       }
       if (rest === "/versions") {
@@ -811,7 +1527,7 @@ export class FakeApi {
     return fail(404, `fake API: no route for ${method} ${path}`);
   }
 
-  private runSummary({ steps: _steps, ...run }: RunRow) {
+  private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
     return {
       ...run,
       workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,
