@@ -39,13 +39,13 @@ from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import EMBEDDING_DIM
+from aios.datastores.reads import jsonable
 from aios.embeddings import embed_documents
 from aios.tools.data import (
     DATA_NOT_INSTRUCTIONS,
     embedding_markers,
     in_store,
     in_thread,
-    jsonable,
     pg_error,
 )
 from aios.tools.registry import AgentTool, ToolSpec, register
