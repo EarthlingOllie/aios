@@ -460,6 +460,25 @@ def test_values_of_each_type(api, store, agent):
     )
 
 
+def test_jsonb_can_be_filtered_on_but_json_cant(api, store, agent):
+    """Postgres has no equality for json; jsonb's is by value."""
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.docs (id int PRIMARY KEY, meta json, tags jsonb)")
+        conn.execute("""INSERT INTO data.docs VALUES (1, '{"a": 1}', '{"b": 2}')""")
+
+    by_json, by_jsonb = run_tools(
+        api,
+        agent,
+        call(table="docs", operation="delete", where={"meta": {"a": 1}}),
+        call(table="docs", operation="delete", where={"tags": {"b": 2}}),
+    )
+
+    assert by_json == {
+        "error": "where: `meta` is json, which can't be compared, so it can't be filtered on."
+    }
+    assert by_jsonb["row_count"] == 1, by_jsonb
+
+
 def test_a_vector_with_an_infinite_number_is_refused(api, store, agent):
     with as_owner(store) as conn:
         conn.execute("CREATE TABLE data.points (id int PRIMARY KEY, at extensions.vector(2))")

@@ -297,6 +297,10 @@ def _filters(table: Table, where: Any) -> dict[str, Any]:
         column = _column(table, name, "where")
         if column.embedding_of is not None:
             raise Refused(f"where: `{name}` is an embedding, and can't be filtered on.")
+        if column.base == "json":
+            raise Refused(
+                f"where: `{name}` is json, which can't be compared, so it can't be filtered on."
+            )
         out[name] = _value(column, value, "where")
     return out
 
@@ -591,7 +595,8 @@ delete. This is the only way to change the data in it; `query_data` reads it.
   - `update`: `values` (column names to new values) on the rows matching `where`.
   - `delete`: the rows matching `where`.
 - `where`: column names to the values the rows' columns must equal (all of them; `null`
-  matches null). Updates and deletes must have one: name rows by primary key where you can.
+  matches no value, SQL's NULL; json columns can't be filtered on, jsonb columns can). Updates
+  and deletes must have one: name rows by primary key where you can.
 - Values are JSON matching each column's type: strings for text, dates and times (ISO 8601),
   numbers for numbers, true or false, any JSON for json columns. Leave out columns the database
   sets (identities, generated columns).
