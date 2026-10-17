@@ -736,7 +736,7 @@ def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
     if not tool_call_ids:
         return
     with SessionLocal() as db:
-        db.execute(
+        cancelled = db.scalars(
             update(SchemaChangeRequest)
             .where(
                 SchemaChangeRequest.requested_by_run == run_id,
@@ -744,7 +744,10 @@ def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
                 SchemaChangeRequest.status == SchemaChangeStatus.pending,
             )
             .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
-        )
+            .returning(SchemaChangeRequest.id)
+        ).all()
+        for request_id in cancelled:
+            schema_changes.clear_notifications(db, request_id)
         db.commit()
 
 
