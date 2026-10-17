@@ -7,19 +7,24 @@ three roles named after it (never after a user):
   member, and `SET ROLE`s to it to migrate the store.
 - `<prefix>_rw` and `<prefix>_ro` (login, with the store's encrypted passwords) may connect to
   it and nothing else, use its schemas, and read and write (`rw`) or only read (`ro`) its
-  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`),
-  which both only read. Neither may create anything. Each has its own connection limit, and
-  default statement and idle-in-transaction timeouts, which a session may change
-  (`data_store_*` settings).
+  tables, but for the tree's bookkeeping (`aios.alembic_version`, `aios.schema_history`,
+  `aios.embedding_columns`, `aios.dropped_objects`), which both only read, and dropped tables
+  and columns (`aios.datastores.dropped`), which neither may. Neither may create anything.
+  Each has its own connection limit, and default statement and idle-in-transaction timeouts,
+  which a session may change (`data_store_*` settings).
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
-template (`aios.db_roles`), which brings pgvector in an `extensions` schema: the provisioner
-isn't a superuser, so it couldn't install it.
+template (`aios.db_roles`), which brings pgvector and pgstattuple (for measuring the store,
+`aios.datastores.quota`) in an `extensions` schema: the provisioner isn't a superuser, so it
+couldn't install them.
 
 Then it runs the store tree to its head, as the owner (`upgrade_store`), and marks the store
-`ready`. Every step checks what's already there, so after a crash running it again finishes
-the job; runs of the same store wait for each other.
+`ready`. The tree's `history` line too, if the store's owner has switched the run history
+export on (`aios.datastores.history`), and from then on whenever the store is migrated.
+
+Every step checks what's already there, so after a crash running it again finishes the job;
+runs of the same store wait for each other.
 
 `migrate_all` brings every ready store to the tree's head, and its roles to the limits
 configured now, one at a time: a store that fails is reported and the rest carry on. It also
@@ -59,7 +64,7 @@ from sqlalchemy.engine import make_url
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, migrations
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus
+from aios.models import DataStore, DataStoreStatus, User
 from alembic import command
 
 log = logging.getLogger(__name__)
@@ -91,7 +96,8 @@ class _Run:
     rw_password: str
     ro_password: str
     server: psycopg.Connection  # the provisioner, on the platform database
-    revision: str | None = None
+    history: bool = False  # bring the store's `history` line to its head too
+    revisions: "Revisions | None" = None
 
 
 def _ident(*names: str) -> sql.Composable:
@@ -169,7 +175,7 @@ def _restrict_connect(run: _Run) -> None:
 
 
 @contextmanager
-def _as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
+def as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
     """The provisioner on the store's database, acting as its owner."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(
@@ -183,7 +189,7 @@ def _as_owner(names: StoreNames) -> Iterator[psycopg.Connection]:
 
 def _set_up_database(run: _Run) -> None:
     n = run.names
-    with _as_owner(n) as conn:
+    with as_owner(n) as conn:
         # Already there from the template; a no-op unless the template lacks it.
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions")
         conn.execute("DROP SCHEMA IF EXISTS public")
@@ -202,14 +208,30 @@ def _set_up_database(run: _Run) -> None:
             conn.execute(sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} ").format(owner) + grant)
 
 
-# The platform's record of the store's schema, which the default privileges would otherwise let
-# `_rw` rewrite: only the tree, as the owner, changes them.
-BOOKKEEPING = ("aios.alembic_version", "aios.schema_history")
+# The platform's record of the store's schema (and which `data` columns are embeddings), which
+# the default privileges would otherwise let `_rw` rewrite: only the tree and schema changes, as
+# the owner, change them.
+BOOKKEEPING = (
+    "aios.alembic_version",
+    "aios.schema_history",
+    "aios.embedding_columns",
+    "aios.dropped_objects",
+)
 
 
-def upgrade_store(names: StoreNames) -> str:
-    """Run the store tree to its head on the store's database, as its owner, and keep `_rw` off
-    its bookkeeping (`BOOKKEEPING`); returns the revision it's at."""
+@dataclass(frozen=True)
+class Revisions:
+    """Where a store is on each line of the store tree (`aios.datastores.migrations`)."""
+
+    aios: str
+    # None if it hasn't got the `history` line.
+    history: str | None = None
+
+
+def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
+    """Run the store tree's `aios` line to its head on the store's database, as its owner, and
+    its `history` line too if `history` is set or the store already has it, and keep `_rw` off
+    the tree's bookkeeping (`BOOKKEEPING`); returns the revisions it's at."""
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
     engine = create_engine(
         url, poolclass=pool.NullPool, connect_args={"connect_timeout": CONNECT_TIMEOUT}
@@ -219,20 +241,27 @@ def upgrade_store(names: StoreNames) -> str:
             quote = conn.dialect.identifier_preparer.quote
             conn.exec_driver_sql(f"SET ROLE {quote(names.owner)}")
             conn.commit()
-            command.upgrade(migrations.config(conn), "head")
+            cfg = migrations.config(conn)
+            # By revision: the tree has a head per line, so "head" alone is ambiguous.
+            command.upgrade(cfg, migrations.head_revision())
+            at = conn.scalars(text("SELECT version_num FROM aios.alembic_version")).all()
+            if history or any(migrations.is_history_revision(r) for r in at):
+                command.upgrade(cfg, f"{migrations.HISTORY}@head")
+                at = conn.scalars(text("SELECT version_num FROM aios.alembic_version")).all()
             # Every time, not in a revision: the tree doesn't know the store's role names.
             conn.exec_driver_sql(
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
             )
-            revision = conn.scalar(text("SELECT version_num FROM aios.alembic_version"))
             conn.commit()
-            return revision
+            on_history = [r for r in at if migrations.is_history_revision(r)]
+            (on_aios,) = [r for r in at if not migrations.is_history_revision(r)]
+            return Revisions(on_aios, on_history[0] if on_history else None)
     finally:
         engine.dispose()
 
 
 def _migrate(run: _Run) -> None:
-    run.revision = upgrade_store(run.names)
+    run.revisions = upgrade_store(run.names, history=run.history)
 
 
 def _mark_ready(run: _Run) -> None:
@@ -244,7 +273,8 @@ def _mark_ready(run: _Run) -> None:
             .where(DataStore.id == run.store_id)
             .values(
                 status=DataStoreStatus.ready,
-                schema_revision=run.revision,
+                schema_revision=run.revisions.aios,
+                history_revision=run.revisions.history,
                 error=None,
             )
         )
@@ -263,7 +293,7 @@ STEPS: list[Callable[[_Run], None]] = [
 
 
 @contextmanager
-def _provisioner_locked(
+def provisioner_locked(
     store_id: uuid.UUID, wait: bool = True
 ) -> Iterator[psycopg.Connection | None]:
     """The provisioner on the platform database, holding the store's lock (released when the
@@ -310,11 +340,16 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
         return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
 
 
+def _wants_history(db, store: DataStore) -> bool:
+    """Whether the store's owner has the run history export on."""
+    return bool(db.scalar(select(User.export_run_history).where(User.id == store.owner_user_id)))
+
+
 def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
     docstring); returns the revision it's at. Does nothing (returns None) for a store that's
     gone, or that's past provisioning, or, unless `wait`, that another run is on."""
-    with _provisioner_locked(store_id, wait) as server:
+    with provisioner_locked(store_id, wait) as server:
         if server is None:
             return None
         with SessionLocal() as db:
@@ -325,14 +360,17 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
             ):
                 return None
             names = StoreNames.of(store)
+            history = _wants_history(db, store)
         passwords = _passwords(store_id)
         if passwords is None:
             return None
-        run = _Run(store_id, names, *passwords, server=server)
+        run = _Run(store_id, names, *passwords, server=server, history=history)
         for step in STEPS:
             step(run)
-    log.info("Data store %s is ready at revision %s", store_id, run.revision)
-    return run.revision
+    if run.revisions is None:  # a test ran only some of the steps
+        return None
+    log.info("Data store %s is ready at revisions %s", store_id, run.revisions)
+    return run.revisions.aios
 
 
 def drop(names: StoreNames) -> None:
@@ -380,9 +418,11 @@ def fail(store_id: uuid.UUID, error: str) -> None:
 
 
 def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
-    """Bring a ready store to the tree's head, and its roles to the limits configured now, and
-    record its revision. Unless `wait`, does nothing (returns None) if another run is on it."""
-    with _provisioner_locked(store_id, wait) as server:
+    """Bring a ready store to the tree's head (and its `history` line, if it has it or its
+    owner wants it), and its roles to the limits configured now, and record its revisions;
+    returns its `aios` line's. Unless `wait`, does nothing (returns None) if another run is on
+    it."""
+    with provisioner_locked(store_id, wait) as server:
         if server is None:
             return None
         with SessionLocal() as db:
@@ -390,16 +430,21 @@ def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
+            history = _wants_history(db, store)
         _set_limits(server, names)
-        revision = upgrade_store(names)
+        revisions = upgrade_store(names, history=history)
         with SessionLocal() as db:
             db.execute(
                 update(DataStore)
                 .where(DataStore.id == store_id)
-                .values(schema_revision=revision, error=None)
+                .values(
+                    schema_revision=revisions.aios,
+                    history_revision=revisions.history,
+                    error=None,
+                )
             )
             db.commit()
-        return revision
+        return revisions.aios
 
 
 def _record_error(store_id: uuid.UUID, error: str) -> None:
@@ -476,9 +521,17 @@ def _migrate_ready(
 
 
 def _behind_head() -> ColumnElement[bool]:
-    """Stores at an earlier revision of the tree than its head. Not one it doesn't know: the
-    release after this one has already migrated that store."""
-    return DataStore.schema_revision.in_(migrations.revisions_before_head())
+    """Stores at an earlier revision of the tree than its head, on either line, or without the
+    `history` line their owner wants (the export's set-up was lost, or failed). Not one it
+    doesn't know: the release after this one has already migrated that store."""
+    return or_(
+        DataStore.schema_revision.in_(migrations.revisions_before_head()),
+        DataStore.history_revision.in_(migrations.history_revisions_before_head()),
+        and_(
+            DataStore.history_revision.is_(None),
+            DataStore.owner_user_id.in_(select(User.id).where(User.export_run_history)),
+        ),
+    )
 
 
 def retry_unfinished(

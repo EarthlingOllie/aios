@@ -43,16 +43,53 @@ class Settings(BaseSettings):
     #
     # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
     # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
-    # processes that use it. On ECS the read-only role is used by the 2 API tasks and the
-    # workflow worker's 2 processes, so 12; the read-write one by the API and the ingest
-    # worker's 2 (one ingest, so one connection, each), so 8. A rolling deploy starts the new
-    # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
+    # processes that use it. On ECS both roles are used by the 2 API tasks and the workflow
+    # worker's 2 processes (the data tools), so 12; the read-write one also by the ingest
+    # worker's 2 (one ingest, so one connection, each), so 14, and the read-only one by the
+    # provisioning worker (measuring one store at a time), so 13. A rolling deploy starts the new
+    # tasks before stopping the old, which doubles that: 28 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
     # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
     # either is cut short there, and says so (`truncated`).
     query_data_max_rows: int = Field(default=200, ge=1)
     query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
+    # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
+    # past it is refused, and writes nothing.
+    write_data_max_rows: int = Field(default=100, ge=1)
+    # Uploaded files, in S3 (`aios.datastores.files`): each store's under `stores/<store id>/`.
+    # The region comes from boto3's usual places (on AWS, the task's).
+    data_store_files_bucket: str = "aios-data-local"
+    # An S3-compatible server to use instead of AWS's (RustFS, locally), as the app reaches it.
+    # Empty on AWS.
+    data_store_files_endpoint: str = ""
+    # That server's keys. Empty on AWS, where credentials come from boto3's usual places (the
+    # task's role).
+    data_store_files_access_key: str = ""
+    data_store_files_secret_key: SecretStr = SecretStr("")
+    # The same server as the browser reaches it, which download links are signed for (a link
+    # names its host): e.g. http://localhost:9000 while the app reaches it at http://rustfs:9000.
+    # Empty: the same as data_store_files_endpoint.
+    data_store_files_public_endpoint: str = ""
+    # How long a download link lasts, in seconds. Each is a bearer link (anyone holding it can
+    # download the file until then), minted per click, so a minute is plenty.
+    document_download_url_seconds: int = Field(default=60, ge=1, le=7 * 24 * 60 * 60)
+    # Each store's storage cap (`aios.datastores.quota`): the data its tables hold (live rows,
+    # measured with pgstattuple), and the bytes of its documents' files. At either, uploads and
+    # `write_data`'s inserts and updates are refused; reads and deletes carry on.
+    data_store_db_quota_bytes: int = Field(default=1024**3, ge=1)
+    data_store_files_quota_bytes: int = Field(default=5 * 1024**3, ge=1)
+    # How long (milliseconds) applying an approved schema change waits for each lock it needs,
+    # e.g. on a table in use, before failing: so it can't stall the store's other queries.
+    schema_change_lock_timeout: int = Field(default=5_000, ge=1)
+    # How long (days) a dropped table or column is kept, for the owner to restore, before it's
+    # purged for good (`aios.datastores.dropped`).
+    data_store_dropped_retention_days: float = Field(default=30, ge=0)
+    # A schema change request nobody has decided after this many days expires, which counts as
+    # a rejection: the run that asked carries on, told so. Checked every
+    # `schema_change_expiry_check_seconds` by the provisioning worker's beat.
+    schema_change_request_expiry_days: float = Field(default=7, gt=0)
+    schema_change_expiry_check_seconds: float = Field(default=60 * 60, gt=0)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

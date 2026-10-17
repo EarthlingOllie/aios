@@ -6,10 +6,16 @@ Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain'
 Reciprocal Rank Fusion).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
-reusable instructions, and **tools** from a built-in library: web search, and document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent)
+reusable instructions, and **tools** from a built-in library: web search; document search,
+the same hybrid search as the documents chat, over the documents of the user running the agent;
+and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
-between, and shows each passage with how the semantic and keyword branches ranked it. Each
+between, and shows each passage with how the semantic and keyword branches ranked it. The
+**Data** page shows the user's data store: its status (Overview), the schema changes its agents
+asked for (Changes: those waiting for a decision, then the history), the tables and columns
+they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
+status, chunk count, size and upload time, upload, download and delete (the chat's documents
+panel uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage.
@@ -56,10 +62,44 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
 - Agents and workflows are soft-deleted too: older workflow versions keep pinning their versions,
-  and stay readable (a node whose agent or workflow is gone shows no latest version). One can't
-  be deleted while a live workflow's current version runs it; older versions don't count, but
-  restoring one that runs something since deleted is refused. Deleting an agent still deletes
-  its runs, their threads and sandboxes. Names are unique among live rows, so they can be reused.
+  and stay readable (a node whose agent or workflow is gone shows no latest version). A workflow
+  can't be deleted while a live workflow's current version runs it; older versions don't count,
+  but restoring one that runs something since deleted is refused. Deleting an agent still
+  deletes its runs, their threads and sandboxes. Names are unique among live rows, so they can
+  be reused.
+- An agent is deleted only once what depends on it is resolved (`aios.dependents`).
+  `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
+  have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
+  version runs it at any depth, the live workflows whose current version runs it (directly, or
+  through a nested workflow's pinned version) with their schedules, and its own schedules.
+  `DELETE /api/agents/{id}` answers 409 with that list (`detail.dependents`, and a
+  `detail.message`) until its body resolves each: `cancel_agent_runs` and
+  `cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
+  deactivate; any other workflow must first be edited to stop running the agent (the agent's
+  page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
+  that starts waiting, after the user looked refuses the delete rather than being cancelled
+  unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
+  failed first, as reading it would. Cancelling a workflow run fails it
+  (`aios.workflows.cancel_runs`), closes out its requests (pending ones cancelled, their
+  notifications cleared) and starts no more of its nodes; a worker running it stops at its next
+  beat. A chat run is deleted with the agent, as before, cancelling its requests. Any turn still
+  underway on the agent's runs (a chat's, a schedule's, a cancelled workflow run's node) is
+  stopped: the connection holding its turn lock is ended (`checkpoints.stop_turns`), so it fails
+  at its next write, and a model or tool call already underway finishes unrecorded. A turn that
+  only takes its run's lock after the run has gone finds it gone and does nothing, so no thread
+  is left behind. **Deactivating** a workflow turns off its schedules (as
+  pausing each would, dropping a firing claimed but not started), and with the agent gone no
+  run of it can start, by hand or by schedule: starting one is refused as running a deleted
+  agent. It stays, to be edited (removing the node, or taking a nested workflow's newer
+  version) or deleted; its schedules can be turned back on once it runs. It all happens in one
+  transaction, with the agent and the workflows that run it locked, so a run being started is
+  either seen (and refuses the delete) or waits and then can't start. On the agent's page,
+  Delete opens a dialog that loads the list: with nothing in it, a simple confirm; otherwise
+  each run (with the node it waits at and its requests), workflow and schedule links to where
+  it's seen or managed, in a new tab, with a "Cancel these runs" box and Deactivate or Edit
+  workflow for each workflow. Delete stays disabled until each has a resolution, and the list
+  is checked again when the window regains focus (or on "Check again"), so a workflow edited
+  meanwhile leaves it.
 - Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so a
   delete can't race a save that starts using what it deletes.
 - A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
@@ -125,6 +165,8 @@ browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ─�
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
 api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
+api, worker ──▶ S3 (RustFS locally): uploaded files, under each data store's prefix
+browser ──download link (presigned, a minute)──▶ S3
 api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
@@ -136,7 +178,7 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 | Retrieval | pgvector HNSW (cosine) + Postgres FTS (`tsvector`, GIN), RRF (k=60) |
 | Inference | LangGraph agents (LangChain `create_agent`, `anthropic:claude-sonnet-5-5` via `langchain-anthropic`), streamed to the UI by our own Vercel AI SDK adapter (`ui_stream.py`); LangGraph Postgres checkpointer for run history; `langchain-voyageai` embeddings (`voyageai:voyage-4`, 1024-d); Docling `HybridChunker` |
 | Tracing | Langfuse (open source, self-hosted) via its LangChain callback handler |
-| Infra | Docker Compose locally; Terraform on AWS: VPC, ECS Fargate, ALB, RDS Postgres, ElastiCache (Valkey), ECR, Secrets Manager |
+| Infra | Docker Compose locally (RustFS for S3); Terraform on AWS: VPC, ECS Fargate, ALB, RDS Postgres, ElastiCache (Valkey), S3 (SSE-KMS), ECR, Secrets Manager |
 
 ## Layout
 
@@ -146,7 +188,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user
     api/chat.py     POST /api/chat (AI SDK UI message stream)
-    api/documents.py upload/list/delete, GET /api/search
+    api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
@@ -154,6 +196,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     scheduler.py    fires due schedules (runs in each API process)
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
+    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -167,8 +210,10 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     agent.py        the documents chat's agent + search_documents tool, and the run context
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
-                    models.py (the tables every store has: documents, chunks),
-                    provision.py (creating and migrating each store's database), and
+                    models.py (the tables every store has: documents, chunks; and the
+                    run history export's), history.py (the run history export),
+                    provision.py (creating and migrating each store's database),
+                    files.py (uploaded files in S3, and download links), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
@@ -179,8 +224,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
 infra/deploy.sh     build → push → create roles → migrate → migrate data stores → roll out
-docker-compose.yml  db, redis, db-roles, migrate, migrate-stores, api, worker, workflow-worker,
-                    provisioning-worker, web, sandbox
+docker-compose.yml  db, redis, rustfs, files-bucket, db-roles, migrate, migrate-stores, api,
+                    worker, workflow-worker, provisioning-worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -200,19 +245,22 @@ open http://localhost:8080
 
 `db-roles` creates the database roles as the master user (see [Database roles](#database-roles)),
 then `migrate` runs `alembic upgrade head` as `aios_app` before `api`/`worker` start, and
-`migrate-stores` brings the data stores to the store tree's head (see [Data stores](#data-stores)). The worker image bakes in
+`migrate-stores` brings the data stores to the store tree's head (see [Data stores](#data-stores)).
+`rustfs` stands in for S3 (its S3 API on http://localhost:9000, where download links send the
+browser), and `files-bucket` makes the bucket. The worker image bakes in
 Docling's models and the chunker tokenizer at build time, so it needs Hugging Face access
 while building but not at runtime.
 
 ## Local development
 
 ```sh
-docker compose up -d db redis
+docker compose up -d db redis rustfs
 
 cd backend
 cp .env.example .env     # PUBLIC_URL=http://localhost:5173
 uv sync --extra ingest   # drop --extra ingest if you're not running the worker
 uv run python -m aios.db_roles   # as the master user (DATABASE_ADMIN_URL); safe to re-run
+uv run python -m aios.datastores.files create-bucket   # uploaded files' bucket, in RustFS
 uv run alembic upgrade head
 uv run python -m aios.datastores.provision migrate-all   # data stores, after every upgrade
 uv run uvicorn aios.main:app --reload
@@ -229,7 +277,10 @@ Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (
 need the migrated database: they skip when no server is listening or it isn't migrated, but fail
 when the server turns `DATABASE_URL` away (a missing role or database, a wrong password), so run
 `aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
-from the environment or `.env`, and skip without it) and `pnpm build && pnpm test && pnpm test:e2e`
+from the environment or `.env`, and skip without it, and the documents tests need RustFS, at
+`DATA_STORE_FILES_ENDPOINT` with `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in
+`backend/.env.example`), `terraform test` in `infra/terraform` (it plans and applies against a
+mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
 (frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
 need no backend. Run `pnpm exec playwright install chromium` once first, or point
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
@@ -264,8 +315,11 @@ It also revokes `CONNECT` from `PUBLIC` on the platform database (then grants it
 roles), `postgres` and `template1`, so no other role (a data store's included) can connect to
 them. Only a database's owner may do that, so one the master user doesn't own is left as it is
 and reported as a warning. And it makes the data stores' template, `aios_store_template`
-(`DATA_STORE_TEMPLATE`): an empty database with pgvector in an `extensions` schema, which no one
-may connect to and the provisioner copies.
+(`DATA_STORE_TEMPLATE`): an empty database with pgvector and pgstattuple (for measuring a store's
+data) in an `extensions` schema, which no one may connect to and the provisioner copies. It adds
+pgstattuple to any store made before the template had it. Stores it may not connect to, or
+create it in (on RDS, the master user isn't a superuser), are listed in one warning; any of
+them without it is measured by its database's size until a superuser adds it.
 
 ### Data stores
 
@@ -302,8 +356,8 @@ set up"), and the UI says so.
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
 never have them, and a server logging statements has only the encrypted ones (in the
-`data_stores` insert), useless without the key. The API returns only a store's status
-(`GET /api/data-store`).
+`data_stores` insert), useless without the key. The API returns only a store's status and
+usage (`GET /api/data-store`).
 
 `python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
 after the platform's migration) finishes provisioning any store left `provisioning` or `failed`,
@@ -318,7 +372,7 @@ back, until the provisioning worker's beat brings it to head with the retries ab
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
 on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
-and the document search tools') as `_ro`. Searches have no owner filter: a store holds only its
+and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store holds only its
 owner's documents, and its roles can't connect to any other database. A store is reached at
 `DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
 database's instance, which the provisioner may know by another name (Compose's `db`, with the
@@ -327,9 +381,97 @@ they're empty until then.
 
 Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
 pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
-role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
+role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
-ingest task retries, and the search tools tell the model.
+ingest task retries, and the search and data tools tell the model.
+
+The Data page's **Tables** (`GET /api/data/tables`, `.../tables/{table}/rows` and
+`.../tables/{table}/value`, in `aios.api.data` and `aios.datastores.tables`) show the store's
+`data` tables, with their columns and row counts (the planner's estimate for a big table), and
+their rows a page at a time. They read as `_ro` through `aios.datastores.reads`, as
+`query_data` does, so under the same statement timeout and row and byte caps. No SQL is taken:
+a table, a sort column or a value's column is a name looked up in the catalog (404 or 422 if
+it isn't there), and only then quoted into a statement. Values come as text, cut to 200
+characters (read in full, as far as the byte cap, on asking); embeddings come as their type and
+dimension (`vector(1024)`), never their numbers, and `jsonb` pretty-printed.
+
+Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
+1 GiB) for the data its tables hold, and `DATA_STORE_FILES_QUOTA_BYTES` (default 5 GiB) for its
+documents' files, the sum of their `size_bytes`. The data is each table's live rows, as
+`pgstattuple_approx` estimates them, in its own pages and its TOAST table (where large values
+go), plus its indexes in proportion to how much of the table is live rows. Not the database's
+size (`pg_database_size`): that keeps the space deleted rows took until their table is
+rewritten, so deleting rows wouldn't bring a store back under its cap. Over either, uploads
+answer 507 (as does an upload that wouldn't fit) and `write_data` refuses inserts, upserts and
+updates, telling the model; reads, searches, downloads and deletes carry on. The checks measure
+the store as the write comes in. What each store uses is also recorded on its `data_stores` row
+for the Data page's Overview, which shows both against their caps, warning from 80%: the
+provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
+and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
+makes room at once; the Overview shows rows' room at the next measurement. The checks first read
+the database's size, which is never less than the data, and only measure the data once that
+size reaches the cap. Deleting rows doesn't bring the size back down, so from then on each check
+measures: `pgstattuple_approx` reads the pages vacuum hasn't marked all-visible, the ones
+written or deleted from since.
+
+#### Run history export
+
+On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
+their runs into their store's `history` schema, keyed by the platform's ids and recording who
+ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
+with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
+input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
+key: the two are exported apart). Statuses are copied as text. The platform database stays the
+source of truth (`aios.datastores.history`):
+
+- The `history` tables are the store tree's second line (branch label `history`, revisions
+  `h0001`, ...), which a store gets only once its owner first switches the export on:
+  `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
+  migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
+  same default privileges on it as on `aios`. A store behind the line's head isn't exported
+  until it's brought there.
+- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+  outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
+  `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
+  every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
+  the run's row in the same transaction as the run's own update. Deleting a run, its agent or
+  its workflow run writes it too, and deleting an agent writes the workflow runs whose steps
+  held its runs. Pausing and resuming a workflow run will write it too, once runs can pause.
+- `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
+  upserting each run with its messages or steps, or deleting the copy of a run that's gone.
+  It's queued when the outbox is written, and the provisioning worker's beat queues it every
+  minute for any store with rows still pending. A run that fails to export keeps its error on
+  its outbox row and is tried again at its next change, or in an hour, so it doesn't hold up
+  the rest.
+- Switching it off stops the export (after the batch under way) and keeps the copy; runs
+  deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
+  copy; while the export is on, every run is then exported again.
+
+##### Searchable history
+
+While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+switched off with the export), embeds the exported messages so agents can search past runs:
+
+- `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
+  (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
+  (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
+- The export embeds what it has just exported once it has caught up (after letting go of the
+  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
+  keeps its embedding while its text is unchanged, so a run exported again is embedded only where
+  it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching embedding
+  on queues the export, which embeds every message already there (a backfill);
+  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
+  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
+  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
+  new embeddings and keeps the existing ones, which are still searched.
+- The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
+  search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by meaning
+  over what's embedded. If the query can't be embedded, it searches by keyword alone. Each result
+  is a message with its run's id, agent, title and when it started; the run searching is left
+  out. Like document search, it runs in the store's own database as `_ro`, so it never sees
+  another store's runs.
 
 ### Dependency policy
 
@@ -430,8 +572,23 @@ Known limits:
 
 ## Notes and trade-offs
 
-- **Uploads are stored in Postgres** (`documents.data`, in the user's data store), so the API
-  and worker don't need a shared bucket. Move them to S3 if files get large.
+- **Uploaded files are in S3** (`aios.datastores.files`; RustFS locally, in Compose and the
+  tests), at `stores/<store id>/documents/<document id>`; the store's `documents` row keeps the
+  key, the size and the SHA-256. An upload streams the file to S3, then inserts the row, then
+  queues the ingest, and deletes the object again if either of those fails (unless the row is
+  still there); the ingest reads it back from S3 (when S3 can't answer for now, the document
+  waits, and the task tries again a minute later, up to ten times), and deleting a document
+  deletes its object, then its row (so should S3 refuse, the document stays to be deleted
+  again). Downloading
+  (`GET /api/documents/{id}/download`) looks the document up in the user's own store, so
+  another's is a 404, and redirects to a presigned `GetObject` link that saves it under its
+  original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding a link can use it
+  until then, so one is minted per click and never shown on the page. Links are signed for
+  `DATA_STORE_FILES_PUBLIC_ENDPOINT` when set (RustFS as the browser reaches it, while the app
+  reaches it at `DATA_STORE_FILES_ENDPOINT`). On AWS the bucket (`<name>-data-<environment>`)
+  has SSE-KMS, Block Public Access and no versioning (a delete really deletes); only the API's
+  and the ingest worker's task roles may get, put and delete objects, under `stores/*`, and the
+  app subnets reach it through an S3 gateway endpoint.
 - **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
   user, with an id of its own, created when they sign in. Document upload, listing, deletion,
   search, ingest and the document search tools open their sessions with
@@ -500,6 +657,60 @@ Known limits:
   set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
   model their results are data, not instructions, and that the store is being set up until
   it's ready.
+- **Request schema changes** (`request_schema_change`) is how an agent gets new tables, columns
+  and indexes in `data`, or drops tables and columns (`aios.datastores.schema_changes`). The
+  model sends a spec, never SQL: `create_table`, `add_column`, `create_index`, `drop_table`
+  and `drop_column` operations, with types from an allowlist (including `embedding`, a vector
+  of a text column that `write_data` fills) and names that
+  match `^[a-z][a-z0-9_]{0,62}$` and aren't reserved words. The tool checks it against the
+  store's schema, compiles it to SQL with every identifier quoted (descriptions become
+  `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
+  `interrupt()`: the turn ends with a card of the agent's reason and the exact SQL, and the run
+  takes no new messages until it's decided. The store's owner (`can_approve`) approves or
+  rejects it (with an optional note) there or in the Data page's Changes section. Each user who
+  can decide a new request gets a notification (`aios.notifications`, the `notifications`
+  table: user, kind, a jsonb reference, created and read times), which the navigation's bell
+  polls for (`GET /api/notifications`, unread first with an unread count, every 10s) and shows
+  as an unread badge with a list; an item opens the request on the Data page, and one can be
+  marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding or cancelling the
+  request marks its notifications read (`schema_changes.clear_notifications`). Users only
+  ever see their own. An approved
+  request is applied on the provisioning worker (`aios.apply_schema_change`), as the
+  provisioner `SET ROLE` to the store's owner, in one transaction under
+  `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the
+  store's data schema revision; if the revision moved on since the request was made, the spec
+  is checked again, and one that no longer applies is marked `stale`. Then the workflow worker
+  resumes the run (`aios.resume_agent_run`) with the outcome (applied, rejected with the note,
+  failed with the error, or stale), which the tool call returns to the model, and the chat
+  shows the rest of the turn. In a workflow run, the agent node's step becomes `waiting` (with
+  the request it waits on); other branches carry on, and once nothing else can run the run
+  becomes `waiting` and its task returns, holding no worker. A waiting run isn't failed for its
+  heartbeat, and its waiting time (`waited_seconds`) doesn't count towards
+  `WORKFLOW_RUN_TIME_LIMIT`. The decision queues `aios.run_workflow` again: the worker claims
+  the run from `waiting`, rebuilds its state from the recorded steps, and resumes the waiting
+  node on its own agent run's thread, on the versions the run pinned (a pin that can no longer
+  run fails its step with the reason). The run page shows the waiting node with the request's
+  card, and the pins that are no longer current. A request nobody decides within
+  `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` (7) expires: the provisioning worker's beat
+  (`aios.expire_schema_change_requests`, every `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour)
+  marks it `expired`, which counts as a rejection, and the chat or workflow run that asked
+  resumes with it. Deleting a chat run, an agent with a waiting chat, or a waiting workflow run
+  marks its pending request `cancelled` instead, and nothing resumes (`schema_changes.cancel`).
+  An agent whose workflow node waits can only be deleted by cancelling that workflow run, which
+  cancels the request the same way (see deleting an agent, above). Either way the request's
+  notifications are marked read, nothing is applied, and the Data page's history shows it.
+- **Drops are reversible** (`aios.datastores.dropped`). `drop_table` and `drop_column` rename
+  the table or column to `_dropped_<timestamp>_<name>` and record it in
+  `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with
+  dropped columns keeps its privileges on its other columns only, so `SELECT *` on it is
+  refused until they're restored or purged), so it's gone from `describe_data`, `query_data`
+  and `write_data` while its data stays. The card and the Changes section show what a drop
+  would remove (row counts, the columns affected), and approving it takes the tables' names
+  typed (refused by the server otherwise). The Data page's Dropped section lists what's
+  dropped with when it's purged, and restores it (on the provisioning worker,
+  `aios.restore_dropped`), refused if its name has been taken since. The provisioning worker's
+  beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hour
+  (`aios.purge_dropped`). Restores and purges are logged in `aios.schema_history` too.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
