@@ -40,6 +40,18 @@ def upgrade() -> None:
     )
     op.create_index("ix_notifications_user_id_read_at", "notifications", ["user_id", "read_at"])
     op.create_index("ix_notifications_ref", "notifications", ["ref"], postgresql_using="gin")
+    # Requests already waiting notify whoever can decide them (`resolve.approvers`: the store's
+    # owner), as a new one would; else nothing would prompt their decision.
+    op.execute(
+        """
+        INSERT INTO notifications (user_id, kind, ref, created_at)
+        SELECT s.owner_user_id, 'schema_change_request',
+               jsonb_build_object('request_id', r.id::text, 'data_store_id', r.data_store_id::text),
+               r.created_at
+        FROM schema_change_requests r JOIN data_stores s ON s.id = r.data_store_id
+        WHERE r.status = 'pending'
+        """
+    )
 
 
 def downgrade() -> None:
