@@ -144,13 +144,15 @@ function RunChat({
   const bottomRef = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
 
-  // Once a run that waited on a schema change request has carried on (on the server, not in
-  // this chat's stream), show the conversation as it is now.
-  const wasWaiting = useRef(run.waiting);
+  // Each time a run that waited on a schema change request has carried on (on the server, not
+  // in this chat's stream), show the conversation as it is now: also when it carried on into
+  // another request, and so is waiting still.
+  const resumed = run.schema_change_requests.filter((r) => r.resumed_at).length;
+  const shownResumed = useRef(resumed);
   useEffect(() => {
-    if (wasWaiting.current && !run.waiting) setMessages(run.ui_messages);
-    wasWaiting.current = run.waiting;
-  }, [run, setMessages]);
+    if (resumed > shownResumed.current) setMessages(run.ui_messages);
+    shownResumed.current = resumed;
+  }, [resumed, run.ui_messages, setMessages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

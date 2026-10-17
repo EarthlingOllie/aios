@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import pytest
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from psycopg import OperationalError
+from sqlalchemy import event
 from test_agents import agent_body, chat_body, make_agent
 from test_data_tools import as_owner, provisioned
 from test_workflows import agent_node, make_workflow
@@ -21,8 +22,9 @@ from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
-from aios.datastores import can_approve, data_store_for
-from aios.db import SessionLocal
+from aios.datastores import can_approve, data_store_for, schema_changes
+from aios.datastores.schema_changes import SchemaChange
+from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
 from aios.tools import build_tool, hybrid_search
@@ -283,6 +285,30 @@ def test_a_redelivered_apply_still_resumes_the_run(api, agent, store, queued):
         run_queued(queued)
     (_, outcome), _ = script.results
     assert outcome["status"] == "applied"
+
+
+def test_the_list_reads_the_store_once_however_many_requests_it_has(api, store):
+    """It's read every couple of seconds while a change is being applied."""
+    for name in ("a1", "a2", "a3", "a4", "a5"):
+        schema_changes.propose(
+            store.id,
+            SchemaChange.model_validate({"ops": [{**CONTACTS, "name": name}]}),
+            "Because",
+            run_id=None,
+            tool_call_id=None,
+        )
+    statements = []
+
+    def record(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert len(api.get("/api/schema-changes").json()) == 5
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert len([s for s in statements if "FROM data_stores" in s]) <= 2
 
 
 def test_a_request_is_decided_once(api, agent, queued):

@@ -87,6 +87,45 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
   await expect(page.locator("form:has(#run-input) button[type=submit]")).toBeEnabled();
 });
 
+test("a run that carries on into another request shows that request's card", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { agent, run, request } = waitingRun(api);
+  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await card(page).getByRole("button", { name: "Approve" }).click();
+  await expect(card(page)).toContainText("Applying");
+
+  // The resumed turn asks for an index, and waits again: the run never stops waiting.
+  api.addSchemaChange({
+    run_id: run.id,
+    tool_call_id: "call_2",
+    summary: "Create index contacts_name_idx on data.contacts",
+  });
+  api.finishSchemaChange(request.id, {
+    status: "applied",
+    messages: [
+      {
+        id: "a2",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          { type: "text", text: "Now an index.", state: "done" },
+          {
+            type: "tool-request_schema_change",
+            toolCallId: "call_2",
+            state: "input-available",
+            input: { ops: [], reason: "Faster lookups" },
+          },
+        ],
+      },
+    ],
+  });
+
+  const index = card(page, "Create index contacts_name_idx on data.contacts");
+  await expect(index).toContainText("Waiting for you");
+  await expect(index.getByRole("button", { name: "Approve" })).toBeVisible();
+  await expect(card(page)).toContainText("Applied to your data store.");
+});
+
 test("rejecting with a note sends the note, and the run carries on", async ({ page }) => {
   const api = await fakeApi(page);
   const { agent, run, request } = waitingRun(api);
