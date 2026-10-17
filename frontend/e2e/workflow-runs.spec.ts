@@ -45,8 +45,8 @@ test("starts a run from the workflow page", async ({ page }) => {
   await expect(page).toHaveURL(/\/workflows\/\d+\/runs\/\d+$/);
   await expect(page.getByText("Summarise this week's tickets")).toBeVisible();
   await expect(page.getByTestId("run-status")).toHaveText("Queued");
-  // Nothing has started yet, so every node is waiting.
-  await expect(node(page, "research")).toHaveAttribute("data-state", "waiting");
+  // Nothing has started yet, so every node is pending.
+  await expect(node(page, "research")).toHaveAttribute("data-state", "pending");
 });
 
 test("shows where a live run is, and follows it to the end", async ({ page }) => {
@@ -69,7 +69,7 @@ test("shows where a live run is, and follows it to the end", async ({ page }) =>
   await expect(page.getByTestId("run-status")).toHaveText("Running");
   await expect(node(page, "research")).toHaveAttribute("data-state", "succeeded");
   await expect(node(page, "write")).toHaveAttribute("data-state", "running");
-  await expect(node(page, "review")).toHaveAttribute("data-state", "waiting");
+  await expect(node(page, "review")).toHaveAttribute("data-state", "pending");
   // The path so far is highlighted, and the edge into the running node is animated.
   await expect(edge(page, "research", "write")).toHaveClass(/animated/);
   await expect(edge(page, "research", "write")).toHaveAttribute("data-state", "live");

@@ -18,8 +18,11 @@ from aios.datastores import (
     DataStoreBehind,
     DataStoreBusy,
     DataStoreNotReady,
+    store_busy,
+    store_not_ready,
     store_session,
     store_status,
+    store_upgrading,
 )
 from aios.datastores.history import NoHistory, check_searchable
 from aios.datastores.models import EMBEDDABLE
@@ -110,17 +113,10 @@ HISTORY_SQL = text(
 )
 
 
-# What the search tools tell the model while the store is being set up.
-STORE_NOT_READY = "The user's data store is still being set up, so there's nothing to search yet."
-# Or when setting it up failed (as the API words it: a retry follows, later).
-STORE_FAILED = (
-    "The user's data store couldn't be set up, so there's nothing to search. "
-    "It will be tried again; they can check back later."
-)
-# Or while it's brought to the store tree's head (made by the release before, during a deploy).
-STORE_UPGRADING = "The user's data store is being upgraded. Try the search again in a moment."
-# And while it has no connections free.
-STORE_BUSY = "The user's data store is busy. Try the search again in a moment."
+# What the search tools tell the model while the store is brought to the store tree's head,
+# or has no connections free (and, from `store_not_ready`, while it isn't ready).
+STORE_UPGRADING = store_upgrading("the search")
+STORE_BUSY = store_busy("the search")
 # What the history search tells it when the store has no exported history.
 NO_HISTORY = (
     "The user hasn't exported their run history, so there are no past runs to search. "
@@ -324,8 +320,7 @@ async def _tool_results(search: Callable[[], Awaitable[list[dict]]]) -> list[dic
     except DataStoreBehind:
         return [{"error": STORE_UPGRADING}]
     except DataStoreNotReady as exc:
-        failed = exc.status == DataStoreStatus.failed
-        return [{"error": STORE_FAILED if failed else STORE_NOT_READY}]
+        return [{"error": store_not_ready(exc.status)}]
     except DataStoreBusy:
         return [{"error": STORE_BUSY}]
 

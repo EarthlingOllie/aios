@@ -4,8 +4,8 @@ Searchable run history (`aios.datastores.history`): the per-user setting that em
 exported messages, and on each data store when embedding them last caught up, or why it last
 failed and when it's tried again.
 
-Revision ID: 0016
-Revises: 0015
+Revision ID: 0020
+Revises: 0019
 Create Date: 2026-10-17 18:00:00
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0016"
-down_revision: str | None = "0015"
+revision: str = "0020"
+down_revision: str | None = "0019"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
