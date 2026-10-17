@@ -102,6 +102,9 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     try {
       await api.deleteDocument(doc.id);
     } catch (err) {
+      // Already gone (deleted twice before the list caught up, or from another tab): that's
+      // what was asked for.
+      if (err instanceof ApiError && err.status === 404) return;
       setErrors([`Couldn't delete ${doc.filename}: ${describeError(err)}`]);
     } finally {
       await refresh();

@@ -344,6 +344,31 @@ test("a search that matches nothing points to the Data page's Documents", async 
   await expect(page.getByText("No documents yet.")).toBeVisible();
 });
 
+test("deleting a document twice, before the list catches up, isn't an error", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.addDocument("drop.md");
+  await page.goto("/data?tab=documents");
+  await expect(row(page, "drop.md")).toBeVisible();
+
+  // The list is slow to answer after the delete, so the row stays up to be clicked again.
+  api.holdDocumentLists();
+  page.on("dialog", (dialog) => dialog.accept());
+  const remove = page.getByRole("button", { name: "Delete drop.md" });
+  await remove.click();
+  await expect.poll(() => api.heldDocumentLists.length).toBe(1);
+  await remove.click();
+  await expect
+    .poll(() => api.writes.filter(([method]) => method === "DELETE").length)
+    .toBeGreaterThan(0);
+
+  api.holdDocumentLists(false);
+  for (const release of api.heldDocumentLists) release();
+  await expect(row(page, "drop.md")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("cancelling a delete keeps the document", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("keep.md");
