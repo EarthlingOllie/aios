@@ -1,6 +1,6 @@
 import { Loader2 } from "lucide-react";
 
-import { DocumentsSection, useSharedDocuments } from "@/components/Documents";
+import { DocumentsSection, useDataStore } from "@/components/Documents";
 import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { DataStoreStatus } from "@/lib/api";
@@ -20,7 +20,7 @@ const statusVariant = {
  */
 export function DataPage() {
   // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.
-  const { storeStatus, storeError } = useSharedDocuments();
+  const { status: storeStatus, error: storeError } = useDataStore();
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6 md:px-8">

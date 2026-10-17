@@ -258,6 +258,26 @@ test("deleting a document removes it from the list and from search", async ({ pa
   await expect(page.getByText("No passages matched.")).toBeVisible();
 });
 
+test("opening Documents reads the list again, picking up changes made elsewhere", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.addDocument("old.md");
+  await page.goto("/");
+  await expect(page.getByText("old.md")).toBeVisible();
+
+  // Another tab (or an agent) adds a document while this one sits on the chat.
+  api.addDocument("elsewhere.md");
+  await page.getByRole("link", { name: "Data" }).first().click();
+  await page.getByRole("tab", { name: "Documents" }).click();
+  await expect(row(page, "elsewhere.md")).toBeVisible();
+
+  // And back on the chat, its panel reads it again too.
+  api.addDocument("later.md");
+  await page.getByRole("link", { name: "Chat" }).first().click();
+  await expect(page.getByText("later.md")).toBeVisible();
+});
+
 test("a search that matches nothing points to the Data page's Documents", async ({ page }) => {
   await fakeApi(page);
   await page.goto("/search?q=fish");

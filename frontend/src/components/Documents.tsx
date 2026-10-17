@@ -70,12 +70,6 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     );
   }, []);
 
-  // List the documents once the store is ready (not before: the API refuses to list them until
-  // then).
-  useEffect(() => {
-    if (ready) refresh();
-  }, [ready, refresh]);
-
   // Poll while anything is still being ingested by the worker, or the last read failed for a
   // reason that may pass; each read waits for the last to answer, so a slow store doesn't pile
   // them up.
@@ -115,9 +109,12 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
 
   return {
     docs,
+    /** Reads the list again; never rejects. */
+    refresh,
     /** The store is ready but its list hasn't been read yet (and no read has failed). */
     loading: ready && docs === undefined && !listError,
-    listError,
+    // A store that isn't ready says so itself; a list refused meanwhile adds nothing.
+    listError: ready ? listError : undefined,
     listRetrying,
     uploading,
     errors,
@@ -132,32 +129,53 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
 type DocumentsState = ReturnType<typeof useDocuments>;
 
 type SharedDocuments = {
-  storeStatus: DataStoreStatus | undefined;
-  /** Why the store's status couldn't be read, while it keeps trying. */
-  storeError: string | undefined;
+  store: ReturnType<typeof useDataStoreStatus>;
   documents: DocumentsState;
 };
 
 const DocumentsContext = createContext<SharedDocuments | null>(null);
 
 /**
- * The store's status and the user's documents, held above the pages: the chat's panel and the
- * Data page read one list, and an upload still in flight keeps its progress and errors when you
- * switch tabs or pages.
+ * The store's status and the user's documents, held above the pages: the chat's panel, the Data
+ * page and the Search page share one status, the panel and the Data page read one list, and an
+ * upload still in flight keeps its progress and errors when you switch tabs or pages.
  */
 export function DocumentsProvider({ children }: { children: ReactNode }) {
-  const { status: storeStatus, error: storeError } = useDataStoreStatus();
-  const documents = useDocuments(storeStatus);
-  return (
-    <DocumentsContext value={{ storeStatus, storeError, documents }}>{children}</DocumentsContext>
-  );
+  const store = useDataStoreStatus();
+  const documents = useDocuments(store.status);
+  return <DocumentsContext value={{ store, documents }}>{children}</DocumentsContext>;
 }
 
-/** The store's status and the documents, from the `DocumentsProvider` above. */
-export function useSharedDocuments() {
+function useShared() {
   const shared = useContext(DocumentsContext);
-  if (!shared) throw new Error("useSharedDocuments needs a DocumentsProvider above it");
+  if (!shared) throw new Error("The documents hooks need a DocumentsProvider above them");
   return shared;
+}
+
+/**
+ * The user's data store's status (and why it couldn't be read, while it keeps trying), from the
+ * `DocumentsProvider` above.
+ */
+export function useDataStore() {
+  const { status, error } = useShared().store;
+  return { status, error };
+}
+
+/**
+ * The store's status and the documents, from the `DocumentsProvider` above. The list is read
+ * again when the caller mounts (and when the store becomes ready), so a page or panel opened
+ * later shows documents added or deleted elsewhere since.
+ */
+function useDocumentsList() {
+  const { status: storeStatus, error: storeError } = useDataStore();
+  const { documents } = useShared();
+  const { refresh } = documents;
+  const ready = storeStatus === "ready";
+  // Not before the store is ready: the API refuses to list them until then.
+  useEffect(() => {
+    if (ready) refresh();
+  }, [ready, refresh]);
+  return { storeStatus, storeError, documents };
 }
 
 /** The Upload button, with the file picker it opens. */
@@ -269,7 +287,7 @@ function isEmpty(documents: DocumentsState) {
 
 /** The chat's documents panel: a compact list beside the conversation it grounds. */
 export function Documents() {
-  const { storeStatus, documents } = useSharedDocuments();
+  const { storeStatus, documents } = useDocumentsList();
   const { docs } = documents;
 
   return (
@@ -314,7 +332,7 @@ export function Documents() {
  * count and upload time. Uploads from the chat's panel land in the same list.
  */
 export function DocumentsSection() {
-  const { storeStatus, documents } = useSharedDocuments();
+  const { storeStatus, documents } = useDocumentsList();
   const { docs } = documents;
 
   const onDelete = (doc: DocumentInfo) => {
