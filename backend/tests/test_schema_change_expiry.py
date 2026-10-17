@@ -295,6 +295,18 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
     assert request["status"] == "cancelled"
 
 
+def test_the_provisioning_workers_beat_expires_requests_every_so_often():
+    [entry] = [
+        e
+        for e in worker.celery_app.conf.beat_schedule.values()
+        if e["task"] == "aios.expire_schema_change_requests"
+    ]
+    assert entry["schedule"] == get_settings().schema_change_expiry_check_seconds == 3600
+    assert worker.celery_app.conf.task_routes["aios.expire_schema_change_requests"] == {
+        "queue": "provisioning"
+    }
+
+
 def test_the_expiry_period_is_configuration(
     api,
     agent,  # noqa: F811

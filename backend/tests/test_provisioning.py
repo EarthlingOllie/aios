@@ -734,8 +734,8 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     # Its own provisioning task may still be trying: it's left to that.
     assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
     # The provisioning worker runs it (`celery worker -B`), as the provisioner.
-    scheduled = [e for e in worker.celery_app.conf.beat_schedule.values()]
-    assert [e["task"] for e in scheduled] == ["aios.retry_unfinished_data_stores"]
+    scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
+    assert "aios.retry_unfinished_data_stores" in scheduled
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }
