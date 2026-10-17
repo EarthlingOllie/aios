@@ -52,7 +52,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
-from aios.datastores.connections import DataStoreBusy, store_session
+from aios.datastores import migrations
+from aios.datastores.connections import DataStoreBehind, DataStoreBusy, store_session
 from aios.datastores.models import (
     HistoryAgentRun,
     HistoryMessage,
@@ -227,18 +228,29 @@ def _locked(data_store_id: uuid.UUID, wait: float = 0) -> Iterator[bool]:
 
 
 def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
-    """The store is ready, has its `history` tables, and its owner has the export on."""
-    return bool(
-        db.scalar(
-            select(User.export_run_history)
-            .join(DataStore, DataStore.owner_user_id == User.id)
-            .where(
-                DataStore.id == data_store_id,
-                DataStore.status == DataStoreStatus.ready,
-                DataStore.history_revision.is_not(None),
-            )
+    """The store is ready, has its `history` tables, and its owner has the export on.
+
+    Raises `DataStoreBehind` if its `history` tables are behind the line's head (their
+    migration failed, say): they may not all be there yet."""
+    row = db.execute(
+        select(User.export_run_history, DataStore.history_revision)
+        .join(DataStore, DataStore.owner_user_id == User.id)
+        .where(
+            DataStore.id == data_store_id,
+            DataStore.status == DataStoreStatus.ready,
+            DataStore.history_revision.is_not(None),
         )
-    )
+    ).one_or_none()
+    if row is None or not row.export_run_history:
+        return False
+    _check_head(data_store_id, row.history_revision)
+    return True
+
+
+def _check_head(data_store_id: uuid.UUID, revision: str) -> None:
+    """Raises `DataStoreBehind` if a store's `history` line is at `revision`, before its head."""
+    if revision in migrations.history_revisions_before_head():
+        raise DataStoreBehind(data_store_id, revision)
 
 
 def _clean(value: Any) -> Any:
@@ -615,6 +627,7 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             owner_id = store.owner_user_id if store and store.history_revision else None
         if owner_id is None:
             return
+        _check_head(data_store_id, store.history_revision)
         with store_session(data_store_id, "rw") as store:
             store.execute(delete(HistoryMessage))
             store.execute(delete(HistoryAgentRun))

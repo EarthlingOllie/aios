@@ -11,7 +11,7 @@ import test_workflow_runs as workflow_runs
 from conftest import delete_user
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from sqlalchemy import text
+from sqlalchemy import text, update
 from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow, workflow_node
 
@@ -19,10 +19,18 @@ from aios import worker
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
-from aios.datastores import DataStoreBusy, data_store_for, history, provision, store_session
+from aios.datastores import (
+    DataStoreBehind,
+    DataStoreBusy,
+    data_store_for,
+    history,
+    migrations,
+    provision,
+    store_session,
+)
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, HistoryExport, User, WorkflowRun
+from aios.models import AgentRun, DataStore, HistoryExport, User, WorkflowRun
 from aios.workflows import execute_run
 
 
@@ -1078,3 +1086,31 @@ def test_deleting_an_agent_unlinks_its_runs_from_the_exported_steps(
         " FROM history.workflow_run_steps ORDER BY path",
     ) == [("draft", True), ("review", False), ("review/critic", False)]
     assert stored(store_id, "SELECT agent_name FROM history.agent_runs") == [("draft",)]
+
+
+def test_a_store_behind_the_history_lines_head_isnt_exported_until_it_is_brought_there(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow_runs.run(api, started, nested_workflow(api), "topic")
+    # As if its last migration failed before the `history` line's newest revision.
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == store_id)
+            .values(history_revision=migrations.history_revisions_before_head()[0])
+        )
+        db.commit()
+
+    # The export task tries it again (`test_the_export_task_tries_a_busy_store_again`), and
+    # the provisioning worker's beat brings it to the head meanwhile.
+    with pytest.raises(DataStoreBehind):
+        history.export(store_id)
+    with SessionLocal() as db:
+        assert db.query(HistoryExport).filter(HistoryExport.exported_at.is_(None)).count() == 3
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]
+
+    provision.migrate_store(store_id)
+    history.export(store_id)
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(1,)]
