@@ -26,11 +26,16 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   waits for its next change, or `RETRY_AFTER`, so it doesn't hold up the rest. A periodic
   sweep (`stores_to_export`) queues stores whose rows are still pending, should a queued export
   be lost.
+- **Embedding** (`User.embed_run_history`, offered only while the export is on: `set_embedding`)
+  makes the copy searchable by meaning (`aios.search.history_search`): once the export has
+  caught up, it embeds the messages waiting (`_embed`), those just exported or, once switched
+  on, every one there. Switched off, nothing new is embedded and what was is kept.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
   (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
   outbox, so their copies go once it's back on.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -46,6 +51,8 @@ from sqlalchemy import (
     Select,
     Text,
     and_,
+    bindparam,
+    case,
     cast,
     delete,
     event,
@@ -55,19 +62,28 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
 from aios.datastores import migrations
-from aios.datastores.connections import DataStoreBehind, DataStoreBusy, store_session
+from aios.datastores.connections import (
+    DataStoreBehind,
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_session,
+)
 from aios.datastores.models import (
+    EMBEDDABLE,
     HistoryAgentRun,
     HistoryMessage,
     HistoryWorkflowRun,
     HistoryWorkflowRunStep,
 )
 from aios.db import SessionLocal, engine
+from aios.embeddings import embed_documents
 from aios.models import (
     Agent,
     AgentRun,
@@ -94,6 +110,22 @@ ROWS_PER_INSERT = 1000
 # How long a run that failed to export waits before it's tried again (seconds), unless it changes
 # first: what failed may pass (a statement timeout, a dropped connection), or may not.
 RETRY_AFTER = 60 * 60
+
+# Messages embedded per round trip to the embedding API (and to the store).
+EMBED_BATCH = 128
+
+# How long an export spends embedding (seconds), well inside its task's time limit: what's left
+# waits for the periodic sweep, which queues the store's export again.
+EMBED_BUDGET = 5 * 60
+
+# How long embedding that failed waits before the sweep tries it again (seconds), unless an
+# export of the store runs first: the embedding API may be down for a while, or keep refusing.
+EMBED_RETRY_AFTER = 10 * 60
+
+# How much of a message is embedded (characters, from its start): a batch then stays well inside
+# the embedding API's tokens per request. A long message is found by meaning through its start;
+# by keyword, through all of it.
+EMBED_MAX_CHARS = 4000
 
 # How long deleting a store's exported history waits for an export of it to finish (seconds).
 LOCK_WAIT = 5
@@ -217,13 +249,18 @@ def enqueue_everything(db: Session, user_id: int) -> None:
 
 
 @contextmanager
-def _locked(data_store_id: uuid.UUID, wait: float = 0) -> Iterator[bool]:
+def _locked(
+    data_store_id: uuid.UUID, wait: float = 0, lock: str = "history_export"
+) -> Iterator[bool]:
     """Holds the store's export lock, if it's free or frees up within `wait` seconds; whether it
     got it. One export (or delete) of a store at a time, so a run's copy is never written by
     two at once, in either order. Never waiting long, so exports queued while a long one runs
-    (a backfill) don't hold the app workers, and ingest with them."""
+    (a backfill) don't hold the app workers, and ingest with them.
+
+    `lock` names another of the store's locks: "history_embed", one embedding of it at a time
+    (`_embed`)."""
     with engine.connect() as conn:
-        key = func.hashtextextended(f"aios.history_export:{data_store_id}", 0)
+        key = func.hashtextextended(f"aios.{lock}:{data_store_id}", 0)
         deadline = time.monotonic() + wait
         while True:
             locked = conn.scalar(select(func.pg_try_advisory_lock(key)))
@@ -258,6 +295,29 @@ def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
         return False
     _check_head(data_store_id, row.history_revision)
     return True
+
+
+class NoHistory(Exception):
+    """The store has no `history` tables: its owner has never switched the export on."""
+
+
+def check_searchable(data_store_id: uuid.UUID) -> None:
+    """Raises unless the store's exported history can be searched (`aios.search`):
+    `DataStoreNotReady` unless the store is ready, `NoHistory` if it has no `history` tables,
+    and `DataStoreBehind` if they're behind their line's head."""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(DataStore.status, DataStore.history_revision).where(
+                DataStore.id == data_store_id
+            )
+        ).one_or_none()
+    if row is None:
+        raise DataStoreNotFound(data_store_id)
+    if row.status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, row.status)
+    if row.history_revision is None:
+        raise NoHistory
+    _check_head(data_store_id, row.history_revision)
 
 
 def _check_head(data_store_id: uuid.UUID, revision: str) -> None:
@@ -365,9 +425,17 @@ def _write_run(store: Session, run: dict[str, Any], messages: list[dict[str, Any
             stmt.on_conflict_do_update(
                 index_elements=[HistoryMessage.agent_run_id, HistoryMessage.position],
                 set_={
-                    c: stmt.excluded[c]
-                    for c in messages[0]
-                    if c not in ("agent_run_id", "position")
+                    **{
+                        c: stmt.excluded[c]
+                        for c in messages[0]
+                        if c not in ("agent_run_id", "position")
+                    },
+                    # Kept while its text is, so a run exported again is embedded only where
+                    # it's new.
+                    "embedding": case(
+                        (HistoryMessage.text == stmt.excluded.text, HistoryMessage.embedding),
+                        else_=None,
+                    ),
                 },
             )
         )
@@ -586,14 +654,110 @@ def export(data_store_id: uuid.UUID) -> int:
             if count < BATCH:
                 break
         # Caught up, even with nothing to export: the Settings page waits for this.
-        with SessionLocal() as db:
-            db.execute(
-                update(DataStore)
-                .where(DataStore.id == data_store_id)
-                .values(history_exported_at=func.now())
-            )
-            db.commit()
+        _set_store(data_store_id, history_exported_at=func.now())
+    # Once the lock is let go: embedding can take minutes (a backfill), and exports and deletes
+    # needn't wait for it.
+    _embed(data_store_id)
     return exported
+
+
+def _set_store(data_store_id: uuid.UUID, **values: Any) -> None:
+    """Set the store's `values` (on `data_stores`)."""
+    with SessionLocal() as db:
+        db.execute(update(DataStore).where(DataStore.id == data_store_id).values(**values))
+        db.commit()
+
+
+def _embedding(data_store_id: uuid.UUID) -> bool:
+    """The store's owner has embedding on (which they can only while the export is on)."""
+    with SessionLocal() as db:
+        return bool(
+            db.scalar(
+                select(User.embed_run_history)
+                .join(DataStore, DataStore.owner_user_id == User.id)
+                .where(DataStore.id == data_store_id)
+            )
+        )
+
+
+def _embed_batch(data_store_id: uuid.UUID) -> int:
+    """Embed the store's first messages waiting for it; how many there were."""
+    messages = HistoryMessage.__table__
+    with store_session(data_store_id, "rw") as store:
+        waiting = store.execute(
+            select(messages.c.agent_run_id, messages.c.position, messages.c.text)
+            .where(messages.c.embedding.is_(None), sql_text(EMBEDDABLE))
+            .order_by(messages.c.agent_run_id, messages.c.position)
+            .limit(EMBED_BATCH)
+        ).all()
+    if not waiting:
+        return 0
+    # With no session open on the store: its engine may be evicted while the API answers.
+    vectors = asyncio.run(embed_documents([m.text[:EMBED_MAX_CHARS] for m in waiting]))
+    with store_session(data_store_id, "rw") as store:
+        store.execute(
+            messages.update()
+            .where(
+                messages.c.agent_run_id == bindparam("run"),
+                messages.c.position == bindparam("pos"),
+                # Exported again meanwhile with other text: it waits for an embedding of that.
+                messages.c.text == bindparam("embedded_text"),
+            )
+            .values(embedding=bindparam("vec", type_=messages.c.embedding.type)),
+            [
+                {"run": m.agent_run_id, "pos": m.position, "embedded_text": m.text, "vec": vec}
+                for m, vec in zip(waiting, vectors, strict=True)
+            ],
+        )
+        store.commit()
+    return len(waiting)
+
+
+def _embed(data_store_id: uuid.UUID) -> None:
+    """Embed the store's exported messages still waiting for it (`EMBEDDABLE`), while its owner
+    has embedding on: those just exported, or every one there once it's switched on (a
+    backfill). For up to `EMBED_BUDGET`; it has caught up (`history_embedded_at`) once none are
+    left. What it doesn't finish (out of time, or the embedding API failed) waits for the
+    periodic sweep. Switched off, it stops after the batch under way, keeping what's embedded.
+    Nor while another embedding of the store runs, which embeds what's waiting as this would.
+
+    Raises as `store_session` does (the store is gone, or going, or behind its head), and
+    `DataStoreBusy` if it has no connections free: the export's task handles them."""
+    with _locked(data_store_id, lock="history_embed") as locked:
+        if locked:
+            _embed_locked(data_store_id)
+
+
+def _embed_locked(data_store_id: uuid.UUID) -> None:
+    deadline = time.monotonic() + EMBED_BUDGET
+    try:
+        while True:
+            if not _embedding(data_store_id):
+                return  # switched off: what's embedded is kept
+            if _embed_batch(data_store_id) < EMBED_BATCH:
+                _set_store(
+                    data_store_id,
+                    history_embedded_at=func.now(),
+                    history_embed_error=None,
+                    history_embed_retry_at=None,
+                )
+                return
+            if time.monotonic() >= deadline:
+                break
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        raise
+    except Exception as exc:
+        log.exception("Couldn't embed the exported history of data store %s", data_store_id)
+        _set_store(
+            data_store_id,
+            history_embedded_at=None,
+            history_embed_error=f"{type(exc).__name__}: {exc}"[:2000],
+            history_embed_retry_at=func.now()
+            + func.make_interval(0, 0, 0, 0, 0, 0, EMBED_RETRY_AFTER),
+        )
+        return
+    # Out of time: the sweep queues the store's export again (`stores_to_export`).
+    _set_store(data_store_id, history_embedded_at=None)
 
 
 def stores_to_export() -> list[uuid.UUID]:
@@ -616,6 +780,15 @@ def stores_to_export() -> list[uuid.UUID]:
                         )
                         .exists(),
                         DataStore.history_exported_at.is_(None),
+                        # Messages still to embed (a backfill unfinished, or that failed).
+                        and_(
+                            User.embed_run_history,
+                            DataStore.history_embedded_at.is_(None),
+                            or_(
+                                DataStore.history_embed_retry_at.is_(None),
+                                DataStore.history_embed_retry_at <= func.now(),
+                            ),
+                        ),
                     ),
                 )
             )
@@ -648,8 +821,11 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             store.commit()
     # Once the lock is let go: the export this queues may start at once, and would find it held.
     with SessionLocal() as db:
+        # Nor has embedding caught up, while it's on, until what's exported again is embedded.
         db.execute(
-            update(DataStore).where(DataStore.id == data_store_id).values(history_exported_at=None)
+            update(DataStore)
+            .where(DataStore.id == data_store_id)
+            .values(history_exported_at=None, history_embedded_at=None)
         )
         enqueue_everything(db, owner_id)
         db.commit()
@@ -663,8 +839,16 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     committed (`enqueue_set_up`)."""
     # Locked, so two switches at once don't both backfill, or both miss it.
     was_on = db.scalar(select(User.export_run_history).where(User.id == user_id).with_for_update())
-    db.execute(update(User).where(User.id == user_id).values(export_run_history=on))
-    if not on or was_on:
+    if not on:
+        # Embedding is only offered while the export is on.
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(export_run_history=False, embed_run_history=False)
+        )
+        return None
+    db.execute(update(User).where(User.id == user_id).values(export_run_history=True))
+    if was_on:
         return None
     from aios.datastores.resolve import data_store_for
 
@@ -672,3 +856,34 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     enqueue_everything(db, user_id)
     db.execute(update(DataStore).where(DataStore.id == store_id).values(history_exported_at=None))
     return store_id
+
+
+class ExportOff(Exception):
+    """Embedding was asked for while the user's run history export is off."""
+
+
+def set_embedding(db: Session, user_id: int, on: bool) -> None:
+    """Switch embedding the user's exported messages on or off, in `db`'s transaction, which
+    the caller commits. Raises `ExportOff` to switch it on while the export is off.
+
+    Switching it on (from off) backfills: the store's export is queued once committed, and
+    embeds every exported message waiting (`_embed`); it hasn't caught up until then."""
+    row = db.execute(
+        select(User.export_run_history, User.embed_run_history)
+        .where(User.id == user_id)
+        .with_for_update()
+    ).one()
+    if on and not row.export_run_history:
+        raise ExportOff
+    db.execute(update(User).where(User.id == user_id).values(embed_run_history=on))
+    if not on or row.embed_run_history:
+        return
+    from aios.datastores.resolve import data_store_for
+
+    store_id = data_store_for(user_id, db)
+    db.execute(
+        update(DataStore)
+        .where(DataStore.id == store_id)
+        .values(history_embedded_at=None, history_embed_error=None, history_embed_retry_at=None)
+    )
+    db.info.setdefault(_TO_EXPORT, set()).add(store_id)

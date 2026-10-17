@@ -27,6 +27,13 @@ export type Settings = {
   history_ready: boolean;
   /** When the export last copied runs into the data store. */
   history_exported_at: string | null;
+  /** Embed the exported messages, so agents can search past runs by meaning (only while the
+   * export is on). */
+  embed_run_history: boolean;
+  /** When embedding last caught up (embedded every exported message waiting). */
+  history_embedded_at: string | null;
+  /** Why embedding last failed, if it hasn't caught up since (it's tried again later). */
+  history_embed_error: string | null;
 };
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
@@ -639,7 +646,7 @@ export const api = {
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),
-  updateSettings: (body: { export_run_history: boolean }) =>
+  updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
     request<Settings>("/api/settings", json("PUT", body)),
   deleteExportedHistory: () =>
     request<void>("/api/settings/exported-history", { method: "DELETE" }),
