@@ -8,6 +8,7 @@ it.
 """
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -400,17 +401,35 @@ def test_refuses_to_grant_createrole_before_postgres_16(cluster, monkeypatch):
     assert _attrs(admin_url, make_url(prov_url).username) is None
 
 
-def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template):
-    """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
+def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template, capsys):
+    """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted.
+
+    Like RDS's, it may not connect to data stores (only theirs roles may), or create pgstattuple
+    in one it's let into, so it can't give it to those made before the template had it: it says
+    so, and carries on."""
     _, app_url, prov_url = cluster
     tag = uuid.uuid4().hex[:8]
     master, dbname = f"T_Master_{tag}", f"t_roles_q_{tag}"
+    # Data stores from before the template had pgstattuple: it may connect to the second.
+    stores = sorted(f"ds_{uuid.uuid4().hex}" for _ in range(2))
     with _connect(admin_url) as conn:
         conn.execute(
             sql.SQL("CREATE ROLE {} LOGIN CREATEDB CREATEROLE PASSWORD 'pw'").format(
                 sql.Identifier(master)
             )
         )
+        for store in stores:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(store)))
+            conn.execute(
+                sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(store))
+            )
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(stores[1]), sql.Identifier(master)
+            )
+        )
+    with _connect(admin_url, database=stores[1]) as conn:
+        conn.execute("CREATE SCHEMA extensions")
     master_url = make_url(admin_url).set(username=master, password="pw", database=dbname)
     master_url = master_url.render_as_string(hide_password=False)
     with _connect(admin_url) as conn:
@@ -435,6 +454,10 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
                 sql.SQL("CREATE SCHEMA extensions AUTHORIZATION {}").format(sql.Identifier(master))
             )
             conn.execute("CREATE EXTENSION vector SCHEMA extensions")
+            conn.execute("CREATE EXTENSION pgstattuple SCHEMA extensions")
+            conn.execute(
+                "GRANT EXECUTE ON FUNCTION extensions.pgstattuple_approx(regclass) TO PUBLIC"
+            )
         with _connect(master_url) as conn:
             conn.execute("CREATE TABLE things (id int)")
         app_q = make_url(app_url).set(database=dbname).render_as_string(hide_password=False)
@@ -444,6 +467,11 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
 
         with _connect(app_q) as conn:
             conn.execute("ALTER TABLE things ADD COLUMN name text")
+        warning = capsys.readouterr().err
+        # Among any other stores on the instance.
+        assert "Couldn't give pgstattuple to " in warning
+        assert f"{stores[0]} (DETAIL:  User does not have CONNECT privilege.)" in warning
+        assert f"{stores[1]} (HINT:  Must be superuser to create this extension.)" in warning
     finally:
         # As its owner: a master user that isn't a superuser couldn't drop it.
         with _connect(master_url, database="postgres") as conn:
@@ -463,6 +491,8 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
                     sql.Identifier(master)
                 )
             )
+            for store in stores:
+                conn.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(store)))
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 
@@ -621,8 +651,10 @@ def _setup_checkpointer(database_url: str, monkeypatch) -> None:
     monkeypatch.setattr(get_settings(), "database_url", database_url)
 
     async def turn() -> None:
-        async with checkpoints.turn(run_id=0):
-            pass
+        # Run 0 doesn't exist, so the turn itself is refused, once the setup has run.
+        with contextlib.suppress(checkpoints.RunGone):
+            async with checkpoints.turn(run_id=0):
+                pass
 
     asyncio.run(turn())
 

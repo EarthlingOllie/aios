@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from aios.datastores import credentials
 from aios.db import SessionLocal
-from aios.models import DataStore, Document
+from aios.models import DataStore
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,18 @@ def _provision_committed(session: Session) -> None:
 @event.listens_for(Session, "after_rollback")
 def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_NEW_STORES, None)
+
+
+def can_approve(user_id: int, store: DataStore) -> bool:
+    """Whether the user may decide the store's schema change requests: a permission, not who
+    the store is, so teams can give it to more than the owner. Those in `approvers`."""
+    return user_id in approvers(store)
+
+
+def approvers(store: DataStore) -> list[int]:
+    """The users who may decide the store's schema change requests (`can_approve`), whom a new
+    one notifies. Today, only the owner."""
+    return [store.owner_user_id]
 
 
 def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
@@ -101,18 +113,3 @@ def data_store_for_request(user_id: int, db: Session) -> uuid.UUID:
     db.commit()
     db.close()
     return store_id
-
-
-def data_store_of_document(document_id: int) -> uuid.UUID | None:
-    """The store a document is in; None if it's gone.
-
-    Only for ingest messages queued before data stores (`aios.worker`), which carry just the
-    document's id; remove it once a release has drained them.
-    """
-    with SessionLocal() as db:
-        owner_id = db.scalar(select(Document.owner_id).where(Document.id == document_id))
-        if owner_id is None:
-            return None
-        store_id = data_store_for(owner_id, db)
-        db.commit()
-        return store_id

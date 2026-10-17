@@ -52,23 +52,23 @@ export function useLoad<T>(fn: () => Promise<T>) {
 export const POLL_MS = 1000;
 
 /**
- * While `active`, calls `reload` again `POLL_MS` after each call settles, failed or not, so one
- * failed read doesn't stop the polling.
+ * While `active`, calls `reload` again `ms` (by default `POLL_MS`) after each call settles,
+ * failed or not, so one failed read doesn't stop the polling.
  */
-export function usePoll(active: boolean, reload: () => Promise<unknown>) {
+export function usePoll(active: boolean, reload: () => Promise<unknown>, ms = POLL_MS) {
   useEffect(() => {
     if (!active) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = () => {
-      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
+      timer = setTimeout(() => reload().finally(() => stopped || poll()), ms);
     };
     poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [active, reload]);
+  }, [active, reload, ms]);
 }
 
 /** A native `<select>` styled like `Input`. */

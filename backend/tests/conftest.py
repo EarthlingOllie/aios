@@ -1,20 +1,27 @@
+import asyncio
+import io
 import os
 import tempfile
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from psycopg import errors
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from aios import checkpoints
 from aios.auth import current_user
-from aios.datastores import data_store_for, provision, resolve
+from aios.config import get_settings
+from aios.datastores import data_store_for, files, history, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
+from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, User
 from aios.sandbox import runner
 
 
@@ -28,7 +35,7 @@ def db():
     """A session against a migrated database (`alembic upgrade head`); skips if unavailable."""
     try:
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1 FROM chunks LIMIT 1"))
+            conn.execute(text("SELECT 1 FROM data_stores LIMIT 1"))
     except OperationalError as exc:
         # libpq prefixes an error the server sent with its severity ("FATAL:  ..."), so one
         # without it never reached a server (refused, unresolvable host, timeout): skip. One with
@@ -45,6 +52,10 @@ def db():
         if isinstance(exc.orig, errors.UndefinedTable):
             pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
+    # Before any test holds a transaction open: on a fresh database the checkpointer's setup
+    # creates its indexes CONCURRENTLY, which waits for every older transaction in the
+    # database, so the first turn would otherwise wait for ever on a test's own open session.
+    asyncio.run(checkpoints.ensure_ready())
     with SessionLocal() as session:
         yield session
         session.rollback()
@@ -55,6 +66,16 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     """Data stores whose provisioning was queued, instead of sending it to the broker."""
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
+    return queued
+
+
+@pytest.fixture(autouse=True)
+def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
+    """The run history export's tasks the code queued (by store), instead of sending them to
+    the broker: "export" drains a store's outbox, "set_up" gives it the `history` tables."""
+    queued: dict[str, list[uuid.UUID]] = {"export": [], "set_up": []}
+    monkeypatch.setattr(history, "enqueue_export", queued["export"].append)
+    monkeypatch.setattr(history, "enqueue_set_up", queued["set_up"].append)
     return queued
 
 
@@ -72,30 +93,71 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
-def mark_ready(db, user: User) -> uuid.UUID:
-    """Give the user a store that's ready, without provisioning it: enough for documents and
-    search, which are still in the platform database."""
-    store_id = data_store_for(user.id)
-    db.execute(
-        update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.ready)
-    )
+def provisioned_user(db, github_id: int, login: str) -> User:
+    """A new user, with their store provisioned: a database of its own, ready. Delete them with
+    `delete_user`."""
+    u = User(github_id=github_id, login=login)
+    db.add(u)
     db.commit()
-    return store_id
+    provision.provision(data_store_for(u.id))
+    return u
 
 
 @pytest.fixture
 def user(db):
-    """A user whose store is ready (not provisioned: see `mark_ready`)."""
-    u = User(github_id=-1, login="test-user")
-    db.add(u)
-    db.commit()
-    mark_ready(db, u)
+    """A user whose store is provisioned and ready."""
+    u = provisioned_user(db, -1, "test-user")
     yield u
     delete_user(db, u)
 
 
+@pytest.fixture(scope="session")
+def files_bucket() -> str:
+    """The bucket uploads go to (on RustFS, locally and in CI), made if it's missing."""
+    try:
+        files.create_bucket()
+    except (BotoCoreError, ClientError) as exc:
+        pytest.fail(
+            f"Can't reach the files bucket ({exc}). Start RustFS and point "
+            "DATA_STORE_FILES_ENDPOINT and DATA_STORE_FILES_ACCESS_KEY/_SECRET_KEY at it "
+            "(see the README's Checks)."
+        )
+    return get_settings().data_store_files_bucket
+
+
+def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
+    """A document in the store, with its file in S3, as an upload leaves it; returns its id."""
+    with store_session(store_id, "rw") as store:
+        doc = Document(
+            **{"filename": "a.md", "s3_key": "", "size_bytes": len(data), "sha256": "", **values}
+        )
+        store.add(doc)
+        store.flush()
+        doc.s3_key = files.document_key(store_id, doc.id)
+        doc.sha256 = files.put(doc.s3_key, io.BytesIO(data), None).sha256
+        store.commit()
+        return doc.id
+
+
 @pytest.fixture
-def api(client, user):
+def new_user(db) -> Iterator[Callable[[], User]]:
+    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+    made: list[User] = []
+
+    def make() -> User:
+        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
+        db.add(u)
+        db.commit()
+        made.append(u)
+        return u
+
+    yield make
+    for u in made:
+        delete_user(db, u)
+
+
+@pytest.fixture
+def api(client, user, files_bucket):
     """A client signed in as `user`."""
     app.dependency_overrides[current_user] = lambda: user
     yield client
