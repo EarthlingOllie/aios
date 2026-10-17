@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # How long (days) a dropped table or column is kept, for the owner to restore, before it's
     # purged for good (`aios.datastores.dropped`).
     data_store_dropped_retention_days: float = Field(default=30, ge=0)
+    # A schema change request nobody has decided after this many days expires, which counts as
+    # a rejection: the run that asked carries on, told so. Checked every
+    # `schema_change_expiry_check_seconds` by the provisioning worker's beat.
+    schema_change_request_expiry_days: float = Field(default=7, gt=0)
+    schema_change_expiry_check_seconds: float = Field(default=60 * 60, gt=0)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import tempfile
@@ -12,9 +13,10 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from aios import checkpoints
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, provision, resolve, store_session
+from aios.datastores import data_store_for, files, history, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
@@ -50,6 +52,10 @@ def db():
         if isinstance(exc.orig, errors.UndefinedTable):
             pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
+    # Before any test holds a transaction open: on a fresh database the checkpointer's setup
+    # creates its indexes CONCURRENTLY, which waits for every older transaction in the
+    # database, so the first turn would otherwise wait for ever on a test's own open session.
+    asyncio.run(checkpoints.ensure_ready())
     with SessionLocal() as session:
         yield session
         session.rollback()
@@ -60,6 +66,16 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     """Data stores whose provisioning was queued, instead of sending it to the broker."""
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
+    return queued
+
+
+@pytest.fixture(autouse=True)
+def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
+    """The run history export's tasks the code queued (by store), instead of sending them to
+    the broker: "export" drains a store's outbox, "set_up" gives it the `history` tables."""
+    queued: dict[str, list[uuid.UUID]] = {"export": [], "set_up": []}
+    monkeypatch.setattr(history, "enqueue_export", queued["export"].append)
+    monkeypatch.setattr(history, "enqueue_set_up", queued["set_up"].append)
     return queued
 
 

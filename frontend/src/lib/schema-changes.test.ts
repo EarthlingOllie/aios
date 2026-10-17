@@ -62,4 +62,36 @@ describe("requestSummary", () => {
         .message,
     ).toContain("`data.contacts` already exists");
   });
+
+  it("says an expired request counts as rejected, and the agent carries on", () => {
+    const expired = requestSummary(request({ status: "expired" }));
+    expect(expired).toMatchObject({ label: "Expired", variant: "outline", inFlight: true });
+    expect(expired.message).toBe(
+      "Nobody decided in time, so it expired, which counts as rejected. Nothing changed. The agent is carrying on.",
+    );
+    const done = requestSummary(request({ status: "expired", resumed_at: "2026-10-17T09:01:00Z" }));
+    expect(done).toMatchObject({ inFlight: false });
+    expect(done.message).toBe(
+      "Nobody decided in time, so it expired, which counts as rejected. Nothing changed.",
+    );
+  });
+
+  it("says a cancelled request's run is gone", () => {
+    const cancelled = requestSummary(
+      request({ status: "cancelled", run: null, resumed_at: "2026-10-17T09:01:00Z" }),
+    );
+    expect(cancelled).toMatchObject({
+      label: "Cancelled",
+      variant: "outline",
+      message: "Cancelled: the run that asked was deleted or stopped. Nothing changed.",
+      inFlight: false,
+    });
+  });
+
+  it("names when a request was decided, expired or cancelled", () => {
+    const at = { decided_at: "2026-10-17T09:01:00Z" };
+    expect(requestSummary(request({ status: "rejected", ...at })).decidedLabel).toBe("Decided");
+    expect(requestSummary(request({ status: "expired", ...at })).decidedLabel).toBe("Expired");
+    expect(requestSummary(request({ status: "cancelled", ...at })).decidedLabel).toBe("Cancelled");
+  });
 });

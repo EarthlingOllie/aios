@@ -1,21 +1,25 @@
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import checkpoints
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentUser
+from aios.datastores import history
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
     Trigger,
     Workflow,
     WorkflowNode,
@@ -33,8 +37,10 @@ from aios.workflows import (
     GraphError,
     RunError,
     alive,
+    close_requests,
     fail_stopped_runs,
     load_graph,
+    reachable_versions,
     validate_graph,
 )
 
@@ -607,6 +613,10 @@ class WorkflowRunSummary(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    # While it waits, since when; and how long it waited before (seconds), which doesn't count
+    # towards its time limit.
+    waiting_since: datetime | None
+    waited_seconds: float
 
 
 class WorkflowRunStepOut(BaseModel):
@@ -622,8 +632,24 @@ class WorkflowRunStepOut(BaseModel):
     # the agent run has been deleted (with its agent).
     agent_id: int | None
     agent_run_id: int | None
+    # While an agent node waits: the schema change requests it waits on (one per call), oldest
+    # first.
+    waiting_on_request_ids: list[uuid.UUID]
     started_at: datetime
     finished_at: datetime | None
+
+
+class StalePin(BaseModel):
+    """A version a waiting run pins that's no longer its agent's or workflow's current one: the
+    run resumes on it regardless."""
+
+    # The node pinning it, from the run's workflow down.
+    path: list[str]
+    kind: WorkflowNodeKind
+    name: str
+    pinned_version: int
+    # None once the agent or workflow has been deleted.
+    current_version: int | None
 
 
 class WorkflowRunOut(WorkflowRunSummary):
@@ -631,6 +657,112 @@ class WorkflowRunOut(WorkflowRunSummary):
     version: WorkflowVersionOut
     # In the order they started.
     steps: list[WorkflowRunStepOut]
+    # While it waits: the pins, at any depth, it would resume on that are no longer current.
+    stale_pins: list[StalePin]
+
+
+def stale_pins(db: Session, version_id: int) -> list[StalePin]:
+    """The versions a run of a workflow version pins that are no longer current: the version
+    itself first (path `[]`), then its nodes' at any depth, in node order, each subworkflow's
+    after its node. Two queries, whatever the graph, reading only versions and names (a waiting
+    run's page polls this)."""
+    pinned_agent, current_agent = aliased(AgentVersion), aliased(AgentVersion)
+    pinned_flow, current_flow = aliased(WorkflowVersion), aliased(WorkflowVersion)
+    top = db.execute(
+        select(
+            pinned_flow.version.label("pinned"),
+            Workflow.name,
+            Workflow.deleted_at,
+            current_flow.version.label("current"),
+        )
+        .join(Workflow, Workflow.id == pinned_flow.workflow_id)
+        .outerjoin(current_flow, current_flow.id == Workflow.current_version_id)
+        .where(pinned_flow.id == version_id)
+    ).one()
+    rows = db.execute(
+        select(
+            WorkflowNode.workflow_version_id,
+            WorkflowNode.key,
+            WorkflowNode.kind,
+            WorkflowNode.subworkflow_version_id,
+            func.coalesce(pinned_agent.version, pinned_flow.version).label("pinned"),
+            func.coalesce(Agent.name, Workflow.name).label("name"),
+            func.coalesce(Agent.deleted_at, Workflow.deleted_at).label("deleted_at"),
+            func.coalesce(current_agent.version, current_flow.version).label("current"),
+        )
+        .outerjoin(pinned_agent, pinned_agent.id == WorkflowNode.agent_version_id)
+        .outerjoin(Agent, Agent.id == pinned_agent.agent_id)
+        .outerjoin(current_agent, current_agent.id == Agent.current_version_id)
+        .outerjoin(pinned_flow, pinned_flow.id == WorkflowNode.subworkflow_version_id)
+        .outerjoin(Workflow, Workflow.id == pinned_flow.workflow_id)
+        .outerjoin(current_flow, current_flow.id == Workflow.current_version_id)
+        .where(WorkflowNode.workflow_version_id.in_(select(reachable_versions(version_id).c.id)))
+        .order_by(WorkflowNode.workflow_version_id, WorkflowNode.position)
+    ).all()
+    nodes: dict[int, list] = {}
+    for row in rows:
+        nodes.setdefault(row.workflow_version_id, []).append(row)
+    stale: list[StalePin] = []
+
+    def check(path: list[str], kind: WorkflowNodeKind, pin) -> None:
+        now = None if pin.deleted_at is not None else pin.current
+        # Without a current version (only while one is being made), nothing to compare.
+        if now != pin.pinned and (now is not None or pin.deleted_at is not None):
+            stale.append(
+                StalePin(
+                    path=path,
+                    kind=kind,
+                    name=pin.name,
+                    pinned_version=pin.pinned,
+                    current_version=now,
+                )
+            )
+
+    def walk(version_id: int, path: list[str]) -> None:
+        for node in nodes.get(version_id, []):
+            check([*path, node.key], node.kind, node)
+            if node.subworkflow_version_id is not None:
+                walk(node.subworkflow_version_id, [*path, node.key])
+
+    check([], WorkflowNodeKind.workflow, top)
+    walk(version_id, [])
+    return stale
+
+
+def waiting_requests(db: Session, steps: Sequence[WorkflowRunStep]) -> list[SchemaChangeRequest]:
+    """The requests the waiting steps among `steps` wait on, oldest first: those their agent runs
+    made that they haven't been given, and each one's recorded request (its agent run may have
+    gone with its agent)."""
+    waiting = [s for s in steps if s.status == WorkflowStepStatus.waiting]
+    agent_run_ids = [s.agent_run_id for s in waiting if s.agent_run_id is not None]
+    recorded = [s.waiting_on_request_id for s in waiting if s.waiting_on_request_id is not None]
+    if not waiting:
+        return []
+    return list(
+        db.scalars(
+            select(SchemaChangeRequest)
+            .where(
+                or_(
+                    SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
+                    SchemaChangeRequest.id.in_(recorded),
+                ),
+                SchemaChangeRequest.resumed_at.is_(None),
+                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+            )
+            .order_by(SchemaChangeRequest.created_at, SchemaChangeRequest.id)
+        )
+    )
+
+
+def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list[uuid.UUID]:
+    if step.status != WorkflowStepStatus.waiting:
+        return []
+    return [
+        r.id
+        for r in requests
+        if r.id == step.waiting_on_request_id
+        or (step.agent_run_id is not None and r.requested_by_run == step.agent_run_id)
+    ]
 
 
 def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
@@ -654,6 +786,8 @@ def workflow_run_summary_query():
         WorkflowRun.created_at,
         WorkflowRun.started_at,
         WorkflowRun.finished_at,
+        WorkflowRun.waiting_since,
+        WorkflowRun.waited_seconds,
     ).join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
 
 
@@ -721,7 +855,9 @@ def queue_workflow_run(db: Session, run: WorkflowRun) -> None:
         run_workflow_task.delay(run.id)
     except Exception as exc:
         # Nothing would ever pick up a committed-but-unqueued run; drop it so the client can
-        # simply retry without leaving one stuck in `queued`.
+        # simply retry without leaving one stuck in `queued`. A backfill since it was committed
+        # may have exported it: that copy goes too.
+        history.enqueue_workflow_runs(db, WorkflowRun.id == run.id, deleting=True)
         db.delete(run)
         db.commit()
         raise HTTPException(
@@ -745,25 +881,32 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
         .where(WorkflowRunStep.run_id == run.id)
         .order_by(WorkflowRunStep.id)
     ).all()
+    waits = waiting_requests(db, [step for step, _ in steps])
+    # Read before `load_version`, which expires the session's rows.
+    steps_out = [
+        WorkflowRunStepOut(
+            id=step.id,
+            path=step.path,
+            kind=step.kind,
+            status=step.status,
+            input=step.input,
+            output=step.output,
+            error=step.error,
+            agent_id=agent_id,
+            agent_run_id=step.agent_run_id,
+            waiting_on_request_ids=waits_on(step, waits),
+            started_at=step.started_at,
+            finished_at=step.finished_at,
+        )
+        for step, agent_id in steps
+    ]
     return WorkflowRunOut(
         **summary.model_dump(),
         version=version_out(load_version(db, summary.workflow_version_id)),
-        steps=[
-            WorkflowRunStepOut(
-                id=step.id,
-                path=step.path,
-                kind=step.kind,
-                status=step.status,
-                input=step.input,
-                output=step.output,
-                error=step.error,
-                agent_id=agent_id,
-                agent_run_id=step.agent_run_id,
-                started_at=step.started_at,
-                finished_at=step.finished_at,
-            )
-            for step, agent_id in steps
-        ],
+        steps=steps_out,
+        stale_pins=stale_pins(db, summary.workflow_version_id)
+        if summary.status == WorkflowRunStatus.waiting
+        else [],
     )
 
 
@@ -792,6 +935,12 @@ def delete_workflow_run(
         )
     )
     sandboxes = run_sandboxes(db, agent_run_ids)
+    # Before they go (their requests keep no link to them): a pending one can't be approved.
+    close_requests(db, [run.id])
+    # Their exported copies go too, and its own (its agent runs' rows first, as the export
+    # marks them).
+    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)
+    history.enqueue_workflow_runs(db, WorkflowRun.id == run.id, deleting=True)
     db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     db.delete(run)  # and its steps
     db.commit()

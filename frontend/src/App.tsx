@@ -17,6 +17,7 @@ import {
 import { Chat } from "@/components/Chat";
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
+import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ import { DataPage } from "@/pages/Data";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
+import { SettingsPage } from "@/pages/Settings";
 import {
   SkillDetail,
   SkillForm,
@@ -98,7 +100,9 @@ export default function App() {
       <Route
         element={
           <DocumentsProvider>
-            <Shell user={auth.user} onSignOut={signOut} />
+            <NotificationsProvider>
+              <Shell user={auth.user} onSignOut={signOut} />
+            </NotificationsProvider>
           </DocumentsProvider>
         }
       >
@@ -130,6 +134,7 @@ export default function App() {
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data" element={<DataPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
@@ -165,7 +170,7 @@ const navItems: NavItem[] = [
   { to: "/workflows", label: "Workflows", icon: Workflow, end: false },
   { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false },
   { to: "/data", label: "Data", icon: Database, end: false },
-  { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
+  { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
@@ -195,6 +200,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <div className="flex items-center gap-2">
           {user.avatar_url && <img src={user.avatar_url} alt="" className="size-7 rounded-full" />}
           <span className="flex-1 truncate text-sm font-medium">{user.name ?? user.login}</span>
+          <NotificationsMenu />
           <Button variant="ghost" size="icon" aria-label="Sign out" onClick={onSignOut}>
             <LogOut />
           </Button>
@@ -210,6 +216,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
         {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <NotificationsMenu className="shrink-0" />
         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
         </Button>

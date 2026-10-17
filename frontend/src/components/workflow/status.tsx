@@ -9,11 +9,13 @@ export const statusLabel: Record<WorkflowRunStatus | NodeState, string> = {
   running: "Running",
   succeeded: "Succeeded",
   failed: "Failed",
-  waiting: "Waiting",
+  waiting: "Waiting for you",
+  pending: "Not started",
   "not-run": "Didn't run",
 };
 
 const runningClass = "border-sky-500 text-sky-700 dark:text-sky-300";
+const waitingClass = "border-amber-500 text-amber-700 dark:text-amber-300";
 
 /** Where a run is on one node of its graph. */
 export function StateBadge({ state }: { state: NodeState }) {
@@ -22,6 +24,7 @@ export function StateBadge({ state }: { state: NodeState }) {
       variant="outline"
       className={cn(
         state === "running" && runningClass,
+        state === "waiting" && waitingClass,
         state === "succeeded" && "border-emerald-500 text-emerald-700 dark:text-emerald-300",
         state === "failed" && "border-red-500 text-red-700 dark:text-red-300",
       )}
@@ -44,7 +47,7 @@ export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus
       variant={
         status === "failed" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
       }
-      className={cn(status === "running" && runningClass)}
+      className={cn(status === "running" && runningClass, status === "waiting" && waitingClass)}
       {...props}
     >
       {statusLabel[status]}

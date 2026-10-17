@@ -1,11 +1,16 @@
 """Hybrid retrieval: pgvector cosine search + Postgres full-text search, fused with RRF, over a
-data store's documents (in its own database, as its read-only role)."""
+data store's documents, or over its exported run history (in its own database, as its read-only
+role)."""
 
+import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from anyio import to_thread
-from sqlalchemy import text
+from sqlalchemy import RowMapping, TextClause, text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
@@ -19,8 +24,12 @@ from aios.datastores import (
     store_status,
     store_upgrading,
 )
+from aios.datastores.history import NoHistory, check_searchable
+from aios.datastores.models import EMBEDDABLE
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
+
+log = logging.getLogger(__name__)
 
 # Each branch ranks its own top-N candidates; Reciprocal Rank Fusion then scores every
 # chunk as sum(1 / (k + rank)) over the branches it appears in.
@@ -59,10 +68,60 @@ HYBRID_SQL = text(
 )
 
 
+# The same over the store's exported messages (`aios.datastores.history`), keyed by run and
+# position: the semantic branch over those embedded (while embedding is on), the lexical one over
+# every one worth searching. The run searching, if any, is left out: it's not a past run. With
+# no query vector (the embedding API failed), it's the lexical branch alone.
+HISTORY_SQL = text(
+    f"""
+    WITH semantic AS (
+        SELECT m.agent_run_id, m.position,
+               row_number() OVER (ORDER BY m.embedding <=> CAST(:qvec AS vector)) AS rank
+        FROM history.messages m
+        WHERE CAST(:qvec AS vector) IS NOT NULL
+          AND m.embedding IS NOT NULL AND m.agent_run_id <> :exclude
+        ORDER BY m.embedding <=> CAST(:qvec AS vector)
+        LIMIT :candidates
+    ),
+    lexical AS (
+        SELECT m.agent_run_id, m.position,
+               row_number() OVER (ORDER BY ts_rank_cd(m.tsv, q) DESC) AS rank
+        FROM history.messages m,
+             websearch_to_tsquery('english', :query) q
+        WHERE m.tsv @@ q AND {EMBEDDABLE} AND m.agent_run_id <> :exclude
+        ORDER BY ts_rank_cd(m.tsv, q) DESC
+        LIMIT :candidates
+    ),
+    fused AS (
+        SELECT COALESCE(s.agent_run_id, l.agent_run_id) AS agent_run_id,
+               COALESCE(s.position, l.position) AS position,
+               COALESCE(1.0 / (:rrf_k + s.rank), 0) + COALESCE(1.0 / (:rrf_k + l.rank), 0) AS score,
+               s.rank AS semantic_rank,
+               l.rank AS lexical_rank
+        FROM semantic s
+        FULL OUTER JOIN lexical l
+            ON l.agent_run_id = s.agent_run_id AND l.position = s.position
+    )
+    SELECT f.agent_run_id, f.position, f.score, f.semantic_rank, f.lexical_rank,
+           m.role, m.text, r.agent_name, r.title, r.created_at
+    FROM fused f
+    JOIN history.messages m ON m.agent_run_id = f.agent_run_id AND m.position = f.position
+    JOIN history.agent_runs r ON r.id = f.agent_run_id
+    ORDER BY f.score DESC
+    LIMIT :limit
+    """
+)
+
+
 # What the search tools tell the model while the store is brought to the store tree's head,
 # or has no connections free (and, from `store_not_ready`, while it isn't ready).
 STORE_UPGRADING = store_upgrading("the search")
 STORE_BUSY = store_busy("the search")
+# What the history search tells it when the store has no exported history.
+NO_HISTORY = (
+    "The user hasn't exported their run history, so there are no past runs to search. "
+    "They can switch the export on in Settings."
+)
 
 
 @dataclass
@@ -77,30 +136,65 @@ class SearchHit:
     lexical_rank: int | None
 
 
+@dataclass
+class HistoryHit:
+    agent_run_id: int
+    position: int
+    agent_name: str
+    title: str | None
+    created_at: datetime
+    role: str
+    text: str
+    score: float
+    semantic_rank: int | None
+    lexical_rank: int | None
+
+
 def vector_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.7g}" for x in vec) + "]"
+
+
+def _fused(
+    db: Session,
+    sql: TextClause,
+    *,
+    query: str,
+    query_vector: list[float] | None,
+    limit: int,
+    **params: Any,
+) -> list[RowMapping]:
+    """Run a hybrid search's SQL (`HYBRID_SQL`, `HISTORY_SQL`) on `db`, with `params` besides
+    the ones they share."""
+    settings = get_settings()
+    # pgvector >= 0.8: keep scanning the HNSW index past `hnsw.ef_search` (40) candidates when
+    # more are asked for.
+    db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+    rows = (
+        db.execute(
+            sql,
+            {
+                "qvec": vector_literal(query_vector) if query_vector else None,
+                "query": query,
+                # Enough candidates from each branch to fill `limit` even when only one matches.
+                "candidates": max(settings.search_candidates, limit),
+                "rrf_k": settings.search_rrf_k,
+                "limit": limit,
+                **params,
+            },
+        )
+        .mappings()
+        .all()
+    )
+    db.rollback()  # end the transaction so SET LOCAL doesn't leak
+    return list(rows)
 
 
 def hybrid_search_with_vector(
     db: Session, *, query: str, query_vector: list[float], limit: int = 8
 ) -> list[SearchHit]:
     """Search the documents of the store `db` is a session on."""
-    settings = get_settings()
-    # pgvector >= 0.8: keep scanning the HNSW index past `hnsw.ef_search` (40) candidates when
-    # more are asked for.
-    db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
-    rows = db.execute(
-        HYBRID_SQL,
-        {
-            "qvec": vector_literal(query_vector),
-            "query": query,
-            # Enough candidates from each branch to fill `limit` even when only one matches.
-            "candidates": max(settings.search_candidates, limit),
-            "rrf_k": settings.search_rrf_k,
-            "limit": limit,
-        },
-    ).mappings()
-    hits = [
+    rows = _fused(db, HYBRID_SQL, query=query, query_vector=query_vector, limit=limit)
+    return [
         SearchHit(
             chunk_id=r["id"],
             document_id=r["document_id"],
@@ -113,47 +207,163 @@ def hybrid_search_with_vector(
         )
         for r in rows
     ]
-    db.rollback()  # end the transaction so SET LOCAL doesn't leak
-    return hits
 
 
-async def hybrid_search(*, data_store_id: uuid.UUID, query: str, limit: int = 8) -> list[SearchHit]:
-    """Search the data store's documents."""
+def history_search_with_vector(
+    db: Session,
+    *,
+    query: str,
+    query_vector: list[float] | None,
+    limit: int = 8,
+    exclude_run_id: int | None = None,
+) -> list[HistoryHit]:
+    """Search the exported messages of the store `db` is a session on, but `exclude_run_id`'s;
+    by keyword alone with no `query_vector`."""
+    rows = _fused(
+        db,
+        HISTORY_SQL,
+        query=query,
+        query_vector=query_vector,
+        limit=limit,
+        # Platform ids start at 1.
+        exclude=exclude_run_id or 0,
+    )
+    return [
+        HistoryHit(
+            agent_run_id=r["agent_run_id"],
+            position=r["position"],
+            agent_name=r["agent_name"],
+            title=r["title"],
+            created_at=r["created_at"],
+            role=r["role"],
+            text=r["text"],
+            score=float(r["score"]),
+            semantic_rank=r["semantic_rank"],
+            lexical_rank=r["lexical_rank"],
+        )
+        for r in rows
+    ]
+
+
+def _check_ready(data_store_id: uuid.UUID) -> None:
+    status = store_status(data_store_id)
+    if status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, status)
+
+
+async def _search[T](
+    data_store_id: uuid.UUID,
+    query: str,
+    search: Callable[[Session, list[float] | None], list[T]],
+    *,
+    history: bool = False,
+) -> list[T]:
+    """Embed `query` and run `search` with it, on a read-only session on the store. For the
+    store's `history`, it searches without the vector (by keyword) if embedding fails: the
+    history may have no embeddings anyway (embedding is opt-in), and keyword search needs none."""
     if not query.strip():  # e.g. a blank query from the agent's tool call
         return []
     # Embedding the query would be wasted on a store that isn't ready. The session is opened
     # only after it: an engine held across the embed may have been evicted by then.
-    status = await to_thread.run_sync(store_status, data_store_id)
-    if status != DataStoreStatus.ready:
-        raise DataStoreNotReady(data_store_id, status)
-    query_vector = await embed_query(query)
+    await to_thread.run_sync(check_searchable if history else _check_ready, data_store_id)
+    try:
+        query_vector = await embed_query(query)
+    except Exception:
+        if not history:
+            raise
+        log.warning(
+            "Couldn't embed the history search's query; searching by keyword", exc_info=True
+        )
+        query_vector = None
 
-    def run() -> list[SearchHit]:
+    def run() -> list[T]:
         with store_session(data_store_id, "ro") as db:
-            return hybrid_search_with_vector(
-                db, query=query, query_vector=query_vector, limit=limit
-            )
+            return search(db, query_vector)
 
     return await to_thread.run_sync(run)
 
 
-async def document_search_results(
-    *, data_store_id: uuid.UUID, query: str, limit: int = 8
-) -> list[dict]:
-    """Hybrid search hits in the form the search tools return to the model."""
+async def hybrid_search(*, data_store_id: uuid.UUID, query: str, limit: int = 8) -> list[SearchHit]:
+    """Search the data store's documents."""
+    return await _search(
+        data_store_id,
+        query,
+        lambda db, vec: hybrid_search_with_vector(db, query=query, query_vector=vec, limit=limit),
+    )
+
+
+async def history_search(
+    *,
+    data_store_id: uuid.UUID,
+    query: str,
+    limit: int = 8,
+    exclude_run_id: int | None = None,
+) -> list[HistoryHit]:
+    """Search the data store's exported run history (but `exclude_run_id`'s messages). Raises
+    `NoHistory` if it has none."""
+    return await _search(
+        data_store_id,
+        query,
+        lambda db, vec: history_search_with_vector(
+            db, query=query, query_vector=vec, limit=limit, exclude_run_id=exclude_run_id
+        ),
+        history=True,
+    )
+
+
+async def _tool_results(search: Callable[[], Awaitable[list[dict]]]) -> list[dict]:
+    """The search's results for the model, or why there are none."""
     try:
-        hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
+        return await search()
+    except NoHistory:
+        return [{"error": NO_HISTORY}]
     except DataStoreBehind:
         return [{"error": STORE_UPGRADING}]
     except DataStoreNotReady as exc:
         return [{"error": store_not_ready(exc.status)}]
     except DataStoreBusy:
         return [{"error": STORE_BUSY}]
-    return [
-        {
-            "source": hit.filename,
-            "headings": hit.meta.get("headings", []),
-            "text": hit.text,
-        }
-        for hit in hits
-    ]
+
+
+async def document_search_results(
+    *, data_store_id: uuid.UUID, query: str, limit: int = 8
+) -> list[dict]:
+    """Hybrid search hits in the form the search tools return to the model."""
+
+    async def search() -> list[dict]:
+        hits = await hybrid_search(data_store_id=data_store_id, query=query, limit=limit)
+        return [
+            {
+                "source": hit.filename,
+                "headings": hit.meta.get("headings", []),
+                "text": hit.text,
+            }
+            for hit in hits
+        ]
+
+    return await _tool_results(search)
+
+
+async def history_search_results(
+    *, data_store_id: uuid.UUID, query: str, limit: int = 8, exclude_run_id: int | None = None
+) -> list[dict]:
+    """History search hits in the form the history search tool returns to the model: each
+    message with the run it's from, and when that run started."""
+
+    async def search() -> list[dict]:
+        hits = await history_search(
+            data_store_id=data_store_id, query=query, limit=limit, exclude_run_id=exclude_run_id
+        )
+        return [
+            {
+                "run_id": hit.agent_run_id,
+                "agent": hit.agent_name,
+                "title": hit.title,
+                "when": hit.created_at.isoformat(),
+                "role": hit.role,
+                "text": hit.text,
+            }
+            for hit in hits
+        ]
+
+    return await _tool_results(search)

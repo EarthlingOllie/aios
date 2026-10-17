@@ -5,7 +5,8 @@ The model sends a spec, never SQL (`aios.datastores.schema_changes`). The tool c
 the store's current schema, records a pending request, and pauses the run (LangGraph's
 `interrupt()`): the turn ends with the request waiting for the owner. Once it's decided (and, if
 approved, applied), the run is resumed with the outcome (`aios.api.agents.resume_run`), which is
-what the tool call returns to the model.
+what the tool call returns to the model. In a workflow run, the agent node's step waits, and
+the workflow run pauses once nothing else can run (`aios.workflows`).
 
 Resuming runs the tool call again from the start, so it looks for the request its call already
 made before making one, and `interrupt()` then returns the outcome.
@@ -30,10 +31,7 @@ from aios.tools.registry import AgentTool, ToolSpec, register
 # What the interrupt's value names the request by.
 REQUEST_KEY = "schema_change_request"
 
-IN_WORKFLOW = (
-    "Schema changes can't be requested from a workflow run yet, only from the agent's own chat"
-    " or schedules: nothing was requested."
-)
+NO_RUN = "Schema changes can only be requested from an agent run: nothing was requested."
 
 
 class RequestSchemaChangeConfig(BaseModel):
@@ -97,8 +95,8 @@ def build(config: RequestSchemaChangeConfig) -> list[AgentTool]:
         runtime: ToolRuntime[ChatDeps],
     ) -> str:
         ctx, call_id = runtime.context, runtime.tool_call_id
-        if ctx.workflow_run_id is not None or ctx.run_id is None:
-            return json.dumps({"error": IN_WORKFLOW})
+        if ctx.run_id is None:
+            return json.dumps({"error": NO_RUN})
         request = await to_thread.run_sync(schema_changes.find, ctx.run_id, call_id)
         if request is None:
             try:

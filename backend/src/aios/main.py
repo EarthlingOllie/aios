@@ -18,12 +18,14 @@ from aios.api import (
     data,
     documents,
     dropped,
+    notifications,
     schema_changes,
     skills,
     tools,
     triggers,
     workflows,
 )
+from aios.api import settings as settings_api
 from aios.config import get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
@@ -65,6 +67,8 @@ def create_app() -> FastAPI:
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
     app.include_router(dropped.router)
+    app.include_router(notifications.router)
+    app.include_router(settings_api.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

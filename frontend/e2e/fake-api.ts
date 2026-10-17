@@ -77,6 +77,17 @@ export type DroppedRow = {
   /** If set, a restore is accepted but never happens (the worker gave up without a word). */
   stallRestore?: boolean;
 };
+export type NotificationRow = {
+  id: string;
+  kind: string;
+  ref: Record<string, string>;
+  /** For a kind other than a schema change request (whose title is its summary). */
+  title: string | null;
+  created_at: string;
+  read_at: string | null;
+  /** Whether it's the signed-in user's; the API never shows them another user's. */
+  mine: boolean;
+};
 type WorkflowVersionRow = {
   id: number;
   workflow_id: number;
@@ -126,8 +137,8 @@ export type TableRow = {
 };
 /** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
 const PREVIEW_CHARS = 200;
-type RunStatus = "queued" | "running" | "succeeded" | "failed";
-type StepStatus = "running" | "succeeded" | "failed";
+type RunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
+type StepStatus = "running" | "waiting" | "succeeded" | "failed";
 export type StepRow = {
   id: number;
   path: string[];
@@ -138,9 +149,58 @@ export type StepRow = {
   error: string | null;
   agent_id: number | null;
   agent_run_id: number | null;
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
 };
+export type StalePinRow = {
+  path: string[];
+  kind: Kind;
+  name: string;
+  pinned_version: number;
+  current_version: number | null;
+};
+type DependentTriggerRow = {
+  id: number;
+  enabled: boolean;
+  cron: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+};
+
+type DependentRequestRow = { id: string; summary: string; status: "pending" };
+
+/** What depends on an agent, as GET /api/agents/{id}/dependents answers. */
+export type AgentDependentsRow = {
+  agent_runs: {
+    id: number;
+    title: string | null;
+    waiting: boolean;
+    running: boolean;
+    trigger_id: number | null;
+    updated_at: string;
+    requests: DependentRequestRow[];
+  }[];
+  workflow_runs: {
+    id: number;
+    workflow_id: number;
+    workflow_name: string;
+    status: RunStatus;
+    created_at: string;
+    waiting_nodes: string[];
+    requests: DependentRequestRow[];
+  }[];
+  workflows: {
+    id: number;
+    name: string;
+    version: number;
+    direct: boolean;
+    triggers: DependentTriggerRow[];
+  }[];
+  triggers: DependentTriggerRow[];
+};
+
 export type RunRow = {
   id: number;
   workflow_id: number;
@@ -152,7 +212,10 @@ export type RunRow = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  waiting_since: string | null;
+  waited_seconds: number;
   steps: StepRow[];
+  stale_pins: StalePinRow[];
 };
 
 const NOW = "2026-10-14T09:00:00Z";
@@ -168,6 +231,12 @@ export class FakeApi {
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
   agentRuns = new Map<number, AgentRunRow>();
+  /**
+   * What depends on each agent, by agent id (none if unset). As on the server, deleting one is
+   * refused until each listed run is named to cancel and each workflow to deactivate; a test
+   * "edits" a workflow by taking it off the list.
+   */
+  agentDependents = new Map<number, AgentDependentsRow>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
@@ -193,6 +262,18 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
   dataStoreFails = false;
+  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
+   * a test says so, as the provisioning worker would. */
+  settings = {
+    export_run_history: false,
+    history_ready: false,
+    history_exported_at: null as string | null,
+    embed_run_history: false,
+    history_embedded_at: null as string | null,
+    history_embed_error: null as string | null,
+  };
+  /** Times "delete exported history" was asked for. */
+  exportedHistoryDeletes = 0;
   /** The user's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
@@ -217,6 +298,13 @@ export class FakeApi {
   schemaChanges: SchemaChangeRow[] = [];
   /** Dropped tables and columns in the user's store, newest first. */
   dropped: DroppedRow[] = [];
+  /**
+   * Notifications, oldest first. As on the server, a pending request the user may decide
+   * notifies them, and deciding it marks that read; `mine: false` ones are another user's.
+   */
+  notifications: NotificationRow[] = [];
+  /** How many times the app asked for the user's notifications. */
+  notificationLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
   /** The store's `data` tables, by name. */
@@ -424,6 +512,9 @@ export class FakeApi {
       ...fields,
     };
     this.schemaChanges.push(request);
+    if (request.status === "pending" && request.decider) {
+      this.addNotification({ ref: { request_id: request.id, data_store_id: request.data_store_id } });
+    }
     return request;
   }
 
@@ -447,6 +538,30 @@ export class FakeApi {
   private droppedOut(item: DroppedRow) {
     const { purge_in_days, refuseRestore: _, stallRestore: __, ...fields } = item;
     return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
+  }
+
+  /** Adds a notification: the user's own, about a schema change request, unless told otherwise. */
+  addNotification(fields: Partial<NotificationRow> = {}): NotificationRow {
+    const notification: NotificationRow = {
+      id: `note-${this.id()}`,
+      kind: "schema_change_request",
+      ref: {},
+      title: null,
+      // Later ones are newer, so they list first.
+      created_at: new Date(Date.parse(NOW) + this.notifications.length * 1000).toISOString(),
+      read_at: null,
+      mine: true,
+      ...fields,
+    };
+    this.notifications.push(notification);
+    return notification;
+  }
+
+  private notificationOut({ mine: _mine, ...n }: NotificationRow) {
+    const request = n.kind === "schema_change_request"
+      ? this.schemaChanges.find((r) => r.id === n.ref.request_id)
+      : undefined;
+    return { ...n, title: request ? request.summary : n.title };
   }
 
   /**
@@ -556,6 +671,9 @@ export class FakeApi {
       created_at: NOW,
       started_at: NOW,
       finished_at: null,
+      waiting_since: null,
+      waited_seconds: 0,
+      stale_pins: [],
       ...run,
       steps: [],
     };
@@ -575,6 +693,7 @@ export class FakeApi {
       error: null,
       agent_id: null,
       agent_run_id: null,
+      waiting_on_request_ids: [],
       started_at: NOW,
       finished_at: null,
       ...step,
@@ -761,6 +880,17 @@ export class FakeApi {
 
   // --- Routing ---------------------------------------------------------------------------------
 
+  private dependentsOf(agentId: number): AgentDependentsRow {
+    return (
+      this.agentDependents.get(agentId) ?? {
+        agent_runs: [],
+        workflow_runs: [],
+        workflows: [],
+        triggers: [],
+      }
+    );
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -799,6 +929,31 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
+    if (path === "/api/settings") {
+      if (method === "PUT") {
+        // As the API: embedding only while the export is on, and off with it.
+        if (body?.export_run_history !== undefined) {
+          this.settings.export_run_history = Boolean(body.export_run_history);
+          if (!this.settings.export_run_history) this.settings.embed_run_history = false;
+        }
+        if (body?.embed_run_history !== undefined) {
+          if (body.embed_run_history && !this.settings.export_run_history) {
+            return reply(409, { detail: "Switch the run history export on first." });
+          }
+          if (body.embed_run_history && !this.settings.embed_run_history) {
+            this.settings.history_embedded_at = null;
+          }
+          this.settings.embed_run_history = Boolean(body.embed_run_history);
+        }
+      }
+      return reply(200, this.settings);
+    }
+    if (path === "/api/settings/exported-history" && method === "DELETE") {
+      this.exportedHistoryDeletes++;
+      // Emptied: nothing exported since (while it's on, the export starts over).
+      this.settings.history_exported_at = null;
+      return reply(204);
+    }
     if (
       path === "/api/documents" ||
       path.startsWith("/api/documents/") ||
@@ -896,6 +1051,11 @@ export class FakeApi {
       if (!request || !request.decider) return fail(404, "Schema change request not found");
       return reply(200, { removes: request.impact });
     }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)$/)) && method === "GET") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      return reply(200, this.schemaChangeOut(request));
+    }
     if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
       if (!request || !request.decider) return fail(404, "Schema change request not found");
@@ -913,6 +1073,9 @@ export class FakeApi {
         request.status = "rejected";
         request.note = (body?.note ?? "").trim() || null;
       }
+      for (const n of this.notifications) {
+        if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
+      }
       return reply(200, this.schemaChangeOut(request));
     }
     if (path === "/api/dropped" && method === "GET") {
@@ -927,6 +1090,23 @@ export class FakeApi {
       if (item.refuseRestore) item.restore_error = item.refuseRestore;
       else if (!item.stallRestore) this.dropped = this.dropped.filter((d) => d !== item);
       return reply(202, { ...out, blocked: null });
+    }
+    if (path === "/api/notifications" && method === "GET") {
+      this.notificationLists++;
+      const mine = this.notifications.filter((n) => n.mine).reverse();
+      const unread = mine.filter((n) => !n.read_at);
+      return reply(200, {
+        unread: unread.length,
+        notifications: [...unread, ...mine.filter((n) => n.read_at)].map((n) =>
+          this.notificationOut(n),
+        ),
+      });
+    }
+    if ((m = path.match(/^\/api\/notifications\/([\w-]+)\/read$/)) && method === "POST") {
+      const notification = this.notifications.find((n) => n.id === m![1] && n.mine);
+      if (!notification) return fail(404, "Notification not found");
+      notification.read_at ??= NOW;
+      return reply(200, this.notificationOut(notification));
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {
@@ -950,6 +1130,31 @@ export class FakeApi {
       if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
       this.agentRuns.delete(run.id);
       return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)$/)) && method === "DELETE") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      const dependents = this.dependentsOf(agent.id);
+      const asked = (body ?? {}) as Partial<Record<string, number[]>>;
+      const named = (key: string, id: number) => (asked[key] ?? []).includes(id);
+      const left = [
+        ...dependents.agent_runs.filter((r) => !named("cancel_agent_runs", r.id)),
+        ...dependents.workflow_runs.filter((r) => !named("cancel_workflow_runs", r.id)),
+        ...dependents.workflows.filter((w) => !named("deactivate_workflows", w.id)),
+      ];
+      if (left.length) {
+        return reply(409, {
+          detail: { message: "This agent is still in use: resolve what depends on it.", dependents },
+        });
+      }
+      this.agents.delete(agent.id);
+      this.agentDependents.delete(agent.id);
+      for (const run of this.agentRunsOf(agent)) this.agentRuns.delete(run.id);
+      return reply(204);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/dependents$/)) && method === "GET") {
+      if (!this.agents.has(Number(m[1]))) return fail(404, "Not Found");
+      return reply(200, this.dependentsOf(Number(m[1])));
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));
@@ -1135,6 +1340,7 @@ export class FakeApi {
           ...this.runSummary(run),
           version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
           steps: run.steps,
+          stale_pins: run.stale_pins,
         });
       }
       if (rest === "/versions") {
@@ -1164,7 +1370,7 @@ export class FakeApi {
     return fail(404, `fake API: no route for ${method} ${path}`);
   }
 
-  private runSummary({ steps: _steps, ...run }: RunRow) {
+  private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
     return {
       ...run,
       workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,

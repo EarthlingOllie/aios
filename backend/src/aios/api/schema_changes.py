@@ -27,7 +27,13 @@ from aios.datastores import (
     data_store_for,
     dropped,
 )
-from aios.datastores.schema_changes import SchemaChange, confirmation
+from aios.datastores.schema_changes import (
+    SchemaChange,
+    clear_notifications,
+    confirmation,
+    not_given,
+    restore_notifications,
+)
 from aios.db import DB
 from aios.models import AgentRun, SchemaChangeRequest, SchemaChangeStatus
 
@@ -150,11 +156,7 @@ def waiting_on(db: Session, run_id: int) -> bool:
         db.scalar(
             select(func.count())
             .select_from(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.requested_by_run == run_id,
-                SchemaChangeRequest.resumed_at.is_(None),
-                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
-            )
+            .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
         )
         > 0
     )
@@ -212,6 +214,8 @@ def _decide(db: Session, user_id: int, request_id: uuid.UUID, **values) -> Schem
         setattr(request, key, value)
     request.decided_by_user_id = user_id
     request.decided_at = func.now()
+    # With the decision, so they're cleared if and only if it's made.
+    clear_notifications(db, request.id)
     db.commit()
     db.refresh(request)
     return request
@@ -219,11 +223,13 @@ def _decide(db: Session, user_id: int, request_id: uuid.UUID, **values) -> Schem
 
 def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None]) -> None:
     """Queue what follows a decision; if it can't be (the broker is down), undo the decision,
-    which nothing else has seen through, so it's not left decided with nothing to act on it."""
+    which nothing else has seen through, so it's not left decided with nothing to act on it, and
+    its notifications are unread again."""
     try:
         queue()
     except Exception as exc:
         log.exception("Couldn't queue what follows deciding schema change request %s", request.id)
+        restore_notifications(db, request.id, request.decided_at)
         db.execute(
             update(SchemaChangeRequest)
             .where(

@@ -15,11 +15,9 @@ from psycopg import OperationalError
 from sqlalchemy import event
 from test_agents import agent_body, chat_body, make_agent
 from test_data_tools import as_owner, provisioned
-from test_workflows import agent_node, make_workflow
 
 from aios import checkpoints, ui_stream, worker
 from aios.api import agents as agents_api
-from aios.api import workflows as workflows_api
 from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
 from aios.datastores import can_approve, data_store_for, schema_changes
@@ -28,7 +26,6 @@ from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
 from aios.tools import build_tool, hybrid_search
-from aios.workflows import execute_run
 
 TOOLS = [
     {"key": "request_schema_change", "config": {}},
@@ -336,24 +333,6 @@ def test_only_the_stores_owner_can_decide(api, agent, db, new_user, queued):
     assert (can_approve(other.id, store), can_approve(store.owner_user_id, store)) == (False, True)
 
 
-def test_a_workflow_run_cant_wait_on_a_request_yet(api, agent, store, monkeypatch, queued):
-    """Its agent nodes would need the workflow to pause, which is to come: the model is told,
-    and nothing is requested."""
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
-    workflow = make_workflow(api, "Builders", [agent_node("build", agent)])
-    started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"}).json()
-    script = Script(CONTACTS)
-    with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
-
-    (name, result), _ = script.results
-    assert name == "request_schema_change"
-    assert "workflow" in result["error"]
-    assert api.get("/api/schema-changes").json() == []
-    finished = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}").json()
-    assert finished["status"] == "succeeded"
-
-
 def run_of(api, agent: dict, run: dict) -> dict:
     return api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
 
@@ -468,6 +447,8 @@ def test_a_turn_stopped_before_its_request_waits_cancels_the_request(
     after = run_of(api, agent, run)
     [request] = after["schema_change_requests"]
     assert (request["status"], after["waiting"]) == ("cancelled", False)
+    # Nothing for the owner to decide any more.
+    assert api.get("/api/notifications").json()["unread"] == 0
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
     assert queued == []
 

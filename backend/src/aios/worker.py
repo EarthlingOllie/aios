@@ -46,8 +46,14 @@ celery_app.conf.update(
         "aios.apply_schema_change": {"queue": "provisioning"},
         "aios.restore_dropped": {"queue": "provisioning"},
         "aios.purge_dropped": {"queue": "provisioning"},
+        # Run by the provisioning worker's beat, next to the store retries.
+        "aios.expire_schema_change_requests": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
+        # Its `history` tables are migrations, so it's the provisioner's too. The export itself
+        # writes as the store's `rw` role, as ingest does, so it's the app workers' (the
+        # default queue).
+        "aios.set_up_history_export": {"queue": "provisioning"},
     },
 )
 
@@ -59,6 +65,9 @@ RETRY_UNFINISHED_EVERY = 600
 MEASURE_USAGE_EVERY = 300
 # Dropped tables and columns past their retention (days) are purged this often (seconds).
 PURGE_DROPPED_EVERY = 3600
+# Stores with runs still waiting to be exported (their export was never queued, or was lost)
+# are queued this often (seconds), by the same beat; the exports go to the app workers.
+EXPORT_PENDING_HISTORY_EVERY = 60
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
@@ -75,6 +84,17 @@ celery_app.conf.beat_schedule = {
         "task": "aios.purge_dropped",
         "schedule": PURGE_DROPPED_EVERY,
         "options": {"expires": PURGE_DROPPED_EVERY},
+    },
+    # Schema change requests nobody decided in time (`SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`).
+    "expire-schema-change-requests": {
+        "task": "aios.expire_schema_change_requests",
+        "schedule": settings.schema_change_expiry_check_seconds,
+        "options": {"expires": settings.schema_change_expiry_check_seconds},
+    },
+    "export-pending-history": {
+        "task": "aios.export_pending_history",
+        "schedule": EXPORT_PENDING_HISTORY_EVERY,
+        "options": {"expires": EXPORT_PENDING_HISTORY_EVERY},
     },
 }
 
@@ -179,6 +199,55 @@ def measure_data_store_usage_task() -> None:
 
 
 @celery_app.task(
+    name="aios.set_up_history_export",
+    soft_time_limit=PROVISION_TIME_LIMIT,
+    time_limit=PROVISION_TIME_LIMIT + 60,
+)
+def set_up_history_export_task(data_store_id: str) -> None:
+    """Give the store its `history` tables, now its owner has switched the run history export
+    on, then queue the export of what's waiting (`aios.datastores.history`). Safe to run again.
+
+    A store that isn't ready yet gets them as it's provisioned, and its runs are exported by
+    the periodic sweep (`export_pending_history_task`) once it is; one whose migration fails is
+    tried again by `retry_unfinished_data_stores_task`."""
+    from aios.datastores import history, provision
+
+    store_id = uuid.UUID(data_store_id)
+    try:
+        provision.migrate_store(store_id)
+    except LookupError:
+        return
+    history.enqueue_export(store_id)
+
+
+@celery_app.task(name="aios.export_history", bind=True, max_retries=None)
+def export_history_task(self, data_store_id: str) -> None:
+    """Drain the store's run history outbox into its `history` tables
+    (`aios.datastores.history`). Safe to run again, or at once with another for the store."""
+    from aios.datastores import history
+
+    try:
+        history.export(uuid.UUID(data_store_id))
+    # Before `DataStoreNotReady`, which a store behind is too.
+    except (DataStoreBehind, DataStoreBusy) as exc:
+        # Its rows are still pending; this delivery's retry picks them up (a store behind the
+        # tree's head, on either line, is brought there by `retry_unfinished_data_stores_task`).
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
+    except (DataStoreNotFound, DataStoreNotReady):
+        # Deleted, or being deleted, since: its outbox goes with it.
+        return
+
+
+@celery_app.task(name="aios.export_pending_history")
+def export_pending_history_task() -> None:
+    """Queue the export of every exporting store with runs still waiting."""
+    from aios.datastores import history
+
+    for store_id in history.stores_to_export():
+        history.enqueue_export(store_id)
+
+
+@celery_app.task(
     name="aios.run_workflow",
     # A run times itself (`execute_run`); these are backstops, should its event loop be stuck.
     # The run itself is failed long before (`workflow_run_no_progress_limit`); these free the
@@ -191,8 +260,8 @@ def run_workflow_task(run_id: int) -> None:
     from aios.workflows import execute_run, fail_run, time_limit_error
 
     try:
-        # Only a queued run starts, so a redelivered message doesn't run it twice; one left
-        # running by a worker that died (its heartbeat stopped) is failed instead.
+        # Only a queued or waiting run starts, so a redelivered message doesn't run it twice;
+        # one left running by a worker that died (its heartbeat stopped) is failed instead.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
         fail_run(run_id, time_limit_error())
@@ -258,18 +327,36 @@ def purge_dropped_task() -> None:
     dropped.purge_all()
 
 
+@celery_app.task(name="aios.expire_schema_change_requests")
+def expire_schema_change_requests_task() -> None:
+    """Expire the schema change requests nobody decided in time, and resume the runs that asked
+    with that, as a rejection would (`aios.datastores.schema_changes.expire`)."""
+    from aios.datastores import schema_changes
+
+    schema_changes.expire()
+    for request_id in schema_changes.expired_not_resumed():
+        enqueue_resume(request_id)
+
+
 def enqueue_resume(request_id: uuid.UUID) -> None:
     """Queue resuming the run that made a request, if it's decided and the run (if a run made
-    it) hasn't been given the outcome yet."""
+    it) hasn't been given the outcome yet.
+
+    An agent node's run is resumed through its workflow run, which carries on from where it
+    waited (`aios.workflows`): queued again, it's claimed if it's waiting."""
     from aios.db import SessionLocal
     from aios.models import SchemaChangeRequest
+    from aios.workflows import workflow_run_waiting_on
 
     with SessionLocal() as db:
         request = db.get(SchemaChangeRequest, request_id)
         if request is None or not request.status.decided or request.resumed_at is not None:
             return
         run_id = request.requested_by_run
-    if run_id is not None:
+        workflow_run_id = workflow_run_waiting_on(db, request)
+    if workflow_run_id is not None:
+        run_workflow_task.delay(workflow_run_id)
+    elif run_id is not None:
         resume_agent_run_task.delay(run_id)
 
 
