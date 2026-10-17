@@ -16,6 +16,7 @@ from aios.datastores.connections import (
     store_session,
     store_status,
 )
+from aios.datastores.notices import store_busy, store_not_ready, store_upgrading
 from aios.datastores.resolve import data_store_for, data_store_for_request
 
 __all__ = [
@@ -26,7 +27,10 @@ __all__ = [
     "Role",
     "data_store_for",
     "data_store_for_request",
+    "store_busy",
     "store_engine",
+    "store_not_ready",
+    "store_upgrading",
     "store_session",
     "store_status",
 ]
