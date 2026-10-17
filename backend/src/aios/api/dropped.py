@@ -29,8 +29,6 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-_UNREADABLE = (DataStoreBehind, DataStoreBusy, DataStoreNotFound, DataStoreNotReady)
-
 
 class DroppedOut(BaseModel):
     id: int
@@ -71,16 +69,25 @@ def _store(user_id: int, db: DB):
     return store_id
 
 
+def _read(store_id, fn, *args):
+    """`fn(store_id, *args)` on the store; None for a store that isn't set up (nothing's
+    dropped in it), and 503 for one that can't be read just now (busy, or being upgraded),
+    which is worth trying again rather than taken to mean nothing's there."""
+    try:
+        return fn(store_id, *args) if store_id else None
+    except (DataStoreBehind, DataStoreBusy) as exc:  # Behind before NotReady: it's one
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Your data store can't be read just now."
+        ) from exc
+    except (DataStoreNotFound, DataStoreNotReady):
+        return None
+
+
 @router.get("/dropped", response_model=list[DroppedOut])
 def list_dropped(user: CurrentUser, db: DB):
-    """What's dropped in the user's store, newest first; nothing while it can't be read."""
-    store_id = _store(user.id, db)
-    if store_id is None:
-        return []
-    try:
-        return [_out(item, why) for item, why in dropped.listing(store_id)]
-    except _UNREADABLE:
-        return []
+    """What's dropped in the user's store, newest first."""
+    listed = _read(_store(user.id, db), dropped.listing) or []
+    return [_out(item, why) for item, why in listed]
 
 
 @router.post(
@@ -93,14 +100,7 @@ def restore(dropped_id: int, user: CurrentUser, db: DB):
     from aios.worker import restore_dropped_task
 
     store_id = _store(user.id, db)
-    try:
-        found = dropped.find(store_id, dropped_id) if store_id else None
-    except (DataStoreNotFound, DataStoreNotReady):
-        found = None  # a store not set up yet has nothing dropped
-    except _UNREADABLE as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Your data store can't be read just now."
-        ) from exc
+    found = _read(store_id, dropped.find, dropped_id)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing dropped by that id")
     item, why = found

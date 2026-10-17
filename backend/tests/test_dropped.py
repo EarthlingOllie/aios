@@ -481,6 +481,20 @@ def test_embedding_columns_stay_marked_through_a_drop_and_a_restore(db, api, sto
     assert [m for m in markers() if m[0] == "people"] == [("people", "bio_embedding")]
 
 
+def test_a_store_that_cant_be_read_just_now_says_so_rather_than_nothing_is_dropped(
+    db, api, store, restores
+):
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+    [table] = listed(api)
+    # Behind the store tree's head, as during a deploy: worth trying again shortly.
+    db.execute(update(DataStore).where(DataStore.id == store.id).values(schema_revision="0004"))
+    db.commit()
+
+    assert api.get("/api/dropped").status_code == 503
+    assert api.post(f"/api/dropped/{table['id']}/restore").status_code == 503
+    assert restores == []
+
+
 def test_only_the_stores_owner_sees_and_restores_its_dropped_objects(
     db, api, store, new_user, restores
 ):
@@ -562,6 +576,13 @@ def test_a_dropped_tables_dropped_columns_go_with_it(db, api, store, monkeypatch
     assert listed(api) == []
     with as_owner(store) as conn:
         assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)
+
+
+def test_the_purge_is_scheduled_on_the_provisioning_worker():
+    scheduled = [e["task"] for e in worker.celery_app.conf.beat_schedule.values()]
+
+    assert "aios.purge_dropped" in scheduled
+    assert worker.celery_app.conf.task_routes["aios.purge_dropped"] == {"queue": "provisioning"}
 
 
 def test_the_scheduled_purge_goes_through_every_ready_store(db, store, monkeypatch):
