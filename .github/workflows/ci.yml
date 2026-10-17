@@ -21,12 +21,26 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U aios" --health-interval 2s --health-retries 30
+      # Stands in for S3, as in Compose: uploaded files (aios.datastores.files).
+      rustfs:
+        image: rustfs/rustfs:1.0.1
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -fs http://localhost:9000/health" --health-interval 2s
+          --health-retries 30
     # As deployed: the master user (`aios`) only creates the roles; migrations and tests run as
     # the app's role. The master user's DSN also lets tests/test_db_roles.py run.
     env:
       DATABASE_URL: postgresql+psycopg://aios_app:aios_app@localhost:5432/aios
       DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios
       DATABASE_ADMIN_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
+      DATA_STORE_FILES_ENDPOINT: http://localhost:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
