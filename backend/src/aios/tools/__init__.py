@@ -8,7 +8,12 @@ and passed to the run.
 To add a tool, write a module that calls `register(ToolSpec(...))` and import it below.
 """
 
-from aios.tools import hybrid_search, run_python, web_search  # noqa: F401  (registers the tools)
+from aios.tools import (  # noqa: F401  (registers the tools)
+    history_search,
+    hybrid_search,
+    run_python,
+    web_search,
+)
 from aios.tools.registry import (
     TOOLS,
     AgentTool,

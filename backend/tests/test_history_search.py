@@ -2,16 +2,23 @@
 export, on the Settings page) and searching past runs with hybrid retrieval
 (`aios.datastores.history`, `aios.search`)."""
 
+import asyncio
 import math
 import re
 
 import pytest
-from fake_model import ToolCall, model, use_model
+from conftest import delete_user, provisioned_user
+from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
+from sqlalchemy import update
 from test_agents import agent_body, chat_body, make_agent
 from test_history_export import chat, new_run, set_up_and_export, settings, stored, switch
 
 from aios import search, worker
+from aios.auth import current_user
 from aios.datastores import data_store_for, history
+from aios.db import SessionLocal
+from aios.main import app
+from aios.models import AgentRun, DataStore
 
 DIM = 1024
 
@@ -186,3 +193,161 @@ def test_a_backfill_left_unfinished_is_picked_up_by_the_sweep(
     history.export(store_id)
     assert [done for _, _, done in embedded_messages(store_id)] == [True, True]
     assert store_id not in history.stores_to_export()
+
+
+HISTORY_TOOL = {"key": "history_search", "config": {"max_results": 3}}
+
+
+def search_history_once(query: str):
+    """A model that searches past runs once with `query`, then replies with what came back."""
+    seen = {}
+
+    async def script(messages, info):
+        if returns := last_tool_results(messages):
+            seen["results"] = tool_output(returns[0])
+            yield f"found {len(seen['results'])}"
+        else:
+            seen["description"] = info.tools["search_history"].description
+            yield ToolCall("search_history", {"query": query})
+
+    return model(script), seen
+
+
+def ask(api, agent: dict, run: dict, query: str) -> dict:
+    fake, seen = search_history_once(query)
+    with use_model(fake):
+        response = api.post(
+            f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("remember?")
+        )
+    assert response.status_code == 200
+    return seen
+
+
+@pytest.fixture
+def query_meaning(monkeypatch):
+    async def embed_query(text):
+        return meaning(text)
+
+    monkeypatch.setattr(search, "embed_query", embed_query)
+
+
+@pytest.fixture
+def past_runs(api, store_id, history_tasks, embedded) -> dict:
+    """Two earlier runs, exported and embedded: one about baking, one about cats."""
+    switch(api, True)
+    embed(api, True)
+    set_up_and_export(store_id, history_tasks)
+    baker = make_agent(api, "Baker")
+    baking = new_run(api, baker)
+    chat(api, baker, baking, "How do I keep my sourdough going?", "Feed the starter daily.")
+    cats = new_run(api, baker)
+    chat(api, baker, cats, "Why do felines knead?", "It comforts them, Kneading-wise.")
+    history.export(store_id)
+    return {"baker": baker, "baking": baking, "cats": cats}
+
+
+def test_an_agent_finds_a_passage_from_an_earlier_run_by_meaning_and_by_keyword(
+    api, past_runs, query_meaning
+):
+    agent = make_agent(api, "Rememberer")
+    agent = api.put(
+        f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[HISTORY_TOOL])
+    ).json()
+    run = new_run(api, agent)
+    baking = past_runs["baking"]
+    with SessionLocal() as db:
+        started = db.get(AgentRun, baking["id"]).created_at
+
+    # By meaning: "bread" shares no word with the run, only its meaning.
+    seen = ask(api, agent, run, "bread")
+    assert "past runs" in seen["description"]
+    assert seen["results"][0] == {
+        "run_id": baking["id"],
+        "agent": "Baker",
+        "title": "How do I keep my sourdough going?",
+        "when": started.isoformat(),
+        "role": "user",
+        "text": "How do I keep my sourdough going?",
+    }
+    assert len(seen["results"]) == 3
+
+    # By keyword: "starter" means nothing to the embedder, but it's a word in the run.
+    seen = ask(api, agent, new_run(api, agent), "starter")
+    assert seen["results"][0]["text"] == "Feed the starter daily."
+    assert seen["results"][0]["run_id"] == baking["id"]
+
+
+def test_searching_history_leaves_out_the_run_searching(api, store_id, past_runs, query_meaning):
+    agent = make_agent(api, "Rememberer")
+    agent = api.put(
+        f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[HISTORY_TOOL])
+    ).json()
+    run = new_run(api, agent)
+    chat(api, agent, run, "Kittens and sourdough", "Both need feeding.")
+    history.export(store_id)
+
+    seen = ask(api, agent, run, "kittens sourdough")
+
+    assert run["id"] not in {r["run_id"] for r in seen["results"]}
+    assert {r["run_id"] for r in seen["results"]} == {
+        past_runs["baking"]["id"],
+        past_runs["cats"]["id"],
+    }
+
+
+def test_searching_history_never_returns_another_stores_runs(
+    db, api, user, past_runs, query_meaning, history_tasks
+):
+    other = provisioned_user(db, -2, "other-user")
+    try:
+        app.dependency_overrides[current_user] = lambda: other
+        other_store = data_store_for(other.id)
+        switch(api, True)
+        embed(api, True)
+        set_up_and_export(other_store, history_tasks)
+        agent = make_agent(api, "Theirs")
+        agent = api.put(
+            f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[HISTORY_TOOL])
+        ).json()
+        chat(api, agent, new_run(api, agent), "My zebrafish aquarium", "Lovely fish.")
+        history.export(other_store)
+
+        seen = ask(api, agent, new_run(api, agent), "sourdough starter felines")
+        assert {r["agent"] for r in seen["results"]} == {"Theirs"}
+
+        app.dependency_overrides[current_user] = lambda: user
+        mine = make_agent(api, "Mine")
+        mine = api.put(
+            f"/api/agents/{mine['id']}", json=agent_body(mine, tools=[HISTORY_TOOL])
+        ).json()
+        seen = ask(api, mine, new_run(api, mine), "zebrafish aquarium")
+        assert {r["agent"] for r in seen["results"]} == {"Baker"}
+    finally:
+        app.dependency_overrides[current_user] = lambda: user
+        delete_user(db, other)
+
+
+def test_searching_history_before_any_was_exported_says_so(api, query_meaning):
+    agent = make_agent(api, "Rememberer")
+    agent = api.put(
+        f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[HISTORY_TOOL])
+    ).json()
+
+    seen = ask(api, agent, new_run(api, agent), "sourdough")
+
+    assert seen["results"] == [{"error": search.NO_HISTORY}]
+
+
+def test_searching_history_behind_its_lines_head_says_to_try_again(
+    api, store_id, past_runs, query_meaning
+):
+    # As while a deploy brings the store to h0003, which gives the messages their search columns.
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore).where(DataStore.id == store_id).values(history_revision="h0002")
+        )
+        db.commit()
+
+    results = asyncio.run(search.history_search_results(data_store_id=store_id, query="bread"))
+
+    assert results == [{"error": search.STORE_UPGRADING}]

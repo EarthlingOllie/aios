@@ -64,7 +64,13 @@ from sqlalchemy.orm import Session
 
 from aios import checkpoints
 from aios.datastores import migrations
-from aios.datastores.connections import DataStoreBehind, DataStoreBusy, store_session
+from aios.datastores.connections import (
+    DataStoreBehind,
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_session,
+)
 from aios.datastores.models import (
     EMBEDDABLE,
     HistoryAgentRun,
@@ -271,6 +277,29 @@ def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
         return False
     _check_head(data_store_id, row.history_revision)
     return True
+
+
+class NoHistory(Exception):
+    """The store has no `history` tables: its owner has never switched the export on."""
+
+
+def check_searchable(data_store_id: uuid.UUID) -> None:
+    """Raises unless the store's exported history can be searched (`aios.search`):
+    `DataStoreNotReady` unless the store is ready, `NoHistory` if it has no `history` tables,
+    and `DataStoreBehind` if they're behind their line's head."""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(DataStore.status, DataStore.history_revision).where(
+                DataStore.id == data_store_id
+            )
+        ).one_or_none()
+    if row is None:
+        raise DataStoreNotFound(data_store_id)
+    if row.status != DataStoreStatus.ready:
+        raise DataStoreNotReady(data_store_id, row.status)
+    if row.history_revision is None:
+        raise NoHistory
+    _check_head(data_store_id, row.history_revision)
 
 
 def _check_head(data_store_id: uuid.UUID, revision: str) -> None:
