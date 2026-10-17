@@ -320,24 +320,37 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
     if not pending:
         return 0
     runs = _load_runs([p.source_id for p in pending])
+    # A run that fails (its checkpoint won't load, its copy won't write) is set aside with its
+    # error, until it changes again or RETRY_AFTER, so the runs after it still go in.
     errors: dict[int, str] = {}
+
+    def failed(p, exc: Exception) -> None:
+        log.exception("Couldn't export agent run %s to data store %s", p.source_id, data_store_id)
+        errors[p.id] = f"{type(exc).__name__}: {exc}"
+
+    # Every thread read first, on one connection, so the store's transaction isn't left idle.
+    messages: dict[int, list[dict[str, Any]]] = {}
+    with checkpoints.sync_saver() as saver:
+        for p in pending:
+            if p.source_id in runs:
+                try:
+                    messages[p.source_id] = flatten(
+                        p.source_id, checkpoints.history(p.source_id, saver)
+                    )
+                except Exception as exc:
+                    failed(p, exc)
     with store_session(data_store_id, "rw") as store:
         for p in pending:
             run = runs.get(p.source_id)
             if run is None:
                 # Deleted (its messages go with it, by their foreign key).
                 store.execute(delete(HistoryAgentRun).where(HistoryAgentRun.id == p.source_id))
-                continue
-            try:
-                with store.begin_nested():
-                    _write_run(store, run, flatten(run["id"], checkpoints.history(run["id"])))
-            except Exception as exc:
-                # E.g. its checkpoint won't load. Set aside with its error (until the run
-                # changes again, or RETRY_AFTER), so the runs after it still go in.
-                log.exception(
-                    "Couldn't export agent run %s to data store %s", p.source_id, data_store_id
-                )
-                errors[p.id] = f"{type(exc).__name__}: {exc}"
+            elif p.id not in errors:
+                try:
+                    with store.begin_nested():
+                        _write_run(store, run, messages[p.source_id])
+                except Exception as exc:
+                    failed(p, exc)
         store.commit()
     with SessionLocal() as db:
         for p in sorted(pending, key=lambda p: p.source_id):  # in run order, as enqueue_runs

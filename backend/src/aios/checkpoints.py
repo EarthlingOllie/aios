@@ -83,18 +83,23 @@ async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
 
 
 @contextmanager
-def _sync_saver() -> Iterator[PostgresSaver]:
+def sync_saver() -> Iterator[PostgresSaver]:
+    """A checkpointer outside a turn, on a connection of its own (e.g. to read many runs'
+    histories on one)."""
     with Connection.connect(conninfo(), **_CONNECT_KWARGS) as conn:
         yield PostgresSaver(conn)
 
 
-def history(run_id: int) -> list[BaseMessage]:
-    """The run's conversation as of its latest checkpoint (empty before its first turn)."""
-    with _sync_saver() as saver:
-        try:
-            checkpoint = saver.get_tuple(thread_config(run_id))
-        except UndefinedTable:  # no turn has run anywhere yet (see `setup`)
-            return []
+def history(run_id: int, saver: PostgresSaver | None = None) -> list[BaseMessage]:
+    """The run's conversation as of its latest checkpoint (empty before its first turn); read
+    with `saver` (see `sync_saver`), or on a connection of its own."""
+    if saver is None:
+        with sync_saver() as saver:
+            return history(run_id, saver)
+    try:
+        checkpoint = saver.get_tuple(thread_config(run_id))
+    except UndefinedTable:  # no turn has run anywhere yet (see `setup`)
+        return []
     if checkpoint is None:
         return []
     return list(checkpoint.checkpoint["channel_values"].get("messages", []))
@@ -107,7 +112,7 @@ def delete_threads(run_ids: list[int]) -> None:
     """
     if not run_ids:
         return
-    with _sync_saver() as saver:
+    with sync_saver() as saver:
         try:
             for run_id in run_ids:
                 saver.conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))

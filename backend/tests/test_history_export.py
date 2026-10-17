@@ -393,10 +393,10 @@ def export_running(api, user, store_id, history_tasks, monkeypatch):
     threading.Timer(5, release.set).start()
     read = history.checkpoints.history
 
-    def slow(run_id):
+    def slow(run_id, *args):
         reading.set()
         release.wait()
-        return read(run_id)
+        return read(run_id, *args)
 
     monkeypatch.setattr(history.checkpoints, "history", slow)
     running = threading.Thread(target=history.export, args=[store_id])
@@ -675,7 +675,7 @@ def test_a_run_set_aside_by_an_error_is_tried_again_later(
     switch(api, True)
     read = history.checkpoints.history
 
-    def fails(run_id):
+    def fails(run_id, *args):
         raise RuntimeError("connection dropped")
 
     monkeypatch.setattr(history.checkpoints, "history", fails)
@@ -740,12 +740,35 @@ def test_switching_it_off_stops_an_export_under_way(
     monkeypatch.setattr(history, "BATCH", 1)
     read = history.checkpoints.history
 
-    def switched_off_while_reading(run_id):
+    def switched_off_while_reading(run_id, *args):
         switch(api, False)
-        return read(run_id)
+        return read(run_id, *args)
 
     monkeypatch.setattr(history.checkpoints, "history", switched_off_while_reading)
 
     # The batch under way finishes; no other starts.
     assert history.export(store_id) == 1
     assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(1,)]
+
+
+def test_an_export_reads_a_batch_of_runs_on_one_connection(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    agent = make_agent(api, "Bot")
+    runs = [new_run(api, agent) for _ in range(3)]
+    for run in runs:
+        chat(api, agent, run, "hi")
+    switch(api, True)
+    for queued in history_tasks["set_up"]:
+        provision.migrate_store(queued)
+    connects = []
+    connect = history.checkpoints.Connection.connect
+
+    def counted(*args, **kwargs):
+        connects.append(1)
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(history.checkpoints.Connection, "connect", counted)
+
+    assert history.export(store_id) == 3
+    assert len(connects) == 1
