@@ -6,8 +6,8 @@ input and output tokens of each model call, written by the turn loop at each mod
 runs from before, which are shown as not tracked. A heartbeat marks a run whose turn is running
 outside a request (`aios.firing`), so one whose process died can be failed.
 
-Revision ID: 0011
-Revises: 0010
+Revision ID: 0012
+Revises: 0011
 Create Date: 2026-10-17 10:12:41.000000
 """
 
@@ -18,8 +18,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0011"
-down_revision: str | None = "0010"
+revision: str = "0012"
+down_revision: str | None = "0011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
