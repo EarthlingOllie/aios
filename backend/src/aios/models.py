@@ -11,6 +11,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     String,
@@ -37,6 +38,11 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
+    export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Embed the exported messages too, so agents can search past runs by meaning. Only while
+    # the export is on: switching it off switches this off.
+    embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -88,6 +94,18 @@ class DataStore(Base):
     ro_password: Mapped[str | None] = mapped_column(Text)
     # The store tree's Alembic revision its database is at (`aios.datastores.migrations`).
     schema_revision: Mapped[str | None] = mapped_column(String(64))
+    # The revision of the tree's `history` branch it's at: null until its owner first switches
+    # the run history export on, which creates the `history` schema.
+    history_revision: Mapped[str | None] = mapped_column(String(64))
+    # When the run history export last caught up (copied in whatever runs were pending).
+    history_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When embedding the exported messages last caught up (embedded every one waiting); null
+    # while it hasn't since it was switched on, or since it last failed.
+    history_embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why embedding last failed, and when it's tried again (unless the store's export runs
+    # first, after a turn); both cleared once it catches up.
+    history_embed_error: Mapped[str | None] = mapped_column(Text)
+    history_embed_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -97,6 +115,52 @@ class DataStore(Base):
     db_bytes: Mapped[int | None] = mapped_column(BigInteger)
     files_bytes: Mapped[int | None] = mapped_column(BigInteger)
     usage_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HistoryExportKind(enum.StrEnum):
+    agent_run = "agent_run"
+    workflow_run = "workflow_run"
+
+
+class HistoryExport(Base):
+    """The run history export's outbox: a run (by kind and platform id) to copy into the data
+    store, or to delete from it if it's gone (`aios.datastores.history`).
+
+    One row per run and store. It's written in the same transaction as the run's own update,
+    and written again (`exported_at`, `error` and `retry_at` cleared) each time the run
+    changes, so it's pending while `exported_at` is null. A run that failed to export keeps its
+    `error`, and is set aside until `retry_at` (or until it changes again, if that's sooner), so
+    it doesn't hold up the runs after it.
+    """
+
+    __tablename__ = "history_exports"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("data_stores.id", ondelete="CASCADE")
+    )
+    kind: Mapped[HistoryExportKind] = mapped_column(
+        Enum(HistoryExportKind, name="history_export_kind")
+    )
+    # Not a foreign key: the row outlives a deleted run, to delete its copy.
+    source_id: Mapped[int] = mapped_column(BigInteger)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("data_store_id", "kind", "source_id"),
+        # What the export drains.
+        Index(
+            "ix_history_exports_pending",
+            "data_store_id",
+            "enqueued_at",
+            postgresql_where=text("exported_at IS NULL"),
+        ),
+    )
 
 
 # Agents and skills are split into an editable identity row (name, description) and a chain of
@@ -701,3 +765,28 @@ class SchemaChangeRequest(Base):
     data_store: Mapped[DataStore] = relationship()
 
     __table_args__ = (UniqueConstraint("requested_by_run", "tool_call_id"),)
+
+
+class Notification(Base):
+    """Something in the app for a user to see (`aios.notifications`): what kind it is, and a
+    reference to what it's about (for a schema change request, its id and its store's). Not tied
+    to any one feature, so other kinds can use it later. It's read once the user marks it so, or
+    once what it's about no longer needs them (a request decided)."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(64))
+    ref: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # A user's, unread first: what the SPA polls for.
+        Index("ix_notifications_user_id_read_at", "user_id", "read_at"),
+        # The notifications about something (`ref @> ...`), to mark them read.
+        Index("ix_notifications_ref", "ref", postgresql_using="gin"),
+    )
