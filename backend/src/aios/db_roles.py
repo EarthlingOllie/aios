@@ -304,25 +304,29 @@ SELECT datname FROM pg_database
 
 
 def _add_pgstattuple_to_stores(admin_url: str, platform_db: str) -> None:
-    """pgstattuple in each data store made from the template before it had it."""
+    """pgstattuple in each data store made from the template before it had it.
+
+    Only a store's own roles may connect to it, and only a superuser may create pgstattuple: a
+    master user that isn't one (RDS's) can't, and says so, once for all the stores it couldn't
+    check. Those lacking it are measured by their size until a superuser adds it."""
     with psycopg.connect(libpq_conninfo(admin_url, database=platform_db)) as conn:
         stores = [name for (name,) in conn.execute(_STORES).fetchall()]
+    missed = []
     for store in stores:
         try:
-            conn = psycopg.connect(libpq_conninfo(admin_url, database=store))
-        except psycopg.OperationalError as exc:
-            # Only its own roles may connect, which a master user that isn't a superuser (RDS's)
-            # needs granting. Until a superuser adds pgstattuple, it's measured by its size.
-            print(
-                f"Warning: Couldn't check pgstattuple is in data store {store}, so it's measured"
-                f" by its database's size: {str(exc).strip()}",
-                file=sys.stderr,
-            )
-            continue
-        with conn:
-            has = conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple'")
-            if not has.fetchone():
-                _add_pgstattuple(conn)
+            with psycopg.connect(libpq_conninfo(admin_url, database=store)) as conn:
+                has = conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple'")
+                if not has.fetchone():
+                    _add_pgstattuple(conn)
+        except psycopg.Error as exc:
+            missed.append(f"{store} ({str(exc).strip().splitlines()[-1]})")
+    if missed:
+        print(
+            f"Warning: Couldn't give pgstattuple to {len(missed)} data stores, or check they have"
+            " it: any without it is measured by its database's size, which deleting rows doesn't"
+            f" bring down, until a superuser adds it. {', '.join(missed)}",
+            file=sys.stderr,
+        )
 
 
 def _ensure_store_template(admin_url: str, platform_db: str, template: str) -> None:

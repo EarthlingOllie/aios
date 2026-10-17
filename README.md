@@ -267,9 +267,9 @@ them. Only a database's owner may do that, so one the master user doesn't own is
 and reported as a warning. And it makes the data stores' template, `aios_store_template`
 (`DATA_STORE_TEMPLATE`): an empty database with pgvector and pgstattuple (for measuring a store's
 data) in an `extensions` schema, which no one may connect to and the provisioner copies. It adds
-pgstattuple to any store made before the template had it; one it may not connect to (on RDS, the
-master user isn't a superuser) is reported as a warning, and measured by its database's size
-until a superuser adds it.
+pgstattuple to any store made before the template had it. Stores it may not connect to, or
+create it in (on RDS, the master user isn't a superuser), are listed in one warning; any of
+them without it is measured by its database's size until a superuser adds it.
 
 ### Data stores
 
@@ -349,8 +349,10 @@ for the Data page's Overview, which shows both against their caps, warning from 
 provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
 and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
 makes room at once; the Overview shows rows' room at the next measurement. The checks first read
-the database's size, which is never less than the data, and only measure the data at or over the
-cap, so writes well under it cost little.
+the database's size, which is never less than the data, and only measure the data once that
+size reaches the cap. Deleting rows doesn't bring the size back down, so from then on each check
+measures: `pgstattuple_approx` reads the pages vacuum hasn't marked all-visible, the ones
+written or deleted from since.
 
 ### Dependency policy
 
