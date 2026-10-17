@@ -26,6 +26,10 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   waits for its next change, or `RETRY_AFTER`, so it doesn't hold up the rest. A periodic
   sweep (`stores_to_export`) queues stores whose rows are still pending, should a queued export
   be lost.
+- **Embedding** (`User.embed_run_history`, offered only while the export is on: `set_embedding`)
+  makes the copy searchable by meaning (`aios.search.history_search`): once the export has
+  caught up, it embeds the messages waiting (`_embed`), those just exported or, once switched
+  on, every one there. Switched off, nothing new is embedded and what was is kept.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
   (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
   outbox, so their copies go once it's back on.
