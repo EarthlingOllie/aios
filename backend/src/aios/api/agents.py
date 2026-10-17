@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, tracing, ui_stream
+from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
@@ -415,6 +415,13 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
         )
         db.commit()
     return agent_out(agent)
+
+
+@router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
+def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
+    """What depends on the agent: what deleting it would cut off, and so has to be resolved
+    first (see `delete_agent`)."""
+    return dependents.find(db, get_owned_agent(db, user.id, agent_id))
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)

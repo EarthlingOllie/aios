@@ -16,6 +16,8 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, Connection
 from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from aios.config import get_settings, libpq_conninfo
 
@@ -80,6 +82,22 @@ async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
         await conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))
         # Closing the connection releases the lock, however the turn ends.
         yield AsyncPostgresSaver(conn)
+
+
+def turns_underway(db: Session, run_ids: list[int]) -> set[int]:
+    """Those of these runs with a turn underway, in any process: their turn lock is held."""
+    if not run_ids:
+        return set()
+    # The two-int form of an advisory lock shows its keys as classid and objid (objsubid 2).
+    rows = db.execute(
+        text(
+            "SELECT objid::bigint FROM pg_locks WHERE locktype = 'advisory' AND granted"
+            " AND objsubid = 2 AND classid = CAST(:key AS oid)"
+            " AND objid::bigint = ANY(:ids)"
+        ),
+        {"key": _TURN_LOCK, "ids": list(run_ids)},
+    )
+    return {row[0] for row in rows}
 
 
 @contextmanager
