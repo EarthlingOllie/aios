@@ -124,7 +124,8 @@ def _claim(now: datetime, limit: int) -> list[int]:
         return claim_due(db, now, limit)
 
 
-# Kept for the tests and callers that beat the fires in flight by hand; the loop is `aios.firing`'s.
+# Refreshes the heartbeats of the fires this process is running, schedules' among them; the
+# loop that calls it every `HEARTBEAT_SECONDS` is started by `run_forever`.
 beat = firing.beat
 
 

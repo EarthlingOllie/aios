@@ -116,9 +116,9 @@ def fail_stalled(db: Session) -> None:
     db.commit()
 
 
-def _beat(fires: list[Fire]) -> None:
+def _beat(flights: list[Fire]) -> None:
     with SessionLocal() as db:
-        if run_ids := [fire.run_id for fire in fires if fire.run_id is not None]:
+        if run_ids := [flight.run_id for flight in flights if flight.run_id is not None]:
             # Not once its turn has ended, nor one a chat turn has since taken over.
             db.execute(
                 update(AgentRun)
@@ -129,15 +129,15 @@ def _beat(fires: list[Fire]) -> None:
                 )
                 .values(heartbeat_at=func.now())
             )
-        for fire in fires:
-            fire.cause.beat(db)
+        for flight in flights:
+            flight.cause.beat(db)
         db.commit()
 
 
 async def beat() -> None:
     """Refresh the heartbeats of the fires this process is running."""
-    if fires := list(_in_flight.values()):
-        await run_in_threadpool(_beat, fires)
+    if flights := list(_in_flight.values()):
+        await run_in_threadpool(_beat, flights)
 
 
 async def beat_forever(interval: float) -> None:
@@ -151,15 +151,15 @@ async def beat_forever(interval: float) -> None:
             log.exception("heartbeat failed")
 
 
-def _start(fire: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
+def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
     """Start the cause's run, and the turn: its run marked running, with its heartbeat."""
     with SessionLocal() as db:
-        turn = fire.cause.start(db)
+        turn = flight.cause.start(db)
         if turn is None:
             return None
         ctx = agents_api.load_chat_context(db, turn.user_id, turn.agent_id, turn.run_id)
     agents_api._start_turn(turn.run_id, turn.message, heartbeat=True)
-    fire.run_id = turn.run_id
+    flight.run_id = turn.run_id
     return turn, ctx
 
 
@@ -169,10 +169,10 @@ def _record(cause: Cause, error: str | None) -> None:
         db.commit()
 
 
-async def _fire(fire: Fire) -> None:
+async def _fire(flight: Fire) -> None:
     error = None
     try:
-        started = await run_in_threadpool(_start, fire)
+        started = await run_in_threadpool(_start, flight)
         if started is not None:
             turn, ctx = started
             stream = agents_api.turn_stream(
@@ -187,12 +187,12 @@ async def _fire(fire: Fire) -> None:
         error = str(exc.detail)
     except asyncio.CancelledError:
         with CancelScope(shield=True):
-            await run_in_threadpool(_record, fire.cause, STOPPED)
+            await run_in_threadpool(_record, flight.cause, STOPPED)
         raise
     except Exception:
-        log.exception("%r couldn't fire", fire.cause)
+        log.exception("%r couldn't fire", flight.cause)
         error = "Couldn't start the run."
-    await run_in_threadpool(_record, fire.cause, error)
+    await run_in_threadpool(_record, flight.cause, error)
 
 
 async def fire(cause: Cause) -> None:
@@ -206,9 +206,9 @@ def _forget(task: asyncio.Task) -> None:
 
 def launch(cause: Cause, *, name: str) -> asyncio.Task:
     """Fire the cause in a task of its own, counted against the cap and beaten while it runs."""
-    fire = Fire(cause)
-    task = asyncio.create_task(_fire(fire), name=name)
-    _in_flight[task] = fire
+    flight = Fire(cause)
+    task = asyncio.create_task(_fire(flight), name=name)
+    _in_flight[task] = flight
     task.add_done_callback(_forget)
     return task
 

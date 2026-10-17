@@ -684,6 +684,14 @@ def _start_turn(run_id: int, prompt: str, *, heartbeat: bool = False) -> None:
         db.commit()
 
 
+def tool_call_count(response: AIMessage) -> int:
+    """The tool calls in a model response: the agent's, and the provider's own (e.g. web
+    search), which are content blocks of the response (as the run page counts them)."""
+    blocks = response.content if isinstance(response.content, list) else []
+    server = sum(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in blocks)
+    return len(response.tool_calls) + server
+
+
 def _count_step(run_id: int, response: AIMessage) -> None:
     """Add a model step to the run's counters: its tool calls, and what the call cost."""
     usage = response.usage_metadata or {}
@@ -693,7 +701,7 @@ def _count_step(run_id: int, response: AIMessage) -> None:
             .where(AgentRun.id == run_id)
             .values(
                 tool_call_count=func.coalesce(AgentRun.tool_call_count, 0)
-                + len(response.tool_calls),
+                + tool_call_count(response),
                 input_tokens=func.coalesce(AgentRun.input_tokens, 0) + usage.get("input_tokens", 0),
                 output_tokens=func.coalesce(AgentRun.output_tokens, 0)
                 + usage.get("output_tokens", 0),

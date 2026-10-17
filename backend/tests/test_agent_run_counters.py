@@ -4,8 +4,10 @@ written from the turn loop at each model step (see `aios.api.agents.turn_stream`
 from datetime import datetime
 
 from fake_model import ToolCall, Usage, model, use_model
+from langchain_core.messages import AIMessage
 from test_agents import agent_body, chat_body, make_agent
 
+from aios.api.agents import tool_call_count
 from aios.tools import hybrid_search
 
 
@@ -145,3 +147,18 @@ def test_counters_add_up_over_a_runs_turns(api, monkeypatch):
     }
     # The times are the latest turn's.
     assert second["started_at"] > first["finished_at"]
+
+
+def test_tool_calls_include_the_providers_own():
+    # A web search the provider ran, then a call the agent runs: both are tool calls, as the
+    # run page's event log counts them.
+    response = AIMessage(
+        content=[
+            {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}},
+            {"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": []},
+            {"type": "text", "text": "Let me check the documents too."},
+        ],
+        tool_calls=[{"name": "search_documents", "args": {"query": "x"}, "id": "call_1"}],
+    )
+    assert tool_call_count(response) == 2
+    assert tool_call_count(AIMessage("Just text.")) == 0
