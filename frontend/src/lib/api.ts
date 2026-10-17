@@ -238,6 +238,8 @@ export type AgentInput = {
   note?: string;
 };
 
+export type AgentRunStatus = "running" | "succeeded" | "failed";
+
 export type RunSummary = {
   id: number;
   agent_id: number;
@@ -247,6 +249,15 @@ export type RunSummary = {
   message_count: number;
   /** The trigger (e.g. a schedule) that started the run, if one did and it still exists. */
   trigger_id: number | null;
+  /** How its latest turn is going or went, and when it began and ended. Null, with the
+   * counters, for a run from before these were kept (see `lib/agent-runs`). */
+  status: AgentRunStatus | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Over all its turns: the model's tool calls, and the tokens of each model call. */
+  tool_call_count: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -600,6 +611,46 @@ export type AgentDeleteResolutions = {
   cancel_workflow_runs: number[];
   deactivate_workflows: number[];
 };
+export type ChatVisibility = "public" | "private";
+export type ChatMemberKind = "user" | "agent" | "workflow";
+
+/** Someone in a chat: a user (with a role), or, later, an agent or a workflow. */
+export type ChatMember = {
+  /** The membership's id, which removing the member takes. */
+  id: number;
+  kind: ChatMemberKind;
+  /** Users only: the chat's owner, or an ordinary member. */
+  role: "owner" | "member" | null;
+  /** The user's, agent's or workflow's id. */
+  target_id: number;
+  name: string;
+  /** Users only. */
+  login: string | null;
+  avatar_url: string | null;
+  added_at: string;
+};
+
+export type ChatSummary = {
+  id: number;
+  name: string;
+  description: string;
+  /** A private chat doesn't exist for anyone who isn't a member. */
+  visibility: ChatVisibility;
+  owner_id: number;
+  /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
+  is_owner: boolean;
+  member_count: number;
+  created_at: string;
+  /** When it was last active. */
+  updated_at: string;
+};
+
+export type Chat = ChatSummary & {
+  /** Grouped by kind; the owner first, then in the order they were added. */
+  members: { users: ChatMember[]; agents: ChatMember[]; workflows: ChatMember[] };
+};
+
+export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
 
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -763,4 +814,13 @@ export const api = {
   previewSchedule: (cron: string, timezone: string) =>
     request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
+
+  listChats: () => request<ChatSummary[]>("/api/chats"),
+  getChat: (id: number) => request<Chat>(`/api/chats/${id}`),
+  createChat: (body: ChatInput) => request<Chat>("/api/chats", json("POST", body)),
+  updateChat: (id: number, body: ChatInput) =>
+    request<Chat>(`/api/chats/${id}`, json("PUT", body)),
+  deleteChat: (id: number) => request<void>(`/api/chats/${id}`, { method: "DELETE" }),
+  removeChatMember: (id: number, memberId: number) =>
+    request<void>(`/api/chats/${id}/members/${memberId}`, { method: "DELETE" }),
 };

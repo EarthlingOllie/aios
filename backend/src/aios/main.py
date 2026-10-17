@@ -15,6 +15,7 @@ from aios import auth, scheduler, tracing
 from aios.api import (
     agents,
     chat,
+    chats,
     data,
     documents,
     dropped,
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(dropped.router)
     app.include_router(notifications.router)
     app.include_router(settings_api.router)
+    app.include_router(chats.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

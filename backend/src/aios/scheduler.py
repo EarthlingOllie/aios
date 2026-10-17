@@ -1,7 +1,10 @@
 """Fires schedule triggers (`aios.models.Trigger`).
 
 Each API process runs `run_forever` alongside serving requests. Every tick it claims the
-schedules that are due (`claim_due`) and fires each in a task of its own (`fire`):
+schedules that are due (`claim_due`) and fires each in a task of its own (`fire`), through the
+firing machinery every cause of a run outside a request shares (`aios.firing`: the cap, the
+heartbeat, the stall sweep, and starting a run and running one turn of it). What's a schedule's
+own is `ScheduleFiring`: what it claims, and where its heartbeat and outcome live.
 
 - A process fires at most `scheduler_max_concurrent_runs` at once, and claims no more than it has
   free slots for: claiming moves a schedule on, so one claimed but left waiting would be late or,
@@ -28,28 +31,28 @@ schedules that are due (`claim_due`) and fires each in a task of its own (`fire`
   the agent got to is kept, and the schedule records that it failed.
 - A process that dies (killed, OOM, a deploy) can't record that, nor can a tick stopped between
   claiming and firing. So while a schedule is stored as running, the process firing it refreshes
-  its heartbeat (`heartbeat_at`, set when it's claimed) every `HEARTBEAT_SECONDS` (`beat`), and
-  each tick, on any replica, fails those whose heartbeat has stopped for `STALE_AFTER`
-  (`fail_stalled`). A live replica keeps beating its own fires, so others leave them be. Only the
-  stored status counts: a workflow's schedule is stored as running only until its run is queued,
-  and the worker looks after the run from there (`aios.workflows`).
+  its heartbeat (`heartbeat_at`, set when it's claimed) every `HEARTBEAT_SECONDS`
+  (`ScheduleFiring.beat`, with the run's own), and each tick, on any replica, fails those whose
+  heartbeat has stopped for `STALE_AFTER` (`fail_stalled`). A live replica keeps beating its own
+  fires, so others leave them be. Only the stored status counts: a workflow's schedule is stored
+  as running only until its run is queued, and the worker looks after the run from there
+  (`aios.workflows`).
 """
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from anyio import CancelScope
 from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
-from langchain_core.messages import HumanMessage
-from sqlalchemy import func, or_, select, tuple_, update
+from sqlalchemy import func, or_, select, update
 
-from aios import cron
+from aios import cron, firing
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
-from aios.config import get_settings
 from aios.db import SessionLocal
+from aios.firing import HEARTBEAT_SECONDS, STALE_AFTER, STOPPED, CantStart
 from aios.models import Trigger, TriggerStatus, TriggerTargetKind
 
 log = logging.getLogger(__name__)
@@ -57,24 +60,8 @@ log = logging.getLogger(__name__)
 # Most schedules claimed per tick, however many slots are free; any left over are due on the next.
 BATCH = 50
 
-# How often a process refreshes the heartbeat of the schedules it's firing, and how long without
-# one until a running schedule counts as stopped: a few missed beats, so a slow write or a busy
-# loop doesn't fail a live fire. (As `aios.workflows` does for workflow runs.)
-HEARTBEAT_SECONDS = 30.0
-STALE_AFTER = timedelta(seconds=3 * HEARTBEAT_SECONDS)
-
-# Why a fire is failed when its process stops, or is found to have stopped.
-STOPPED = "The service stopped mid-run."
-# Why one is failed if it was dropped (see `_claimed`) without its schedule being edited.
+# Why a firing is failed if it was dropped (see `_claimed`) without its schedule being edited.
 CHANGED = "The schedule was changed as it fired; it runs as changed next time."
-
-# Fires in flight, with the (trigger id, fired at) of each: kept so they aren't
-# garbage-collected, can be stopped on shutdown, and have their heartbeats refreshed.
-_firing: dict[asyncio.Task, tuple[int, datetime]] = {}
-
-
-class FireError(Exception):
-    """The trigger couldn't fire; the message is shown on it."""
 
 
 def claim_due(db, now: datetime, limit: int = BATCH) -> list[int]:
@@ -126,6 +113,9 @@ def fail_stalled(db) -> None:
 
 def _sweep() -> None:
     with SessionLocal() as db:
+        # The runs of fires whose process has gone, and the schedules: a schedule is running from
+        # when it's claimed, before it has a run.
+        firing.fail_stalled(db)
         fail_stalled(db)
 
 
@@ -134,38 +124,9 @@ def _claim(now: datetime, limit: int) -> list[int]:
         return claim_due(db, now, limit)
 
 
-def _beat(fires: list[tuple[int, datetime]]) -> None:
-    with SessionLocal() as db:
-        # Not once it's recorded how it went, or fired again (on another replica, say).
-        db.execute(
-            update(Trigger)
-            .where(
-                tuple_(Trigger.id, Trigger.last_fired_at).in_(fires),
-                Trigger.last_status == TriggerStatus.running,
-            )
-            .values(heartbeat_at=func.now())
-        )
-        db.commit()
-
-
-async def beat() -> None:
-    """Refresh the heartbeat of the schedules this process is firing."""
-    if fires := list(_firing.values()):
-        await run_in_threadpool(_beat, fires)
-
-
-async def _beat_forever() -> None:
-    while True:
-        await asyncio.sleep(HEARTBEAT_SECONDS)
-        try:
-            await beat()
-        except Exception:
-            # Only several missed beats in a row count as stopped.
-            log.exception("scheduler heartbeat failed")
-
-
-# What an agent's schedule runs once its run has started: (user id, agent id, run id, message).
-AgentTurn = tuple[int, int, int, str]
+# Refreshes the heartbeats of the fires this process is running, schedules' among them; the
+# loop that calls it every `HEARTBEAT_SECONDS` is started by `run_forever`.
+beat = firing.beat
 
 
 class _Gone(Exception):
@@ -203,103 +164,87 @@ def _claimed(
     return trigger
 
 
-def _start_agent_run(trigger_id: int, fired_at: datetime) -> AgentTurn:
-    """Start a run for an agent's schedule."""
-    with SessionLocal() as db:
-        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
-        agent = trigger.agent
-        try:
-            run = agents_api.new_agent_run(db, agent, trigger_id=trigger.id)
-        except HTTPException as exc:
-            if exc.status_code == 404:
-                raise FireError("The agent has been deleted.") from exc
-            raise FireError(exc.detail) from exc
-        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
-        # Committed with the run, under the agent's share lock (see `new_agent_run`).
-        trigger.last_run_id = run.id
-        db.commit()
-        return agent.owner_id, agent.id, run.id, trigger.input
+def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
+    """Start a run for an agent's schedule; commits."""
+    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
+    agent = trigger.agent
+    try:
+        run = agents_api.new_agent_run(db, agent, trigger_id=trigger.id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise CantStart("The agent has been deleted.") from exc
+        raise CantStart(exc.detail) from exc
+    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
+    # Committed with the run, under the agent's share lock (see `new_agent_run`).
+    trigger.last_run_id = run.id
+    db.commit()
+    return firing.Turn(agent.owner_id, agent.id, run.id, trigger.input)
 
 
-def _start_workflow_run(trigger_id: int, fired_at: datetime) -> None:
+def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
     """Start a run for a workflow's schedule, and queue it for the worker (`aios.workflows`).
 
     Raises `HTTPException` as starting one by hand would, if it can't start or be queued."""
-    with SessionLocal() as db:
-        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
-        run = workflows_api.new_workflow_run(db, trigger.workflow, trigger.input)
-        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
-        trigger.last_workflow_run_id = run.id
-        # Commits the link with the run; if queueing fails the run is deleted, and the link
-        # with it (SET NULL).
-        workflows_api.queue_workflow_run(db, run)
+    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
+    run = workflows_api.new_workflow_run(db, trigger.workflow, trigger.input)
+    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
+    trigger.last_workflow_run_id = run.id
+    # Commits the link with the run; if queueing fails the run is deleted, and the link
+    # with it (SET NULL).
+    workflows_api.queue_workflow_run(db, run)
 
 
-async def _run_agent(trigger_id: int, fired_at: datetime) -> str | None:
-    """Start an agent's run and run its turn; the turn's error, if it failed."""
-    user_id, agent_id, run_id, message = await run_in_threadpool(
-        _start_agent_run, trigger_id, fired_at
-    )
-    ctx = await run_in_threadpool(_load_context, user_id, agent_id, run_id)
-    await run_in_threadpool(agents_api._start_turn, run_id, message)
-    error = None
-    async for chunk in agents_api.turn_stream(ctx, user_id, run_id, HumanMessage(content=message)):
-        if chunk["type"] == "error":
-            error = chunk["errorText"]
-    return error
+@dataclass(frozen=True)
+class ScheduleFiring:
+    """One firing of a schedule, as the cause of a run (`aios.firing.Cause`): the trigger as
+    claimed at `fired_at`, which is what the firing acts on and records to."""
 
+    trigger_id: int
+    fired_at: datetime
 
-def _record(trigger_id: int, fired_at: datetime, error: str | None) -> None:
-    with SessionLocal() as db:
+    def start(self, db) -> firing.Turn | None:
+        """The agent's turn to run; None for a workflow (queued for the worker, so the trigger
+        shows how the run goes from here) or a trigger that's gone or fired again."""
+        kind = _target(self.trigger_id, self.fired_at)
+        if kind is None:
+            return None
+        try:
+            if kind == TriggerTargetKind.workflow:
+                _start_workflow_run(db, self.trigger_id, self.fired_at)
+                return None
+            return _start_agent_run(db, self.trigger_id, self.fired_at)
+        except _Gone as exc:
+            # A no-op to record: it's gone, fired again, or was edited, which drops the firing
+            # (see `_claimed`). Recorded anyway, so one dropped some other way isn't left running.
+            raise CantStart(CHANGED) from exc
+
+    def beat(self, db) -> None:
+        # Not once it's recorded how it went, or fired again (on another replica, say).
+        db.execute(
+            update(Trigger)
+            .where(
+                Trigger.id == self.trigger_id,
+                Trigger.last_fired_at == self.fired_at,
+                Trigger.last_status == TriggerStatus.running,
+            )
+            .values(heartbeat_at=func.now())
+        )
+
+    def record(self, db, error: str | None) -> None:
         # A no-op if the trigger was deleted, or has fired again since.
         db.execute(
             update(Trigger)
-            .where(Trigger.id == trigger_id, Trigger.last_fired_at == fired_at)
+            .where(Trigger.id == self.trigger_id, Trigger.last_fired_at == self.fired_at)
             .values(
                 last_status=TriggerStatus.failed if error else TriggerStatus.succeeded,
                 last_error=error,
             )
         )
-        db.commit()
-
-
-def _load_context(user_id: int, agent_id: int, run_id: int) -> agents_api.ChatContext:
-    with SessionLocal() as db:
-        return agents_api.load_chat_context(db, user_id, agent_id, run_id)
 
 
 async def fire(trigger_id: int, fired_at: datetime) -> None:
     """Fire one claimed trigger, and record how it went."""
-    error = None
-    try:
-        kind = await run_in_threadpool(_target, trigger_id, fired_at)
-        if kind is None:
-            return
-        if kind == TriggerTargetKind.workflow:
-            # Queued for the worker: the trigger shows how the run goes from here.
-            await run_in_threadpool(_start_workflow_run, trigger_id, fired_at)
-        else:
-            error = await _run_agent(trigger_id, fired_at)
-    except _Gone:
-        # A no-op: it's gone, fired again, or was edited, which drops the firing (see
-        # `_claimed`). Recorded anyway, so a firing dropped some other way isn't left running.
-        error = CHANGED
-    except FireError as exc:
-        error = str(exc)
-    except HTTPException as exc:
-        error = str(exc.detail)
-    except asyncio.CancelledError:
-        with CancelScope(shield=True):
-            await run_in_threadpool(_record, trigger_id, fired_at, STOPPED)
-        raise
-    except Exception:
-        log.exception("trigger %s couldn't fire", trigger_id)
-        error = "Couldn't start the run."
-    await run_in_threadpool(_record, trigger_id, fired_at, error)
-
-
-def _forget(task: asyncio.Task) -> None:
-    _firing.pop(task, None)
+    await firing.fire(ScheduleFiring(trigger_id, fired_at))
 
 
 async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
@@ -310,23 +255,21 @@ async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
     await run_in_threadpool(_sweep)
     # Every fire counts, a workflow's too: it holds its slot only while it starts and queues
     # the run, and counting it keeps the bound simple and honest.
-    in_flight = sum(not task.done() for task in _firing)
-    free = min(BATCH, get_settings().scheduler_max_concurrent_runs - in_flight)
+    free = min(BATCH, firing.free_slots())
     fired = {}
     if free <= 0:
         return fired
     for trigger_id in await run_in_threadpool(_claim, now, free):
-        task = asyncio.create_task(fire(trigger_id, now), name=f"trigger-{trigger_id}")
-        _firing[task] = (trigger_id, now)
-        task.add_done_callback(_forget)
-        fired[trigger_id] = task
+        fired[trigger_id] = firing.launch(
+            ScheduleFiring(trigger_id, now), name=f"trigger-{trigger_id}"
+        )
     return fired
 
 
 async def run_forever(interval: float) -> None:
     """Tick every `interval` seconds, and beat the fires in flight every `HEARTBEAT_SECONDS`,
     until cancelled; then stop the fires still running."""
-    beating = asyncio.create_task(_beat_forever(), name="scheduler-heartbeat")
+    beating = asyncio.create_task(firing.beat_forever(HEARTBEAT_SECONDS), name="heartbeat")
     try:
         while True:
             try:
@@ -336,6 +279,5 @@ async def run_forever(interval: float) -> None:
             await asyncio.sleep(interval)
     finally:
         beating.cancel()
-        for task in list(_firing):
-            task.cancel()
-        await asyncio.gather(beating, *_firing, return_exceptions=True)
+        await firing.stop_all()
+        await asyncio.gather(beating, return_exceptions=True)

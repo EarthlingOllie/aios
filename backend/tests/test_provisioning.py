@@ -588,7 +588,7 @@ def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
 
 
 def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, new_user):
-    """Stores made before migration 0012 have no passwords yet."""
+    """Stores made before migration 0014 have no passwords yet."""
     store_id = data_store_for(new_user().id)
     db.execute(
         update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
@@ -604,7 +604,7 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
 
 
 def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provisioned(db, new_user):
-    """While a deploy migrates, the release before migration 0012 still serves, and makes a
+    """While a deploy migrates, the release before migration 0014 still serves, and makes a
     new user's store with only its owner: the row gets its names from its id."""
     user = new_user()
     store_id = db.scalar(insert(DataStore).values(owner_user_id=user.id).returning(DataStore.id))

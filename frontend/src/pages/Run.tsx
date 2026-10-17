@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
+import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { ErrorBanner, formatDate, Placeholder, useLoad, usePoll, type ListContext } from "@/components/crud";
 import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
@@ -66,7 +67,15 @@ export function RunPage() {
             </Link>{" "}
             · run #{runId} · started {formatDate(run.data.created_at)}
           </div>
-          <div className="truncate text-sm font-medium">{run.data.title ?? "New run"}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-medium">{run.data.title ?? "New run"}</span>
+            <AgentRunStatusBadge run={run.data} data-testid="run-status" />
+            <RunCountersLine
+              run={run.data}
+              className="text-muted-foreground text-xs"
+              data-testid="run-counters"
+            />
+          </div>
         </div>
         <div className="bg-muted flex rounded-md p-0.5 text-sm" role="tablist">
           {(["conversation", "events"] as const).map((t) => (

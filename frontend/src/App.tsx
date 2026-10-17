@@ -7,6 +7,7 @@ import {
   Database,
   LogOut,
   MessageSquare,
+  MessagesSquare,
   Search,
   Settings,
   Sparkles,
@@ -21,6 +22,7 @@ import { NotificationsMenu, NotificationsProvider } from "@/components/Notificat
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ChatDetail, ChatForm, ChatsIndex, ChatsSection } from "@/pages/Chats";
 import {
   AgentDetail,
   AgentForm,
@@ -135,6 +137,12 @@ export default function App() {
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="chats" element={<ChatsSection />}>
+          <Route index element={<ChatsIndex />} />
+          <Route path="new" element={<ChatForm />} />
+          <Route path=":chatId" element={<ChatDetail />} />
+          <Route path=":chatId/edit" element={<ChatForm />} />
+        </Route>
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
           .map(({ to, label, icon, stub }) => (
@@ -165,6 +173,7 @@ const navItems: NavItem[] = [
     stub: "See how your agents are used and how they perform.",
   },
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
+  { to: "/chats", label: "Chats", icon: MessagesSquare, end: false },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
   { to: "/workflows", label: "Workflows", icon: Workflow, end: false },

@@ -25,10 +25,10 @@ import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
+import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
-const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 export function WorkflowsSection() {
   const { data, error, reload } = useLoad(api.listWorkflows);

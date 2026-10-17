@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+
+import type { RunSummary } from "@/lib/api";
+import { formatDuration, formatTokens, runCounters } from "@/lib/agent-runs";
+
+function run(changes: Partial<RunSummary> = {}): RunSummary {
+  return {
+    id: 1,
+    agent_id: 2,
+    agent_version_id: 3,
+    agent_version: 1,
+    title: "Find sources",
+    message_count: 4,
+    trigger_id: null,
+    status: null,
+    started_at: null,
+    finished_at: null,
+    tool_call_count: null,
+    input_tokens: null,
+    output_tokens: null,
+    created_at: "2026-10-14T09:00:00Z",
+    updated_at: "2026-10-14T09:00:05Z",
+    ...changes,
+  };
+}
+
+describe("formatDuration", () => {
+  it("reads in seconds, minutes or hours depending on how long it took", () => {
+    expect(formatDuration("2026-10-14T09:00:00Z", "2026-10-14T09:00:04.200Z")).toBe("4.2s");
+    expect(formatDuration("2026-10-14T09:00:00Z", "2026-10-14T09:03:05Z")).toBe("3m 5s");
+    expect(formatDuration("2026-10-14T09:00:00Z", "2026-10-14T10:02:30Z")).toBe("1h 2m");
+  });
+
+  it("measures to now while it's still going", () => {
+    const now = Date.parse("2026-10-14T09:00:10Z");
+    expect(formatDuration("2026-10-14T09:00:00Z", null, now)).toBe("10.0s");
+  });
+
+  it("never goes negative when the clocks disagree", () => {
+    const now = Date.parse("2026-10-14T08:59:59Z");
+    expect(formatDuration("2026-10-14T09:00:00Z", null, now)).toBe("0.0s");
+  });
+});
+
+describe("formatTokens", () => {
+  it("shows small counts whole and large ones rounded with a unit", () => {
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(365)).toBe("365");
+    expect(formatTokens(1234)).toBe("1.2k");
+    expect(formatTokens(48_000)).toBe("48k");
+    expect(formatTokens(2_345_678)).toBe("2.3M");
+  });
+});
+
+describe("runCounters", () => {
+  it("is null for a run from before counters were kept", () => {
+    expect(runCounters(run())).toBeNull();
+  });
+
+  it("adds input and output tokens up, as bills do", () => {
+    const tracked = run({
+      status: "succeeded",
+      started_at: "2026-10-14T09:00:00Z",
+      finished_at: "2026-10-14T09:00:04.200Z",
+      tool_call_count: 2,
+      input_tokens: 350,
+      output_tokens: 15,
+    });
+    expect(runCounters(tracked)).toEqual({ status: "succeeded", toolCalls: 2, tokens: 365 });
+  });
+
+  it("counts a run that's running but hasn't reached a model step yet as zero so far", () => {
+    const starting = run({ status: "running", started_at: "2026-10-14T09:00:00Z" });
+    expect(runCounters(starting)).toEqual({ status: "running", toolCalls: 0, tokens: 0 });
+  });
+});

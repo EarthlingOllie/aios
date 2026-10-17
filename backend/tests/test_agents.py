@@ -527,8 +527,8 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     def fake_start(run_id, prompt):
         events.append(("title on loop", on_event_loop()))
 
-    def fake_end(run_id, count):
-        events.append(("count on loop", on_event_loop(), count))
+    def fake_end(run_id, *, failed, message_count=None):
+        events.append(("count on loop", on_event_loop(), message_count))
 
     async def script(messages, info):
         events.append("model")

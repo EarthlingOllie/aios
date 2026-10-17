@@ -9,8 +9,8 @@ finishes, the previous release's document requests and ingests fail on the missi
 Keeping the tables a release longer wouldn't save anything, since nothing reads what that
 release writes to them, so its uploads would be lost silently instead.
 
-Revision ID: 0013
-Revises: 0012
+Revision ID: 0015
+Revises: 0014
 Create Date: 2026-10-16 09:00:00
 """
 
@@ -22,8 +22,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0013"
-down_revision: str | None = "0012"
+revision: str = "0015"
+down_revision: str | None = "0014"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
