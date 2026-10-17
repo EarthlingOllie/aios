@@ -130,3 +130,64 @@ def test_the_tables_wait_for_the_store_to_be_ready(api, db, user):
 
     assert response.status_code == 409
     assert response.json()["data_store_status"] == "provisioning"
+
+
+def rows(api, table: str, **params) -> dict:
+    response = api.get(f"/api/data/tables/{table}/rows", params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def values(page: dict) -> list[list]:
+    return [r["values"] for r in page["rows"]]
+
+
+def test_a_tables_rows_come_a_page_at_a_time_sorted_by_a_column(api, store):
+    first = rows(api, "fish", sort="weight_kg", order="desc", limit=2)
+    second = rows(api, "fish", sort="weight_kg", order="desc", limit=2, offset=2)
+
+    assert first["columns"] == ["id", "name", "weight_kg"]
+    # As text, as Postgres writes them.
+    assert values(first) == [["3", "carp", "7.5"], ["1", "pike", "4.2"]]
+    assert first["has_more"] is True
+    assert values(second) == [["2", "perch", "0.8"]]
+    assert second["has_more"] is False
+    assert rows(api, "fish", sort="name")["rows"][0]["values"][1] == "carp"
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "whales",
+        # Names, never SQL: these name no table.
+        "fish; DROP TABLE data.fish",
+        'fish" --',
+        "FISH",
+        # Not the owner's, nor the platform's.
+        "chunks",
+        "aios.chunks",
+        "data.fish",
+    ],
+)
+def test_an_unknown_table_is_not_found(api, store, table):
+    response = api.get(f"/api/data/tables/{table}/rows")
+
+    assert response.status_code == 404
+    assert rows(api, "fish")["columns"] == ["id", "name", "weight_kg"]
+
+
+def test_another_stores_table_is_not_found(api, store, db, new_user):
+    other = provisioned(db, data_store_for(new_user().id))
+    with as_owner(other) as conn:
+        conn.execute("CREATE TABLE data.secrets (code text)")
+
+    assert api.get("/api/data/tables/secrets/rows").status_code == 404
+
+
+@pytest.mark.parametrize("sort", ["colour", "weight_kg DESC", "name; DROP TABLE data.fish", "1"])
+def test_sorting_by_an_unknown_column_is_unprocessable(api, store, sort):
+    response = api.get("/api/data/tables/fish/rows", params={"sort": sort})
+
+    assert response.status_code == 422
+    assert "no column" in response.json()["detail"]
+    assert len(rows(api, "fish")["rows"]) == 3

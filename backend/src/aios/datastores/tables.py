@@ -13,20 +13,22 @@ import psycopg
 from psycopg import sql
 
 from aios.config import get_settings
-from aios.datastores.reads import read_only
+from aios.datastores.reads import read_capped, read_only
 
 SCHEMA = "data"
 # Tables the planner expects this many rows of, or more, show its estimate rather than a count.
 EXACT_COUNT_BELOW = 100_000
 # The bytes a table's row count (and the comma after it) may take in the list, as JSON.
 COUNT_ROOM = 24
+# pgvector's types: shown as their dimension, never their numbers.
+EMBEDDING_TYPES = ("vector", "halfvec", "sparsevec")
 
-# The store's tables, with their columns, in order: only the owner's (`data`), and a partitioned
-# table once, not each partition.
+# The store's tables (or the one named), with their columns, in order: only the owner's
+# (`data`), and a partitioned table once, not each partition.
 TABLES_SQL = """
     SELECT c.relname AS name, obj_description(c.oid, 'pg_class') AS description,
            col.name AS column, col.type, col.nullable, col.description AS column_description,
-           col.embedding,
+           col.base_type,
            -- The planner's row estimate (-1, or NULL: never analyzed); a partitioned table's,
            -- its partitions'.
            CASE WHEN c.relkind = 'p' THEN (
@@ -40,19 +42,28 @@ TABLES_SQL = """
     LEFT JOIN LATERAL (
         SELECT a.attnum, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
                NOT a.attnotnull AS nullable, col_description(c.oid, a.attnum) AS description,
-               -- pgvector's types, or a domain over one.
-               bt.typname IN ('vector', 'halfvec', 'sparsevec') AS embedding
+               -- A domain's, the type it's over.
+               bt.typname AS base_type
         FROM pg_attribute a
         JOIN pg_type t ON t.oid = a.atttypid
         JOIN pg_type bt ON bt.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END
         WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     ) col ON true
-    WHERE n.nspname = %s
+    WHERE n.nspname = %(schema)s
+      AND (%(name)s::text IS NULL OR c.relname = %(name)s::text)
       AND c.relkind IN ('r', 'p')
       AND NOT c.relispartition
       AND has_table_privilege(c.oid, 'SELECT')
     ORDER BY c.relname, col.attnum
 """
+
+
+class TableNotFound(LookupError):
+    """The store has no `data` table of this name (that its read-only role may read)."""
+
+
+class ColumnNotFound(LookupError):
+    """The table has no column of this name."""
 
 
 @dataclass
@@ -61,8 +72,12 @@ class Column:
     type: str
     nullable: bool
     description: str | None
-    # A pgvector column: shown as its dimension, never its numbers.
-    embedding: bool
+    # The type's name (a domain's, the type it's over), e.g. `jsonb` or `vector`.
+    base_type: str
+
+    @property
+    def embedding(self) -> bool:
+        return self.base_type in EMBEDDING_TYPES
 
 
 @dataclass
@@ -74,18 +89,40 @@ class Table:
     # Whether `row_count` is the planner's estimate (a big table), not a count.
     row_count_estimated: bool = False
 
+    def column(self, name: str) -> Column:
+        for column in self.columns:
+            if column.name == name:
+                return column
+        raise ColumnNotFound(name)
 
-def _catalog(pg: psycopg.Connection) -> dict[str, Table]:
-    """The store's tables, with the planner's estimate of their rows as `row_count` (None if
-    there is none)."""
+
+@dataclass
+class Row:
+    # Where the row is, for reading one of its values in full (`read_value`).
+    key: str
+    # Each value as text (None for NULL), in column order.
+    values: list[str | None]
+
+
+@dataclass
+class RowsPage:
+    columns: list[str]
+    rows: list[Row]
+    # There are more rows after these.
+    has_more: bool
+
+
+def _catalog(pg: psycopg.Connection, name: str | None = None) -> dict[str, Table]:
+    """The store's tables (or the one named), with the planner's estimate of their rows as
+    `row_count` (None if there is none)."""
     tables: dict[str, Table] = {}
-    for row in pg.execute(TABLES_SQL, (SCHEMA,)):
-        name, description, column, type_, nullable, column_description, embedding, estimate = row
-        table = tables.get(name)
+    for row in pg.execute(TABLES_SQL, {"schema": SCHEMA, "name": name}):
+        table_name, description, column, type_, nullable, column_description, base, estimate = row
+        table = tables.get(table_name)
         if table is None:
             known = estimate is not None and estimate >= 0
-            table = tables[name] = Table(
-                name=name,
+            table = tables[table_name] = Table(
+                name=table_name,
                 description=description,
                 columns=[],
                 row_count=round(estimate) if known else None,
@@ -97,10 +134,17 @@ def _catalog(pg: psycopg.Connection) -> dict[str, Table]:
                     type=type_,
                     nullable=nullable,
                     description=column_description,
-                    embedding=embedding,
+                    base_type=base,
                 )
             )
     return tables
+
+
+def _table(pg: psycopg.Connection, name: str) -> Table:
+    table = _catalog(pg, name).get(name)
+    if table is None:
+        raise TableNotFound(name)
+    return table
 
 
 def _qualified(table: str) -> sql.Composable:
@@ -136,3 +180,59 @@ def list_tables(data_store_id: uuid.UUID) -> tuple[list[Table], bool]:
         for table in shown:
             _count(pg, table)
     return shown, len(shown) < len(tables)
+
+
+def _text(column: Column) -> sql.Composable:
+    """The column's value as text, as the page shows it."""
+    return sql.SQL("{}::text").format(sql.Identifier(column.name))
+
+
+def read_rows(
+    data_store_id: uuid.UUID,
+    table_name: str,
+    *,
+    offset: int,
+    limit: int,
+    sort: str | None = None,
+    descending: bool = False,
+) -> RowsPage:
+    """A page of the table's rows, from `offset`: at most `limit` of them, fewer if they'd go
+    past `query_data`'s byte cap. In `sort`'s order (a column's name) if given, else as stored.
+
+    Raises `TableNotFound` or `ColumnNotFound` for a name the catalog doesn't have."""
+    settings = get_settings()
+    with read_only(data_store_id) as pg:
+        table = _table(pg, table_name)
+        order = []
+        if sort is not None:
+            direction = sql.SQL("DESC" if descending else "ASC")
+            order.append(
+                sql.SQL("{} {} NULLS LAST").format(
+                    sql.Identifier(table.column(sort).name), direction
+                )
+            )
+        # Then as stored, so rows that sort alike keep one order from page to page.
+        order.append(sql.SQL("tableoid, ctid"))
+        statement = sql.SQL(
+            "SELECT tableoid::text || ':' || ctid::text, {cells} FROM {table}"
+            " ORDER BY {order} OFFSET {offset} LIMIT {limit}"
+        ).format(
+            cells=sql.SQL(", ").join(_text(c) for c in table.columns),
+            table=_qualified(table.name),
+            order=sql.SQL(", ").join(order),
+            offset=sql.Literal(offset),
+            # One more than the page, to tell whether there are more.
+            limit=sql.Literal(limit + 1),
+        )
+        read = read_capped(
+            pg,
+            statement.as_string(pg),
+            max_rows=limit,
+            max_bytes=settings.query_data_max_bytes,
+            ensure_ascii=False,
+        )
+    return RowsPage(
+        columns=[c.name for c in table.columns],
+        rows=[Row(key=r[0], values=r[1:]) for r in read.rows],
+        has_more=read.truncated,
+    )
