@@ -370,6 +370,47 @@ export type TriggerInput = {
 
 export type SchedulePreview = { description: string; next_runs: string[] };
 
+export type ChatVisibility = "public" | "private";
+export type ChatMemberKind = "user" | "agent" | "workflow";
+
+/** Someone in a chat: a user (with a role), or, later, an agent or a workflow. */
+export type ChatMember = {
+  /** The membership's id, which removing the member takes. */
+  id: number;
+  kind: ChatMemberKind;
+  /** Users only: the chat's owner, or an ordinary member. */
+  role: "owner" | "member" | null;
+  /** The user's, agent's or workflow's id. */
+  target_id: number;
+  name: string;
+  /** Users only. */
+  login: string | null;
+  avatar_url: string | null;
+  added_at: string;
+};
+
+export type ChatSummary = {
+  id: number;
+  name: string;
+  description: string;
+  /** A private chat doesn't exist for anyone who isn't a member. */
+  visibility: ChatVisibility;
+  owner_id: number;
+  /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
+  is_owner: boolean;
+  member_count: number;
+  created_at: string;
+  /** When it was last active. */
+  updated_at: string;
+};
+
+export type Chat = ChatSummary & {
+  /** Grouped by kind; the owner first, then in the order they were added. */
+  members: { users: ChatMember[]; agents: ChatMember[]; workflows: ChatMember[] };
+};
+
+export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
+
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -489,4 +530,13 @@ export const api = {
   previewSchedule: (cron: string, timezone: string) =>
     request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
+
+  listChats: () => request<ChatSummary[]>("/api/chats"),
+  getChat: (id: number) => request<Chat>(`/api/chats/${id}`),
+  createChat: (body: ChatInput) => request<Chat>("/api/chats", json("POST", body)),
+  updateChat: (id: number, body: ChatInput) =>
+    request<Chat>(`/api/chats/${id}`, json("PUT", body)),
+  deleteChat: (id: number) => request<void>(`/api/chats/${id}`, { method: "DELETE" }),
+  removeChatMember: (id: number, memberId: number) =>
+    request<void>(`/api/chats/${id}/members/${memberId}`, { method: "DELETE" }),
 };
