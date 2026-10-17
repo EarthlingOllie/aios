@@ -565,6 +565,27 @@ def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, stat
     assert says in described["error"]
 
 
+def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, data_agent):
+    """Not a failed turn: the model is told, and can tell the user."""
+    with psycopg.connect(
+        libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
+    ) as conn:
+        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" CONNECTION LIMIT 0')
+    dispose_engines()
+
+    described, queried = run_tools(
+        api,
+        data_agent,
+        ToolCall("describe_data", {}),
+        ToolCall("query_data", {"sql": "SELECT 1"}),
+    )
+
+    for result in (described, queried):
+        assert set(result) == {"error"}
+        assert "couldn't be reached" in result["error"]
+        assert store.role_prefix not in result["error"]
+
+
 def test_the_tools_keep_working_call_after_call(api, store, data_agent):
     """Psycopg prepares statements it runs often, which resetting the session drops."""
     calls = [ToolCall("query_data", {"sql": "SELECT count(*) FROM data.fish"})] * 8
