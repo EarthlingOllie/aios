@@ -278,6 +278,24 @@ test("opening Documents reads the list again, picking up changes made elsewhere"
   await expect(page.getByText("later.md")).toBeVisible();
 });
 
+test("a store that stops being ready is noticed on opening the Data or Search page", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
+
+  // Nothing polls a ready store, so only opening a page that shows it finds out.
+  api.dataStoreStatus = "failed";
+  await page.getByRole("link", { name: "Data" }).first().click();
+  await expect(overview(page)).toContainText("Your data store couldn't be set up.");
+
+  await page.getByRole("link", { name: "Search" }).first().click();
+  await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
+    "Your data store couldn't be set up",
+  );
+});
+
 test("a search that matches nothing points to the Data page's Documents", async ({ page }) => {
   await fakeApi(page);
   await page.goto("/search?q=fish");

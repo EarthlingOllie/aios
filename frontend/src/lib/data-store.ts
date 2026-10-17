@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, describeError, type DataStoreStatus } from "@/lib/api";
 
@@ -58,11 +58,18 @@ export function dataStorePollInterval(status: DataStoreStatus): number | null {
 /**
  * The user's data store's status, asked again while it isn't ready. `status` is undefined until
  * the first answer; a failed request keeps the last one, says what went wrong in `error`, and
- * tries again.
+ * tries again. `recheck` asks again straight away, e.g. about a store last seen ready, which
+ * nothing polls.
  */
-export function useDataStoreStatus(): { status?: DataStoreStatus; error?: string } {
+export function useDataStoreStatus(): {
+  status?: DataStoreStatus;
+  error?: string;
+  recheck: () => void;
+} {
   const [status, setStatus] = useState<DataStoreStatus>();
   const [error, setError] = useState<string>();
+  // Bumped by `recheck`: starts the checks over, dropping any still waiting or in flight.
+  const [round, setRound] = useState(0);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -86,6 +93,7 @@ export function useDataStoreStatus(): { status?: DataStoreStatus; error?: string
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
-  return { status, error };
+  }, [round]);
+  const recheck = useCallback(() => setRound((n) => n + 1), []);
+  return { status, error, recheck };
 }

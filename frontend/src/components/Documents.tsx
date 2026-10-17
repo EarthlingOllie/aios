@@ -154,10 +154,15 @@ function useShared() {
 
 /**
  * The user's data store's status (and why it couldn't be read, while it keeps trying), from the
- * `DocumentsProvider` above.
+ * `DocumentsProvider` above. A store last seen ready is asked about again when the caller
+ * mounts, as nothing polls it once it's ready.
  */
 export function useDataStore() {
-  const { status, error } = useShared().store;
+  const { status, error, recheck } = useShared().store;
+  // Only on mount, and only about a ready store: one still being asked about, or not ready (and
+  // so still polled), needs nothing more.
+  const recheckReady = useRef(status === "ready" ? recheck : undefined);
+  useEffect(() => recheckReady.current?.(), []);
   return { status, error };
 }
 
