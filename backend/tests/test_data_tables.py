@@ -314,6 +314,117 @@ def test_a_column_that_cant_be_sorted_by_is_unprocessable(api, store):
     assert values(rows(api, "places")) == [["home", "(1,2)"]]
 
 
+def test_a_column_named_like_the_reads_own_columns_sorts_by_itself(api, store):
+    """The page's statement names columns of its own (the row's key, each value's text)."""
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.kv (key int, c0 int, page int)")
+        conn.execute("INSERT INTO data.kv SELECT i, 13 - i, i % 2 FROM generate_series(1, 12) i")
+
+    def first_column(**params) -> list[str]:
+        return [r[0] for r in values(rows(api, "kv", **params))]
+
+    assert first_column(sort="key", order="desc")[:3] == ["12", "11", "10"]
+    assert first_column(sort="c0", order="desc")[:3] == ["1", "2", "3"]
+    assert first_column(sort="page") == [
+        "2",
+        "4",
+        "6",
+        "8",
+        "10",
+        "12",
+        "1",
+        "3",
+        "5",
+        "7",
+        "9",
+        "11",
+    ]
+
+
+def test_a_table_with_no_columns_shows_its_rows(api, store):
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.nothing ()")
+        conn.execute("INSERT INTO data.nothing DEFAULT VALUES")
+
+    assert tables(api)["nothing"]["columns"] == []
+    page = rows(api, "nothing")
+    assert (page["columns"], values(page)) == ([], [[]])
+
+
+def test_a_table_with_a_slash_in_its_name_opens(api, store):
+    with as_owner(store) as conn:
+        conn.execute('CREATE TABLE data."q1/q2" (n int)')
+        conn.execute('INSERT INTO data."q1/q2" VALUES (7)')
+
+    page = api.get("/api/data/tables/q1%2Fq2/rows")
+
+    assert page.status_code == 200, page.text
+    assert values(page.json()) == [["7"]]
+    key = page.json()["rows"][0]["key"]
+    assert value(api, "q1/q2", key, "n").json() == {"value": "7", "truncated": False}
+
+
+def test_arrays_of_embeddings_and_domains_over_domains_show_no_numbers(api, store):
+    with as_owner(store) as conn:
+        conn.execute("CREATE DOMAIN data.emb AS vector(2)")
+        conn.execute("CREATE DOMAIN data.emb2 AS data.emb")
+        conn.execute(
+            "CREATE TABLE data.multi (many vector(2)[], deep data.emb2, deeps data.emb2[])"
+        )
+        conn.execute(
+            "INSERT INTO data.multi VALUES (ARRAY['[1,2]', '[3,4]']::vector(2)[], '[5,6]',"
+            " ARRAY['[7,8]']::data.emb2[])"
+        )
+
+    listed = tables(api)["multi"]
+    page = rows(api, "multi")
+
+    assert [c["embedding"] for c in listed["columns"]] == [True, True, True]
+    assert values(page) == [["2 × vector", "vector(2)", "1 × vector"]]
+
+
+def test_counting_rows_has_a_time_budget_past_which_counts_are_left_out(api, store, monkeypatch):
+    """A table never analyzed has no estimate, and counting it could take as long as reading
+    it: the list doesn't wait for that."""
+    monkeypatch.setattr(data_tables, "COUNT_BUDGET_MS", 1)
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.big (h text) WITH (autovacuum_enabled = false)")
+        conn.execute("INSERT INTO data.big SELECT md5(i::text) FROM generate_series(1, 300000) i")
+
+    response = api.get("/api/data/tables")
+
+    assert response.status_code == 200, response.text
+    big = {t["name"]: t for t in response.json()["tables"]}["big"]
+    assert big["row_count"] is None
+
+
+def test_a_wide_rows_values_are_cut_shorter_so_a_page_fits_the_byte_cap(api, store, monkeypatch):
+    with as_owner(store) as conn:
+        columns = ", ".join(f"c{i} text" for i in range(40))
+        conn.execute(f"CREATE TABLE data.wide ({columns})")
+        conn.execute(f"INSERT INTO data.wide SELECT {', '.join(['repeat(chr(26085), 300)'] * 40)}")
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 16 * 1024)
+
+    page = rows(api, "wide")
+
+    assert len(page["rows"]) == 1
+    assert page["has_more"] is False
+    assert page["rows"][0]["truncated"] == list(range(40))
+
+
+def test_a_row_too_wide_to_show_at_all_says_so(api, store, monkeypatch):
+    with as_owner(store) as conn:
+        columns = ", ".join(f"c{i} text" for i in range(40))
+        conn.execute(f"CREATE TABLE data.wide ({columns})")
+        conn.execute(f"INSERT INTO data.wide SELECT {', '.join(['repeat(chr(26085), 300)'] * 40)}")
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 1000)
+
+    response = api.get("/api/data/tables/wide/rows")
+
+    assert response.status_code == 422
+    assert "too wide" in response.json()["detail"]
+
+
 def test_a_read_past_the_time_limit_is_stopped(api, store):
     with as_owner(store) as conn:
         conn.execute(

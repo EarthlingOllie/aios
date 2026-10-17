@@ -69,7 +69,7 @@ def list_tables(user: CurrentUser):
     )
 
 
-@router.get("/tables/{table}/rows", response_model=RowsOut)
+@router.get("/tables/{table:path}/rows", response_model=RowsOut)
 def read_rows(
     table: str,
     user: CurrentUser,
@@ -96,7 +96,7 @@ def read_rows(
     )
 
 
-@router.get("/tables/{table}/value", response_model=ValueOut)
+@router.get("/tables/{table:path}/value", response_model=ValueOut)
 def read_value(table: str, row: str, column: str, user: CurrentUser):
     """One value of a row in full (as far as the byte cap), where the page cut it short."""
     with _refusals():
@@ -106,8 +106,9 @@ def read_value(table: str, row: str, column: str, user: CurrentUser):
 
 @contextmanager
 def _refusals() -> Iterator[None]:
-    """Names the catalog doesn't have as 404 (a table, a row) or 422 (a column, a row key), a
-    column that can't be sorted by as 422, and a read past the time limit as 504."""
+    """Names the catalog doesn't have as 404 (a table, a row) or 422 (a column, a row key); a
+    column that can't be sorted by, or a row too wide to show, as 422; and a read past the time
+    limit as 504."""
     try:
         yield
     except tables.TooSlow as exc:
@@ -128,3 +129,8 @@ def _refusals() -> Iterator[None]:
         ) from exc
     except tables.BadRowKey as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Not a row's key") from exc
+    except tables.RowTooWide as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "A row of this table is too wide to show here, even with its values cut short.",
+        ) from exc

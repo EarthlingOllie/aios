@@ -183,16 +183,20 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
 
 
 def _query(data_store_id: uuid.UUID, sql: str) -> dict:
-    with read_only(data_store_id) as pg:
-        try:
-            return _read(pg, sql)
-        except psycopg.Error as exc:
-            return {"error": _error(exc)}
-        except Exception as exc:
-            # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode: the
-            # model is told, so it can try again, rather than the turn failing.
-            log.exception("query_data failed outside Postgres")
-            return {"error": f"The query failed: {exc}"}
+    try:
+        with read_only(data_store_id) as pg:
+            try:
+                return _read(pg, sql)
+            except Exception as exc:
+                if isinstance(exc, psycopg.Error):
+                    raise
+                # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode:
+                # the model is told, so it can try again, rather than the turn failing.
+                log.exception("query_data failed outside Postgres")
+                return {"error": f"The query failed: {exc}"}
+    except psycopg.Error as exc:
+        # The query's, or starting its transaction's (e.g. the session was ended).
+        return {"error": _error(exc)}
 
 
 async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *args) -> str:
