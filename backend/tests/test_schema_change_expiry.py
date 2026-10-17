@@ -228,6 +228,34 @@ def test_a_cancel_made_as_its_approved_leaves_the_approval(
     assert request_of(api, request)["status"] == "approved"
 
 
+def test_an_expired_request_nothing_can_resume_isnt_queued_again_and_again(
+    api,
+    agent,  # noqa: F811
+    queued,  # noqa: F811
+    monkeypatch,
+):
+    """E.g. one left pending by a chat run deleted before deleting cancelled requests."""
+    _, request = start(api, agent, Script(CONTACTS))
+    asked_ago(request, expiry() + timedelta(minutes=1))
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(SchemaChangeRequest.id == request["id"])
+            .values(requested_by_run=None)
+        )
+        db.commit()
+    looked_at: list = []
+    monkeypatch.setattr(worker, "enqueue_resume", looked_at.append)
+
+    expire(queued)
+    expire(queued)
+
+    expired = request_of(api, request)
+    assert expired["status"] == "expired"
+    assert expired["resumed_at"] is not None
+    assert str(request["id"]) not in {str(i) for i in looked_at}
+
+
 def test_the_expiry_period_is_configuration(
     api,
     agent,  # noqa: F811

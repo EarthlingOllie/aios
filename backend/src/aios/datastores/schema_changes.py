@@ -33,7 +33,7 @@ from typing import Annotated, Any, Literal
 
 import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios import notifications
@@ -42,7 +42,7 @@ from aios.datastores.connections import store_session
 from aios.datastores.models import EMBEDDING_DIM
 from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
-from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus, WorkflowRunStep
 
 log = logging.getLogger(__name__)
 
@@ -618,60 +618,72 @@ def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
     )
 
 
+def _close(
+    db: Session, status: SchemaChangeStatus, *where: ColumnElement[bool], **values: Any
+) -> list[uuid.UUID]:
+    """Take the pending requests matching `where` out of `pending` with `status` (and
+    `values`), clearing their notifications; returns their ids. Only one still pending is
+    closed, in one statement: one being decided meanwhile holds its row
+    (`aios.api.schema_changes._decide`), and this waits for it, then leaves it. In the caller's
+    transaction."""
+    closed = db.scalars(
+        update(SchemaChangeRequest)
+        .where(*where, SchemaChangeRequest.status == SchemaChangeStatus.pending)
+        .values(status=status, decided_at=func.now(), **values)
+        .returning(SchemaChangeRequest.id)
+    ).all()
+    # One by one, each by the jsonb index; there are seldom more than a few at once.
+    for request_id in closed:
+        clear_notifications(db, request_id)
+    return list(closed)
+
+
 def cancel(db: Session, *where: ColumnElement[bool]) -> list[uuid.UUID]:
     """Cancel the pending requests matching `where`, clearing their notifications; returns
     their ids. Nothing will resume the runs that asked (they're gone, or have been told the
-    call didn't finish), so they count as given. Only one still pending is cancelled: one
-    being decided meanwhile holds its row, and this waits for it, then leaves it. In the
-    caller's transaction."""
-    cancelled = db.scalars(
-        update(SchemaChangeRequest)
-        .where(*where, SchemaChangeRequest.status == SchemaChangeStatus.pending)
-        .values(status=SchemaChangeStatus.cancelled, decided_at=func.now(), resumed_at=func.now())
-        .returning(SchemaChangeRequest.id)
-    ).all()
-    for request_id in cancelled:
-        clear_notifications(db, request_id)
-    return list(cancelled)
+    call didn't finish), so they count as given. In the caller's transaction."""
+    return _close(db, SchemaChangeStatus.cancelled, *where, resumed_at=func.now())
 
 
 def expire() -> list[uuid.UUID]:
     """Expire the requests still pending after `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`, clearing
     their notifications; returns their ids. Expiring counts as a rejection: the runs that asked
-    are then resumed with it (`aios.worker.expire_schema_change_requests_task`).
-
-    Only a request still pending is expired, in one statement: one being decided meanwhile
-    holds its row (`aios.api.schema_changes._decide`), and this waits for it, then leaves it."""
+    are then resumed with it (`aios.worker.expire_schema_change_requests_task`)."""
     age = timedelta(days=get_settings().schema_change_request_expiry_days)
     with SessionLocal() as db:
-        expired = db.scalars(
-            update(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.status == SchemaChangeStatus.pending,
-                SchemaChangeRequest.created_at < func.now() - age,
-            )
-            .values(status=SchemaChangeStatus.expired, decided_at=func.now())
-            .returning(SchemaChangeRequest.id)
-        ).all()
-        for request_id in expired:
-            clear_notifications(db, request_id)
+        expired = _close(
+            db, SchemaChangeStatus.expired, SchemaChangeRequest.created_at < func.now() - age
+        )
         db.commit()
-    return list(expired)
+    return expired
 
 
 def expired_not_resumed() -> list[uuid.UUID]:
     """Expired requests whose runs haven't been given the outcome yet: those to resume. Each
     run of the scheduled task queues them all again, so one whose queuing failed isn't lost
-    (resuming twice is safe)."""
-    with SessionLocal() as db:
-        return list(
-            db.scalars(
-                select(SchemaChangeRequest.id).where(
-                    SchemaChangeRequest.status == SchemaChangeStatus.expired,
-                    SchemaChangeRequest.resumed_at.is_(None),
-                )
+    (resuming twice is safe).
+
+    One nothing can resume any more (its agent run is gone, and no workflow step waits on it)
+    counts as given instead, so it isn't looked at again."""
+    not_given = [
+        SchemaChangeRequest.status == SchemaChangeStatus.expired,
+        SchemaChangeRequest.resumed_at.is_(None),
+    ]
+    resumable = or_(
+        SchemaChangeRequest.requested_by_run.is_not(None),
+        SchemaChangeRequest.id.in_(
+            select(WorkflowRunStep.waiting_on_request_id).where(
+                WorkflowRunStep.waiting_on_request_id.is_not(None)
             )
+        ),
+    )
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest).where(*not_given, ~resumable).values(resumed_at=func.now())
         )
+        ids = list(db.scalars(select(SchemaChangeRequest.id).where(*not_given)))
+        db.commit()
+    return ids
 
 
 def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: datetime) -> None:
