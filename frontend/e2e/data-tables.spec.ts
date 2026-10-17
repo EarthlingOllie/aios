@@ -96,6 +96,21 @@ test("opening a table shows its rows, and sorting by a column reorders them", as
   await expect(tableCard(page, "fish")).toBeVisible();
 });
 
+test("two quick clicks on a column sort it descending", async ({ page }) => {
+  const api = await fakeApi(page);
+  addFish(api);
+  await page.goto("/data?tab=tables&table=fish");
+  await expect(firstColumn(page, "fish")).toHaveText(["1", "2", "3"]);
+
+  await grid(page, "fish").getByRole("button", { name: "weight_kg" }).dblclick();
+
+  await expect(page.getByRole("columnheader", { name: "weight_kg" })).toHaveAttribute(
+    "aria-sort",
+    "descending",
+  );
+  await expect(firstColumn(page, "fish")).toHaveText(["3", "1", "2"]);
+});
+
 test("a column added since the list was read heads its own values", async ({ page }) => {
   const api = await fakeApi(page);
   const fish = addFish(api);

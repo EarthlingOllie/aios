@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Loader2, Table2, X } from "lucide-react";
 
@@ -188,12 +188,22 @@ function useRowsQuery() {
       },
       { replace: true },
     );
+  // The order last asked for: a navigation renders later (in a transition), so a second click
+  // before it does would otherwise start again from the order still shown.
+  const asked = useRef(sort);
+  const shown = JSON.stringify(sort);
+  useEffect(() => {
+    asked.current = JSON.parse(shown);
+  }, [shown]);
   return {
     sort,
     offset,
-    // A new order starts from the first row.
-    setSort: (s: Sort) =>
-      update({ sort: s?.column ?? null, order: s?.order === "desc" ? "desc" : null, offset: null }),
+    /** Sorts by the column's next order (`nextSort`), from the first row. */
+    sortBy: (column: string) => {
+      const s = nextSort(asked.current, column);
+      asked.current = s;
+      update({ sort: s?.column ?? null, order: s?.order === "desc" ? "desc" : null, offset: null });
+    },
     setOffset: (n: number) => update({ offset: n > 0 ? String(n) : null }),
   };
 }
@@ -227,7 +237,7 @@ type Expanded = { row: string; rowNumber: number; column: string };
 
 function TableRows({ name, table }: { name: string; table?: DataTable }) {
   const [params] = useSearchParams();
-  const { sort, offset, setSort, setOffset } = useRowsQuery();
+  const { sort, offset, sortBy, setOffset } = useRowsQuery();
   const rows = useRows(name, {
     offset,
     limit: PAGE_SIZE,
@@ -294,7 +304,7 @@ function TableRows({ name, table }: { name: string; table?: DataTable }) {
                         sort={sort}
                         onSort={() => {
                           setExpanded(undefined);
-                          setSort(nextSort(sort, column.name));
+                          sortBy(column.name);
                         }}
                       />
                     ))}
