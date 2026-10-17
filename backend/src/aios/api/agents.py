@@ -673,15 +673,16 @@ def _start_turn(run_id: int, prompt: str) -> None:
 
 def _end_turn(run_id: int, message_count: int) -> None:
     with SessionLocal() as db:
+        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: with
+        # the run's own update, it goes in the run history export's outbox. The outbox row
+        # first, as deleting a run does, so the two never each hold the row the other wants.
+        history.enqueue_runs(db, AgentRun.id == run_id)
         # A no-op if the run was deleted mid-turn.
         db.execute(
             update(AgentRun)
             .where(AgentRun.id == run_id)
             .values(message_count=message_count, updated_at=func.now())
         )
-        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: with
-        # the run's own update, it goes in the run history export's outbox.
-        history.enqueue_runs(db, AgentRun.id == run_id)
         db.commit()
 
 

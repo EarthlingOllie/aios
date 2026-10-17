@@ -115,6 +115,9 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
         .join(User, User.id == Agent.owner_id)
         .join(DataStore, DataStore.owner_user_id == User.id)
         .where(exporting, *where)
+        # Rows are locked in run order, as the export marks them, so two writers of several
+        # don't each hold one the other wants.
+        .order_by(AgentRun.id)
     )
     stmt = insert(HistoryExport).from_select(
         [HistoryExport.data_store_id, HistoryExport.kind, HistoryExport.source_id], runs
@@ -320,7 +323,7 @@ def _export_batch(data_store_id: uuid.UUID) -> int:
                 errors[p.id] = f"{type(exc).__name__}: {exc}"
         store.commit()
     with SessionLocal() as db:
-        for p in pending:
+        for p in sorted(pending, key=lambda p: p.source_id):  # in run order, as enqueue_runs
             # Only as it was read: a run changed since is pending again, for the next batch.
             same = (HistoryExport.id == p.id, HistoryExport.enqueued_at == p.enqueued_at)
             if p.id in errors:

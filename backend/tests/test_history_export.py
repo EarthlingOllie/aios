@@ -628,3 +628,37 @@ def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go
         row = db.query(HistoryExport).filter_by(source_id=broken["id"]).one()
         assert row.error is None
     assert history.stores_to_export() == [store_id]
+
+
+def test_a_run_deleted_as_its_turn_ends_doesnt_deadlock(api, user, store_id, history_tasks):
+    """Deleting a run writes its outbox row, then deletes it; a turn ending writes both too. In
+    the same order, or each holds the row the other waits for."""
+    agent = make_agent(api, "Bot")
+    run = new_run(api, agent)
+    chat(api, agent, run, "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    errors = []
+
+    def end_turn():
+        try:
+            agents_api._end_turn(run["id"], 2)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    with SessionLocal() as deleting:
+        # delete_run, up to deleting the run: its outbox row is written (and locked).
+        history.enqueue_runs(deleting, AgentRun.id == run["id"], deleting=True)
+        ending = threading.Thread(target=end_turn)
+        ending.start()
+        time.sleep(0.5)  # it's waiting on the outbox row, or holding the run's
+        try:
+            deleting.delete(deleting.get(AgentRun, run["id"]))
+            deleting.commit()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+        ending.join(10)
+
+    assert errors == []
+    history.export(store_id)
+    assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
