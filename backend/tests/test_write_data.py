@@ -271,6 +271,21 @@ def test_bad_calls_are_refused_with_what_to_fix(api, store, agent, args, says):
     assert len(fish(store)) == 2
 
 
+def test_a_constraint_checked_at_commit_is_refused_with_what_failed(api, store, agent):
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.ponds (id int PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE data.stocked (id int PRIMARY KEY,"
+            " pond int REFERENCES data.ponds DEFERRABLE INITIALLY DEFERRED)"
+        )
+
+    result = write(api, agent, table="stocked", operation="insert", rows=[{"id": 1, "pond": 9}])
+
+    assert set(result) == {"error"}
+    assert "violates foreign key constraint" in result["error"], result
+    assert "Key (pond)=(9) is not present" in result["error"]
+
+
 def test_a_call_is_written_whole_or_not_at_all(api, store, agent):
     result = write(
         api, agent, table="fish", operation="insert", rows=[{"name": "eel"}, {"name": "pike"}]

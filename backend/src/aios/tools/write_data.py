@@ -33,6 +33,7 @@ from langchain_core.tools import StructuredTool
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.exc import DBAPIError
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
@@ -470,8 +471,12 @@ def _execute(cur: psycopg.Cursor, query: sql.Composed, params: dict, where: str)
     try:
         cur.execute(query, params)
     except psycopg.Error as exc:
-        detail = exc.diag.message_detail
-        raise Refused(where + pg_error(exc) + (f" {detail}" if detail else "")) from exc
+        raise _refused(exc, where) from exc
+
+
+def _refused(exc: psycopg.Error, where: str = "") -> Refused:
+    detail = exc.diag.message_detail
+    return Refused(where + pg_error(exc) + (f" {detail}" if detail else ""))
 
 
 def _over_cap(plan: Plan, max_rows: int) -> Refused:
@@ -516,7 +521,13 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
                             dict(zip(names, map(jsonable, row), strict=True))
                             for row in cur.fetchall()
                         ]
-            session.commit()
+            try:
+                session.commit()
+            except DBAPIError as exc:
+                # A constraint checked only at commit (deferred), say; not the connection.
+                if exc.connection_invalidated or not isinstance(exc.orig, psycopg.Error):
+                    raise
+                raise _refused(exc.orig) from exc
         except Refused as exc:
             return {"error": str(exc)}
     result: dict = {"table": plan.table.qualified, "operation": plan.operation, "row_count": count}
