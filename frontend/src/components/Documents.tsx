@@ -22,7 +22,7 @@ import {
   type DataStoreUsage,
   type DocumentInfo,
 } from "@/lib/api";
-import { filesFull, storageMeters, useDataStoreStatus } from "@/lib/data-store";
+import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-store";
 import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 
@@ -94,25 +94,20 @@ function useDocuments(
     setUploading(true);
     setErrors([]);
     const failed: string[] = [];
-    let full = false;
     try {
       for (const file of files) {
         try {
           await api.uploadDocument(file);
         } catch (err) {
+          // Each is tried, and each refusal said: one that doesn't fit leaves room for a smaller.
           failed.push(`${file.name}: ${describeError(err)}`);
-          // At the file cap since the store was last asked about: the rest would be refused too.
-          if (err instanceof ApiError && err.status === 507) {
-            full = true;
-            break;
-          }
         }
       }
     } finally {
       setErrors(failed);
       setUploading(false);
-      // Its usage, which now stops uploads (until the documents are measured under the cap).
-      if (full) recheckStore();
+      // The store's usage, which uploads change (and which may now stop them).
+      recheckStore();
       await refresh();
     }
   }
@@ -121,6 +116,8 @@ function useDocuments(
     setErrors([]);
     try {
       await api.deleteDocument(doc.id);
+      // The room it made, which may let uploads in again.
+      recheckStore();
     } catch (err) {
       // Already gone (deleted twice before the list caught up, or from another tab): that's
       // what was asked for.
@@ -146,9 +143,9 @@ function useDocuments(
     upload,
     remove,
     /** Uploads wait for the store to be ready, and for its status to be known. */
-    canUpload: ready && !filesFull(usage),
-    /** What uploads at the file cap are refused for; null below it. */
-    filesFullWarning: ready && filesFull(usage) ? storageMeters(usage!)[1].warning : null,
+    canUpload: ready && !uploadsRefused(usage),
+    /** What uploads are refused for, at either cap; empty below both. */
+    fullWarnings: ready ? fullWarnings(usage) : [],
   };
 }
 
@@ -265,9 +262,9 @@ function DocumentsNotices({
         action="upload documents"
         className={className}
       />
-      {documents.filesFullWarning && (
+      {documents.fullWarnings.length > 0 && (
         <Notice label="Storage" error className={className}>
-          {documents.filesFullWarning}
+          {documents.fullWarnings.join(" ")}
         </Notice>
       )}
       {documents.listError && (

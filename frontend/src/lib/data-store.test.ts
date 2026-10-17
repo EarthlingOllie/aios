@@ -5,8 +5,8 @@ import {
   dataStoreNotice,
   dataStorePollInterval,
   dataStoreSummary,
-  filesFull,
   storageMeters,
+  uploadsRefused,
 } from "@/lib/data-store";
 
 describe("dataStoreSummary", () => {
@@ -114,10 +114,10 @@ describe("storageMeters", () => {
     );
     expect([db.level, files.level]).toEqual(["near", "near"]);
     expect(db.warning).toBe(
-      "Your database is nearly full. Once it is, your agents can't add or change rows.",
+      "Your database is nearly full. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
     );
     expect(files.warning).toBe(
-      "Your documents are nearly at their cap. Once they are, uploads are refused.",
+      "Your documents are nearly at their cap. Once they are, uploads are refused, and your agents can't add or change rows.",
     );
   });
 
@@ -125,10 +125,10 @@ describe("storageMeters", () => {
     const [db, files] = storageMeters(usage({ db_bytes: 1024 ** 3, files_bytes: 6 * 1024 ** 3 }));
     expect([db.level, files.level]).toEqual(["full", "full"]);
     expect(db.warning).toBe(
-      "Your database is full: your agents can't add or change rows. They can still read and delete them.",
+      "Your database is full: your agents can't add or change rows, and documents can't be uploaded. Reading and deleting still work.",
     );
     expect(files.warning).toBe(
-      "Your documents are at their cap: uploads are refused. Delete some to upload more.",
+      "Your documents are at their cap: uploads are refused, and your agents can't add or change rows. Delete some to make room.",
     );
     // A share past the cap is drawn as a full bar.
     expect(files.share).toBe(1);
@@ -148,11 +148,12 @@ describe("storageMeters", () => {
   });
 });
 
-describe("filesFull", () => {
-  it("is true only once the documents are measured at their cap", () => {
-    expect(filesFull(usage())).toBe(false);
-    expect(filesFull(usage({ files_bytes: 5 * 1024 ** 3 }))).toBe(true);
-    expect(filesFull(usage({ files_bytes: null }))).toBe(false);
-    expect(filesFull(undefined)).toBe(false);
+describe("uploadsRefused", () => {
+  it("is true once either cap is reached, as the API refuses uploads at either", () => {
+    expect(uploadsRefused(usage())).toBe(false);
+    expect(uploadsRefused(usage({ files_bytes: 5 * 1024 ** 3 }))).toBe(true);
+    expect(uploadsRefused(usage({ db_bytes: 1024 ** 3 }))).toBe(true);
+    expect(uploadsRefused(usage({ db_bytes: null, files_bytes: null }))).toBe(false);
+    expect(uploadsRefused(undefined)).toBe(false);
   });
 });

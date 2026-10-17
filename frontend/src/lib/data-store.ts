@@ -64,14 +64,15 @@ export type StorageMeter = {
   warning: string | null;
 };
 
+// At either cap, the API refuses uploads and agents' inserts and updates alike.
 const WARNINGS = {
   db: {
-    near: "Your database is nearly full. Once it is, your agents can't add or change rows.",
-    full: "Your database is full: your agents can't add or change rows. They can still read and delete them.",
+    near: "Your database is nearly full. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
+    full: "Your database is full: your agents can't add or change rows, and documents can't be uploaded. Reading and deleting still work.",
   },
   files: {
-    near: "Your documents are nearly at their cap. Once they are, uploads are refused.",
-    full: "Your documents are at their cap: uploads are refused. Delete some to upload more.",
+    near: "Your documents are nearly at their cap. Once they are, uploads are refused, and your agents can't add or change rows.",
+    full: "Your documents are at their cap: uploads are refused, and your agents can't add or change rows. Delete some to make room.",
   },
 };
 
@@ -105,9 +106,15 @@ export function storageMeters(usage: DataStoreUsage): StorageMeter[] {
   ];
 }
 
-/** Whether the documents were last measured at their cap, so uploads are refused. */
-export function filesFull(usage: DataStoreUsage | undefined): boolean {
-  return usage?.files_bytes != null && usage.files_bytes >= usage.files_quota_bytes;
+/** Whether either cap was last seen reached, so uploads are refused. */
+export function uploadsRefused(usage: DataStoreUsage | undefined): boolean {
+  return Boolean(usage && storageMeters(usage).some((m) => m.level === "full"));
+}
+
+/** What uploads are refused for, at either cap; empty below both. */
+export function fullWarnings(usage: DataStoreUsage | undefined): string[] {
+  if (!usage) return [];
+  return storageMeters(usage).flatMap((m) => (m.level === "full" && m.warning ? [m.warning] : []));
 }
 
 /** How long to wait before asking again about a store that isn't ready (ms); null once it is. */
