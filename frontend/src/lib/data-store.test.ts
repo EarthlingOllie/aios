@@ -4,17 +4,20 @@ import { dataStoreNotice, dataStorePollInterval } from "@/lib/data-store";
 
 describe("dataStoreNotice", () => {
   it("says nothing about a ready store", () => {
-    expect(dataStoreNotice("ready")).toBeNull();
+    expect(dataStoreNotice("ready", "search")).toBeNull();
   });
 
-  it("says a new store is being set up", () => {
-    expect(dataStoreNotice("provisioning")).toBe(
+  it("says a new store is being set up, and what can be done once it's ready", () => {
+    expect(dataStoreNotice("provisioning", "upload documents")).toBe(
       "Setting up your data store. You can upload documents once it's ready.",
+    );
+    expect(dataStoreNotice("provisioning", "search")).toBe(
+      "Setting up your data store. You can search once it's ready.",
     );
   });
 
   it("says a store couldn't be set up", () => {
-    expect(dataStoreNotice("failed")).toMatch(/^Your data store couldn't be set up/);
+    expect(dataStoreNotice("failed", "search")).toMatch(/^Your data store couldn't be set up/);
   });
 });
 
