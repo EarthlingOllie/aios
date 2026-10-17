@@ -1,9 +1,12 @@
 import hashlib
+import io
+import os
 import time
 
 import httpx
 import pytest
 from conftest import delete_user, provisioned_user
+from pydantic import SecretStr
 from sqlalchemy import event, select
 
 from aios import ingest, worker
@@ -267,3 +270,36 @@ def test_the_ascii_filename_stands_in_for_any_name():
         "attachment; filename=\"a_b_c__.pdf\"; filename*=UTF-8''a%22b%5Cc%0D%0A.pdf"
     )
     assert files.attachment("") == "attachment; filename=\"download\"; filename*=UTF-8''download"
+
+
+@pytest.fixture
+def fresh_files_clients():
+    """The files clients made anew for the test, and again after it."""
+    files.client.cache_clear()
+    files._signer.cache_clear()
+    yield
+    files.client.cache_clear()
+    files._signer.cache_clear()
+
+
+def test_the_files_servers_keys_can_come_from_the_settings(
+    files_bucket, fresh_files_clients, monkeypatch
+):
+    # As a local run with only backend/.env: boto3 reads the environment, not that file.
+    settings = get_settings()
+    access_key = settings.data_store_files_access_key or os.environ["AWS_ACCESS_KEY_ID"]
+    secret_key = (
+        settings.data_store_files_secret_key.get_secret_value()
+        or os.environ["AWS_SECRET_ACCESS_KEY"]
+    )
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(settings, "data_store_files_access_key", access_key)
+    monkeypatch.setattr(settings, "data_store_files_secret_key", SecretStr(secret_key))
+    key = "stores/settings-check/documents/1"
+
+    files.put(key, io.BytesIO(b"hi"), None)
+
+    assert files.read(key) == b"hi"
+    assert httpx.get(files.download_url(key, "a")).content == b"hi"
+    files.delete(key)

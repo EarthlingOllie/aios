@@ -50,11 +50,15 @@ class Settings(BaseSettings):
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
     # Uploaded files, in S3 (`aios.datastores.files`): each store's under `stores/<store id>/`.
-    # Credentials and the region come from boto3's usual places (on AWS, the task's role).
+    # The region comes from boto3's usual places (on AWS, the task's).
     data_store_files_bucket: str = "aios-data-local"
     # An S3-compatible server to use instead of AWS's (RustFS, locally), as the app reaches it.
     # Empty on AWS.
     data_store_files_endpoint: str = ""
+    # That server's keys. Empty on AWS, where credentials come from boto3's usual places (the
+    # task's role).
+    data_store_files_access_key: str = ""
+    data_store_files_secret_key: SecretStr = SecretStr("")
     # The same server as the browser reaches it, which download links are signed for (a link
     # names its host): e.g. http://localhost:9000 while the app reaches it at http://rustfs:9000.
     # Empty: the same as data_store_files_endpoint.

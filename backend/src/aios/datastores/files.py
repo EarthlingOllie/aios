@@ -36,8 +36,20 @@ def _new_client(endpoint: str) -> BaseClient:
         # An S3-compatible server on a plain host name (rustfs:9000) has no per-bucket hosts.
         s3={"addressing_style": "path"} if endpoint else {},
     )
+    settings = get_settings()
+    # The keys from the settings when given (RustFS's, locally); boto3's own otherwise.
+    keys = (
+        {
+            "aws_access_key_id": settings.data_store_files_access_key,
+            "aws_secret_access_key": settings.data_store_files_secret_key.get_secret_value(),
+        }
+        if settings.data_store_files_access_key
+        else {}
+    )
     with _clients_lock:
-        return boto3.session.Session().client("s3", endpoint_url=endpoint or None, config=config)
+        return boto3.session.Session().client(
+            "s3", endpoint_url=endpoint or None, config=config, **keys
+        )
 
 
 @cache

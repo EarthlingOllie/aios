@@ -100,7 +100,7 @@ def files_bucket() -> str:
     except (BotoCoreError, ClientError) as exc:
         pytest.fail(
             f"Can't reach the files bucket ({exc}). Start RustFS and point "
-            "DATA_STORE_FILES_ENDPOINT and AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY at it "
+            "DATA_STORE_FILES_ENDPOINT and DATA_STORE_FILES_ACCESS_KEY/_SECRET_KEY at it "
             "(see the README's Checks)."
         )
     return get_settings().data_store_files_bucket

@@ -16,9 +16,8 @@ x-backend: &backend
     # the browser reaches it at.
     DATA_STORE_FILES_ENDPOINT: http://rustfs:9000
     DATA_STORE_FILES_PUBLIC_ENDPOINT: http://localhost:9000
-    AWS_ACCESS_KEY_ID: rustfsadmin
-    AWS_SECRET_ACCESS_KEY: rustfsadmin
-    AWS_DEFAULT_REGION: us-east-1
+    DATA_STORE_FILES_ACCESS_KEY: rustfsadmin
+    DATA_STORE_FILES_SECRET_KEY: rustfsadmin
   depends_on:
     db:
       condition: service_healthy
