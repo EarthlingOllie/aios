@@ -4,6 +4,8 @@ Like `test_data_tools`, these run against real, provisioned stores, and make `da
 directly as the store's owner role (standing in for approved schema changes).
 """
 
+import math
+
 import psycopg
 import pytest
 from fake_model import ToolCall
@@ -456,6 +458,18 @@ def test_values_of_each_type(api, store, agent):
         0.5,
         "[1,2,3]",
     )
+
+
+def test_a_vector_with_an_infinite_number_is_refused(api, store, agent):
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.points (id int PRIMARY KEY, at extensions.vector(2))")
+
+    result = write(
+        api, agent, table="points", operation="insert", rows=[{"id": 1, "at": [math.inf, 1]}]
+    )
+
+    assert set(result) == {"error"}, result
+    assert "rows[0]: infinite value not allowed in vector" in result["error"]
 
 
 def test_text_that_looks_like_sql_is_stored_as_it_is(api, store, agent):

@@ -198,6 +198,11 @@ def _writable(table: Table, name: Any, where: str) -> Column:
     return column
 
 
+def _vector(numbers: list[float]) -> str:
+    """A vector as pgvector reads it."""
+    return "[" + ",".join(str(float(n)) for n in numbers) + "]"
+
+
 def _value(column: Column, value: Any, where: str) -> Any:
     """The value to bind for `column`, checked against its type."""
     if value is None:
@@ -258,7 +263,7 @@ def _value(column: Column, value: Any, where: str) -> Any:
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
         ):
             raise wrong("a list of numbers")
-        return "[" + ",".join(str(float(v)) for v in value) + "]"
+        return _vector(value)
     if base in STRING_TYPES:
         if not isinstance(value, str):
             raise wrong("a string")
@@ -443,7 +448,7 @@ def _params(statement: Statement, vectors: list[list[float]]) -> dict[str, Any]:
     names (`_sql`): by position, as column names needn't be valid placeholder names."""
     values = dict(statement.values)
     for column, index in statement.embed.items():
-        values[column] = "[" + ",".join(map(str, vectors[index])) + "]"
+        values[column] = _vector(vectors[index])
     params = {f"v{i}": value for i, value in enumerate(values.values())}
     params.update({f"w{i}": value for i, value in enumerate(statement.where.values())})
     return params
