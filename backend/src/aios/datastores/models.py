@@ -27,6 +27,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -35,6 +36,9 @@ EMBEDDING_DIM = 1024
 SCHEMA = "aios"
 # The run history export's tables (`aios.datastores.history`).
 HISTORY_SCHEMA = "history"
+# The exported messages worth embedding, and searching: what the user and the assistant said
+# (not tool results, which are the tools' own, nor the empty text of a turn of only tool calls).
+EMBEDDABLE = "role IN ('user', 'assistant') AND btrim(text) <> ''"
 
 
 class StoreBase(DeclarativeBase):
@@ -175,9 +179,35 @@ class HistoryMessage(StoreBase):
         JSONB, comment="An assistant message's token usage: {input_tokens, output_tokens, ...}."
     )
     model: Mapped[str | None] = mapped_column(Text, comment="The model that wrote it.")
+    # For searching past runs (`aios.search`): the text's embedding, while the owner has
+    # embedding on, and its full-text vector, always.
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM),
+        comment="Its text's embedding, for search: a user's or assistant's message with text, "
+        "once embedded (only while embedding is on).",
+    )
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', text)", persisted=True),
+        comment="Its text's full-text search vector.",
+    )
 
     __table_args__ = (
         PrimaryKeyConstraint("agent_run_id", "position"),
+        Index(
+            "ix_messages_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index("ix_messages_tsv", "tsv", postgresql_using="gin"),
+        # The messages waiting to be embedded (`EMBEDDABLE`), for the embedding to find.
+        Index(
+            "ix_messages_unembedded",
+            "agent_run_id",
+            "position",
+            postgresql_where=sql_text(f"embedding IS NULL AND {EMBEDDABLE}"),
+        ),
         {
             "schema": HISTORY_SCHEMA,
             "comment": "The messages of the agent runs in history.agent_runs, in order.",
