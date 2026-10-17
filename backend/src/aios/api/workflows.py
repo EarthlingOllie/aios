@@ -608,6 +608,10 @@ class WorkflowRunSummary(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    # While it waits, since when; and how long it waited before (seconds), which doesn't count
+    # towards its time limit.
+    waiting_since: datetime | None
+    waited_seconds: float
 
 
 class WorkflowRunStepOut(BaseModel):
@@ -657,6 +661,8 @@ def workflow_run_summary_query():
         WorkflowRun.created_at,
         WorkflowRun.started_at,
         WorkflowRun.finished_at,
+        WorkflowRun.waiting_since,
+        WorkflowRun.waited_seconds,
     ).join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
 
 

@@ -8,17 +8,20 @@ gives the waiting node its outcome on its own thread.
 The queued tasks are run here by hand, in order, standing in for the workers."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
+from sqlalchemy import func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
 from test_workflows import agent_node, make_agent, make_workflow
 
-from aios import worker
+from aios import worker, workflows
+from aios.config import get_settings
 from aios.datastores import data_store_for
-from aios.models import DataStore
+from aios.models import DataStore, WorkflowRun
 from aios.workflows import execute_run
 
 
@@ -184,3 +187,73 @@ def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, sto
     [(_, outcome)] = flow.results
     assert (outcome["status"], outcome["note"]) == ("rejected", "Not now")
     assert steps(out)["after"]["input"] == "builder:built(rejected)"
+
+
+def test_a_long_wait_isnt_failed_for_its_heartbeat_or_the_time_limit(
+    api, db, builder, store, queued
+):
+    """Waiting holds no worker, so it beats no heartbeat; and only running counts towards the
+    run's time limit. How long it waited is recorded."""
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    assert waiting["waiting_since"] is not None
+    limit = get_settings().workflow_run_time_limit
+    # It ran for a minute, then waited far longer than the heartbeat's lease and the limit.
+    db.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == waiting["id"])
+        .values(
+            started_at=func.now() - timedelta(seconds=2 * limit + 60),
+            waiting_since=func.now() - timedelta(seconds=2 * limit),
+            heartbeat_at=func.now() - timedelta(seconds=2 * limit),
+        )
+    )
+    db.commit()
+
+    # Read (which fails runs whose worker stopped) and listed: still waiting.
+    assert read(api, workflow, waiting["id"])["status"] == "waiting"
+    listed = api.get(f"/api/workflows/{workflow['id']}/runs").json()
+    assert [r["status"] for r in listed] == ["waiting"]
+
+    [request] = api.get("/api/schema-changes").json()
+    api.post(f"/api/schema-changes/{request['id']}/approve")
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert out["waiting_since"] is None
+    assert 2 * limit <= out["waited_seconds"] < 2 * limit + 60
+
+
+def test_a_run_resumes_with_only_what_was_left_of_its_time_limit(
+    api, db, builder, store, queued, monkeypatch
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    limit = get_settings().workflow_run_time_limit
+    # It had run for all but a moment of its limit before it waited.
+    db.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == waiting["id"])
+        .values(
+            started_at=func.now() - timedelta(seconds=limit + 60),
+            waiting_since=func.now() - timedelta(seconds=60),
+        )
+    )
+    db.commit()
+    [request] = api.get("/api/schema-changes").json()
+    api.post(f"/api/schema-changes/{request['id']}/approve")
+
+    async def slow(messages, info):
+        await asyncio.sleep(2)
+        async for item in flow(messages, info):
+            yield item
+
+    with use_model(model(slow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert (out["status"], out["error"]) == ("failed", workflows.time_limit_error())
