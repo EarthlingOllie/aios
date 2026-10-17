@@ -1,12 +1,14 @@
 import os
 import tempfile
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import errors
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios.auth import current_user
 from aios.datastores import data_store_for, provision, resolve
@@ -28,20 +30,21 @@ def db():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM data_stores LIMIT 1"))
-    except Exception as exc:  # noqa: BLE001
-        # The server is up but won't let DATABASE_URL's role in: the roles haven't been created
-        # (or the password is wrong), which skipping would hide.
-        message = str(exc)
-        if isinstance(exc, OperationalError) and (
-            "password authentication failed" in message
-            or ('role "' in message and "does not exist" in message)
-        ):
+    except OperationalError as exc:
+        # libpq prefixes an error the server sent with its severity ("FATAL:  ..."), so one
+        # without it never reached a server (refused, unresolvable host, timeout): skip. One with
+        # it is a server that's up but turns DATABASE_URL away (the role or database is missing,
+        # a wrong password, no CONNECT privilege, a pg_hba.conf rule), which skipping would hide.
+        if "FATAL:" in str(exc.orig):
             pytest.fail(
-                f"DATABASE_URL's role can't log in ({exc.orig}). Create the roles with "
-                "`python -m aios.db_roles` (see the README's Database roles)."
+                f"the database server turned DATABASE_URL away ({exc.orig}). If its role is "
+                "missing, create the roles with `python -m aios.db_roles` (see the README's "
+                "Database roles)."
             )
-        if isinstance(exc, OperationalError) or "data_stores" in str(exc):
-            pytest.skip(f"database not available: {exc.__class__.__name__}")
+        pytest.skip(f"database not available: {exc.__class__.__name__}")
+    except ProgrammingError as exc:
+        if isinstance(exc.orig, errors.UndefinedTable):
+            pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
     with SessionLocal() as session:
         yield session
@@ -86,6 +89,23 @@ def user(db):
     u = provisioned_user(db, -1, "test-user")
     yield u
     delete_user(db, u)
+
+
+@pytest.fixture
+def new_user(db) -> Iterator[Callable[[], User]]:
+    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+    made: list[User] = []
+
+    def make() -> User:
+        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
+        db.add(u)
+        db.commit()
+        made.append(u)
+        return u
+
+    yield make
+    for u in made:
+        delete_user(db, u)
 
 
 @pytest.fixture
