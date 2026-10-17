@@ -33,7 +33,9 @@ export function SettingsPage() {
   }
 
   function onDelete() {
-    if (!window.confirm("Delete the run history exported to your data store? Your runs stay here.")) {
+    if (
+      !window.confirm("Delete the run history exported to your data store? Your runs stay here.")
+    ) {
       return;
     }
     act(() => api.deleteExportedHistory(), "Exported history deleted.");
@@ -73,7 +75,11 @@ export function SettingsPage() {
                 />
                 Export my run history to my data store
               </label>
-              <p role="status" aria-label="Run history export" className="text-muted-foreground text-sm">
+              <p
+                role="status"
+                aria-label="Run history export"
+                className="text-muted-foreground text-sm"
+              >
                 {historyExportStatus(settings, formatDate)}
               </p>
               <div className="flex flex-wrap items-center gap-3">
