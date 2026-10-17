@@ -6,10 +6,12 @@
   Nothing resumes: the run is gone.
 - Either way the request's notifications are cleared, and no change is ever applied."""
 
+import threading
 from datetime import timedelta
 
+import pytest
 from fake_model import model, use_model
-from sqlalchemy import update
+from sqlalchemy import select, update
 from test_schema_change_requests import (  # noqa: F401
     CONTACTS,
     Script,
@@ -23,8 +25,9 @@ from test_schema_change_requests import (  # noqa: F401
 
 from aios import worker
 from aios.config import get_settings
+from aios.datastores import schema_changes
 from aios.db import SessionLocal
-from aios.models import SchemaChangeRequest
+from aios.models import SchemaChangeRequest, SchemaChangeStatus
 
 
 def asked_ago(request: dict, age: timedelta) -> None:
@@ -132,6 +135,97 @@ def test_deleting_an_agent_whose_run_waits_cancels_its_request(
     assert api.get("/api/notifications").json()["unread"] == 0
     assert queued == []
     assert data_tables(store) == []
+
+
+def test_an_approval_made_as_it_expires_wins_and_is_applied_once(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+    queued,  # noqa: F811
+):
+    """The approval holds the request's row while it decides; expiry waits, then leaves it."""
+    script = Script(CONTACTS)
+    _, request = start(api, agent, script)
+    asked_ago(request, expiry() + timedelta(minutes=1))
+    expired: list = []
+    with SessionLocal() as deciding:
+        # As `_decide` does: lock it, and decide it, but not yet committed.
+        row = deciding.scalar(
+            select(SchemaChangeRequest)
+            .where(SchemaChangeRequest.id == request["id"])
+            .with_for_update()
+        )
+        row.status = SchemaChangeStatus.approved
+        deciding.flush()
+        expiring = threading.Thread(target=lambda: expired.extend(schema_changes.expire()))
+        expiring.start()
+        expiring.join(1)
+        assert expiring.is_alive()  # waiting for the decision's lock
+        deciding.commit()
+    expiring.join(10)
+
+    assert expired == []
+    assert request_of(api, request)["status"] == "approved"
+    worker.apply_schema_change_task.run(request["id"])
+    with use_model(model(script)):
+        run_queued(queued)
+    assert request_of(api, request)["status"] == "applied"
+    assert data_tables(store) == ["contacts"]
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_an_expired_request_cant_be_decided(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+    queued,  # noqa: F811
+    decision,
+):
+    _, request = start(api, agent, Script(CONTACTS))
+    asked_ago(request, expiry() + timedelta(minutes=1))
+    expire(queued)
+    queued.clear()
+
+    r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+
+    assert r.status_code == 409
+    assert "expired" in r.json()["detail"]
+    assert queued == []
+    assert data_tables(store) == []
+
+
+def test_a_cancel_made_as_its_approved_leaves_the_approval(
+    api,
+    agent,  # noqa: F811
+    queued,  # noqa: F811
+):
+    run, request = start(api, agent, Script(CONTACTS))
+    cancelled: list = []
+    with SessionLocal() as deciding:
+        row = deciding.scalar(
+            select(SchemaChangeRequest)
+            .where(SchemaChangeRequest.id == request["id"])
+            .with_for_update()
+        )
+        row.status = SchemaChangeStatus.approved
+        deciding.flush()
+
+        def cancel() -> None:
+            with SessionLocal() as db:
+                cancelled.extend(
+                    schema_changes.cancel(db, SchemaChangeRequest.requested_by_run == run["id"])
+                )
+                db.commit()
+
+        cancelling = threading.Thread(target=cancel)
+        cancelling.start()
+        cancelling.join(1)
+        assert cancelling.is_alive()
+        deciding.commit()
+    cancelling.join(10)
+
+    assert cancelled == []
+    assert request_of(api, request)["status"] == "approved"
 
 
 def test_the_expiry_period_is_configuration(
