@@ -11,10 +11,11 @@ from conftest import delete_user
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text
-from test_agents import chat_body, make_agent
+from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow
 
 from aios import worker
+from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.datastores import DataStoreBusy, data_store_for, history, provision, store_session
@@ -186,6 +187,67 @@ def test_a_turn_that_fails_exports_what_the_user_saw(api, user, store_id, histor
         ("user", "hello"),
         ("assistant", "half an "),
     ]
+
+
+def test_a_turn_that_is_stopped_exports_what_the_user_saw(api, user, db, store_id, history_tasks):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    agent = make_agent(api, "Bot")
+    run = new_run(api, agent)
+
+    async def slow(messages, info):
+        yield "partial "
+        await asyncio.sleep(60)
+        yield "never sent"
+
+    async def stop_after_first_text():
+        # Stop in the UI aborts the fetch: the server sees its response task cancelled.
+        response = await agents_api.run_chat(agent["id"], run["id"], chat_body("stop me"), user, db)
+        got_text = asyncio.Event()
+
+        async def consume():
+            async for chunk in response.body_iterator:
+                if "partial" in chunk:
+                    got_text.set()
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(got_text.wait(), 10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with use_model(model(slow)):
+        asyncio.run(stop_after_first_text())
+    history.export(store_id)
+
+    assert stored(store_id, "SELECT role, text FROM history.messages ORDER BY position") == [
+        ("user", "stop me"),
+        ("assistant", "partial "),
+    ]
+    assert stored(store_id, "SELECT message_count FROM history.agent_runs") == [(2,)]
+
+
+def test_a_turn_stopped_during_tool_calls_exports_them_and_their_results(
+    api, user, db, store_id, history_tasks, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+
+    stop_during_searches(api, user, db, monkeypatch, [])
+    history.export(store_id)
+
+    rows = stored(
+        store_id,
+        "SELECT role, tool_calls, tool_call_id, is_error FROM history.messages ORDER BY position",
+    )
+    assert [(role, call_id, is_error) for role, _, call_id, is_error in rows] == [
+        ("user", None, None),
+        ("assistant", None, None),
+        ("tool", "call-quick", False),
+        # Still running when the turn stopped: the user saw it fail.
+        ("tool", "call-slow", True),
+    ]
+    assert [c["id"] for c in rows[1][1]] == ["call-slow", "call-quick"]
 
 
 def test_deleting_a_run_or_its_agent_deletes_its_copy(api, user, store_id, history_tasks):
