@@ -67,6 +67,25 @@ test("a store whose status can't be read says so, and recovers when it can", asy
   await expect(overview(page)).not.toContainText("Couldn't check your data store");
 });
 
+test("Documents and the chat's panel say when the store's status can't be read", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.dataStoreFails = true;
+  await page.goto("/data?tab=documents");
+
+  const notice = page.getByRole("status", { name: "Data store" });
+  await expect(notice).toContainText("Couldn't check your data store");
+  await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
+
+  await page.getByRole("link", { name: "Chat" }).first().click();
+  await expect(notice).toContainText("Couldn't check your data store");
+
+  api.dataStoreFails = false;
+  await expect(notice).toBeHidden({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
+});
+
 test("each section has its own URL", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("plan.md");

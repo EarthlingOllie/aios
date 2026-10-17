@@ -13,6 +13,7 @@ import { formatDate, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
+import { Notice } from "@/components/Notice";
 import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
 import { useDataStoreStatus } from "@/lib/data-store";
 import { cn } from "@/lib/utils";
@@ -217,33 +218,32 @@ function UploadButton({ documents }: { documents: DocumentsState }) {
 }
 
 /**
- * What's wrong, if anything: a store that isn't ready, a list that couldn't be read, or uploads
- * and deletes that failed.
+ * What's wrong, if anything: a store that isn't ready (or whose status can't be read), a list
+ * that couldn't be read, or uploads and deletes that failed.
  */
 function DocumentsNotices({
   storeStatus,
+  storeError,
   documents,
   className,
 }: {
   storeStatus: DataStoreStatus | undefined;
+  storeError: string | undefined;
   documents: DocumentsState;
   className: string;
 }) {
   return (
     <>
-      <DataStoreNotice status={storeStatus} action="upload documents" className={className} />
+      <DataStoreNotice
+        status={storeStatus}
+        error={storeError}
+        action="upload documents"
+        className={className}
+      />
       {documents.listError && (
-        <div
-          role="status"
-          aria-label="Documents list"
-          className={cn(
-            "text-muted-foreground flex items-start gap-2 rounded-md border text-sm",
-            className,
-          )}
-        >
-          {documents.listRetrying && <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />}
-          <span>{documents.listError}</span>
-        </div>
+        <Notice label="Documents list" busy={documents.listRetrying} className={className}>
+          {documents.listError}
+        </Notice>
       )}
       {documents.errors.length > 0 && (
         <div
@@ -294,7 +294,7 @@ function isEmpty(documents: DocumentsState) {
 
 /** The chat's documents panel: a compact list beside the conversation it grounds. */
 export function Documents() {
-  const { storeStatus, documents } = useDocumentsList();
+  const { storeStatus, storeError, documents } = useDocumentsList();
   const { docs } = documents;
 
   return (
@@ -303,7 +303,12 @@ export function Documents() {
         <h2 className="text-sm font-semibold">Documents</h2>
         <UploadButton documents={documents} />
       </div>
-      <DocumentsNotices storeStatus={storeStatus} documents={documents} className="px-2 py-1.5" />
+      <DocumentsNotices
+        storeStatus={storeStatus}
+        storeError={storeError}
+        documents={documents}
+        className="px-2 py-1.5"
+      />
       {documents.loading && <DocumentsLoading />}
       <ul className="flex-1 space-y-1 overflow-y-auto">
         {isEmpty(documents) && (
@@ -339,7 +344,7 @@ export function Documents() {
  * count and upload time. Uploads from the chat's panel land in the same list.
  */
 export function DocumentsSection() {
-  const { storeStatus, documents } = useDocumentsList();
+  const { storeStatus, storeError, documents } = useDocumentsList();
   const { docs } = documents;
 
   const onDelete = (doc: DocumentInfo) => {
@@ -355,7 +360,12 @@ export function DocumentsSection() {
         </p>
         <UploadButton documents={documents} />
       </div>
-      <DocumentsNotices storeStatus={storeStatus} documents={documents} className="px-3 py-2" />
+      <DocumentsNotices
+        storeStatus={storeStatus}
+        storeError={storeError}
+        documents={documents}
+        className="px-3 py-2"
+      />
       {documents.loading && <DocumentsLoading />}
       {isEmpty(documents) && (
         <p className="text-muted-foreground text-sm">
