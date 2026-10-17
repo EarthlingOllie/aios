@@ -1,9 +1,10 @@
-import { useCallback, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { Check, Database, Loader2, X } from "lucide-react";
 
 import { ErrorBanner, formatDate, useLoad, usePoll } from "@/components/crud";
 import { Notice } from "@/components/Notice";
+import { useRefreshNotifications } from "@/components/Notifications";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +25,7 @@ export function SchemaChangeCard({
   onDecided,
   showRun = false,
   foldSql = false,
+  current = false,
 }: {
   request: SchemaChangeRequest;
   /** After a decision, with the request as the server has it now. */
@@ -32,18 +34,23 @@ export function SchemaChangeCard({
   showRun?: boolean;
   /** Keep the SQL folded away until asked for (the Data page's history). */
   foldSql?: boolean;
+  /** The one a link (a notification) opened: marked, and scrolled into view. */
+  current?: boolean;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const summary = requestSummary(request);
+  const refreshNotifications = useRefreshNotifications();
 
   async function decide(decision: () => Promise<SchemaChangeRequest>) {
     setSending(true);
     setError(undefined);
     try {
       onDecided(await decision());
+      // Deciding it clears its notification: the badge shouldn't wait for the next poll.
+      void refreshNotifications();
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -51,10 +58,20 @@ export function SchemaChangeCard({
     }
   }
 
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (current) section.current?.scrollIntoView?.({ block: "nearest" });
+  }, [current]);
+
   return (
     <section
+      ref={section}
       aria-label={`Schema change: ${request.summary}`}
-      className="flex flex-col gap-3 rounded-md border px-4 py-3 text-sm"
+      aria-current={current || undefined}
+      className={cn(
+        "flex flex-col gap-3 rounded-md border px-4 py-3 text-sm",
+        current && "ring-primary ring-2",
+      )}
     >
       <div className="flex flex-wrap items-center gap-2">
         <Database className="text-muted-foreground size-4" />
@@ -154,6 +171,9 @@ function SqlBlock({ sql }: { sql: string }) {
  * carrying on.
  */
 export function ChangesSection() {
+  // The request a link (a notification) opened, if any: `/data?tab=changes&request=<id>`.
+  const [params] = useSearchParams();
+  const opened = params.get("request");
   const list = useLoad(useCallback(() => api.listSchemaChanges(), []));
   const requests = list.data ?? [];
   usePoll(
@@ -182,7 +202,13 @@ export function ChangesSection() {
           </p>
         )}
         {pending.map((r) => (
-          <SchemaChangeCard key={r.id} request={r} onDecided={() => list.reload()} showRun />
+          <SchemaChangeCard
+            key={r.id}
+            request={r}
+            onDecided={() => list.reload()}
+            showRun
+            current={r.id === opened}
+          />
         ))}
       </section>
       {decided.length > 0 && (
@@ -195,6 +221,7 @@ export function ChangesSection() {
               onDecided={() => list.reload()}
               showRun
               foldSql
+              current={r.id === opened}
             />
           ))}
         </section>

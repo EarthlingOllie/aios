@@ -234,6 +234,26 @@ export type SchemaChangeRequest = {
   can_decide: boolean;
 };
 
+/** Something in the app for the signed-in user to see. */
+export type Notification = {
+  id: string;
+  /** What it's about: `schema_change_request` (a request waiting for a decision) for now. */
+  kind: string;
+  /** For a schema change request, `request_id` and `data_store_id`. */
+  ref: Record<string, string>;
+  /** What it says, in a line; null when what it's about has gone. */
+  title: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+
+export type NotificationList = {
+  /** How many of the user's are unread, all told. */
+  unread: number;
+  /** Unread first, then read; newest first within each. */
+  notifications: Notification[];
+};
+
 export type Run = RunSummary & {
   ui_messages: UIMessage[];
   messages: ModelMessage[];
@@ -479,6 +499,9 @@ export const api = {
     request<SchemaChangeRequest>(`/api/schema-changes/${id}/approve`, { method: "POST" }),
   rejectSchemaChange: (id: string, note: string) =>
     request<SchemaChangeRequest>(`/api/schema-changes/${id}/reject`, json("POST", { note })),
+  listNotifications: () => request<NotificationList>("/api/notifications"),
+  markNotificationRead: (id: string) =>
+    request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
   search: (q: string, limit: number) =>
     request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
