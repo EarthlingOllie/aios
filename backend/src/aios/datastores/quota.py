@@ -74,6 +74,16 @@ def files_full(usage: Usage) -> str:
     )
 
 
+def db_full(usage: Usage) -> str:
+    """Why `write_data` refuses an insert or update, for the model (which tells the user)."""
+    return (
+        f"The user's data store is full: its database uses {format_bytes(usage.db_bytes or 0)}"
+        f" of the {format_bytes(usage.db_quota_bytes)} allowed, so rows can't be inserted or"
+        " updated. Reading and deleting rows still work. Tell the user: the Data page shows"
+        " their usage."
+    )
+
+
 def measure(data_store_id: uuid.UUID) -> None:
     """Measure what the store uses now, and record it on its row."""
     with store_session(data_store_id, "ro") as store:

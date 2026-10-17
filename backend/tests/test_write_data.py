@@ -14,6 +14,7 @@ from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
 from test_provisioning import login_url
 
+from aios import worker
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import data_store_for, store_not_ready
 from aios.datastores.connections import dispose_engines
@@ -800,3 +801,30 @@ def test_arguments_of_the_wrong_shape_are_refused_by_the_tools_schema(api, store
 
     assert "valid dictionary" in result
     assert len(fish(store)) == 2
+
+
+def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and_reads(
+    api, store, agent, monkeypatch
+):
+    # Any store's database is bigger than this.
+    monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 1024 * 1024)
+    worker.measure_data_store_usage_task.apply().get()
+
+    inserted, upserted, updated, deleted, queried = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+        call(table="fish", operation="upsert", rows=[{"name": "pike"}], on_conflict=["name"]),
+        call(table="fish", operation="update", values={"weight_kg": 9}, where={"id": 1}),
+        call(table="fish", operation="delete", where={"name": "perch"}),
+        ToolCall("query_data", {"sql": "SELECT name FROM data.fish"}),
+    )
+
+    for refused in (inserted, upserted, updated):
+        assert set(refused) == {"error"}
+        assert refused["error"].startswith("The user's data store is full: its database uses ")
+        assert "of the 1.0 MB allowed" in refused["error"]
+        assert "Reading and deleting rows still work" in refused["error"]
+    assert deleted["row_count"] == 1
+    assert queried["rows"] == [["pike"]]
+    assert fish(store) == [("pike", "4.2", None)]
