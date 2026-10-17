@@ -1114,3 +1114,24 @@ def test_a_store_behind_the_history_lines_head_isnt_exported_until_it_is_brought
     provision.migrate_store(store_id)
     history.export(store_id)
     assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(1,)]
+
+
+def test_delete_exported_history_empties_the_workflow_runs_and_while_on_brings_them_back(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    run = workflow_runs.run(api, started, nested_workflow(api), "topic")
+    history.export(store_id)
+    counts = (
+        "SELECT (SELECT count(*) FROM history.workflow_runs),"
+        " (SELECT count(*) FROM history.workflow_run_steps)"
+    )
+    assert stored(store_id, counts) == [(1, 3)]
+
+    assert api.delete("/api/settings/exported-history").status_code == 204
+
+    assert stored(store_id, counts) == [(0, 0)]
+    history.export(store_id)
+    assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(run["id"],)]
+    assert stored(store_id, counts) == [(1, 3)]
