@@ -596,3 +596,36 @@ def test_a_request_with_drops_is_confirmed_with_the_names_of_the_tables_it_drops
         )
         == "fish, eels"
     )
+
+
+def test_a_dropped_embedding_columns_marker_follows_its_table_when_that_is_dropped_too():
+    """Its marker is the table's still, under its new name: dropping the table moves it."""
+    spec = check(
+        change(
+            {"op": "drop_column", "table": "fish", "column": "notes_embedding"},
+            {"op": "drop_table", "table": "fish"},
+        ),
+        POND,
+        now=AT,
+    )
+
+    assert spec.ops[1].has_embeddings
+    already_dropped = StoreSchema(
+        tables={"fish": {"id": "bigint", "notes_text": "text"}},
+        relations={"fish"},
+        embeddings={("fish", "_dropped_20261001000000_notes_embedding"): "notes_text"},
+        dropped_columns={"fish": {"_dropped_20261001000000_notes_embedding"}},
+    )
+    [op] = check(change({"op": "drop_table", "table": "fish"}), already_dropped, now=AT).ops
+    assert op.has_embeddings
+
+
+def test_a_text_column_whose_embedding_is_dropped_already_can_be_dropped():
+    schema = StoreSchema(
+        tables={"fish": {"id": "bigint", "notes_text": "text"}},
+        relations={"fish"},
+        embeddings={("fish", "_dropped_20261001000000_notes_embedding"): "notes_text"},
+        dropped_columns={"fish": {"_dropped_20261001000000_notes_embedding"}},
+    )
+
+    check(change({"op": "drop_column", "table": "fish", "column": "notes_text"}), schema, now=AT)

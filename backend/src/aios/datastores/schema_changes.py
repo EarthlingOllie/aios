@@ -551,8 +551,13 @@ def _check_drop_column(op: DropColumn, state: StoreSchema, now: datetime, where:
             f"{where}: `{op.column}` is in `{SCHEMA}.{op.table}`'s primary key, so it can't be"
             " dropped"
         )
+    # A live embedding of it (one that's dropped too keeps its marker, but needs nothing).
     embedding = next(
-        (c for (t, c), source in state.embeddings.items() if t == op.table and source == op.column),
+        (
+            c
+            for (t, c), source in state.embeddings.items()
+            if t == op.table and source == op.column and not c.startswith(DROPPED_PREFIX)
+        ),
         None,
     )
     if embedding is not None:
@@ -574,7 +579,10 @@ def _check_drop_column(op: DropColumn, state: StoreSchema, now: datetime, where:
     )
     del columns[op.column]
     not_null.discard(op.column)
-    state.embeddings.pop((op.table, op.column), None)
+    # Its marker stays, under its new name (and follows the table if that's dropped).
+    source = state.embeddings.pop((op.table, op.column), None)
+    if source is not None:
+        state.embeddings[op.table, dropped_as] = source
     dropped.add(dropped_as)
     return checked
 
