@@ -1052,3 +1052,29 @@ def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
 
     history.export(store_id)
     assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]
+
+
+def test_deleting_an_agent_unlinks_its_runs_from_the_exported_steps(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    run = workflow_runs.run(api, started, workflow, "topic")
+    history.export(store_id)
+    critic = next(s for s in run["steps"] if s["path"] == ["review", "critic"])
+
+    # Once nothing current uses it, it can go, with its runs. The steps that held them stay
+    # without them, as on the platform.
+    (review,) = [w for w in api.get("/api/workflows").json() if w["name"] == "review"]
+    for gone in (f"workflows/{workflow['id']}", f"workflows/{review['id']}"):
+        assert api.delete(f"/api/{gone}").status_code == 204
+    assert api.delete(f"/api/agents/{critic['agent_id']}").status_code == 204
+    history.export(store_id)
+
+    assert stored(
+        store_id,
+        "SELECT array_to_string(path, '/'), agent_run_id IS NOT NULL"
+        " FROM history.workflow_run_steps ORDER BY path",
+    ) == [("draft", True), ("review", False), ("review/critic", False)]
+    assert stored(store_id, "SELECT agent_name FROM history.agent_runs") == [("draft",)]

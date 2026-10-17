@@ -32,6 +32,8 @@ from aios.models import (
     SkillVersion,
     Trigger,
     WorkflowNode,
+    WorkflowRun,
+    WorkflowRunStep,
     agent_version_skills,
 )
 from aios.runner import build_agent, run_title, version_tools
@@ -430,6 +432,13 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     history.enqueue_runs(db, AgentRun.agent_id == agent.id, deleting=True)  # their copies go too
+    # The workflow steps that held them stay, without them: so do their copies.
+    history.enqueue_workflow_runs(
+        db,
+        WorkflowRun.id.in_(
+            select(WorkflowRunStep.run_id).where(WorkflowRunStep.agent_run_id.in_(run_ids))
+        ),
+    )
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
