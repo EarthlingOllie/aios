@@ -191,3 +191,48 @@ def test_sorting_by_an_unknown_column_is_unprocessable(api, store, sort):
     assert response.status_code == 422
     assert "no column" in response.json()["detail"]
     assert len(rows(api, "fish")["rows"]) == 3
+
+
+@pytest.fixture
+def notes(store) -> DataStore:
+    """`data.notes`: jsonb, embeddings (a domain over one too) and wide values."""
+    with as_owner(store) as conn:
+        conn.execute("CREATE DOMAIN data.embedding AS vector(3)")
+        conn.execute(
+            "CREATE TABLE data.notes (id int PRIMARY KEY, meta jsonb, body text,"
+            " vec vector(3), loose vector, small halfvec(2), sparse sparsevec(5),"
+            " emb data.embedding)"
+        )
+        conn.execute(
+            "INSERT INTO data.notes VALUES"
+            """ (1, '{"b": [1, 2], "a": "x"}', 'short', '[1,2,3]', '[1,2,3,4]', '[1,2]',"""
+            " '{1:1,3:2}/5', '[4,5,6]'),"
+            " (2, NULL, repeat('wide ', 1000), NULL, NULL, NULL, NULL, NULL)"
+        )
+    return store
+
+
+def test_embeddings_show_as_their_dimension_not_their_numbers(api, notes):
+    listed = tables(api)["notes"]
+    page = rows(api, "notes", sort="id")
+
+    embedding = {c["name"]: c["embedding"] for c in listed["columns"]}
+    assert embedding == {
+        "id": False,
+        "meta": False,
+        "body": False,
+        "vec": True,
+        "loose": True,
+        "small": True,
+        "sparse": True,
+        "emb": True,
+    }
+    first, second = values(page)
+    assert first[3:] == ["vector(3)", "vector(4)", "halfvec(2)", "sparsevec(5)", "vector(3)"]
+    assert second[3:] == [None] * 5
+
+
+def test_jsonb_is_pretty_printed(api, notes):
+    page = rows(api, "notes", sort="id")
+
+    assert values(page)[0][1] == '{\n    "a": "x",\n    "b": [\n        1,\n        2\n    ]\n}'

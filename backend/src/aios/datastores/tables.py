@@ -183,8 +183,20 @@ def list_tables(data_store_id: uuid.UUID) -> tuple[list[Table], bool]:
 
 
 def _text(column: Column) -> sql.Composable:
-    """The column's value as text, as the page shows it."""
-    return sql.SQL("{}::text").format(sql.Identifier(column.name))
+    """The column's value as text, as the page shows it: an embedding as its type and dimension
+    (e.g. `vector(1024)`), never its numbers; `jsonb` pretty-printed."""
+    value = sql.Identifier(column.name)
+    if column.base_type == "sparsevec":
+        # Written `{index:value,...}/dimension`.
+        dims = sql.SQL("split_part({}::text, '/', 2)").format(value)
+    elif column.embedding:
+        dims = sql.SQL("vector_dims({})").format(value)
+    elif column.base_type == "jsonb":
+        return sql.SQL("jsonb_pretty({})").format(value)
+    else:
+        return sql.SQL("{}::text").format(value)
+    # NULL stays NULL.
+    return sql.SQL("{} || '(' || {} || ')'").format(sql.Literal(column.base_type), dims)
 
 
 def read_rows(
