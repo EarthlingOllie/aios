@@ -414,11 +414,11 @@ function Cell({
   label: string;
 }) {
   return (
-    <td className="max-w-xs min-w-24 px-3 py-2">
+    <td className="max-w-sm min-w-40 px-3 py-2">
       {value === null ? (
         <span className="text-muted-foreground text-xs italic">NULL</span>
       ) : (
-        <div className="max-h-32 overflow-hidden font-mono text-xs break-words whitespace-pre-wrap">
+        <div className="max-h-40 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">
           {value}
           {truncated && "…"}
         </div>
