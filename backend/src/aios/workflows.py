@@ -444,6 +444,22 @@ def _decided_waits() -> ColumnElement[bool]:
     )
 
 
+def workflow_run_waiting_on(db: Session, request: SchemaChangeRequest) -> int | None:
+    """The workflow run whose agent node made the request, if one did: the run to resume once
+    it's decided. Found by the step's agent run, or, if that's gone with its agent, by the
+    request the step waits on."""
+    by_run = (
+        WorkflowRunStep.agent_run_id == request.requested_by_run
+        if request.requested_by_run is not None
+        else false()
+    )
+    return db.scalar(
+        select(WorkflowRunStep.run_id)
+        .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
+        .limit(1)
+    )
+
+
 def _pause_run(run_id: int) -> None:
     """A run whose nodes have all ended or wait: it waits, holding no worker.
 

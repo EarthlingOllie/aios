@@ -13,7 +13,7 @@ import pytest
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from test_agents import agent_body
 from test_data_tools import provisioned
-from test_schema_change_requests import CONTACTS, TOOLS
+from test_schema_change_requests import CONTACTS, TOOLS, data_tables
 from test_workflows import agent_node, make_agent, make_workflow
 
 from aios import worker
@@ -118,3 +118,69 @@ def test_a_requesting_node_waits_while_an_independent_branch_finishes(
     assert build["waiting_on_request_id"] == request["id"]
     # Nothing is queued: the run holds no worker until it's decided.
     assert queued == []
+
+
+def chain(api, builder: dict) -> dict:
+    """build → after, with an independent branch, other."""
+    after = make_agent(api, "After", base_prompt="after")
+    other = make_agent(api, "Other", base_prompt="other")
+    return make_workflow(
+        api,
+        "Builders",
+        [agent_node("build", builder), agent_node("after", after), agent_node("other", other)],
+        [("build", "after")],
+    )
+
+
+def test_approving_resumes_the_waiting_node_and_the_run_completes(api, builder, store, queued):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    assert "after" not in steps(waiting)
+    [request] = api.get("/api/schema-changes").json()
+
+    r = api.post(f"/api/schema-changes/{request['id']}/approve")
+    assert r.status_code == 200, r.text
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert data_tables(store) == ["contacts"]
+    by_path = steps(out)
+    assert (by_path["build"]["status"], by_path["build"]["output"]) == (
+        "succeeded",
+        "builder:built(applied)",
+    )
+    assert by_path["build"]["waiting_on_request_id"] is None
+    assert by_path["after"]["input"] == "builder:built(applied)"
+    assert out["output"] == "after(builder:built(applied))\n\nother(go)"
+    # Nothing ran twice: the other branch's step is the one it recorded before it waited.
+    assert len(out["steps"]) == 3
+    assert by_path["other"] == steps(waiting)["other"]
+    # The node resumed on its own agent run: one conversation, its call given the outcome.
+    [(name, outcome)] = flow.results
+    assert (name, outcome["status"]) == ("request_schema_change", "applied")
+    build = by_path["build"]
+    conversation = api.get(f"/api/agents/{build['agent_id']}/runs/{build['agent_run_id']}").json()
+    assert conversation["waiting"] is False
+    assert [m["type"] for m in conversation["messages"]] == ["human", "ai", "tool", "ai"]
+
+
+def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, store, queued):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    [request] = api.get("/api/schema-changes").json()
+
+    r = api.post(f"/api/schema-changes/{request['id']}/reject", json={"note": "Not now"})
+    assert r.status_code == 200, r.text
+    with use_model(model(flow)):
+        run_queued(queued)
+
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert data_tables(store) == []
+    [(_, outcome)] = flow.results
+    assert (outcome["status"], outcome["note"]) == ("rejected", "Not now")
+    assert steps(out)["after"]["input"] == "builder:built(rejected)"

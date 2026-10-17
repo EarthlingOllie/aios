@@ -150,8 +150,8 @@ def run_workflow_task(run_id: int) -> None:
     from aios.workflows import execute_run, fail_run, time_limit_error
 
     try:
-        # Only a queued run starts, so a redelivered message doesn't run it twice; one left
-        # running by a worker that died (its heartbeat stopped) is failed instead.
+        # Only a queued or waiting run starts, so a redelivered message doesn't run it twice;
+        # one left running by a worker that died (its heartbeat stopped) is failed instead.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
         fail_run(run_id, time_limit_error())
@@ -190,16 +190,23 @@ def apply_schema_change_task(request_id: str) -> None:
 
 def enqueue_resume(request_id: uuid.UUID) -> None:
     """Queue resuming the run that made a request, if it's decided and the run (if a run made
-    it) hasn't been given the outcome yet."""
+    it) hasn't been given the outcome yet.
+
+    An agent node's run is resumed through its workflow run, which carries on from where it
+    waited (`aios.workflows`): queued again, it's claimed if it's waiting."""
     from aios.db import SessionLocal
     from aios.models import SchemaChangeRequest
+    from aios.workflows import workflow_run_waiting_on
 
     with SessionLocal() as db:
         request = db.get(SchemaChangeRequest, request_id)
         if request is None or not request.status.decided or request.resumed_at is not None:
             return
         run_id = request.requested_by_run
-    if run_id is not None:
+        workflow_run_id = workflow_run_waiting_on(db, request)
+    if workflow_run_id is not None:
+        run_workflow_task.delay(workflow_run_id)
+    elif run_id is not None:
         resume_agent_run_task.delay(run_id)
 
 
