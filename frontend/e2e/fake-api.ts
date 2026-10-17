@@ -48,6 +48,31 @@ export type SchemaChangeRow = {
   resumed_at: string | null;
   /** Whether the signed-in user may decide it (the store's owner), while it's pending. */
   decider: boolean;
+  /** What approving it takes typed, if it drops anything. */
+  confirm_with: string | null;
+  /** What its drops would remove (GET .../impact). */
+  impact: {
+    table: string;
+    column: string | null;
+    rows: number | null;
+    values: number | null;
+    columns: string[] | null;
+  }[];
+};
+
+export type DroppedRow = {
+  id: number;
+  kind: "table" | "column";
+  table: string;
+  column: string | null;
+  dropped_name: string;
+  dropped_at: string;
+  /** How long until it's purged, from now (days). */
+  purge_in_days: number;
+  blocked: string | null;
+  restore_error: string | null;
+  /** If set, a restore is refused once it runs (the worker's check), with this. */
+  refuseRestore?: string;
 };
 type WorkflowVersionRow = {
   id: number;
@@ -149,6 +174,8 @@ export class FakeApi {
   private holdingLists = false;
   /** Schema change requests in the user's store, oldest first. */
   schemaChanges: SchemaChangeRow[] = [];
+  /** Dropped tables and columns in the user's store, newest first. */
+  dropped: DroppedRow[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -240,10 +267,34 @@ export class FakeApi {
       applied_at: null,
       resumed_at: null,
       decider: true,
+      confirm_with: null,
+      impact: [],
       ...fields,
     };
     this.schemaChanges.push(request);
     return request;
+  }
+
+  /** Adds a dropped table or column, as if a drop was approved earlier. */
+  addDropped(fields: Partial<DroppedRow> & Pick<DroppedRow, "kind" | "table">): DroppedRow {
+    const name = fields.column ?? fields.table;
+    const item: DroppedRow = {
+      id: this.id(),
+      column: null,
+      dropped_name: `_dropped_20261014090000_${name}`,
+      dropped_at: NOW,
+      purge_in_days: 30,
+      blocked: null,
+      restore_error: null,
+      ...fields,
+    };
+    this.dropped.unshift(item);
+    return item;
+  }
+
+  private droppedOut(item: DroppedRow) {
+    const { purge_in_days, refuseRestore: _, ...fields } = item;
+    return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
   }
 
   /**
@@ -265,7 +316,7 @@ export class FakeApi {
   }
 
   private schemaChangeOut(request: SchemaChangeRow) {
-    const { run_id, decider, ...fields } = request;
+    const { run_id, decider, impact: _, ...fields } = request;
     const run = run_id === null ? undefined : this.agentRuns.get(run_id);
     return {
       ...fields,
@@ -659,11 +710,20 @@ export class FakeApi {
         [...pending, ...decided].map((r) => this.schemaChangeOut(r)),
       );
     }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/impact$/)) && method === "GET") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      return reply(200, { removes: request.impact });
+    }
     if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
       if (!request || !request.decider) return fail(404, "Schema change request not found");
       if (request.status !== "pending") {
         return fail(409, `This request has already been ${request.status}`);
+      }
+      const typed = (body?.confirm ?? "").trim();
+      if (m[2] === "approve" && request.confirm_with && typed !== request.confirm_with) {
+        return fail(422, `This request drops data: Type \`${request.confirm_with}\` to confirm.`);
       }
       request.decided_at = NOW;
       if (m[2] === "approve") {
@@ -673,6 +733,19 @@ export class FakeApi {
         request.note = (body?.note ?? "").trim() || null;
       }
       return reply(200, this.schemaChangeOut(request));
+    }
+    if (path === "/api/dropped" && method === "GET") {
+      return reply(200, this.dropped.map((d) => this.droppedOut(d)));
+    }
+    if ((m = path.match(/^\/api\/dropped\/(\d+)\/restore$/)) && method === "POST") {
+      const item = this.dropped.find((d) => d.id === Number(m![1]));
+      if (!item) return fail(404, "Nothing dropped by that id");
+      if (item.blocked) return fail(409, item.blocked);
+      const out = this.droppedOut(item);
+      // What the provisioning worker then does.
+      if (item.refuseRestore) item.restore_error = item.refuseRestore;
+      else this.dropped = this.dropped.filter((d) => d !== item);
+      return reply(202, { ...out, blocked: null });
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {

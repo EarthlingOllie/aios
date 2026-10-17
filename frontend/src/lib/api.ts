@@ -232,6 +232,37 @@ export type SchemaChangeRequest = {
   resumed_at: string | null;
   /** Whether the signed-in user may approve or reject it (it's still pending). */
   can_decide: boolean;
+  /** What approving it takes typed, if it drops anything: the tables' names. */
+  confirm_with: string | null;
+};
+
+/** What one of a request's drops would remove, as the store is now. */
+export type Removal = {
+  table: string;
+  /** The column it drops; null for the whole table. */
+  column: string | null;
+  /** The table's rows; null if it isn't there any more. */
+  rows: number | null;
+  /** A column's: how many rows have a value in it. */
+  values: number | null;
+  /** A table's: its columns. */
+  columns: string[] | null;
+};
+
+/** A table or column a drop took away, until it's restored or purged. */
+export type DroppedObject = {
+  id: number;
+  kind: "table" | "column";
+  /** A table's name, or the table a column is in. */
+  table: string;
+  column: string | null;
+  dropped_name: string;
+  dropped_at: string;
+  purge_at: string;
+  /** Why it can't be restored now, if it can't (its name has been taken since, say). */
+  blocked: string | null;
+  /** Why the last restore asked for was refused, if it was. */
+  restore_error: string | null;
 };
 
 export type Run = RunSummary & {
@@ -452,8 +483,17 @@ export const api = {
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
   listSchemaChanges: () => request<SchemaChangeRequest[]>("/api/schema-changes"),
-  approveSchemaChange: (id: string) =>
-    request<SchemaChangeRequest>(`/api/schema-changes/${id}/approve`, { method: "POST" }),
+  approveSchemaChange: (id: string, confirm?: string) =>
+    request<SchemaChangeRequest>(
+      `/api/schema-changes/${id}/approve`,
+      // A request that drops anything takes its tables' names typed.
+      confirm === undefined ? { method: "POST" } : json("POST", { confirm }),
+    ),
+  schemaChangeImpact: (id: string) =>
+    request<{ removes: Removal[] }>(`/api/schema-changes/${id}/impact`),
+  listDropped: () => request<DroppedObject[]>("/api/dropped"),
+  restoreDropped: (id: number) =>
+    request<DroppedObject>(`/api/dropped/${id}/restore`, { method: "POST" }),
   rejectSchemaChange: (id: string, note: string) =>
     request<SchemaChangeRequest>(`/api/schema-changes/${id}/reject`, json("POST", { note })),
   search: (q: string, limit: number) =>
