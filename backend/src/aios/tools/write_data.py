@@ -558,8 +558,11 @@ async def _embed(texts: list[str]) -> Embedded | dict:
     except Exception:
         log.exception("write_data couldn't embed %d texts", len(texts))
         return {
-            "error": "The text couldn't be embedded just now, so nothing was written. Try"
-            " again in a moment."
+            # The provider's error isn't shown: it's not the model's to read, and may say
+            # more about the platform than it should.
+            "error": "The text couldn't be embedded, so nothing was written: the embedding"
+            " model is unavailable, or refused it. If it's very long, try shorter text;"
+            " otherwise try again later."
         }
     if len(vectors) != len(texts) or any(len(v) != EMBEDDING_DIM for v in vectors):
         log.error("The embedding model gave the wrong number or size of vectors")

@@ -651,6 +651,8 @@ def test_a_failing_embedding_model_writes_nothing(api, notes, agent, monkeypatch
     assert set(result) == {"error"}
     assert "couldn't be embedded" in result["error"]
     assert "nothing was written" in result["error"]
+    # It may never embed (text past the model's limit, say): not only "try again".
+    assert "shorter" in result["error"]
     assert stored_notes(notes) == []
 
 
