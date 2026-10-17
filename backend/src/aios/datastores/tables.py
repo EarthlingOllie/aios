@@ -6,7 +6,10 @@ and each name is looked up in the catalog before it's put in a statement (quoted
 """
 
 import json
+import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 
 import psycopg
@@ -22,6 +25,10 @@ EXACT_COUNT_BELOW = 100_000
 COUNT_ROOM = 24
 # pgvector's types: shown as their dimension, never their numbers.
 EMBEDDING_TYPES = ("vector", "halfvec", "sparsevec")
+# The characters of each value a page of rows shows; the rest is read on asking (`read_value`).
+PREVIEW_CHARS = 200
+# A row's key: its table's (or partition's) oid, and its place in it (`ctid`).
+_ROW_KEY = re.compile(r"(?P<table>[0-9]{1,10}):\((?P<block>[0-9]{1,10}),(?P<place>[0-9]{1,5})\)")
 
 # The store's tables (or the one named), with their columns, in order: only the owner's
 # (`data`), and a partitioned table once, not each partition.
@@ -66,6 +73,34 @@ class ColumnNotFound(LookupError):
     """The table has no column of this name."""
 
 
+class CantSort(ValueError):
+    """The column's type has no order to sort it by."""
+
+
+class TooSlow(RuntimeError):
+    """The read ran past the store's statement timeout, and was stopped."""
+
+
+@contextmanager
+def _reading(data_store_id: uuid.UUID) -> Iterator[psycopg.Connection]:
+    """`read_only`, with a read stopped by the statement timeout raising `TooSlow`."""
+    try:
+        with read_only(data_store_id) as pg:
+            yield pg
+    except psycopg.errors.QueryCanceled as exc:
+        if "statement timeout" not in (exc.diag.message_primary or ""):
+            raise
+        raise TooSlow from exc
+
+
+class BadRowKey(ValueError):
+    """Not a row's key (`Row.key`)."""
+
+
+class RowNotFound(LookupError):
+    """No row of the table has this key (any more: a row moves when it's updated)."""
+
+
 @dataclass
 class Column:
     name: str
@@ -100,8 +135,10 @@ class Table:
 class Row:
     # Where the row is, for reading one of its values in full (`read_value`).
     key: str
-    # Each value as text (None for NULL), in column order.
+    # Each value as text (None for NULL), in column order, cut to `PREVIEW_CHARS`.
     values: list[str | None]
+    # The values that were cut, by their place in `values`.
+    truncated: list[int]
 
 
 @dataclass
@@ -166,7 +203,7 @@ def list_tables(data_store_id: uuid.UUID) -> tuple[list[Table], bool]:
     """The store's tables, by name, with their columns and row counts; and whether some were
     left out, to keep the list within `query_data`'s byte cap."""
     max_bytes = get_settings().query_data_max_bytes
-    with read_only(data_store_id) as pg:
+    with _reading(data_store_id) as pg:
         tables = list(_catalog(pg).values())
         # As many whole tables as fit, in order. Sized before they're counted, so only those
         # shown are; a count's digits can't take one past the room left for them.
@@ -213,7 +250,7 @@ def read_rows(
 
     Raises `TableNotFound` or `ColumnNotFound` for a name the catalog doesn't have."""
     settings = get_settings()
-    with read_only(data_store_id) as pg:
+    with _reading(data_store_id) as pg:
         table = _table(pg, table_name)
         order = []
         if sort is not None:
@@ -225,26 +262,91 @@ def read_rows(
             )
         # Then as stored, so rows that sort alike keep one order from page to page.
         order.append(sql.SQL("tableoid, ctid"))
+        cells = [sql.Identifier(f"c{i}") for i in range(len(table.columns))]
+        preview = sql.Literal(PREVIEW_CHARS)
+        # The page's rows first (the subquery, which its LIMIT keeps whole), then each value cut
+        # to its preview, and which were cut.
         statement = sql.SQL(
-            "SELECT tableoid::text || ':' || ctid::text, {cells} FROM {table}"
-            " ORDER BY {order} OFFSET {offset} LIMIT {limit}"
+            "SELECT key, {previews}, array_positions(ARRAY[{cut}]::boolean[], true) FROM ("
+            "SELECT tableoid::text || ':' || ctid::text AS key, {cells} FROM {table}"
+            " ORDER BY {order} OFFSET {offset} LIMIT {limit}) page"
         ).format(
-            cells=sql.SQL(", ").join(_text(c) for c in table.columns),
+            previews=sql.SQL(", ").join(sql.SQL("left({}, {})").format(c, preview) for c in cells),
+            cut=sql.SQL(", ").join(sql.SQL("length({}) > {}").format(c, preview) for c in cells),
+            cells=sql.SQL(", ").join(
+                sql.SQL("{} AS {}").format(_text(column), cell)
+                for column, cell in zip(table.columns, cells, strict=True)
+            ),
             table=_qualified(table.name),
             order=sql.SQL(", ").join(order),
             offset=sql.Literal(offset),
             # One more than the page, to tell whether there are more.
             limit=sql.Literal(limit + 1),
         )
-        read = read_capped(
-            pg,
-            statement.as_string(pg),
-            max_rows=limit,
-            max_bytes=settings.query_data_max_bytes,
-            ensure_ascii=False,
-        )
+        try:
+            read = read_capped(
+                pg,
+                statement.as_string(pg),
+                max_rows=limit,
+                max_bytes=settings.query_data_max_bytes,
+                ensure_ascii=False,
+            )
+        except psycopg.errors.UndefinedFunction as exc:
+            # Its type has no order (e.g. `point`).
+            if sort is None:
+                raise
+            raise CantSort(sort) from exc
     return RowsPage(
         columns=[c.name for c in table.columns],
-        rows=[Row(key=r[0], values=r[1:]) for r in read.rows],
+        rows=[
+            # Postgres counts the cut values from 1.
+            Row(key=r[0], values=r[1:-1], truncated=[i - 1 for i in r[-1]])
+            for r in read.rows
+        ],
         has_more=read.truncated,
     )
+
+
+def _row_key(key: str) -> tuple[int, str]:
+    match = _ROW_KEY.fullmatch(key)
+    # Oids and block numbers are 32 bits, places in a block 16.
+    if match is None or max(int(match["table"]), int(match["block"])) >= 2**32:
+        raise BadRowKey(key)
+    if int(match["place"]) >= 2**16:
+        raise BadRowKey(key)
+    return int(match["table"]), f"({match['block']},{match['place']})"
+
+
+def read_value(
+    data_store_id: uuid.UUID, table_name: str, row_key: str, column_name: str
+) -> tuple[str | None, bool]:
+    """One value of a row (`Row.key`), in full as far as `query_data`'s byte cap allows; and
+    whether it was cut short there.
+
+    Raises `TableNotFound` or `ColumnNotFound` for a name the catalog doesn't have, `BadRowKey`
+    for a key that isn't one, and `RowNotFound` if the row isn't there (any more)."""
+    max_bytes = get_settings().query_data_max_bytes
+    table_oid, tid = _row_key(row_key)
+    # Characters that, as JSON, fit the cap however they're written: none takes more than 6
+    # bytes (`\u001f`), and the brackets, quotes and flag take 16.
+    chars = sql.Literal(max(1, (max_bytes - 16) // 6))
+    with _reading(data_store_id) as pg:
+        table = _table(pg, table_name)
+        text = _text(table.column(column_name))
+        statement = sql.SQL(
+            "SELECT left({text}, {chars}), length({text}) > {chars} FROM {table}"
+            " WHERE tableoid = {oid}::oid AND ctid = {tid}::tid"
+        ).format(
+            text=text,
+            chars=chars,
+            table=_qualified(table.name),
+            oid=sql.Literal(str(table_oid)),
+            tid=sql.Literal(tid),
+        )
+        read = read_capped(
+            pg, statement.as_string(pg), max_rows=1, max_bytes=max_bytes, ensure_ascii=False
+        )
+    if not read.rows:
+        raise RowNotFound(row_key)
+    value, cut = read.rows[0]
+    return value, bool(cut)

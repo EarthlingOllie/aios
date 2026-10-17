@@ -6,13 +6,15 @@ owner role, as in `test_data_tools`.
 
 import json
 
+import psycopg
 import pytest
 from sqlalchemy import update
 from test_data_tools import as_owner, provisioned
 
-from aios.config import get_settings
+from aios.config import get_settings, libpq_conninfo
 from aios.datastores import data_store_for
 from aios.datastores import tables as data_tables
+from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
 
 
@@ -236,3 +238,94 @@ def test_jsonb_is_pretty_printed(api, notes):
     page = rows(api, "notes", sort="id")
 
     assert values(page)[0][1] == '{\n    "a": "x",\n    "b": [\n        1,\n        2\n    ]\n}'
+
+
+def value(api, table: str, row: str, column: str):
+    return api.get(f"/api/data/tables/{table}/value", params={"row": row, "column": column})
+
+
+def test_a_wide_value_is_cut_short_and_can_be_read_in_full(api, notes):
+    short, wide = rows(api, "notes", sort="id")["rows"]
+
+    assert short["truncated"] == []
+    assert wide["truncated"] == [2]
+    assert wide["values"][2] == ("wide " * 1000)[: data_tables.PREVIEW_CHARS]
+
+    full = value(api, "notes", wide["key"], "body")
+    assert full.status_code == 200
+    assert full.json() == {"value": "wide " * 1000, "truncated": False}
+
+
+def test_a_value_too_big_to_read_whole_is_read_as_far_as_the_byte_cap(api, notes, monkeypatch):
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 800)
+    wide = rows(api, "notes", sort="id")["rows"][1]
+
+    full = value(api, "notes", wide["key"], "body").json()
+
+    assert full["truncated"] is True
+    assert ("wide " * 1000).startswith(full["value"])
+    assert 0 < len(full["value"].encode()) <= 800
+
+
+def test_a_page_stops_at_the_byte_cap(api, notes, monkeypatch):
+    with as_owner(notes) as conn:
+        conn.execute(
+            "INSERT INTO data.notes (id, body) SELECT i, 'x' FROM generate_series(3, 50) i"
+        )
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 2000)
+
+    page = rows(api, "notes", sort="id", limit=50)
+
+    assert 0 < len(page["rows"]) < 50
+    assert page["has_more"] is True
+    assert len(json.dumps(page["rows"]).encode()) <= 2000 * 2
+
+
+@pytest.mark.parametrize(
+    ("row", "column", "status"),
+    [
+        (None, "colour", 422),
+        ("(0,1)", "body", 422),
+        ("1:(0,1); DROP TABLE data.notes", "body", 422),
+        ("1:(999,1)", "body", 404),
+        ("4294967296:(0,1)", "body", 422),
+        ("1:(0,65536)", "body", 422),
+    ],
+)
+def test_reading_a_value_needs_a_real_row_and_column(api, notes, row, column, status):
+    real = rows(api, "notes", sort="id")["rows"][0]["key"]
+    key = row or real
+
+    response = value(api, "notes", key, column)
+
+    assert response.status_code == status, response.text
+    assert value(api, "whales", real, "body").status_code == 404
+
+
+def test_a_column_that_cant_be_sorted_by_is_unprocessable(api, store):
+    with as_owner(store) as conn:
+        conn.execute("CREATE TABLE data.places (name text, spot point)")
+        conn.execute("INSERT INTO data.places VALUES ('home', '(1,2)')")
+
+    response = api.get("/api/data/tables/places/rows", params={"sort": "spot"})
+
+    assert response.status_code == 422
+    assert "can't be sorted" in response.json()["detail"]
+    assert values(rows(api, "places")) == [["home", "(1,2)"]]
+
+
+def test_a_read_past_the_time_limit_is_stopped(api, store):
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE TABLE data.big AS SELECT md5(i::text) AS h FROM generate_series(1, 300000) i"
+        )
+    with psycopg.connect(
+        libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
+    ) as conn:
+        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" SET statement_timeout = 30')
+    dispose_engines()
+
+    response = api.get("/api/data/tables/big/rows", params={"sort": "h"})
+
+    assert response.status_code == 504
+    assert "too long" in response.json()["detail"]
