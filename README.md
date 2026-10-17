@@ -298,7 +298,10 @@ after the platform's migration) finishes provisioning any store left `provisioni
 then brings every ready store to the store tree's head, one store at a time. A store that fails
 keeps its revision, gets the error on its row, and is reported; the rest carry on, and the
 command exits non-zero. Store migrations run while the previous release is still serving, so
-each must work with the code before it (expand now, contract in a later release).
+each must work with the code before it (expand now, contract in a later release). The code,
+though, needs its own head: a ready store behind it (the previous release made it after
+migrate-all ran, or migrating it failed) answers 409 ("being upgraded") and holds its ingests
+back, until the provisioning worker's beat brings it to head with the retries above.
 
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session

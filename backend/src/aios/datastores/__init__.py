@@ -7,6 +7,7 @@ store's database; everything in between takes a data store id. The tables every 
 """
 
 from aios.datastores.connections import (
+    DataStoreBehind,
     DataStoreBusy,
     DataStoreNotFound,
     DataStoreNotReady,
@@ -18,6 +19,7 @@ from aios.datastores.connections import (
 from aios.datastores.resolve import data_store_for
 
 __all__ = [
+    "DataStoreBehind",
     "DataStoreBusy",
     "DataStoreNotFound",
     "DataStoreNotReady",

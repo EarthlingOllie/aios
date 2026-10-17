@@ -13,6 +13,7 @@ Stores are upgraded one at a time while the new release is already running, so e
 must work with the code before it (expand now, contract in a later release).
 """
 
+from functools import cache
 from pathlib import Path
 
 from alembic.config import Config
@@ -57,6 +58,12 @@ def head_revision() -> str:
 
 def revisions_before_head() -> list[str]:
     """The tree's revisions before its head: a store at one of them is behind."""
+    return list(_revisions_before_head(tuple(VERSION_LOCATIONS)))
+
+
+# Opening a store checks it isn't behind, so the tree is read once, not on every request.
+@cache
+def _revisions_before_head(locations: tuple[str, ...]) -> tuple[str, ...]:
     script = ScriptDirectory.from_config(config())
     head = script.get_current_head()
-    return [s.revision for s in script.walk_revisions() if s.revision != head]
+    return tuple(s.revision for s in script.walk_revisions() if s.revision != head)

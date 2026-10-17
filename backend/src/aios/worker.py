@@ -5,7 +5,13 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 
 from aios.config import get_settings
-from aios.datastores import DataStoreBusy, DataStoreNotFound, DataStoreNotReady, store_session
+from aios.datastores import (
+    DataStoreBehind,
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_session,
+)
 
 settings = get_settings()
 
@@ -65,6 +71,10 @@ def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
     try:
         with store_session(uuid.UUID(data_store_id), "rw") as db:
             ingest_document(db, document_id)
+    except DataStoreBehind as exc:
+        # Ready, but not yet at the store tree's head this code needs: the schedule brings it
+        # there in minutes (`provision.retry_unfinished`).
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
     except (DataStoreNotFound, DataStoreNotReady):
         # Deleted since the upload (with its owner), or being deleted: a store is ready by the
         # time anything is uploaded to it, and stops being ready only when it's deleted. Its

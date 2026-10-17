@@ -21,12 +21,11 @@ import psycopg
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from celery.exceptions import SoftTimeLimitExceeded
+from celery.exceptions import Retry, SoftTimeLimitExceeded
 from conftest import delete_user, provisioned_user
 from psycopg import errors, sql
 from sqlalchemy import create_engine, insert, pool, select, text, update
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ProgrammingError
 
 from aios import worker
 from aios.auth import current_user
@@ -841,8 +840,22 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
     try:
         db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))
         db.commit()
-        with pytest.raises(ProgrammingError, match="UndefinedTable"):
-            api.get("/api/documents")
+        # Until then it's not ready for this release: a 409, not the missing tables' 500; and
+        # an ingest waits for it. The store ahead works.
+        r = api.get("/api/documents")
+        assert (r.status_code, r.json()["detail"]) == (
+            409,
+            "Your data store is being upgraded. Try again in a moment.",
+        )
+        retried = []
+        monkeypatch.setattr(
+            worker.ingest_document_task, "retry", lambda **kw: retried.append(kw) or Retry()
+        )
+        with pytest.raises(Retry):
+            worker.ingest_document_task.run(str(store_id), 1)
+        assert retried == [{"countdown": worker.BUSY_RETRY_COUNTDOWN}]
+        with store_session(ahead, "ro") as store:
+            store.execute(text("SELECT 1"))
         # Only this test's stores: others in the database are left alone.
         retry = provision.retry_unfinished
         monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id, ahead]))

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import PoolProxiedConnection, QueuePool
 
 from aios.config import get_settings
-from aios.datastores import credentials
+from aios.datastores import credentials, migrations
 from aios.db import SessionLocal
 from aios.models import DataStore, DataStoreStatus
 
@@ -54,6 +54,17 @@ class DataStoreNotReady(RuntimeError):
         self.status = status
 
 
+class DataStoreBehind(DataStoreNotReady):
+    """The store is ready, but at a revision of the store tree before its head, which this
+    release's code needs (the release before made it during a deploy, or migrating it failed):
+    worth trying again once the schedule brings it there (`provision.retry_unfinished`)."""
+
+    def __init__(self, data_store_id: uuid.UUID, revision: str):
+        super().__init__(data_store_id, DataStoreStatus.ready)
+        self.args = (f"Data store {data_store_id} is at {revision}, before the tree's head",)
+        self.revision = revision
+
+
 class DataStoreBusy(RuntimeError):
     """The store's role already holds all the connections it may (its `CONNECTION LIMIT`), or
     its instance does, or this process's pool on it does: worth trying again shortly."""
@@ -74,6 +85,9 @@ def _ready_store(db: Session, data_store_id: uuid.UUID) -> DataStore:
         raise DataStoreNotFound(data_store_id)
     if store.status != DataStoreStatus.ready:
         raise DataStoreNotReady(data_store_id, store.status)
+    # Not a revision this release doesn't know: the next release has already migrated it.
+    if store.schema_revision in migrations.revisions_before_head():
+        raise DataStoreBehind(data_store_id, store.schema_revision)
     return store
 
 
@@ -169,7 +183,7 @@ def store_engine(data_store_id: uuid.UUID, role: Role = "rw") -> Engine:
     """The engine on the data store's database, as its `role`.
 
     Raises `DataStoreNotFound` if there's no such store, and `DataStoreNotReady` until it's
-    ready."""
+    ready (`DataStoreBehind` while it's behind the store tree's head)."""
     _check_role(role)
     with SessionLocal() as db:
         store = _ready_store(db, data_store_id)

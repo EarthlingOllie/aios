@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from aios import auth, scheduler, tracing
 from aios.api import agents, chat, documents, skills, tools, triggers, workflows
 from aios.config import get_settings
-from aios.datastores import DataStoreBusy, DataStoreNotReady
+from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
 from aios.models import DataStoreStatus
 
@@ -64,12 +64,14 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DataStoreNotReady)
     async def data_store_not_ready(request: Request, exc: DataStoreNotReady) -> JSONResponse:
-        # Uploads, document lists and searches, until the user's store is provisioned.
-        detail = (
-            "Your data store couldn't be set up. We'll try again; please check back later."
-            if exc.status == DataStoreStatus.failed
-            else "Your data store is being set up. Try again in a moment."
-        )
+        # Uploads, document lists and searches, until the user's store is provisioned (or, made
+        # by the release before during a deploy, brought to the store tree's head).
+        if isinstance(exc, DataStoreBehind):
+            detail = "Your data store is being upgraded. Try again in a moment."
+        elif exc.status == DataStoreStatus.failed:
+            detail = "Your data store couldn't be set up. We'll try again; please check back later."
+        else:
+            detail = "Your data store is being set up. Try again in a moment."
         return JSONResponse(
             {"detail": detail, "data_store_status": exc.status.value},
             status_code=status.HTTP_409_CONFLICT,
