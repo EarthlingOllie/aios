@@ -38,6 +38,7 @@ from sqlalchemy.exc import DBAPIError
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import store_session
+from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.models import EMBEDDING_DIM
 from aios.embeddings import embed_documents
 from aios.tools.data import (
@@ -57,7 +58,8 @@ SCHEMA = "data"
 Operation = Literal["insert", "upsert", "update", "delete"]
 
 # A table's columns as the catalog has them, in order, with which are its primary key.
-COLUMNS_SQL = """
+# Not what the owner dropped (`aios.datastores.dropped`): the role may not write it anyway.
+COLUMNS_SQL = f"""
     SELECT a.attname, format_type(a.atttypid, a.atttypmod), t.typname, t.typcategory,
            a.attidentity, a.attgenerated,
            array_position(pk.indkey::int2[], a.attnum) AS pk_position
@@ -67,12 +69,13 @@ COLUMNS_SQL = """
     JOIN pg_type t ON t.oid = a.atttypid
     LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
     WHERE n.nspname = %s AND c.relname = %s AND c.relkind IN ('r', 'p')
+      AND {VISIBLE_TABLE} AND {VISIBLE_COLUMN}
     ORDER BY a.attnum
 """
 
-TABLES_SQL = """
+TABLES_SQL = f"""
     SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = %s AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+    WHERE n.nspname = %s AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND {VISIBLE_TABLE}
     ORDER BY c.relname
 """
 

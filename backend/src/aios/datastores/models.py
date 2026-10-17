@@ -11,6 +11,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Computed,
     DateTime,
     Enum,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
@@ -64,6 +66,31 @@ class EmbeddingColumn(StoreBase):
     table_name: Mapped[str] = mapped_column(Text, primary_key=True)
     column_name: Mapped[str] = mapped_column(Text, primary_key=True)
     source_column: Mapped[str] = mapped_column(Text)
+
+
+class DroppedObject(StoreBase):
+    """A table or column in `data` that an approved drop renamed out of the way, until it's
+    restored or purged (`aios.datastores.dropped`). Only the owner writes it
+    (`provision.BOOKKEEPING`)."""
+
+    __tablename__ = "dropped_objects"
+    __table_args__ = {
+        "comment": "Tables and columns in data that were dropped, until restored or purged"
+    }
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # A dropped table: its name before it was dropped. A dropped column: the table it's in, as
+    # that's named now (a dropped table's new name, if the table was dropped after it).
+    table_name: Mapped[str] = mapped_column(Text)
+    # A dropped column: its name before it was dropped. None for a table.
+    column_name: Mapped[str | None] = mapped_column(Text)
+    # What it was renamed to.
+    dropped_name: Mapped[str] = mapped_column(Text)
+    # A column that was NOT NULL (dropping it lifts that, so new rows can leave it out).
+    not_null: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    dropped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Why the last restore the owner asked for was refused, if it was.
+    restore_error: Mapped[str | None] = mapped_column(Text)
 
 
 class DocumentStatus(enum.StrEnum):

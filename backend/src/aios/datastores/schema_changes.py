@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
@@ -47,6 +47,9 @@ from aios.datastores.connections import store_session
 from aios.datastores.models import EMBEDDING_DIM
 from aios.db import SessionLocal
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+
+if TYPE_CHECKING:
+    from aios.datastores.provision import StoreNames
 
 log = logging.getLogger(__name__)
 
@@ -702,11 +705,13 @@ def summarize(change: SchemaChange) -> str:
 
 # Every relation in `data` (tables, indexes, sequences, views...), with a table's columns.
 _SCHEMA_SQL = """
-    SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod)
+    SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+           coalesce(a.attnum = ANY(pk.indkey), false)
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
         AND c.relkind IN ('r', 'p')
+    LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
     WHERE n.nspname = 'data'
     ORDER BY c.relname, a.attnum
 """
@@ -715,17 +720,27 @@ _TYPES_SQL = """
     SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = 'data' AND t.typrelid = 0
 """
+_EMBEDDINGS_SQL = "SELECT table_name, column_name, source_column FROM aios.embedding_columns"
 
 
 def read_schema(pg: psycopg.Connection) -> StoreSchema:
     """The store's `data` schema, as specs are checked against it."""
     schema = StoreSchema()
-    for relation, column, type_ in pg.execute(_SCHEMA_SQL):
+    for relation, column, type_, not_null, in_key in pg.execute(_SCHEMA_SQL):
         schema.relations.add(relation)
-        if column is not None:
-            # pgvector's type, named with its schema unless that's on the search path.
-            schema.tables.setdefault(relation, {})[column] = type_.removeprefix("extensions.")
+        if column is None or relation.startswith(DROPPED_PREFIX):
+            continue
+        if column.startswith(DROPPED_PREFIX):
+            schema.dropped_columns.setdefault(relation, set()).add(column)
+            continue
+        # pgvector's type, named with its schema unless that's on the search path.
+        schema.tables.setdefault(relation, {})[column] = type_.removeprefix("extensions.")
+        if not_null:
+            schema.not_null.setdefault(relation, set()).add(column)
+        if in_key:
+            schema.primary_keys.setdefault(relation, []).append(column)
     schema.relations.update(name for (name,) in pg.execute(_TYPES_SQL))
+    schema.embeddings = {(t, c): source for t, c, source in pg.execute(_EMBEDDINGS_SQL)}
     return schema
 
 
@@ -766,7 +781,13 @@ def propose(
         # revision, which only means it's checked again when it's applied.
         revision = read_revision(pg)
         schema = read_schema(pg)
-    checked = check(change, schema)
+    # The names drops rename to are the platform's to pick, never the model's.
+    drops = (DropTable, DropColumn)
+    fresh = [
+        op.model_copy(update={"dropped_as": None}) if isinstance(op, drops) else op
+        for op in change.ops
+    ]
+    checked = check(SchemaChange(ops=fresh), schema)
     request = SchemaChangeRequest(
         data_store_id=data_store_id,
         ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
@@ -795,9 +816,10 @@ class _Stale(Exception):
     pass
 
 
-def _run(names: Any, request: SchemaChangeRequest) -> None:
+def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
     """Run the request's SQL on the store, as its owner, all or nothing; raises `_Stale` if the
     schema has moved on and no longer takes it."""
+    from aios.datastores import dropped
     from aios.datastores.provision import as_owner
 
     timeout = f"{get_settings().schema_change_lock_timeout}ms"
@@ -810,16 +832,45 @@ def _run(names: Any, request: SchemaChangeRequest) -> None:
         ).fetchone()
         if done:  # applied already, by a run of this that stopped before recording it
             return
+        spec = SchemaChange.model_validate({"ops": request.ops})
         if read_revision(conn) != request.base_revision:
             try:
-                check(SchemaChange.model_validate({"ops": request.ops}), read_schema(conn))
+                rechecked = check(spec, read_schema(conn))
             except Invalid as exc:
                 raise _Stale(str(exc)) from exc
+            # What it found to drop, say, has changed: the SQL approved isn't what it takes now.
+            if compile_sql(rechecked) != request.sql:
+                raise _Stale(
+                    "the tables it changes have changed since it was asked for, so the SQL"
+                    " approved isn't what it would take now"
+                )
         conn.execute(request.sql)  # several statements: sent whole, with no parameters
+        for table in _access_changed(spec):
+            if read_exists(conn, table):
+                dropped.grant_access(conn, names.rw, names.ro, table)
         conn.execute(
             "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
             (request.id, request.summary, request.sql),
         )
+
+
+def _access_changed(change: SchemaChange) -> list[str]:
+    """The tables (as they're named once it's applied) whose login roles' access a change
+    sets anew (`dropped.grant_access`): those it drops, drops columns from, or adds columns to
+    (which may have dropped columns, so get their privileges column by column)."""
+    tables: list[str] = []
+    for op in change.ops:
+        if isinstance(op, DropTable):
+            tables.append(op.dropped_as)
+        elif isinstance(op, (DropColumn, AddColumn)):
+            tables.append(op.table)
+    return list(dict.fromkeys(tables))
+
+
+def read_exists(pg: psycopg.Connection, table: str) -> bool:
+    """Whether `data.<table>` is there."""
+    qualified = f"{_quote(SCHEMA)}.{_quote(table)}"
+    return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]
 
 
 def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:

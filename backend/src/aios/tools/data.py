@@ -54,6 +54,7 @@ from aios.datastores import (
     store_upgrading,
 )
 from aios.datastores.connections import MAX_CONNECTIONS
+from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,13 @@ DATA_NOT_INSTRUCTIONS = (
 )
 
 UNREACHABLE = "The user's data store couldn't be reached just now. Try again in a moment."
+
+# What a query refused a privilege is told: it read the platform's bookkeeping, or something the
+# user dropped, or (most likely) used `SELECT *` on a table with dropped columns.
+NOT_READABLE = (
+    "Tables and columns the user dropped can't be read, and nor can a whole table with dropped"
+    " columns: name the columns you want instead of `*` (`describe_data` lists them)."
+)
 
 # The worker threads the tools may hold at once, in this process. A call holds one for as long
 # as its query runs (up to the statement timeout), and a model can make many calls at once:
@@ -84,9 +92,10 @@ def _store_limiter(store_id: uuid.UUID) -> CapacityLimiter:
 
 
 # The store's tables, with their columns: the owner's (`data`) first, then the platform's
-# (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions.
+# (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions, nor what
+# the owner dropped.
 DESCRIBE_SQL = text(
-    """
+    f"""
     SELECT n.nspname AS schema, c.relname AS name,
            obj_description(c.oid, 'pg_class') AS description,
            a.attname AS column, format_type(a.atttypid, a.atttypmod) AS type,
@@ -98,8 +107,12 @@ DESCRIBE_SQL = text(
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       -- A partitioned table is one table: its partitions are how it's stored.
       AND NOT c.relispartition
-      AND has_table_privilege(c.oid, 'SELECT')
-      AND NOT (n.nspname = 'aios' AND c.relname = 'alembic_version')
+      -- Readable, if only some of its columns (a table with dropped columns), and only those.
+      AND has_any_column_privilege(c.oid, 'SELECT')
+      AND has_column_privilege(c.oid, a.attnum, 'SELECT')
+      -- Not dropped (`aios.datastores.dropped`): the role can't read those anyway.
+      AND {VISIBLE_TABLE} AND {VISIBLE_COLUMN}
+      AND NOT (n.nspname = 'aios' AND c.relname IN ('alembic_version', 'dropped_objects'))
     ORDER BY n.nspname <> 'data', n.nspname, c.relname, a.attnum
     """
 )
@@ -342,6 +355,8 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
         try:
             pg.execute("BEGIN READ ONLY")
             return _read(pg, sql)
+        except psycopg.errors.InsufficientPrivilege as exc:
+            return {"error": f"{pg_error(exc)}. {NOT_READABLE}"}
         except psycopg.Error as exc:
             return {"error": pg_error(exc)}
         except Exception as exc:
