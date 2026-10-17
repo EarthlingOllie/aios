@@ -7,9 +7,10 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from anyio import to_thread
-from sqlalchemy import text
+from sqlalchemy import RowMapping, TextClause, text
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
@@ -157,26 +158,47 @@ def vector_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.7g}" for x in vec) + "]"
 
 
-def hybrid_search_with_vector(
-    db: Session, *, query: str, query_vector: list[float], limit: int = 8
-) -> list[SearchHit]:
-    """Search the documents of the store `db` is a session on."""
+def _fused(
+    db: Session,
+    sql: TextClause,
+    *,
+    query: str,
+    query_vector: list[float] | None,
+    limit: int,
+    **params: Any,
+) -> list[RowMapping]:
+    """Run a hybrid search's SQL (`HYBRID_SQL`, `HISTORY_SQL`) on `db`, with `params` besides
+    the ones they share."""
     settings = get_settings()
     # pgvector >= 0.8: keep scanning the HNSW index past `hnsw.ef_search` (40) candidates when
     # more are asked for.
     db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
-    rows = db.execute(
-        HYBRID_SQL,
-        {
-            "qvec": vector_literal(query_vector),
-            "query": query,
-            # Enough candidates from each branch to fill `limit` even when only one matches.
-            "candidates": max(settings.search_candidates, limit),
-            "rrf_k": settings.search_rrf_k,
-            "limit": limit,
-        },
-    ).mappings()
-    hits = [
+    rows = (
+        db.execute(
+            sql,
+            {
+                "qvec": vector_literal(query_vector) if query_vector else None,
+                "query": query,
+                # Enough candidates from each branch to fill `limit` even when only one matches.
+                "candidates": max(settings.search_candidates, limit),
+                "rrf_k": settings.search_rrf_k,
+                "limit": limit,
+                **params,
+            },
+        )
+        .mappings()
+        .all()
+    )
+    db.rollback()  # end the transaction so SET LOCAL doesn't leak
+    return list(rows)
+
+
+def hybrid_search_with_vector(
+    db: Session, *, query: str, query_vector: list[float], limit: int = 8
+) -> list[SearchHit]:
+    """Search the documents of the store `db` is a session on."""
+    rows = _fused(db, HYBRID_SQL, query=query, query_vector=query_vector, limit=limit)
+    return [
         SearchHit(
             chunk_id=r["id"],
             document_id=r["document_id"],
@@ -189,8 +211,6 @@ def hybrid_search_with_vector(
         )
         for r in rows
     ]
-    db.rollback()  # end the transaction so SET LOCAL doesn't leak
-    return hits
 
 
 def history_search_with_vector(
@@ -203,21 +223,16 @@ def history_search_with_vector(
 ) -> list[HistoryHit]:
     """Search the exported messages of the store `db` is a session on, but `exclude_run_id`'s;
     by keyword alone with no `query_vector`."""
-    settings = get_settings()
-    db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
-    rows = db.execute(
+    rows = _fused(
+        db,
         HISTORY_SQL,
-        {
-            "qvec": vector_literal(query_vector) if query_vector else None,
-            "query": query,
-            "candidates": max(settings.search_candidates, limit),
-            "rrf_k": settings.search_rrf_k,
-            "limit": limit,
-            # Platform ids start at 1.
-            "exclude": exclude_run_id or 0,
-        },
-    ).mappings()
-    hits = [
+        query=query,
+        query_vector=query_vector,
+        limit=limit,
+        # Platform ids start at 1.
+        exclude=exclude_run_id or 0,
+    )
+    return [
         HistoryHit(
             agent_run_id=r["agent_run_id"],
             position=r["position"],
@@ -232,8 +247,6 @@ def history_search_with_vector(
         )
         for r in rows
     ]
-    db.rollback()  # end the transaction so SET LOCAL doesn't leak
-    return hits
 
 
 def _check_ready(data_store_id: uuid.UUID) -> None:
