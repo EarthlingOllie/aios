@@ -553,9 +553,14 @@ def test_the_sweep_queues_exporting_stores_with_runs_still_waiting(
     assert beat["task"] == "aios.export_pending_history"
 
 
-def test_the_export_task_tries_a_busy_store_again(user, store_id, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [DataStoreBusy, lambda store_id: DataStoreBehind(store_id, "h0001")],
+    ids=["busy", "behind"],
+)
+def test_the_export_task_tries_a_busy_or_behind_store_again(user, store_id, monkeypatch, error):
     def busy(data_store_id):
-        raise DataStoreBusy(data_store_id)
+        raise error(data_store_id)
 
     monkeypatch.setattr(history, "export", busy)
     retried = []
@@ -1103,8 +1108,8 @@ def test_a_store_behind_the_history_lines_head_isnt_exported_until_it_is_brought
         )
         db.commit()
 
-    # The export task tries it again (`test_the_export_task_tries_a_busy_store_again`), and
-    # the provisioning worker's beat brings it to the head meanwhile.
+    # The export task tries it again (`test_the_export_task_tries_a_busy_or_behind_store_again`),
+    # and the provisioning worker's beat brings it to the head meanwhile.
     with pytest.raises(DataStoreBehind):
         history.export(store_id)
     with SessionLocal() as db:
