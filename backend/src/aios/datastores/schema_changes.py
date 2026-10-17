@@ -554,7 +554,10 @@ def propose(
     read."""
     with store_session(data_store_id, "ro") as session:
         pg = session.connection().connection.driver_connection
-        schema, revision = read_schema(pg), read_revision(pg)
+        # The revision first: a change committed in between makes the schema newer than the
+        # revision, which only means it's checked again when it's applied.
+        revision = read_revision(pg)
+        schema = read_schema(pg)
     checked = check(change, schema)
     request = SchemaChangeRequest(
         data_store_id=data_store_id,

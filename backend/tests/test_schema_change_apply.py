@@ -184,6 +184,26 @@ def test_two_requests_on_the_same_revision_the_second_is_checked_again(db, store
     assert [h[1] for h in history(store)] == [first.id, unrelated.id]
 
 
+def test_a_change_applied_while_a_request_is_made_still_gets_it_checked_again(
+    db, store, monkeypatch
+):
+    """The request's revision is never newer than the schema it was checked against, so one
+    applied in between is caught at apply (stale), not left to fail there."""
+    first = propose(store, CONTACTS)
+    read_schema = schema_changes.read_schema
+
+    def first_lands_meanwhile(pg):
+        schema = read_schema(pg)
+        approve(db, first)
+        return schema
+
+    monkeypatch.setattr(schema_changes, "read_schema", first_lands_meanwhile)
+    second = propose(store, CONTACTS)
+    monkeypatch.undo()
+
+    assert approve(db, second).status == SchemaChangeStatus.stale
+
+
 def test_an_apply_waits_for_a_lock_no_longer_than_its_timeout(db, store, monkeypatch):
     monkeypatch.setattr(get_settings(), "schema_change_lock_timeout", 200)
     request = propose(
