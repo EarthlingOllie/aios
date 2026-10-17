@@ -433,9 +433,11 @@ Known limits:
 - **Uploaded files are in S3** (`aios.datastores.files`; RustFS locally, in Compose and the
   tests), at `stores/<store id>/documents/<document id>`; the store's `documents` row keeps the
   key, the size and the SHA-256. An upload streams the file to S3, then inserts the row, then
-  queues the ingest, and deletes the object again if either of those fails; the ingest reads it
-  back from S3, and deleting a document deletes its object (before the row's delete commits, so
-  should S3 refuse, the document stays to be deleted again). Downloading
+  queues the ingest, and deletes the object again if either of those fails (unless the row is
+  still there); the ingest reads it back from S3 (when S3 can't answer for now, the document
+  waits, and the task tries again a minute later, up to ten times), and deleting a document
+  deletes its object, then its row (so should S3 refuse, the document stays to be deleted
+  again). Downloading
   (`GET /api/documents/{id}/download`) looks the document up in the user's own store, so
   another's is a 404, and redirects to a presigned `GetObject` link that saves it under its
   original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding a link can use it
