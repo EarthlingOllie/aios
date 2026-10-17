@@ -92,10 +92,6 @@ class Dependents(BaseModel):
     # The agent's own schedules: deleted with it.
     triggers: list[DependentTrigger] = []
 
-    @property
-    def any(self) -> bool:
-        return bool(self.agent_runs or self.workflow_runs or self.workflows)
-
 
 def _chat_runs(db: Session, agent: Agent) -> list[DependentAgentRun]:
     """The agent's chat runs (not a workflow node's) that are waiting or have a turn underway."""
@@ -233,6 +229,38 @@ def _workflows(db: Session, agent: Agent) -> list[DependentWorkflow]:
         )
         for workflow, version in rows
     ]
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def unresolved(
+    found: Dependents,
+    *,
+    cancel_agent_runs: set[int],
+    cancel_workflow_runs: set[int],
+    deactivate_workflows: set[int],
+) -> str | None:
+    """Why the agent can't be deleted with these resolutions, or None if it can: what's still
+    going that isn't to be cancelled, and the workflows that run it and aren't to be
+    deactivated (they must be edited first)."""
+    chats = [r for r in found.agent_runs if r.id not in cancel_agent_runs]
+    runs = [r for r in found.workflow_runs if r.id not in cancel_workflow_runs]
+    flows = [w.name for w in found.workflows if w.id not in deactivate_workflows]
+    parts = []
+    if chats:
+        parts.append(f"{_count(len(chats), 'chat run')} still going (cancel them)")
+    if runs:
+        parts.append(f"{_count(len(runs), 'workflow run')} still going (cancel them)")
+    if flows:
+        parts.append(
+            f"{'workflows' if len(flows) > 1 else 'the workflow'} {', '.join(flows)}"
+            " (deactivate or edit them to stop running it)"
+        )
+    if not parts:
+        return None
+    return f"This agent is still in use: {'; '.join(parts)}."
 
 
 def find(db: Session, agent: Agent) -> Dependents:

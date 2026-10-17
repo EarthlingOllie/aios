@@ -214,6 +214,21 @@ def load(db: Session, trigger_id: int) -> Trigger:
     return db.scalars(select(Trigger).where(Trigger.id == trigger_id).options(*LOAD)).one()
 
 
+def disable_triggers(db: Session, condition) -> None:
+    """Turn off the triggers matching `condition`, as pausing each would: none fires again until
+    it's turned back on, and a firing claimed but not started is dropped. Lock their targets
+    first (see `aios.scheduler._claimed`)."""
+    ids = db.scalars(
+        update(Trigger)
+        .where(condition, Trigger.enabled)
+        .values(enabled=False, next_run_at=None)
+        .returning(Trigger.id)
+        .execution_options(synchronize_session=False)
+    ).all()
+    for trigger_id in ids:
+        cancel_unstarted_firing(db, trigger_id)
+
+
 def delete_triggers(db: Session, condition) -> None:
     """Delete the triggers matching `condition`, e.g. as their agent or workflow is deleted (it's
     only soft-deleted, so they wouldn't cascade)."""
