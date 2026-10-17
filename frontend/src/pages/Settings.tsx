@@ -33,12 +33,21 @@ export function SettingsPage() {
   }
 
   function onDelete() {
-    if (
-      !window.confirm("Delete the run history exported to your data store? Your runs stay here.")
-    ) {
+    // While the export is on, deleting starts it over: every run is exported again.
+    const on = settings?.export_run_history;
+    const question = on
+      ? "Delete the run history exported to your data store? Your runs stay here. The export is " +
+        "on, so all your runs are exported again: to keep it empty, switch the export off first."
+      : "Delete the run history exported to your data store? Your runs stay here.";
+    if (!window.confirm(question)) {
       return;
     }
-    act(() => api.deleteExportedHistory(), "Exported history deleted.");
+    act(
+      () => api.deleteExportedHistory(),
+      on
+        ? "Exported history deleted. All your runs are exported again."
+        : "Exported history deleted.",
+    );
   }
 
   return (
