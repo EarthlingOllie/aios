@@ -10,6 +10,15 @@ export type User = {
 /** The user's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
+/** What a data store uses, as last measured (null until it's first measured), and its caps. */
+export type DataStoreUsage = {
+  db_bytes: number | null;
+  db_quota_bytes: number;
+  files_bytes: number | null;
+  files_quota_bytes: number;
+  measured_at: string | null;
+};
+
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 export type DocumentInfo = {
@@ -18,7 +27,51 @@ export type DocumentInfo = {
   status: DocumentStatus;
   error: string | null;
   chunk_count: number;
+  size_bytes: number;
   created_at: string;
+};
+
+/** A column of a table in the store's `data` schema. */
+export type DataColumn = {
+  name: string;
+  /** As Postgres names it, e.g. `numeric` or `vector(1024)`. */
+  type: string;
+  nullable: boolean;
+  description: string | null;
+  /** An embedding: its values come as their type and dimension, never their numbers. */
+  embedding: boolean;
+};
+
+/** A table in the store's `data` schema: what the user's agents keep. */
+export type DataTable = {
+  name: string;
+  description: string | null;
+  columns: DataColumn[];
+  /** Null if it couldn't be told. */
+  row_count: number | null;
+  /** The count is the database's estimate (a big table), not exact. */
+  row_count_estimated: boolean;
+};
+
+/** A page of a table's rows: each value as text (null for NULL), cut to a preview. */
+export type DataRowsPage = {
+  columns: string[];
+  rows: {
+    /** Names the row when asking for one of its values in full. */
+    key: string;
+    values: (string | null)[];
+    /** The values cut short, by their place in `values`. */
+    truncated: number[];
+  }[];
+  offset: number;
+  has_more: boolean;
+};
+
+export type DataRowsQuery = {
+  offset: number;
+  limit: number;
+  sort?: string;
+  order?: "asc" | "desc";
 };
 
 /** A passage found by the hybrid (semantic + keyword) document search. */
@@ -232,6 +285,39 @@ export type SchemaChangeRequest = {
   resumed_at: string | null;
   /** Whether the signed-in user may approve or reject it (it's still pending). */
   can_decide: boolean;
+  /** What approving it takes typed, if it drops anything: the tables' names. */
+  confirm_with: string | null;
+};
+
+/** What one of a request's drops would remove, as the store is now. */
+export type Removal = {
+  table: string;
+  /** The column it drops; null for the whole table. */
+  column: string | null;
+  /** The table's rows; null if it isn't there any more. */
+  rows: number | null;
+  /** A column's: how many rows have a value in it. */
+  values: number | null;
+  /** A table's: its columns. */
+  columns: string[] | null;
+  /** Whether `rows` is Postgres's estimate (or null: none), as counting took too long. */
+  estimated: boolean;
+};
+
+/** A table or column a drop took away, until it's restored or purged. */
+export type DroppedObject = {
+  id: number;
+  kind: "table" | "column";
+  /** A table's name, or the table a column is in. */
+  table: string;
+  column: string | null;
+  dropped_name: string;
+  dropped_at: string;
+  purge_at: string;
+  /** Why it can't be restored now, if it can't (its name has been taken since, say). */
+  blocked: string | null;
+  /** Why the last restore asked for was refused, if it was. */
+  restore_error: string | null;
 };
 
 /** Something in the app for the signed-in user to see. */
@@ -338,7 +424,8 @@ export type WorkflowInput = {
   base_version?: number;
 };
 
-export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
+/** waiting: paused until the user decides a schema change request one of its nodes made. */
+export type WorkflowRunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
 
 export type WorkflowRunSummary = {
   id: number;
@@ -352,6 +439,10 @@ export type WorkflowRunSummary = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** While it waits, since when; and how long it waited before (seconds). Waiting doesn't
+   * count towards its time limit. */
+  waiting_since: string | null;
+  waited_seconds: number;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -360,15 +451,30 @@ export type WorkflowRunStep = {
   /** Node keys from the run's workflow down to this node. */
   path: string[];
   kind: WorkflowNodeKind;
-  status: "running" | "succeeded" | "failed";
+  /** waiting: an agent node waiting for a schema change request, or a workflow node one of
+   * whose nodes waits. */
+  status: "running" | "waiting" | "succeeded" | "failed";
   input: string;
   output: string | null;
   error: string | null;
   /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
   agent_id: number | null;
   agent_run_id: number | null;
+  /** While an agent node waits: the schema change requests it waits on, oldest first. */
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
+};
+
+/** A version a waiting run pins that's no longer current: the run resumes on it regardless. */
+export type StalePin = {
+  /** The node pinning it, from the run's workflow down; [] for the run's own workflow. */
+  path: string[];
+  kind: WorkflowNodeKind;
+  name: string;
+  pinned_version: number;
+  /** null once the agent or workflow has been deleted. */
+  current_version: number | null;
 };
 
 export type WorkflowRun = WorkflowRunSummary & {
@@ -376,6 +482,8 @@ export type WorkflowRun = WorkflowRunSummary & {
   version: WorkflowVersion;
   /** In the order they started. */
   steps: WorkflowRunStep[];
+  /** While it waits: the pins it would resume on that are no longer current. */
+  stale_pins: StalePin[];
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
@@ -463,7 +571,8 @@ const json = (method: string, body: unknown): RequestInit => ({
 export const api = {
   me: () => request<User>("/api/me"),
   logout: () => request<void>("/logout", { method: "POST" }),
-  getDataStore: () => request<{ status: DataStoreStatus }>("/api/data-store"),
+  getDataStore: () =>
+    request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
@@ -472,8 +581,18 @@ export const api = {
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
   listSchemaChanges: () => request<SchemaChangeRequest[]>("/api/schema-changes"),
-  approveSchemaChange: (id: string) =>
-    request<SchemaChangeRequest>(`/api/schema-changes/${id}/approve`, { method: "POST" }),
+  getSchemaChange: (id: string) => request<SchemaChangeRequest>(`/api/schema-changes/${id}`),
+  approveSchemaChange: (id: string, confirm?: string) =>
+    request<SchemaChangeRequest>(
+      `/api/schema-changes/${id}/approve`,
+      // A request that drops anything takes its tables' names typed.
+      confirm === undefined ? { method: "POST" } : json("POST", { confirm }),
+    ),
+  schemaChangeImpact: (id: string) =>
+    request<{ removes: Removal[] }>(`/api/schema-changes/${id}/impact`),
+  listDropped: () => request<DroppedObject[]>("/api/dropped"),
+  restoreDropped: (id: number) =>
+    request<DroppedObject>(`/api/dropped/${id}/restore`, { method: "POST" }),
   rejectSchemaChange: (id: string, note: string) =>
     request<SchemaChangeRequest>(`/api/schema-changes/${id}/reject`, json("POST", { note })),
   listNotifications: () => request<NotificationList>("/api/notifications"),
@@ -481,6 +600,18 @@ export const api = {
     request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
   search: (q: string, limit: number) =>
     request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
+  listDataTables: () =>
+    request<{ tables: DataTable[]; truncated: boolean }>("/api/data/tables"),
+  getDataRows: (table: string, { offset, limit, sort, order }: DataRowsQuery) => {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (sort) params.set("sort", sort);
+    if (sort && order) params.set("order", order);
+    return request<DataRowsPage>(`/api/data/tables/${encodeURIComponent(table)}/rows?${params}`);
+  },
+  getDataValue: (table: string, row: string, column: string) =>
+    request<{ value: string | null; truncated: boolean }>(
+      `/api/data/tables/${encodeURIComponent(table)}/value?${new URLSearchParams({ row, column })}`,
+    ),
 
   listSkills: () => request<SkillSummary[]>("/api/skills"),
   getSkill: (id: number) => request<Skill>(`/api/skills/${id}`),

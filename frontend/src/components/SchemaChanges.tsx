@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { Check, Database, Loader2, X } from "lucide-react";
+import { Check, Database, Loader2, TriangleAlert, X } from "lucide-react";
 
 import { ErrorBanner, formatDate, useLoad, usePoll } from "@/components/crud";
 import { Notice } from "@/components/Notice";
 import { useRefreshNotifications } from "@/components/Notifications";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, describeError, type SchemaChangeRequest } from "@/lib/api";
+import { confirmed, removalText } from "@/lib/dropped";
 import { requestSummary } from "@/lib/schema-changes";
 import { cn } from "@/lib/utils";
 
@@ -41,7 +43,10 @@ export function SchemaChangeCard({
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
+  // For a request that drops anything: the tables' names, as the owner typed them.
+  const [typed, setTyped] = useState("");
   const summary = requestSummary(request);
+  const confirmWith = request.can_decide ? request.confirm_with : null;
   const refreshNotifications = useRefreshNotifications();
 
   async function decide(decision: () => Promise<SchemaChangeRequest>) {
@@ -110,7 +115,24 @@ export function SchemaChangeCard({
           {summary.message}
         </p>
       )}
+      {confirmWith && <Removals request={request} />}
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      {confirmWith && !rejecting && (
+        <label className="flex flex-col gap-1 text-xs">
+          <span>
+            It can be restored from the Dropped section until it's purged. Type{" "}
+            <code className="bg-muted rounded px-1 font-mono">{confirmWith}</code> to confirm.
+          </span>
+          <Input
+            aria-label={`Type ${confirmWith} to confirm`}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            className="max-w-xs font-mono"
+          />
+        </label>
+      )}
       {request.can_decide &&
         (rejecting ? (
           <form
@@ -140,8 +162,10 @@ export function SchemaChangeCard({
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={sending}
-              onClick={() => decide(() => api.approveSchemaChange(request.id))}
+              disabled={sending || (!!confirmWith && !confirmed(typed, confirmWith))}
+              onClick={() =>
+                decide(() => api.approveSchemaChange(request.id, confirmWith ? typed : undefined))
+              }
             >
               <Check /> Approve
             </Button>
@@ -151,6 +175,29 @@ export function SchemaChangeCard({
           </div>
         ))}
     </section>
+  );
+}
+
+/** What a pending request's drops would remove from the store as it is now. */
+function Removals({ request }: { request: SchemaChangeRequest }) {
+  const impact = useLoad(useCallback(() => api.schemaChangeImpact(request.id), [request.id]));
+  return (
+    <div className="border-destructive/40 flex flex-col gap-1 rounded-md border px-3 py-2">
+      <p className="text-destructive flex items-center gap-1.5 font-medium">
+        <TriangleAlert className="size-4" /> This drops data
+      </p>
+      {impact.error && <p className="text-destructive text-xs">{impact.error}</p>}
+      {!impact.data && !impact.error && (
+        <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading" />
+      )}
+      {impact.data && (
+        <ul aria-label="What it removes" className="list-disc pl-5 text-xs">
+          {impact.data.removes.map((r, i) => (
+            <li key={i}>{removalText(r)}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

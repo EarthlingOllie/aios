@@ -41,7 +41,11 @@ celery_app.conf.update(
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
+        # Not for the credentials: it's quick, and there it never waits behind long ingests.
+        "aios.measure_data_store_usage": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
+        "aios.restore_dropped": {"queue": "provisioning"},
+        "aios.purge_dropped": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -50,12 +54,27 @@ celery_app.conf.update(
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# What each store uses is measured this often (seconds), for its storage cap
+# (`aios.datastores.quota`): a store past it is refused writes from the next measurement.
+MEASURE_USAGE_EVERY = 300
+# Dropped tables and columns past their retention (days) are purged this often (seconds).
+PURGE_DROPPED_EVERY = 3600
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "measure-data-store-usage": {
+        "task": "aios.measure_data_store_usage",
+        "schedule": MEASURE_USAGE_EVERY,
+        "options": {"expires": MEASURE_USAGE_EVERY},
+    },
+    "purge-dropped": {
+        "task": "aios.purge_dropped",
+        "schedule": PURGE_DROPPED_EVERY,
+        "options": {"expires": PURGE_DROPPED_EVERY},
     },
 }
 
@@ -65,15 +84,24 @@ celery_app.conf.beat_schedule = {
 # marking it failed needs the connection the store hasn't got free.
 BUSY_RETRY_COUNTDOWN = 30
 
+# S3 that can't be reached (or is throttling, or failing on its side, past its client's own
+# retries) is tried again this often (seconds), up to this many times: about ten minutes. Then
+# the document fails with S3's error.
+FILES_RETRY_COUNTDOWN = 60
+FILES_RETRIES = 10
+
 
 @celery_app.task(name="aios.ingest_document", bind=True, max_retries=None)
 def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
     """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
+    from aios.datastores.files import FilesUnavailable
     from aios.ingest import ingest_document
 
     try:
         with store_session(uuid.UUID(data_store_id), "rw") as db:
-            ingest_document(db, document_id)
+            ingest_document(db, document_id, last_try=self.request.retries >= FILES_RETRIES)
+    except FilesUnavailable as exc:
+        raise self.retry(countdown=FILES_RETRY_COUNTDOWN) from exc
     except DataStoreBehind as exc:
         # Ready, but not yet at the store tree's head this code needs: the schedule brings it
         # there in minutes (`provision.retry_unfinished`).
@@ -138,6 +166,19 @@ def retry_unfinished_data_stores_task() -> None:
 
 
 @celery_app.task(
+    name="aios.measure_data_store_usage",
+    # As the retry: one that runs over stops, and the next carries on.
+    soft_time_limit=MEASURE_USAGE_EVERY,
+    time_limit=MEASURE_USAGE_EVERY + 60,
+)
+def measure_data_store_usage_task() -> None:
+    """Record what each ready store uses, for its storage cap (`aios.datastores.quota`)."""
+    from aios.datastores import quota
+
+    quota.measure_all()
+
+
+@celery_app.task(
     name="aios.run_workflow",
     # A run times itself (`execute_run`); these are backstops, should its event loop be stuck.
     # The run itself is failed long before (`workflow_run_no_progress_limit`); these free the
@@ -150,8 +191,8 @@ def run_workflow_task(run_id: int) -> None:
     from aios.workflows import execute_run, fail_run, time_limit_error
 
     try:
-        # Only a queued run starts, so a redelivered message doesn't run it twice; one left
-        # running by a worker that died (its heartbeat stopped) is failed instead.
+        # Only a queued or waiting run starts, so a redelivered message doesn't run it twice;
+        # one left running by a worker that died (its heartbeat stopped) is failed instead.
         asyncio.run(execute_run(run_id))
     except SoftTimeLimitExceeded:
         fail_run(run_id, time_limit_error())
@@ -188,18 +229,54 @@ def apply_schema_change_task(request_id: str) -> None:
     enqueue_resume(uuid.UUID(request_id))
 
 
+@celery_app.task(
+    name="aios.restore_dropped",
+    soft_time_limit=APPLY_TIME_LIMIT,
+    time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
+    """Restore a dropped table or column the owner asked for (`aios.datastores.dropped`). Run
+    again (redelivered), it finds nothing left to restore."""
+    from aios.datastores import dropped
+
+    dropped.restore(uuid.UUID(data_store_id), dropped_id)
+
+
+@celery_app.task(
+    name="aios.purge_dropped",
+    soft_time_limit=PURGE_DROPPED_EVERY,
+    time_limit=PURGE_DROPPED_EVERY + 60,
+)
+def purge_dropped_task() -> None:
+    """Drop for good, in every ready store, the tables and columns dropped longer ago than
+    `DATA_STORE_DROPPED_RETENTION_DAYS` (`aios.datastores.dropped`)."""
+    from aios.datastores import dropped
+
+    dropped.purge_all()
+
+
 def enqueue_resume(request_id: uuid.UUID) -> None:
     """Queue resuming the run that made a request, if it's decided and the run (if a run made
-    it) hasn't been given the outcome yet."""
+    it) hasn't been given the outcome yet.
+
+    An agent node's run is resumed through its workflow run, which carries on from where it
+    waited (`aios.workflows`): queued again, it's claimed if it's waiting."""
     from aios.db import SessionLocal
     from aios.models import SchemaChangeRequest
+    from aios.workflows import workflow_run_waiting_on
 
     with SessionLocal() as db:
         request = db.get(SchemaChangeRequest, request_id)
         if request is None or not request.status.decided or request.resumed_at is not None:
             return
         run_id = request.requested_by_run
-    if run_id is not None:
+        workflow_run_id = workflow_run_waiting_on(db, request)
+    if workflow_run_id is not None:
+        run_workflow_task.delay(workflow_run_id)
+    elif run_id is not None:
         resume_agent_run_task.delay(run_id)
 
 

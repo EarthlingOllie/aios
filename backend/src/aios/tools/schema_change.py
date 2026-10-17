@@ -5,7 +5,8 @@ The model sends a spec, never SQL (`aios.datastores.schema_changes`). The tool c
 the store's current schema, records a pending request, and pauses the run (LangGraph's
 `interrupt()`): the turn ends with the request waiting for the owner. Once it's decided (and, if
 approved, applied), the run is resumed with the outcome (`aios.api.agents.resume_run`), which is
-what the tool call returns to the model.
+what the tool call returns to the model. In a workflow run, the agent node's step waits, and
+the workflow run pauses once nothing else can run (`aios.workflows`).
 
 Resuming runs the tool call again from the start, so it looks for the request its call already
 made before making one, and `interrupt()` then returns the outcome.
@@ -30,10 +31,7 @@ from aios.tools.registry import AgentTool, ToolSpec, register
 # What the interrupt's value names the request by.
 REQUEST_KEY = "schema_change_request"
 
-IN_WORKFLOW = (
-    "Schema changes can't be requested from a workflow run yet, only from the agent's own chat"
-    " or schedules: nothing was requested."
-)
+NO_RUN = "Schema changes can only be requested from an agent run: nothing was requested."
 
 
 class RequestSchemaChangeConfig(BaseModel):
@@ -60,8 +58,8 @@ async def _request(
 
 def _description() -> str:
     return f"""Ask the user to change the tables in their data store: create a table, add a
-column, or create an index. Tables in the `data` schema are changed only this way, once the
-user approves.
+column, create an index, or drop a table or column. Tables in the `data` schema are changed
+only this way, once the user approves.
 
 - `ops`: the changes, applied in order, all together or not at all:
   - `create_table`: `name`, `description`, `columns`, and `primary_key` (column names; left
@@ -70,6 +68,11 @@ user approves.
   - `create_index`: `table`, `columns`, `method` (`btree` by default; `gin` for a jsonb column;
     `fulltext` for searching a text column's words; `hnsw` for nearest neighbours of a vector
     or embedding column), `unique` (btree only), and an optional `name`.
+  - `drop_table`: `table`. `drop_column`: `table` and `column` (not one in the primary key,
+    nor a text column whose embedding column is still there: drop that first). The user
+    types the table's name to approve a drop, and sees how many rows it takes. A dropped
+    table or column is gone from the tools at once, but kept for a while, and the user can
+    restore it until it's purged.
 - A column has a `name`, a `type` (text, integer, bigint, numeric, boolean, date, timestamptz,
   jsonb, uuid, vector or embedding), `nullable` (default true), an optional `default` (a
   constant; "now" for a date or timestamptz; "random" for a uuid) and a `description`. A
@@ -92,8 +95,8 @@ def build(config: RequestSchemaChangeConfig) -> list[AgentTool]:
         runtime: ToolRuntime[ChatDeps],
     ) -> str:
         ctx, call_id = runtime.context, runtime.tool_call_id
-        if ctx.workflow_run_id is not None or ctx.run_id is None:
-            return json.dumps({"error": IN_WORKFLOW})
+        if ctx.run_id is None:
+            return json.dumps({"error": NO_RUN})
         request = await to_thread.run_sync(schema_changes.find, ctx.run_id, call_id)
         if request is None:
             try:
@@ -123,7 +126,8 @@ register(
     ToolSpec(
         key="request_schema_change",
         name="Request schema changes",
-        description="Ask you to approve new tables, columns and indexes in your data store.",
+        description="Ask you to approve new tables, columns and indexes in your data store, or"
+        " dropping tables and columns (which you can restore until they're purged).",
         config_model=RequestSchemaChangeConfig,
         build=build,
     )
