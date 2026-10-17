@@ -28,6 +28,7 @@ import uuid
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Annotated, Any
+from weakref import WeakValueDictionary
 
 import psycopg
 from anyio import CapacityLimiter, to_thread
@@ -43,6 +44,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import DataStoreNotFound, DataStoreNotReady, store_not_ready, store_session
+from aios.datastores.connections import MAX_CONNECTIONS
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -56,10 +58,21 @@ DATA_NOT_INSTRUCTIONS = (
 UNREACHABLE = "The user's data store couldn't be reached just now. Try again in a moment."
 
 # The worker threads the tools may hold at once, in this process. A call holds one for as long
-# as its query runs (up to the statement timeout), or waits for one of the store's few
-# connections, and a model can make many calls at once: without a limit of their own they'd
-# take all of anyio's default threads, which the API's sync endpoints share.
+# as its query runs (up to the statement timeout), and a model can make many calls at once:
+# without a limit of their own they'd take all of anyio's default threads, which the API's sync
+# endpoints share.
 _threads = CapacityLimiter(8)
+# And each store, no more of them than it has connections to use them (a call waiting for one
+# would hold a thread, and maybe time out): so one user's slow queries can't hold up another's.
+_store_threads: WeakValueDictionary[uuid.UUID, CapacityLimiter] = WeakValueDictionary()
+
+
+def _store_limiter(store_id: uuid.UUID) -> CapacityLimiter:
+    limiter = _store_threads.get(store_id)
+    if limiter is None:
+        limiter = _store_threads[store_id] = CapacityLimiter(MAX_CONNECTIONS)
+    return limiter
+
 
 # The store's tables, with their columns: the owner's (`data`) first, then the platform's
 # (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions.
@@ -290,7 +303,9 @@ async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *
     if store_id is None:
         return json.dumps({"error": store_not_ready(None)})
     try:
-        return json.dumps(await to_thread.run_sync(read, store_id, *args, limiter=_threads))
+        async with _store_limiter(store_id):
+            result = await to_thread.run_sync(read, store_id, *args, limiter=_threads)
+        return json.dumps(result)
     except DataStoreNotReady as exc:
         return json.dumps({"error": store_not_ready(exc.status)})
     except DataStoreNotFound:

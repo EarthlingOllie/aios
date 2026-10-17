@@ -663,3 +663,46 @@ def test_slow_queries_dont_starve_the_apis_other_requests(api, store, data_agent
             assert turn.result().status_code == 200
 
     assert waited < 0.25
+
+
+def test_one_users_slow_queries_dont_hold_up_another_users_tools(
+    api, store, other_store, data_agent, monkeypatch
+):
+    """Each store gets no more of the tools' threads than it has connections to use them."""
+    monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
+    sql = "SELECT pg_sleep(1)"
+
+    async def many_slow_queries(messages, info):
+        if last_tool_results(messages):
+            yield "done"
+        else:
+            for _ in range(12):
+                yield ToolCall("query_data", {"sql": sql})
+
+    def sleeping() -> int:
+        with psycopg.connect(login_url(store, "ro")) as conn:
+            query = "SELECT count(*) FROM pg_stat_activity WHERE query = %s"
+            return conn.execute(query, (sql,)).fetchone()[0]
+
+    with SessionLocal() as session:
+        other_user = session.get(User, other_store.owner_user_id)
+    with api, use_model(model(many_slow_queries)):
+        run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
+        url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"
+        with ThreadPoolExecutor(1) as pool:
+            turn = pool.submit(api.post, url, json=chat_body("go"))
+            while not sleeping():
+                time.sleep(0.01)
+            app.dependency_overrides[current_user] = lambda: other_user
+            their_agent = make_agent(api, "Theirs")
+            their_agent = api.put(
+                f"/api/agents/{their_agent['id']}",
+                json=agent_body(their_agent, tools=DATA_TOOLS),
+            ).json()
+            start = time.monotonic()
+            described = describe(api, their_agent)
+            waited = time.monotonic() - start
+            assert turn.result().status_code == 200
+
+    assert "error" not in described
+    assert waited < 0.5

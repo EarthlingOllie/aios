@@ -32,6 +32,9 @@ Role = Literal["rw", "ro"]
 
 # Engines kept open at once (each up to 3 connections); past it the least recently used goes.
 MAX_ENGINES = 64
+# The connections each store engine pools, at most: one kept, two more while busy.
+POOL_SIZE, MAX_OVERFLOW = 1, 2
+MAX_CONNECTIONS = POOL_SIZE + MAX_OVERFLOW
 
 _OWNER = "data_store_owner_id"
 
@@ -96,8 +99,8 @@ def _engine(store: DataStore, role: Role) -> Engine:
         connect_args = {"prepare_threshold": None} if role == "ro" else {}
         engine = create_engine(
             store_url(store, role),
-            pool_size=1,
-            max_overflow=2,
+            pool_size=POOL_SIZE,
+            max_overflow=MAX_OVERFLOW,
             pool_pre_ping=True,
             connect_args=connect_args,
         )
