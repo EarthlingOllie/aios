@@ -22,7 +22,7 @@ from aios.auth import current_user
 from aios.datastores import DataStoreBusy, data_store_for, history, provision, store_session
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, HistoryExport, User
+from aios.models import AgentRun, HistoryExport, User, WorkflowRun
 from aios.workflows import execute_run
 
 
@@ -902,3 +902,84 @@ def test_switching_it_on_backfills_existing_workflow_runs(
         "SELECT count(*) FROM history.workflow_run_steps s JOIN history.agent_runs r"
         " ON r.id = s.agent_run_id AND r.workflow_run_id = s.workflow_run_id",
     ) == [(4,)]
+
+
+def test_a_workflow_run_exported_midway_is_updated_as_it_goes_and_finishes(
+    api, user, store_id, history_tasks, started
+):
+    """What pausing and resuming a run will do (#31): its row written while it's under way,
+    then again at its end. Exported midway, the copy has the run and steps as they were then."""
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    run = workflow_runs.start(api, workflow, "topic")
+    midway: list[list[tuple]] = []
+
+    # Queued: in the outbox only once it changes, or a backfill puts it there.
+    history.export(store_id)
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]
+
+    def export_now() -> None:
+        with SessionLocal() as db:
+            history.enqueue_workflow_runs(db, WorkflowRun.id == run["id"])
+            db.commit()
+        history.export(store_id)
+        midway.append(
+            stored(store_id, "SELECT status, output FROM history.workflow_runs")
+            + stored(
+                store_id,
+                "SELECT array_to_string(path, '/'), status, output"
+                " FROM history.workflow_run_steps ORDER BY path",
+            )
+        )
+
+    async def script(messages, info):
+        name, text = messages[0].content, messages[-1].content
+        if name == "critic":
+            await asyncio.to_thread(export_now)
+        yield f"{name}({text})"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(run["id"]))
+
+    assert midway == [
+        [
+            ("running", None),
+            ("draft", "succeeded", "draft(topic)"),
+            ("review", "running", None),
+            ("review/critic", "running", None),
+        ]
+    ]
+    history.export(store_id)
+    assert stored(store_id, "SELECT status, output FROM history.workflow_runs") == [
+        ("succeeded", "critic(draft(topic))")
+    ]
+    assert stored(
+        store_id,
+        "SELECT array_to_string(path, '/'), status FROM history.workflow_run_steps ORDER BY path",
+    ) == [("draft", "succeeded"), ("review", "succeeded"), ("review/critic", "succeeded")]
+
+
+def test_exporting_workflow_runs_again_gives_no_duplicates(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    workflow_runs.run(api, started, workflow, "one")
+    workflow_runs.run(api, started, workflow, "two")
+    history.export(store_id)
+    counts = (
+        "SELECT (SELECT count(*) FROM history.workflow_runs),"
+        " (SELECT count(*) FROM history.workflow_run_steps),"
+        " (SELECT count(*) FROM history.agent_runs)"
+    )
+    assert stored(store_id, counts) == [(2, 6, 4)]
+
+    for _ in range(2):
+        with SessionLocal() as db:
+            history.enqueue_everything(db, user.id)
+            db.commit()
+        assert history.export(store_id) == 6
+
+    assert stored(store_id, counts) == [(2, 6, 4)]
