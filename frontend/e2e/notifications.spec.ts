@@ -72,10 +72,14 @@ test("marking one read clears it from the badge and keeps it in the list", async
   await page.goto("/agents");
 
   await bell(page).click();
+  const item = list(page).getByRole("link", { name: /Create table data\.contacts/ });
+  // Said, not only shown by a dot.
+  await expect(item).toHaveAccessibleName(/^Unread/);
   await list(page).getByRole("button", { name: "Mark read" }).click();
 
   await expect(bell(page)).toHaveAccessibleName("Notifications");
-  await expect(list(page).getByRole("link", { name: /Create table data\.contacts/ })).toBeVisible();
+  await expect(item).toBeVisible();
+  await expect(item).not.toHaveAccessibleName(/Unread/);
   await expect(list(page).getByRole("button", { name: "Mark read" })).toHaveCount(0);
   expect(api.writes).toContainEqual(["POST", `/api/notifications/${notification.id}/read`, null]);
 });

@@ -153,6 +153,7 @@ function NotificationItem({
   const unread = !notification.read_at;
   const body = (
     <>
+      {unread && <span className="sr-only">Unread: </span>}
       <span className={cn("block", unread ? "font-medium" : "text-muted-foreground")}>{view.heading}</span>
       {view.detail && <span className="text-muted-foreground block truncate text-xs">{view.detail}</span>}
       <span className="text-muted-foreground block text-xs">{formatDate(notification.created_at)}</span>
@@ -160,7 +161,7 @@ function NotificationItem({
   );
   return (
     <li className={cn("flex items-start gap-2 px-3 py-2", unread && "bg-accent/40")}>
-      {unread && <span aria-label="Unread" className="bg-primary mt-1.5 size-2 shrink-0 rounded-full" />}
+      {unread && <span aria-hidden className="bg-primary mt-1.5 size-2 shrink-0 rounded-full" />}
       {view.to ? (
         <Link to={view.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
           {body}
