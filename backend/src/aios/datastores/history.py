@@ -345,14 +345,20 @@ def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
         return {r["id"]: _clean(dict(r)) for r in rows}
 
 
-def _write_run(store: Session, run: dict[str, Any], messages: list[dict[str, Any]]) -> None:
-    stmt = insert(HistoryAgentRun).values(**run, exported_at=func.now())
+def _upsert(store: Session, table: type, rows: list[dict[str, Any]]) -> None:
+    """Insert `rows` into `table`, or update the rows already there with their ids."""
+    if not rows:
+        return
+    stmt = insert(table).values(rows)
     store.execute(
         stmt.on_conflict_do_update(
-            index_elements=[HistoryAgentRun.id],
-            set_={c: stmt.excluded[c] for c in [*run, "exported_at"] if c != "id"},
+            index_elements=[table.id], set_={c: stmt.excluded[c] for c in rows[0] if c != "id"}
         )
     )
+
+
+def _write_run(store: Session, run: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    _upsert(store, HistoryAgentRun, [{**run, "exported_at": func.now()}])
     for start in range(0, len(messages), ROWS_PER_INSERT):
         stmt = insert(HistoryMessage).values(messages[start : start + ROWS_PER_INSERT])
         store.execute(
@@ -429,18 +435,6 @@ def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
         return runs
 
 
-def _upsert(store: Session, table: type, rows: list[dict[str, Any]]) -> None:
-    """Insert `rows` into `table`, or update the rows already there with their ids."""
-    if not rows:
-        return
-    stmt = insert(table).values(rows)
-    store.execute(
-        stmt.on_conflict_do_update(
-            index_elements=[table.id], set_={c: stmt.excluded[c] for c in rows[0] if c != "id"}
-        )
-    )
-
-
 def _write_workflow_run(store: Session, run: dict[str, Any]) -> None:
     steps = run["steps"]
     row = {k: v for k, v in run.items() if k != "steps"}
@@ -483,21 +477,24 @@ _COPIES = {
 
 def _read(batch: _Batch, data_store_id: uuid.UUID) -> None:
     """Read what the batch's runs are now, from the platform."""
-    agent_runs = batch.of(HistoryExportKind.agent_run)
-    batch.found[HistoryExportKind.agent_run] = _load_runs([p.source_id for p in agent_runs])
-    batch.found[HistoryExportKind.workflow_run] = _load_workflow_runs(
-        [p.source_id for p in batch.of(HistoryExportKind.workflow_run)]
-    )
+    for kind, load in (
+        (HistoryExportKind.agent_run, _load_runs),
+        (HistoryExportKind.workflow_run, _load_workflow_runs),
+    ):
+        ids = [p.source_id for p in batch.of(kind)]
+        batch.found[kind] = load(ids) if ids else {}
+    agent_runs = [p for p in batch.of(HistoryExportKind.agent_run) if batch.exists(p)]
+    if not agent_runs:
+        return
     # Every thread read first, on one connection, so the store's transaction isn't left idle.
     with checkpoints.sync_saver() as saver:
         for p in agent_runs:
-            if batch.exists(p):
-                try:
-                    batch.messages[p.source_id] = flatten(
-                        p.source_id, checkpoints.history(p.source_id, saver)
-                    )
-                except Exception as exc:
-                    batch.failed(p, exc, data_store_id)
+            try:
+                batch.messages[p.source_id] = flatten(
+                    p.source_id, checkpoints.history(p.source_id, saver)
+                )
+            except Exception as exc:
+                batch.failed(p, exc, data_store_id)
 
 
 def _write(store: Session, batch: _Batch, p: Row) -> None:
@@ -642,6 +639,8 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             return
         _check_head(data_store_id, store.history_revision)
         with store_session(data_store_id, "rw") as store:
+            # Children first, each in one statement: what their foreign keys would cascade
+            # row by row (millions of messages, say) is left with nothing to do.
             store.execute(delete(HistoryMessage))
             store.execute(delete(HistoryAgentRun))
             store.execute(delete(HistoryWorkflowRunStep))

@@ -1188,3 +1188,26 @@ def test_a_run_ended_while_a_node_runs_starts_no_more_steps_than_its_copy_has(
     assert stored(
         store_id, "SELECT array_to_string(path, '/') FROM history.workflow_run_steps"
     ) == [("draft",)]
+
+
+def test_a_batch_of_workflow_runs_alone_reads_no_checkpoints(
+    api, user, store_id, history_tasks, started, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    run = workflow_runs.run(api, started, nested_workflow(api), "topic")
+    history.export(store_id)
+    with SessionLocal() as db:
+        history.enqueue_workflow_runs(db, WorkflowRun.id == run["id"])
+        db.commit()
+    connects = []
+    connect = history.checkpoints.Connection.connect
+
+    def counted(*args, **kwargs):
+        connects.append(1)
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(history.checkpoints.Connection, "connect", counted)
+
+    assert history.export(store_id) == 1
+    assert connects == []
