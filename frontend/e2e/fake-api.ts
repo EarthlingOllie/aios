@@ -165,6 +165,8 @@ export class FakeApi {
    * notifies them, and deciding it marks that read; `mine: false` ones are another user's.
    */
   notifications: NotificationRow[] = [];
+  /** How many times the app asked for the user's notifications. */
+  notificationLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
 
@@ -721,6 +723,7 @@ export class FakeApi {
       return reply(200, this.schemaChangeOut(request));
     }
     if (path === "/api/notifications" && method === "GET") {
+      this.notificationLists++;
       const mine = this.notifications.filter((n) => n.mine).reverse();
       const unread = mine.filter((n) => !n.read_at);
       return reply(200, {

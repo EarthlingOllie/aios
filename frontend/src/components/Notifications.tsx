@@ -23,14 +23,32 @@ const NotificationsContext = createContext<NotificationsState | null>(null);
 /**
  * Polls for the signed-in user's notifications, for every `NotificationsMenu` below it (the
  * navigation has one for wide screens and one for narrow), so they're read once however many
- * show them.
+ * show them. Not while the tab is hidden: it asks again as soon as it's shown.
  */
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { data, error, reload } = useLoad(useCallback(() => api.listNotifications(), []));
-  usePoll(true, reload, NOTIFICATIONS_POLL_MS);
+  const visible = useVisible();
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    // Shown again: what changed meanwhile, now (the first load is useLoad's).
+    if (visible && !wasVisible.current) void reload();
+    wasVisible.current = visible;
+  }, [visible, reload]);
+  usePoll(visible, reload, NOTIFICATIONS_POLL_MS);
   return (
     <NotificationsContext.Provider value={{ data, error, reload }}>{children}</NotificationsContext.Provider>
   );
+}
+
+/** Whether the page is visible: false while its tab is in the background or minimised. */
+function useVisible(): boolean {
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return visible;
 }
 
 const noRefresh = () => Promise.resolve();

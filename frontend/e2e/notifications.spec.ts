@@ -28,6 +28,40 @@ test("a new request shows an unread badge without a reload", async ({ page }) =>
   await expect(bell(page)).toContainText("1");
 });
 
+/** As the browser does when the tab is hidden or shown again. */
+async function setHidden(page: Page, hidden: boolean) {
+  await page.evaluate((hidden) => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => (hidden ? "hidden" : "visible"),
+    });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+}
+
+test("a hidden tab stops asking, and asks again as soon as it's shown", async ({ page }) => {
+  await page.clock.install();
+  const api = await fakeApi(page);
+  await page.goto("/agents");
+  await expect(bell(page)).toHaveAccessibleName("Notifications");
+  const asked = api.notificationLists;
+
+  await setHidden(page, true);
+  api.addSchemaChange();
+  for (let i = 0; i < 3; i++) {
+    await page.clock.runFor(POLL_MS);
+    // Time for a request the timer started to reach the API.
+    await page.waitForTimeout(300);
+  }
+  expect(api.notificationLists).toBe(asked);
+
+  await setHidden(page, false);
+
+  await expect(bell(page)).toHaveAccessibleName("Notifications, 1 unread");
+  expect(api.notificationLists).toBe(asked + 1);
+});
+
 test("an item opens the request on the Data page, and deciding it clears the badge", async ({
   page,
 }) => {
