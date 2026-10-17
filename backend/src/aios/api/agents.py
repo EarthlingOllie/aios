@@ -757,7 +757,7 @@ def cancel_chat_requests(db: Session, run_ids: list[int]) -> None:
         db,
         SchemaChangeRequest.requested_by_run.in_(run_ids),
         SchemaChangeRequest.requested_by_run.not_in(
-            select(WorkflowRunStep.agent_run_id).where(WorkflowRunStep.agent_run_id.is_not(None))
+            select(WorkflowRunStep.agent_run_id).where(WorkflowRunStep.agent_run_id.in_(run_ids))
         ),
     )
 
