@@ -426,27 +426,33 @@ def read_value(
     for a key that isn't one, and `RowNotFound` if the row isn't there (any more)."""
     max_bytes = get_settings().query_data_max_bytes
     table_oid, tid = _row_key(row_key)
-    # Characters that, as JSON, fit the cap however they're written: none takes more than 6
-    # bytes (`\u001f`), and the brackets, quotes and flag take 16.
-    chars = sql.Literal(max(1, (max_bytes - 16) // 6))
-    with _reading(data_store_id) as pg:
-        table = _table(pg, table_name)
-        text = _text(table.column(column_name))
-        statement = sql.SQL(
-            "SELECT left({text}, {chars}), length({text}) > {chars} FROM {table} AS {source}"
-            " WHERE {source}.tableoid = {oid}::oid AND {source}.ctid = {tid}::tid"
-        ).format(
-            text=text,
-            chars=chars,
-            table=_qualified(table.name),
-            source=SOURCE,
-            oid=sql.Literal(str(table_oid)),
-            tid=sql.Literal(tid),
-        )
-        read = read_capped(
-            pg, statement.as_string(pg), max_rows=1, max_bytes=max_bytes, ensure_ascii=False
-        )
-    if not read.rows:
-        raise RowNotFound(row_key)
-    value, cut = read.rows[0]
-    return value, bool(cut)
+    # As many characters as fit the cap as JSON (less 16 bytes for the brackets, quotes and
+    # flag): as many as there are bytes, for plain text; else half (a character JSON writes as
+    # two bytes, as most UTF-8 and escapes are); else a sixth, which fits however they're
+    # written (none takes more than `\u001f`'s 6).
+    room = max(6, max_bytes - 16)
+    for chars in (room, room // 2, room // 6):
+        with _reading(data_store_id) as pg:
+            table = _table(pg, table_name)
+            text = _text(table.column(column_name))
+            statement = sql.SQL(
+                "SELECT left({text}, {chars}), length({text}) > {chars} FROM {table} AS {source}"
+                " WHERE {source}.tableoid = {oid}::oid AND {source}.ctid = {tid}::tid"
+            ).format(
+                text=text,
+                chars=sql.Literal(chars),
+                table=_qualified(table.name),
+                source=SOURCE,
+                oid=sql.Literal(str(table_oid)),
+                tid=sql.Literal(tid),
+            )
+            read = read_capped(
+                pg, statement.as_string(pg), max_rows=1, max_bytes=max_bytes, ensure_ascii=False
+            )
+        if read.rows:
+            value, cut = read.rows[0]
+            return value, bool(cut)
+        if not read.truncated:
+            raise RowNotFound(row_key)
+    # A sixth always fits.
+    raise AssertionError("A value cut to a sixth of the byte cap didn't fit it")

@@ -267,6 +267,32 @@ def test_a_value_too_big_to_read_whole_is_read_as_far_as_the_byte_cap(api, notes
     assert 0 < len(full["value"].encode()) <= 800
 
 
+@pytest.mark.parametrize(
+    ("text", "whole"),
+    [
+        # Plain text is read whole up to near the cap...
+        ("abc " * 7000, True),
+        # ...as is text written longer in JSON, up to half of it...
+        ("line\n" * 5000, True),
+        # ...and the rest as far as fits, however it's written.
+        ("日本語" * 10000, False),
+    ],
+    ids=["ascii", "escaped", "multibyte"],
+)
+def test_a_value_is_read_whole_as_far_as_the_byte_cap_allows(api, notes, monkeypatch, text, whole):
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 32 * 1024)
+    with as_owner(notes) as conn:
+        conn.execute("UPDATE data.notes SET body = %s WHERE id = 2", (text,))
+    row = rows(api, "notes", sort="id")["rows"][1]
+
+    full = value(api, "notes", row["key"], "body").json()
+
+    assert full["truncated"] is not whole
+    assert text.startswith(full["value"])
+    assert len(full["value"]) == len(text) if whole else len(full["value"]) > 1000
+    assert len(json.dumps(full, ensure_ascii=False).encode()) <= 32 * 1024
+
+
 def test_a_page_stops_at_the_byte_cap(api, notes, monkeypatch):
     with as_owner(notes) as conn:
         conn.execute(
