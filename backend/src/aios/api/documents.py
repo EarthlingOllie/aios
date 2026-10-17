@@ -1,4 +1,6 @@
 import logging
+import uuid
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated
 
@@ -6,10 +8,11 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
 from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import files, store_session, store_status
+from aios.datastores import files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
 from aios.models import DataStoreStatus
@@ -53,9 +56,20 @@ class UserOut(BaseModel):
     avatar_url: str | None
 
 
+class UsageOut(BaseModel):
+    """What the store uses, as last measured (null until it's first measured), and its caps."""
+
+    db_bytes: int | None
+    db_quota_bytes: int
+    files_bytes: int | None
+    files_quota_bytes: int
+    measured_at: datetime | None
+
+
 class DataStoreOut(BaseModel):
-    # Only its status: a store's name, roles and credentials never leave the platform.
+    # Only its status and usage: a store's name, roles and credentials never leave the platform.
     status: DataStoreStatus
+    usage: UsageOut
 
 
 @router.get("/me", response_model=UserOut)
@@ -65,8 +79,10 @@ def me(user: CurrentUser):
 
 @router.get("/data-store", response_model=DataStoreOut)
 def data_store(store_id: CurrentDataStore):
-    """The user's data store's status: documents and search wait until it's `ready`."""
-    return DataStoreOut(status=store_status(store_id))
+    """The user's data store's status (documents and search wait until it's `ready`), and its
+    usage against its storage caps."""
+    status, usage = quota.status_and_usage(store_id)
+    return DataStoreOut(status=status, usage=UsageOut(**asdict(usage)))
 
 
 @router.get("/documents", response_model=list[DocumentOut])
@@ -101,6 +117,9 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
     if file.size is None or file.size > get_settings().max_upload_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     with store_session(store_id, "rw") as db:
+        refusal = quota.upload_refusal(db, file.filename or "upload", file.size)
+        if refusal:
+            raise HTTPException(status.HTTP_507_INSUFFICIENT_STORAGE, refusal)
         # The document's id first, since its file's key holds it. Committed, so no transaction
         # is left open through the upload.
         doc_id = db.scalar(select(func.nextval(DOCUMENT_IDS)))
@@ -149,6 +168,7 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
             if not row_committed:
                 _delete_unkept_file(key)
             raise
+        _record_files(store_id, db)
     return DocumentOut(
         id=doc.id,
         filename=doc.filename,
@@ -158,6 +178,15 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
         size_bytes=doc.size_bytes,
         created_at=doc.created_at,
     )
+
+
+def _record_files(store_id: uuid.UUID, db: Session) -> None:
+    """Records the store's documents' bytes after an upload or delete, for the Data page. Should
+    that fail, it's logged: the upload or delete went through, and the schedule records them."""
+    try:
+        quota.record_files(store_id, db)
+    except Exception:
+        logger.exception("Couldn't record data store %s's documents' bytes", store_id)
 
 
 def _delete_unkept_file(key: str) -> None:
@@ -203,6 +232,7 @@ def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
             ) from exc
         db.execute(delete(Document).where(Document.id == document_id))  # its chunks cascade
         db.commit()
+        _record_files(store_id, db)
 
 
 @router.get("/search", response_model=list[SearchHitOut])

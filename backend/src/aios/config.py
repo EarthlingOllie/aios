@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
     # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
     # processes that use it. On ECS both roles are used by the 2 API tasks and the workflow
-    # worker's 2 processes (the data tools), so 12, and the read-write one also by the ingest
-    # worker's 2 (one ingest, so one connection, each), so 14. A rolling deploy starts the new
+    # worker's 2 processes (the data tools), so 12; the read-write one also by the ingest
+    # worker's 2 (one ingest, so one connection, each), so 14, and the read-only one by the
+    # provisioning worker (measuring one store at a time), so 13. A rolling deploy starts the new
     # tasks before stopping the old, which doubles that: 28 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
@@ -73,6 +74,11 @@ class Settings(BaseSettings):
     # How long a download link lasts, in seconds. Each is a bearer link (anyone holding it can
     # download the file until then), minted per click, so a minute is plenty.
     document_download_url_seconds: int = Field(default=60, ge=1, le=7 * 24 * 60 * 60)
+    # Each store's storage cap (`aios.datastores.quota`): the data its tables hold (live rows,
+    # measured with pgstattuple), and the bytes of its documents' files. At either, uploads and
+    # `write_data`'s inserts and updates are refused; reads and deletes carry on.
+    data_store_db_quota_bytes: int = Field(default=1024**3, ge=1)
+    data_store_files_quota_bytes: int = Field(default=5 * 1024**3, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

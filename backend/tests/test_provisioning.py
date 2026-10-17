@@ -671,7 +671,8 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
         response = client.get("/api/data-store")
     finally:
         app.dependency_overrides.clear()
-    assert response.json() == {"status": "ready"}
+    assert response.json()["status"] == "ready"
+    assert set(response.json()) == {"status", "usage"}
     for password in passwords:
         assert password not in caplog.text
         assert password not in response.text
@@ -734,8 +735,8 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
     # Its own provisioning task may still be trying: it's left to that.
     assert store_row(db, just_signed_up).status == DataStoreStatus.provisioning
     # The provisioning worker runs it (`celery worker -B`), as the provisioner.
-    scheduled = [e for e in worker.celery_app.conf.beat_schedule.values()]
-    assert [e["task"] for e in scheduled] == ["aios.retry_unfinished_data_stores"]
+    scheduled = worker.celery_app.conf.beat_schedule["retry-unfinished-data-stores"]
+    assert scheduled["task"] == "aios.retry_unfinished_data_stores"
     assert worker.celery_app.conf.task_routes["aios.retry_unfinished_data_stores"] == {
         "queue": "provisioning"
     }

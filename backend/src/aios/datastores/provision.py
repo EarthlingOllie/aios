@@ -14,8 +14,9 @@ three roles named after it (never after a user):
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
-template (`aios.db_roles`), which brings pgvector in an `extensions` schema: the provisioner
-isn't a superuser, so it couldn't install it.
+template (`aios.db_roles`), which brings pgvector and pgstattuple (for measuring the store,
+`aios.datastores.quota`) in an `extensions` schema: the provisioner isn't a superuser, so it
+couldn't install them.
 
 Then it runs the store tree to its head, as the owner (`upgrade_store`), and marks the store
 `ready`. Every step checks what's already there, so after a crash running it again finishes

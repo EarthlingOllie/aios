@@ -276,8 +276,11 @@ It also revokes `CONNECT` from `PUBLIC` on the platform database (then grants it
 roles), `postgres` and `template1`, so no other role (a data store's included) can connect to
 them. Only a database's owner may do that, so one the master user doesn't own is left as it is
 and reported as a warning. And it makes the data stores' template, `aios_store_template`
-(`DATA_STORE_TEMPLATE`): an empty database with pgvector in an `extensions` schema, which no one
-may connect to and the provisioner copies.
+(`DATA_STORE_TEMPLATE`): an empty database with pgvector and pgstattuple (for measuring a store's
+data) in an `extensions` schema, which no one may connect to and the provisioner copies. It adds
+pgstattuple to any store made before the template had it. Stores it may not connect to, or
+create it in (on RDS, the master user isn't a superuser), are listed in one warning; any of
+them without it is measured by its database's size until a superuser adds it.
 
 ### Data stores
 
@@ -314,8 +317,8 @@ set up"), and the UI says so.
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
 never have them, and a server logging statements has only the encrypted ones (in the
-`data_stores` insert), useless without the key. The API returns only a store's status
-(`GET /api/data-store`).
+`data_stores` insert), useless without the key. The API returns only a store's status and
+usage (`GET /api/data-store`).
 
 `python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
 after the platform's migration) finishes provisioning any store left `provisioning` or `failed`,
@@ -339,7 +342,7 @@ they're empty until then.
 
 Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
 pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
-role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
+role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
 ingest task retries, and the search and data tools tell the model.
 
@@ -352,6 +355,25 @@ a table, a sort column or a value's column is a name looked up in the catalog (4
 it isn't there), and only then quoted into a statement. Values come as text, cut to 200
 characters (read in full, as far as the byte cap, on asking); embeddings come as their type and
 dimension (`vector(1024)`), never their numbers, and `jsonb` pretty-printed.
+
+Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
+1 GiB) for the data its tables hold, and `DATA_STORE_FILES_QUOTA_BYTES` (default 5 GiB) for its
+documents' files, the sum of their `size_bytes`. The data is each table's live rows, as
+`pgstattuple_approx` estimates them, in its own pages and its TOAST table (where large values
+go), plus its indexes in proportion to how much of the table is live rows. Not the database's
+size (`pg_database_size`): that keeps the space deleted rows took until their table is
+rewritten, so deleting rows wouldn't bring a store back under its cap. Over either, uploads
+answer 507 (as does an upload that wouldn't fit) and `write_data` refuses inserts, upserts and
+updates, telling the model; reads, searches, downloads and deletes carry on. The checks measure
+the store as the write comes in. What each store uses is also recorded on its `data_stores` row
+for the Data page's Overview, which shows both against their caps, warning from 80%: the
+provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
+and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
+makes room at once; the Overview shows rows' room at the next measurement. The checks first read
+the database's size, which is never less than the data, and only measure the data once that
+size reaches the cap. Deleting rows doesn't bring the size back down, so from then on each check
+measures: `pgstattuple_approx` reads the pages vacuum hasn't marked all-visible, the ones
+written or deleted from since.
 
 ### Dependency policy
 

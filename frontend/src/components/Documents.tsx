@@ -14,8 +14,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
 import { Notice } from "@/components/Notice";
-import { api, ApiError, describeError, type DataStoreStatus, type DocumentInfo } from "@/lib/api";
-import { useDataStoreStatus } from "@/lib/data-store";
+import {
+  api,
+  ApiError,
+  describeError,
+  type DataStoreStatus,
+  type DataStoreUsage,
+  type DocumentInfo,
+} from "@/lib/api";
+import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-store";
 import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +37,11 @@ const statusVariant = {
  * The user's documents, read by the views that show them (`useDocumentsList`) and again while
  * any is still being ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
-function useDocuments(storeStatus: DataStoreStatus | undefined) {
+function useDocuments(
+  storeStatus: DataStoreStatus | undefined,
+  usage: DataStoreUsage | undefined,
+  recheckStore: () => void,
+) {
   // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
   const [docs, setDocs] = useState<DocumentInfo[]>();
   // What to say about the last read of the list failing (e.g. the store is busy); the list
@@ -88,12 +99,15 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
         try {
           await api.uploadDocument(file);
         } catch (err) {
+          // Each is tried, and each refusal said: one that doesn't fit leaves room for a smaller.
           failed.push(`${file.name}: ${describeError(err)}`);
         }
       }
     } finally {
       setErrors(failed);
       setUploading(false);
+      // The store's usage, which uploads change (and which may now stop them).
+      recheckStore();
       await refresh();
     }
   }
@@ -102,6 +116,8 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     setErrors([]);
     try {
       await api.deleteDocument(doc.id);
+      // The room it made, which may let uploads in again.
+      recheckStore();
     } catch (err) {
       // Already gone (deleted twice before the list caught up, or from another tab): that's
       // what was asked for.
@@ -127,7 +143,9 @@ function useDocuments(storeStatus: DataStoreStatus | undefined) {
     upload,
     remove,
     /** Uploads wait for the store to be ready, and for its status to be known. */
-    canUpload: ready,
+    canUpload: ready && !uploadsRefused(usage),
+    /** What uploads are refused for, at either cap; empty below both. */
+    fullWarnings: ready ? fullWarnings(usage) : [],
   };
 }
 
@@ -147,7 +165,7 @@ const DocumentsContext = createContext<SharedDocuments | null>(null);
  */
 export function DocumentsProvider({ children }: { children: ReactNode }) {
   const store = useDataStoreStatus();
-  const documents = useDocuments(store.status);
+  const documents = useDocuments(store.status, store.usage, store.recheck);
   return <DocumentsContext value={{ store, documents }}>{children}</DocumentsContext>;
 }
 
@@ -163,12 +181,12 @@ function useShared() {
  * mounts, as nothing polls it once it's ready.
  */
 export function useDataStore() {
-  const { status, error, recheck } = useShared().store;
+  const { status, usage, error, recheck } = useShared().store;
   // Only on mount, and only about a ready store: one still being asked about, or not ready (and
   // so still polled), needs nothing more.
   const recheckReady = useRef(status === "ready" ? recheck : undefined);
   useEffect(() => recheckReady.current?.(), []);
-  return { status, error };
+  return { status, usage, error, recheck };
 }
 
 /**
@@ -244,6 +262,11 @@ function DocumentsNotices({
         action="upload documents"
         className={className}
       />
+      {documents.fullWarnings.length > 0 && (
+        <Notice label="Storage" error className={className}>
+          {documents.fullWarnings.join(" ")}
+        </Notice>
+      )}
       {documents.listError && (
         <Notice label="Documents list" busy={documents.listRetrying} className={className}>
           {documents.listError}
