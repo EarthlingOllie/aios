@@ -525,7 +525,15 @@ Known limits:
   the run from `waiting`, rebuilds its state from the recorded steps, and resumes the waiting
   node on its own agent run's thread, on the versions the run pinned (a pin that can no longer
   run fails its step with the reason). The run page shows the waiting node with the request's
-  card, and the pins that are no longer current.
+  card, and the pins that are no longer current. A request nobody decides within
+  `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS` (7) expires: the provisioning worker's beat
+  (`aios.expire_schema_change_requests`, every `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour)
+  marks it `expired`, which counts as a rejection, and the chat or workflow run that asked
+  resumes with it. Deleting a chat run, an agent with a waiting chat, or a waiting workflow run
+  marks its pending request `cancelled` instead, and nothing resumes (`schema_changes.cancel`).
+  (Deleting the agent of a waiting workflow node leaves the request pending: the workflow run
+  still waits on it, and fails that step on resume.) Either way the request's notifications
+  are marked read, nothing is applied, and the Data page's history shows it.
 - **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
   description and instructions in a `<skill>` block). That's simple and works well for a handful
   of skills. With many large skills, switch to progressive disclosure: list only names and
