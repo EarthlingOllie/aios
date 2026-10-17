@@ -932,6 +932,11 @@ def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
             f"The user approved it, and it's applied: {request.summary}. `describe_data`"
             " shows the store's tables as they are now."
         )
+        if confirmation(SchemaChange.model_validate({"ops": request.ops})):
+            out["message"] += (
+                " What it dropped is kept for a while: the user can restore it from the Data"
+                " page until it's purged."
+            )
     elif status == SchemaChangeStatus.rejected:
         out["note"] = request.note
         out["message"] = "The user rejected it, and nothing changed" + (

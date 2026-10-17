@@ -60,8 +60,8 @@ async def _request(
 
 def _description() -> str:
     return f"""Ask the user to change the tables in their data store: create a table, add a
-column, or create an index. Tables in the `data` schema are changed only this way, once the
-user approves.
+column, create an index, or drop a table or column. Tables in the `data` schema are changed
+only this way, once the user approves.
 
 - `ops`: the changes, applied in order, all together or not at all:
   - `create_table`: `name`, `description`, `columns`, and `primary_key` (column names; left
@@ -70,6 +70,11 @@ user approves.
   - `create_index`: `table`, `columns`, `method` (`btree` by default; `gin` for a jsonb column;
     `fulltext` for searching a text column's words; `hnsw` for nearest neighbours of a vector
     or embedding column), `unique` (btree only), and an optional `name`.
+  - `drop_table`: `table`. `drop_column`: `table` and `column` (not one in the primary key,
+    nor a text column whose embedding column is still there: drop that first). The user
+    types the table's name to approve a drop, and sees how many rows it takes. A dropped
+    table or column is gone from the tools at once, but kept for a while, and the user can
+    restore it until it's purged.
 - A column has a `name`, a `type` (text, integer, bigint, numeric, boolean, date, timestamptz,
   jsonb, uuid, vector or embedding), `nullable` (default true), an optional `default` (a
   constant; "now" for a date or timestamptz; "random" for a uuid) and a `description`. A
@@ -123,7 +128,8 @@ register(
     ToolSpec(
         key="request_schema_change",
         name="Request schema changes",
-        description="Ask you to approve new tables, columns and indexes in your data store.",
+        description="Ask you to approve new tables, columns and indexes in your data store, or"
+        " dropping tables and columns (which you can restore until they're purged).",
         config_model=RequestSchemaChangeConfig,
         build=build,
     )

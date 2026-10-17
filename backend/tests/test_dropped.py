@@ -5,10 +5,12 @@ tools' access to it, while its data stays; the owner can restore it until it's p
 from datetime import datetime, timedelta
 
 import pytest
-from fake_model import ToolCall
+from fake_model import ToolCall, model, use_model
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
+from test_schema_change_requests import TOOLS as REQUEST_TOOLS
+from test_schema_change_requests import Script, run_queued, start
 
 from aios import worker
 from aios.auth import current_user
@@ -17,6 +19,7 @@ from aios.datastores import data_store_for, dropped, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.tools import build_tool
 
 TOOLS = [
     {"key": "describe_data", "config": {}},
@@ -270,6 +273,40 @@ def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
             },
         ]
     }
+
+
+def test_the_tool_offers_drops_and_says_they_can_be_undone():
+    [request_tool] = build_tool("request_schema_change", {})
+
+    assert "drop_table" in request_tool.description
+    assert "drop_column" in request_tool.description
+    assert "restore" in request_tool.description
+
+
+def test_an_agent_asks_from_its_chat_to_drop_a_table_and_is_told_it_can_be_restored(
+    api, store, monkeypatch
+):
+    tasks: list = []
+    for task in (worker.apply_schema_change_task, worker.resume_agent_run_task):
+        monkeypatch.setattr(task, "delay", lambda *args, task=task: tasks.append((task, args)))
+    agent = make_agent(api, "Tidier")
+    agent = api.put(
+        f"/api/agents/{agent['id']}", json=agent_body(agent, tools=REQUEST_TOOLS)
+    ).json()
+    script = Script({"op": "drop_table", "table": "fish"})
+
+    run, request = start(api, agent, script)
+    assert request["confirm_with"] == "fish"
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 422
+    r = api.post(f"/api/schema-changes/{request['id']}/approve", json={"confirm": "fish"})
+    assert r.status_code == 200, r.text
+    with use_model(model(script)):
+        run_queued(tasks)
+
+    (_, outcome), (_, described) = script.results
+    assert outcome["status"] == "applied"
+    assert "restore" in outcome["message"]
+    assert "fish" not in {t["name"] for t in described["tables"]}
 
 
 # --- The Dropped section, and restoring ---------------------------------------------------------
