@@ -663,8 +663,12 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
     )
 
 
-def _start_turn(run_id: int, prompt: str) -> None:
-    """Mark the run running as a turn begins, and title it after its first message."""
+def _start_turn(run_id: int, prompt: str, *, heartbeat: bool = False) -> None:
+    """Mark the run running as a turn begins, and title it after its first message.
+
+    With `heartbeat`, the turn runs outside a request and its process will keep the run's
+    heartbeat (`aios.firing`); without, any earlier one is cleared, so a request's turn isn't
+    failed as stalled."""
     with SessionLocal() as db:
         db.execute(
             update(AgentRun)
@@ -674,6 +678,7 @@ def _start_turn(run_id: int, prompt: str) -> None:
                 status=AgentRunStatus.running,
                 started_at=func.now(),
                 finished_at=None,
+                heartbeat_at=func.now() if heartbeat else None,
             )
         )
         db.commit()
