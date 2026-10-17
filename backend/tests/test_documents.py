@@ -121,6 +121,21 @@ def test_an_upload_that_s3_refuses_answers_503_and_leaves_no_row(api, user, queu
     assert queued == []
 
 
+def test_an_upload_whose_reply_from_s3_is_lost_leaves_no_object(api, user, queued, monkeypatch):
+    put = files.put
+
+    def stored_but_reply_lost(key, file, content_type):
+        put(key, file, content_type)
+        raise ConnectionError("connection reset reading the reply")
+
+    monkeypatch.setattr(files, "put", stored_but_reply_lost)
+
+    assert upload(api).status_code == 503
+
+    assert stored_keys(data_store_for(user.id)) == []
+    assert queued == []
+
+
 def test_an_upload_over_the_limit_is_refused_before_s3(api, user, queued, monkeypatch):
     monkeypatch.setattr(get_settings(), "max_upload_bytes", 3)
 

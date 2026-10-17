@@ -112,6 +112,8 @@ def upload_document(file: UploadFile, user: CurrentUser):
         try:
             stored = files.put(key, file.file, file.content_type)
         except Exception as exc:
+            # It may have been stored all the same (the reply was lost, say).
+            _delete_unkept_file(key)
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "Could not store the file; please try again shortly.",
