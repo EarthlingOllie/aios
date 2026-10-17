@@ -33,10 +33,18 @@ inspection UI (PR 5). Both sides build against this document; change it here fir
 
 ## Statuses
 
-- run: `queued` → `running` → `succeeded` | `failed`
-- step: `running` → `succeeded` | `failed`
+- run: `queued` → `running` → `succeeded` | `failed`, and `running` ⇄ `waiting`
+- step: `running` → `succeeded` | `failed`, and `running` ⇄ `waiting`
 
 Steps exist only once a node has started, so a node with no step hasn't run (yet).
+
+An agent node whose agent asks for a schema change (`request_schema_change`) waits for the
+owner's decision: its step is `waiting`, with `waiting_on_request_id` (a workflow node one of
+whose nodes waits is `waiting` too, without one). Nodes that don't depend on it still run; once
+nothing else can, the run is `waiting` and holds no worker. It isn't failed for its heartbeat,
+and waiting doesn't count towards its time limit. The decision resumes it: the waiting node
+carries on, on its own agent run, and the run goes on as before, on the versions it pinned. A
+pin that can no longer run (its agent deleted, a tool gone) fails its step when it runs again.
 
 ## Endpoints
 
@@ -49,11 +57,11 @@ version whose tools left the library). 422 if the workflow has no nodes.
 `GET /api/workflows/{id}/runs` → `WorkflowRunSummary[]`, newest first.
 
 `GET /api/workflows/{id}/runs/{run_id}` → `WorkflowRunOut`. Polled by the UI every ~1s while
-the run's status is `queued` or `running`.
+the run's status is `queued` or `running`, and every ~5s while it's `waiting`.
 
 `DELETE /api/workflows/{id}/runs/{run_id}` → 204. Also deletes the agent runs its steps created.
-409 while the run is `running` (a queued one can be deleted, and so can one whose worker
-stopped), so the UI should disable delete until it finishes.
+409 while the run is `running` (a queued or waiting one can be deleted, and so can one whose
+worker stopped), so the UI should disable delete until it finishes.
 
 A workflow node's subgraph is `GET /api/workflows/{target_id}/versions/{version}`, the version
 the node pins. Unlike the endpoints above, it still serves a version once its workflow has been
@@ -61,8 +69,8 @@ deleted (the workflow itself and its version list then 404), so a past run's sub
 still be opened.
 
 ```ts
-type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
-type WorkflowStepStatus = "running" | "succeeded" | "failed";
+type WorkflowRunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
+type WorkflowStepStatus = "running" | "waiting" | "succeeded" | "failed";
 
 type WorkflowRunSummary = {
   id: number;
@@ -76,6 +84,8 @@ type WorkflowRunSummary = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  waiting_since: string | null;  // while waiting
+  waited_seconds: number;        // time spent waiting before, not counted towards the limit
 };
 
 type WorkflowRunStep = {
@@ -92,6 +102,8 @@ type WorkflowRunStep = {
   // /agents/{agent_id}/runs/{agent_run_id}); null for workflow nodes.
   agent_id: number | null;
   agent_run_id: number | null;
+  // While a waiting agent node waits: the schema change request it waits on.
+  waiting_on_request_id: string | null;
   started_at: string;
   finished_at: string | null;
 };
@@ -100,5 +112,14 @@ type WorkflowRunOut = WorkflowRunSummary & {
   // The pinned version's graph, as GET /api/workflows/{id}/versions/{n} returns it.
   version: WorkflowVersionOut;
   steps: WorkflowRunStep[];      // in start order
+  // While waiting: the pins it resumes on that are no longer current (path [] is the run's own
+  // workflow; current_version null once deleted).
+  stale_pins: {
+    path: string[];
+    kind: "agent" | "workflow";
+    name: string;
+    pinned_version: number;
+    current_version: number | null;
+  }[];
 };
 ```
