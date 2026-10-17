@@ -793,7 +793,7 @@ def delete_workflow_run(
         )
     )
     sandboxes = run_sandboxes(db, agent_run_ids)
-    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids))  # their exported copies go too
+    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)  # their copies go too
     db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     db.delete(run)  # and its steps
     db.commit()

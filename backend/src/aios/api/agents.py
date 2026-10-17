@@ -429,7 +429,7 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
-    history.enqueue_runs(db, AgentRun.agent_id == agent.id)  # their exported copies go too
+    history.enqueue_runs(db, AgentRun.agent_id == agent.id, deleting=True)  # their copies go too
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
@@ -592,7 +592,7 @@ def delete_run(
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
     # Its exported copy goes too (found through the run, so before it's deleted).
-    history.enqueue_runs(db, AgentRun.id == run.id)
+    history.enqueue_runs(db, AgentRun.id == run.id, deleting=True)
     db.delete(run)
     db.commit()
     background.add_task(checkpoints.delete_threads, [run_id])
