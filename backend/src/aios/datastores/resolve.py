@@ -52,6 +52,12 @@ def can_approve(user_id: int, store: DataStore) -> bool:
     return store.owner_user_id == user_id
 
 
+def approvers(store: DataStore) -> list[int]:
+    """The users who pass `can_approve` for the store, to tell about its requests. Changes with
+    it: today, only the owner."""
+    return [store.owner_user_id]
+
+
 def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
     """The id of the user's data store, creating it if they don't have one yet.
 
