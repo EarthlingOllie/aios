@@ -57,6 +57,7 @@ export type SchemaChangeRow = {
     rows: number | null;
     values: number | null;
     columns: string[] | null;
+    estimated: boolean;
   }[];
 };
 

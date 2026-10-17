@@ -28,9 +28,18 @@ export function removalText(removal: Removal): string {
   const what = removal.column
     ? `Column ${removal.column} of data.${removal.table}`
     : `Table data.${removal.table}`;
-  if (removal.rows === null) return `${what}: not there any more`;
-  if (removal.column) return `${what}: a value in ${removal.values ?? 0} of ${rows(removal.rows)}`;
-  return `${what}: ${rows(removal.rows)}, with columns ${(removal.columns ?? []).join(", ")}`;
+  if (removal.rows === null && !removal.estimated) return `${what}: not there any more`;
+  // Counting took too long: Postgres's estimate, if it has one.
+  const counted =
+    removal.rows === null
+      ? "too many rows to count quickly"
+      : removal.estimated
+        ? `about ${rows(removal.rows)}`
+        : null;
+  const columns = removal.column ? "" : `, with columns ${(removal.columns ?? []).join(", ")}`;
+  if (counted) return `${what}: ${counted}${columns}`;
+  if (removal.column) return `${what}: a value in ${removal.values ?? 0} of ${rows(removal.rows!)}`;
+  return `${what}: ${rows(removal.rows!)}${columns}`;
 }
 
 /** Whether what the owner typed confirms a drop: exactly the names asked for. */

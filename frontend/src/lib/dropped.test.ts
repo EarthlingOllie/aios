@@ -21,20 +21,66 @@ describe("purgeIn", () => {
 describe("removalText", () => {
   it("names a table's rows and columns", () => {
     expect(
-      removalText({ table: "fish", column: null, rows: 3, values: null, columns: ["id", "name"] }),
+      removalText({
+        table: "fish",
+        column: null,
+        rows: 3,
+        values: null,
+        columns: ["id", "name"],
+        estimated: false,
+      }),
     ).toBe("Table data.fish: 3 rows, with columns id, name");
   });
 
   it("names a column's rows and how many have a value", () => {
     expect(
-      removalText({ table: "fish", column: "weight_kg", rows: 3, values: 1, columns: null }),
+      removalText({
+        table: "fish",
+        column: "weight_kg",
+        rows: 3,
+        values: 1,
+        columns: null,
+        estimated: false,
+      }),
     ).toBe("Column weight_kg of data.fish: a value in 1 of 3 rows");
   });
 
-  it("says when the table isn't there any more", () => {
-    expect(removalText({ table: "fish", column: null, rows: null, values: null, columns: null })).toBe(
-      "Table data.fish: not there any more",
+  it("says when its rows are an estimate, or couldn't be counted", () => {
+    const table = {
+      table: "fish",
+      column: null,
+      values: null,
+      columns: ["id"],
+    };
+    expect(removalText({ ...table, rows: 1200, estimated: true })).toBe(
+      "Table data.fish: about 1200 rows, with columns id",
     );
+    expect(removalText({ ...table, rows: null, estimated: true })).toBe(
+      "Table data.fish: too many rows to count quickly, with columns id",
+    );
+    expect(
+      removalText({
+        table: "fish",
+        column: "name",
+        rows: 1200,
+        values: null,
+        columns: null,
+        estimated: true,
+      }),
+    ).toBe("Column name of data.fish: about 1200 rows");
+  });
+
+  it("says when the table isn't there any more", () => {
+    expect(
+      removalText({
+        table: "fish",
+        column: null,
+        rows: null,
+        values: null,
+        columns: null,
+        estimated: false,
+      }),
+    ).toBe("Table data.fish: not there any more");
   });
 });
 

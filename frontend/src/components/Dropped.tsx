@@ -21,9 +21,7 @@ export function DroppedSection() {
   const [restoring, setRestoring] = useState<Map<number, string | null>>(new Map());
   const [error, setError] = useState<string>();
   const items = list.data ?? [];
-  const waiting = items.some(
-    (d) => restoring.has(d.id) && restoring.get(d.id) === d.restore_error,
-  );
+  const waiting = items.some((d) => restoring.has(d.id) && restoring.get(d.id) === d.restore_error);
   usePoll(waiting, list.reload, POLL_MS);
 
   async function restore(item: DroppedObject) {

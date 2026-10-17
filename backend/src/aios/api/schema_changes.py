@@ -87,6 +87,8 @@ class RemovalOut(BaseModel):
     values: int | None
     # A table's: its columns.
     columns: list[str] | None
+    # Whether `rows` is Postgres's estimate: counting took too long.
+    estimated: bool
 
 
 class ImpactOut(BaseModel):

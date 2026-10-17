@@ -48,13 +48,39 @@ def is_dropped(name: str) -> bool:
 class Removal:
     """What one drop would take out of the tools' reach, as the store is now: a table's rows
     and columns, or a column's rows and how many of them have a value in it. `rows` is None if
-    the table isn't there (any more)."""
+    the table isn't there (any more), or if counting took too long and there's no estimate;
+    `estimated` if it's Postgres's estimate (`pg_class.reltuples`) rather than a count."""
 
     table: str
     column: str | None
     rows: int | None
     values: int | None
     columns: list[str] | None
+    estimated: bool = False
+
+
+# How long (ms) counting a table's rows for the card may take before it's estimated instead:
+# a huge table, or one locked by a change being applied, mustn't hold up the owner deciding.
+IMPACT_COUNT_TIMEOUT = 3000
+
+
+def _count(pg: psycopg.Connection, relation: sql.Identifier, column: str | None) -> Removal:
+    counted = sql.SQL("count({})").format(sql.Identifier(column)) if column else sql.NULL
+    pg.execute("SAVEPOINT impact")
+    try:
+        pg.execute("SELECT set_config('statement_timeout', %s, true)", (str(IMPACT_COUNT_TIMEOUT),))
+        rows, values = pg.execute(
+            sql.SQL("SELECT count(*), {} FROM {}").format(counted, relation)
+        ).fetchone()
+        pg.execute("RELEASE SAVEPOINT impact")
+        return Removal("", column, rows, values, None)
+    except psycopg.errors.QueryCanceled:
+        pg.execute("ROLLBACK TO SAVEPOINT impact")
+    (estimate,) = pg.execute(
+        "SELECT reltuples FROM pg_class WHERE oid = to_regclass(%s)", (relation.as_string(pg),)
+    ).fetchone()
+    # -1: never vacuumed or analyzed, so no estimate.
+    return Removal("", column, round(estimate) if estimate >= 0 else None, None, None, True)
 
 
 def impact(data_store_id: uuid.UUID, ops: list[dict[str, Any]]) -> list[Removal]:
@@ -69,21 +95,14 @@ def impact(data_store_id: uuid.UUID, ops: list[dict[str, Any]]) -> list[Removal]
         for op in drops:
             table, column = op["table"], op.get("column")
             relation = sql.Identifier(SCHEMA, table)
-            qualified = relation.as_string(pg)
-            columns = [c for (c,) in pg.execute(_READABLE_SQL, (qualified,))]
+            columns = [c for (c,) in pg.execute(_READABLE_SQL, (relation.as_string(pg),))]
             if not columns or (column is not None and column not in columns):
                 out.append(Removal(table, column, None, None, None))
                 continue
-            if column is None:
-                (rows,) = pg.execute(sql.SQL("SELECT count(*) FROM {}").format(relation)).fetchone()
-                out.append(Removal(table, None, rows, None, columns))
-            else:
-                rows, values = pg.execute(
-                    sql.SQL("SELECT count(*), count({}) FROM {}").format(
-                        sql.Identifier(column), relation
-                    )
-                ).fetchone()
-                out.append(Removal(table, column, rows, values, None))
+            removal = _count(pg, relation, column)
+            removal.table = table
+            removal.columns = None if column else columns
+            out.append(removal)
     return out
 
 

@@ -263,13 +263,21 @@ def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
     assert r.status_code == 200, r.text
     assert r.json() == {
         "removes": [
-            {"table": "fish", "column": "weight_kg", "rows": 3, "values": 2, "columns": None},
+            {
+                "table": "fish",
+                "column": "weight_kg",
+                "rows": 3,
+                "values": 2,
+                "columns": None,
+                "estimated": False,
+            },
             {
                 "table": "fish",
                 "column": None,
                 "rows": 3,
                 "values": None,
                 "columns": ["id", "name", "weight_kg"],
+                "estimated": False,
             },
         ]
     }
@@ -307,6 +315,22 @@ def test_an_agent_asks_from_its_chat_to_drop_a_table_and_is_told_it_can_be_resto
     assert outcome["status"] == "applied"
     assert "restore" in outcome["message"]
     assert "fish" not in {t["name"] for t in described["tables"]}
+
+
+def test_a_count_that_takes_too_long_is_estimated_instead(api, store, monkeypatch):
+    """A huge table, or one locked by a change being applied, mustn't hold up the card."""
+    monkeypatch.setattr(dropped, "IMPACT_COUNT_TIMEOUT", 200)
+    request = propose(store, {"op": "drop_table", "table": "fish"})
+
+    with as_owner(store) as conn, conn.transaction():
+        conn.execute("ANALYZE data.fish")
+        conn.execute("LOCK TABLE data.fish IN ACCESS EXCLUSIVE MODE")
+        r = api.get(f"/api/schema-changes/{request.id}/impact")
+
+    assert r.status_code == 200, r.text
+    [removal] = r.json()["removes"]
+    assert (removal["rows"], removal["estimated"]) == (2, True)
+    assert removal["columns"] == ["id", "name", "weight_kg"]
 
 
 # --- The Dropped section, and restoring ---------------------------------------------------------
@@ -578,9 +602,7 @@ def test_a_dropped_tables_dropped_columns_go_with_it(db, api, store, monkeypatch
         assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)
 
 
-def test_the_scheduled_purge_leaves_a_store_behind_the_trees_head_for_later(
-    db, store, monkeypatch
-):
+def test_the_scheduled_purge_leaves_a_store_behind_the_trees_head_for_later(db, store, monkeypatch):
     """Before it's migrated it may not have `aios.dropped_objects` yet."""
     monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 0)
     apply(db, store, {"op": "drop_table", "table": "fish"})

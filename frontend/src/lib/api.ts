@@ -247,6 +247,8 @@ export type Removal = {
   values: number | null;
   /** A table's: its columns. */
   columns: string[] | null;
+  /** Whether `rows` is Postgres's estimate (or null: none), as counting took too long. */
+  estimated: boolean;
 };
 
 /** A table or column a drop took away, until it's restored or purged. */

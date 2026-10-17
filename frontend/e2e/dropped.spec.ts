@@ -16,8 +16,15 @@ function dropRequest(api: FakeApi) {
     sql: 'ALTER TABLE "data"."fish" RENAME COLUMN "weight_kg" TO "_dropped_20261014090000_weight_kg";',
     confirm_with: "fish, eels",
     impact: [
-      { table: "fish", column: "weight_kg", rows: 3, values: 2, columns: null },
-      { table: "eels", column: null, rows: 12, values: null, columns: ["id", "length"] },
+      { table: "fish", column: "weight_kg", rows: 3, values: 2, columns: null, estimated: false },
+      {
+        table: "eels",
+        column: null,
+        rows: 12,
+        values: null,
+        columns: ["id", "length"],
+        estimated: false,
+      },
     ],
   });
 }
@@ -73,7 +80,8 @@ test("the Dropped section lists what's dropped, with when it's purged", async ({
     kind: "column",
     table: "fish",
     column: "name",
-    blocked: "`data.fish` already has a column `name` again: one was added after this one was dropped, so this one can't take its name back.",
+    blocked:
+      "`data.fish` already has a column `name` again: one was added after this one was dropped, so this one can't take its name back.",
   });
 
   await page.goto("/data?tab=dropped");
