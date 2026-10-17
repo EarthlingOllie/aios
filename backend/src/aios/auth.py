@@ -5,15 +5,17 @@ only the user's id there. The session is a signed (itsdangerous) cookie, so the 
 never handles tokens; it just sends the cookie.
 """
 
+import uuid
 from typing import Annotated
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from aios.config import get_settings
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
 from aios.models import User
 
@@ -60,7 +62,7 @@ async def auth_callback(request: Request, db: DB):
     user.email = email
     user.avatar_url = profile.get("avatar_url")
     db.commit()
-    data_store_for(user.id)
+    await run_in_threadpool(data_store_for, user.id)
 
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()
@@ -82,3 +84,13 @@ def current_user(request: Request, db: DB) -> User:
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
+
+
+def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
+    """The signed-in user's data store. The request's session is closed once it's resolved (see
+    `data_store_for_request`), so an endpoint that takes this mustn't use `DB` after it."""
+    return data_store_for_request(user.id, db)
+
+
+# For endpoints that reach the user's data only through their store.
+CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]
