@@ -15,7 +15,24 @@ resource "aws_db_parameter_group" "main" {
   }
 }
 
+# The master user's: for break-glass access, and for creating the roles below (the db-roles
+# task, which infra/deploy.sh runs). Nothing else connects as it.
 resource "random_password" "db" {
+  length  = 32
+  special = false
+}
+
+# The platform database's roles, created by `aios.db_roles` (the db-roles task):
+# - aios_app: the api, the workers and migrations. Owns the platform schema; no CREATEDB or
+#   CREATEROLE.
+# - aios_provisioner: CREATEDB and CREATEROLE, for creating data stores. Only the provisioning
+#   worker will be given its secret (no service has it yet).
+resource "random_password" "db_app" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "db_provisioner" {
   length  = 32
   special = false
 }
@@ -71,6 +88,9 @@ resource "aws_elasticache_replication_group" "main" {
 }
 
 locals {
-  database_url = "postgresql+psycopg://${aws_db_instance.main.username}:${random_password.db.result}@${aws_db_instance.main.endpoint}/${aws_db_instance.main.db_name}?sslmode=require"
-  redis_url    = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379/0?ssl_cert_reqs=required"
+  db_location        = "${aws_db_instance.main.endpoint}/${aws_db_instance.main.db_name}?sslmode=require"
+  database_url       = "postgresql+psycopg://aios_app:${random_password.db_app.result}@${local.db_location}"
+  provisioner_url    = "postgresql+psycopg://aios_provisioner:${random_password.db_provisioner.result}@${local.db_location}"
+  database_admin_url = "postgresql+psycopg://${aws_db_instance.main.username}:${random_password.db.result}@${local.db_location}"
+  redis_url          = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379/0?ssl_cert_reqs=required"
 }

@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "workflow-worker", "web", "migrate", "sandbox", "egress-proxy"])
+  for_each          = toset(["api", "worker", "workflow-worker", "web", "migrate", "db-roles", "sandbox", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -45,6 +45,30 @@ data "aws_iam_policy_document" "read_secrets" {
 resource "aws_iam_role_policy" "execution_secrets" {
   role   = aws_iam_role.execution.id
   policy = data.aws_iam_policy_document.read_secrets.json
+}
+
+# The db-roles task's: the only execution role that can read the master user's secret, so no
+# other task definition can be given it.
+resource "aws_iam_role" "execution_db_roles" {
+  name               = "${var.name}-ecs-execution-db-roles"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "execution_db_roles" {
+  role       = aws_iam_role.execution_db_roles.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+data "aws_iam_policy_document" "read_db_roles_secrets" {
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.db_master.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "execution_db_roles_secrets" {
+  role   = aws_iam_role.execution_db_roles.id
+  policy = data.aws_iam_policy_document.read_db_roles_secrets.json
 }
 
 # Runtime role for the worker, web and migrate containers. It has no permissions: they make no
@@ -149,6 +173,31 @@ resource "aws_ecs_task_definition" "migrate" {
     environment      = local.backend_env
     secrets          = local.backend_secrets
     logConfiguration = local.log_config.migrate
+  }])
+}
+
+# One-off, before each migration: `python -m aios.db_roles` (see infra/deploy.sh) creates the
+# app's and the provisioner's roles as the master user, or updates their passwords, and hands the
+# app's role anything the master user still owns. Re-running it changes nothing else.
+resource "aws_ecs_task_definition" "db_roles" {
+  family                   = "${var.name}-db-roles"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.execution_db_roles.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  container_definitions = jsonencode([{
+    name      = "db-roles"
+    image     = local.migrate_image
+    essential = true
+    command   = ["python", "-m", "aios.db_roles"]
+    secrets = [
+      for k in ["DATABASE_ADMIN_URL", "DATABASE_URL", "DATA_STORE_PROVISIONER_URL"] :
+      { name = k, valueFrom = "${aws_secretsmanager_secret.db_master.arn}:${k}::" }
+    ]
+    logConfiguration = local.log_config["db-roles"]
   }])
 }
 

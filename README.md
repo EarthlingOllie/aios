@@ -124,7 +124,7 @@ browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ─�
                           └─ everything else ─────────────────▶ web (React SPA, static)
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
-api, worker ──▶ Postgres 17 + pgvector (agent run history: LangGraph checkpoints, `langgraph` schema)
+api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
 api, worker ──traces──▶ Langfuse (optional, self-hosted)
 ```
 
@@ -168,12 +168,13 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store
     worker.py       Celery app + ingest and workflow run tasks
+    db_roles.py     creates the database roles (`aios_app`, `aios_provisioner`) as the master user
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)
   Dockerfile        targets: api, worker, sandbox
 frontend/           Vite React SPA (+ nginx images/configs)
 infra/terraform/    AWS
-infra/deploy.sh     build → push → migrate → roll out
-docker-compose.yml  db, redis, migrate, api, worker, workflow-worker, web, sandbox
+infra/deploy.sh     build → push → create roles → migrate → roll out
+docker-compose.yml  db, redis, db-roles, migrate, api, worker, workflow-worker, web, sandbox
 ```
 
 ## Prerequisites
@@ -191,7 +192,8 @@ docker compose up --build
 open http://localhost:8080
 ```
 
-`migrate` runs `alembic upgrade head` before `api`/`worker` start. The worker image bakes in
+`db-roles` creates the database roles as the master user (see [Database roles](#database-roles)),
+then `migrate` runs `alembic upgrade head` as `aios_app` before `api`/`worker` start. The worker image bakes in
 Docling's models and the chunker tokenizer at build time, so it needs Hugging Face access
 while building but not at runtime.
 
@@ -203,6 +205,7 @@ docker compose up -d db redis
 cd backend
 cp .env.example .env     # PUBLIC_URL=http://localhost:5173
 uv sync --extra ingest   # drop --extra ingest if you're not running the worker
+uv run python -m aios.db_roles   # as the master user (DATABASE_ADMIN_URL); safe to re-run
 uv run alembic upgrade head
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
@@ -214,10 +217,39 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise) and `pnpm build && pnpm test && pnpm test:e2e`
+need the migrated database: they skip when no server is listening or it isn't migrated, but fail
+when the server turns `DATABASE_URL` away (a missing role or database, a wrong password), so run
+`aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
+from the environment or `.env`, and skip without it) and `pnpm build && pnpm test && pnpm test:e2e`
 (frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
 need no backend. Run `pnpm exec playwright install chromium` once first, or point
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
+
+### Database roles
+
+Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Compose's):
+
+| Role | Attributes | Used by |
+| --- | --- | --- |
+| `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (the checkpointer's `langgraph`). It doesn't own the database, so it can't drop or reconfigure it. |
+| `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating data stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker only; no service uses it yet. |
+
+`python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
+else reads), taking each role's name and password from its URL. It also creates the `vector`
+extension (not one a non-superuser can create), grants `aios_app` `CREATE` on the platform
+database, and makes it own `public` and anything else in the database the master user still owns, so a database that was migrated as the master user is
+handed over; the master user stays a member of `aios_app`, for break-glass access. It's safe to
+re-run: to change a password, change the URL and run it again.
+
+It changes nothing (it runs in one transaction) and exits with an error if: the server is older
+than PostgreSQL 16 (before 16, `CREATEROLE` reaches roles it didn't create); the three URLs name
+fewer than three roles, or different hosts or ports (compared as written, so not `localhost` in
+one and `127.0.0.1` in another); `aios_app` has, or may `SET ROLE` to a role that has,
+`SUPERUSER`, `CREATEDB`, `CREATEROLE`, `BYPASSRLS` or `REPLICATION` (on RDS, don't grant it
+`rds_superuser`); or the master user would still own something in the database it can't hand
+over, which it lists. Compose
+runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
+migration. The master user is otherwise for break-glass access only.
 
 ### Dependency policy
 
@@ -251,7 +283,7 @@ aws secretsmanager put-secret-value --secret-id aios/external --secret-string '{
   "ANTHROPIC_API_KEY": "...", "VOYAGE_API_KEY": "..."}'
 
 cd ../..
-infra/deploy.sh          # build & push images, run migrations, roll out (tag = git sha)
+infra/deploy.sh          # build & push images, create roles, migrate, roll out (tag = git sha)
 ```
 
 Services won't become healthy until the first `deploy.sh` has pushed images. Everything runs
@@ -259,6 +291,20 @@ in one region (`var.region`). RDS and Valkey sit in private subnets and only acc
 from the app security group. Without `certificate_arn` the site is served over plain HTTP on
 the ALB hostname and session cookies aren't marked `Secure`. Set a domain and certificate for
 anything real.
+
+Database credentials are in three secrets (see [Database roles](#database-roles)):
+`<name>/app`'s `DATABASE_URL` is `aios_app`'s, given to the api, the workers and migrations;
+`<name>/provisioner` is `aios_provisioner`'s, for the provisioning worker only (none runs yet, and
+the shared execution role can't read it); and
+`<name>/db-master` is the RDS master user's, for break-glass access. Only the `db-roles` task
+(whose execution role is the only one that can read it) is given the master user's, to create the
+roles before each migration; the secret also holds the two roles' DSNs, so that task reads nothing
+else. On a stack with running services, `deploy.sh` creates the roles (a targeted apply of just
+that task and secret, then the task) before the full apply switches `<name>/app` to `aios_app`, so
+a task ECS starts in between never gets a role that doesn't exist yet. On a stack deployed before
+these roles existed, the first deploy hands the schema to `aios_app`. Services still running the
+previous release connect as the master user until they're replaced, which keeps working: the
+master user is a member of `aios_app`.
 
 ### Sandboxes on Fargate (`run_python`)
 
@@ -325,8 +371,8 @@ Known limits:
   schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
   first time a process runs a turn. Alembic only compares the `public` schema, so `alembic
   check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
-  keys, so this is done explicitly). The API's database role needs to be able to create that
-  schema.
+  keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
+  `CREATE` on the database.
 - **Tools are code, not data.** Each lives in `backend/src/aios/tools/`, registered under a stable
   key with a Pydantic settings model (every field has a default, and its JSON schema drives the
   settings form). An agent version stores which tools it has and their validated settings

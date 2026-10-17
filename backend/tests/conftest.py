@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import errors
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios.auth import current_user
 from aios.db import SessionLocal, engine
@@ -25,9 +26,21 @@ def db():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM chunks LIMIT 1"))
-    except Exception as exc:  # noqa: BLE001
-        if isinstance(exc, OperationalError) or "chunks" in str(exc):
-            pytest.skip(f"database not available: {exc.__class__.__name__}")
+    except OperationalError as exc:
+        # libpq prefixes an error the server sent with its severity ("FATAL:  ..."), so one
+        # without it never reached a server (refused, unresolvable host, timeout): skip. One with
+        # it is a server that's up but turns DATABASE_URL away (the role or database is missing,
+        # a wrong password, no CONNECT privilege, a pg_hba.conf rule), which skipping would hide.
+        if "FATAL:" in str(exc.orig):
+            pytest.fail(
+                f"the database server turned DATABASE_URL away ({exc.orig}). If its role is "
+                "missing, create the roles with `python -m aios.db_roles` (see the README's "
+                "Database roles)."
+            )
+        pytest.skip(f"database not available: {exc.__class__.__name__}")
+    except ProgrammingError as exc:
+        if isinstance(exc.orig, errors.UndefinedTable):
+            pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
     with SessionLocal() as session:
         yield session
