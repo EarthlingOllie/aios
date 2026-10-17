@@ -97,6 +97,43 @@ def test_only_requests_past_the_expiry_expire_and_their_notifications_clear(
     assert unread == {young["id"]}
 
 
+def test_deleting_a_waiting_chat_run_cancels_its_request_and_nothing_resumes(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+    queued,  # noqa: F811
+):
+    run, request = start(api, agent, Script(CONTACTS))
+
+    r = api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}")
+
+    assert r.status_code == 204
+    cancelled = request_of(api, request)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["decided_at"] is not None
+    assert api.get("/api/notifications").json()["unread"] == 0
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
+    expire(queued)
+    assert queued == []
+    assert data_tables(store) == []
+
+
+def test_deleting_an_agent_whose_run_waits_cancels_its_request(
+    api,
+    agent,  # noqa: F811
+    store,  # noqa: F811
+    queued,  # noqa: F811
+):
+    _, request = start(api, agent, Script(CONTACTS))
+
+    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
+
+    assert request_of(api, request)["status"] == "cancelled"
+    assert api.get("/api/notifications").json()["unread"] == 0
+    assert queued == []
+    assert data_tables(store) == []
+
+
 def test_the_expiry_period_is_configuration(
     api,
     agent,  # noqa: F811

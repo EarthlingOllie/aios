@@ -36,6 +36,7 @@ from aios.models import (
     SkillVersion,
     Trigger,
     WorkflowNode,
+    WorkflowRunStep,
     agent_version_skills,
 )
 from aios.runner import build_agent, run_title, version_tools
@@ -437,6 +438,7 @@ def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: Backgrou
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
+    cancel_chat_requests(db, run_ids)
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
@@ -600,6 +602,7 @@ def delete_run(
 ) -> None:
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
+    cancel_chat_requests(db, [run.id])
     db.delete(run)
     db.commit()
     background.add_task(checkpoints.delete_threads, [run_id])
@@ -736,19 +739,27 @@ def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
     if not tool_call_ids:
         return
     with SessionLocal() as db:
-        cancelled = db.scalars(
-            update(SchemaChangeRequest)
-            .where(
-                SchemaChangeRequest.requested_by_run == run_id,
-                SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
-                SchemaChangeRequest.status == SchemaChangeStatus.pending,
-            )
-            .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
-            .returning(SchemaChangeRequest.id)
-        ).all()
-        for request_id in cancelled:
-            schema_changes.clear_notifications(db, request_id)
+        schema_changes.cancel(
+            db,
+            SchemaChangeRequest.requested_by_run == run_id,
+            SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
+        )
         db.commit()
+
+
+def cancel_chat_requests(db: Session, run_ids: list[int]) -> None:
+    """Before these agent runs are deleted (their requests keep no link to them): cancel the
+    pending requests their chats wait on, so none can be approved with nothing left to resume.
+    A workflow node's run is left alone: its workflow run still waits on the request and resumes
+    on its decision (`aios.workflows.workflow_run_waiting_on`), and ending or deleting that run
+    closes it out (`aios.workflows.close_requests`). In the caller's transaction."""
+    schema_changes.cancel(
+        db,
+        SchemaChangeRequest.requested_by_run.in_(run_ids),
+        SchemaChangeRequest.requested_by_run.not_in(
+            select(WorkflowRunStep.agent_run_id).where(WorkflowRunStep.agent_run_id.is_not(None))
+        ),
+    )
 
 
 async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -> None:
