@@ -709,3 +709,19 @@ def test_switching_it_back_on_says_its_exporting_until_the_backfill_is_done(
     assert switch(api, True)["history_exported_at"] is None
     set_up_and_export(store_id, history_tasks)
     assert settings(api)["history_exported_at"] is not None
+
+
+def test_the_export_delete_exported_history_queues_can_start_at_once(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    agent = make_agent(api, "Bot")
+    run = new_run(api, agent)
+    chat(api, agent, run, "hi")
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    # A worker that picks the export up the moment it's queued.
+    monkeypatch.setattr(history, "enqueue_export", history.export)
+
+    assert api.delete("/api/settings/exported-history").status_code == 204
+
+    assert stored(store_id, "SELECT id FROM history.agent_runs") == [(run["id"],)]

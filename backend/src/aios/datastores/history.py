@@ -438,14 +438,13 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             store.execute(delete(HistoryMessage))
             store.execute(delete(HistoryAgentRun))
             store.commit()
-        with SessionLocal() as db:
-            db.execute(
-                update(DataStore)
-                .where(DataStore.id == data_store_id)
-                .values(history_exported_at=None)
-            )
-            enqueue_runs(db, Agent.owner_id == owner_id)
-            db.commit()
+    # Once the lock is let go: the export this queues may start at once, and would find it held.
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore).where(DataStore.id == data_store_id).values(history_exported_at=None)
+        )
+        enqueue_runs(db, Agent.owner_id == owner_id)
+        db.commit()
 
 
 def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
