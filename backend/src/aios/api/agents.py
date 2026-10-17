@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, tracing, ui_stream
@@ -689,12 +689,13 @@ def _end_turn(run_id: int, message_count: int) -> None:
         db.commit()
 
 
-async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> None:
+async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> list[str]:
     """Record a turn that failed or was stopped, so the next turn sees what the user saw.
 
     The user's message is already in the thread (it's checkpointed before the model is called).
     What's added: the reply's text so far, and, if it stopped while tools were running, a result
     for each call still waiting for one (a call without a result can't be sent to the model).
+    Returns the ids of those calls.
     """
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])
@@ -726,12 +727,32 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
     # model has finished it.
     if partial is not None and isinstance(last, HumanMessage | ToolMessage):
         await agent.aupdate_state(config, {"messages": [partial]}, as_node="model")
+    return [m.tool_call_id for m in stopped]
+
+
+def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
+    """Cancel the pending schema change requests these tool calls made: the model has been told
+    the calls didn't finish, so nothing waits on them any more."""
+    if not tool_call_ids:
+        return
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
+                SchemaChangeRequest.status == SchemaChangeStatus.pending,
+            )
+            .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
+        )
+        db.commit()
 
 
 async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -> None:
     try:
         if not finished:
-            await _keep_unfinished_turn(agent, config, partial)
+            stopped = await _keep_unfinished_turn(agent, config, partial)
+            await run_in_threadpool(_cancel_requests, run_id, stopped)
         state = await agent.aget_state(config)
         await run_in_threadpool(_end_turn, run_id, len(state.values.get("messages", [])))
     except Exception:
@@ -773,24 +794,30 @@ class RunWaiting(Exception):
         super().__init__(WAITING)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Resume:
     """A turn that resumes a run waiting on schema change requests, giving each waiting tool
-    call its request's outcome, for those decided (`resume_run`)."""
+    call its request's outcome, for those decided (`resume_run`). The turn fills in which
+    requests it dealt with, once it has the run to itself."""
+
+    # The decided requests (not yet resumed) it found: given to their calls, or with no call
+    # waiting on them any more.
+    dealt_with: list[uuid.UUID] | None = None
 
 
-def _outcomes(request_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """The decided requests' outcomes, by id."""
+def _decided_requests(run_id: int) -> dict[str, dict[str, Any]]:
+    """The run's decided requests it hasn't been given yet, with their outcomes, by id."""
     with SessionLocal() as db:
         requests = db.scalars(
             select(SchemaChangeRequest).where(
-                SchemaChangeRequest.id.in_([uuid.UUID(i) for i in request_ids])
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.resumed_at.is_(None),
             )
         ).all()
         return {str(r.id): schema_changes.outcome(r) for r in requests if r.status.decided}
 
 
-async def _resume_command(agent, config) -> Command | None:
+async def _resume_command(agent, config, run_id: int, resume: Resume) -> Command | None:
     """The command resuming the run's waiting tool calls whose requests are decided (by
     interrupt id, so others keep waiting); None if none are."""
     from aios.tools.schema_change import REQUEST_KEY
@@ -801,9 +828,11 @@ async def _resume_command(agent, config) -> Command | None:
         for i in state.interrupts
         if isinstance(i.value, dict) and REQUEST_KEY in i.value
     }
-    outcomes = await run_in_threadpool(_outcomes, list(waiting.values()))
-    resume = {iid: outcomes[rid] for iid, rid in waiting.items() if rid in outcomes}
-    return Command(resume=resume) if resume else None
+    outcomes = await run_in_threadpool(_decided_requests, run_id)
+    # Those decided after this aren't dealt with: their own resume gives them to the run.
+    resume.dealt_with = [uuid.UUID(rid) for rid in outcomes]
+    values = {iid: outcomes[rid] for iid, rid in waiting.items() if rid in outcomes}
+    return Command(resume=values) if values else None
 
 
 def _check_not_waiting(run_id: int) -> None:
@@ -845,7 +874,7 @@ async def turn_stream(
                 checkpointer=saver,
             )
             if isinstance(turn, Resume):
-                graph_input = await _resume_command(agent, config)
+                graph_input = await _resume_command(agent, config, run_id, turn)
             else:
                 await run_in_threadpool(_check_not_waiting, run_id)
                 graph_input = {"messages": [turn]}
@@ -911,9 +940,9 @@ def _run_owner(run_id: int) -> tuple[int, int] | None:
         return (row.id, row.owner_id) if row else None
 
 
-def _mark_resumed(run_id: int) -> None:
-    """The run's decided requests have been given to it: it takes new messages again (unless
-    another still waits)."""
+def _mark_resumed(run_id: int, request_ids: list[uuid.UUID] | None = None) -> None:
+    """The run has been given these requests' outcomes (None: all its decided ones'): it takes
+    new messages again, unless another still waits."""
     with SessionLocal() as db:
         db.execute(
             update(SchemaChangeRequest)
@@ -923,16 +952,24 @@ def _mark_resumed(run_id: int) -> None:
                 SchemaChangeRequest.status.not_in(
                     [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
                 ),
+                true() if request_ids is None else SchemaChangeRequest.id.in_(request_ids),
             )
             .values(resumed_at=func.now())
         )
         db.commit()
 
 
+class ResumeFailed(RuntimeError):
+    """A resume that couldn't give the run its outcomes (it never got the run to itself): worth
+    trying again."""
+
+
 async def resume_run(run_id: int) -> None:
     """Carry on a run that waits on schema change requests, now some are decided: their tool
     calls return the outcomes, and the turn goes on from there, as the run's owner. The rest
-    of the turn is in the run's history, for its chat to show."""
+    of the turn is in the run's history, for its chat to show.
+
+    Raises `ResumeFailed` if the turn couldn't start (the run stays waiting)."""
     owner = await run_in_threadpool(_run_owner, run_id)
     if owner is None:
         return
@@ -940,11 +977,19 @@ async def resume_run(run_id: int) -> None:
     try:
         with SessionLocal() as db:
             ctx = await run_in_threadpool(load_chat_context, db, user_id, agent_id, run_id)
-        async for chunk in turn_stream(ctx, user_id, run_id, Resume()):
-            if chunk["type"] == "error":
-                log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
-    finally:
+    except HTTPException as exc:
+        # Its version can't run any more (a tool left the library, say): no turn of it can, so
+        # it isn't left waiting on what can't come.
+        log.warning("agent run %s can't be resumed: %s", run_id, exc.detail)
         await run_in_threadpool(_mark_resumed, run_id)
+        return
+    resume = Resume()
+    async for chunk in turn_stream(ctx, user_id, run_id, resume):
+        if chunk["type"] == "error":
+            log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
+    if resume.dealt_with is None:
+        raise ResumeFailed(f"Agent run {run_id} couldn't be resumed")
+    await run_in_threadpool(_mark_resumed, run_id, resume.dealt_with)
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")

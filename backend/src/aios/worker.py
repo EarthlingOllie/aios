@@ -164,10 +164,19 @@ def run_workflow_task(run_id: int) -> None:
 APPLY_TIME_LIMIT = 5 * 60
 
 
+# Applying a request, or resuming the run that made it, is tried this many times more if it
+# fails (the database or broker unreachable, say), further apart each time: both can be run
+# again safely.
+DECISION_RETRIES = 5
+
+
 @celery_app.task(
     name="aios.apply_schema_change",
     soft_time_limit=APPLY_TIME_LIMIT,
     time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
 )
 def apply_schema_change_task(request_id: str) -> None:
     """Apply an approved schema change request to its store, then resume the run that asked
@@ -198,6 +207,9 @@ def enqueue_resume(request_id: uuid.UUID) -> None:
     name="aios.resume_agent_run",
     soft_time_limit=settings.workflow_run_time_limit + 60,
     time_limit=settings.workflow_run_time_limit + 120,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
 )
 def resume_agent_run_task(run_id: int) -> None:
     """Resume an agent run waiting on schema change requests, with the outcomes of those that

@@ -6,20 +6,26 @@ The queued tasks (applying on the provisioning worker, resuming the run on the w
 are run here by hand, in order, standing in for the workers."""
 
 import asyncio
+import contextlib
+from contextlib import asynccontextmanager
 
 import pytest
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
+from psycopg import OperationalError
 from test_agents import agent_body, chat_body, make_agent
 from test_data_tools import as_owner, provisioned
 from test_workflows import agent_node, make_workflow
 
-from aios import worker
+from aios import checkpoints, ui_stream, worker
+from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
+from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
 from aios.datastores import can_approve, data_store_for
+from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, User
-from aios.tools import build_tool
+from aios.tools import build_tool, hybrid_search
 from aios.workflows import execute_run
 
 TOOLS = [
@@ -320,3 +326,141 @@ def test_a_workflow_run_cant_wait_on_a_request_yet(api, agent, store, monkeypatc
     assert api.get("/api/schema-changes").json() == []
     finished = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}").json()
     assert finished["status"] == "succeeded"
+
+
+def run_of(api, agent: dict, run: dict) -> dict:
+    return api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
+
+
+def test_a_resume_that_cant_start_keeps_the_run_waiting_and_is_tried_again(
+    api, agent, queued, monkeypatch
+):
+    """Not given its outcome, the run mustn't take new messages: its tool call has no result."""
+    script = Script(CONTACTS)
+    run, request = start(api, agent, script)
+    api.post(f"/api/schema-changes/{request['id']}/reject", json={})
+    [(task, args)] = queued
+
+    turn, waiting_between = checkpoints.turn, []
+
+    @asynccontextmanager
+    async def down_the_first_time(run_id):
+        if not waiting_between:
+            waiting_between.append(None)
+            raise OperationalError("the database is down")
+        with SessionLocal() as db:
+            waiting_between.append(waiting_on(db, run_id))
+        async with turn(run_id) as saver:
+            yield saver
+
+    monkeypatch.setattr(checkpoints, "turn", down_the_first_time)
+    with use_model(model(script)):
+        task.apply(args=args)  # as the worker runs it, retries and all
+
+    assert waiting_between == [None, True]
+    (_, outcome), _ = script.results
+    assert outcome["status"] == "rejected"
+    assert run_of(api, agent, run)["waiting"] is False
+
+
+def test_two_requests_in_one_step_each_resumes_its_own_call(api, agent, store, queued):
+    """The run carries on once both are decided, and refuses messages until then."""
+    script = Script(CONTACTS)
+    places = {**CONTACTS, "name": "places"}
+
+    async def ask_twice(messages, info):
+        if not last_tool_results(messages):
+            for ops in (CONTACTS, places):
+                yield ToolCall("request_schema_change", {"ops": [ops], "reason": "Both"})
+        else:
+            async for item in script(messages, info):
+                yield item
+
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    with use_model(model(ask_twice)):
+        api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go"))
+    requests = run_of(api, agent, run)["schema_change_requests"]
+    [first] = [r for r in requests if "contacts" in r["summary"]]
+    [second] = [r for r in requests if "places" in r["summary"]]
+
+    api.post(f"/api/schema-changes/{first['id']}/approve")
+    with use_model(model(ask_twice)):
+        run_queued(queued)
+    assert run_of(api, agent, run)["waiting"] is True
+    url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+    assert api.post(url, json=chat_body("hello?")).status_code == 409
+
+    api.post(f"/api/schema-changes/{second['id']}/reject", json={"note": "One is enough"})
+    with use_model(model(ask_twice)):
+        run_queued(queued)
+
+    after = run_of(api, agent, run)
+    assert after["waiting"] is False
+    statuses = {r["summary"]: r["status"] for r in after["schema_change_requests"]}
+    assert statuses == {
+        "Create table data.contacts": "applied",
+        "Create table data.places": "rejected",
+    }
+    outcomes = [r for name, r in script.results if name == "request_schema_change"]
+    assert sorted(o["status"] for o in outcomes) == ["applied", "rejected"]
+    assert data_tables(store) == ["contacts"]
+
+
+def test_a_turn_stopped_before_its_request_waits_cancels_the_request(
+    api, user, db, agent, queued, monkeypatch
+):
+    """The model is told the call didn't finish, so the request goes too: nothing waits on it,
+    and it can't be approved."""
+    events: list = []
+    tools = [*TOOLS, {"key": "hybrid_search", "config": {}}]
+    api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools))
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
+
+    async def slow_search(data_store_id, query, limit):
+        events.append("search started")
+        await asyncio.sleep(60)
+
+    async def ask_and_search(messages, info):
+        yield ToolCall("request_schema_change", {"ops": [CONTACTS], "reason": "Why not"})
+        yield ToolCall("search_documents", {"query": "slow"})
+
+    monkeypatch.setattr(hybrid_search, "document_search_results", slow_search)
+    monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
+
+    async def stop_while_searching():
+        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("go"), user, db)
+        # Until the stream goes quiet (the search is running, the request recorded), then
+        # stopped as a client going away stops it.
+        with contextlib.suppress(TimeoutError, StopAsyncIteration):
+            while True:
+                await asyncio.wait_for(anext(chunks), 2)
+        await chunks.aclose()
+
+    with use_model(model(ask_and_search)):
+        asyncio.run(stop_while_searching())
+
+    after = run_of(api, agent, run)
+    [request] = after["schema_change_requests"]
+    assert (request["status"], after["waiting"]) == ("cancelled", False)
+    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
+    assert queued == []
+
+
+def test_an_apply_whose_resume_cant_be_queued_is_tried_again(api, agent, queued, monkeypatch):
+    _, request = start(api, agent, Script(CONTACTS))
+    api.post(f"/api/schema-changes/{request['id']}/approve")
+    [(task, args)] = queued
+
+    resumes = []
+
+    def down_the_first_time(*args):
+        if not resumes:
+            resumes.append("refused")
+            raise ConnectionError("Redis is down")
+        resumes.append(args)
+
+    monkeypatch.setattr(worker.resume_agent_run_task, "delay", down_the_first_time)
+
+    task.apply(args=args)  # as the worker runs it, retries and all
+
+    assert resumes == ["refused", (request["run"]["run_id"],)]
