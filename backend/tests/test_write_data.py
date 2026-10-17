@@ -10,12 +10,13 @@ from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
+from test_provisioning import login_url
 
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import data_store_for, store_not_ready
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
-from aios.tools import build_tool
+from aios.tools import build_tool, write_data
 
 TOOLS = [
     {"key": "write_data", "config": {}},
@@ -432,3 +433,218 @@ def test_names_the_catalog_has_are_quoted(api, store, agent):
     )
 
     assert result["row_count"] == 1, result
+
+
+# Embedding columns.
+
+
+def fake_vector(text: str) -> list[float]:
+    """A stand-in for the embedding model's: the text's length, then zeros."""
+    return [float(len(text))] + [0.0] * 1023
+
+
+@pytest.fixture
+def embedded(monkeypatch) -> list[list[str]]:
+    """Fakes the embedding model; records each batch of texts it's asked to embed."""
+    batches: list[list[str]] = []
+
+    async def embed_documents(texts):
+        batches.append(list(texts))
+        return [fake_vector(t) for t in texts]
+
+    monkeypatch.setattr(write_data, "embed_documents", embed_documents)
+    return batches
+
+
+@pytest.fixture
+def notes(store) -> DataStore:
+    """`data.notes`, whose `body_embedding` is marked as the embedding of `body`."""
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE TABLE data.notes (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
+            " title text UNIQUE, body text, body_embedding extensions.vector(1024))"
+        )
+        conn.execute(
+            "INSERT INTO aios.embedding_columns VALUES ('notes', 'body_embedding', 'body')"
+        )
+    return store
+
+
+def stored_notes(store: DataStore) -> list[tuple]:
+    """Each note's title, body, and its embedding's first value (the body's length, faked)."""
+    with as_owner(store) as conn:
+        return conn.execute(
+            "SELECT title, body, (body_embedding::real[])[1] FROM data.notes ORDER BY id"
+        ).fetchall()
+
+
+def test_inserting_text_stores_its_embedding(api, notes, agent, embedded):
+    inserted, queried = run_tools(
+        api,
+        agent,
+        call(
+            table="notes",
+            operation="insert",
+            rows=[{"title": "a", "body": "hello"}, {"title": "b", "body": "hi"}, {"title": "c"}],
+        ),
+        ToolCall(
+            "query_data",
+            {"sql": "SELECT title, vector_dims(body_embedding) FROM data.notes ORDER BY id"},
+        ),
+    )
+
+    assert inserted["row_count"] == 3
+    assert embedded == [["hello", "hi"]]  # one batch, for the call
+    assert stored_notes(notes) == [("a", "hello", 5.0), ("b", "hi", 2.0), ("c", None, None)]
+    assert queried["rows"] == [["a", 1024], ["b", 1024], ["c", None]]
+
+
+def test_updating_the_text_re_embeds_it(api, notes, agent, embedded):
+    run_tools(
+        api,
+        agent,
+        call(table="notes", operation="insert", rows=[{"title": "a", "body": "hello"}]),
+        call(table="notes", operation="update", values={"body": "hello there"}, where={"id": 1}),
+    )
+    assert stored_notes(notes) == [("a", "hello there", 11.0)]
+
+    # Changing anything else leaves it be, and embeds nothing.
+    write(api, agent, table="notes", operation="update", values={"title": "b"}, where={"id": 1})
+    assert stored_notes(notes) == [("b", "hello there", 11.0)]
+    assert embedded == [["hello"], ["hello there"]]
+
+    # Nor does blank text have an embedding.
+    write(api, agent, table="notes", operation="update", values={"body": " "}, where={"id": 1})
+    assert stored_notes(notes) == [("b", " ", None)]
+
+
+def test_upserting_the_text_re_embeds_it(api, notes, agent, embedded):
+    run_tools(
+        api,
+        agent,
+        call(table="notes", operation="insert", rows=[{"title": "a", "body": "hello"}]),
+        call(
+            table="notes",
+            operation="upsert",
+            rows=[{"title": "a", "body": "bye"}],
+            on_conflict=["title"],
+        ),
+    )
+
+    assert stored_notes(notes) == [("a", "bye", 3.0)]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"operation": "insert", "rows": [{"title": "a", "body_embedding": [0.1] * 1024}]},
+        {"operation": "update", "values": {"body_embedding": [0.1] * 1024}, "where": {"id": 1}},
+    ],
+)
+def test_embeddings_are_never_sent(api, notes, agent, embedded, args):
+    result = write(api, agent, table="notes", **args)
+
+    assert "`body_embedding` is the embedding of `body`" in result["error"]
+    assert "Leave it out" in result["error"]
+
+
+def test_a_failing_embedding_model_writes_nothing(api, notes, agent, monkeypatch):
+    async def embed_documents(texts):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(write_data, "embed_documents", embed_documents)
+
+    result = write(api, agent, table="notes", operation="insert", rows=[{"body": "hello"}])
+
+    assert set(result) == {"error"}
+    assert "couldn't be embedded" in result["error"]
+    assert "nothing was written" in result["error"]
+    assert stored_notes(notes) == []
+
+
+def test_embeddings_cant_be_filtered_on(api, notes, agent, embedded):
+    result = write(
+        api, agent, table="notes", operation="delete", where={"body_embedding": [0.1] * 1024}
+    )
+
+    assert "`body_embedding` is an embedding, and can't be filtered on" in result["error"]
+
+
+def test_a_table_that_changes_while_its_text_is_embedded_is_refused(api, notes, agent, monkeypatch):
+    """The embedding is made with no connection held, so the table is read again to write."""
+
+    async def embed_documents(texts):
+        with as_owner(notes) as conn:
+            conn.execute(
+                "ALTER TABLE data.notes ADD COLUMN title_embedding extensions.vector(1024)"
+            )
+            conn.execute(
+                "INSERT INTO aios.embedding_columns VALUES ('notes', 'title_embedding', 'title')"
+            )
+        return [fake_vector(t) for t in texts]
+
+    monkeypatch.setattr(write_data, "embed_documents", embed_documents)
+
+    result = write(
+        api, agent, table="notes", operation="insert", rows=[{"title": "a", "body": "hello"}]
+    )
+
+    assert result == {
+        "error": "The table changed while writing, and nothing was written. Try again."
+    }
+    assert stored_notes(notes) == []
+
+
+def test_describe_data_says_which_columns_are_embeddings(api, notes, agent):
+    [described] = run_tools(api, agent, ToolCall("describe_data", {}))
+
+    table = next(t for t in described["tables"] if t["name"] == "notes")
+    columns = {c["name"]: c for c in table["columns"]}
+    assert columns["body_embedding"]["embedding_of"] == "body"
+    assert columns["body_embedding"]["type"] == "vector(1024)"
+    assert "embedding_of" not in columns["body"]
+
+
+def test_a_marker_whose_text_column_is_gone_refuses_writes(api, notes, agent, embedded):
+    with as_owner(notes) as conn:
+        conn.execute("ALTER TABLE data.notes DROP COLUMN body")
+
+    result = write(api, agent, table="notes", operation="insert", rows=[{"title": "a"}])
+
+    assert "needs a schema change" in result["error"]
+
+
+def test_only_the_owner_writes_the_markers(store):
+    """The read-write role reads them, but can't mark or unmark columns (only schema changes,
+    as the owner, do)."""
+    with psycopg.connect(login_url(store, "rw"), autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM aios.embedding_columns").fetchone() == (0,)
+        for statement in (
+            "INSERT INTO aios.embedding_columns VALUES ('fish', 'name', 'name')",
+            "DELETE FROM aios.embedding_columns",
+            "TRUNCATE aios.embedding_columns",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+    with psycopg.connect(login_url(store, "ro"), autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM aios.embedding_columns").fetchone() == (0,)
+
+
+def test_the_tool_reads_the_catalog_as_the_store_sees_it_now(api, store, agent):
+    """No cache of a table: a column added since the last call is there at the next."""
+    write(api, agent, table="fish", operation="delete", where={"id": 1})
+    with as_owner(store) as conn:
+        conn.execute("ALTER TABLE data.fish ADD COLUMN colour text")
+
+    result = write(
+        api, agent, table="fish", operation="insert", rows=[{"name": "eel", "colour": "grey"}]
+    )
+
+    assert result["row_count"] == 1
+
+
+def test_arguments_of_the_wrong_shape_are_refused_by_the_tools_schema(api, store, agent):
+    result = write(api, agent, table="fish", operation="insert", rows=["pike"])
+
+    assert "valid dictionary" in result
+    assert len(fish(store)) == 2
