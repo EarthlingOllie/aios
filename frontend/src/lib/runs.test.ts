@@ -15,7 +15,8 @@ function step(path: string[], status: WorkflowRunStep["status"]): WorkflowRunSte
     agent_id: 1,
     agent_run_id: 2,
     started_at: "2026-10-14T09:00:00Z",
-    finished_at: status === "running" ? null : "2026-10-14T09:00:05Z",
+    waiting_on_request_id: status === "waiting" ? "req-1" : null,
+    finished_at: status === "running" || status === "waiting" ? null : "2026-10-14T09:00:05Z",
   };
 }
 
@@ -26,9 +27,10 @@ const edges = [
 ];
 
 describe("isActive", () => {
-  it("is true while queued or running", () => {
+  it("is true until the run ends: queued, running or waiting", () => {
     expect(isActive("queued")).toBe(true);
     expect(isActive("running")).toBe(true);
+    expect(isActive("waiting")).toBe(true);
     expect(isActive("succeeded")).toBe(false);
     expect(isActive("failed")).toBe(false);
   });
@@ -43,12 +45,19 @@ describe("stepAt", () => {
 });
 
 describe("nodeStates", () => {
-  it("gives each node its step's status, or waiting / not run when it has none", () => {
+  it("gives each node its step's status, or pending / not run when it has none", () => {
     const steps = [step(["research"], "succeeded"), step(["write"], "running")];
     expect(nodeStates(keys, steps, [], true)).toEqual({
       research: "succeeded",
       write: "running",
-      review: "waiting",
+      review: "pending",
+    });
+    // A node waiting for a decision is waiting; those after it are still to start.
+    const paused = [step(["research"], "succeeded"), step(["write"], "waiting")];
+    expect(nodeStates(keys, paused, [], true)).toEqual({
+      research: "succeeded",
+      write: "waiting",
+      review: "pending",
     });
     // Once the run has ended, a node with no step never ran.
     expect(nodeStates(keys, [step(["research"], "failed")], [], false)).toEqual({

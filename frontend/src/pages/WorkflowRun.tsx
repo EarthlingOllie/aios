@@ -16,26 +16,38 @@ import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge, StateBadge, statusLabel } from "@/components/workflow/status";
+import { StalePins, useWaitingRequests, WaitingSection } from "@/components/workflow/waiting";
 import {
   api,
   describeError,
   type NodePosition,
+  type SchemaChangeRequest,
   type WorkflowNode,
   type WorkflowRun,
   type WorkflowRunStep,
   type WorkflowVersion,
 } from "@/lib/api";
-import { edgeStates, isActive, type NodeState, nodeStates, stepAt } from "@/lib/runs";
+import {
+  edgeStates,
+  isActive,
+  type NodeState,
+  nodeStates,
+  stepAt,
+  WAITING_POLL_MS,
+} from "@/lib/runs";
 
 // The layout to use when the workflow's own can't be read: one object, so it's not new each render.
 const noLayout: Record<string, NodePosition> = {};
 
-function duration(from: string, to: string | null) {
-  const seconds = Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+function seconds(total: number) {
+  if (total < 60) return `${total.toFixed(1)}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${Math.round(total % 60)}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function duration(from: string, to: string | null) {
+  return seconds(Math.max(0, ((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000));
 }
 
 /** One level of the graph being shown: the run's workflow, or a subworkflow inside it. */
@@ -67,8 +79,14 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const [version, setVersion] = useState<WorkflowVersion>();
   if (run.data && run.data.version.id !== version?.id) setVersion(run.data.version);
 
-  // Follow a run that's still going.
-  usePoll(!!run.data && isActive(run.data.status), run.reload);
+  // Follow a run that's still going; one waiting for the user less often.
+  const waitingRun = run.data?.status === "waiting";
+  usePoll(
+    !!run.data && isActive(run.data.status),
+    run.reload,
+    waitingRun ? WAITING_POLL_MS : undefined,
+  );
+  const waiting = useWaitingRequests(run.data?.steps ?? []);
 
   // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
@@ -137,8 +155,11 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         </span>
       }
       subtitle={
-        r.started_at
-          ? `Started ${formatDate(r.started_at)} · ${duration(r.started_at, r.finished_at)}`
+        r.status === "waiting" && r.waiting_since
+          ? `Started ${formatDate(r.started_at!)} · waiting since ${formatDate(r.waiting_since)}`
+          : r.started_at
+          ? `Started ${formatDate(r.started_at)} · ${duration(r.started_at, r.finished_at)}` +
+            (r.waited_seconds > 0 ? ` · waited ${seconds(r.waited_seconds)}` : "")
           : r.finished_at
             ? // E.g. its worker died while it was still queued.
               `${statusLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
@@ -171,6 +192,20 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         >
           {r.error}
         </div>
+      )}
+      {r.status === "waiting" && (
+        <>
+          <WaitingSection
+            steps={r.steps}
+            requests={waiting.requests}
+            error={waiting.error}
+            onDecided={() => {
+              waiting.reload();
+              run.reload();
+            }}
+          />
+          <StalePins pins={r.stale_pins} />
+        </>
       )}
       <div className="grid gap-4 md:grid-cols-2">
         <TextBlock label="Input">{r.input}</TextBlock>
@@ -226,6 +261,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
                   node={selected}
                   step={stepAt(r.steps, [...prefix, selected.key])}
                   state={states[selected.key]}
+                  requests={waiting.requests}
                   onOpen={() => open(selected)}
                 />
               )}
@@ -258,13 +294,16 @@ function StepDetails({
   node,
   step,
   state,
+  requests,
   onOpen,
 }: {
   node: WorkflowNode;
   step: WorkflowRunStep | undefined;
   state: NodeState;
+  requests: Record<string, SchemaChangeRequest>;
   onOpen: () => void;
 }) {
+  const request = step?.waiting_on_request_id ? requests[step.waiting_on_request_id] : undefined;
   return (
     <div className="flex flex-col gap-3 border-t pt-3">
       <div className="flex items-center gap-2">
@@ -279,6 +318,15 @@ function StepDetails({
             Started {formatDate(step.started_at)} · {duration(step.started_at, step.finished_at)}
           </p>
           {step.error && <p className="text-destructive text-sm break-words">{step.error}</p>}
+          {step.status === "waiting" && (
+            <p className="text-sm">
+              {request
+                ? `Waiting for your decision on: ${request.summary}`
+                : step.kind === "workflow"
+                  ? "Waiting: a node inside it waits for your decision."
+                  : "Waiting for your decision on a schema change request."}
+            </p>
+          )}
           <TextBlock label="Step input">{step.input}</TextBlock>
           {step.output !== null && <TextBlock label="Step output">{step.output}</TextBlock>}
           {step.agent_id !== null && step.agent_run_id !== null && (
@@ -292,8 +340,8 @@ function StepDetails({
         </>
       ) : (
         <p className="text-muted-foreground text-sm">
-          {state === "waiting"
-            ? "Waiting: it starts once every node before it has succeeded."
+          {state === "pending"
+            ? "Not started: it starts once every node before it has succeeded."
             : "Didn't run: a node before it failed, or the run stopped first."}
         </p>
       )}
