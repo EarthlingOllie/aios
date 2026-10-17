@@ -2,6 +2,7 @@
 data store's documents, or over its exported run history (in its own database, as its read-only
 role)."""
 
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from aios.datastores.history import NoHistory, check_searchable
 from aios.datastores.models import EMBEDDABLE
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
+
+log = logging.getLogger(__name__)
 
 # Each branch ranks its own top-N candidates; Reciprocal Rank Fusion then scores every
 # chunk as sum(1 / (k + rank)) over the branches it appears in.
@@ -63,14 +66,16 @@ HYBRID_SQL = text(
 
 # The same over the store's exported messages (`aios.datastores.history`), keyed by run and
 # position: the semantic branch over those embedded (while embedding is on), the lexical one over
-# every one worth searching. The run searching, if any, is left out: it's not a past run.
+# every one worth searching. The run searching, if any, is left out: it's not a past run. With
+# no query vector (the embedding API failed), it's the lexical branch alone.
 HISTORY_SQL = text(
     f"""
     WITH semantic AS (
         SELECT m.agent_run_id, m.position,
                row_number() OVER (ORDER BY m.embedding <=> CAST(:qvec AS vector)) AS rank
         FROM history.messages m
-        WHERE m.embedding IS NOT NULL AND m.agent_run_id <> :exclude
+        WHERE CAST(:qvec AS vector) IS NOT NULL
+          AND m.embedding IS NOT NULL AND m.agent_run_id <> :exclude
         ORDER BY m.embedding <=> CAST(:qvec AS vector)
         LIMIT :candidates
     ),
@@ -192,17 +197,18 @@ def history_search_with_vector(
     db: Session,
     *,
     query: str,
-    query_vector: list[float],
+    query_vector: list[float] | None,
     limit: int = 8,
     exclude_run_id: int | None = None,
 ) -> list[HistoryHit]:
-    """Search the exported messages of the store `db` is a session on, but `exclude_run_id`'s."""
+    """Search the exported messages of the store `db` is a session on, but `exclude_run_id`'s;
+    by keyword alone with no `query_vector`."""
     settings = get_settings()
     db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
     rows = db.execute(
         HISTORY_SQL,
         {
-            "qvec": vector_literal(query_vector),
+            "qvec": vector_literal(query_vector) if query_vector else None,
             "query": query,
             "candidates": max(settings.search_candidates, limit),
             "rrf_k": settings.search_rrf_k,
@@ -239,17 +245,27 @@ def _check_ready(data_store_id: uuid.UUID) -> None:
 async def _search[T](
     data_store_id: uuid.UUID,
     query: str,
-    search: Callable[[Session, list[float]], list[T]],
+    search: Callable[[Session, list[float] | None], list[T]],
     *,
     history: bool = False,
 ) -> list[T]:
-    """Embed `query` and run `search` with it, on a read-only session on the store."""
+    """Embed `query` and run `search` with it, on a read-only session on the store. For the
+    store's `history`, it searches without the vector (by keyword) if embedding fails: the
+    history may have no embeddings anyway (embedding is opt-in), and keyword search needs none."""
     if not query.strip():  # e.g. a blank query from the agent's tool call
         return []
     # Embedding the query would be wasted on a store that isn't ready. The session is opened
     # only after it: an engine held across the embed may have been evicted by then.
     await to_thread.run_sync(check_searchable if history else _check_ready, data_store_id)
-    query_vector = await embed_query(query)
+    try:
+        query_vector = await embed_query(query)
+    except Exception:
+        if not history:
+            raise
+        log.warning(
+            "Couldn't embed the history search's query; searching by keyword", exc_info=True
+        )
+        query_vector = None
 
     def run() -> list[T]:
         with store_session(data_store_id, "ro") as db:

@@ -413,6 +413,20 @@ def test_searching_history_before_any_was_exported_says_so(api, query_meaning):
     assert seen["results"] == [{"error": search.NO_HISTORY}]
 
 
+def test_with_the_embedding_api_down_history_is_still_searched_by_keyword(
+    store_id, past_runs, monkeypatch, caplog
+):
+    async def down(text):
+        raise RuntimeError("embedding API is down")
+
+    monkeypatch.setattr(search, "embed_query", down)
+
+    results = asyncio.run(search.history_search_results(data_store_id=store_id, query="starter"))
+
+    assert [r["text"] for r in results] == ["Feed the starter daily."]
+    assert "Couldn't embed the history search's query" in caplog.text
+
+
 def test_searching_history_behind_its_lines_head_says_to_try_again(
     api, store_id, past_runs, query_meaning
 ):
