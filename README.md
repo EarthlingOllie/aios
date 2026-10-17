@@ -12,7 +12,12 @@ and chat with them. The **Search** page runs that hybrid search directly, with n
 between, and shows each passage with how the semantic and keyword branches ranked it. Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
-instructions sent and token usage.
+instructions sent and token usage. A run also records how it went and what it cost: a status
+(running, succeeded, failed), when its latest turn began and ended, and, over all its turns, the
+model's tool calls and its input and output tokens (each model call's, summed, so the context is
+counted again at each step, as bills count it). The run list and the run page show these; runs
+from before they were kept show "not tracked" rather than zero, and the run page's event log
+still totals the stored messages for them.
 
 Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
 chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
@@ -90,6 +95,15 @@ first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
 does the same for its own (`/api/triggers`).
 
+**Chats** are group conversations, named like channels (a name is unique among all chats). The
+**Chats** page lists the chats you're in, most recently active first, and opens one to its header
+and members, grouped by kind (users for now; agents and workflows have their place in
+`chat_members` and join later, with messages). A chat is **public** or **private**: a private chat
+doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
+opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
+renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
+other members).
+
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
   (the run is listed with the agent's others, marked as scheduled). The schedule shows how its
@@ -106,6 +120,13 @@ does the same for its own (`/api/triggers`).
   runs in the API process, next to the chats it serves), and claims no more than it has free
   slots for. What it can't start stays due, for another replica or its next poll, so a burst
   (many schedules sharing `0 9 * * *`) runs a little late rather than crowding out chat.
+- The firing itself is shared machinery (`aios.firing`), for whatever causes a run outside a
+  request: a schedule now, and later a mention in a chat. It holds the cap, the heartbeat, the
+  stall sweep, and "start a run and run one turn of it"; what's the cause's own (what it claims
+  and how it starts the run, where its heartbeat and outcome live) is a small object the caller
+  supplies. While a fire runs, the process keeps a heartbeat on the run itself
+  (`agent_runs.heartbeat_at`) as well as the cause's, so a run whose process died is failed on
+  its own page too, and not only on its schedule.
 - Missed runs aren't caught up: a schedule that's overdue (nothing was running) fires once, then
   carries on from now. Across daylight-saving changes it behaves like cron: a skipped local time
   runs when the clock jumps, and a repeated one runs once. A turn still running when the process
@@ -151,7 +172,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
+    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}]
     scheduler.py    fires due schedules (runs in each API process)
+    firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
@@ -440,7 +463,7 @@ Known limits:
   tool call that hadn't finished) is added to the thread, so the next turn sees what the user
   saw. Turns of the same run are serialized by a Postgres advisory lock: a second tab's turn
   waits for the first, then builds on it. `agent_runs` keeps a message count and title for
-  listings.
+  listings, and the run's status, times and counters, written by each turn.
 - **The checkpointer's tables are LangGraph's, not Alembic's.** They live in the `langgraph`
   schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
   first time a process runs a turn. Alembic only compares the `public` schema, so `alembic

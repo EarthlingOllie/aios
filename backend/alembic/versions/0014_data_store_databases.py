@@ -11,8 +11,8 @@ with only its owner: a trigger gives such a row its names (`resolve.names_for`, 
 `retry_unfinished` provisions it (making its passwords). Drop the trigger once no release from
 before this migration can be running.
 
-Revision ID: 0012
-Revises: 0011
+Revision ID: 0014
+Revises: 0013
 Create Date: 2026-10-15 23:10:00
 """
 
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0012"
-down_revision: str | None = "0011"
+revision: str = "0014"
+down_revision: str | None = "0013"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
