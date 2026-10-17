@@ -12,6 +12,7 @@ from aios import checkpoints
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentUser
+from aios.datastores import history
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
@@ -934,6 +935,7 @@ def delete_workflow_run(
     sandboxes = run_sandboxes(db, agent_run_ids)
     # Before they go (their requests keep no link to them): a pending one can't be approved.
     close_requests(db, [run.id])
+    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)  # their copies go too
     db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     db.delete(run)  # and its steps
     db.commit()

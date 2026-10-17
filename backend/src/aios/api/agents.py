@@ -22,7 +22,7 @@ from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
 from aios.auth import CurrentUser
-from aios.datastores import data_store_for, schema_changes
+from aios.datastores import data_store_for, history, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -490,6 +490,7 @@ def delete_agent(
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     cancel_chat_requests(db, run_ids)
+    history.enqueue_runs(db, AgentRun.agent_id == agent.id, deleting=True)  # their copies go too
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
@@ -640,11 +641,11 @@ def create_run(agent_id: DbId, user: CurrentUser, db: DB):
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
-    history = checkpoints.history(run.id)
+    messages = checkpoints.history(run.id)
     return RunOut(
         **RunSummary.model_validate(row, from_attributes=True).model_dump(),
-        ui_messages=ui_stream.to_ui_messages(history),
-        messages=checkpoints.messages_out(history),
+        ui_messages=ui_stream.to_ui_messages(messages),
+        messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
         schema_change_requests=run_requests(db, run.id, user.id),
         waiting=waiting_on(db, run.id),
@@ -658,6 +659,8 @@ def delete_run(
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
     cancel_chat_requests(db, [run.id])
+    # Its exported copy goes too (found through the run, so before it's deleted).
+    history.enqueue_runs(db, AgentRun.id == run.id, deleting=True)
     db.delete(run)
     db.commit()
     background.add_task(checkpoints.delete_threads, [run_id])
@@ -738,6 +741,10 @@ def _start_turn(run_id: int, prompt: str) -> None:
 
 def _end_turn(run_id: int, message_count: int) -> None:
     with SessionLocal() as db:
+        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: with
+        # the run's own update, it goes in the run history export's outbox. The outbox row
+        # first, as deleting a run does, so the two never each hold the row the other wants.
+        history.enqueue_runs(db, AgentRun.id == run_id)
         # A no-op if the run was deleted mid-turn.
         db.execute(
             update(AgentRun)

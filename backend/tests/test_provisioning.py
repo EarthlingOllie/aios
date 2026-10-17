@@ -32,12 +32,12 @@ from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, data_store_for, migrations, provision, store_session
 from aios.datastores.connections import store_url
-from aios.datastores.migrations import head_revision
+from aios.datastores.migrations import head_revision, history_head
 from aios.datastores.models import StoreBase
 from aios.datastores.resolve import names_for
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus
+from aios.models import DataStore, DataStoreStatus, User
 from alembic import command
 
 
@@ -575,9 +575,9 @@ def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
     upgrades = []
     upgrade_store = provision.upgrade_store
 
-    def counted(names):
+    def counted(names, **kwargs):
         upgrades.append(names.dbname)
-        return upgrade_store(names)
+        return upgrade_store(names, **kwargs)
 
     monkeypatch.setattr(provision, "upgrade_store", counted)
 
@@ -930,10 +930,25 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
         delete_user(db, ahead_user)
 
 
+def exporting_user(db, new_user) -> User:
+    """A new user (no store yet) with the run history export switched on."""
+    u = new_user()
+    u.export_run_history = True
+    db.commit()
+    return u
+
+
+def store_tables(dbname: str, schema: str) -> set[str]:
+    with admin_connect(dbname) as conn:
+        rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (schema,))
+        return {r[0] for r in rows}
+
+
 def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
     """Like `alembic check` for the platform: a provisioned store's tables are what
-    `aios.datastores.models` says, so the models and the tree can't drift apart."""
-    store_id = data_store_for(new_user().id)
+    `aios.datastores.models` says, so the models and the tree can't drift apart. On both of
+    the tree's lines: its owner has the run history export on."""
+    store_id = data_store_for(exporting_user(db, new_user).id)
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
@@ -946,9 +961,85 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
             conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
             context = MigrationContext.configure(conn, opts=migrations.context_options())
             assert compare_metadata(context, StoreBase.metadata) == []
-            tables = conn.scalars(
-                text("SELECT tablename FROM pg_tables WHERE schemaname = 'aios'")
-            ).all()
-            assert {"documents", "chunks"} <= set(tables)
     finally:
         engine.dispose()
+    assert {"documents", "chunks"} <= store_tables(names.dbname, "aios")
+    assert store_tables(names.dbname, "history") == {"agent_runs", "messages"}
+
+
+def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export_on(db, new_user):
+    owner = new_user()
+    store_id = data_store_for(owner.id)
+    provision.provision(store_id)
+    row = store_row(db, store_id)
+    assert (row.schema_revision, row.history_revision) == (head_revision(), None)
+    assert store_tables(row.dbname, "history") == set()
+    # Migrating it doesn't give it them either.
+    provision.migrate_all([store_id])
+    assert store_row(db, store_id).history_revision is None
+
+    owner.export_run_history = True
+    db.commit()
+    provision.migrate_store(store_id)
+
+    row = store_row(db, store_id)
+    assert (row.schema_revision, row.history_revision) == (head_revision(), history_head())
+    assert store_tables(row.dbname, "history") == {"agent_runs", "messages"}
+    # Switched off again, the store keeps them, and they're kept at their head.
+    owner.export_run_history = False
+    db.commit()
+    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
+    assert store_row(db, store_id).history_revision == history_head()
+
+
+def test_a_store_provisioned_for_an_owner_exporting_history_gets_its_tables(db, new_user):
+    store_id = data_store_for(exporting_user(db, new_user).id)
+
+    worker.provision_data_store_task.apply(args=[str(store_id)]).get()
+
+    row = store_row(db, store_id)
+    assert (row.status, row.history_revision) == (DataStoreStatus.ready, history_head())
+
+
+def test_a_store_whose_history_set_up_was_lost_gets_it_on_the_schedule(db, new_user, monkeypatch):
+    owner = new_user()
+    store_id = data_store_for(owner.id)
+    provision.provision(store_id)
+    # Switched on, but its set-up task never ran.
+    owner.export_run_history = True
+    db.commit()
+    retry = provision.retry_unfinished
+    monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id]))
+
+    worker.retry_unfinished_data_stores_task.apply().get()
+
+    assert store_row(db, store_id).history_revision == history_head()
+
+
+def test_the_history_set_up_task_migrates_the_store_then_queues_its_export(
+    db, new_user, history_tasks
+):
+    owner = new_user()
+    store_id = data_store_for(owner.id)
+    provision.provision(store_id)
+    owner.export_run_history = True
+    db.commit()
+
+    worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
+
+    assert store_row(db, store_id).history_revision == history_head()
+    assert history_tasks["export"] == [store_id]
+    assert worker.celery_app.conf.task_routes["aios.set_up_history_export"] == {
+        "queue": "provisioning"
+    }
+
+
+def test_the_history_set_up_task_leaves_a_store_not_ready_yet_to_its_provisioning(
+    db, new_user, history_tasks
+):
+    store_id = data_store_for(exporting_user(db, new_user).id)
+
+    worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
+
+    assert history_tasks["export"] == []
+    assert store_row(db, store_id).status == DataStoreStatus.provisioning
