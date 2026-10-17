@@ -26,6 +26,7 @@ import logging
 import math
 import uuid
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Annotated, Any
 
 import psycopg
@@ -33,6 +34,7 @@ from anyio import CapacityLimiter, to_thread
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 from psycopg import adapt, pq
+from psycopg.types.json import set_json_loads
 from psycopg.types.string import TextLoader
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
@@ -129,6 +131,18 @@ def _describe(data_store_id: uuid.UUID) -> dict:
     return {"tables": list(tables.values())}
 
 
+def _exact_float(literal: str) -> float | str:
+    """A number in a JSON value, as a float if one holds it exactly, else as its text."""
+    number = float(literal)
+    if math.isfinite(number) and Decimal(repr(number)) == Decimal(literal):
+        return number
+    return literal
+
+
+def _json_loads(data: str | bytes) -> Any:
+    return json.loads(data, parse_float=_exact_float)
+
+
 def _jsonable(value: Any) -> Any:
     """A value as the model is shown it: JSON, losing no precision (numerics as text)."""
     if value is None or isinstance(value, (str, bool, int)):
@@ -202,6 +216,7 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
     cur = pg.cursor()
     for name in TEXT_TYPES:
         cur.adapters.register_loader(name, TextLoader)
+    set_json_loads(_json_loads, cur)
     # After the text loaders, so the cap wraps them.
     _cap_values(cur, types, max_bytes)
     rows: list[list] = []

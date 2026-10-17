@@ -378,6 +378,28 @@ def test_values_come_back_as_json(api, store, data_agent):
     ]
 
 
+def test_numbers_in_json_lose_no_precision(api, store, data_agent):
+    """A float can't hold every JSON number: one it can't is shown as text, like a numeric."""
+    result = query(
+        api,
+        data_agent,
+        "SELECT '{\"amount\": 0.12345678901234567890123, \"weight\": 1.5,"
+        " \"count\": 12345678901234567890}'::jsonb AS j,"
+        " '[0.30000000000000000001, 2.50]'::json AS k",
+    )
+
+    assert result["rows"] == [
+        [
+            {
+                "amount": "0.12345678901234567890123",
+                "count": 12345678901234567890,
+                "weight": 1.5,
+            },
+            ["0.30000000000000000001", 2.5],
+        ]
+    ]
+
+
 def test_dates_times_and_intervals_come_back_as_postgres_writes_them(api, store, data_agent):
     """Including those Python can't hold (infinities, years past 9999 or BC, 24:00), so one
     such row doesn't fail the whole query."""
