@@ -749,6 +749,23 @@ def test_each_distinct_text_is_embedded_once(api, store, agent, embedded):
         ).fetchall() == [(1, 5.0, 5.0), (2, 5.0, 5.0), (3, 2.0, 2.0)]
 
 
+def test_a_store_not_yet_migrated_to_have_markers_is_described_and_written(api, store, agent):
+    """A store whose migration failed stays ready at the revision before, under the new code."""
+    with as_owner(store) as conn:
+        conn.execute("DROP TABLE aios.embedding_columns")
+
+    described, inserted = run_tools(
+        api,
+        agent,
+        ToolCall("describe_data", {}),
+        call(table="fish", operation="insert", rows=[{"name": "eel"}]),
+    )
+
+    assert "error" not in described, described
+    assert ("data", "fish") in {(t["schema"], t["name"]) for t in described["tables"]}
+    assert inserted.get("row_count") == 1, inserted
+
+
 def test_only_the_owner_writes_the_markers(store):
     """The read-write role reads them, but can't mark or unmark columns (only schema changes,
     as the owner, do)."""

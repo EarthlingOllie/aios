@@ -40,7 +40,14 @@ from aios.config import get_settings
 from aios.datastores import store_session
 from aios.embeddings import embed_documents
 from aios.models import EMBEDDING_DIM
-from aios.tools.data import DATA_NOT_INSTRUCTIONS, in_store, in_thread, jsonable, pg_error
+from aios.tools.data import (
+    DATA_NOT_INSTRUCTIONS,
+    embedding_markers,
+    in_store,
+    in_thread,
+    jsonable,
+    pg_error,
+)
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -49,20 +56,16 @@ SCHEMA = "data"
 
 Operation = Literal["insert", "upsert", "update", "delete"]
 
-# A table's columns as the catalog has them, in order, with which are its primary key and
-# which are marked as embeddings (of which column).
+# A table's columns as the catalog has them, in order, with which are its primary key.
 COLUMNS_SQL = """
     SELECT a.attname, format_type(a.atttypid, a.atttypmod), t.typname, t.typcategory,
            a.attidentity, a.attgenerated,
-           array_position(pk.indkey::int2[], a.attnum) AS pk_position,
-           e.source_column
+           array_position(pk.indkey::int2[], a.attnum) AS pk_position
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     JOIN pg_type t ON t.oid = a.atttypid
     LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
-    LEFT JOIN aios.embedding_columns e
-      ON e.table_name = c.relname AND e.column_name = a.attname
     WHERE n.nspname = %s AND c.relname = %s AND c.relkind IN ('r', 'p')
     ORDER BY a.attnum
 """
@@ -172,7 +175,8 @@ def _table(pg: psycopg.Connection, name: str) -> Table:
             f"There's no table `{table}` in `{SCHEMA}` (its tables: {listed}). Call"
             " `describe_data` to see them."
         )
-    return Table(table, {r[0]: Column(*r) for r in rows})
+    markers = embedding_markers(pg, table)
+    return Table(table, {r[0]: Column(*r, markers.get((table, r[0]))) for r in rows})
 
 
 def _column(table: Table, name: Any, where: str) -> Column:

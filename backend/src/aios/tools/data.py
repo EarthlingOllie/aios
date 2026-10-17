@@ -81,13 +81,10 @@ DESCRIBE_SQL = text(
     SELECT n.nspname AS schema, c.relname AS name,
            obj_description(c.oid, 'pg_class') AS description,
            a.attname AS column, format_type(a.atttypid, a.atttypmod) AS type,
-           NOT a.attnotnull AS nullable, col_description(c.oid, a.attnum) AS column_description,
-           e.source_column AS embedding_of
+           NOT a.attnotnull AS nullable, col_description(c.oid, a.attnum) AS column_description
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-    LEFT JOIN aios.embedding_columns e
-      ON n.nspname = 'data' AND e.table_name = c.relname AND e.column_name = a.attname
     WHERE n.nspname IN ('data', 'aios')
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       -- A partitioned table is one table: its partitions are how it's stored.
@@ -97,6 +94,26 @@ DESCRIBE_SQL = text(
     ORDER BY n.nspname <> 'data', n.nspname, c.relname, a.attnum
     """
 )
+
+
+# The `data` columns marked as embeddings (`aios.embedding_columns`), and of which text column.
+# A store that failed to migrate stays ready at the revision before while the new release runs
+# (`provision.migrate_all`), so one may not have the table yet: then it has no markers.
+HAS_MARKERS_SQL = "SELECT to_regclass('aios.embedding_columns') IS NOT NULL"
+MARKERS_SQL = "SELECT table_name, column_name, source_column FROM aios.embedding_columns"
+
+
+def embedding_markers(
+    pg: psycopg.Connection, table: str | None = None
+) -> dict[tuple[str, str], str]:
+    """(table, column) -> the text column it's the embedding of; of `table`'s only, if given."""
+    if not pg.execute(HAS_MARKERS_SQL).fetchone()[0]:
+        return {}
+    if table is None:
+        rows = pg.execute(MARKERS_SQL)
+    else:
+        rows = pg.execute(MARKERS_SQL + " WHERE table_name = %s", (table,))
+    return {(t, c): source for t, c, source in rows}
 
 
 # Types `query_data` reads as Postgres writes them, not as Python values: Python's can't hold
@@ -129,6 +146,7 @@ class QueryDataConfig(BaseModel):
 def _describe(data_store_id: uuid.UUID) -> dict:
     tables: dict[tuple[str, str], dict] = {}
     with store_session(data_store_id, "ro") as session:
+        markers = embedding_markers(session.connection().connection.driver_connection)
         for r in session.execute(DESCRIBE_SQL).mappings():
             table = tables.setdefault(
                 (r["schema"], r["name"]),
@@ -146,8 +164,8 @@ def _describe(data_store_id: uuid.UUID) -> dict:
                 "description": r["column_description"],
             }
             # Filled by `write_data` from the text column it's of.
-            if r["embedding_of"] is not None:
-                column["embedding_of"] = r["embedding_of"]
+            if r["schema"] == "data" and (r["name"], r["column"]) in markers:
+                column["embedding_of"] = markers[r["name"], r["column"]]
             table["columns"].append(column)
     # As many whole tables as fit the byte cap, in order: the owner's first.
     max_bytes = get_settings().query_data_max_bytes
