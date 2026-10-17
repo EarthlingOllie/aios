@@ -194,14 +194,28 @@ def _columns(pg: psycopg.Connection, sql: str) -> tuple[list[str], list[int]]:
     return names, [res.ftype(i) for i in range(res.nfields)]
 
 
-class _ValueTooBig(Exception):
+class _RowTooBig(Exception):
     pass
 
 
-def _cap_values(cur: psycopg.Cursor, types: list[int], max_bytes: int) -> None:
-    """Makes `cur` refuse a value whose text is over `max_bytes` before loading it, as it can't
-    fit the result anyway: one row is unbounded, and loading a huge one (then dumping it as
-    JSON) would take several times its size in memory."""
+class _RowBudget:
+    """The bytes of text the row being loaded has taken so far."""
+
+    def __init__(self, max_bytes: int):
+        self.max_bytes = max_bytes
+        self.used = 0
+
+    def take(self, size: int) -> None:
+        self.used += size
+        if self.used > self.max_bytes:
+            raise _RowTooBig
+
+
+def _cap_values(cur: psycopg.Cursor, types: list[int], budget: _RowBudget) -> None:
+    """Makes `cur` refuse a row whose text is over the budget before loading the value that
+    takes it over, as it can't fit the result anyway: a row is unbounded (one huge value, or
+    many big ones), and loading a huge one (then dumping it as JSON) would take several times
+    its size in memory."""
     for oid in set(types):
         # As psycopg loads it otherwise; types it doesn't know (e.g. `vector`), as text.
         loader = cur.adapters.get_loader(oid, pq.Format.TEXT) or cur.adapters.get_loader(
@@ -214,8 +228,7 @@ def _cap_values(cur: psycopg.Cursor, types: list[int], max_bytes: int) -> None:
                 self._loader = loader(oid, context)
 
             def load(self, data: Any) -> Any:
-                if len(data) > max_bytes:
-                    raise _ValueTooBig
+                budget.take(len(data))
                 return self._loader.load(data)
 
         cur.adapters.register_loader(oid, Capped)
@@ -234,13 +247,15 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
         cur.adapters.register_loader(name, TextLoader)
     set_json_loads(_json_loads, cur)
     # After the text loaders, so the cap wraps them.
-    _cap_values(cur, types, max_bytes)
+    budget = _RowBudget(max_bytes)
+    _cap_values(cur, types, budget)
     rows: list[list] = []
     size, truncated = 0, False
     # `stream` sends it with the extended protocol too, and reads it a row at a time; leaving
     # early cancels the rest.
     try:
         for row in cur.stream(sql):
+            budget.used = 0  # this row is loaded: the next starts afresh
             value = [_jsonable(v) for v in row]
             row_size = len(json.dumps(value)) + 1
             if len(rows) == max_rows or size + row_size > max_bytes:
@@ -248,7 +263,7 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
                 break
             rows.append(value)
             size += row_size
-    except _ValueTooBig:
+    except _RowTooBig:
         truncated = True
         # libpq keeps the buffer it read the value into for as long as the connection is open,
         # so it's closed rather than pooled (`_query` throws away one it can't roll back).

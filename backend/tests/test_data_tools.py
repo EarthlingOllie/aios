@@ -363,6 +363,24 @@ def test_a_value_over_the_byte_cap_is_never_loaded(api, store, data_agent):
     assert query(api, data_agent, "SELECT 1")["rows"] == [[1]]
 
 
+def test_a_row_over_the_byte_cap_is_never_loaded_whole(api, store, data_agent, monkeypatch):
+    """Nor is a row of many values, each under the cap but over it together."""
+    monkeypatch.setattr(get_settings(), "query_data_max_bytes", 1_000_000)
+    columns = ", ".join(f"repeat('x', 900000) AS c{i}" for i in range(40))
+    tracemalloc.start()
+    try:
+        result = query(api, data_agent, f"SELECT {columns}")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert (result["rows"], result["truncated"]) == ([], True)
+    assert "first row alone" in result["note"]
+    # The row is 36 MB, and as much again as JSON.
+    assert peak < 10_000_000
+    assert query(api, data_agent, "SELECT 1")["rows"] == [[1]]
+
+
 def test_values_come_back_as_json(api, store, data_agent):
     result = query(
         api,
