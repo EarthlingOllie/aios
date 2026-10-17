@@ -116,8 +116,9 @@ class Chunk(StoreBase):
     )
 
 
-# The run history export: a copy of the owner's agent runs, keyed by the platform's ids. The
-# platform database stays the source of truth; these are only ever written by the export.
+# The run history export: a copy of the owner's agent and workflow runs, keyed by the platform's
+# ids. The platform database stays the source of truth; these are only ever written by the
+# export.
 
 
 class HistoryAgentRun(StoreBase):

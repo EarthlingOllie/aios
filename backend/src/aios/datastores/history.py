@@ -1,24 +1,31 @@
-"""The run history export: a copy of a user's agent runs in their data store's `history` schema.
+"""The run history export: a copy of a user's agent runs and workflow runs in their data
+store's `history` schema.
 
 The platform database stays the source of truth; the copy is one-way, and only while the
 store's owner has it switched on (`User.export_run_history`, on the Settings page):
 
 - **Switching it on** queues the store's set-up on the provisioning worker
   (`enqueue_set_up`), which brings the store tree's `history` line to its head
-  (`aios.datastores.provision`), and backfills: every run of the owner's goes in the outbox.
-- **The outbox** is `history_exports`, a row per run and store. Whatever changes a run (a turn
-  ending, `aios.api.agents._end_turn`, which every chat, schedule and workflow agent node turn
-  goes through; or deleting it) writes its row with `enqueue_runs`, in the same transaction as
-  its own change, and the store's export is queued once that commits. Nothing else does, so a
-  copy's agent name and schedule are as of its run's last turn: renaming the agent or deleting
-  the schedule shows in the copy at the run's next turn, not before.
+  (`aios.datastores.provision`), and backfills: every run of the owner's, of each kind, goes in
+  the outbox (`enqueue_everything`).
+- **The outbox** is `history_exports`, a row per run (by kind) and store. Whatever changes a
+  run writes its row, in the same transaction as its own change, and the store's export is
+  queued once that commits:
+  - an agent run (`enqueue_runs`): a turn ending (`aios.api.agents._end_turn`, which every
+    chat, schedule and workflow agent node turn goes through), or deleting it;
+  - a workflow run (`enqueue_workflow_runs`): its end, however it ended
+    (`aios.workflows._end_runs`), deleting it, or deleting an agent whose runs its steps held.
+    Pausing and resuming a run will write it too, once runs can pause.
+  Nothing else does, so a copy's agent or workflow name and schedule are as of its run's last
+  change: renaming the agent shows in the copy at the run's next turn, not before.
 - **The export** (`export`, the `aios.export_history` task, on the app workers: it writes as
-  the store's `rw` role) drains the store's outbox, copying each run and its messages,
-  flattened from its checkpoint, or deleting the copy of a run that's gone. Copies are upserted
-  by the platform's ids, so exporting again changes nothing. A run that fails to export keeps
-  its error on its row and waits for its next change, or `RETRY_AFTER`, so it doesn't hold up
-  the rest. A periodic sweep (`stores_to_export`) queues stores whose rows are still pending,
-  should a queued export be lost.
+  the store's `rw` role) drains the store's outbox, copying each agent run and its messages,
+  flattened from its checkpoint, and each workflow run with its steps at every depth, or
+  deleting the copy of a run that's gone. Copies are upserted by the platform's ids, so
+  exporting again changes nothing. A run that fails to export keeps its error on its row and
+  waits for its next change, or `RETRY_AFTER`, so it doesn't hold up the rest. A periodic
+  sweep (`stores_to_export`) queues stores whose rows are still pending, should a queued export
+  be lost.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
   (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
   outbox, so their copies go once it's back on.
