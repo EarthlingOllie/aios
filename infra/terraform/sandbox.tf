@@ -85,8 +85,9 @@ resource "aws_vpc_endpoint" "interface" {
   tags                = { Name = "${var.name}-${each.key}" }
 }
 
-# Only on the sandbox route table (the other subnets reach S3 through the NAT), and only for
-# the bucket ECR keeps image layers in, so sandbox code can't use it to reach other buckets.
+# Only on the sandbox route table (the app subnets have one of their own, data_store_files.tf),
+# and only for the bucket ECR keeps image layers in, so sandbox code can't use it to reach other
+# buckets.
 data "aws_iam_policy_document" "s3_endpoint" {
   statement {
     actions   = ["s3:GetObject"]

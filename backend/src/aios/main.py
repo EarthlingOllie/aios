@@ -15,7 +15,9 @@ from aios import auth, scheduler, tracing
 from aios.api import (
     agents,
     chat,
+    data,
     documents,
+    dropped,
     notifications,
     schema_changes,
     skills,
@@ -55,6 +57,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(documents.router)
+    app.include_router(data.router)
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(agents.router)
@@ -62,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router)
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
+    app.include_router(dropped.router)
     app.include_router(notifications.router)
 
     @app.exception_handler(RequestValidationError)

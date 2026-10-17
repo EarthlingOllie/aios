@@ -8,12 +8,14 @@ import math
 
 import psycopg
 import pytest
+from conftest import add_document
 from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
 from test_provisioning import login_url
 
+from aios import worker
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import data_store_for, store_not_ready
 from aios.datastores.connections import dispose_engines
@@ -803,3 +805,89 @@ def test_arguments_of_the_wrong_shape_are_refused_by_the_tools_schema(api, store
 
     assert "valid dictionary" in result
     assert len(fish(store)) == 2
+
+
+def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and_reads(
+    api, store, agent, monkeypatch
+):
+    """Checked as the call comes in, not against the last measurement."""
+    monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 1024)
+    with as_owner(store) as conn:
+        # 10 KB of notes.
+        conn.execute("CREATE TABLE data.notes (body text)")
+        conn.execute(
+            "INSERT INTO data.notes SELECT repeat(md5(g::text), 32) FROM generate_series(1, 10) g"
+        )
+
+    inserted, upserted, updated, deleted, queried = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+        call(table="fish", operation="upsert", rows=[{"name": "pike"}], on_conflict=["name"]),
+        call(table="fish", operation="update", values={"weight_kg": 9}, where={"id": 1}),
+        call(table="fish", operation="delete", where={"name": "perch"}),
+        ToolCall("query_data", {"sql": "SELECT name FROM data.fish"}),
+    )
+
+    for refused in (inserted, upserted, updated):
+        assert set(refused) == {"error"}
+        assert refused["error"].startswith("The user's data store is full: its data takes up ")
+        assert "of the 1.0 KB allowed" in refused["error"]
+        assert "Reading still works, and deleting rows makes room" in refused["error"]
+    assert deleted["row_count"] == 1
+    assert queried["rows"] == [["pike"]]
+    assert fish(store) == [("pike", "4.2", None)]
+
+
+def test_deleting_rows_at_the_database_cap_lets_writes_in_again(api, db, store, agent, monkeypatch):
+    """The cap is on the data the store holds, not its database's size, which keeps the space
+    deleted rows took: deleting enough makes room, at once and on the Data page."""
+    monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 4 * 1024 * 1024)
+    monkeypatch.setattr(get_settings(), "write_data_max_rows", 10_000)
+    with as_owner(store) as conn:
+        # 8 MB of notes, an eighth of them kept, all through the table.
+        conn.execute("CREATE TABLE data.notes (id int PRIMARY KEY, keep boolean, body text)")
+        conn.execute(
+            "INSERT INTO data.notes SELECT g, g % 8 = 0,"
+            " (SELECT string_agg(md5(g::text || '-' || h), '') FROM generate_series(1, 32) h)"
+            " FROM generate_series(1, 8000) g"
+        )
+    worker.measure_data_store_usage_task.apply().get()
+    assert api.get("/api/data-store").json()["usage"]["db_bytes"] > 8 * 1024 * 1024
+
+    refused, deleted, inserted = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+        call(table="notes", operation="delete", where={"keep": False}),
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+    )
+    worker.measure_data_store_usage_task.apply().get()
+
+    assert refused["error"].startswith("The user's data store is full")
+    assert deleted["row_count"] == 7000
+    assert inserted["row_count"] == 1
+    assert [f[0] for f in fish(store)] == ["pike", "perch", "carp"]
+    assert api.get("/api/data-store").json()["usage"]["db_bytes"] < 2 * 1024 * 1024
+
+
+def test_a_store_at_its_file_cap_refuses_inserts_and_updates_too(
+    api, store, agent, files_bucket, monkeypatch
+):
+    """Either cap is the store's: past it, writes stop."""
+    monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", 100)
+    add_document(store.id, b"x" * 100)
+
+    inserted, deleted = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="insert", rows=[{"name": "carp"}]),
+        call(table="fish", operation="delete", where={"name": "perch"}),
+    )
+
+    assert inserted == {
+        "error": "The user's data store is full: its documents use 100 B of the 100 B allowed,"
+        " so rows can't be inserted or updated. Reading and deleting rows still work. Tell the"
+        " user: deleting documents on the Data page makes room."
+    }
+    assert deleted["row_count"] == 1

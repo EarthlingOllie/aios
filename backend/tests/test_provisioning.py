@@ -671,7 +671,8 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
         response = client.get("/api/data-store")
     finally:
         app.dependency_overrides.clear()
-    assert response.json() == {"status": "ready"}
+    assert response.json()["status"] == "ready"
+    assert set(response.json()) == {"status", "usage"}
     for password in passwords:
         assert password not in caplog.text
         assert password not in response.text
