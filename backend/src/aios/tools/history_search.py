@@ -1,14 +1,28 @@
 import json
 
 from langchain.tools import ToolRuntime, tool
+from pydantic import BaseModel, ConfigDict, Field
 
 from aios.agent import ChatDeps
 from aios.search import history_search_results
-from aios.tools.hybrid_search import HybridSearchConfig
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 
-def build(config: HybridSearchConfig) -> list[AgentTool]:
+class HistorySearchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The same bounds as the document search's.
+    max_results: int = Field(
+        8,
+        ge=1,
+        le=50,
+        title="Results per search",
+        description="Messages returned for each search. More gives the model more context, and"
+        " uses more tokens.",
+    )
+
+
+def build(config: HistorySearchConfig) -> list[AgentTool]:
     # The document search's retrieval, over the run history exported to the run's data store
     # (`aios.datastores.history`): by keyword always, and by meaning once embedding is on.
     @tool(parse_docstring=True)
@@ -41,7 +55,7 @@ register(
         name="Run history search",
         description="Search your past runs exported to your data store, combining semantic and"
         " keyword matching.",
-        config_model=HybridSearchConfig,
+        config_model=HistorySearchConfig,
         build=build,
     )
 )

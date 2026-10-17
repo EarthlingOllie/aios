@@ -273,6 +273,15 @@ def test_a_long_message_is_embedded_by_its_start(api, store_id, history_tasks, e
 HISTORY_TOOL = {"key": "history_search", "config": {"max_results": 3}}
 
 
+def test_the_tool_library_offers_run_history_search(api):
+    tools = {t["key"]: t for t in api.get("/api/tools").json()}
+    tool = tools["history_search"]
+    assert (tool["name"], tool["default_config"]) == ("Run history search", {"max_results": 8})
+    max_results = tool["config_schema"]["properties"]["max_results"]
+    assert "Messages returned" in max_results["description"]
+    assert (max_results["minimum"], max_results["maximum"]) == (1, 50)
+
+
 def search_history_once(query: str):
     """A model that searches past runs once with `query`, then replies with what came back."""
     seen = {}
