@@ -55,7 +55,7 @@ from aios import checkpoints, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, schema_changes
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -644,17 +644,14 @@ def _end_runs(
 def close_requests(db: Session, agent_run_ids) -> None:
     """Close out the schema change requests these agent runs (a workflow run's nodes) made and
     haven't been given: their workflow run has ended or is being deleted, so nothing will give
-    them their outcomes. Pending ones are cancelled, so they can't be approved; the others count
+    them their outcomes. Pending ones are cancelled, so they can't be approved, and their
+    notifications cleared (`schema_changes.cancel`); the others count
     as given, so the conversations don't wait on them (one being applied still is)."""
     not_given = [
         SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
         SchemaChangeRequest.resumed_at.is_(None),
     ]
-    db.execute(
-        update(SchemaChangeRequest)
-        .where(*not_given, SchemaChangeRequest.status == SchemaChangeStatus.pending)
-        .values(status=SchemaChangeStatus.cancelled, resumed_at=func.now())
-    )
+    schema_changes.cancel(db, *not_given)
     db.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
 
 

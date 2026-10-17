@@ -27,13 +27,13 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import notifications
@@ -618,6 +618,62 @@ def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
     )
 
 
+def cancel(db: Session, *where: ColumnElement[bool]) -> list[uuid.UUID]:
+    """Cancel the pending requests matching `where`, clearing their notifications; returns
+    their ids. Nothing will resume the runs that asked (they're gone, or have been told the
+    call didn't finish), so they count as given. Only one still pending is cancelled: one
+    being decided meanwhile holds its row, and this waits for it, then leaves it. In the
+    caller's transaction."""
+    cancelled = db.scalars(
+        update(SchemaChangeRequest)
+        .where(*where, SchemaChangeRequest.status == SchemaChangeStatus.pending)
+        .values(status=SchemaChangeStatus.cancelled, decided_at=func.now(), resumed_at=func.now())
+        .returning(SchemaChangeRequest.id)
+    ).all()
+    for request_id in cancelled:
+        clear_notifications(db, request_id)
+    return list(cancelled)
+
+
+def expire() -> list[uuid.UUID]:
+    """Expire the requests still pending after `SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`, clearing
+    their notifications; returns their ids. Expiring counts as a rejection: the runs that asked
+    are then resumed with it (`aios.worker.expire_schema_change_requests_task`).
+
+    Only a request still pending is expired, in one statement: one being decided meanwhile
+    holds its row (`aios.api.schema_changes._decide`), and this waits for it, then leaves it."""
+    age = timedelta(days=get_settings().schema_change_request_expiry_days)
+    with SessionLocal() as db:
+        expired = db.scalars(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.status == SchemaChangeStatus.pending,
+                SchemaChangeRequest.created_at < func.now() - age,
+            )
+            .values(status=SchemaChangeStatus.expired, decided_at=func.now())
+            .returning(SchemaChangeRequest.id)
+        ).all()
+        for request_id in expired:
+            clear_notifications(db, request_id)
+        db.commit()
+    return list(expired)
+
+
+def expired_not_resumed() -> list[uuid.UUID]:
+    """Expired requests whose runs haven't been given the outcome yet: those to resume. Each
+    run of the scheduled task queues them all again, so one whose queuing failed isn't lost
+    (resuming twice is safe)."""
+    with SessionLocal() as db:
+        return list(
+            db.scalars(
+                select(SchemaChangeRequest.id).where(
+                    SchemaChangeRequest.status == SchemaChangeStatus.expired,
+                    SchemaChangeRequest.resumed_at.is_(None),
+                )
+            )
+        )
+
+
 def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: datetime) -> None:
     """Undo `clear_notifications` for a decision that was undone (the request waits again):
     those it marked read, in the transaction that ran at `cleared_at`, are unread again; any a
@@ -732,6 +788,11 @@ def outcome(request: SchemaChangeRequest) -> dict[str, Any]:
         out["message"] = (
             f"The user approved it, but applying it failed, and nothing changed: {request.error}"
         )
-    else:  # expired or cancelled
-        out["message"] = f"The request was {status.value} without being applied: nothing changed."
+    elif status == SchemaChangeStatus.expired:
+        out["message"] = (
+            "Nobody decided on the request in time, so it expired, and nothing changed. Treat it"
+            " as rejected; ask again if the change is still needed."
+        )
+    else:  # cancelled
+        out["message"] = "The request was cancelled without being applied: nothing changed."
     return out

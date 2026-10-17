@@ -42,6 +42,8 @@ celery_app.conf.update(
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
+        # Run by the provisioning worker's beat, next to the store retries.
+        "aios.expire_schema_change_requests": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -56,6 +58,12 @@ celery_app.conf.beat_schedule = {
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    # Schema change requests nobody decided in time (`SCHEMA_CHANGE_REQUEST_EXPIRY_DAYS`).
+    "expire-schema-change-requests": {
+        "task": "aios.expire_schema_change_requests",
+        "schedule": settings.schema_change_expiry_check_seconds,
+        "options": {"expires": settings.schema_change_expiry_check_seconds},
     },
 }
 
@@ -186,6 +194,17 @@ def apply_schema_change_task(request_id: str) -> None:
 
     schema_changes.apply(uuid.UUID(request_id))
     enqueue_resume(uuid.UUID(request_id))
+
+
+@celery_app.task(name="aios.expire_schema_change_requests")
+def expire_schema_change_requests_task() -> None:
+    """Expire the schema change requests nobody decided in time, and resume the runs that asked
+    with that, as a rejection would (`aios.datastores.schema_changes.expire`)."""
+    from aios.datastores import schema_changes
+
+    schema_changes.expire()
+    for request_id in schema_changes.expired_not_resumed():
+        enqueue_resume(request_id)
 
 
 def enqueue_resume(request_id: uuid.UUID) -> None:
