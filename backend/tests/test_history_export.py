@@ -983,3 +983,72 @@ def test_exporting_workflow_runs_again_gives_no_duplicates(
         assert history.export(store_id) == 6
 
     assert stored(store_id, counts) == [(2, 6, 4)]
+
+
+def test_deleting_a_workflow_run_deletes_its_copy(api, user, store_id, history_tasks, started):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    gone = workflow_runs.run(api, started, workflow, "one")
+    kept = workflow_runs.run(api, started, workflow, "two")
+    history.export(store_id)
+    history_tasks["export"].clear()
+
+    assert api.delete(f"/api/workflows/{workflow['id']}/runs/{gone['id']}").status_code == 204
+
+    assert history_tasks["export"] == [store_id]
+    history.export(store_id)
+    assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(kept["id"],)]
+    assert stored(store_id, "SELECT DISTINCT workflow_run_id FROM history.workflow_run_steps") == [
+        (kept["id"],)
+    ]
+    # Its agent nodes' agent runs went with it.
+    assert stored(store_id, "SELECT DISTINCT workflow_run_id FROM history.agent_runs") == [
+        (kept["id"],)
+    ]
+    with SessionLocal() as db:
+        assert not db.query(HistoryExport).filter_by(source_id=gone["id"]).count()
+
+
+def test_a_workflow_run_deleted_while_it_is_off_loses_its_copy_once_it_is_back_on(
+    api, user, store_id, history_tasks, started
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    run = workflow_runs.run(api, started, workflow, "one")
+    history.export(store_id)
+    switch(api, False)
+
+    assert api.delete(f"/api/workflows/{workflow['id']}/runs/{run['id']}").status_code == 204
+    history.export(store_id)
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(1,)]
+
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_run_steps") == [(0,)]
+
+
+def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
+    api, user, store_id, history_tasks, monkeypatch
+):
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+
+    def broker_down(run_id: int) -> None:
+        # Committed, so a backfill (or delete exported history) meanwhile exports it.
+        with SessionLocal() as db:
+            history.enqueue_everything(db, user.id)
+            db.commit()
+        history.export(store_id)
+        assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(run_id,)]
+        raise ConnectionError("broker down")
+
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", broker_down)
+    response = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "x"})
+    assert response.status_code == 503
+
+    history.export(store_id)
+    assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]

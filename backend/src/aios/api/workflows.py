@@ -722,7 +722,9 @@ def queue_workflow_run(db: Session, run: WorkflowRun) -> None:
         run_workflow_task.delay(run.id)
     except Exception as exc:
         # Nothing would ever pick up a committed-but-unqueued run; drop it so the client can
-        # simply retry without leaving one stuck in `queued`.
+        # simply retry without leaving one stuck in `queued`. A backfill since it was committed
+        # may have exported it: that copy goes too.
+        history.enqueue_workflow_runs(db, WorkflowRun.id == run.id, deleting=True)
         db.delete(run)
         db.commit()
         raise HTTPException(
@@ -793,7 +795,10 @@ def delete_workflow_run(
         )
     )
     sandboxes = run_sandboxes(db, agent_run_ids)
-    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)  # their copies go too
+    # Their exported copies go too, and its own (its agent runs' rows first, as the export
+    # marks them).
+    history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)
+    history.enqueue_workflow_runs(db, WorkflowRun.id == run.id, deleting=True)
     db.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     db.delete(run)  # and its steps
     db.commit()
