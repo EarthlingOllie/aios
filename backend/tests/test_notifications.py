@@ -67,6 +67,15 @@ def test_requesting_a_change_notifies_the_owner(api, agent, store, queued):  # n
     assert notification["read_at"] is None
 
 
+def test_a_requests_notification_says_what_it_asks_for(api, agent, queued):  # noqa: F811
+    """So the list reads without opening each one."""
+    _, request = start(api, agent, Script(CONTACTS))
+
+    [notification] = api.get("/api/notifications").json()["notifications"]
+
+    assert notification["title"] == request["summary"] == "Create table data.contacts"
+
+
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_deciding_the_request_marks_its_notification_read(api, agent, queued, decision):  # noqa: F811
     _, request = start(api, agent, Script(CONTACTS))

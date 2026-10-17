@@ -591,6 +591,25 @@ def _notification_ref(request: SchemaChangeRequest) -> dict[str, str]:
     return {"request_id": str(request.id), "data_store_id": str(request.data_store_id)}
 
 
+def summaries(db: Session, request_ids: set[str]) -> dict[str, str]:
+    """The summaries of those of these requests (by id, as text) that still exist, by id: what
+    their notifications say."""
+    ids = []
+    for request_id in request_ids:
+        try:
+            ids.append(uuid.UUID(request_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(SchemaChangeRequest.id, SchemaChangeRequest.summary).where(
+            SchemaChangeRequest.id.in_(ids)
+        )
+    )
+    return {str(request_id): summary for request_id, summary in rows}
+
+
 def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
     """Mark the request's notifications read, for everyone it notified: it no longer waits for
     a decision (it's decided, cancelled or expired). In the caller's transaction."""
