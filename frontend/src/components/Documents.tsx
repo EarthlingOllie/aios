@@ -26,8 +26,8 @@ const statusVariant = {
 } as const;
 
 /**
- * The user's documents, listed once their store is ready and re-read while any is still being
- * ingested, plus upload and delete. Held once, by `DocumentsProvider`.
+ * The user's documents, read by the views that show them (`useDocumentsList`) and again while
+ * any is still being ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
 function useDocuments(storeStatus: DataStoreStatus | undefined) {
   // Undefined until the first read answers, so a list still loading isn't taken for an empty one.
