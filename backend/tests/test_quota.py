@@ -165,8 +165,10 @@ def test_uploads_and_deletes_record_the_documents_bytes_straight_away(
         (1024, "1.0 KB"),
         (1536, "1.5 KB"),
         (10 * 1024, "10 KB"),
-        # Half up, as the Data page's Math.round does.
+        # Half up, as the Data page's Math.round and toFixed do.
         (10 * 1024 + 512, "11 KB"),
+        (1280, "1.3 KB"),
+        (int(2.25 * 1024**3), "2.3 GB"),
         (int(2.5 * 1024 * 1024), "2.5 MB"),
         (3 * 1024**3, "3.0 GB"),
         (1024 * 1024 - 1, "1.0 MB"),

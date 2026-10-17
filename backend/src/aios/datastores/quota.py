@@ -11,10 +11,10 @@ and delete (`record_files`), so room made shows straight away.
 """
 
 import logging
-import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import func, select, text, update
@@ -56,9 +56,10 @@ def format_bytes(n: int) -> str:
         unit += 1
     if unit == 0:
         return f"{n} B"
-    # Halves up, as JavaScript's Math.round (Python's round goes to the even one).
-    whole = math.floor(value + 0.5)
-    return f"{value:.1f} {_UNITS[unit]}" if value < 9.95 else f"{whole} {_UNITS[unit]}"
+    # Halves up, as JavaScript's toFixed and Math.round (Python's rounding goes to the even one),
+    # on the float's exact value, as they do.
+    places = Decimal("0.1") if value < 9.95 else Decimal(1)
+    return f"{Decimal(value).quantize(places, ROUND_HALF_UP)} {_UNITS[unit]}"
 
 
 def _of(used: int, quota: int) -> str:
