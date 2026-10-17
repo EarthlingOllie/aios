@@ -5,6 +5,7 @@ import pytest
 
 pytest.importorskip("docling")
 
+from conftest import add_document  # noqa: E402
 from docling.chunking import HybridChunker  # noqa: E402
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
@@ -62,17 +63,17 @@ def test_chunk_document_keeps_headings():
 
 
 @pytest.fixture
-def store(user):
+def store(user, files_bucket):
     """A read-write session on `user`'s store."""
     with store_session(data_store_for(user.id), "rw") as session:
+        session.info["store_id"] = data_store_for(user.id)
         yield session
 
 
-def add(store, **values) -> Document:
-    doc = Document(**{"filename": "guide.md", "data": MARKDOWN, **values})
-    store.add(doc)
-    store.commit()
-    return doc
+def add(store, data: bytes = MARKDOWN, **values) -> Document:
+    """A document, with its file in S3, as an upload leaves it."""
+    doc_id = add_document(store.info["store_id"], data, **{"filename": "guide.md", **values})
+    return store.get(Document, doc_id)
 
 
 def test_ingest_document_stores_chunks(store):
@@ -94,8 +95,8 @@ def test_ingest_gives_up_after_max_attempts(store, monkeypatch):
     # Previous deliveries died mid-conversion (e.g. OOM) and left the row `processing`.
     doc = add(
         store,
-        filename="huge.pdf",
         data=b"%PDF",
+        filename="huge.pdf",
         status=DocumentStatus.processing,
         attempts=ingest.MAX_ATTEMPTS,
     )

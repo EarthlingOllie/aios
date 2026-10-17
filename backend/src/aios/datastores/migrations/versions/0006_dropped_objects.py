@@ -4,8 +4,8 @@ The tables and columns in `data` that approved drops renamed out of the way
 (`_dropped_<timestamp>_<name>`), until they're restored or purged. Only the owner (schema
 changes, restores and the purge) writes it (`provision.BOOKKEEPING`); both login roles read it.
 
-Revision ID: 0005
-Revises: 0004
+Revision ID: 0006
+Revises: 0005
 Create Date: 2026-10-17 09:00:00
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0005"
-down_revision: str | None = "0004"
+revision: str = "0006"
+down_revision: str | None = "0005"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

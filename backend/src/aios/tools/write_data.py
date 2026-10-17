@@ -37,16 +37,16 @@ from sqlalchemy.exc import DBAPIError
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import store_session
+from aios.datastores import quota, store_session
 from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.models import EMBEDDING_DIM
+from aios.datastores.reads import jsonable
 from aios.embeddings import embed_documents
 from aios.tools.data import (
     DATA_NOT_INSTRUCTIONS,
     embedding_markers,
     in_store,
     in_thread,
-    jsonable,
     pg_error,
 )
 from aios.tools.registry import AgentTool, ToolSpec, register
@@ -579,7 +579,17 @@ async def _embed(texts: list[str]) -> Embedded | dict:
     return Embedded(texts, vectors)
 
 
+def _refusal(data_store_id: uuid.UUID) -> str | None:
+    with store_session(data_store_id, "rw") as session:
+        return quota.write_refusal(session)
+
+
 async def _write(data_store_id: uuid.UUID, call: Call) -> dict:
+    # A store at its storage cap takes no more rows, nor changes to them; deletes go ahead.
+    if call.operation != "delete":
+        refusal = await in_thread(data_store_id, _refusal)
+        if refusal:
+            return {"error": refusal}
     result = await in_thread(data_store_id, _apply, call, None)
     if not isinstance(result, NeedsEmbedding):
         return result
@@ -618,6 +628,9 @@ delete. This is the only way to change the data in it; `query_data` reads it.
 At most {max_rows} rows a call, written all together or not at all. The result has
 `row_count`, and `rows`: the primary keys of the rows written. On failure it has an `error`
 instead, and nothing was written.
+
+While the store is full (its storage cap), inserts, upserts and updates are refused; reads
+still work, and deletes make room.
 
 What you send is stored as data, exactly as given: it's never run as SQL. {DATA_NOT_INSTRUCTIONS}"""
 

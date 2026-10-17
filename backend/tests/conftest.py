@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 import uuid
@@ -5,13 +6,17 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
+from psycopg import errors
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios.auth import current_user
-from aios.datastores import data_store_for, provision, resolve
+from aios.config import get_settings
+from aios.datastores import data_store_for, files, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
+from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
@@ -29,20 +34,21 @@ def db():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM data_stores LIMIT 1"))
-    except Exception as exc:  # noqa: BLE001
-        # The server is up but won't let DATABASE_URL's role in: the roles haven't been created
-        # (or the password is wrong), which skipping would hide.
-        message = str(exc)
-        if isinstance(exc, OperationalError) and (
-            "password authentication failed" in message
-            or ('role "' in message and "does not exist" in message)
-        ):
+    except OperationalError as exc:
+        # libpq prefixes an error the server sent with its severity ("FATAL:  ..."), so one
+        # without it never reached a server (refused, unresolvable host, timeout): skip. One with
+        # it is a server that's up but turns DATABASE_URL away (the role or database is missing,
+        # a wrong password, no CONNECT privilege, a pg_hba.conf rule), which skipping would hide.
+        if "FATAL:" in str(exc.orig):
             pytest.fail(
-                f"DATABASE_URL's role can't log in ({exc.orig}). Create the roles with "
-                "`python -m aios.db_roles` (see the README's Database roles)."
+                f"the database server turned DATABASE_URL away ({exc.orig}). If its role is "
+                "missing, create the roles with `python -m aios.db_roles` (see the README's "
+                "Database roles)."
             )
-        if isinstance(exc, OperationalError) or "data_stores" in str(exc):
-            pytest.skip(f"database not available: {exc.__class__.__name__}")
+        pytest.skip(f"database not available: {exc.__class__.__name__}")
+    except ProgrammingError as exc:
+        if isinstance(exc.orig, errors.UndefinedTable):
+            pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
     with SessionLocal() as session:
         yield session
@@ -89,6 +95,34 @@ def user(db):
     delete_user(db, u)
 
 
+@pytest.fixture(scope="session")
+def files_bucket() -> str:
+    """The bucket uploads go to (on RustFS, locally and in CI), made if it's missing."""
+    try:
+        files.create_bucket()
+    except (BotoCoreError, ClientError) as exc:
+        pytest.fail(
+            f"Can't reach the files bucket ({exc}). Start RustFS and point "
+            "DATA_STORE_FILES_ENDPOINT and DATA_STORE_FILES_ACCESS_KEY/_SECRET_KEY at it "
+            "(see the README's Checks)."
+        )
+    return get_settings().data_store_files_bucket
+
+
+def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
+    """A document in the store, with its file in S3, as an upload leaves it; returns its id."""
+    with store_session(store_id, "rw") as store:
+        doc = Document(
+            **{"filename": "a.md", "s3_key": "", "size_bytes": len(data), "sha256": "", **values}
+        )
+        store.add(doc)
+        store.flush()
+        doc.s3_key = files.document_key(store_id, doc.id)
+        doc.sha256 = files.put(doc.s3_key, io.BytesIO(data), None).sha256
+        store.commit()
+        return doc.id
+
+
 @pytest.fixture
 def new_user(db) -> Iterator[Callable[[], User]]:
     """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
@@ -107,7 +141,7 @@ def new_user(db) -> Iterator[Callable[[], User]]:
 
 
 @pytest.fixture
-def api(client, user):
+def api(client, user, files_bucket):
     """A client signed in as `user`."""
     app.dependency_overrides[current_user] = lambda: user
     yield client

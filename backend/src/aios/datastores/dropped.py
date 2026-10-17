@@ -148,7 +148,13 @@ def grant_access(conn: psycopg.Connection, rw: str, ro: str, table: str) -> None
         )
         return
     listed = sql.SQL(", ").join(map(sql.Identifier, kept))
-    conn.execute(sql.SQL("GRANT SELECT ({}) ON TABLE {} TO {}").format(listed, relation, both))
+    # And where each row is (`tableoid`, `ctid`), which the Data page's Tables key rows by: a
+    # table-wide `SELECT` would give those, but no column grant does unless they're named.
+    conn.execute(
+        sql.SQL("GRANT SELECT ({}, tableoid, ctid) ON TABLE {} TO {}").format(
+            listed, relation, both
+        )
+    )
     conn.execute(
         sql.SQL("GRANT INSERT ({0}), UPDATE ({0}) ON TABLE {1} TO {2}").format(
             listed, relation, sql.Identifier(rw)

@@ -15,6 +15,7 @@ from aios import auth, scheduler, tracing
 from aios.api import (
     agents,
     chat,
+    data,
     documents,
     dropped,
     schema_changes,
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router)
     app.include_router(documents.router)
+    app.include_router(data.router)
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(agents.router)

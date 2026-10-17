@@ -630,3 +630,30 @@ def test_the_scheduled_purge_goes_through_every_ready_store(db, store, monkeypat
 
     with as_owner(store) as conn:
         assert conn.execute("SELECT count(*) FROM aios.dropped_objects").fetchone() == (0,)
+
+
+def test_the_tables_page_leaves_out_a_dropped_table(db, api, store):
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+
+    listed = api.get("/api/data/tables").json()
+
+    assert listed["tables"] == []
+    assert api.get("/api/data/tables/fish/rows").status_code == 404
+
+
+def test_the_tables_page_shows_a_table_with_a_dropped_column_without_it(db, api, store):
+    request = apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    dropped_as = request.ops[0]["dropped_as"]
+
+    [fish] = api.get("/api/data/tables").json()["tables"]
+    page = api.get("/api/data/tables/fish/rows", params={"sort": "id"})
+
+    assert fish["name"] == "fish"
+    assert [c["name"] for c in fish["columns"]] == ["id", "weight_kg"]
+    assert page.status_code == 200, page.text
+    assert page.json()["columns"] == ["id", "weight_kg"]
+    assert [r["values"] for r in page.json()["rows"]] == [["1", "4.2"], ["2", "0.8"]]
+    row = page.json()["rows"][0]["key"]
+    for column in ("name", dropped_as):
+        value = api.get("/api/data/tables/fish/value", params={"row": row, "column": column})
+        assert value.status_code == 422, value.text
