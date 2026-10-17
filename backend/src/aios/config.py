@@ -43,10 +43,12 @@ class Settings(BaseSettings):
     #
     # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
     # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
-    # processes that use store roles. On ECS that's about 6 (2 API tasks, the ingest worker's 2
-    # and the workflow worker's 2), so 18. Keep it at least 3 x those processes when adding
-    # any. Past it, a connection is refused, which answers 503 (try again).
-    data_store_connection_limit: int = Field(default=20, ge=1)
+    # processes that use it. On ECS the read-only role is used by the 2 API tasks and the
+    # workflow worker's 2 processes, so 12; the read-write one by the API and the ingest
+    # worker's 2 (one ingest, so one connection, each), so 8. A rolling deploy starts the new
+    # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
+    # adding processes. Past it, a connection is refused, which answers 503 (try again).
+    data_store_connection_limit: int = Field(default=30, ge=1)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

@@ -310,9 +310,10 @@ database's instance, which the provisioner may know by another name (Compose's `
 API on the host). A row's `host` and `port` are for a store moved to another instance later;
 they're empty until then.
 
-Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 20), and each process
-pools up to 3 per store and role, so the limit must be at least 3 x the processes that use
-store roles (about 6 on AWS: see `config.py`). A connection past the limit is refused: the API
+Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
+pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
+role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
+`config.py`). A connection past the limit is refused: the API
 answers 503 to try again, the ingest task retries, and the search tools tell the model.
 
 ### Dependency policy
