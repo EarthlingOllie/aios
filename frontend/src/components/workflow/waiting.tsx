@@ -15,10 +15,7 @@ import { api, type SchemaChangeRequest, type StalePin, type WorkflowRunStep } fr
 
 /** The requests the run's waiting steps wait on, by id; read again with `reload`. */
 export function useWaitingRequests(steps: WorkflowRunStep[]) {
-  const key = steps
-    .map((s) => (s.status === "waiting" ? s.waiting_on_request_id : null))
-    .filter((id) => id !== null)
-    .join(",");
+  const key = steps.flatMap((s) => s.waiting_on_request_ids).join(",");
   const load = useLoad(
     useCallback(async () => {
       const ids = key ? key.split(",") : [];
@@ -41,8 +38,9 @@ export function WaitingSection({
   error?: string;
   onDecided: () => void;
 }) {
-  const waiting = steps.filter((s) => s.status === "waiting" && s.waiting_on_request_id);
+  const waiting = steps.filter((s) => s.waiting_on_request_ids.length > 0);
   if (waiting.length === 0) return null;
+  const count = waiting.flatMap((s) => s.waiting_on_request_ids).length;
   return (
     <section
       aria-label="Waiting for your decision"
@@ -51,7 +49,7 @@ export function WaitingSection({
       <h2 className="text-sm font-semibold">Waiting for your decision</h2>
       <p className="text-muted-foreground text-sm">
         The run is paused, holding no worker, until you approve or reject{" "}
-        {waiting.length === 1 ? "this request" : "these requests"}. It then carries on from
+        {count === 1 ? "this request" : "these requests"}. It then carries on from
         where it stopped.
       </p>
       {error && (
@@ -60,7 +58,7 @@ export function WaitingSection({
         </Notice>
       )}
       {waiting.map((step) => {
-        const request = requests[step.waiting_on_request_id!];
+        const asks = step.waiting_on_request_ids.map((id) => requests[id]).filter(Boolean);
         return (
           <div key={step.id} className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -83,7 +81,9 @@ export function WaitingSection({
                 </Button>
               </span>
             </div>
-            {request && <SchemaChangeCard request={request} onDecided={onDecided} />}
+            {asks.map((request) => (
+              <SchemaChangeCard key={request.id} request={request} onDecided={onDecided} />
+            ))}
           </div>
         );
       })}

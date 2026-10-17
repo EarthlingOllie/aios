@@ -303,7 +303,7 @@ function StepDetails({
   requests: Record<string, SchemaChangeRequest>;
   onOpen: () => void;
 }) {
-  const request = step?.waiting_on_request_id ? requests[step.waiting_on_request_id] : undefined;
+  const asks = (step?.waiting_on_request_ids ?? []).map((id) => requests[id]).filter(Boolean);
   return (
     <div className="flex flex-col gap-3 border-t pt-3">
       <div className="flex items-center gap-2">
@@ -320,8 +320,8 @@ function StepDetails({
           {step.error && <p className="text-destructive text-sm break-words">{step.error}</p>}
           {step.status === "waiting" && (
             <p className="text-sm">
-              {request
-                ? `Waiting for your decision on: ${request.summary}`
+              {asks.length > 0
+                ? `Waiting for your decision on: ${asks.map((r) => r.summary).join("; ")}`
                 : step.kind === "workflow"
                   ? "Waiting: a node inside it waits for your decision."
                   : "Waiting for your decision on a schema change request."}

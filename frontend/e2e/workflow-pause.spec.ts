@@ -31,7 +31,7 @@ function waitingRun(api: FakeApi) {
         input: "go",
         agent_id: builder.id,
         agent_run_id: conversation.id,
-        waiting_on_request_id: request.id,
+        waiting_on_request_ids: [request.id],
       },
       { path: ["other"], status: "succeeded", output: "other(go)" },
     ],
@@ -72,7 +72,7 @@ test("a waiting run shows its waiting node and the request, approved from the ru
   // The worker applies it and the run carries on; the page follows it to the end.
   api.finishSchemaChange(request.id, { status: "applied" });
   Object.assign(run, { status: "succeeded", output: "done", waiting_since: null });
-  Object.assign(run.steps[0], { status: "succeeded", waiting_on_request_id: null });
+  Object.assign(run.steps[0], { status: "succeeded", waiting_on_request_ids: [] });
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded", { timeout: 10_000 });
   await expect(waiting).toHaveCount(0);
 });
@@ -131,4 +131,19 @@ test("a waiting run shows no pins notice while every pin is current", async ({ p
   await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
   await expect(page.getByTestId("run-status")).toHaveText("Waiting for you");
   await expect(page.getByRole("region", { name: "Pinned versions" })).toHaveCount(0);
+});
+
+test("a node waiting on two requests shows a card for each", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { workflow, run, request, conversation } = waitingRun(api);
+  const second = api.addSchemaChange({ run_id: conversation.id, summary: "Create table data.places" });
+  run.steps[0].waiting_on_request_ids = [request.id, second.id];
+  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+
+  const waiting = page.getByRole("region", { name: "Waiting for your decision" });
+  await expect(waiting).toContainText("these requests");
+  await expect(waiting.getByRole("region", { name: /^Schema change:/ })).toHaveCount(2);
+  await expect(
+    waiting.getByRole("region", { name: "Schema change: Create table data.places" }),
+  ).toBeVisible();
 });

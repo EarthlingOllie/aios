@@ -354,8 +354,8 @@ export type WorkflowRunStep = {
   /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
   agent_id: number | null;
   agent_run_id: number | null;
-  /** While a waiting agent node waits: the schema change request it waits on. */
-  waiting_on_request_id: string | null;
+  /** While an agent node waits: the schema change requests it waits on, oldest first. */
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
 };

@@ -130,7 +130,7 @@ def test_a_requesting_node_waits_while_an_independent_branch_finishes(
     assert build["status"] == "waiting"
     [request] = api.get("/api/schema-changes").json()
     assert request["status"] == "pending"
-    assert build["waiting_on_request_id"] == request["id"]
+    assert build["waiting_on_request_ids"] == [request["id"]]
     # Nothing is queued: the run holds no worker until it's decided.
     assert queued == []
 
@@ -167,7 +167,7 @@ def test_approving_resumes_the_waiting_node_and_the_run_completes(api, builder, 
         "succeeded",
         "builder:built(applied)",
     )
-    assert by_path["build"]["waiting_on_request_id"] is None
+    assert by_path["build"]["waiting_on_request_ids"] == []
     assert by_path["after"]["input"] == "builder:built(applied)"
     assert out["output"] == "after(builder:built(applied))\n\nother(go)"
     # Nothing ran twice: the other branch's step is the one it recorded before it waited.
@@ -396,9 +396,9 @@ def test_a_nested_workflows_waiting_node_pauses_and_resumes_the_top_level_run(
     assert waiting["status"] == "waiting", waiting["error"]
     by_path = steps(waiting)
     assert by_path["review"]["status"] == "waiting"
-    assert by_path["review"]["waiting_on_request_id"] is None
+    assert by_path["review"]["waiting_on_request_ids"] == []
     assert by_path["review/build"]["status"] == "waiting"
-    assert by_path["review/build"]["waiting_on_request_id"] is not None
+    assert len(by_path["review/build"]["waiting_on_request_ids"]) == 1
     assert by_path["review/other"]["status"] == "succeeded"
     assert "publish" not in by_path
 
@@ -563,6 +563,43 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
 
     out = read(api, workflow, waiting["id"])
     assert out["status"] == "waiting"
-    assert steps(out)["build"]["waiting_on_request_id"] == pending["id"]
+    assert steps(out)["build"]["waiting_on_request_ids"] == [pending["id"]]
     assert api.get(f"/api/schema-changes/{orphan_id}").json()["resumed_at"] is not None
     assert queued == []
+
+
+def test_a_node_asking_twice_shows_both_requests_and_resumes_once_both_are_decided(
+    api, builder, store, queued
+):
+    flow = Flow()
+
+    async def ask_twice(messages, info):
+        if messages[0].content == "builder" and not last_tool_results(messages):
+            for table in ("contacts", "places"):
+                yield ToolCall(
+                    "request_schema_change",
+                    {"ops": [{**CONTACTS, "name": table}], "reason": "Both"},
+                )
+            return
+        async for item in flow(messages, info):
+            yield item
+
+    workflow = chain(api, builder)
+    waiting = start(api, queued, workflow, ask_twice)
+
+    requests = {r["summary"]: r["id"] for r in api.get("/api/schema-changes").json()}
+    assert sorted(steps(waiting)["build"]["waiting_on_request_ids"]) == sorted(requests.values())
+
+    api.post(f"/api/schema-changes/{requests['Create table data.places']}/reject", json={})
+    with use_model(model(ask_twice)):
+        run_queued(queued)
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "waiting"
+    assert steps(out)["build"]["waiting_on_request_ids"] == [requests["Create table data.contacts"]]
+
+    api.post(f"/api/schema-changes/{requests['Create table data.contacts']}/approve")
+    with use_model(model(ask_twice)):
+        run_queued(queued)
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert data_tables(store) == ["contacts"]

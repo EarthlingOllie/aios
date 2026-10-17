@@ -15,7 +15,7 @@ function step(path: string[], status: WorkflowRunStep["status"]): WorkflowRunSte
     agent_id: 1,
     agent_run_id: 2,
     started_at: "2026-10-14T09:00:00Z",
-    waiting_on_request_id: status === "waiting" ? "req-1" : null,
+    waiting_on_request_ids: status === "waiting" ? ["req-1"] : [],
     finished_at: status === "running" || status === "waiting" ? null : "2026-10-14T09:00:05Z",
   };
 }

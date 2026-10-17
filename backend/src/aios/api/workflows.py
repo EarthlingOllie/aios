@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import checkpoints
@@ -17,6 +17,8 @@ from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
     Trigger,
     Workflow,
     WorkflowNode,
@@ -629,8 +631,9 @@ class WorkflowRunStepOut(BaseModel):
     # the agent run has been deleted (with its agent).
     agent_id: int | None
     agent_run_id: int | None
-    # While a waiting agent node waits: the schema change request it waits on.
-    waiting_on_request_id: uuid.UUID | None
+    # While an agent node waits: the schema change requests it waits on (one per call), oldest
+    # first.
+    waiting_on_request_ids: list[uuid.UUID]
     started_at: datetime
     finished_at: datetime | None
 
@@ -713,6 +716,42 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
         )
     walk(top, [])
     return stale
+
+
+def waiting_requests(db: Session, steps: Sequence[WorkflowRunStep]) -> list[SchemaChangeRequest]:
+    """The requests the waiting steps among `steps` wait on, oldest first: those their agent runs
+    made that they haven't been given, and each one's recorded request (its agent run may have
+    gone with its agent)."""
+    waiting = [s for s in steps if s.status == WorkflowStepStatus.waiting]
+    agent_run_ids = [s.agent_run_id for s in waiting if s.agent_run_id is not None]
+    recorded = [s.waiting_on_request_id for s in waiting if s.waiting_on_request_id is not None]
+    if not waiting:
+        return []
+    return list(
+        db.scalars(
+            select(SchemaChangeRequest)
+            .where(
+                or_(
+                    SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
+                    SchemaChangeRequest.id.in_(recorded),
+                ),
+                SchemaChangeRequest.resumed_at.is_(None),
+                SchemaChangeRequest.status != SchemaChangeStatus.cancelled,
+            )
+            .order_by(SchemaChangeRequest.created_at, SchemaChangeRequest.id)
+        )
+    )
+
+
+def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list[uuid.UUID]:
+    if step.status != WorkflowStepStatus.waiting:
+        return []
+    return [
+        r.id
+        for r in requests
+        if r.id == step.waiting_on_request_id
+        or (step.agent_run_id is not None and r.requested_by_run == step.agent_run_id)
+    ]
 
 
 def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
@@ -829,6 +868,7 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
         .where(WorkflowRunStep.run_id == run.id)
         .order_by(WorkflowRunStep.id)
     ).all()
+    waits = waiting_requests(db, [step for step, _ in steps])
     return WorkflowRunOut(
         **summary.model_dump(),
         version=version_out(load_version(db, summary.workflow_version_id)),
@@ -843,7 +883,7 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
                 error=step.error,
                 agent_id=agent_id,
                 agent_run_id=step.agent_run_id,
-                waiting_on_request_id=step.waiting_on_request_id,
+                waiting_on_request_ids=waits_on(step, waits),
                 started_at=step.started_at,
                 finished_at=step.finished_at,
             )

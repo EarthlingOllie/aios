@@ -39,8 +39,8 @@ inspection UI (PR 5). Both sides build against this document; change it here fir
 Steps exist only once a node has started, so a node with no step hasn't run (yet).
 
 An agent node whose agent asks for a schema change (`request_schema_change`) waits for the
-owner's decision: its step is `waiting`, with `waiting_on_request_id` (a workflow node one of
-whose nodes waits is `waiting` too, without one). Nodes that don't depend on it still run; once
+owner's decision: its step is `waiting`, with `waiting_on_request_ids` (a workflow node one of
+whose nodes waits is `waiting` too, with none). Nodes that don't depend on it still run; once
 nothing else can, the run is `waiting` and holds no worker. It isn't failed for its heartbeat,
 and waiting doesn't count towards its time limit. The decision resumes it: the waiting node
 carries on, on its own agent run, and the run goes on as before, on the versions it pinned. A
@@ -102,8 +102,8 @@ type WorkflowRunStep = {
   // /agents/{agent_id}/runs/{agent_run_id}); null for workflow nodes.
   agent_id: number | null;
   agent_run_id: number | null;
-  // While a waiting agent node waits: the schema change request it waits on.
-  waiting_on_request_id: string | null;
+  // While an agent node waits: the schema change requests it waits on, oldest first.
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
 };

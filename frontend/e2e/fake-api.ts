@@ -89,7 +89,7 @@ export type StepRow = {
   error: string | null;
   agent_id: number | null;
   agent_run_id: number | null;
-  waiting_on_request_id: string | null;
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
 };
@@ -386,7 +386,7 @@ export class FakeApi {
       error: null,
       agent_id: null,
       agent_run_id: null,
-      waiting_on_request_id: null,
+      waiting_on_request_ids: [],
       started_at: NOW,
       finished_at: null,
       ...step,
