@@ -329,3 +329,33 @@ def test_a_read_past_the_time_limit_is_stopped(api, store):
 
     assert response.status_code == 504
     assert "too long" in response.json()["detail"]
+
+
+def test_the_tables_api_takes_names_and_numbers_never_sql(client):
+    """Each parameter is a name checked against the catalog, a number, or a direction."""
+    schema = client.get("/openapi.json").json()
+    data_paths = {p: ops for p, ops in schema["paths"].items() if p.startswith("/api/data/")}
+
+    params = {
+        (op_name, param["name"])
+        for ops in data_paths.values()
+        for op_name, op in ops.items()
+        for param in op.get("parameters", [])
+    }
+
+    assert set(data_paths) == {
+        "/api/data/tables",
+        "/api/data/tables/{table}/rows",
+        "/api/data/tables/{table}/value",
+    }
+    assert all(op == "get" for op, _ in params)
+    assert {name for _, name in params} == {
+        "table",
+        "offset",
+        "limit",
+        "sort",
+        "order",
+        "row",
+        "column",
+    }
+    assert not any("requestBody" in op for ops in data_paths.values() for op in ops.values())
