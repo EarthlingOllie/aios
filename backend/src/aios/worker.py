@@ -41,18 +41,28 @@ celery_app.conf.update(
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
+        # Not for the credentials: it's quick, and there it never waits behind long ingests.
+        "aios.measure_data_store_usage": {"queue": "provisioning"},
     },
 )
 
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# What each store uses is measured this often (seconds), for its storage cap
+# (`aios.datastores.quota`): a store past it is refused writes from the next measurement.
+MEASURE_USAGE_EVERY = 300
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "measure-data-store-usage": {
+        "task": "aios.measure_data_store_usage",
+        "schedule": MEASURE_USAGE_EVERY,
+        "options": {"expires": MEASURE_USAGE_EVERY},
     },
 }
 
@@ -141,6 +151,19 @@ def retry_unfinished_data_stores_task() -> None:
     from aios.datastores import provision
 
     provision.retry_unfinished()
+
+
+@celery_app.task(
+    name="aios.measure_data_store_usage",
+    # As the retry: one that runs over stops, and the next carries on.
+    soft_time_limit=MEASURE_USAGE_EVERY,
+    time_limit=MEASURE_USAGE_EVERY + 60,
+)
+def measure_data_store_usage_task() -> None:
+    """Record what each ready store uses, for its storage cap (`aios.datastores.quota`)."""
+    from aios.datastores import quota
+
+    quota.measure_all()
 
 
 @celery_app.task(
