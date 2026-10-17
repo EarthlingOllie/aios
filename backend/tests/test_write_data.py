@@ -687,6 +687,47 @@ def test_a_marker_whose_text_column_is_gone_refuses_writes(api, notes, agent, em
     assert "needs a schema change" in result["error"]
 
 
+def test_a_marked_column_of_the_wrong_size_refuses_writes_before_embedding(
+    api, store, agent, embedded
+):
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE TABLE data.tiny (id int PRIMARY KEY, body text, e extensions.vector(3))"
+        )
+        conn.execute("INSERT INTO aios.embedding_columns VALUES ('tiny', 'e', 'body')")
+
+    result = write(api, agent, table="tiny", operation="insert", rows=[{"id": 1, "body": "hi"}])
+
+    assert "`data.tiny.e` is marked as an embedding but isn't a vector(1024)" in result["error"]
+    assert "needs a schema change" in result["error"]
+    assert embedded == []
+
+
+def test_each_distinct_text_is_embedded_once(api, store, agent, embedded):
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE TABLE data.pairs (id int PRIMARY KEY, body text,"
+            " a extensions.vector(1024), b extensions.vector(1024))"
+        )
+        conn.execute("INSERT INTO aios.embedding_columns VALUES ('pairs', 'a', 'body')")
+        conn.execute("INSERT INTO aios.embedding_columns VALUES ('pairs', 'b', 'body')")
+
+    result = write(
+        api,
+        agent,
+        table="pairs",
+        operation="insert",
+        rows=[{"id": 1, "body": "hello"}, {"id": 2, "body": "hello"}, {"id": 3, "body": "hi"}],
+    )
+
+    assert result["row_count"] == 3, result
+    assert embedded == [["hello", "hi"]]
+    with as_owner(store) as conn:
+        assert conn.execute(
+            "SELECT id, (a::real[])[1], (b::real[])[1] FROM data.pairs ORDER BY id"
+        ).fetchall() == [(1, 5.0, 5.0), (2, 5.0, 5.0), (3, 2.0, 2.0)]
+
+
 def test_only_the_owner_writes_the_markers(store):
     """The read-write role reads them, but can't mark or unmark columns (only schema changes,
     as the owner, do)."""

@@ -313,12 +313,17 @@ def _plan(pg: psycopg.Connection, call: Call) -> Plan:
                 " doesn't have. The table needs a schema change before it can be written."
             )
         for name in made:
-            if table.columns[name].base != "vector":
+            column = table.columns[name]
+            # Written `vector(n)` or, off the search path, `extensions.vector(n)`.
+            if column.base != "vector" or not column.type.endswith(f"vector({EMBEDDING_DIM})"):
                 raise Refused(
-                    f"`{table.qualified}.{name}` is marked as an embedding but isn't a vector."
-                    " The table needs a schema change before it can be written."
+                    f"`{table.qualified}.{name}` is marked as an embedding but isn't a"
+                    f" vector({EMBEDDING_DIM}). The table needs a schema change before it can"
+                    " be written."
                 )
     texts: list[str] = []
+    # Each distinct text is embedded once, however many columns and rows it's in.
+    text_index: dict[str, int] = {}
 
     def values(row: dict[str, Any], where: str) -> Statement:
         statement = Statement()
@@ -327,8 +332,10 @@ def _plan(pg: psycopg.Connection, call: Call) -> Plan:
             for embedding in embeddings.get(name, []):
                 # Blank text has nothing to embed: its embedding is cleared.
                 if isinstance(value, str) and value.strip():
-                    statement.embed[embedding] = len(texts)
-                    texts.append(value)
+                    if value not in text_index:
+                        text_index[value] = len(texts)
+                        texts.append(value)
+                    statement.embed[embedding] = text_index[value]
                 statement.values[embedding] = None
         return statement
 
