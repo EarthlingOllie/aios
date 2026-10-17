@@ -551,6 +551,28 @@ def test_each_operation_sees_the_drops_before_it():
     )
 
 
+def test_a_name_dropped_twice_in_a_second_gets_a_dropped_name_of_its_own_each_time():
+    schema = StoreSchema(
+        tables={"fish": {"id": "bigint", "x": "text"}},
+        relations={"fish", "_dropped_20261017123005_fish"},
+        dropped_columns={"fish": {"_dropped_20261017123005_x"}},
+    )
+
+    spec = check(
+        change(
+            {"op": "drop_column", "table": "fish", "column": "x"},
+            {"op": "drop_table", "table": "fish"},
+        ),
+        schema,
+        now=AT,
+    )
+
+    assert [op.dropped_as for op in spec.ops] == [
+        "_dropped_20261017123006_x",
+        "_dropped_20261017123006_fish",
+    ]
+
+
 def test_the_model_cant_pick_the_dropped_name():
     """It's the platform's: the time it was asked for, and the name, nothing else."""
     for name in ("fish", "_dropped_x_fish", "_dropped_20261017123005_FISH"):

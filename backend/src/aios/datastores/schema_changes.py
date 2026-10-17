@@ -33,7 +33,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -478,7 +478,7 @@ def check(change: SchemaChange, schema: StoreSchema, now: datetime | None = None
     found. Raises `Invalid` if the schema doesn't take it."""
     state = copy.deepcopy(schema)
     tables, relations = state.tables, state.relations
-    stamp = f"{DROPPED_PREFIX}{(now or datetime.now(UTC)):%Y%m%d%H%M%S}_"
+    now = now or datetime.now(UTC)
     checked: list[Op] = []
     for i, op in enumerate(change.ops, start=1):
         where = f"Operation {i} ({op.op})"
@@ -499,21 +499,30 @@ def check(change: SchemaChange, schema: StoreSchema, now: datetime | None = None
         elif isinstance(op, CreateIndex):
             op = _check_create_index(op, tables, relations, where)
         elif isinstance(op, DropTable):
-            op = _check_drop_table(op, state, stamp, where)
+            op = _check_drop_table(op, state, now, where)
         else:
-            op = _check_drop_column(op, state, stamp, where)
+            op = _check_drop_column(op, state, now, where)
         checked.append(op)
     return SchemaChange(ops=checked)
 
 
-def _dropped_as(op: DropTable | DropColumn, stamp: str, name: str) -> str:
-    return op.dropped_as or stamp + name[: 63 - len(stamp)]
+def _dropped_as(op: DropTable | DropColumn, now: datetime, name: str, taken: set[str]) -> str:
+    """The name it's renamed to: the one it has (checked again), or one from `now` and its name
+    that isn't `taken` (a later second's, if it was dropped once already this second)."""
+    if op.dropped_as:
+        return op.dropped_as
+    while True:
+        stamp = f"{DROPPED_PREFIX}{now:%Y%m%d%H%M%S}_"
+        dropped_as = stamp + name[: 63 - len(stamp)]
+        if dropped_as not in taken:
+            return dropped_as
+        now += timedelta(seconds=1)
 
 
-def _check_drop_table(op: DropTable, state: StoreSchema, stamp: str, where: str) -> DropTable:
+def _check_drop_table(op: DropTable, state: StoreSchema, now: datetime, where: str) -> DropTable:
     if op.table not in state.tables:
         raise Invalid(f"{where}: there's no table `{SCHEMA}.{op.table}`")
-    dropped_as = _dropped_as(op, stamp, op.table)
+    dropped_as = _dropped_as(op, now, op.table, state.relations)
     if dropped_as in state.relations:
         raise Invalid(f"{where}: `{SCHEMA}.{dropped_as}` already exists")
     checked = op.model_copy(
@@ -531,7 +540,7 @@ def _check_drop_table(op: DropTable, state: StoreSchema, stamp: str, where: str)
     return checked
 
 
-def _check_drop_column(op: DropColumn, state: StoreSchema, stamp: str, where: str) -> DropColumn:
+def _check_drop_column(op: DropColumn, state: StoreSchema, now: datetime, where: str) -> DropColumn:
     columns = state.tables.get(op.table)
     if columns is None:
         raise Invalid(f"{where}: there's no table `{SCHEMA}.{op.table}`")
@@ -552,7 +561,7 @@ def _check_drop_column(op: DropColumn, state: StoreSchema, stamp: str, where: st
             " or before)"
         )
     dropped = state.dropped_columns.setdefault(op.table, set())
-    dropped_as = _dropped_as(op, stamp, op.column)
+    dropped_as = _dropped_as(op, now, op.column, dropped | set(columns))
     if dropped_as in dropped or dropped_as in columns:
         raise Invalid(f"{where}: `{SCHEMA}.{op.table}` already has a column `{dropped_as}`")
     not_null = state.not_null.get(op.table, set())

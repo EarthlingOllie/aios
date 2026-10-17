@@ -2,6 +2,8 @@
 `drop_table` or `drop_column` renames the table or column out of the way and takes the data
 tools' access to it, while its data stays; the owner can restore it until it's purged."""
 
+from datetime import datetime, timedelta
+
 import pytest
 from fake_model import ToolCall
 from sqlalchemy import update
@@ -9,8 +11,11 @@ from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
 
 from aios import worker
+from aios.auth import current_user
+from aios.config import get_settings
 from aios.datastores import data_store_for, schema_changes
 from aios.datastores.schema_changes import SchemaChange
+from aios.main import app
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
 
 TOOLS = [
@@ -265,3 +270,188 @@ def test_what_a_drop_would_remove_is_shown_before_its_approved(api, store):
             },
         ]
     }
+
+
+# --- The Dropped section, and restoring ---------------------------------------------------------
+
+
+@pytest.fixture
+def restores(monkeypatch) -> list:
+    """The restores queued, as (store id, dropped id), instead of sent to the broker."""
+    queued: list = []
+    monkeypatch.setattr(worker.restore_dropped_task, "delay", lambda *a: queued.append(a))
+    return queued
+
+
+def run_restores(restores: list) -> None:
+    while restores:
+        worker.restore_dropped_task.run(*restores.pop(0))
+
+
+def listed(api) -> list[dict]:
+    r = api.get("/api/dropped")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_the_dropped_section_lists_what_was_dropped_with_when_its_purged(
+    db, api, store, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_dropped_retention_days", 2)
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+
+    [table] = listed(api)  # the column went with its table: it's not listed by itself
+    assert (table["kind"], table["table"], table["column"]) == ("table", "fish", None)
+    dropped_at = datetime.fromisoformat(table["dropped_at"])
+    assert datetime.fromisoformat(table["purge_at"]) - dropped_at == timedelta(days=2)
+    assert table["blocked"] is None and table["restore_error"] is None
+
+
+def test_restoring_a_dropped_table_brings_it_back_intact(db, api, agent, store, restores):
+    with as_owner(store) as conn:
+        conn.execute("COMMENT ON TABLE data.fish IS 'Fish caught'")
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+    [table] = listed(api)
+
+    r = api.post(f"/api/dropped/{table['id']}/restore")
+    assert r.status_code == 202, r.text
+    run_restores(restores)
+
+    described = tool(api, agent, "describe_data")
+    [fish] = [t for t in described["tables"] if t["schema"] == "data"]
+    assert (fish["name"], fish["description"]) == ("fish", "Fish caught")
+    # Its dropped column is back too, still dropped, and listed by itself again.
+    assert [c["name"] for c in fish["columns"]] == ["id", "name"]
+    [column] = listed(api)
+    assert (column["kind"], column["table"], column["column"]) == ("column", "fish", "weight_kg")
+    read = tool(api, agent, "query_data", sql="SELECT id, name FROM data.fish ORDER BY id")
+    assert read["rows"] == [[1, "pike"], [2, "perch"]]
+    with as_owner(store) as conn:
+        [(summary,)] = conn.execute(
+            "SELECT summary FROM aios.schema_history ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+    assert summary == "Restore table data.fish"
+
+
+def test_restoring_a_dropped_column_brings_back_its_values_and_constraint(
+    db, api, agent, store, restores
+):
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    [column] = listed(api)
+
+    assert api.post(f"/api/dropped/{column['id']}/restore").status_code == 202
+    run_restores(restores)
+
+    assert listed(api) == []
+    # The table is whole again: `SELECT *` reads it.
+    read = tool(api, agent, "query_data", sql="SELECT * FROM data.fish ORDER BY id")
+    assert read["columns"] == ["id", "name", "weight_kg"]
+    assert [row[1] for row in read["rows"]] == ["pike", "perch"]
+    with as_owner(store) as conn:
+        [(not_null,)] = conn.execute(
+            "SELECT attnotnull FROM pg_attribute"
+            " WHERE attrelid = 'data.fish'::regclass AND attname = 'name'"
+        ).fetchall()
+    assert not_null
+
+
+def test_a_restored_column_that_rows_left_empty_meanwhile_comes_back_nullable(
+    db, api, agent, store, restores
+):
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    tool(api, agent, "write_data", table="fish", operation="insert", rows=[{"weight_kg": 1}])
+    [column] = listed(api)
+
+    api.post(f"/api/dropped/{column['id']}/restore")
+    run_restores(restores)
+
+    assert listed(api) == []
+    read = tool(api, agent, "query_data", sql="SELECT name FROM data.fish ORDER BY id")
+    assert read["rows"] == [["pike"], ["perch"], [None]]
+
+
+def test_restoring_onto_a_name_taken_since_is_refused(db, api, store, restores):
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+    apply(
+        db,
+        store,
+        {"op": "create_table", "name": "fish", "columns": [{"name": "x", "type": "text"}]},
+    )
+    [table] = listed(api)
+    assert "`data.fish` exists again" in table["blocked"]
+
+    r = api.post(f"/api/dropped/{table['id']}/restore")
+
+    assert r.status_code == 409
+    assert "`data.fish` exists again" in r.json()["detail"]
+    assert restores == []
+
+
+def test_a_restore_the_name_was_taken_before_it_ran_is_refused_and_says_why(
+    db, api, store, restores
+):
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    [column] = listed(api)
+    assert api.post(f"/api/dropped/{column['id']}/restore").status_code == 202
+    apply(
+        db, store, {"op": "add_column", "table": "fish", "column": {"name": "name", "type": "text"}}
+    )
+
+    run_restores(restores)
+
+    [still] = listed(api)
+    assert "already has a column `name`" in still["restore_error"]
+    with as_owner(store) as conn:
+        assert (
+            conn.execute(f'SELECT count("{still["dropped_name"]}") FROM data.fish').fetchone()[0]
+            == 2
+        )
+
+
+def test_a_dropped_tables_column_is_restored_with_the_table_not_by_itself(db, api, store):
+    apply(db, store, {"op": "drop_column", "table": "fish", "column": "name"})
+    [column] = listed(api)
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+
+    r = api.post(f"/api/dropped/{column['id']}/restore")
+
+    assert r.status_code == 409
+    assert "Restore the table `fish` first" in r.json()["detail"]
+
+
+def test_embedding_columns_stay_marked_through_a_drop_and_a_restore(db, api, store, restores):
+    bio = {"name": "bio", "type": "text"}
+    embedding = {"name": "bio_embedding", "type": "embedding", "embedding_of": "bio"}
+    apply(db, store, {"op": "create_table", "name": "people", "columns": [bio, embedding]})
+
+    def markers() -> list[tuple]:
+        with as_owner(store) as conn:
+            return conn.execute(
+                "SELECT table_name, column_name FROM aios.embedding_columns ORDER BY 1, 2"
+            ).fetchall()
+
+    dropped_as = apply(db, store, {"op": "drop_table", "table": "people"}).ops[0]["dropped_as"]
+    assert markers() == [(dropped_as, "bio_embedding")]
+    # The name is free for a new table with an embedding column of the same name.
+    apply(db, store, {"op": "create_table", "name": "people", "columns": [bio, embedding]})
+    apply(db, store, {"op": "drop_table", "table": "people"})
+    [newer, older] = listed(api)
+    api.post(f"/api/dropped/{older['id']}/restore")
+    run_restores(restores)
+
+    assert [m for m in markers() if m[0] == "people"] == [("people", "bio_embedding")]
+
+
+def test_only_the_stores_owner_sees_and_restores_its_dropped_objects(
+    db, api, store, new_user, restores
+):
+    apply(db, store, {"op": "drop_table", "table": "fish"})
+    [table] = listed(api)
+    other = new_user()
+    app.dependency_overrides[current_user] = lambda: other
+
+    assert listed(api) == []
+    assert api.post(f"/api/dropped/{table['id']}/restore").status_code == 404
+    assert restores == []

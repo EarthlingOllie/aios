@@ -42,6 +42,7 @@ celery_app.conf.update(
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
+        "aios.restore_dropped": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -186,6 +187,22 @@ def apply_schema_change_task(request_id: str) -> None:
 
     schema_changes.apply(uuid.UUID(request_id))
     enqueue_resume(uuid.UUID(request_id))
+
+
+@celery_app.task(
+    name="aios.restore_dropped",
+    soft_time_limit=APPLY_TIME_LIMIT,
+    time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
+    """Restore a dropped table or column the owner asked for (`aios.datastores.dropped`). Run
+    again (redelivered), it finds nothing left to restore."""
+    from aios.datastores import dropped
+
+    dropped.restore(uuid.UUID(data_store_id), dropped_id)
 
 
 def enqueue_resume(request_id: uuid.UUID) -> None:
