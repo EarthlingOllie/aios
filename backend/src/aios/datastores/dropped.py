@@ -18,8 +18,6 @@ here (`VISIBLE_TABLE`, `VISIBLE_COLUMN`) as well as by the roles' privileges.
 
 import logging
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -29,7 +27,13 @@ from psycopg import sql
 
 from aios.config import get_settings
 from aios.datastores.connections import store_session
-from aios.datastores.schema_changes import DROPPED_PREFIX, SCHEMA
+from aios.datastores.schema_changes import (
+    DROPPED_PREFIX,
+    SCHEMA,
+    record_history,
+    schema_transaction,
+    table_exists,
+)
 from aios.db import SessionLocal
 from aios.models import DataStore
 
@@ -212,16 +216,11 @@ def find(data_store_id: uuid.UUID, dropped_id: int) -> tuple[Dropped, str | None
         return None if row is None else (item := _row(row), blocked(pg, item))
 
 
-def _exists(pg: psycopg.Connection, table: str) -> bool:
-    qualified = sql.Identifier(SCHEMA, table).as_string(pg)
-    return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]
-
-
 def blocked(pg: psycopg.Connection, item: Dropped) -> str | None:
     """Why it can't be restored now, if it can't: its name has been taken since, or (a column)
     its table is dropped too."""
     if item.column is None:
-        if _exists(pg, item.table):
+        if table_exists(pg, item.table):
             return (
                 f"`{SCHEMA}.{item.table}` exists again: a table of that name was made after this"
                 " one was dropped, so this one can't take its name back."
@@ -234,7 +233,7 @@ def blocked(pg: psycopg.Connection, item: Dropped) -> str | None:
             (item.table,),
         ).fetchone()
         return f"Restore the table `{table[0] if table else item.table}` first: it's dropped too."
-    if not _exists(pg, item.table):
+    if not table_exists(pg, item.table):
         return f"There's no table `{SCHEMA}.{item.table}` to restore it to."
     qualified = sql.Identifier(SCHEMA, item.table).as_string(pg)
     taken = pg.execute(
@@ -303,21 +302,8 @@ class _Refused(Exception):
     pass
 
 
-@contextmanager
-def _schema_transaction(conn: psycopg.Connection) -> Iterator[None]:
-    """A transaction (as the owner) that changes the schema as applying a schema change does:
-    waiting for its locks no longer than `SCHEMA_CHANGE_LOCK_TIMEOUT`, one at a time with the
-    others (`aios.schema_history` is locked), and recorded there, bumping the revision."""
-    with conn.transaction():
-        timeout = f"{get_settings().schema_change_lock_timeout}ms"
-        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
-        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
-        yield
-
-
 def _record(conn: psycopg.Connection, summary: str, statements: list[sql.Composable]) -> None:
-    text = "\n".join(s.as_string(conn) + ";" for s in statements)
-    conn.execute("INSERT INTO aios.schema_history (summary, sql) VALUES (%s, %s)", (summary, text))
+    record_history(conn, summary, "\n".join(s.as_string(conn) + ";" for s in statements))
 
 
 def restore(data_store_id: uuid.UUID, dropped_id: int) -> str | None:
@@ -331,7 +317,7 @@ def restore(data_store_id: uuid.UUID, dropped_id: int) -> str | None:
         names = StoreNames.of(db.get(DataStore, data_store_id))
     with provisioner_locked(data_store_id), as_owner(names) as conn:
         try:
-            with _schema_transaction(conn):
+            with schema_transaction(conn):
                 row = conn.execute(
                     f"SELECT {_FIELDS} FROM aios.dropped_objects WHERE id = %s FOR UPDATE",
                     (dropped_id,),
@@ -421,7 +407,7 @@ def purge(data_store_id: uuid.UUID, wait: bool = True) -> list[str]:
                 (retention,),
             ).fetchall()
             for (dropped_id,) in expired:
-                with _schema_transaction(conn):
+                with schema_transaction(conn):
                     row = conn.execute(
                         f"SELECT {_FIELDS} FROM aios.dropped_objects WHERE id = %s FOR UPDATE",
                         (dropped_id,),
@@ -431,7 +417,7 @@ def purge(data_store_id: uuid.UUID, wait: bool = True) -> list[str]:
                     statements, summary, table = _purge_sql(_row(row))
                     for statement in statements:
                         conn.execute(statement)
-                    if table is not None and _exists(conn, table):
+                    if table is not None and table_exists(conn, table):
                         grant_access(conn, names.rw, names.ro, table)
                     _record(conn, summary, statements)
                 purged.append(summary)

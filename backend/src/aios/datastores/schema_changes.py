@@ -32,6 +32,8 @@ import copy
 import logging
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -839,11 +841,7 @@ def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
     from aios.datastores import dropped
     from aios.datastores.provision import as_owner
 
-    timeout = f"{get_settings().schema_change_lock_timeout}ms"
-    with as_owner(names) as conn, conn.transaction():
-        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
-        # One change at a time, each seeing the last: the revision can't move until commit.
-        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
+    with as_owner(names) as conn, schema_transaction(conn):
         done = conn.execute(
             "SELECT 1 FROM aios.schema_history WHERE request_id = %s", (request.id,)
         ).fetchone()
@@ -863,12 +861,34 @@ def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
                 )
         conn.execute(request.sql)  # several statements: sent whole, with no parameters
         for table in _access_changed(spec):
-            if read_exists(conn, table):
+            if table_exists(conn, table):
                 dropped.grant_access(conn, names.rw, names.ro, table)
-        conn.execute(
-            "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
-            (request.id, request.summary, request.sql),
-        )
+        record_history(conn, request.summary, request.sql, request.id)
+
+
+@contextmanager
+def schema_transaction(conn: psycopg.Connection) -> Iterator[None]:
+    """A transaction (as the store's owner) that changes its schema: applying a request, or
+    restoring or purging what was dropped. It waits for each lock no longer than
+    `SCHEMA_CHANGE_LOCK_TIMEOUT`, so it can't stall the store's other queries for long, and
+    holds `aios.schema_history`'s, so changes run one at a time, each seeing the last (the
+    revision can't move until it commits)."""
+    with conn.transaction():
+        timeout = f"{get_settings().schema_change_lock_timeout}ms"
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", (timeout,))
+        conn.execute("LOCK TABLE aios.schema_history IN EXCLUSIVE MODE")
+        yield
+
+
+def record_history(
+    conn: psycopg.Connection, summary: str, sql: str, request_id: uuid.UUID | None = None
+) -> None:
+    """Log a change in `aios.schema_history` (in its `schema_transaction`), which bumps the
+    store's data schema revision."""
+    conn.execute(
+        "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
+        (request_id, summary, sql),
+    )
 
 
 def _access_changed(change: SchemaChange) -> list[str]:
@@ -884,7 +904,7 @@ def _access_changed(change: SchemaChange) -> list[str]:
     return list(dict.fromkeys(tables))
 
 
-def read_exists(pg: psycopg.Connection, table: str) -> bool:
+def table_exists(pg: psycopg.Connection, table: str) -> bool:
     """Whether `data.<table>` is there."""
     qualified = f"{_quote(SCHEMA)}.{_quote(table)}"
     return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]

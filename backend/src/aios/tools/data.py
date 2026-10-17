@@ -107,8 +107,7 @@ DESCRIBE_SQL = text(
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       -- A partitioned table is one table: its partitions are how it's stored.
       AND NOT c.relispartition
-      -- Readable, if only some of its columns (a table with dropped columns), and only those.
-      AND has_any_column_privilege(c.oid, 'SELECT')
+      -- Only the columns it may read (all of a table's, unless it has dropped columns).
       AND has_column_privilege(c.oid, a.attnum, 'SELECT')
       -- Not dropped (`aios.datastores.dropped`): the role can't read those anyway.
       AND {VISIBLE_TABLE} AND {VISIBLE_COLUMN}
