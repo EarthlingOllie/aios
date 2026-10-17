@@ -2,15 +2,26 @@
 against two configured caps, and the writes refused past either."""
 
 import psycopg
+import pytest
 from conftest import add_document
 from sqlalchemy import select
+from test_documents import PDF, stored_keys, upload
 from test_provisioning import admin_connect
 
 from aios import worker
+from aios.api import documents
 from aios.config import Settings, get_settings, libpq_conninfo
-from aios.datastores import data_store_for, provision
+from aios.datastores import data_store_for, provision, quota
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore
+
+
+@pytest.fixture
+def queued(monkeypatch) -> list[tuple]:
+    """Uploads' ingests, kept here instead of sent to the broker."""
+    calls = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *a: calls.append(a))
+    return calls
 
 
 def store_row(db, store_id) -> DataStore:
@@ -76,3 +87,49 @@ def test_the_schedule_runs_every_few_minutes_on_the_provisioning_worker():
     assert entry["schedule"] == worker.MEASURE_USAGE_EVERY <= 15 * 60
     route = worker.celery_app.conf.task_routes["aios.measure_data_store_usage"]
     assert route == {"queue": "provisioning"}
+
+
+def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
+    api, user, queued, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", len(PDF))
+    store_id = data_store_for(user.id)
+    first = upload(api).json()
+    # Under the cap until it's measured at it.
+    worker.measure_data_store_usage_task.apply().get()
+
+    r = upload(api, name="more.pdf")
+
+    assert r.status_code == 507
+    assert r.json()["detail"] == (
+        "Your data store is full: its documents use 47 B of the 47 B allowed. "
+        "Delete some to upload more."
+    )
+    assert stored_keys(store_id) == [f"stores/{store_id}/documents/{first['id']}"]
+    # Reading and deleting carry on.
+    assert [d["id"] for d in api.get("/api/documents").json()] == [first["id"]]
+    assert api.delete(f"/api/documents/{first['id']}").status_code == 204
+
+    worker.measure_data_store_usage_task.apply().get()
+
+    assert upload(api, name="more.pdf").status_code == 201
+
+
+@pytest.mark.parametrize(
+    ("n", "says"),
+    [
+        (0, "0 B"),
+        (1023, "1023 B"),
+        (1024, "1.0 KB"),
+        (1536, "1.5 KB"),
+        (10 * 1024, "10 KB"),
+        # Half up, as the Data page's Math.round does.
+        (10 * 1024 + 512, "11 KB"),
+        (int(2.5 * 1024 * 1024), "2.5 MB"),
+        (3 * 1024**3, "3.0 GB"),
+        (1024 * 1024 - 1, "1.0 MB"),
+        (10 * 1024 - 1, "10 KB"),
+    ],
+)
+def test_sizes_are_written_as_the_data_page_writes_them(n, says):
+    assert quota.format_bytes(n) == says

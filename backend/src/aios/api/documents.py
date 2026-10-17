@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select
 
 from aios.auth import CurrentUser
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, store_session, store_status
+from aios.datastores import data_store_for, files, quota, store_session, store_status
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
 from aios.models import DataStoreStatus
@@ -103,6 +103,9 @@ def upload_document(file: UploadFile, user: CurrentUser):
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
     store_id = data_store_for(user.id)
     with store_session(store_id, "rw") as db:
+        usage = quota.usage(store_id)
+        if usage.files_full:
+            raise HTTPException(status.HTTP_507_INSUFFICIENT_STORAGE, quota.files_full(usage))
         # The document's id first, since its file's key holds it. Committed, so no transaction
         # is left open through the upload.
         doc_id = db.scalar(select(func.nextval(DOCUMENT_IDS)))

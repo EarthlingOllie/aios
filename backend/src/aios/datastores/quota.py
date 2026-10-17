@@ -8,6 +8,7 @@ uploads and `write_data`'s inserts and updates are refused; reads, searches and 
 """
 
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,6 +46,32 @@ class Usage:
     @property
     def files_full(self) -> bool:
         return self.files_bytes is not None and self.files_bytes >= self.files_quota_bytes
+
+
+_UNITS = ("B", "KB", "MB", "GB", "TB")
+
+
+def format_bytes(n: int) -> str:
+    """A size for people, as the Data page writes it (`formatBytes`): "512 B", "1.5 KB",
+    "20 MB" (binary units)."""
+    unit, value = 0, float(n)
+    # Up a unit at 1024, or at what would round to 1024 (1023.95 KB is "1.0 MB").
+    while unit < len(_UNITS) - 1 and value >= (1024 if unit == 0 else 1023.95):
+        value /= 1024
+        unit += 1
+    if unit == 0:
+        return f"{n} B"
+    # Halves up, as JavaScript's Math.round (Python's round goes to the even one).
+    whole = math.floor(value + 0.5)
+    return f"{value:.1f} {_UNITS[unit]}" if value < 9.95 else f"{whole} {_UNITS[unit]}"
+
+
+def files_full(usage: Usage) -> str:
+    """Why an upload is refused, for the user."""
+    return (
+        f"Your data store is full: its documents use {format_bytes(usage.files_bytes or 0)} of"
+        f" the {format_bytes(usage.files_quota_bytes)} allowed. Delete some to upload more."
+    )
 
 
 def measure(data_store_id: uuid.UUID) -> None:
