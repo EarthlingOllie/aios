@@ -199,11 +199,50 @@ export type ModelMessage = {
   response_metadata?: { model_name?: string; stop_reason?: string };
 };
 
+export type SchemaChangeStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "applied"
+  | "failed"
+  | "stale"
+  | "cancelled";
+
+/** An agent's request to change the tables in the user's data store. */
+export type SchemaChangeRequest = {
+  id: string;
+  data_store_id: string;
+  status: SchemaChangeStatus;
+  summary: string;
+  reason: string;
+  /** Exactly what runs on approval. */
+  sql: string;
+  ops: Record<string, unknown>[];
+  /** The agent run that asked, if it still exists. */
+  run: { agent_id: number; run_id: number; title: string | null } | null;
+  /** The tool call that asked, so a chat shows the request at that call. */
+  tool_call_id: string | null;
+  note: string | null;
+  error: string | null;
+  created_at: string;
+  decided_at: string | null;
+  applied_at: string | null;
+  /** When the run that asked was given the outcome. */
+  resumed_at: string | null;
+  /** Whether the signed-in user may approve or reject it (it's still pending). */
+  can_decide: boolean;
+};
+
 export type Run = RunSummary & {
   ui_messages: UIMessage[];
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
   instructions: string;
+  /** The schema change requests the run made, oldest first. */
+  schema_change_requests: SchemaChangeRequest[];
+  /** Whether it waits on one of them: it takes no new messages until it's resumed. */
+  waiting: boolean;
 };
 
 export type WorkflowNodeKind = "agent" | "workflow";
@@ -412,6 +451,11 @@ export const api = {
     body.append("file", file);
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
+  listSchemaChanges: () => request<SchemaChangeRequest[]>("/api/schema-changes"),
+  approveSchemaChange: (id: string) =>
+    request<SchemaChangeRequest>(`/api/schema-changes/${id}/approve`, { method: "POST" }),
+  rejectSchemaChange: (id: string, note: string) =>
+    request<SchemaChangeRequest>(`/api/schema-changes/${id}/reject`, json("POST", { note })),
   search: (q: string, limit: number) =>
     request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 

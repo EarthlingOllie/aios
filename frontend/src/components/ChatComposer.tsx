@@ -10,6 +10,7 @@ export function ChatComposer({
   value,
   onChange,
   busy,
+  disabled = false,
   onStop,
   onSubmit,
 }: {
@@ -18,6 +19,8 @@ export function ChatComposer({
   value: string;
   onChange: (value: string) => void;
   busy: boolean;
+  /** Nothing can be sent (e.g. the run waits on a decision). */
+  disabled?: boolean;
   onStop: () => void;
   onSubmit: () => void;
 }) {
@@ -50,7 +53,7 @@ export function ChatComposer({
             <Square />
           </Button>
         ) : (
-          <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={!value.trim()}>
+          <Button type="submit" size="icon" className="absolute right-2 bottom-2 size-8" disabled={disabled || !value.trim()}>
             <ArrowUp />
           </Button>
         )}
