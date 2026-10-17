@@ -170,6 +170,21 @@ class Graph:
     targets: dict[str, list[str]]
 
 
+def reachable_versions(version_id: int):
+    """A CTE of the ids (`id`) of a workflow version and every version it runs, at any depth: one
+    recursive query (pins only point at older versions, so the walk ends)."""
+    reach = (
+        select(WorkflowVersion.id.label("id"))
+        .where(WorkflowVersion.id == version_id)
+        .cte("reach", recursive=True)
+    )
+    return reach.union(
+        select(WorkflowNode.subworkflow_version_id)
+        .join(reach, WorkflowNode.workflow_version_id == reach.c.id)
+        .where(WorkflowNode.subworkflow_version_id.is_not(None))
+    )
+
+
 def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
     """Load a workflow version and every version it runs, at any depth, with what `load_graph`
     reads, in a fixed number of queries however many nodes, agents and levels it has.
@@ -180,16 +195,7 @@ def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
     (Safe here, unlike in `aios.api.workflows.load_version`: each row is reached by one path.)
     Keep the returned rows referenced while reading them: the session only holds rows weakly.
     """
-    reach = (
-        select(WorkflowVersion.id.label("id"))
-        .where(WorkflowVersion.id == version_id)
-        .cte("reach", recursive=True)
-    )
-    reach = reach.union(
-        select(WorkflowNode.subworkflow_version_id)
-        .join(reach, WorkflowNode.workflow_version_id == reach.c.id)
-        .where(WorkflowNode.subworkflow_version_id.is_not(None))
-    )
+    reach = reachable_versions(version_id)
     agent_version = selectinload(WorkflowVersion.nodes).selectinload(WorkflowNode.agent_version)
     versions = db.scalars(
         select(WorkflowVersion)

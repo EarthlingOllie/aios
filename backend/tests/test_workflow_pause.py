@@ -17,7 +17,14 @@ from sqlalchemy import func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
-from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
+from test_workflows import (
+    agent_node,
+    count_queries,
+    make_agent,
+    make_workflow,
+    workflow_body,
+    workflow_node,
+)
 
 from aios import worker, workflows
 from aios.config import get_settings
@@ -603,3 +610,23 @@ def test_a_node_asking_twice_shows_both_requests_and_resumes_once_both_are_decid
     out = read(api, workflow, waiting["id"])
     assert out["status"] == "succeeded", out["error"]
     assert data_tables(store) == ["contacts"]
+
+
+def test_reading_a_waiting_run_doesnt_load_its_agents_tools_and_takes_fixed_queries(
+    api, builder, store, queued
+):
+    """The page polls a waiting run, possibly for days: its pins are checked without loading
+    what running them needs, in as many queries however deep the graph and however many steps."""
+    inner = chain(api, builder)
+    middle = make_workflow(api, "Middle", [workflow_node("inner", inner)])
+    outer = make_workflow(api, "Outer", [workflow_node("middle", middle)])
+    shallow = start(api, queued, middle, Flow())
+    deep = start(api, queued, outer, Flow())
+    counts = []
+    for workflow, run in ((middle, shallow), (outer, deep)):
+        assert run["status"] == "waiting"
+        with count_queries() as statements:
+            read(api, workflow, run["id"])
+        assert not [q for q in statements if "agent_version_tools" in q], statements
+        counts.append(len(statements))
+    assert counts[0] == counts[1]
