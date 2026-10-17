@@ -51,6 +51,21 @@ class SchemaHistory(StoreBase):
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EmbeddingColumn(StoreBase):
+    """A `vector(EMBEDDING_DIM)` column of a table in `data`, and the text column in the same
+    table it's the embedding of: `write_data` fills it. Schema changes add a row as they add
+    such a column; only the owner writes it (`provision.BOOKKEEPING`)."""
+
+    __tablename__ = "embedding_columns"
+    __table_args__ = {
+        "comment": "Columns in data that write_data fills with embeddings of a text column"
+    }
+
+    table_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    column_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_column: Mapped[str] = mapped_column(Text)
+
+
 class DocumentStatus(enum.StrEnum):
     pending = "pending"
     processing = "processing"

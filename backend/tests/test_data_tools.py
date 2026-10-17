@@ -525,6 +525,7 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
         ("data", "fish"),
         ("aios", "chunks"),
         ("aios", "documents"),
+        ("aios", "embedding_columns"),
         ("aios", "schema_history"),
     }
     assert query(api, data_agent, "SELECT current_database()")["rows"] == [[store.dbname]]
@@ -576,6 +577,7 @@ def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent)
         ("data", "secrets"),
         ("aios", "chunks"),
         ("aios", "documents"),
+        ("aios", "embedding_columns"),
         ("aios", "schema_history"),
     }
     assert result["rows"] == [["hunter2"]]

@@ -13,6 +13,7 @@ from aios.tools import (  # noqa: F401  (registers the tools)
     hybrid_search,
     run_python,
     web_search,
+    write_data,
 )
 from aios.tools.registry import (
     TOOLS,

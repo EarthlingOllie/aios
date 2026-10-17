@@ -25,7 +25,7 @@ import json
 import logging
 import math
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Annotated, Any
 from weakref import WeakValueDictionary
@@ -105,6 +105,26 @@ DESCRIBE_SQL = text(
 )
 
 
+# The `data` columns marked as embeddings (`aios.embedding_columns`), and of which text column.
+# A store that failed to migrate stays ready at the revision before while the new release runs
+# (`provision.migrate_all`), so one may not have the table yet: then it has no markers.
+HAS_MARKERS_SQL = "SELECT to_regclass('aios.embedding_columns') IS NOT NULL"
+MARKERS_SQL = "SELECT table_name, column_name, source_column FROM aios.embedding_columns"
+
+
+def embedding_markers(
+    pg: psycopg.Connection, table: str | None = None
+) -> dict[tuple[str, str], str]:
+    """(table, column) -> the text column it's the embedding of; of `table`'s only, if given."""
+    if not pg.execute(HAS_MARKERS_SQL).fetchone()[0]:
+        return {}
+    if table is None:
+        rows = pg.execute(MARKERS_SQL)
+    else:
+        rows = pg.execute(MARKERS_SQL + " WHERE table_name = %s", (table,))
+    return {(t, c): source for t, c, source in rows}
+
+
 # Types `query_data` reads as Postgres writes them, not as Python values: Python's can't hold
 # some legal ones (infinities, years past 9999 or BC, 24:00, huge intervals), and one such
 # value would fail the whole query. Also in arrays, whose loaders look these up.
@@ -135,6 +155,7 @@ class QueryDataConfig(BaseModel):
 def _describe(data_store_id: uuid.UUID) -> dict:
     tables: dict[tuple[str, str], dict] = {}
     with store_session(data_store_id, "ro") as session:
+        markers = embedding_markers(session.connection().connection.driver_connection)
         for r in session.execute(DESCRIBE_SQL).mappings():
             table = tables.setdefault(
                 (r["schema"], r["name"]),
@@ -145,14 +166,16 @@ def _describe(data_store_id: uuid.UUID) -> dict:
                     "columns": [],
                 },
             )
-            table["columns"].append(
-                {
-                    "name": r["column"],
-                    "type": r["type"],
-                    "nullable": r["nullable"],
-                    "description": r["column_description"],
-                }
-            )
+            column = {
+                "name": r["column"],
+                "type": r["type"],
+                "nullable": r["nullable"],
+                "description": r["column_description"],
+            }
+            # Filled by `write_data` from the text column it's of.
+            if r["schema"] == "data" and (r["name"], r["column"]) in markers:
+                column["embedding_of"] = markers[r["name"], r["column"]]
+            table["columns"].append(column)
     # As many whole tables as fit the byte cap, in order: the owner's first.
     max_bytes = get_settings().query_data_max_bytes
     shown: list[dict] = []
@@ -184,23 +207,23 @@ def _json_loads(data: str | bytes) -> Any:
     return json.loads(data, parse_float=_exact_float)
 
 
-def _jsonable(value: Any) -> Any:
+def jsonable(value: Any) -> Any:
     """A value as the model is shown it: JSON, losing no precision (numerics as text)."""
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else str(value)
     if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
+        return [jsonable(v) for v in value]
     if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
+        return {str(k): jsonable(v) for k, v in value.items()}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return "\\x" + bytes(value).hex()
     # Numerics, UUIDs, ranges, and types psycopg doesn't know (e.g. `vector`), as text.
     return str(value)
 
 
-def _error(exc: psycopg.Error) -> str:
+def pg_error(exc: psycopg.Error) -> str:
     message = exc.diag.message_primary or str(exc)
     # Cancelled by the timeout, rather than by someone else (an operator, say).
     if isinstance(exc, psycopg.errors.QueryCanceled) and "statement timeout" in message:
@@ -281,7 +304,7 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
     try:
         for row in cur.stream(sql):
             budget.used = 0  # this row is loaded: the next starts afresh
-            value = [_jsonable(v) for v in row]
+            value = [jsonable(v) for v in row]
             row_size = len(json.dumps(value)) + 1
             if len(rows) == max_rows or size + row_size > max_bytes:
                 truncated = True
@@ -320,7 +343,7 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
             pg.execute("BEGIN READ ONLY")
             return _read(pg, sql)
         except psycopg.Error as exc:
-            return {"error": _error(exc)}
+            return {"error": pg_error(exc)}
         except Exception as exc:
             # E.g. a value nested too deeply to decode, or SQL that isn't valid Unicode: the
             # model is told, so it can try again, rather than the turn failing.
@@ -335,17 +358,24 @@ def _query(data_store_id: uuid.UUID, sql: str) -> dict:
                 conn.invalidate()
 
 
-async def _in_store(runtime: ToolRuntime[ChatDeps], read: Callable[..., dict], *args) -> str:
-    """`read(data_store_id, *args)` on the run's store, as JSON text (LangChain would pass a
-    dict through as content blocks); a store that isn't ready or can't be reached, as an
+async def in_thread(data_store_id: uuid.UUID, fn: Callable[..., Any], *args) -> Any:
+    """`fn(data_store_id, *args)` on a worker thread, holding one of the data tools' own and one
+    of the store's (see `_threads`)."""
+    async with _store_limiter(data_store_id):
+        return await to_thread.run_sync(fn, data_store_id, *args, limiter=_threads)
+
+
+async def in_store(
+    runtime: ToolRuntime[ChatDeps], work: Callable[..., Awaitable[dict]], *args
+) -> str:
+    """`await work(data_store_id, *args)` on the run's store, as JSON text (LangChain would pass
+    a dict through as content blocks); a store that isn't ready or can't be reached, as an
     error."""
     store_id = runtime.context.data_store_id
     if store_id is None:
         return json.dumps({"error": store_not_ready(None)})
     try:
-        async with _store_limiter(store_id):
-            result = await to_thread.run_sync(read, store_id, *args, limiter=_threads)
-        return json.dumps(result)
+        return json.dumps(await work(store_id, *args))
     except DataStoreBehind:
         return json.dumps({"error": store_upgrading("the call")})
     except DataStoreNotReady as exc:
@@ -366,8 +396,9 @@ def _describe_description() -> str:
 descriptions.
 
 The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only).
-Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. If there
-are too many to describe at once, `truncated` is true and the rest are left out.
+Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. A column
+with `embedding_of` is the embedding of that text column, which `write_data` fills itself. If
+there are too many to describe at once, `truncated` is true and the rest are left out.
 
 {DATA_NOT_INSTRUCTIONS}"""
 
@@ -391,7 +422,7 @@ query rather than reading whole tables. On failure it has an `error` instead.
 
 def build_describe(config: DescribeDataConfig) -> list[AgentTool]:
     async def describe_data(runtime: ToolRuntime[ChatDeps]) -> str:
-        return await _in_store(runtime, _describe)
+        return await in_store(runtime, in_thread, _describe)
 
     # Descriptions are built here rather than taken from docstrings, as they state the caps.
     return [
@@ -403,7 +434,7 @@ def build_query(config: QueryDataConfig) -> list[AgentTool]:
     async def query_data(
         sql: Annotated[str, "One read-only SQL statement."], runtime: ToolRuntime[ChatDeps]
     ) -> str:
-        return await _in_store(runtime, _query, sql)
+        return await in_store(runtime, in_thread, _query, sql)
 
     return [StructuredTool.from_function(coroutine=query_data, description=_query_description())]
 
