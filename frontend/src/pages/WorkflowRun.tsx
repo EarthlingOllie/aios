@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ChevronRight, MessageSquare, Trash2, Workflow as WorkflowIcon } from "lucide-react";
 
@@ -87,6 +87,12 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     waitingRun ? WAITING_POLL_MS : undefined,
   );
   const waiting = useWaitingRequests(run.data?.steps ?? []);
+  // Read its requests again with each read of the run: one may be decided elsewhere (the Data
+  // page, the conversation) while the run still waits.
+  const reloadRequests = waiting.reload;
+  useEffect(() => {
+    if (waitingRun) reloadRequests();
+  }, [run.data, waitingRun, reloadRequests]);
 
   // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;

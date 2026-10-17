@@ -147,3 +147,17 @@ test("a node waiting on two requests shows a card for each", async ({ page }) =>
     waiting.getByRole("region", { name: "Schema change: Create table data.places" }),
   ).toBeVisible();
 });
+
+test("a request decided elsewhere stops offering approve and reject", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { workflow, run, request } = waitingRun(api);
+  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  const card = page.getByRole("region", { name: `Schema change: ${request.summary}` });
+  await expect(card.getByRole("button", { name: "Approve" })).toBeVisible();
+
+  // Approved on the Data page, in another tab; the run still waits while it's applied.
+  Object.assign(request, { status: "approved", decided_at: "2026-10-14T09:05:00Z" });
+
+  await expect(card).toContainText("Applying", { timeout: 10_000 });
+  await expect(card.getByRole("button", { name: "Approve" })).toHaveCount(0);
+});
