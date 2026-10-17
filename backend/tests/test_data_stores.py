@@ -34,7 +34,7 @@ from aios.datastores import (
     store_session,
 )
 from aios.datastores import connections as store_connections
-from aios.datastores.models import Document, DocumentStatus
+from aios.datastores.models import EMBEDDING_DIM, Document, DocumentStatus
 from aios.db import SessionLocal, engine
 from aios.models import (
     Base,
@@ -160,6 +160,23 @@ def test_the_search_tools_tell_the_model_a_store_that_failed_couldnt_be_set_up(d
 
     assert results == [{"error": search.STORE_FAILED}]
     assert "couldn't be set up" in search.STORE_FAILED
+
+
+def test_the_search_tools_tell_the_model_a_store_behind_the_trees_head_is_being_upgraded(
+    db, user, monkeypatch
+):
+    store_id = data_store_for(user.id)
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
+    db.commit()
+
+    async def embed(query):
+        return [0.0] * EMBEDDING_DIM
+
+    monkeypatch.setattr(search, "embed_query", embed)
+
+    results = asyncio.run(search.document_search_results(data_store_id=store_id, query="fish"))
+
+    assert results == [{"error": search.STORE_UPGRADING}]
 
 
 def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
