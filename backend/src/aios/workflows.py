@@ -521,6 +521,16 @@ def _start_step(
     agent run, or wins and this fails (a `RunError`), leaving no agent run behind.
     """
     with SessionLocal() as db:
+        # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
+        # worker went on), whose steps, and their exported copy, are final. Share-locked, so
+        # ending it waits for this, or this for that.
+        status = db.scalar(
+            select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
+        )
+        if status is None:
+            raise RunError("The run has been deleted")
+        if status != WorkflowRunStatus.running:
+            raise RunError("The run has ended")
         agent_run_id = None
         if node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True):
             agent_run = AgentRun(

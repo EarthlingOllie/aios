@@ -15,7 +15,7 @@ from sqlalchemy import text, update
 from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow, workflow_node
 
-from aios import worker
+from aios import worker, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
@@ -1160,3 +1160,31 @@ def test_deleting_a_workflow_steps_agent_run_unlinks_it_from_the_exported_step(
         "SELECT array_to_string(path, '/'), agent_run_id IS NOT NULL"
         " FROM history.workflow_run_steps ORDER BY path",
     ) == [("draft", True), ("review", False), ("review/critic", False)]
+
+
+def test_a_run_ended_while_a_node_runs_starts_no_more_steps_than_its_copy_has(
+    api, user, store_id, history_tasks, started
+):
+    """A run failed as stopped (its heartbeat was late, say) while its worker goes on: the copy
+    written as it ended is complete, as no node starts once it has."""
+    switch(api, True)
+    set_up_and_export(store_id, history_tasks)
+    workflow = nested_workflow(api)
+    run = workflow_runs.start(api, workflow, "topic")
+
+    async def script(messages, info):
+        name, text = messages[0].content, messages[-1].content
+        if name == "draft":
+            await asyncio.to_thread(workflows.fail_run, run["id"], "Stopped elsewhere")
+        yield f"{name}({text})"
+
+    with use_model(model(script)):
+        asyncio.run(execute_run(run["id"]))
+    history.export(store_id)
+
+    out = api.get(f"/api/workflows/{workflow['id']}/runs/{run['id']}").json()
+    assert (out["status"], out["error"]) == ("failed", "Stopped elsewhere")
+    assert [s["path"] for s in out["steps"]] == [["draft"]]
+    assert stored(
+        store_id, "SELECT array_to_string(path, '/') FROM history.workflow_run_steps"
+    ) == [("draft",)]
