@@ -174,14 +174,17 @@ export function DetailPage({
 export function Section({
   title,
   actions,
+  label,
   children,
 }: {
   title: string;
   actions?: ReactNode;
+  /** Names the section as a landmark region, so it can be found by name. */
+  label?: string;
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex flex-col gap-2" aria-label={label}>
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
           {title}

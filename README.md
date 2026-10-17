@@ -90,6 +90,15 @@ first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
 does the same for its own (`/api/triggers`).
 
+**Chats** are group conversations, named like channels (a name is unique among all chats). The
+**Chats** page lists the chats you're in, most recently active first, and opens one to its header
+and members, grouped by kind (users for now; agents and workflows have their place in
+`chat_members` and join later, with messages). A chat is **public** or **private**: a private chat
+doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
+opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
+renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
+other members).
+
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
   (the run is listed with the agent's others, marked as scheduled). The schedule shows how its
@@ -151,6 +160,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
+    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}]
     scheduler.py    fires due schedules (runs in each API process)
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
