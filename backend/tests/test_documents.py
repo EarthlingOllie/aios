@@ -2,9 +2,9 @@ from sqlalchemy import select
 
 from aios.api import documents
 from aios.auth import current_user
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, store_session
+from aios.datastores.models import Document
 from aios.main import app
-from aios.models import Document, User
 
 
 def test_upload_enqueue_failure_returns_503_and_leaves_no_row(client, db, user, monkeypatch):
@@ -19,8 +19,8 @@ def test_upload_enqueue_failure_returns_503_and_leaves_no_row(client, db, user, 
         app.dependency_overrides.clear()
 
     assert resp.status_code == 503
-    db.expire_all()
-    assert db.scalars(select(Document).where(Document.owner_id == user.id)).all() == []
+    with store_session(data_store_for(user.id), "ro") as store:
+        assert store.scalars(select(Document)).all() == []
 
 
 def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, monkeypatch):
@@ -36,18 +36,3 @@ def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, 
     ]
     assert api.delete(f"/api/documents/{doc['id']}").status_code == 204
     assert api.get("/api/documents").json() == []
-
-
-def test_another_users_document_cant_be_deleted(api, db, user):
-    other = User(github_id=-2, login="other-user")
-    db.add(other)
-    db.flush()
-    theirs = Document(owner_id=other.id, filename="theirs.md", data=b"")
-    db.add(theirs)
-    db.commit()
-    try:
-        assert api.delete(f"/api/documents/{theirs.id}").status_code == 404
-        assert api.get("/api/documents").json() == []
-    finally:
-        db.delete(other)
-        db.commit()

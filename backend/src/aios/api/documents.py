@@ -7,9 +7,10 @@ from sqlalchemy import func, select
 
 from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import documents_session, store_owner, store_status
+from aios.datastores import store_session, store_status
+from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
-from aios.models import Chunk, DataStoreStatus, Document, DocumentStatus
+from aios.models import DataStoreStatus
 from aios.search import hybrid_search
 from aios.worker import ingest_document_task
 
@@ -61,11 +62,10 @@ def data_store(store_id: CurrentDataStore):
 
 @router.get("/documents", response_model=list[DocumentOut])
 def list_documents(store_id: CurrentDataStore):
-    with documents_session(store_id, "ro") as db:
+    with store_session(store_id, "ro") as db:
         rows = db.execute(
             select(Document, func.count(Chunk.id))
             .outerjoin(Chunk)
-            .where(Document.owner_id == store_owner(db))
             .group_by(Document.id)
             .order_by(Document.created_at.desc())
         ).all()
@@ -90,9 +90,8 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
     data = file.file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "File too large")
-    with documents_session(store_id, "rw") as db:
+    with store_session(store_id, "rw") as db:
         doc = Document(
-            owner_id=store_owner(db),
             filename=file.filename or "upload",
             content_type=file.content_type,
             data=data,
@@ -124,9 +123,9 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
-    with documents_session(store_id, "rw") as db:
+    with store_session(store_id, "rw") as db:
         doc = db.get(Document, document_id)
-        if doc is None or doc.owner_id != store_owner(db):
+        if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
         db.delete(doc)
         db.commit()
