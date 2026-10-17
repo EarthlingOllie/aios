@@ -313,8 +313,8 @@ they're empty until then.
 Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
 pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
 role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
-`config.py`). A connection past the limit is refused: the API
-answers 503 to try again, the ingest task retries, and the search tools tell the model.
+`config.py`). A connection past the limit is refused: the API answers 503 to try again, the
+ingest task retries, and the search tools tell the model.
 
 ### Dependency policy
 
