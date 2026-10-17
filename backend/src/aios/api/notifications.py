@@ -5,9 +5,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from aios.auth import CurrentUser
 from aios.db import DB
@@ -53,3 +53,27 @@ def list_notifications(user: CurrentUser, db: DB):
         .where(Notification.user_id == user.id, Notification.read_at.is_(None))
     )
     return NotificationList(unread=unread, notifications=[_out(n) for n in rows])
+
+
+@router.post("/notifications/{notification_id}/read", response_model=NotificationOut)
+def mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DB):
+    """Mark one of the user's notifications read. Idempotent: one already read keeps when it was
+    first read."""
+    db.execute(
+        update(Notification)
+        .where(
+            Notification.id == notification_id,
+            Notification.user_id == user.id,
+            Notification.read_at.is_(None),
+        )
+        .values(read_at=func.now())
+    )
+    db.commit()
+    notification = db.scalar(
+        select(Notification).where(
+            Notification.id == notification_id, Notification.user_id == user.id
+        )
+    )
+    if notification is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Notification not found")
+    return _out(notification)
