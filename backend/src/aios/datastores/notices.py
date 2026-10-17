@@ -1,4 +1,4 @@
-"""What agents' tools tell the model about a data store they can't use yet."""
+"""What agents' tools tell the model about a data store they can't use (yet, or just now)."""
 
 from aios.models import DataStoreStatus
 
@@ -16,7 +16,13 @@ def store_not_ready(status: DataStoreStatus | None) -> str:
     return "The user's data store isn't available."
 
 
-# While it's brought to the store tree's head (the release before made it, during a deploy).
-STORE_UPGRADING = "The user's data store is being upgraded. Try again in a moment."
-# And while it has no connections free.
-STORE_BUSY = "The user's data store is busy. Try again in a moment."
+def store_upgrading(retry: str) -> str:
+    """What to tell the model while the store is brought to the store tree's head
+    (`DataStoreBehind`): worth trying `retry` (e.g. "the search") again in a moment."""
+    return f"The user's data store is being upgraded. Try {retry} again in a moment."
+
+
+def store_busy(retry: str) -> str:
+    """What to tell the model when the store has no connections free (`DataStoreBusy`): worth
+    trying `retry` again in a moment."""
+    return f"The user's data store is busy. Try {retry} again in a moment."

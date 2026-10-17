@@ -456,3 +456,18 @@ def test_the_files_servers_keys_can_come_from_the_settings(
     assert files.read(key) == b"hi"
     assert httpx.get(files.download_url(key, "a")).content == b"hi"
     files.delete(key)
+
+
+def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, monkeypatch):
+    queued = []
+    monkeypatch.setattr(documents.ingest_document_task, "delay", lambda *args: queued.append(args))
+
+    doc = api.post("/api/documents", files={"file": ("a.txt", b"hello", "text/plain")}).json()
+
+    assert queued == [(str(data_store_for(user.id)), doc["id"])]
+    listed = api.get("/api/documents").json()
+    assert [(d["id"], d["filename"], d["status"]) for d in listed] == [
+        (doc["id"], "a.txt", "pending")
+    ]
+    assert api.delete(f"/api/documents/{doc['id']}").status_code == 204
+    assert api.get("/api/documents").json() == []

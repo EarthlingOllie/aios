@@ -156,10 +156,10 @@ def _engine(store: DataStore, role: Role) -> Engine:
         if engine is not None:
             _engines.move_to_end(key)
             return engine
-        # Up to 3 connections per (store, role) in each process: the roles' connection limit is
-        # budgeted from it (`data_store_connection_limit`).
-        # `query_data` resets read-only connections with `DISCARD ALL`, which drops prepared
-        # statements, so psycopg mustn't make any on them (it prepares those it runs often).
+        # Up to `MAX_CONNECTIONS` per (store, role) in each process: the roles' connection limit
+        # is budgeted from it (`data_store_connection_limit`). `query_data` resets read-only
+        # connections with `DISCARD ALL`, which drops prepared statements, so psycopg mustn't
+        # make any on them (it prepares those it runs often).
         connect_args = {"prepare_threshold": None} if role == "ro" else {}
         engine = create_engine(
             store_url(store, role),

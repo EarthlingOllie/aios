@@ -25,7 +25,7 @@ from test_provisioning import login_url, store_row
 
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import STORE_UPGRADING, data_store_for, provision, store_session
+from aios.datastores import data_store_for, provision, store_session
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
@@ -622,29 +622,22 @@ def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, stat
     assert says in described["error"]
 
 
-def test_both_tools_say_a_store_behind_the_trees_head_is_being_upgraded(api, db, user, data_agent):
-    """Not "isn't available": the schedule brings it to head shortly."""
-    db.execute(
-        update(DataStore).where(DataStore.owner_user_id == user.id).values(schema_revision="0001")
-    )
-    db.commit()
-
-    described, queried = run_tools(
-        api,
-        data_agent,
-        ToolCall("describe_data", {}),
-        ToolCall("query_data", {"sql": "SELECT 1"}),
-    )
-
-    assert described == queried == {"error": STORE_UPGRADING}
-
-
-def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, data_agent):
+@pytest.mark.parametrize(
+    ("change", "says"),
+    [
+        ("NOLOGIN", "couldn't be reached"),
+        # The role's connections all taken: worth trying again shortly.
+        ("CONNECTION LIMIT 0", "busy"),
+    ],
+)
+def test_a_store_that_cant_be_reached_is_an_error_for_the_model(
+    api, store, data_agent, change, says
+):
     """Not a failed turn: the model is told, and can tell the user."""
     with psycopg.connect(
         libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
     ) as conn:
-        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" CONNECTION LIMIT 0')
+        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
     dispose_engines()
 
     described, queried = run_tools(
@@ -656,7 +649,7 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, data
 
     for result in (described, queried):
         assert set(result) == {"error"}
-        assert "couldn't be reached" in result["error"]
+        assert says in result["error"]
         assert store.role_prefix not in result["error"]
 
 

@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # tasks before stopping the old, which doubles that: 28 at most. Keep it at least that when
     # adding processes. Past it, a connection is refused, which answers 503 (try again).
     data_store_connection_limit: int = Field(default=30, ge=1)
+    # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
+    # either is cut short there, and says so (`truncated`).
+    query_data_max_rows: int = Field(default=200, ge=1)
+    query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
+    # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
+    # past it is refused, and writes nothing.
+    write_data_max_rows: int = Field(default=100, ge=1)
     # Uploaded files, in S3 (`aios.datastores.files`): each store's under `stores/<store id>/`.
     # The region comes from boto3's usual places (on AWS, the task's).
     data_store_files_bucket: str = "aios-data-local"
@@ -67,13 +74,6 @@ class Settings(BaseSettings):
     # How long a download link lasts, in seconds. Each is a bearer link (anyone holding it can
     # download the file until then), minted per click, so a minute is plenty.
     document_download_url_seconds: int = Field(default=60, ge=1, le=7 * 24 * 60 * 60)
-    # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
-    # either is cut short there, and says so (`truncated`).
-    query_data_max_rows: int = Field(default=200, ge=1)
-    query_data_max_bytes: int = Field(default=64 * 1024, ge=1)
-    # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
-    # past it is refused, and writes nothing.
-    write_data_max_rows: int = Field(default=100, ge=1)
     # Each store's storage cap (`aios.datastores.quota`): the data its tables hold (live rows,
     # measured with pgstattuple), and the bytes of its documents' files. At either, uploads and
     # `write_data`'s inserts and updates are refused; reads and deletes carry on.

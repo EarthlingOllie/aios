@@ -51,16 +51,15 @@ class SchemaHistory(StoreBase):
 
 
 class EmbeddingColumn(StoreBase):
-    """Which `data` columns are embeddings of which text columns: `write_data` fills those with
-    the platform's embedding model. Only the owner (schema changes) writes it."""
+    """A `vector(EMBEDDING_DIM)` column of a table in `data`, and the text column in the same
+    table it's the embedding of: `write_data` fills it. Schema changes add a row as they add
+    such a column; only the owner writes it (`provision.BOOKKEEPING`)."""
 
     __tablename__ = "embedding_columns"
     __table_args__ = {
         "comment": "Columns in data that write_data fills with embeddings of a text column"
     }
 
-    # A `vector(EMBEDDING_DIM)` column of a table in `data`, and the text column in the same
-    # table it's the embedding of.
     table_name: Mapped[str] = mapped_column(Text, primary_key=True)
     column_name: Mapped[str] = mapped_column(Text, primary_key=True)
     source_column: Mapped[str] = mapped_column(Text)

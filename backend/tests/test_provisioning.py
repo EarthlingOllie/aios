@@ -279,34 +279,6 @@ def test_a_stores_roles_have_their_limits(two_stores):
             assert distance.fetchone() == (1.0,)
 
 
-def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "data_store_connection_limit", 10)
-    monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
-    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
-    store_id = data_store_for(new_user().id)
-    provision.provision(store_id)
-
-    monkeypatch.setattr(settings, "data_store_connection_limit", 20)
-    monkeypatch.setattr(settings, "data_store_statement_timeout", 30_000)
-    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 60_000)
-    provision.migrate_all([store_id])
-
-    row = store_row(db, store_id)
-    for role in ("rw", "ro"):
-        with psycopg.connect(login_url(row, role), autocommit=True) as conn:
-            limit = conn.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
-            assert limit.fetchone() == (20,)
-            timeouts = conn.execute(
-                "SELECT name, setting FROM pg_settings WHERE name IN "
-                "('statement_timeout', 'idle_in_transaction_session_timeout')"
-            )
-            assert dict(timeouts.fetchall()) == {
-                "statement_timeout": "30000",
-                "idle_in_transaction_session_timeout": "60000",
-            }
-
-
 def test_a_store_is_dropped_with_its_roles_still_connected(two_stores):
     a, b = two_stores
     names = provision.StoreNames.of(a)
@@ -371,6 +343,34 @@ def test_a_store_is_dropped_while_autovacuum_works_in_it(two_stores, quick_autov
         assert not admin.execute(
             "SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)
         ).fetchone()
+
+
+def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "data_store_connection_limit", 10)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
+    store_id = data_store_for(new_user().id)
+    provision.provision(store_id)
+
+    monkeypatch.setattr(settings, "data_store_connection_limit", 20)
+    monkeypatch.setattr(settings, "data_store_statement_timeout", 30_000)
+    monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 60_000)
+    provision.migrate_all([store_id])
+
+    row = store_row(db, store_id)
+    for role in ("rw", "ro"):
+        with psycopg.connect(login_url(row, role), autocommit=True) as conn:
+            limit = conn.execute("SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user")
+            assert limit.fetchone() == (20,)
+            timeouts = conn.execute(
+                "SELECT name, setting FROM pg_settings WHERE name IN "
+                "('statement_timeout', 'idle_in_transaction_session_timeout')"
+            )
+            assert dict(timeouts.fetchall()) == {
+                "statement_timeout": "30000",
+                "idle_in_transaction_session_timeout": "60000",
+            }
 
 
 class Crash(Exception):
@@ -950,73 +950,5 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
                 text("SELECT tablename FROM pg_tables WHERE schemaname = 'aios'")
             ).all()
             assert {"documents", "chunks"} <= set(tables)
-    finally:
-        engine.dispose()
-
-
-def owner_engine(names: provision.StoreNames, **connect_args):
-    """The provisioner on the store's database: `SET ROLE` to its owner to change it."""
-    return create_engine(
-        make_url(get_settings().data_store_provisioner_url).set(database=names.dbname),
-        poolclass=pool.NullPool,
-        connect_args=connect_args,
-    )
-
-
-# The store tree as each side of the #25 / #27 merge left a store, before they made one chain:
-# the same ids, for different revisions. #25's (documents) are 0002 and 0003 here too; #27's
-# (the `data` schema, then embedding columns) are 0004 and 0005 here.
-WRITE_DATA_SIDE = {
-    "0002": ["CREATE SCHEMA data"],
-    "0003": [
-        "CREATE SCHEMA data",
-        "CREATE TABLE aios.embedding_columns (table_name text, column_name text,"
-        " source_column text NOT NULL, PRIMARY KEY (table_name, column_name))",
-        "COMMENT ON TABLE aios.embedding_columns IS"
-        " 'Columns in data that write_data fills with embeddings of a text column'",
-    ],
-}
-
-
-@pytest.mark.parametrize(
-    "side, revision",
-    [("s3", "0002"), ("s3", "0003"), ("write_data", "0002"), ("write_data", "0003")],
-)
-def test_a_store_from_either_side_of_the_merged_chain_is_brought_to_its_head(
-    db, new_user, side, revision
-):
-    store_id = data_store_for(new_user().id)
-    provision.provision(store_id)
-    names = provision.StoreNames.of(store_row(db, store_id))
-    engine = owner_engine(names)
-    try:
-        with engine.connect() as conn:
-            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
-            conn.commit()
-            if side == "s3":
-                command.downgrade(migrations.config(conn), revision)
-            else:
-                # As #27's tree left it: no documents (they were still in the platform database).
-                command.downgrade(migrations.config(conn), "0001")
-                for statement in WRITE_DATA_SIDE[revision]:
-                    conn.exec_driver_sql(statement)
-                conn.execute(
-                    text("UPDATE aios.alembic_version SET version_num = :r"), {"r": revision}
-                )
-            conn.commit()
-    finally:
-        engine.dispose()
-
-    assert provision.upgrade_store(names) == head_revision()
-
-    # With `aios` off the search path, reflection names its schema as the models do.
-    engine = owner_engine(names, options="-c search_path=extensions")
-    try:
-        with engine.connect() as conn:
-            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
-            context = MigrationContext.configure(conn, opts=migrations.context_options())
-            assert compare_metadata(context, StoreBase.metadata) == []
-            assert conn.scalar(text("SELECT to_regnamespace('data')::text")) == "data"
-            assert conn.scalar(text("SELECT to_regclass('aios.embedding_columns')::text"))
     finally:
         engine.dispose()

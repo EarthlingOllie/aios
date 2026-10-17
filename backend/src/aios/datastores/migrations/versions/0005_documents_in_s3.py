@@ -7,8 +7,8 @@ No store has a document yet (stores hold documents from the release this ships i
 no bytes to move. Should one have, adding the NOT NULL columns fails, which stops that store's
 migration, and reports it, rather than drop its files.
 
-Revision ID: 0003
-Revises: 0002
+Revision ID: 0005
+Revises: 0004
 Create Date: 2026-10-16 19:30:00
 """
 
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0003"
-down_revision: str | None = "0002"
+revision: str = "0005"
+down_revision: str | None = "0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection
 
 from aios.datastores.models import SCHEMA, StoreBase
 
@@ -67,20 +67,3 @@ def _revisions_before_head(locations: tuple[str, ...]) -> tuple[str, ...]:
     script = ScriptDirectory.from_config(config())
     head = script.get_current_head()
     return tuple(s.revision for s in script.walk_revisions() if s.revision != head)
-
-
-def adopt_write_data_side(connection: Connection) -> None:
-    """Put a store the write_data branch's tree made back on this one chain.
-
-    Two branches each numbered their own revisions after 0001: uploads as 0002 (documents) and
-    0003 (their files in S3), write_data as 0002 (the `data` schema) and 0003 (embedding
-    columns), which this tree has as 0004 and 0005. A store at 0002 or 0003 with no documents
-    table came from write_data's: it goes back to 0001, and runs the rest, whose write_data
-    revisions skip what's already there. Not needed once no store from before the merge is left.
-    """
-    if connection.scalar(text("SELECT to_regclass('aios.alembic_version')")) is None:
-        return
-    revision = connection.scalar(text("SELECT version_num FROM aios.alembic_version"))
-    no_documents = connection.scalar(text("SELECT to_regclass('aios.documents')")) is None
-    if revision in ("0002", "0003") and no_documents:
-        connection.execute(text("UPDATE aios.alembic_version SET version_num = '0001'"))

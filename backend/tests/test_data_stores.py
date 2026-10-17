@@ -25,8 +25,6 @@ from aios.api import documents
 from aios.api import workflows as workflows_api
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import (
-    STORE_BUSY,
-    STORE_UPGRADING,
     DataStoreBusy,
     DataStoreNotFound,
     DataStoreNotReady,
@@ -47,6 +45,7 @@ from aios.models import (
     WorkflowRunStatus,
 )
 from aios.tools import hybrid_search
+from aios.ui_stream import error_text
 from aios.workflows import execute_run
 
 
@@ -185,7 +184,7 @@ def test_the_search_tools_tell_the_model_a_store_behind_the_trees_head_is_being_
 
     results = asyncio.run(search.document_search_results(data_store_id=store_id, query="fish"))
 
-    assert results == [{"error": STORE_UPGRADING}]
+    assert results == [{"error": search.STORE_UPGRADING}]
 
 
 def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
@@ -338,9 +337,10 @@ def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypat
     assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
 
 
-def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, monkeypatch):
-    """Resolving the store is part of claiming the run, so if it fails the run isn't left
-    `running` with no worker (a redelivery could never start it)."""
+def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db, monkeypatch):
+    """Resolving the store is part of claiming the run, so if it fails the run is never left
+    `running` with no worker (a redelivery could never start it), nor `queued` with nothing to
+    run it: it's failed then and there, with the real error."""
     monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
     workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
@@ -349,11 +349,11 @@ def test_a_workflow_run_whose_store_cant_be_resolved_is_not_claimed(api, db, mon
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
     monkeypatch.setattr(workflows, "data_store_for", unavailable)
-    with pytest.raises(OperationalError):
-        asyncio.run(execute_run(started["id"]))
+    asyncio.run(execute_run(started["id"]))
 
     run = db.get(WorkflowRun, started["id"])
-    assert (run.status, run.started_at) == (WorkflowRunStatus.queued, None)
+    assert (run.status, run.started_at) == (WorkflowRunStatus.failed, None)
+    assert run.error == error_text(OperationalError("SELECT", {}, Exception("connection lost")))
 
 
 @contextmanager
@@ -614,7 +614,7 @@ def test_the_search_tools_tell_the_model_the_store_is_busy(busy_store, monkeypat
     monkeypatch.setattr(search, "embed_query", embed_query)
     results = asyncio.run(search.document_search_results(data_store_id=busy_store, query="fish"))
 
-    assert results == [{"error": STORE_BUSY}]
+    assert results == [{"error": search.STORE_BUSY}]
 
 
 def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monkeypatch):

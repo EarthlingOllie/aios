@@ -235,8 +235,10 @@ pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
-need the migrated database and skip otherwise, the role tests in `tests/test_db_roles.py`
-also need `DATABASE_ADMIN_URL` in the environment, and the documents tests need RustFS, at
+need the migrated database: they skip when no server is listening or it isn't migrated, but fail
+when the server turns `DATABASE_URL` away (a missing role or database, a wrong password), so run
+`aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
+from the environment or `.env`, and skip without it, and the documents tests need RustFS, at
 `DATA_STORE_FILES_ENDPOINT` with `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in
 `backend/.env.example`), `terraform test` in `infra/terraform` (it plans and applies against a
 mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
@@ -257,7 +259,16 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 else reads), taking each role's name and password from its URL. It also creates the `vector`
 extension (not one a non-superuser can create), grants `aios_app` `CREATE` on the platform
 database, and makes it own `public` and anything else in the database the master user still owns, so a database that was migrated as the master user is
-handed over. It's safe to re-run: to change a password, change the URL and run it again. Compose
+handed over; the master user stays a member of `aios_app`, for break-glass access. It's safe to
+re-run: to change a password, change the URL and run it again.
+
+It changes nothing (it runs in one transaction) and exits with an error if: the server is older
+than PostgreSQL 16 (before 16, `CREATEROLE` reaches roles it didn't create); the three URLs name
+fewer than three roles, or different hosts or ports (compared as written, so not `localhost` in
+one and `127.0.0.1` in another); `aios_app` has, or may `SET ROLE` to a role that has,
+`SUPERUSER`, `CREATEDB`, `CREATEROLE`, `BYPASSRLS` or `REPLICATION` (on RDS, don't grant it
+`rds_superuser`); or the master user would still own something in the database it can't hand
+over, which it lists. Compose
 runs it as the `db-roles` service, and `infra/deploy.sh` as the `db-roles` task before every
 migration. The master user is otherwise for break-glass access only.
 
@@ -334,6 +345,16 @@ pools up to 3 per store and role, so the limit must be at least 3 x the processe
 role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
 ingest task retries, and the search and data tools tell the model.
+
+The Data page's **Tables** (`GET /api/data/tables`, `.../tables/{table}/rows` and
+`.../tables/{table}/value`, in `aios.api.data` and `aios.datastores.tables`) show the store's
+`data` tables, with their columns and row counts (the planner's estimate for a big table), and
+their rows a page at a time. They read as `_ro` through `aios.datastores.reads`, as
+`query_data` does, so under the same statement timeout and row and byte caps. No SQL is taken:
+a table, a sort column or a value's column is a name looked up in the catalog (404 or 422 if
+it isn't there), and only then quoted into a statement. Values come as text, cut to 200
+characters (read in full, as far as the byte cap, on asking); embeddings come as their type and
+dimension (`vector(1024)`), never their numbers, and `jsonb` pretty-printed.
 
 Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
 1 GiB) for the data its tables hold, and `DATA_STORE_FILES_QUOTA_BYTES` (default 5 GiB) for its

@@ -56,6 +56,26 @@ export type DocumentRow = {
   size_bytes: number;
   created_at: string;
 };
+export type TableColumnRow = {
+  name: string;
+  type: string;
+  nullable: boolean;
+  description: string | null;
+  embedding: boolean;
+};
+/** A `data` table, with its values as the server sends them (as text, an embedding as its type). */
+export type TableRow = {
+  name: string;
+  description: string | null;
+  columns: TableColumnRow[];
+  rows: (string | null)[][];
+  /** Sent as the planner's estimate rather than a count. */
+  estimated?: boolean;
+  /** The row count sent, if not how many `rows` there are (e.g. an estimate of millions). */
+  rowCount?: number;
+};
+/** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
+const PREVIEW_CHARS = 200;
 type RunStatus = "queued" | "running" | "succeeded" | "failed";
 type StepStatus = "running" | "succeeded" | "failed";
 export type StepRow = {
@@ -145,9 +165,113 @@ export class FakeApi {
   private holdingLists = false;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
+  /** The store's `data` tables, by name. */
+  dataTables: TableRow[] = [];
+  /** While true, the tables endpoints answer 500. */
+  tablesFail = false;
+  /** Every page of rows the app asked for, as its query string. */
+  rowReads: string[] = [];
 
   private id() {
     return this.nextId++;
+  }
+
+  /**
+   * Adds a `data` table. A column given as `name:type` is of that type (`vector(3)` is an
+   * embedding), as `name` alone, text.
+   */
+  addTable(
+    name: string,
+    columns: (string | Partial<TableColumnRow>)[],
+    rows: (string | null)[][] = [],
+    fields: Partial<TableRow> = {},
+  ): TableRow {
+    const table: TableRow = {
+      name,
+      description: null,
+      columns: columns.map((c) => {
+        if (typeof c !== "string") {
+          const defaults = { name: "", type: "text", nullable: true, description: null };
+          return { ...defaults, embedding: false, ...c };
+        }
+        const [column, type = "text"] = c.split(":");
+        return {
+          name: column,
+          type,
+          nullable: true,
+          description: null,
+          embedding: /^(vector|halfvec|sparsevec)\b/.test(type),
+        };
+      }),
+      rows,
+      ...fields,
+    };
+    this.dataTables.push(table);
+    this.dataTables.sort((a, b) => a.name.localeCompare(b.name));
+    return table;
+  }
+
+  /** The tables endpoints, as `aios.api.data` answers them. */
+  private tablesResponse(path: string, params: URLSearchParams): [number, unknown] {
+    if (path === "/api/data/tables") {
+      return [
+        200,
+        {
+          tables: this.dataTables.map((t) => ({
+            name: t.name,
+            description: t.description,
+            columns: t.columns,
+            row_count: t.rowCount ?? t.rows.length,
+            row_count_estimated: t.estimated ?? false,
+          })),
+          truncated: false,
+        },
+      ];
+    }
+    const m = path.match(/^\/api\/data\/tables\/([^/]+)\/(rows|value)$/);
+    const table = m && this.dataTables.find((t) => t.name === decodeURIComponent(m[1]));
+    if (!m || !table) return [404, { detail: "No such table" }];
+    const columnIndex = (name: string | null) => table.columns.findIndex((c) => c.name === name);
+    if (m[2] === "value") {
+      const column = columnIndex(params.get("column"));
+      if (column < 0) return [422, { detail: `The table has no column '${params.get("column")}'` }];
+      const row = table.rows[Number(params.get("row"))];
+      if (!row) return [404, { detail: "No such row (any more)" }];
+      return [200, { value: row[column], truncated: false }];
+    }
+    this.rowReads.push(params.toString());
+    const offset = Number(params.get("offset") ?? 0);
+    const limit = Number(params.get("limit") ?? 50);
+    const sort = params.get("sort");
+    let order = table.rows.map((_, i) => i);
+    if (sort !== null) {
+      const column = columnIndex(sort);
+      if (column < 0) return [422, { detail: `The table has no column '${sort}'` }];
+      const sign = params.get("order") === "desc" ? -1 : 1;
+      // Nulls last either way, as the server sorts them.
+      order = order.sort((a, b) => {
+        const x = table.rows[a][column];
+        const y = table.rows[b][column];
+        if (x === null || y === null) return x === y ? a - b : x === null ? 1 : -1;
+        return sign * x.localeCompare(y, undefined, { numeric: true }) || a - b;
+      });
+    }
+    const page = order.slice(offset, offset + limit);
+    return [
+      200,
+      {
+        columns: table.columns.map((c) => c.name),
+        rows: page.map((i) => ({
+          key: String(i),
+          values: table.rows[i].map((v) => (v === null ? null : v.slice(0, PREVIEW_CHARS))),
+          truncated: table.rows[i].flatMap((v, j) =>
+            v !== null && v.length > PREVIEW_CHARS ? [j] : [],
+          ),
+        })),
+        offset,
+        has_more: offset + limit < order.length,
+      },
+    ];
   }
 
   /** Adds a document, as if uploaded earlier. */
@@ -542,7 +666,12 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
-    if (path === "/api/documents" || path.startsWith("/api/documents/") || path === "/api/search") {
+    if (
+      path === "/api/documents" ||
+      path.startsWith("/api/documents/") ||
+      path === "/api/search" ||
+      path.startsWith("/api/data/")
+    ) {
       if (this.dataStoreStatus !== "ready") {
         return reply(409, {
           detail:
@@ -553,6 +682,11 @@ export class FakeApi {
         });
       }
       if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
+      if (path.startsWith("/api/data/")) {
+        if (this.tablesFail) return fail(500, "Internal Server Error");
+        const [status, json] = this.tablesResponse(path, new URL(request.url()).searchParams);
+        return reply(status, json);
+      }
       if (path === "/api/search") {
         // A passage from each ready document whose name contains the query.
         const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";

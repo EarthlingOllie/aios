@@ -10,14 +10,14 @@ from sqlalchemy.orm import Session
 
 from aios.config import get_settings
 from aios.datastores import (
-    STORE_BUSY,
-    STORE_UPGRADING,
     DataStoreBehind,
     DataStoreBusy,
     DataStoreNotReady,
+    store_busy,
     store_not_ready,
     store_session,
     store_status,
+    store_upgrading,
 )
 from aios.embeddings import embed_query
 from aios.models import DataStoreStatus
@@ -57,6 +57,12 @@ HYBRID_SQL = text(
     LIMIT :limit
     """
 )
+
+
+# What the search tools tell the model while the store is brought to the store tree's head,
+# or has no connections free (and, from `store_not_ready`, while it isn't ready).
+STORE_UPGRADING = store_upgrading("the search")
+STORE_BUSY = store_busy("the search")
 
 
 @dataclass
