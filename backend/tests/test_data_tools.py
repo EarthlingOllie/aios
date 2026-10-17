@@ -144,6 +144,23 @@ def test_an_agent_lists_a_data_table_and_answers_by_querying_it(api, store, data
     }
 
 
+def test_a_partitioned_table_is_described_once_without_its_partitions(api, store, data_agent):
+    with as_owner(store) as conn:
+        conn.execute(
+            "CREATE TABLE data.catches (caught_on date NOT NULL, fish text)"
+            " PARTITION BY RANGE (caught_on)"
+        )
+        for year in (2025, 2026):
+            conn.execute(
+                f"CREATE TABLE data.catches_{year} PARTITION OF data.catches"
+                f" FOR VALUES FROM ('{year}-01-01') TO ('{year + 1}-01-01')"
+            )
+
+    names = [t["name"] for t in describe(api, data_agent)["tables"] if t["schema"] == "data"]
+
+    assert names == ["catches", "fish"]
+
+
 @pytest.mark.parametrize(
     "sql",
     [

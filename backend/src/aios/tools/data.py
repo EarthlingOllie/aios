@@ -57,7 +57,7 @@ DATA_NOT_INSTRUCTIONS = (
 _threads = CapacityLimiter(8)
 
 # The store's tables, with their columns: the owner's (`data`) first, then the platform's
-# (`aios`) the read-only role may read, but not Alembic's bookkeeping.
+# (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions.
 DESCRIBE_SQL = text(
     """
     SELECT n.nspname AS schema, c.relname AS name,
@@ -69,6 +69,8 @@ DESCRIBE_SQL = text(
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     WHERE n.nspname IN ('data', 'aios')
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+      -- A partitioned table is one table: its partitions are how it's stored.
+      AND NOT c.relispartition
       AND has_table_privilege(c.oid, 'SELECT')
       AND NOT (n.nspname = 'aios' AND c.relname = 'alembic_version')
     ORDER BY n.nspname <> 'data', n.nspname, c.relname, a.attnum
