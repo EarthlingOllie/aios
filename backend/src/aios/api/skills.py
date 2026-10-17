@@ -133,10 +133,12 @@ def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
 
 
 @contextmanager
-def unique_name(db: Session, what: str, index: str) -> Iterator[None]:
+def unique_name(db: Session, what: str, index: str, detail: str | None = None) -> Iterator[None]:
     """Turn a violation of the live-name unique index `index` inside the block into a 409.
 
-    Any other integrity error is a bug, not a name clash, and propagates.
+    Any other integrity error is a bug, not a name clash, and propagates. The 409 says the user
+    already has `what` with that name, unless `detail` says otherwise (names unique among
+    everyone's, say).
     """
     try:
         yield
@@ -146,7 +148,7 @@ def unique_name(db: Session, what: str, index: str) -> Iterator[None]:
             raise
         db.rollback()
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"You already have {what} with that name."
+            status.HTTP_409_CONFLICT, detail or f"You already have {what} with that name."
         ) from exc
 
 
