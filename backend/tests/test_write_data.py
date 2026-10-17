@@ -828,9 +828,9 @@ def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and
 
     for refused in (inserted, upserted, updated):
         assert set(refused) == {"error"}
-        assert refused["error"].startswith("The user's data store is full: its database uses ")
+        assert refused["error"].startswith("The user's data store is full: its data takes up ")
         assert "of the 1.0 KB allowed" in refused["error"]
-        assert "Reading and deleting rows still work" in refused["error"]
+        assert "Reading still works, and deleting rows makes room" in refused["error"]
     assert deleted["row_count"] == 1
     assert queried["rows"] == [["pike"]]
     assert fish(store) == [("pike", "4.2", None)]

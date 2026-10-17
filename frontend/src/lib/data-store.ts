@@ -67,8 +67,8 @@ export type StorageMeter = {
 // At either cap, the API refuses uploads and agents' inserts and updates alike.
 const WARNINGS = {
   db: {
-    near: "Your database is nearly full. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
-    full: "Your database is full: your agents can't add or change rows, and documents can't be uploaded. Reading and deleting still work.",
+    near: "Your data is nearly at its cap. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
+    full: "Your data is at its cap: your agents can't add or change rows, and documents can't be uploaded. Reading still works, and deleting rows makes room.",
   },
   files: {
     near: "Your documents are nearly at their cap. Once they are, uploads are refused, and your agents can't add or change rows.",
@@ -101,7 +101,8 @@ function meter(
 /** The store's usage against each of its caps, for the Data page's Overview. */
 export function storageMeters(usage: DataStoreUsage): StorageMeter[] {
   return [
-    meter("db", "Database", usage.db_bytes, usage.db_quota_bytes),
+    // The data its tables hold (not its database's size, which deleting rows doesn't bring down).
+    meter("db", "Data stored", usage.db_bytes, usage.db_quota_bytes),
     meter("files", "Documents", usage.files_bytes, usage.files_quota_bytes),
   ];
 }

@@ -91,7 +91,7 @@ describe("storageMeters", () => {
     expect(storageMeters(usage())).toEqual([
       {
         id: "db",
-        label: "Database",
+        label: "Data stored",
         used: "12 MB of 1.0 GB",
         share: 12 / 1024,
         level: "ok",
@@ -114,7 +114,7 @@ describe("storageMeters", () => {
     );
     expect([db.level, files.level]).toEqual(["near", "near"]);
     expect(db.warning).toBe(
-      "Your database is nearly full. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
+      "Your data is nearly at its cap. Once it is, your agents can't add or change rows, and documents can't be uploaded.",
     );
     expect(files.warning).toBe(
       "Your documents are nearly at their cap. Once they are, uploads are refused, and your agents can't add or change rows.",
@@ -125,7 +125,7 @@ describe("storageMeters", () => {
     const [db, files] = storageMeters(usage({ db_bytes: 1024 ** 3, files_bytes: 6 * 1024 ** 3 }));
     expect([db.level, files.level]).toEqual(["full", "full"]);
     expect(db.warning).toBe(
-      "Your database is full: your agents can't add or change rows, and documents can't be uploaded. Reading and deleting still work.",
+      "Your data is at its cap: your agents can't add or change rows, and documents can't be uploaded. Reading still works, and deleting rows makes room.",
     );
     expect(files.warning).toBe(
       "Your documents are at their cap: uploads are refused, and your agents can't add or change rows. Delete some to make room.",

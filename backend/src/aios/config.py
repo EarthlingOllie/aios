@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     # The most rows a `write_data` call writes: inserted, upserted, updated or deleted. A call
     # past it is refused, and writes nothing.
     write_data_max_rows: int = Field(default=100, ge=1)
-    # Each store's storage cap (`aios.datastores.quota`): its database's size
-    # (`pg_database_size`), and the bytes of its documents' files. At either, uploads and
+    # Each store's storage cap (`aios.datastores.quota`): the data its tables hold (live rows,
+    # measured with pgstattuple), and the bytes of its documents' files. At either, uploads and
     # `write_data`'s inserts and updates are refused; reads and deletes carry on.
     data_store_db_quota_bytes: int = Field(default=1024**3, ge=1)
     data_store_files_quota_bytes: int = Field(default=5 * 1024**3, ge=1)

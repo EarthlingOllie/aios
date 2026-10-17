@@ -119,7 +119,7 @@ def upload_refusal(store: Session, filename: str, size: int) -> str | None:
     # Ingesting it writes its chunks to the database.
     if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
-            f"Your data store is full: its database uses {_of(db_bytes, db_quota)}, so documents"
+            f"Your data store is full: its data takes up {_of(db_bytes, db_quota)}, so documents"
             " can't be uploaded."
         )
     files_bytes = store.scalar(_FILES_BYTES)
@@ -146,9 +146,9 @@ def write_refusal(store: Session) -> str | None:
     )
     if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
-            f"The user's data store is full: its database uses {_of(db_bytes, db_quota)}, so rows"
-            " can't be inserted or updated. Reading and deleting rows still work. Tell the user:"
-            " the Data page shows their usage."
+            f"The user's data store is full: its data takes up {_of(db_bytes, db_quota)}, so rows"
+            " can't be inserted or updated. Reading still works, and deleting rows makes room."
+            " Tell the user: the Data page shows their usage."
         )
     files_bytes = store.scalar(_FILES_BYTES)
     if files_bytes >= files_quota:

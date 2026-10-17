@@ -19,7 +19,7 @@ test("the Overview shows usage against both caps", async ({ page }) => {
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: 12 * MB, files_bytes: 300 * MB };
   await page.goto("/data");
 
-  await expect(meter(page, "Database")).toHaveAttribute("aria-valuetext", "12 MB of 1.0 GB");
+  await expect(meter(page, "Data stored")).toHaveAttribute("aria-valuetext", "12 MB of 1.0 GB");
   await expect(meter(page, "Documents")).toHaveAttribute("aria-valuetext", "300 MB of 5.0 GB");
   await expect(overview(page)).toContainText("12 MB of 1.0 GB");
   await expect(overview(page).getByRole("alert")).toHaveCount(0);
@@ -32,7 +32,7 @@ test("the Overview warns as usage nears a cap, and says what's refused at one", 
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: 0.9 * GB, files_bytes: 5 * GB };
   await page.goto("/data");
 
-  await expect(overview(page)).toContainText("Your database is nearly full.");
+  await expect(overview(page)).toContainText("Your data is nearly at its cap.");
   await expect(overview(page).getByRole("alert")).toContainText(
     "Your documents are at their cap: uploads are refused, and your agents can't add or change rows. Delete some to make room.",
   );
@@ -48,7 +48,7 @@ test("the Overview says usage isn't measured yet for a new store", async ({ page
   };
   await page.goto("/data");
 
-  await expect(meter(page, "Database")).toHaveAttribute("aria-valuetext", "Not measured yet");
+  await expect(meter(page, "Data stored")).toHaveAttribute("aria-valuetext", "Not measured yet");
 });
 
 test("the Overview reads usage again while it's open", async ({ page }) => {
@@ -86,7 +86,7 @@ test("a store at its database cap can't take uploads either", async ({ page }) =
 
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   await expect(page.getByRole("alert", { name: "Storage" })).toContainText(
-    "Your database is full: your agents can't add or change rows, and documents can't be uploaded.",
+    "Your data is at its cap: your agents can't add or change rows, and documents can't be uploaded.",
   );
 });
 

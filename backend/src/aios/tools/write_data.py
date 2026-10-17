@@ -626,8 +626,8 @@ At most {max_rows} rows a call, written all together or not at all. The result h
 `row_count`, and `rows`: the primary keys of the rows written. On failure it has an `error`
 instead, and nothing was written.
 
-While the store is full (its storage cap), inserts, upserts and updates are refused; deletes
-and reads still work.
+While the store is full (its storage cap), inserts, upserts and updates are refused; reads
+still work, and deletes make room.
 
 What you send is stored as data, exactly as given: it's never run as SQL. {DATA_NOT_INSTRUCTIONS}"""
 

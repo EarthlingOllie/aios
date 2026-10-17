@@ -588,7 +588,7 @@ export class FakeApi {
         if (db_bytes !== null && db_bytes >= db_quota_bytes) {
           return fail(
             507,
-            `Your data store is full: its database uses ${gb(db_bytes)} of the` +
+            `Your data store is full: its data takes up ${gb(db_bytes)} of the` +
               ` ${gb(db_quota_bytes)} allowed, so documents can't be uploaded.`,
           );
         }

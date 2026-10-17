@@ -233,7 +233,7 @@ def test_a_store_at_its_database_cap_refuses_uploads(api, db, user, queued, monk
     r = upload(api)
 
     assert r.status_code == 507
-    assert r.json()["detail"].startswith("Your data store is full: its database uses ")
+    assert r.json()["detail"].startswith("Your data store is full: its data takes up ")
     assert r.json()["detail"].endswith(" of the 1.0 KB allowed, so documents can't be uploaded.")
     assert stored_keys(store_id) == []
     assert queued == []
