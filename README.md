@@ -265,8 +265,11 @@ It also revokes `CONNECT` from `PUBLIC` on the platform database (then grants it
 roles), `postgres` and `template1`, so no other role (a data store's included) can connect to
 them. Only a database's owner may do that, so one the master user doesn't own is left as it is
 and reported as a warning. And it makes the data stores' template, `aios_store_template`
-(`DATA_STORE_TEMPLATE`): an empty database with pgvector in an `extensions` schema, which no one
-may connect to and the provisioner copies.
+(`DATA_STORE_TEMPLATE`): an empty database with pgvector and pgstattuple (for measuring a store's
+data) in an `extensions` schema, which no one may connect to and the provisioner copies. It adds
+pgstattuple to any store made before the template had it; one it may not connect to (on RDS, the
+master user isn't a superuser) is reported as a warning, and measured by its database's size
+until a superuser adds it.
 
 ### Data stores
 
@@ -333,16 +336,21 @@ role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS:
 ingest task retries, and the search and data tools tell the model.
 
 Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
-1 GiB) for its database, as `pg_database_size` measures it, and `DATA_STORE_FILES_QUOTA_BYTES`
-(default 5 GiB) for its documents' files, the sum of their `size_bytes`. Over either, uploads
+1 GiB) for the data its tables hold, and `DATA_STORE_FILES_QUOTA_BYTES` (default 5 GiB) for its
+documents' files, the sum of their `size_bytes`. The data is each table's live rows, as
+`pgstattuple_approx` estimates them, in its own pages and its TOAST table (where large values
+go), plus its indexes in proportion to how much of the table is live rows. Not the database's
+size (`pg_database_size`): that keeps the space deleted rows took until their table is
+rewritten, so deleting rows wouldn't bring a store back under its cap. Over either, uploads
 answer 507 (as does an upload that wouldn't fit) and `write_data` refuses inserts, upserts and
 updates, telling the model; reads, searches, downloads and deletes carry on. The checks measure
 the store as the write comes in. What each store uses is also recorded on its `data_stores` row
 for the Data page's Overview, which shows both against their caps, warning from 80%: the
 provisioning worker's beat measures every ready store every five minutes, as its `_ro` role,
-and uploads and deletes record the documents' bytes straight away. Deleting documents makes room
-at once; deleted rows only free space once vacuum gives it back to the system, so a store at its
-database cap may stay there.
+and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
+makes room at once; the Overview shows rows' room at the next measurement. The checks first read
+the database's size, which is never less than the data, and only measure the data at or over the
+cap, so writes well under it cost little.
 
 ### Dependency policy
 
