@@ -180,6 +180,11 @@ test("the Changes section lists pending requests first, with the run that asked"
   await expect(history).toContainText("Add column email to data.contacts");
   await expect(history).toContainText("Rejected: Not yet");
   await expect(history.getByRole("button", { name: "Approve" })).toHaveCount(0);
+  // The history keeps each one's SQL folded away, a click from view.
+  await expect(history.getByLabel("SQL")).toBeHidden();
+  await history.getByText("Show the SQL").click();
+  await expect(history.getByLabel("SQL")).toBeVisible();
+  await expect(pending.getByLabel("SQL")).toBeVisible();
 
   await pending.getByRole("link", { name: "From run “Track my contacts”" }).click();
   await expect(page).toHaveURL(`/agents/${agent.id}/runs/${run.id}`);

@@ -23,12 +23,15 @@ export function SchemaChangeCard({
   request,
   onDecided,
   showRun = false,
+  foldSql = false,
 }: {
   request: SchemaChangeRequest;
   /** After a decision, with the request as the server has it now. */
   onDecided: (request: SchemaChangeRequest) => void;
   /** Link to the run that asked (the Data page; a chat is that run). */
   showRun?: boolean;
+  /** Keep the SQL folded away until asked for (the Data page's history). */
+  foldSql?: boolean;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
@@ -65,12 +68,14 @@ export function SchemaChangeCard({
         <span className="text-muted-foreground">The agent's reason: </span>
         {request.reason}
       </p>
-      <pre
-        aria-label="SQL"
-        className="bg-muted/50 max-h-72 overflow-auto rounded p-2 font-mono text-xs whitespace-pre-wrap"
-      >
-        {request.sql}
-      </pre>
+      {foldSql ? (
+        <details>
+          <summary className="text-muted-foreground cursor-pointer text-xs">Show the SQL</summary>
+          <SqlBlock sql={request.sql} />
+        </details>
+      ) : (
+        <SqlBlock sql={request.sql} />
+      )}
       <div className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
         <span>Asked {formatDate(request.created_at)}</span>
         {request.decided_at && <span>Decided {formatDate(request.decided_at)}</span>}
@@ -132,6 +137,17 @@ export function SchemaChangeCard({
   );
 }
 
+function SqlBlock({ sql }: { sql: string }) {
+  return (
+    <pre
+      aria-label="SQL"
+      className="bg-muted/50 mt-1 max-h-72 overflow-auto rounded p-2 font-mono text-xs whitespace-pre-wrap"
+    >
+      {sql}
+    </pre>
+  );
+}
+
 /**
  * The Data page's Changes section: the schema change requests waiting for the user first, then
  * the history of those decided. Read again while any is still being applied or its run is
@@ -173,7 +189,13 @@ export function ChangesSection() {
         <section aria-label="Change history" className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold">History</h2>
           {decided.map((r) => (
-            <SchemaChangeCard key={r.id} request={r} onDecided={() => list.reload()} showRun />
+            <SchemaChangeCard
+              key={r.id}
+              request={r}
+              onDecided={() => list.reload()}
+              showRun
+              foldSql
+            />
           ))}
         </section>
       )}
