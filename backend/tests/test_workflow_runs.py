@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from fake_model import model, replies, use_model
+from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
@@ -21,10 +21,11 @@ from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
-from aios.tools import TOOLS
+from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 
 
@@ -317,6 +318,23 @@ def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch)
     assert out["steps"] == []
 
 
+def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, queued, monkeypatch):
+    wf = make_workflow(api, "w", [agent_node("a", make_agent(api, "a"))])
+    started = start(api, wf)
+
+    def broken(user):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(workflows, "data_store_for", broken)
+    # Failed then and there, not left running without a worker until it's failed as stopped.
+    asyncio.run(execute_run(started["id"]))
+    out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
+    assert out["status"] == "failed"
+    assert out["error"] == "store unavailable"
+    assert out["finished_at"]
+    assert out["steps"] == []
+
+
 def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, queued, monkeypatch):
     poet = test_agents.make_agent(api, "Poet", "Write.", [make_skill(api, "Haiku", "5-7-5")])
     url = f"/api/agents/{poet['id']}"
@@ -350,6 +368,32 @@ def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, que
     }
     assert node["skill_versions"][0]["name"] == "Haiku"
     assert node["tools"][0]["key"] == "web_search"
+
+
+def test_an_agent_nodes_tools_search_the_owners_data_store(api, user, queued, monkeypatch):
+    searched = []
+
+    async def search(**kwargs):
+        searched.append(kwargs["data_store_id"])
+        return []
+
+    async def script(messages, info):
+        if last_tool_results(messages):
+            yield "done"
+        else:
+            yield ToolCall("search_documents", {"query": "fish"})
+
+    monkeypatch.setattr(hybrid_search, "document_search_results", search)
+    librarian = make_agent(api, "Librarian")
+    tools = [{"key": "hybrid_search", "config": {}}]
+    url = f"/api/agents/{librarian['id']}"
+    librarian = api.put(url, json=agent_body(librarian, tools=tools)).json()
+    wf = make_workflow(api, "lookup", [agent_node("l", librarian)])
+    started = start(api, wf)
+    with use_model(model(script)):
+        asyncio.run(execute_run(started["id"]))
+
+    assert searched == [data_store_for(user).id]
 
 
 def test_get_shows_the_pinned_version_and_runs_list_newest_first(api, queued):

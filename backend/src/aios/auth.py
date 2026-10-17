@@ -9,10 +9,12 @@ from typing import Annotated
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import DB
 from aios.models import User
 
@@ -59,6 +61,7 @@ async def auth_callback(request: Request, db: DB):
     user.email = email
     user.avatar_url = profile.get("avatar_url")
     db.commit()
+    await run_in_threadpool(data_store_for, user)
 
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()

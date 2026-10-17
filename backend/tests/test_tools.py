@@ -9,6 +9,7 @@ from test_search import unit
 from aios import llm, search
 from aios.agent import ChatDeps
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.models import Agent, Chunk, Document, DocumentStatus, User
 from aios.runner import server_tools
 from aios.tools import TOOLS, ToolSpec, register
@@ -376,7 +377,9 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         resp = api.post(url, json=chat_body("what about zebrafish?"))
     assert resp.status_code == 200
-    assert spy["deps"] == ChatDeps(user_id=user.id, run_id=run["id"])
+    assert spy["deps"] == ChatDeps(
+        user_id=user.id, data_store_id=data_store_for(user).id, run_id=run["id"]
+    )
     assert seen["tools"] == ["search_documents"]
     assert "hybrid (semantic + keyword)" in seen["description"]
     assert queries == ["zebrafish"]
