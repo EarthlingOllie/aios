@@ -77,6 +77,17 @@ export type DroppedRow = {
   /** If set, a restore is accepted but never happens (the worker gave up without a word). */
   stallRestore?: boolean;
 };
+export type NotificationRow = {
+  id: string;
+  kind: string;
+  ref: Record<string, string>;
+  /** For a kind other than a schema change request (whose title is its summary). */
+  title: string | null;
+  created_at: string;
+  read_at: string | null;
+  /** Whether it's the signed-in user's; the API never shows them another user's. */
+  mine: boolean;
+};
 type WorkflowVersionRow = {
   id: number;
   workflow_id: number;
@@ -228,6 +239,13 @@ export class FakeApi {
   schemaChanges: SchemaChangeRow[] = [];
   /** Dropped tables and columns in the user's store, newest first. */
   dropped: DroppedRow[] = [];
+  /**
+   * Notifications, oldest first. As on the server, a pending request the user may decide
+   * notifies them, and deciding it marks that read; `mine: false` ones are another user's.
+   */
+  notifications: NotificationRow[] = [];
+  /** How many times the app asked for the user's notifications. */
+  notificationLists = 0;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
   /** The store's `data` tables, by name. */
@@ -435,6 +453,9 @@ export class FakeApi {
       ...fields,
     };
     this.schemaChanges.push(request);
+    if (request.status === "pending" && request.decider) {
+      this.addNotification({ ref: { request_id: request.id, data_store_id: request.data_store_id } });
+    }
     return request;
   }
 
@@ -458,6 +479,30 @@ export class FakeApi {
   private droppedOut(item: DroppedRow) {
     const { purge_in_days, refuseRestore: _, stallRestore: __, ...fields } = item;
     return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
+  }
+
+  /** Adds a notification: the user's own, about a schema change request, unless told otherwise. */
+  addNotification(fields: Partial<NotificationRow> = {}): NotificationRow {
+    const notification: NotificationRow = {
+      id: `note-${this.id()}`,
+      kind: "schema_change_request",
+      ref: {},
+      title: null,
+      // Later ones are newer, so they list first.
+      created_at: new Date(Date.parse(NOW) + this.notifications.length * 1000).toISOString(),
+      read_at: null,
+      mine: true,
+      ...fields,
+    };
+    this.notifications.push(notification);
+    return notification;
+  }
+
+  private notificationOut({ mine: _mine, ...n }: NotificationRow) {
+    const request = n.kind === "schema_change_request"
+      ? this.schemaChanges.find((r) => r.id === n.ref.request_id)
+      : undefined;
+    return { ...n, title: request ? request.summary : n.title };
   }
 
   /**
@@ -933,6 +978,9 @@ export class FakeApi {
         request.status = "rejected";
         request.note = (body?.note ?? "").trim() || null;
       }
+      for (const n of this.notifications) {
+        if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
+      }
       return reply(200, this.schemaChangeOut(request));
     }
     if (path === "/api/dropped" && method === "GET") {
@@ -947,6 +995,23 @@ export class FakeApi {
       if (item.refuseRestore) item.restore_error = item.refuseRestore;
       else if (!item.stallRestore) this.dropped = this.dropped.filter((d) => d !== item);
       return reply(202, { ...out, blocked: null });
+    }
+    if (path === "/api/notifications" && method === "GET") {
+      this.notificationLists++;
+      const mine = this.notifications.filter((n) => n.mine).reverse();
+      const unread = mine.filter((n) => !n.read_at);
+      return reply(200, {
+        unread: unread.length,
+        notifications: [...unread, ...mine.filter((n) => n.read_at)].map((n) =>
+          this.notificationOut(n),
+        ),
+      });
+    }
+    if ((m = path.match(/^\/api\/notifications\/([\w-]+)\/read$/)) && method === "POST") {
+      const notification = this.notifications.find((n) => n.id === m![1] && n.mine);
+      if (!notification) return fail(404, "Notification not found");
+      notification.read_at ??= NOW;
+      return reply(200, this.notificationOut(notification));
     }
     if (path === "/api/tools") return reply(200, []);
     if (path === "/api/agents") {

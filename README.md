@@ -571,7 +571,14 @@ Known limits:
   `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
   `interrupt()`: the turn ends with a card of the agent's reason and the exact SQL, and the run
   takes no new messages until it's decided. The store's owner (`can_approve`) approves or
-  rejects it (with an optional note) there or in the Data page's Changes section. An approved
+  rejects it (with an optional note) there or in the Data page's Changes section. Each user who
+  can decide a new request gets a notification (`aios.notifications`, the `notifications`
+  table: user, kind, a jsonb reference, created and read times), which the navigation's bell
+  polls for (`GET /api/notifications`, unread first with an unread count, every 10s) and shows
+  as an unread badge with a list; an item opens the request on the Data page, and one can be
+  marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding or cancelling the
+  request marks its notifications read (`schema_changes.clear_notifications`). Users only
+  ever see their own. An approved
   request is applied on the provisioning worker (`aios.apply_schema_change`), as the
   provisioner `SET ROLE` to the store's owner, in one transaction under
   `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the

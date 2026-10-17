@@ -18,8 +18,10 @@ The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
 
 1. `propose` checks a spec against the store's schema (read as its read-only role), compiles
    it, and records a `SchemaChangeRequest` (platform database) at the store's current data
-   schema revision (`read_revision`: the latest `aios.schema_history` entry).
-2. The owner approves or rejects it (only users who pass `resolve.can_approve`).
+   schema revision (`read_revision`: the latest `aios.schema_history` entry), and notifies
+   each user who can decide it (`aios.notifications`).
+2. The owner approves or rejects it (only users who pass `resolve.can_approve`), which clears
+   its notifications (`clear_notifications`).
 3. `apply`, on the provisioning worker (only it has the provisioner's credentials), runs an
    approved request's SQL as the store's owner, in one transaction under a `lock_timeout`
    (`SCHEMA_CHANGE_LOCK_TIMEOUT`), and appends it to `aios.schema_history`, which bumps the
@@ -43,10 +45,13 @@ import psycopg
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
 
+from aios import notifications
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import EMBEDDING_DIM
+from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
 
@@ -819,8 +824,55 @@ def propose(
     )
     with SessionLocal() as db:
         db.add(request)
+        db.flush()
+        notifications.notify(
+            db,
+            approvers(db.get_one(DataStore, data_store_id)),
+            notifications.SCHEMA_CHANGE_REQUEST,
+            _notification_ref(request),
+        )
         db.commit()
     return request
+
+
+def _notification_ref(request: SchemaChangeRequest) -> dict[str, str]:
+    return {"request_id": str(request.id), "data_store_id": str(request.data_store_id)}
+
+
+def summaries(db: Session, request_ids: set[str]) -> dict[str, str]:
+    """The summaries of those of these requests (by id, as text) that still exist, by id: what
+    their notifications say."""
+    ids = []
+    for request_id in request_ids:
+        try:
+            ids.append(uuid.UUID(request_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(SchemaChangeRequest.id, SchemaChangeRequest.summary).where(
+            SchemaChangeRequest.id.in_(ids)
+        )
+    )
+    return {str(request_id): summary for request_id, summary in rows}
+
+
+def clear_notifications(db: Session, request_id: uuid.UUID) -> None:
+    """Mark the request's notifications read, for everyone it notified: it no longer waits for
+    a decision (it's decided, cancelled or expired). In the caller's transaction."""
+    notifications.mark_read_about(
+        db, notifications.SCHEMA_CHANGE_REQUEST, {"request_id": str(request_id)}
+    )
+
+
+def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: datetime) -> None:
+    """Undo `clear_notifications` for a decision that was undone (the request waits again):
+    those it marked read, in the transaction that ran at `cleared_at`, are unread again; any a
+    user marked read themselves stay read. In the caller's transaction."""
+    notifications.mark_unread_about(
+        db, notifications.SCHEMA_CHANGE_REQUEST, {"request_id": str(request_id)}, cleared_at
+    )
 
 
 def _store_error(exc: psycopg.Error) -> str:

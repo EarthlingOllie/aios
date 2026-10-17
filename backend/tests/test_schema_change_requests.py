@@ -447,6 +447,8 @@ def test_a_turn_stopped_before_its_request_waits_cancels_the_request(
     after = run_of(api, agent, run)
     [request] = after["schema_change_requests"]
     assert (request["status"], after["waiting"]) == ("cancelled", False)
+    # Nothing for the owner to decide any more.
+    assert api.get("/api/notifications").json()["unread"] == 0
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
     assert queued == []
 
