@@ -2,19 +2,16 @@ import enum
 import uuid
 from datetime import datetime
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
-    Computed,
     DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
-    LargeBinary,
     String,
     Table,
     Text,
@@ -22,10 +19,8 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
-EMBEDDING_DIM = 1024
 
 
 class Base(DeclarativeBase):
@@ -61,8 +56,8 @@ class DataStore(Base):
 
     It has an id of its own, rather than being the user's, so a store can later change hands
     (to a team) without renaming anything named after it: its database and roles are named
-    after this id, never a user's. Its documents and chunks are still in the platform database,
-    told apart by their `owner_id`, until they move into it.
+    after this id, never a user's. Its documents and chunks are in its database
+    (`aios.datastores.models`), not here.
     """
 
     __tablename__ = "data_stores"
@@ -96,68 +91,6 @@ class DataStore(Base):
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class DocumentStatus(enum.StrEnum):
-    pending = "pending"
-    processing = "processing"
-    ready = "ready"
-    failed = "failed"
-
-
-class Document(Base):
-    __tablename__ = "documents"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    filename: Mapped[str] = mapped_column(String(512))
-    content_type: Mapped[str | None] = mapped_column(String(255))
-    # Raw upload, kept in Postgres so the API and worker need no shared filesystem/bucket.
-    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
-    status: Mapped[DocumentStatus] = mapped_column(
-        Enum(DocumentStatus, name="document_status"), default=DocumentStatus.pending
-    )
-    error: Mapped[str | None] = mapped_column(Text)
-    # Ingest task deliveries so far; capped so a doc that kills the worker isn't retried forever.
-    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    chunks: Mapped[list["Chunk"]] = relationship(
-        back_populates="document",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="Chunk.ordinal",
-    )
-
-
-class Chunk(Base):
-    __tablename__ = "chunks"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
-    ordinal: Mapped[int] = mapped_column(Integer)
-    # Raw chunk text (shown to users / the model) and the heading-enriched text that was embedded.
-    text: Mapped[str] = mapped_column(Text)
-    contextualized: Mapped[str] = mapped_column(Text)
-    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
-    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
-    tsv: Mapped[str] = mapped_column(
-        TSVECTOR, Computed("to_tsvector('english', contextualized)", persisted=True)
-    )
-
-    document: Mapped[Document] = relationship(back_populates="chunks")
-
-    __table_args__ = (
-        Index(
-            "ix_chunks_embedding_hnsw",
-            "embedding",
-            postgresql_using="hnsw",
-            postgresql_ops={"embedding": "vector_cosine_ops"},
-        ),
-        Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
-    )
 
 
 # Agents and skills are split into an editable identity row (name, description) and a chain of

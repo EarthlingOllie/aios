@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from aios.datastores import credentials
 from aios.db import SessionLocal
-from aios.models import DataStore, Document
+from aios.models import DataStore
 
 log = logging.getLogger(__name__)
 
@@ -89,16 +89,15 @@ def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
     return store_id
 
 
-def data_store_of_document(document_id: int) -> uuid.UUID | None:
-    """The store a document is in; None if it's gone.
+def data_store_for_request(user_id: int, db: Session) -> uuid.UUID:
+    """The signed-in user's data store, for an endpoint that reaches data only through it.
 
-    Only for ingest messages queued before data stores (`aios.worker`), which carry just the
-    document's id; remove it once a release has drained them.
-    """
-    with SessionLocal() as db:
-        owner_id = db.scalar(select(Document.owner_id).where(Document.id == document_id))
-        if owner_id is None:
-            return None
-        store_id = data_store_for(owner_id, db)
-        db.commit()
-        return store_id
+    Resolved on `db`, the request's session (which loaded the user), which is then committed
+    (queuing a new store's provisioning) and closed, returning its connection to the pool before
+    the store is opened. Held while a store session waits for a connection, enough requests at
+    once would exhaust the pool waiting on each other. Blocking: call it from the threadpool in
+    async code."""
+    store_id = data_store_for(user_id, db)
+    db.commit()
+    db.close()
+    return store_id

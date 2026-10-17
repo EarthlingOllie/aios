@@ -38,8 +38,8 @@ from sqlalchemy.exc import DBAPIError
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import store_session
+from aios.datastores.models import EMBEDDING_DIM
 from aios.embeddings import embed_documents
-from aios.models import EMBEDDING_DIM
 from aios.tools.data import (
     DATA_NOT_INSTRUCTIONS,
     embedding_markers,

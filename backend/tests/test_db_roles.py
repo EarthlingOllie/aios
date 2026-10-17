@@ -3,7 +3,8 @@ provisioner's.
 
 These run the bootstrap against a throwaway database, with role names of their own, so they
 don't touch the real `aios_app` and `aios_provisioner`. They need the master user's DSN
-(DATABASE_ADMIN_URL) and skip without it.
+(DATABASE_ADMIN_URL, from the environment or `.env`, as the command reads it) and skip without
+it.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ from sqlalchemy.engine import make_url
 
 from aios import checkpoints
 from aios.config import get_settings, libpq_conninfo
-from aios.db_roles import ensure_roles
+from aios.db_roles import _BootstrapSettings, ensure_roles
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -33,7 +34,8 @@ def _connect(url: str, **parts) -> psycopg.Connection:
 
 @pytest.fixture
 def admin_url() -> str:
-    url = os.environ.get("DATABASE_ADMIN_URL")
+    # Read as `python -m aios.db_roles` reads it, so a `.env` set up as the README says runs these.
+    url = _BootstrapSettings().database_admin_url
     if not url:
         pytest.skip("DATABASE_ADMIN_URL not set")
     try:
@@ -200,29 +202,48 @@ def test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles(db):
     assert tuple(row) == (False, False, False)
 
 
-def test_db_tests_fail_rather_than_skip_when_the_app_role_cannot_log_in(admin_url):
-    """A server that's up but rejects DATABASE_URL's role (the roles were never created) is a
-    setup to fix, not a database that isn't there."""
-    nobody = make_url(admin_url).set(username="t_no_such_role", password="x")
-    result = subprocess.run(
+def _run_a_db_test(database_url: str) -> subprocess.CompletedProcess:
+    """A test that uses the `db` fixture, run with `database_url` as DATABASE_URL."""
+    return subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
             "-q",
+            "-rs",
             "-p",
             "no:cacheprovider",
             "tests/test_db_roles.py::"
             "test_the_app_connects_as_a_role_that_cannot_create_databases_or_roles",
         ],
         cwd=BACKEND,
-        env={**os.environ, "DATABASE_URL": nobody.render_as_string(hide_password=False)},
+        env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
         text=True,
     )
 
+
+# Any refusal from a server that's up is a setup to fix, not a database that isn't there: these
+# two stand in for the rest (a pg_hba.conf rule, no CONNECT privilege, a wrong password).
+@pytest.mark.parametrize(
+    "parts",
+    [{"username": "t_no_such_role", "password": "x"}, {"database": "t_no_such_database"}],
+    ids=["role-missing", "database-missing"],
+)
+def test_db_tests_fail_rather_than_skip_when_the_server_turns_the_app_away(admin_url, parts):
+    url = make_url(admin_url).set(**parts)
+    result = _run_a_db_test(url.render_as_string(hide_password=False))
+
     assert result.returncode != 0, result.stdout
     assert "python -m aios.db_roles" in result.stdout
+
+
+def test_db_tests_skip_when_no_server_is_listening(admin_url):
+    url = make_url(admin_url).set(host="127.0.0.1", port=1)
+    result = _run_a_db_test(url.render_as_string(hide_password=False))
+
+    assert result.returncode == 0, result.stdout
+    assert "1 skipped" in result.stdout
 
 
 def _bootstrap(**env: str) -> subprocess.CompletedProcess:
@@ -335,6 +356,50 @@ def test_refuses_a_url_without_a_password(cluster):
     _connect(app_url).close()
 
 
+@pytest.mark.parametrize("which", ["app", "provisioner"])
+@pytest.mark.parametrize("part", [{"host": "elsewhere.invalid"}, {"port": 5433}])
+def test_refuses_urls_for_another_server(cluster, which, part):
+    """Else the roles are made on the master user's server, and the app can't log in to its own."""
+    admin_url, app_url, prov_url = cluster
+    moved = lambda url: make_url(url).set(**part).render_as_string(hide_password=False)  # noqa: E731
+    if which == "app":
+        app_url = moved(app_url)
+    else:
+        prov_url = moved(prov_url)
+
+    with pytest.raises(ValueError, match="same server"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, make_url(app_url).username) is None
+
+
+def test_the_same_server_may_be_written_differently(cluster):
+    """Host names compare without case, and no port is Postgres's default one."""
+    admin_url, app_url, prov_url = cluster
+    u = make_url(app_url)
+    if u.port not in (None, 5432):
+        pytest.skip("the master user's URL isn't on the default port")
+    app_url = u.set(host=u.host.upper(), port=None).render_as_string(hide_password=False)
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    _connect(prov_url).close()
+
+
+def test_refuses_to_grant_createrole_before_postgres_16(cluster, monkeypatch):
+    """Before 16, CREATEROLE could alter (reset the password of) and take membership of any role
+    but a superuser: the app's, and on RDS the master user. The server here is newer, so it
+    reports 15 for this test."""
+    admin_url, app_url, prov_url = cluster
+    monkeypatch.setattr(psycopg.ConnectionInfo, "server_version", property(lambda _: 150010))
+
+    with pytest.raises(RuntimeError, match="PostgreSQL 16"):
+        ensure_roles(admin_url, app_url, prov_url)
+
+    assert _attrs(admin_url, make_url(app_url).username) is None
+    assert _attrs(admin_url, make_url(prov_url).username) is None
+
+
 def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_template):
     """RDS allows a master username like `AiosAdmin`, which isn't the same unquoted."""
     _, app_url, prov_url = cluster
@@ -401,6 +466,37 @@ def test_a_master_user_whose_name_needs_quoting(cluster, admin_url, store_templa
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(master)))
 
 
+def test_refuses_an_app_role_that_can_become_a_privileged_one(cluster):
+    """Set up by hand before this command existed, say: a member of a role with CREATEDB could
+    SET ROLE to it and create databases, which NOCREATEDB on the app's role doesn't stop."""
+    admin_url, app_url, prov_url = cluster
+    app = make_url(app_url).username
+    creator = f"t_creator_{uuid.uuid4().hex[:8]}"
+    with _connect(admin_url) as conn:
+        conn.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD 'pw'").format(sql.Identifier(app)))
+        conn.execute(sql.SQL("CREATE ROLE {} CREATEDB").format(sql.Identifier(creator)))
+        conn.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(creator), sql.Identifier(app)))
+    try:
+        with pytest.raises(RuntimeError, match=creator):
+            ensure_roles(admin_url, app_url, prov_url)
+
+        assert _attrs(admin_url, make_url(prov_url).username) is None
+    finally:
+        with _connect(admin_url) as conn:
+            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(creator)))
+
+
+def test_refuses_an_app_role_that_is_a_member_of_the_provisioners(cluster):
+    admin_url, app_url, prov_url = cluster
+    ensure_roles(admin_url, app_url, prov_url)
+    app, prov = make_url(app_url).username, make_url(prov_url).username
+    with _connect(admin_url) as conn:
+        conn.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(prov), sql.Identifier(app)))
+
+    with pytest.raises(RuntimeError, match=prov):
+        ensure_roles(admin_url, app_url, prov_url)
+
+
 def test_less_common_objects_are_handed_over_too(cluster):
     """As a migration might create them, and a later one alter them (dropping them needs only
     the schema, which the app's role owns; altering them needs the object)."""
@@ -429,6 +525,70 @@ def test_less_common_objects_are_handed_over_too(cluster):
             "TEXT SEARCH DICTIONARY plain_dict",
         ]:
             conn.execute(sql.SQL("COMMENT ON {} IS 'migrated'").format(sql.SQL(obj)))
+
+
+def test_partitioned_tables_and_their_partitions_are_handed_over(cluster):
+    """A partitioned table's partitions don't follow it, as its column sequences do."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute(
+            "CREATE TABLE events (id int GENERATED ALWAYS AS IDENTITY, n serial, at date)"
+            " PARTITION BY RANGE (at)"
+        )
+        conn.execute(
+            "CREATE TABLE events_2026 PARTITION OF events"
+            " FOR VALUES FROM ('2026-01-01') TO ('2027-01-01') PARTITION BY LIST (n)"
+        )
+        conn.execute("CREATE TABLE events_2026_rest PARTITION OF events_2026 DEFAULT")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    with _connect(app_url) as conn:
+        for table in ["events", "events_2026", "events_2026_rest"]:
+            conn.execute(sql.SQL("COMMENT ON TABLE {} IS 'migrated'").format(sql.Identifier(table)))
+        for seq in ["events_id_seq", "events_n_seq"]:
+            conn.execute(sql.SQL("ALTER SEQUENCE {} RESTART").format(sql.Identifier(seq)))
+
+
+def test_a_schema_is_handed_over_before_what_is_in_it(cluster, monkeypatch):
+    """A master user that isn't a superuser can only give an object to a role that may create in
+    its schema, so the schema has to go first, whatever order the planner reads the catalogs in.
+    A merge anti join, which these settings force, returns its rows sorted by catalog, and
+    pg_class's OID is below pg_namespace's."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE SCHEMA langgraph")
+        conn.execute("CREATE TABLE langgraph.checkpoints (id int)")
+    monkeypatch.setenv("PGOPTIONS", "-c enable_hashjoin=off -c enable_nestloop=off")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    with _connect(app_url) as conn:
+        conn.execute("ALTER TABLE langgraph.checkpoints ADD COLUMN name text")
+
+
+def test_an_extension_the_master_user_created_is_left_alone(cluster):
+    """A master user that is a superuser (CI's and Compose's) creates pgvector itself, and owns
+    its members and their array types. Those array types are part of their element type, not
+    members of the extension, and can't be handed over on their own; nor need they be.
+
+    A trusted extension's members are owned by the bootstrap superuser, whoever creates it, so
+    this makes the master user's own types members of one: the same shape, without needing a
+    superuser. A range type also has a multirange, its array, and constructors."""
+    admin_url, app_url, prov_url = cluster
+    with _connect(admin_url) as conn:
+        conn.execute("CREATE EXTENSION citext")
+        conn.execute("CREATE TYPE mood AS ENUM ('ok')")
+        conn.execute("CREATE TYPE floatrange AS RANGE (subtype = float8)")
+        conn.execute("ALTER EXTENSION citext ADD TYPE mood")
+        conn.execute("ALTER EXTENSION citext ADD TYPE floatrange")
+        conn.execute("CREATE TYPE status AS ENUM ('ok')")
+
+    ensure_roles(admin_url, app_url, prov_url)
+
+    # What isn't in the extension is still handed over.
+    with _connect(app_url) as conn:
+        conn.execute("COMMENT ON TYPE status IS 'migrated'")
 
 
 def test_fails_naming_what_it_cannot_hand_over(cluster):
@@ -493,7 +653,8 @@ def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch)
 
 
 # Objects in the database's own schemas, other than extensions' (pgvector's stay the master
-# user's), whose owner is `%s`.
+# user's), whose owner is `%s`. Looked up by name in pg_roles, not cast with ::regrole, which
+# reads it as an unquoted identifier (so a master user like `AiosAdmin` isn't found).
 _OWNED_BY = """
 SELECT kind, name FROM (
     SELECT 'schema' AS kind, nspname::text AS name, nspowner AS owner,
@@ -513,7 +674,7 @@ SELECT kind, name FROM (
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname NOT LIKE 'pg\\_%%' AND n.nspname <> 'information_schema'
 ) o
-WHERE owner = %s::regrole
+WHERE owner = (SELECT oid FROM pg_roles WHERE rolname = %s)
   AND NOT EXISTS (SELECT 1 FROM pg_depend d
                    WHERE d.classid = o.cls AND d.objid = o.oid
                      AND (d.deptype = 'e'
@@ -543,10 +704,14 @@ def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, m
 
     with _connect(admin_url) as conn:
         assert conn.execute(_OWNED_BY, (admin,)).fetchall() == []
-    # The app's role can change what it now owns: migrate down and up again, and the
-    # checkpointer's setup.
+    # The app's role can change what it now owns: drop the master user's view and function, then
+    # migrate all the way down (to `base`, not a revision that a squash would rename) and up
+    # again, and the checkpointer's setup.
+    with _connect(app_url) as conn:
+        conn.execute("DROP VIEW recent_users")
+        conn.execute("DROP FUNCTION one()")
     down = subprocess.run(
-        [sys.executable, "-m", "alembic", "downgrade", "0004"],
+        [sys.executable, "-m", "alembic", "downgrade", "base"],
         cwd=BACKEND,
         env={**os.environ, "DATABASE_URL": app_url},
         capture_output=True,

@@ -40,7 +40,15 @@ class Settings(BaseSettings):
     # connections the role may hold.
     data_store_statement_timeout: int = Field(default=30_000, ge=1)
     data_store_idle_in_transaction_timeout: int = Field(default=60_000, ge=1)
-    data_store_connection_limit: int = Field(default=10, ge=1)
+    #
+    # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
+    # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
+    # processes that use it. On ECS the read-only role is used by the 2 API tasks and the
+    # workflow worker's 2 processes, so 12; the read-write one by the API and the ingest
+    # worker's 2 (one ingest, so one connection, each), so 8. A rolling deploy starts the new
+    # tasks before stopping the old, which doubles that: 24 at most. Keep it at least that when
+    # adding processes. Past it, a connection is refused, which answers 503 (try again).
+    data_store_connection_limit: int = Field(default=30, ge=1)
     # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
     # either is cut short there, and says so (`truncated`).
     query_data_max_rows: int = Field(default=200, ge=1)
@@ -62,8 +70,9 @@ class Settings(BaseSettings):
     # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
     llm_model: str = "anthropic:claude-sonnet-5-5"
-    # The model must be able to output models.EMBEDDING_DIM (1024) dimensions; that size is
-    # fixed by the vector column, so a model with a different size needs a migration too.
+    # The model must be able to output `aios.datastores.models.EMBEDDING_DIM` (1024)
+    # dimensions; that size is fixed by the vector column, so a model with a different size
+    # needs a migration too (in the data store tree).
     embedding_model: str = "voyageai:voyage-4"
     embedding_batch_size: int = 64
 
