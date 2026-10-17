@@ -96,6 +96,27 @@ test("opening a table shows its rows, and sorting by a column reorders them", as
   await expect(tableCard(page, "fish")).toBeVisible();
 });
 
+test("a column added since the list was read heads its own values", async ({ page }) => {
+  const api = await fakeApi(page);
+  const fish = addFish(api);
+  await page.goto("/data?tab=tables");
+  await expect(tableCard(page, "fish")).toBeVisible();
+
+  // An agent adds a column before the table is opened.
+  fish.columns.splice(1, 0, {
+    name: "colour",
+    type: "text",
+    nullable: true,
+    description: null,
+    embedding: false,
+  });
+  fish.rows = fish.rows.map(([id, ...rest]) => [id, "green", ...rest]);
+  await tableCard(page, "fish").getByRole("link", { name: "fish" }).click();
+
+  await expect(gridRows(page, "fish").first()).toHaveText(/id\s*colour\s*name\s*weight_kg/);
+  await expect(gridRows(page, "fish").nth(1)).toHaveText(/1\s*green\s*pike\s*4\.2/);
+});
+
 test("a big table's rows come a page at a time", async ({ page }) => {
   const api = await fakeApi(page);
   api.addTable(

@@ -236,7 +236,10 @@ function TableRows({ name, table }: { name: string; table?: DataTable }) {
   const [expanded, setExpanded] = useState<Expanded>();
   const missing = rows.error instanceof ApiError && rows.error.status === 404;
   const page = missing ? undefined : rows.page;
-  const columns = table?.columns ?? page?.columns.map((c) => ({ name: c, embedding: false }));
+  // The page's own columns head its values (the list may be older: a column added or dropped
+  // since); the list says which are embeddings, which have no order to sort by.
+  const embeddings = new Set(table?.columns.filter((c) => c.embedding).map((c) => c.name));
+  const columns = page?.columns.map((name) => ({ name, embedding: embeddings.has(name) }));
 
   return (
     <div className="flex flex-col gap-3">
