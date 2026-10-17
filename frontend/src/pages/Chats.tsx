@@ -10,6 +10,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  selectClass,
   useLoad,
   type ListContext,
 } from "@/components/crud";
@@ -25,16 +26,12 @@ import {
   type ChatMember,
   type ChatVisibility,
 } from "@/lib/api";
-
-const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+import { plural } from "@/lib/utils";
 
 const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
   public: { label: "Public", hint: "Anyone signed in can see it." },
   private: { label: "Private", hint: "Only its members can see it." },
 };
-
-const selectClass =
-  "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
 
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);

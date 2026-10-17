@@ -12,9 +12,9 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from aios.api.skills import unique_name
+from aios.api.skills import on_conflict, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
 from aios.models import Chat, ChatMember, ChatMemberKind, ChatMemberRole, ChatVisibility, User
@@ -138,10 +138,17 @@ def chat_out(chat: Chat, user_id: int) -> ChatOut:
     )
 
 
+LOAD = (
+    selectinload(Chat.members).selectinload(ChatMember.user),
+    selectinload(Chat.members).selectinload(ChatMember.agent),
+    selectinload(Chat.members).selectinload(ChatMember.workflow),
+)
+
+
 def load(db: Session, chat_id: int) -> Chat:
     """The chat fresh from the database, with its members and what they point at."""
     db.expire_all()
-    return db.get_one(Chat, chat_id)
+    return db.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one()
 
 
 def is_member(chat: Chat, user_id: int) -> bool:
@@ -150,7 +157,7 @@ def is_member(chat: Chat, user_id: int) -> bool:
 
 def get_visible_chat(db: Session, user_id: int, chat_id: int) -> Chat:
     """The chat, if it exists for the user: any public chat, or a private one they're in."""
-    chat = db.get(Chat, chat_id)
+    chat = db.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one_or_none()
     if chat is None or (chat.visibility == ChatVisibility.private and not is_member(chat, user_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return chat
@@ -242,7 +249,7 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
     # Adding a member is activity too.
     chat.updated_at = func.now()
     # The check above can lose a race with another add of the same user; this catches that.
-    with unique_name(db, "", USER_MEMBER_CONSTRAINT, ALREADY_A_MEMBER):
+    with on_conflict(db, USER_MEMBER_CONSTRAINT, ALREADY_A_MEMBER):
         db.commit()
     return chat_out(load(db, chat.id), user.id)
 

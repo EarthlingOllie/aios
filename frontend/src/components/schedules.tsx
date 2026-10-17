@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Link } from "react-router";
 import { Bot, CalendarClock, Pencil, Plus, Trash2, Workflow } from "lucide-react";
 
-import { ErrorBanner, Field, formatDate, Section, useLoad } from "@/components/crud";
+import { ErrorBanner, Field, formatDate, Section, selectClass, useLoad } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,6 @@ const PRESETS = [
   { label: "First of the month at 09:00", cron: "0 9 1 * *" },
 ];
 
-const selectClass = "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
 
 function browserTimezone() {
   try {

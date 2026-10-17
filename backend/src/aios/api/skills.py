@@ -133,23 +133,28 @@ def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
 
 
 @contextmanager
-def unique_name(db: Session, what: str, index: str, detail: str | None = None) -> Iterator[None]:
-    """Turn a violation of the live-name unique index `index` inside the block into a 409.
-
-    Any other integrity error is a bug, not a name clash, and propagates. The 409 says the user
-    already has `what` with that name, unless `detail` says otherwise (names unique among
-    everyone's, say).
-    """
+def on_conflict(db: Session, constraint: str, detail: str) -> Iterator[None]:
+    """Turn a violation of the unique constraint or index `constraint` inside the block into a
+    409 saying `detail`. Any other integrity error is a bug, not a clash, and propagates."""
     try:
         yield
     except IntegrityError as exc:
         diag = getattr(exc.orig, "diag", None)
-        if getattr(diag, "constraint_name", None) != index:
+        if getattr(diag, "constraint_name", None) != constraint:
             raise
         db.rollback()
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, detail or f"You already have {what} with that name."
-        ) from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
+
+
+@contextmanager
+def unique_name(db: Session, what: str, index: str, detail: str | None = None) -> Iterator[None]:
+    """Turn a violation of the live-name unique index `index` inside the block into a 409.
+
+    The 409 says the user already has `what` with that name, unless `detail` says otherwise
+    (names unique among everyone's, say).
+    """
+    with on_conflict(db, index, detail or f"You already have {what} with that name."):
+        yield
 
 
 def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:

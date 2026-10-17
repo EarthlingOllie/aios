@@ -71,6 +71,10 @@ export function usePoll(active: boolean, reload: () => Promise<unknown>) {
   }, [active, reload]);
 }
 
+/** A native `<select>` styled like `Input`. */
+export const selectClass =
+  "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
+
 /** Passed to the detail routes so they can refresh the list after a change. */
 export type ListContext = { reloadList: () => Promise<void> };
 
