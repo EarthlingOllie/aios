@@ -14,6 +14,15 @@ step (`workflow_run_steps`) when it starts and finishes, in its own transaction,
 watched as it goes. Once a node fails, no more nodes start; those already running finish, and the
 run fails with the first error.
 
+An agent node whose agent asks for a schema change (`request_schema_change`, a LangGraph
+interrupt) waits for the owner's decision: its step becomes `waiting`, with the request, and the
+nodes that don't depend on it carry on. Once nothing else can run, the run becomes `waiting` and
+its task returns (`_pause_run`), holding no worker. The decision queues it again
+(`aios.worker.enqueue_resume`): claimed from `waiting`, it rebuilds its state from the steps it
+recorded, and the waiting node resumes on its agent run's thread with the outcome. It's still on
+the versions it pinned; a pin that can no longer run fails its step when it runs again. Waiting
+time isn't running time: the run's time limit counts only the latter (`Claimed.time_left`).
+
 While a worker runs a run, it refreshes the run's heartbeat (`heartbeat_at`) every
 `HEARTBEAT_SECONDS`, from a thread of its own, so a node that holds the event loop doesn't stop
 it (`_Heartbeat`). A run is alive while it's running with a recent heartbeat (`alive`); one
