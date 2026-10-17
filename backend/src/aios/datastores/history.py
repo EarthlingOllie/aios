@@ -663,8 +663,16 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     committed (`enqueue_set_up`)."""
     # Locked, so two switches at once don't both backfill, or both miss it.
     was_on = db.scalar(select(User.export_run_history).where(User.id == user_id).with_for_update())
-    db.execute(update(User).where(User.id == user_id).values(export_run_history=on))
-    if not on or was_on:
+    if not on:
+        # Embedding is only offered while the export is on.
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(export_run_history=False, embed_run_history=False)
+        )
+        return None
+    db.execute(update(User).where(User.id == user_id).values(export_run_history=True))
+    if was_on:
         return None
     from aios.datastores.resolve import data_store_for
 
@@ -672,3 +680,18 @@ def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
     enqueue_everything(db, user_id)
     db.execute(update(DataStore).where(DataStore.id == store_id).values(history_exported_at=None))
     return store_id
+
+
+class ExportOff(Exception):
+    """Embedding was asked for while the user's run history export is off."""
+
+
+def set_embedding(db: Session, user_id: int, on: bool) -> None:
+    """Switch embedding the user's exported messages on or off, in `db`'s transaction, which
+    the caller commits. Raises `ExportOff` to switch it on while the export is off."""
+    exporting = db.scalar(
+        select(User.export_run_history).where(User.id == user_id).with_for_update()
+    )
+    if on and not exporting:
+        raise ExportOff
+    db.execute(update(User).where(User.id == user_id).values(embed_run_history=on))

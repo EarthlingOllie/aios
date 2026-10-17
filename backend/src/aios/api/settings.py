@@ -4,7 +4,7 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -20,7 +20,9 @@ router = APIRouter(prefix="/api")
 
 
 class SettingsIn(BaseModel):
-    export_run_history: bool
+    # Either, or both; one left out stays as it is.
+    export_run_history: bool | None = None
+    embed_run_history: bool | None = None
 
 
 class SettingsOut(BaseModel):
@@ -30,14 +32,21 @@ class SettingsOut(BaseModel):
     history_ready: bool
     # When the export last caught up (copied in whatever runs were pending).
     history_exported_at: datetime | None
+    # Embed the exported messages, so agents can search past runs by meaning. Only while the
+    # export is on.
+    embed_run_history: bool
+    # When embedding last caught up (embedded every exported message waiting).
+    history_embedded_at: datetime | None
 
 
 def settings_out(db: DB, user_id: int) -> SettingsOut:
     row = db.execute(
         select(
             User.export_run_history,
+            User.embed_run_history,
             DataStore.history_revision,
             DataStore.history_exported_at,
+            DataStore.history_embedded_at,
         )
         .outerjoin(DataStore, DataStore.owner_user_id == User.id)
         .where(User.id == user_id)
@@ -46,6 +55,8 @@ def settings_out(db: DB, user_id: int) -> SettingsOut:
         export_run_history=row.export_run_history,
         history_ready=row.history_revision is not None,
         history_exported_at=row.history_exported_at,
+        embed_run_history=row.embed_run_history,
+        history_embedded_at=row.history_embedded_at,
     )
 
 
@@ -56,7 +67,17 @@ def get_settings(user: CurrentUser, db: DB):
 
 @router.put("/settings", response_model=SettingsOut)
 def update_settings(body: SettingsIn, user: CurrentUser, db: DB):
-    set_up = history.set_exporting(db, user.id, body.export_run_history)
+    set_up = None
+    if body.export_run_history is not None:
+        set_up = history.set_exporting(db, user.id, body.export_run_history)
+    if body.embed_run_history is not None:
+        try:
+            history.set_embedding(db, user.id, body.embed_run_history)
+        except history.ExportOff:
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Switch the run history export on first."
+            ) from None
     db.commit()
     if set_up is not None:
         try:

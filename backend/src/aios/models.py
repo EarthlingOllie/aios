@@ -39,6 +39,9 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(Text)
     # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
     export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Embed the exported messages too, so agents can search past runs by meaning. Only while
+    # the export is on: switching it off switches this off.
+    embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -95,6 +98,9 @@ class DataStore(Base):
     history_revision: Mapped[str | None] = mapped_column(String(64))
     # When the run history export last caught up (copied in whatever runs were pending).
     history_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When embedding the exported messages last caught up (embedded every one waiting); null
+    # while it hasn't since it was switched on, or since it last failed.
+    history_embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
