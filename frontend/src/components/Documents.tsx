@@ -191,7 +191,9 @@ function UploadButton({ documents }: { documents: DocumentsState }) {
       <Button
         size="sm"
         variant="outline"
-        disabled={!documents.canUpload}
+        // One batch at a time, from here or the other view, so they can't trample each other's
+        // progress and errors.
+        disabled={!documents.canUpload || documents.uploading}
         onClick={() => inputRef.current?.click()}
       >
         {documents.uploading ? <Loader2 className="animate-spin" /> : <Upload />}

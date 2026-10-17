@@ -236,6 +236,25 @@ test("an upload from the chat that lands after you open the Data page appears th
   await expect(row(page, "late.md")).toBeVisible();
 });
 
+test("a second upload waits for the one in flight to finish", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.holdUploads();
+  await page.goto("/");
+  await page.locator('input[type="file"]').setInputFiles(file("first.md"));
+
+  // The chat's upload is still going: the Data page's button waits for it, so the two can't
+  // trample each other's progress and errors.
+  await page.getByRole("link", { name: "Data" }).first().click();
+  await page.getByRole("tab", { name: "Documents" }).click();
+  const upload = page.getByRole("button", { name: "Upload" });
+  await expect(upload).toBeDisabled();
+  await expect(upload.locator(".animate-spin")).toBeVisible();
+
+  api.releaseUploads();
+  await expect(row(page, "first.md")).toBeVisible();
+  await expect(upload).toBeEnabled();
+});
+
 test("deleting a document removes it from the list and from search", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("keep.md");
