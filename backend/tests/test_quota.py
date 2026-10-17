@@ -133,3 +133,35 @@ def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
 )
 def test_sizes_are_written_as_the_data_page_writes_them(n, says):
     assert quota.format_bytes(n) == says
+
+
+def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
+    api, db, user, files_bucket, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 100 * 1024**2)
+    monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", 2000)
+    store_id = data_store_for(user.id)
+    add_document(store_id, b"x" * 1500)
+    assert api.get("/api/data-store").json() == {
+        "status": "ready",
+        "usage": {
+            "db_bytes": None,
+            "db_quota_bytes": 100 * 1024**2,
+            "files_bytes": None,
+            "files_quota_bytes": 2000,
+            "measured_at": None,
+        },
+    }
+
+    worker.measure_data_store_usage_task.apply().get()
+
+    usage = api.get("/api/data-store").json()["usage"]
+    row = store_row(db, store_id)
+    assert usage == {
+        "db_bytes": row.db_bytes,
+        "db_quota_bytes": 100 * 1024**2,
+        "files_bytes": 1500,
+        "files_quota_bytes": 2000,
+        "measured_at": row.usage_measured_at.isoformat().replace("+00:00", "Z"),
+    }
+    assert row.db_bytes > 0

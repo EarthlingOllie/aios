@@ -114,7 +114,7 @@ def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_u
             "data_store_status": "provisioning",
         }
     assert queued == []
-    assert api.get("/api/data-store").json() == {"status": "provisioning"}
+    assert api.get("/api/data-store").json()["status"] == "provisioning"
 
 
 def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
@@ -130,7 +130,7 @@ def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
     assert r.status_code == 409
     assert r.json()["data_store_status"] == "failed"
     assert "boom" not in r.text
-    assert api.get("/api/data-store").json() == {"status": "failed"}
+    assert api.get("/api/data-store").json()["status"] == "failed"
 
 
 def search_tool_results(api) -> list:

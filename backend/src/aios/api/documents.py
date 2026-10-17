@@ -54,9 +54,20 @@ class UserOut(BaseModel):
     avatar_url: str | None
 
 
+class UsageOut(BaseModel):
+    """What the store uses, as last measured (null until it's first measured), and its caps."""
+
+    db_bytes: int | None
+    db_quota_bytes: int
+    files_bytes: int | None
+    files_quota_bytes: int
+    measured_at: datetime | None
+
+
 class DataStoreOut(BaseModel):
-    # Only its status: a store's name, roles and credentials never leave the platform.
+    # Only its status and usage: a store's name, roles and credentials never leave the platform.
     status: DataStoreStatus
+    usage: UsageOut
 
 
 @router.get("/me", response_model=UserOut)
@@ -66,8 +77,20 @@ def me(user: CurrentUser):
 
 @router.get("/data-store", response_model=DataStoreOut)
 def data_store(user: CurrentUser):
-    """The user's data store's status: documents and search wait until it's `ready`."""
-    return DataStoreOut(status=store_status(data_store_for(user.id)))
+    """The user's data store's status (documents and search wait until it's `ready`), and its
+    usage against its storage caps."""
+    store_id = data_store_for(user.id)
+    usage = quota.usage(store_id)
+    return DataStoreOut(
+        status=store_status(store_id),
+        usage=UsageOut(
+            db_bytes=usage.db_bytes,
+            db_quota_bytes=usage.db_quota_bytes,
+            files_bytes=usage.files_bytes,
+            files_quota_bytes=usage.files_quota_bytes,
+            measured_at=usage.measured_at,
+        ),
+    )
 
 
 @router.get("/documents", response_model=list[DocumentOut])
