@@ -303,8 +303,8 @@ set up"), and the UI says so.
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
 never have them, and a server logging statements has only the encrypted ones (in the
-`data_stores` insert), useless without the key. The API returns only a store's status
-(`GET /api/data-store`).
+`data_stores` insert), useless without the key. The API returns only a store's status and
+usage (`GET /api/data-store`).
 
 `python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
 after the platform's migration) finishes provisioning any store left `provisioning` or `failed`,
@@ -328,9 +328,20 @@ they're empty until then.
 
 Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
 pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
-role, counted twice for a rolling deploy's old and new tasks (24 at most on AWS: see
+role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS: see
 `config.py`). A connection past the limit is refused: the API answers 503 to try again, the
-ingest task retries, and the search tools tell the model.
+ingest task retries, and the search and data tools tell the model.
+
+Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default
+1 GiB) for its database, as `pg_database_size` measures it, and `DATA_STORE_FILES_QUOTA_BYTES`
+(default 5 GiB) for its documents' files, the sum of their `size_bytes`. The provisioning
+worker's beat measures every ready store every five minutes, as its `_ro` role, and records both
+on its `data_stores` row. The checks read that record: at the file cap an upload answers 507,
+and at the database cap `write_data` refuses inserts, upserts and updates, telling the model;
+reads, searches, downloads and deletes carry on. Deleting documents brings the files under the
+cap at the next measurement; deleted rows only free space once vacuum gives it back to the
+system, so a store at its database cap may stay there. The Data page's Overview shows both
+against their caps, warning from 80%.
 
 ### Dependency policy
 
