@@ -126,8 +126,8 @@ export type TableRow = {
 };
 /** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
 const PREVIEW_CHARS = 200;
-type RunStatus = "queued" | "running" | "succeeded" | "failed";
-type StepStatus = "running" | "succeeded" | "failed";
+type RunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
+type StepStatus = "running" | "waiting" | "succeeded" | "failed";
 export type StepRow = {
   id: number;
   path: string[];
@@ -138,8 +138,16 @@ export type StepRow = {
   error: string | null;
   agent_id: number | null;
   agent_run_id: number | null;
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
+};
+export type StalePinRow = {
+  path: string[];
+  kind: Kind;
+  name: string;
+  pinned_version: number;
+  current_version: number | null;
 };
 export type RunRow = {
   id: number;
@@ -152,7 +160,10 @@ export type RunRow = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  waiting_since: string | null;
+  waited_seconds: number;
   steps: StepRow[];
+  stale_pins: StalePinRow[];
 };
 
 const NOW = "2026-10-14T09:00:00Z";
@@ -556,6 +567,9 @@ export class FakeApi {
       created_at: NOW,
       started_at: NOW,
       finished_at: null,
+      waiting_since: null,
+      waited_seconds: 0,
+      stale_pins: [],
       ...run,
       steps: [],
     };
@@ -575,6 +589,7 @@ export class FakeApi {
       error: null,
       agent_id: null,
       agent_run_id: null,
+      waiting_on_request_ids: [],
       started_at: NOW,
       finished_at: null,
       ...step,
@@ -896,6 +911,11 @@ export class FakeApi {
       if (!request || !request.decider) return fail(404, "Schema change request not found");
       return reply(200, { removes: request.impact });
     }
+    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)$/)) && method === "GET") {
+      const request = this.schemaChanges.find((r) => r.id === m![1]);
+      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      return reply(200, this.schemaChangeOut(request));
+    }
     if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
       if (!request || !request.decider) return fail(404, "Schema change request not found");
@@ -1135,6 +1155,7 @@ export class FakeApi {
           ...this.runSummary(run),
           version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
           steps: run.steps,
+          stale_pins: run.stale_pins,
         });
       }
       if (rest === "/versions") {
@@ -1164,7 +1185,7 @@ export class FakeApi {
     return fail(404, `fake API: no route for ${method} ${path}`);
   }
 
-  private runSummary({ steps: _steps, ...run }: RunRow) {
+  private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
     return {
       ...run,
       workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,

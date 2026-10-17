@@ -404,7 +404,8 @@ export type WorkflowInput = {
   base_version?: number;
 };
 
-export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed";
+/** waiting: paused until the user decides a schema change request one of its nodes made. */
+export type WorkflowRunStatus = "queued" | "running" | "waiting" | "succeeded" | "failed";
 
 export type WorkflowRunSummary = {
   id: number;
@@ -418,6 +419,10 @@ export type WorkflowRunSummary = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** While it waits, since when; and how long it waited before (seconds). Waiting doesn't
+   * count towards its time limit. */
+  waiting_since: string | null;
+  waited_seconds: number;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -426,15 +431,30 @@ export type WorkflowRunStep = {
   /** Node keys from the run's workflow down to this node. */
   path: string[];
   kind: WorkflowNodeKind;
-  status: "running" | "succeeded" | "failed";
+  /** waiting: an agent node waiting for a schema change request, or a workflow node one of
+   * whose nodes waits. */
+  status: "running" | "waiting" | "succeeded" | "failed";
   input: string;
   output: string | null;
   error: string | null;
   /** Agent nodes: the conversation, at /agents/{agent_id}/runs/{agent_run_id}. */
   agent_id: number | null;
   agent_run_id: number | null;
+  /** While an agent node waits: the schema change requests it waits on, oldest first. */
+  waiting_on_request_ids: string[];
   started_at: string;
   finished_at: string | null;
+};
+
+/** A version a waiting run pins that's no longer current: the run resumes on it regardless. */
+export type StalePin = {
+  /** The node pinning it, from the run's workflow down; [] for the run's own workflow. */
+  path: string[];
+  kind: WorkflowNodeKind;
+  name: string;
+  pinned_version: number;
+  /** null once the agent or workflow has been deleted. */
+  current_version: number | null;
 };
 
 export type WorkflowRun = WorkflowRunSummary & {
@@ -442,6 +462,8 @@ export type WorkflowRun = WorkflowRunSummary & {
   version: WorkflowVersion;
   /** In the order they started. */
   steps: WorkflowRunStep[];
+  /** While it waits: the pins it would resume on that are no longer current. */
+  stale_pins: StalePin[];
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
@@ -539,6 +561,7 @@ export const api = {
     return request<DocumentInfo>("/api/documents", { method: "POST", body });
   },
   listSchemaChanges: () => request<SchemaChangeRequest[]>("/api/schema-changes"),
+  getSchemaChange: (id: string) => request<SchemaChangeRequest>(`/api/schema-changes/${id}`),
   approveSchemaChange: (id: string, confirm?: string) =>
     request<SchemaChangeRequest>(
       `/api/schema-changes/${id}/approve`,

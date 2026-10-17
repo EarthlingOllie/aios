@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Double,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -458,12 +459,18 @@ class WorkflowEdge(Base):
 class WorkflowRunStatus(enum.StrEnum):
     queued = "queued"
     running = "running"
+    # Paused on a node waiting for a schema change request, holding no worker; queued again
+    # once it's decided (`aios.workflows`).
+    waiting = "waiting"
     succeeded = "succeeded"
     failed = "failed"
 
 
 class WorkflowStepStatus(enum.StrEnum):
     running = "running"
+    # An agent node waiting for a schema change request, or a workflow node one of whose nodes
+    # is waiting.
+    waiting = "waiting"
     succeeded = "succeeded"
     failed = "failed"
 
@@ -497,6 +504,10 @@ class WorkflowRun(Base):
     # Refreshed by the worker while it runs the run, so a run whose worker died can be told from
     # one still going (`aios.workflows.alive`).
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # While it's waiting, since when; and how long it has waited in all before that. Waiting
+    # doesn't count towards the run's time limit.
+    waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    waited_seconds: Mapped[float] = mapped_column(Double, server_default=text("0"))
 
     workflow_version: Mapped[WorkflowVersion] = relationship()
 
@@ -526,6 +537,11 @@ class WorkflowRunStep(Base):
     # agent run goes first (deleting its agent), the step stays without it.
     agent_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    # While an agent node waits: the schema change request it waits on. (By id, not through
+    # its agent run, which goes if its agent is deleted meanwhile.)
+    waiting_on_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("schema_change_requests.id", ondelete="SET NULL"), index=True
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

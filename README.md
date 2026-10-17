@@ -579,8 +579,15 @@ Known limits:
   is checked again, and one that no longer applies is marked `stale`. Then the workflow worker
   resumes the run (`aios.resume_agent_run`) with the outcome (applied, rejected with the note,
   failed with the error, or stale), which the tool call returns to the model, and the chat
-  shows the rest of the turn. Workflow runs can't wait on a request yet: in a workflow the tool
-  tells the model so.
+  shows the rest of the turn. In a workflow run, the agent node's step becomes `waiting` (with
+  the request it waits on); other branches carry on, and once nothing else can run the run
+  becomes `waiting` and its task returns, holding no worker. A waiting run isn't failed for its
+  heartbeat, and its waiting time (`waited_seconds`) doesn't count towards
+  `WORKFLOW_RUN_TIME_LIMIT`. The decision queues `aios.run_workflow` again: the worker claims
+  the run from `waiting`, rebuilds its state from the recorded steps, and resumes the waiting
+  node on its own agent run's thread, on the versions the run pinned (a pin that can no longer
+  run fails its step with the reason). The run page shows the waiting node with the request's
+  card, and the pins that are no longer current.
 - **Drops are reversible** (`aios.datastores.dropped`). `drop_table` and `drop_column` rename
   the table or column to `_dropped_<timestamp>_<name>` and record it in
   `aios.dropped_objects`; applying one takes the login roles' access to it away (a table with
