@@ -11,6 +11,7 @@ import {
   useLoad,
   usePoll,
 } from "@/components/crud";
+import { Notice } from "@/components/Notice";
 import { Button } from "@/components/ui/button";
 import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -38,6 +39,7 @@ import {
 
 // The layout to use when the workflow's own can't be read: one object, so it's not new each render.
 const noLayout: Record<string, NodePosition> = {};
+const noSteps: WorkflowRunStep[] = [];
 
 function seconds(total: number) {
   if (total < 60) return `${total.toFixed(1)}s`;
@@ -101,7 +103,8 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     run.reload,
     waitingRun ? WAITING_POLL_MS : undefined,
   );
-  const waiting = useWaitingRequests(run.data?.steps ?? []);
+  // What it waits on is its owner's to decide, and to read: from the owner's store.
+  const waiting = useWaitingRequests(run.data?.is_owner ? run.data.steps : noSteps);
   // Read its requests again with each read of the run: one may be decided elsewhere (the Data
   // page, the conversation) while the run still waits.
   const reloadRequests = waiting.reload;
@@ -111,11 +114,12 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
 
   // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
-  // The run carries its own graph; the workflow only gives its name and layout, so the run is
-  // still shown, laid out afresh, if it fails to load.
+  // The run carries its own graph and name; the workflow only gives its layout, so the run is
+  // still shown, laid out afresh, if it fails to load, or isn't the reader's to load: one read
+  // as a member of a chat that started it.
   if (!run.data || (!workflow.data && !workflow.error) || !version) return null;
   const r = run.data;
-  const name = workflow.data?.name ?? `Workflow ${id}`;
+  const name = r.workflow_name;
   const levels: Level[] = [
     { key: null, name, version, layout: workflow.data?.layout ?? noLayout },
     ...opened,
@@ -134,9 +138,10 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     setError(undefined);
     try {
       const [version, sub] = await Promise.all([
-        api.getWorkflowVersion(node.target_id, node.version),
+        // Through the run, so whoever may read it may open it.
+        api.getRunSubworkflow(id, runId, [...prefix, node.key]),
         // Only for where its nodes are drawn; they're laid out afresh without it.
-        api.getWorkflow(node.target_id).catch(() => undefined),
+        r.is_owner ? api.getWorkflow(node.target_id).catch(() => undefined) : undefined,
       ]);
       setOpened([
         ...opened,
@@ -167,9 +172,13 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       wide
       title={
         <span className="flex flex-wrap items-center gap-2">
-          <Link to={`/workflows/${id}`} className="hover:underline">
-            {name}
-          </Link>
+          {r.is_owner ? (
+            <Link to={`/workflows/${id}`} className="hover:underline">
+              {name}
+            </Link>
+          ) : (
+            name
+          )}
           <span className="text-muted-foreground font-normal">run #{r.id}</span>
           <VersionBadge version={r.workflow_version} />
           <RunStatusBadge status={r.status} data-testid="run-status" />
@@ -186,20 +195,29 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
             : `Queued ${formatDate(r.created_at)}`
       }
       actions={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onDelete}
-          disabled={r.status === "running"}
-          title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
-          aria-label="Delete run"
-        >
-          <Trash2 />
-        </Button>
+        r.is_owner && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onDelete}
+            disabled={r.status === "running"}
+            title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
+            aria-label="Delete run"
+          >
+            <Trash2 />
+          </Button>
+        )
       }
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
-      <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
+      {r.is_owner ? (
+        <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
+      ) : (
+        <Notice label="Read only" className="px-3 py-2">
+          {r.chat_name ? `Started from ${r.chat_name}. ` : ""}You can read this run as a member of
+          the chat; only its owner can delete it or decide what it waits on.
+        </Notice>
+      )}
       {run.error && (
         <p role="status" className="text-muted-foreground text-sm">
           Couldn't refresh this run ({run.error}). Trying again…
@@ -213,7 +231,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
           {r.error}
         </div>
       )}
-      {r.status === "waiting" && (
+      {r.is_owner && r.status === "waiting" && (
         <>
           <WaitingSection
             steps={r.steps}

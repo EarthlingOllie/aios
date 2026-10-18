@@ -372,6 +372,13 @@ export type NotificationList = {
 };
 
 export type Run = RunSummary & {
+  /** The agent's name: the reader may not own it, and so can't read the agent itself. */
+  agent_name: string;
+  /**
+   * Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
+   * started it, and only reads it: they can't message the agent or delete the run.
+   */
+  is_owner: boolean;
   ui_messages: UIMessage[];
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
@@ -518,6 +525,17 @@ export type WorkflowRun = WorkflowRunSummary & {
   steps: WorkflowRunStep[];
   /** While it waits: the pins it would resume on that are no longer current. */
   stale_pins: StalePin[];
+};
+
+/** A workflow run as its page reads it. */
+export type WorkflowRunPage = WorkflowRun & {
+  /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
+  workflow_name: string;
+  /**
+   * Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat that
+   * started it, and only reads it: they can't delete it or decide what it waits on.
+   */
+  is_owner: boolean;
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
@@ -892,7 +910,12 @@ export const api = {
     request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
   listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`/api/workflows/${id}/runs`),
   getWorkflowRun: (id: number, runId: number) =>
-    request<WorkflowRun>(`/api/workflows/${id}/runs/${runId}`),
+    request<WorkflowRunPage>(`/api/workflows/${id}/runs/${runId}`),
+  /** The version the run pinned for the workflow node at `path` (node keys, outermost first). */
+  getRunSubworkflow: (id: number, runId: number, path: string[]) =>
+    request<WorkflowVersion>(
+      `/api/workflows/${id}/runs/${runId}/subworkflow?${new URLSearchParams(path.map((key) => ["path", key]))}`,
+    ),
   createWorkflowRun: (id: number, input: string) =>
     request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
   deleteWorkflowRun: (id: number, runId: number) =>

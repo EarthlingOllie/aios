@@ -28,13 +28,19 @@ process with a free slot claims it (`claim_turns`), which beats it while the han
 turn run (`beat`).
 When the turn ends its reply, or why it failed, is posted back (`finish_turn`); one whose
 heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`).
+
+A run an invocation started still executes as, and belongs to, its agent's or workflow's owner;
+but any member of the chat may read it, so its card's link opens for everyone in the chat
+(`shares_agent_run`, `shares_workflow_run`). Only reading: everything else about the run stays
+its owner's. The rule lapses with the invocation's link to the run: once the run or the chat is
+deleted, or the reader leaves the chat.
 """
 
 import re
 from collections.abc import Sequence
 from datetime import timedelta
 
-from sqlalchemy import func, select, true, update
+from sqlalchemy import exists, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
@@ -45,11 +51,14 @@ from aios.models import (
     ChatAuthorKind,
     ChatInvocation,
     ChatInvocationStatus,
+    ChatMember,
     ChatMessage,
     ChatMessageKind,
     TriggerTargetKind,
+    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
+    WorkflowRunStep,
 )
 
 # The acknowledgement a run card carries until the handoff replaces it with what the member
@@ -361,3 +370,39 @@ def fail_stopped_turns(
                 .values(status=AgentRunStatus.failed, finished_at=func.now())
             )
         failed(db, invocation, error)
+
+
+def _in_chats_of(user_id: int):
+    """An invocation in a chat the user is a member of."""
+    return ChatInvocation.chat_id.in_(
+        select(ChatMember.chat_id).where(ChatMember.user_id == user_id)
+    )
+
+
+def shares_workflow_run(db: Session, user_id: int, run_id: int) -> bool:
+    """Whether the user may read the workflow run as a member of a chat that started it."""
+    return db.scalar(
+        select(exists().where(ChatInvocation.workflow_run_id == run_id, _in_chats_of(user_id)))
+    )
+
+
+def shares_agent_run(db: Session, user_id: int, run_id: int) -> bool:
+    """Whether the user may read the agent run as a member of a chat that started it, or that
+    started a (live) workflow's run it's a node's conversation in, at any depth."""
+    in_workflow_runs = (
+        select(WorkflowRunStep.run_id)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
+        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
+        .where(WorkflowRunStep.agent_run_id == run_id, Workflow.deleted_at.is_(None))
+    )
+    return db.scalar(
+        select(
+            exists().where(
+                or_(
+                    ChatInvocation.agent_run_id == run_id,
+                    ChatInvocation.workflow_run_id.in_(in_workflow_runs),
+                ),
+                _in_chats_of(user_id),
+            )
+        )
+    )

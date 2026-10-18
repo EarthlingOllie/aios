@@ -350,6 +350,12 @@ export class FakeApi {
    * "edits" a workflow by taking it off the list.
    */
   agentDependents = new Map<number, AgentDependentsRow>();
+  /**
+   * The agents and workflows (by id) that another user owns. As on the server, the signed-in
+   * user can't list or read them, or do anything to them: only read a run of one, as a member
+   * of a chat that started it (which the fake doesn't check), and that read only.
+   */
+  othersOwn = new Set<number>();
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
@@ -1093,6 +1099,20 @@ export class FakeApi {
     return member;
   }
 
+  /**
+   * A run card in the chat for a run already made: a message from `me` mentioning the agent or
+   * workflow, and its invocation, finished, pointing at the run.
+   */
+  addChatRunCard(chat: ChatRow, kind: Kind, target: AgentRow | WorkflowRow, runId: number): InvocationRow {
+    const message = this.addChatMessage(chat, `@[${target.name}](${kind}:${target.id}) Go`, this.me, [
+      { kind, id: target.id, name: target.name },
+    ]);
+    const invocation = this.invoke(chat, message, kind, target);
+    this.cardOf(chat, invocation).body = "On it.";
+    Object.assign(invocation, { status: "succeeded", run_id: runId, started_at: NOW, finished_at: NOW });
+    return invocation;
+  }
+
   /** Adds an agent or a workflow to a chat, as the owner would. */
   addChatTarget(chat: ChatRow, kind: Kind, target: { id: number }): ChatMemberRow {
     const member: ChatMemberRow = { id: this.id(), kind, target_id: target.id, added_at: NOW };
@@ -1423,6 +1443,12 @@ export class FakeApi {
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
+    // Another user's agent or workflow: only a run of it can be read (see `othersOwn`).
+    if ((m = path.match(/^\/api\/(?:agents|workflows)\/(\d+)(\/.*)?$/)) && this.othersOwn.has(Number(m[1]))) {
+      const readable = method === "GET" && /^\/runs\/\d+(\/subworkflow)?$/.test(m[2] ?? "");
+      if (!readable) return fail(404, "Not Found");
+    }
+
     if (path === "/api/me") return reply(200, this.me);
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
@@ -1613,7 +1639,7 @@ export class FakeApi {
     if (path === "/api/agents") {
       return reply(
         200,
-        [...this.agents.values()].map((a) => ({
+        [...this.agents.values()].filter((a) => !this.othersOwn.has(a.id)).map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -1683,6 +1709,8 @@ export class FakeApi {
         if (!run || run.agent_id !== agent.id) return fail(404, "Not Found");
         return reply(200, {
           ...this.agentRunOut(run),
+          agent_name: agent.name,
+          is_owner: !this.othersOwn.has(agent.id),
           ui_messages: run.ui_messages,
           messages: [],
           instructions: agent.base_prompt,
@@ -1731,7 +1759,7 @@ export class FakeApi {
     if (path === "/api/workflows" && method === "GET") {
       return reply(
         200,
-        this.live().map((w) => ({
+        this.live().filter((w) => !this.othersOwn.has(w.id)).map((w) => ({
           id: w.id,
           name: w.name,
           description: w.description,
@@ -1837,7 +1865,23 @@ export class FakeApi {
           this.runs.delete(run.id);
           return reply(204);
         }
-        return reply(200, this.runOut(run));
+        return reply(200, {
+          ...this.runOut(run),
+          workflow_name: workflow.name,
+          is_owner: !this.othersOwn.has(workflow.id),
+        });
+      }
+      if ((m = rest.match(/^\/runs\/(\d+)\/subworkflow$/)) && method === "GET") {
+        const run = this.runs.get(Number(m[1]));
+        if (!run || run.workflow_id !== workflow.id) return fail(404, "Not Found");
+        // The version pinned at the path's workflow node, along the run's graph.
+        let version = this.workflowVersions.get(run.workflow_version_id)!;
+        for (const key of url.searchParams.getAll("path")) {
+          const node = version.nodes.find((n) => n.key === key);
+          if (!node || node.kind !== "workflow") return fail(404, "Not Found");
+          version = this.workflowVersions.get(node.version_id)!;
+        }
+        return reply(200, this.versionOut(version));
       }
       if (rest === "/versions") {
         return reply(

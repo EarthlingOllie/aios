@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, dependents, tracing, ui_stream
+from aios import checkpoints, dependents, invocations, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
@@ -175,6 +175,11 @@ class RunSummary(BaseModel):
 
 
 class RunOut(RunSummary):
+    # The agent's name: the reader may not own it, and so can't read the agent itself.
+    agent_name: str
+    # Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
+    # started it (`invocations.shares_agent_run`): only its owner sends it messages or deletes it.
+    is_owner: bool
     # AI SDK `UIMessage`s, for rendering the conversation with the same components as a live chat.
     ui_messages: list[dict[str, Any]]
     # The raw LangChain history: messages with their tool calls, results and usage.
@@ -213,6 +218,22 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
     if version is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return version
+
+
+def get_readable_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
+    """The run, for reading: its agent's owner's, or one shared with them through a chat
+    (`invocations.shares_agent_run`). Otherwise a 404, as if it didn't exist."""
+    agent = db.get(Agent, agent_id)
+    run = db.get(AgentRun, run_id)
+    if (
+        agent is None
+        or agent.deleted_at is not None
+        or run is None
+        or run.agent_id != agent.id
+        or (agent.owner_id != user_id and not invocations.shares_agent_run(db, user_id, run.id))
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return run
 
 
 def get_owned_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
@@ -666,11 +687,13 @@ def create_run(agent_id: DbId, user: CurrentUser, db: DB):
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
-    run = get_owned_run(db, user.id, agent_id, run_id)
+    run = get_readable_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     messages = checkpoints.history(run.id)
     return RunOut(
         **RunSummary.model_validate(row, from_attributes=True).model_dump(),
+        agent_name=run.agent.name,
+        is_owner=run.agent.owner_id == user.id,
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
