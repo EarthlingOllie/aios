@@ -48,8 +48,9 @@ const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
 
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
+  const visible = useVisible();
   // Unread counts go up as others post, in chats other than the one open.
-  usePoll(data !== undefined, reload, useVisible() ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
+  usePoll(data !== undefined, reload, visible ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
   return (
     <MasterDetail
       title="Chats"
@@ -116,9 +117,7 @@ export function ChatDetail() {
   const [actionError, setActionError] = useState<string>();
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
-    (messageId: number) => {
-      api.markChatRead(id, messageId).then(reloadList, () => undefined);
-    },
+    (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
     [id, reloadList],
   );
 

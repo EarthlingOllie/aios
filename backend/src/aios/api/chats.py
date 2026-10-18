@@ -441,6 +441,11 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
     return chat_out(load(db, chat.id), user.id)
 
 
+def newest_message_id(db: Session, chat_id: int) -> int | None:
+    """The id of the chat's newest message; None while it has none."""
+    return db.scalar(select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat_id))
+
+
 @router.post("/chats/{chat_id}/join", response_model=ChatOut)
 def join_chat(chat_id: DbId, user: CurrentUser, db: DB):
     """Join a public chat as a member (a private one exists only for its members). What was
@@ -454,9 +459,7 @@ def join_chat(chat_id: DbId, user: CurrentUser, db: DB):
             user_id=user.id,
             role=ChatMemberRole.member,
             added_by=user.id,
-            last_read_message_id=db.scalar(
-                select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat.id)
-            ),
+            last_read_message_id=newest_message_id(db, chat.id),
         )
     )
     # Joining is activity, as adding a member is.
@@ -813,8 +816,7 @@ def mark_read(chat_id: DbId, body: ReadIn, user: CurrentUser, db: DB) -> None:
     member = user_member(chat, user.id)
     if member is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER_READING)
-    newest = db.scalar(select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat.id)) or 0
-    seen = min(body.message_id, newest)
+    seen = min(body.message_id, newest_message_id(db, chat.id) or 0)
     # In one statement, so two tabs reading at once leave the later of the two.
     db.execute(
         update(ChatMember)

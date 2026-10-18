@@ -98,8 +98,11 @@ export function ChatRoom({
   mentionable?: ChatMentionables;
   /** After a message is posted, e.g. to re-sort the list of chats. */
   onPosted?: () => void;
-  /** The reader has seen the messages up to this one (only for a member, who keeps a place). */
-  onRead?: (messageId: number) => void;
+  /**
+   * The reader has seen the messages up to this one (only for a member, who keeps a place). If it
+   * fails, the same message is reported again the next time the reader is seen at the bottom.
+   */
+  onRead?: (messageId: number) => Promise<unknown>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
@@ -126,8 +129,12 @@ export function ChatRoom({
       visible: document.visibilityState !== "hidden",
     });
     if (seen === null || !onRead) return;
+    const before = reported.current;
     reported.current = seen;
-    onRead(seen);
+    onRead(seen).catch(() => {
+      // Not noted: unless something newer has been since, it's still to report.
+      if (reported.current === seen) reported.current = before;
+    });
   }, [onRead]);
 
   /**
