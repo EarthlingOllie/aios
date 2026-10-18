@@ -216,6 +216,59 @@ services:
     depends_on: [api]
     ports: ["8080:80"]
 
+  # Claude Code on the stack's network, for debugging with full context (README, "Debug with
+  # Claude Code"). Opt-in: docker compose --profile debug run --rm claude
+  claude:
+    <<: *backend
+    profiles: [debug]
+    build:
+      context: ./infra/claude
+      args:
+        UID: ${CLAUDE_UID:-1000}
+    environment:
+      <<: *backend-env
+      SANDBOX_BACKEND: dev
+      SANDBOX_DEV_URL: http://sandbox:8080
+      SANDBOX_DEV_TOKEN: dev-sandbox-token
+      DOCKER_HOST: tcp://docker-proxy:2375
+      COMPOSE_PROJECT_NAME: aios
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+    volumes:
+      - .:/workspace
+      - claude-home:/home/dev/.claude
+      - claude-venv:/home/dev/.venv
+      - claude-cache:/home/dev/.cache
+      - claude-node-modules:/workspace/frontend/node_modules
+    stdin_open: true
+    tty: true
+
+  # Read-only Docker API for the claude service: logs, ps and inspect, but no exec, start/stop,
+  # or anything else that writes (POST=0). Only reachable on the compose network.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    profiles: [debug]
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      INFO: 1
+      POST: 0
+      # Listen on IPv4 only, so it also starts where IPv6 is disabled.
+      DISABLE_IPV6: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   pgdata:
   rustfsdata:
+  claude-home:
+  claude-venv:
+  claude-cache:
+  claude-node-modules:
