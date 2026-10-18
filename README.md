@@ -137,8 +137,9 @@ does the same for its own (`/api/triggers`).
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, most recently active first, and opens one to its header,
-messages and members, grouped by kind (users for now; agents and workflows have their place in
-`chat_members` and join later, with messages). A chat is **public** or **private**: a private chat
+messages and members, grouped by kind: users, and the owner's **agents and workflows**, with the
+icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
+user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat
 doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
 opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
 renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
@@ -151,7 +152,14 @@ bottom and otherwise leaves the reader where they are; scrolling to the top load
 (`?before=N`, 50 at a time). Anyone a chat exists for can read it; only its members post (a 403
 for anyone else). A read returns `{messages, invocations}`, the second for the runs mentions will
 start (empty for now). Posting makes a chat the most recently active; a message stays when its
-author is deleted, with no author.
+author is deleted, with no author, or removed from the chat.
+
+Typing `@` in the composer offers the chat's members (`GET /api/chats/{id}/mentionable`), grouped
+by kind so an agent and a workflow with the same name are told apart. Picking one inserts a token,
+`@[name](kind:id)`, and the message is posted with its **mentions** (`{body, mentions: [{kind,
+id}]}`), stored structurally as `[{kind, id, name}]`; the message shows each as a chip with the
+member's kind and name, and a message that mentions you is highlighted. Mentioning anyone who isn't
+a member is a 422 (and a token typed by hand for one is plain text). Mentions start nothing yet.
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
@@ -223,7 +231,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
-    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}]
+    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     cron.py         cron expressions in a timezone (cronsim)

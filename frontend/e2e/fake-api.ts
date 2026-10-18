@@ -7,7 +7,8 @@ import type { Page, Route } from "@playwright/test";
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
  * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else) and messages
- * (read a page at a time by id, `after` or `before` a cursor; only members post).
+ * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
+ * anyone who isn't a member is a 422).
  */
 
 type Kind = "agent" | "workflow";
@@ -239,10 +240,19 @@ export type RunRow = {
 
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
 type ChatVisibility = "public" | "private";
-export type ChatMemberRow = {
+export type ChatMemberRow =
+  | { id: number; kind: "user"; role: "owner" | "member"; user: ChatUser; added_at: string }
+  /** An agent or workflow of `agents` or `workflows`, by id; gone once it's deleted. */
+  | { id: number; kind: Kind; target_id: number; added_at: string };
+export type ChatMention = { kind: "user" | Kind; id: number; name: string };
+type ChatMemberOut = {
   id: number;
-  role: "owner" | "member";
-  user: ChatUser;
+  kind: "user" | Kind;
+  role: "owner" | "member" | null;
+  target_id: number;
+  name: string;
+  login: string | null;
+  avatar_url: string | null;
   added_at: string;
 };
 export type ChatRow = {
@@ -257,7 +267,13 @@ export type ChatRow = {
   created_at: string;
   updated_at: string;
 };
-export type ChatMessageRow = { id: number; author: ChatUser; body: string; created_at: string };
+export type ChatMessageRow = {
+  id: number;
+  author: ChatUser;
+  body: string;
+  mentions: ChatMention[];
+  created_at: string;
+};
 
 /** How many messages a read returns at most, as the API's `MESSAGE_PAGE`. */
 export const MESSAGE_PAGE = 50;
@@ -821,21 +837,33 @@ export class FakeApi {
       created_at: NOW,
       updated_at: NOW,
     };
-    chat.members.push({ id: this.id(), role: "owner", user: owner, added_at: NOW });
+    chat.members.push({ id: this.id(), kind: "user", role: "owner", user: owner, added_at: NOW });
     this.chats.set(chat.id, chat);
     return chat;
   }
 
-  /** Posts a message to a chat, as `author` (by default `me`) would. */
-  addChatMessage(chat: ChatRow, body: string, author: ChatUser = this.me): ChatMessageRow {
-    const message: ChatMessageRow = { id: this.id(), author, body, created_at: NOW };
+  /** Posts a message to a chat, as `author` (by default `me`) would, mentioning `mentions`. */
+  addChatMessage(
+    chat: ChatRow,
+    body: string,
+    author: ChatUser = this.me,
+    mentions: ChatMention[] = [],
+  ): ChatMessageRow {
+    const message: ChatMessageRow = { id: this.id(), author, body, mentions, created_at: NOW };
     chat.messages.push(message);
     return message;
   }
 
   /** Adds a user to a chat, as the owner would. */
   addChatMember(chat: ChatRow, user: ChatUser): ChatMemberRow {
-    const member: ChatMemberRow = { id: this.id(), role: "member", user, added_at: NOW };
+    const member: ChatMemberRow = { id: this.id(), kind: "user", role: "member", user, added_at: NOW };
+    chat.members.push(member);
+    return member;
+  }
+
+  /** Adds an agent or a workflow to a chat, as the owner would. */
+  addChatTarget(chat: ChatRow, kind: Kind, target: { id: number }): ChatMemberRow {
+    const member: ChatMemberRow = { id: this.id(), kind, target_id: target.id, added_at: NOW };
     chat.members.push(member);
     return member;
   }
@@ -961,26 +989,57 @@ export class FakeApi {
       owner_id: chat.owner.id,
       is_owner: chat.owner.id === this.me.id,
       is_member: this.inChat(chat),
-      member_count: chat.members.length,
+      member_count: this.liveMembers(chat).length,
       created_at: chat.created_at,
       updated_at: chat.updated_at,
     };
   }
 
+  /** The agent or workflow a member is, unless it's been deleted. */
+  private chatTarget(kind: Kind, id: number) {
+    if (kind === "agent") return this.agents.get(id);
+    const workflow = this.workflows.get(id);
+    return workflow && !workflow.deleted ? workflow : undefined;
+  }
+
+  /** The chat's members as the API shows them, less deleted agents and workflows: owner first. */
+  private liveMembers(chat: ChatRow): ChatMemberOut[] {
+    return chat.members
+      .flatMap((m): ChatMemberOut[] => {
+        const { id, kind, added_at } = m;
+        if (kind === "user") {
+          const { user, role } = m;
+          const [login, avatar_url] = [user.login, user.avatar_url ?? null];
+          return [{ id, kind, role, target_id: user.id, name: user.name ?? login, login, avatar_url, added_at }];
+        }
+        const target = this.chatTarget(kind, m.target_id);
+        if (!target) return [];
+        const name = target.name;
+        return [{ id, kind, role: null, target_id: target.id, name, login: null, avatar_url: null, added_at }];
+      })
+      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
+  }
+
   chatOut(chat: ChatRow) {
-    const users = [...chat.members]
-      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id)
-      .map((m) => ({
-        id: m.id,
-        kind: "user",
-        role: m.role,
-        target_id: m.user.id,
-        name: m.user.name ?? m.user.login,
-        login: m.user.login,
-        avatar_url: m.user.avatar_url ?? null,
-        added_at: m.added_at,
-      }));
-    return { ...this.chatSummary(chat), members: { users, agents: [], workflows: [] } };
+    const members = this.liveMembers(chat);
+    const of = (kind: string) => members.filter((m) => m.kind === kind);
+    return {
+      ...this.chatSummary(chat),
+      members: { users: of("user"), agents: of("agent"), workflows: of("workflow") },
+    };
+  }
+
+  /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
+  private mentionable(chat: ChatRow) {
+    const members = this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
+      kind,
+      id: target_id,
+      name,
+      login,
+      avatar_url,
+    }));
+    const of = (kind: string) => members.filter((m) => m.kind === kind);
+    return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
   }
 
   private messageOut(chat: ChatRow, m: ChatMessageRow) {
@@ -996,7 +1055,7 @@ export class FakeApi {
       },
       kind: "text",
       body: m.body,
-      mentions: [],
+      mentions: m.mentions,
       created_at: m.created_at,
     };
   }
@@ -1016,7 +1075,7 @@ export class FakeApi {
   }
 
   private inChat(chat: ChatRow) {
-    return chat.members.some((m) => m.user.id === this.me.id);
+    return chat.members.some((m) => m.kind === "user" && m.user.id === this.me.id);
   }
 
   /** The workflows whose versions `version` runs, at any depth. */
@@ -1555,9 +1614,18 @@ export class FakeApi {
         this.messageReads.push(url.search);
         return reply(200, this.messagesPage(chat, url.searchParams));
       }
+      if (rest === "/mentionable" && method === "GET") return reply(200, this.mentionable(chat));
       if (rest === "/messages" && method === "POST") {
         if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
-        return reply(201, this.messageOut(chat, this.addChatMessage(chat, body.body)));
+        const members = Object.values(this.mentionable(chat)).flat();
+        const mentions: ChatMention[] = [];
+        for (const { kind, id } of (body.mentions ?? []) as ChatMention[]) {
+          const member = members.find((x) => x.kind === kind && x.id === id);
+          if (!member) return fail(422, "Only the chat's members can be mentioned in it.");
+          const twice = mentions.some((x) => x.kind === kind && x.id === id);
+          if (!twice) mentions.push({ kind, id, name: member.name });
+        }
+        return reply(201, this.messageOut(chat, this.addChatMessage(chat, body.body, this.me, mentions)));
       }
       if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
@@ -1575,10 +1643,22 @@ export class FakeApi {
         this.chats.delete(chat.id);
         return reply(204);
       }
+      if (rest === "/members" && method === "POST") {
+        const kind = body.kind as ChatMention["kind"];
+        if (kind === "user") return fail(422, "fake API: add users with addChatMember");
+        if (!this.chatTarget(kind, body.id)) return fail(422, `Unknown ${kind}`);
+        if (chat.members.some((x) => x.kind === kind && x.target_id === body.id)) {
+          return fail(409, "Already a member of this chat.");
+        }
+        this.addChatTarget(chat, kind, { id: body.id });
+        return reply(201, this.chatOut(chat));
+      }
       if ((m = rest.match(/^\/members\/(\d+)$/)) && method === "DELETE") {
         const member = chat.members.find((x) => x.id === Number(m![1]));
         if (!member) return fail(404, "Not Found");
-        if (member.role === "owner") return fail(422, "The owner can't be removed from the chat.");
+        if (member.kind === "user" && member.role === "owner") {
+          return fail(422, "The owner can't be removed from the chat.");
+        }
         chat.members = chat.members.filter((x) => x !== member);
         return reply(204);
       }

@@ -32,7 +32,7 @@ test("posts a markdown message and shows it with its author", async ({ page }) =
   await expect(posted.locator("strong")).toHaveText("world");
   await expect(posted).toContainText("Tester");
   await expect(composer(page)).toHaveValue("");
-  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/messages`, { body: "Hello, **world**" }]]);
+  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/messages`, { body: "Hello, **world**", mentions: [] }]]);
 });
 
 test("a message posted by someone else appears within a poll", async ({ page }) => {

@@ -1,14 +1,20 @@
 """Chats: group conversations between users, agents and workflows.
 
 A chat has an owner (the user who made it), a name unique among chats, a description and a
-visibility. Its members are users so far (`ChatMember` has room for agents and workflows). A
-private chat doesn't exist for a user who isn't in it: every endpoint is a 404 for them. Only the
-owner can change a chat, remove its members or delete it: a 403 for anyone else.
+visibility. Its members are users, and agents and workflows the owner owns (an agent or workflow
+since deleted is no longer one; its row stays, and what it posted stays either way). A private
+chat doesn't exist for a user who isn't in it: every endpoint is a 404 for them. Only the owner
+can change a chat, add or remove its members or delete it: a 403 for anyone else.
 
 Its members post markdown messages, read by id: `?after=N` for what's new (what the open chat
 polls), `?before=N` for the page of history before N, and neither for the latest page. Anyone
 the chat exists for can read them; only a member can post (a 403 for anyone else). A chat's last
 activity is when it was last changed or a message was last posted.
+
+A message can mention members: the composer picks them from `GET /api/chats/{id}/mentionable`, the
+body carries a token for each (`@[name](kind:id)`) and the message stores them structurally,
+`[{kind, id, name}]`, so an agent and a workflow with the same name are never confused. Mentioning
+anyone who isn't a member is a 422. Mentions trigger nothing yet.
 """
 
 from datetime import datetime
@@ -19,10 +25,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from aios.api.skills import on_conflict, unique_name
+from aios.api.skills import lock_live, on_conflict, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
+    Agent,
     Chat,
     ChatAuthorKind,
     ChatMember,
@@ -32,13 +39,19 @@ from aios.models import (
     ChatMessageKind,
     ChatVisibility,
     User,
+    Workflow,
 )
 
 router = APIRouter(prefix="/api")
 
 CHAT_NAME_CONSTRAINT = "chats_name_key"
 NAME_TAKEN = "A chat with that name already exists."
-USER_MEMBER_CONSTRAINT = "chat_members_chat_id_user_id_key"
+# One row per (chat, user), (chat, agent) and (chat, workflow).
+MEMBER_CONSTRAINTS = {
+    ChatMemberKind.user: "chat_members_chat_id_user_id_key",
+    ChatMemberKind.agent: "chat_members_chat_id_agent_id_key",
+    ChatMemberKind.workflow: "chat_members_chat_id_workflow_id_key",
+}
 ALREADY_A_MEMBER = "Already a member of this chat."
 
 
@@ -50,7 +63,7 @@ class ChatIn(BaseModel):
 
 class MemberIn(BaseModel):
     kind: ChatMemberKind
-    # The user's id. Agents and workflows can't be added yet.
+    # The user's, agent's or workflow's id; an agent or workflow must be the owner's own.
     id: DbId
 
 
@@ -123,10 +136,21 @@ def member_out(member: ChatMember) -> ChatMemberOut:
     )
 
 
+def live_members(chat: Chat) -> list[ChatMember]:
+    """The chat's members, less any agent or workflow since deleted (they're soft-deleted, and
+    their member rows stay): the owner first, the rest as they were added (ids go up with time)."""
+    live = [
+        m
+        for m in chat.members
+        if (m.agent is None or m.agent.deleted_at is None)
+        and (m.workflow is None or m.workflow.deleted_at is None)
+    ]
+    return sorted(live, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
+
+
 def members_out(chat: Chat) -> ChatMembersOut:
     by_kind: dict[ChatMemberKind, list[ChatMemberOut]] = {kind: [] for kind in ChatMemberKind}
-    # The owner first; the rest as they were added (ids go up with time).
-    for member in sorted(chat.members, key=lambda m: (m.role != ChatMemberRole.owner, m.id)):
+    for member in live_members(chat):
         by_kind[member.kind].append(member_out(member))
     return ChatMembersOut(
         users=by_kind[ChatMemberKind.user],
@@ -153,7 +177,7 @@ def chat_summary(chat: Chat, user_id: int, member_count: int, member: bool) -> C
 def chat_out(chat: Chat, user_id: int) -> ChatOut:
     return ChatOut(
         **chat_summary(
-            chat, user_id, len(chat.members), member=is_member(chat, user_id)
+            chat, user_id, len(live_members(chat)), member=is_member(chat, user_id)
         ).model_dump(),
         members=members_out(chat),
     )
@@ -170,6 +194,11 @@ def load(db: Session, chat_id: int) -> Chat:
     """The chat fresh from the database, with its members and what they point at."""
     db.expire_all()
     return db.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one()
+
+
+def member_key(member: ChatMember) -> tuple[ChatMemberKind, int | None]:
+    """What a member is: its kind and the user's, agent's or workflow's id."""
+    return member.kind, member.user_id or member.agent_id or member.workflow_id
 
 
 def is_member(chat: Chat, user_id: int) -> bool:
@@ -198,7 +227,14 @@ def list_chats(user: CurrentUser, db: DB):
     rows = db.execute(
         select(Chat, func.count(ChatMember.id))
         .join(ChatMember, ChatMember.chat_id == Chat.id)
-        .where(Chat.id.in_(select(ChatMember.chat_id).where(ChatMember.user_id == user.id)))
+        # Not counting agents or workflows since deleted (see `live_members`).
+        .outerjoin(Agent, Agent.id == ChatMember.agent_id)
+        .outerjoin(Workflow, Workflow.id == ChatMember.workflow_id)
+        .where(
+            Chat.id.in_(select(ChatMember.chat_id).where(ChatMember.user_id == user.id)),
+            Agent.deleted_at.is_(None),
+            Workflow.deleted_at.is_(None),
+        )
         .group_by(Chat.id)
         .order_by(Chat.updated_at.desc(), Chat.id.desc())
     )
@@ -233,6 +269,52 @@ def get_chat(chat_id: DbId, user: CurrentUser, db: DB):
     return chat_out(get_visible_chat(db, user.id, chat_id), user.id)
 
 
+class MentionableOut(BaseModel):
+    """A member as the composer offers it to mention, and as a message's `mentions` name it."""
+
+    kind: ChatMemberKind
+    # The user's, agent's or workflow's id.
+    id: int
+    name: str
+    # Users only.
+    login: str | None
+    avatar_url: str | None
+
+
+class MentionablesOut(BaseModel):
+    """Who can be mentioned in a chat: its members, grouped by kind, as `ChatMembersOut` orders
+    them. An agent and a workflow can share a name; their kinds tell them apart."""
+
+    users: list[MentionableOut]
+    agents: list[MentionableOut]
+    workflows: list[MentionableOut]
+
+
+def mentionables(chat: Chat) -> MentionablesOut:
+    members = members_out(chat)
+    return MentionablesOut(
+        **{
+            group: [
+                MentionableOut(
+                    kind=m.kind,
+                    id=m.target_id,
+                    name=m.name,
+                    login=m.login,
+                    avatar_url=m.avatar_url,
+                )
+                for m in getattr(members, group)
+            ]
+            for group in ("users", "agents", "workflows")
+        }
+    )
+
+
+@router.get("/chats/{chat_id}/mentionable", response_model=MentionablesOut)
+def list_mentionable(chat_id: DbId, user: CurrentUser, db: DB):
+    """The chat's members, for the composer's `@` autocomplete."""
+    return mentionables(get_visible_chat(db, user.id, chat_id))
+
+
 @router.put("/chats/{chat_id}", response_model=ChatOut)
 def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, db: DB):
     """Rename, describe or change the visibility of the chat (its owner only)."""
@@ -249,28 +331,36 @@ def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, db: DB):
     "/chats/{chat_id}/members", response_model=ChatOut, status_code=status.HTTP_201_CREATED
 )
 def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
-    """Add a user to the chat (its owner only). Agents and workflows can't be added yet."""
+    """Add a user, or an agent or workflow the owner owns, to the chat (its owner only)."""
     chat = get_owned_chat(db, user.id, chat_id)
-    if body.kind != ChatMemberKind.user:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "Only users can be added to a chat yet."
+    if body.kind == ChatMemberKind.user:
+        if db.get(User, body.id) is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown user")
+        member = ChatMember(
+            kind=body.kind, user_id=body.id, role=ChatMemberRole.member, added_by=user.id
         )
-    if db.get(User, body.id) is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown user")
-    if is_member(chat, body.id):
+    else:
+        model = Agent if body.kind == ChatMemberKind.agent else Workflow
+        target = db.get(model, body.id)
+        # Locked until commit, so a concurrent delete either waits for the add or wins it.
+        if (
+            target is None
+            or target.owner_id != user.id
+            or not lock_live(db, model, [target.id], read=True)
+        ):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.kind}")
+        member = ChatMember(kind=body.kind, added_by=user.id)
+        if body.kind == ChatMemberKind.agent:
+            member.agent_id = target.id
+        else:
+            member.workflow_id = target.id
+    if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
-    chat.members.append(
-        ChatMember(
-            kind=ChatMemberKind.user,
-            user_id=body.id,
-            role=ChatMemberRole.member,
-            added_by=user.id,
-        )
-    )
+    chat.members.append(member)
     # Adding a member is activity too.
     chat.updated_at = func.now()
-    # The check above can lose a race with another add of the same user; this catches that.
-    with on_conflict(db, USER_MEMBER_CONSTRAINT, ALREADY_A_MEMBER):
+    # The check above can lose a race with another add of the same member; this catches that.
+    with on_conflict(db, MEMBER_CONSTRAINTS[body.kind], ALREADY_A_MEMBER):
         db.commit()
     return chat_out(load(db, chat.id), user.id)
 
@@ -301,10 +391,27 @@ def remove_member(chat_id: DbId, member_id: DbId, user: CurrentUser, db: DB) -> 
 # How many messages a read returns at most: the latest page, a page of history, or what's new.
 MESSAGE_PAGE = 50
 NOT_A_MEMBER = "Only the chat's members can post in it."
+NOT_MENTIONABLE = "Only the chat's members can be mentioned in it."
+
+
+class MentionIn(BaseModel):
+    kind: ChatMemberKind
+    # The user's, agent's or workflow's id, as `GET /api/chats/{id}/mentionable` gives it.
+    id: DbId
 
 
 class MessageIn(BaseModel):
+    # Markdown. A mention is written `@[name](kind:id)` in it, which the UI shows as a chip.
     body: str = Field(min_length=1, max_length=100_000, pattern=r"\S")
+    # Who the message mentions, chosen from the chat's members (a 422 for anyone else).
+    mentions: list[MentionIn] = Field(default=[], max_length=100)
+
+
+class MentionOut(BaseModel):
+    kind: ChatMemberKind
+    id: int
+    # As it was when the message was posted.
+    name: str
 
 
 class MessageAuthorOut(BaseModel):
@@ -325,7 +432,7 @@ class MessageOut(BaseModel):
     kind: ChatMessageKind
     # Markdown.
     body: str
-    mentions: list[dict]
+    mentions: list[MentionOut]
     created_at: datetime
 
 
@@ -374,6 +481,22 @@ MESSAGE_LOAD = (
 )
 
 
+def resolve_mentions(chat: Chat, mentions: list[MentionIn]) -> list[MentionOut]:
+    """The members a message mentions, each once in the order given, with their names: a 422 if
+    any isn't a (live) member of the chat."""
+    found = mentionables(chat)
+    members = {(m.kind, m.id): m for m in [*found.users, *found.agents, *found.workflows]}
+    resolved: dict[tuple[ChatMemberKind, int], MentionOut] = {}
+    for mention in mentions:
+        member = members.get((mention.kind, mention.id))
+        if member is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, NOT_MENTIONABLE)
+        resolved.setdefault(
+            (member.kind, member.id), MentionOut(kind=member.kind, id=member.id, name=member.name)
+        )
+    return list(resolved.values())
+
+
 @router.get("/chats/{chat_id}/messages", response_model=MessagesOut)
 def list_messages(
     chat_id: DbId,
@@ -411,12 +534,14 @@ def post_message(chat_id: DbId, body: MessageIn, user: CurrentUser, db: DB):
     chat = get_visible_chat(db, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
+    mentions = resolve_mentions(chat, body.mentions)
     message = ChatMessage(
         chat_id=chat.id,
         author_kind=ChatAuthorKind.user,
         author_user_id=user.id,
         kind=ChatMessageKind.text,
         body=body.body,
+        mentions=[m.model_dump(mode="json") for m in mentions],
     )
     db.add(message)
     # Posting is activity.

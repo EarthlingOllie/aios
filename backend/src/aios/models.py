@@ -877,7 +877,7 @@ class Chat(Base):
 
 
 class ChatMember(Base):
-    """Who is in a chat: a user, an agent or a workflow. Only users are added so far."""
+    """Who is in a chat: a user, an agent or a workflow (one the chat's owner owns)."""
 
     __tablename__ = "chat_members"
 
@@ -964,7 +964,7 @@ class ChatMessage(Base):
     )
     kind: Mapped[ChatMessageKind] = mapped_column(Enum(ChatMessageKind, name="chat_message_kind"))
     body: Mapped[str] = mapped_column(Text)
-    # Who the message mentions, `[{kind, id, name}]`; empty until mentions arrive.
+    # Who the message mentions, `[{kind, id, name}]`, with the names as they were when posted.
     mentions: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

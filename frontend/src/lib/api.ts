@@ -614,7 +614,7 @@ export type AgentDeleteResolutions = {
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
 
-/** Someone in a chat: a user (with a role), or, later, an agent or a workflow. */
+/** Someone in a chat: a user (with a role), an agent or a workflow. */
 export type ChatMember = {
   /** The membership's id, which removing the member takes. */
   id: number;
@@ -654,6 +654,19 @@ export type Chat = ChatSummary & {
 
 export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
 
+/** A member a message mentions: a user, an agent or a workflow, by id within its kind. */
+export type ChatMentionRef = { kind: ChatMemberKind; id: number };
+export type ChatMention = ChatMentionRef & { name: string };
+
+/** A member the composer offers to mention. */
+export type ChatMentionable = ChatMention & { login: string | null; avatar_url: string | null };
+/** Who can be mentioned in a chat (its members), grouped by kind. */
+export type ChatMentionables = {
+  users: ChatMentionable[];
+  agents: ChatMentionable[];
+  workflows: ChatMentionable[];
+};
+
 /** Who posted a chat message: a user (with a login and maybe an avatar), an agent or a workflow. */
 export type ChatMessageAuthor = {
   kind: "user" | "agent" | "workflow" | "system";
@@ -671,7 +684,8 @@ export type ChatMessage = {
   kind: "text" | "run_card";
   /** Markdown. */
   body: string;
-  mentions: { kind: ChatMemberKind; id: number; name: string }[];
+  /** Who it mentions, as they were named when it was posted; its body has a token for each. */
+  mentions: ChatMention[];
   created_at: string;
 };
 
@@ -858,6 +872,9 @@ export const api = {
         Object.entries(cursor).map(([k, v]) => [k, String(v)]),
       )}`,
     ),
-  postChatMessage: (id: number, body: string) =>
-    request<ChatMessage>(`/api/chats/${id}/messages`, json("POST", { body })),
+  postChatMessage: (id: number, body: string, mentions: ChatMentionRef[] = []) =>
+    request<ChatMessage>(`/api/chats/${id}/messages`, json("POST", { body, mentions })),
+  listChatMentionable: (id: number) => request<ChatMentionables>(`/api/chats/${id}/mentionable`),
+  addChatMember: (id: number, member: ChatMentionRef) =>
+    request<Chat>(`/api/chats/${id}/members`, json("POST", member)),
 };

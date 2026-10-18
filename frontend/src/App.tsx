@@ -21,6 +21,7 @@ import { Login } from "@/components/Login";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
+import { CurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsSection } from "@/pages/Chats";
 import {
@@ -103,7 +104,9 @@ export default function App() {
         element={
           <DocumentsProvider>
             <NotificationsProvider>
-              <Shell user={auth.user} onSignOut={signOut} />
+              <CurrentUserContext.Provider value={auth.user}>
+                <Shell user={auth.user} onSignOut={signOut} />
+              </CurrentUserContext.Provider>
             </NotificationsProvider>
           </DocumentsProvider>
         }

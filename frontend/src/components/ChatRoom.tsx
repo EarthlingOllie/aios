@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { Bot, Workflow } from "lucide-react";
 
-import { ChatComposer } from "@/components/ChatComposer";
+import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
@@ -12,8 +12,12 @@ import {
   type ChatMessage,
   type ChatMessageAuthor,
   type ChatMessagesCursor,
+  type ChatMentionables,
 } from "@/lib/api";
 import { afterCursor, hasOlder, isAtBottom, mergeMessages } from "@/lib/chat-messages";
+import { useCurrentUser } from "@/lib/current-user";
+import { mentionAt, mentionsIn, remarkMentions } from "@/lib/mentions";
+import { cn } from "@/lib/utils";
 
 /** How often an open chat asks for what's new while its tab is hidden (ms). */
 export const CHAT_HIDDEN_POLL_MS = 30_000;
@@ -60,16 +64,20 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * An open chat's messages and its composer. Shows the latest page, scrolled to the newest, and
  * asks for what's new every `POLL_MS` (`CHAT_HIDDEN_POLL_MS` while the tab is hidden, and at once
  * when it's shown again). Scrolling to the top loads the page before, keeping the reader's place;
- * new messages scroll into view only when the reader is already at the bottom.
+ * new messages scroll into view only when the reader is already at the bottom. `@` in the composer
+ * offers `mentionable`; a message mentioning the signed-in user is highlighted.
  */
 export function ChatRoom({
   chatId,
   canPost,
+  mentionable,
   onPosted,
 }: {
   chatId: number;
   /** Members post; anyone else may only read. */
   canPost: boolean;
+  /** Who can be mentioned: the chat's members, as `GET /api/chats/{id}/mentionable` lists them. */
+  mentionable?: ChatMentionables;
   /** After a message is posted, e.g. to re-sort the list of chats. */
   onPosted?: () => void;
 }) {
@@ -160,7 +168,9 @@ export function ChatRoom({
     setPosting(true);
     setError(undefined);
     try {
-      const message = await api.postChatMessage(chatId, body);
+      // Only the members the composer offered are mentions; any other token is plain text.
+      const mentions = mentionable ? mentionsIn(body, mentionable) : [];
+      const message = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
       show([message], { to: "bottom" });
       setDraft("");
@@ -205,6 +215,7 @@ export function ChatRoom({
           disabled={posting}
           onStop={() => undefined}
           onSubmit={onSubmit}
+          mentionable={mentionable}
         />
       ) : (
         <p className="text-muted-foreground text-sm">Only the chat's members can post in it.</p>
@@ -214,10 +225,18 @@ export function ChatRoom({
 }
 
 function MessageItem({ message }: { message: ChatMessage }) {
+  const me = useCurrentUser();
   const author = message.author;
   const name = author?.name ?? "Deleted user";
+  const mentionsMe = me !== null && message.mentions.some((m) => m.kind === "user" && m.id === me.id);
+  const plugins = useMemo(() => [remarkMentions(message.mentions)], [message.mentions]);
   return (
-    <article className="flex gap-2">
+    <article
+      className={cn(
+        "flex gap-2",
+        mentionsMe && "-mx-1.5 rounded-md border-l-2 border-amber-500 bg-amber-50 px-1.5 py-1 dark:bg-amber-950/30",
+      )}
+    >
       <div className="pt-0.5">
         {author ? (
           <ChatAvatar kind={author.kind} name={author.name} avatarUrl={author.avatar_url} alt={author.name} />
@@ -231,9 +250,30 @@ function MessageItem({ message }: { message: ChatMessage }) {
           <time className="text-muted-foreground text-xs" dateTime={message.created_at}>
             {formatDate(message.created_at)}
           </time>
+          {mentionsMe && <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Mentions you</span>}
         </div>
-        <MarkdownView className="text-sm">{message.body}</MarkdownView>
+        <MarkdownView className="text-sm" remarkPlugins={plugins} components={mentionComponents}>
+          {message.body}
+        </MarkdownView>
       </div>
     </article>
   );
 }
+
+/** A mention in a message, as `remarkMentions` marks it: a chip with the member's kind and name. */
+function MentionChip({ "data-mention": ref, children, ...props }: ComponentProps<"span"> & { "data-mention"?: string }) {
+  const target = ref ? mentionAt(ref) : null;
+  if (!target) return <span {...props}>{children}</span>;
+  const { label, icon: Icon } = MEMBER_KIND[target.kind];
+  return (
+    <span
+      title={`${label}: ${String(children)}`}
+      className="bg-accent text-accent-foreground inline-flex items-baseline gap-1 rounded px-1 font-medium"
+    >
+      <Icon className="size-3.5 shrink-0 self-center" role="img" aria-label={label} />
+      {children}
+    </span>
+  );
+}
+
+const mentionComponents = { span: MentionChip };

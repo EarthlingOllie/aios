@@ -1,5 +1,5 @@
-import { memo } from "react";
-import Markdown from "react-markdown";
+import { memo, useMemo } from "react";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
@@ -13,13 +13,22 @@ const remarkPlugins = [remarkGfm];
 export const MarkdownView = memo(function MarkdownView({
   children,
   className,
+  remarkPlugins: extraPlugins,
+  components,
 }: {
   children: string;
   className?: string;
+  /** Run after GitHub's extensions, e.g. to mark a chat message's mentions. Keep it stable. */
+  remarkPlugins?: Options["remarkPlugins"];
+  /** Stand-ins for HTML elements, e.g. to show those marks. Keep it stable. */
+  components?: Components;
 }) {
+  const plugins = useMemo(() => [...remarkPlugins, ...(extraPlugins ?? [])], [extraPlugins]);
   return (
     <div className={cn("markdown", className)}>
-      <Markdown remarkPlugins={remarkPlugins}>{children}</Markdown>
+      <Markdown remarkPlugins={plugins} components={components}>
+        {children}
+      </Markdown>
     </div>
   );
 });

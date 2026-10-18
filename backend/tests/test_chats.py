@@ -5,7 +5,7 @@ import pytest
 from aios.api import chats
 from aios.auth import current_user
 from aios.main import app
-from aios.models import User
+from aios.models import ChatAuthorKind, ChatMessage, ChatMessageKind, User
 
 
 def make_chat(api, name: str, **extra) -> dict:
@@ -319,3 +319,224 @@ def test_a_message_outlives_its_author(api, db):
     db.commit()
     [message] = messages(api, chat)["messages"]
     assert message["body"] == "Bye" and message["author"] is None
+
+
+def make_agent(api, name: str) -> dict:
+    resp = api.post("/api/agents", json={"name": name})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def make_workflow(api, name: str) -> dict:
+    resp = api.post("/api/workflows", json={"name": name, "nodes": []})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def add(api, chat: dict, kind: str, target: dict) -> dict:
+    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": target["id"]})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_the_owner_adds_their_agents_and_workflows(api, other):
+    chat = make_chat(api, "Design", visibility="public")
+    # An agent and a workflow may share a name; they're members of different kinds.
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Review")
+    add(api, chat, "agent", agent)
+    chat = add(api, chat, "workflow", workflow)
+    assert chat["member_count"] == 3
+    [a] = chat["members"]["agents"]
+    assert (a["kind"], a["target_id"], a["name"]) == ("agent", agent["id"], "Review")
+    assert a["role"] is None
+    [w] = chat["members"]["workflows"]
+    assert (w["kind"], w["target_id"], w["name"], w["role"]) == (
+        "workflow",
+        workflow["id"],
+        "Review",
+        None,
+    )
+    # Once each.
+    for kind, target in (("agent", agent), ("workflow", workflow)):
+        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": target["id"]})
+        assert resp.status_code == 409, kind
+        assert resp.json()["detail"] == "Already a member of this chat."
+    # Only the owner adds members.
+    with signed_in_as(other):
+        theirs = make_agent(api, "Theirs")
+        member = {"kind": "agent", "id": agent["id"]}
+        resp = api.post(f"/api/chats/{chat['id']}/members", json=member)
+        assert resp.status_code == 403
+    # And only agents and workflows they own, that haven't been deleted.
+    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": theirs["id"]})
+    assert resp.status_code == 422 and resp.json()["detail"] == "Unknown agent"
+    gone = make_workflow(api, "Gone")
+    assert api.delete(f"/api/workflows/{gone['id']}").status_code == 204
+    resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "workflow", "id": gone["id"]})
+    assert resp.status_code == 422 and resp.json()["detail"] == "Unknown workflow"
+    assert api.get("/api/chats").json()[0]["member_count"] == 3
+
+
+def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
+    chat = make_chat(api, "Design", visibility="public")
+    add_user(api, chat, other)
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Review")
+    add(api, chat, "agent", agent)
+    add(api, chat, "workflow", workflow)
+    expected = {
+        "users": [
+            {
+                "kind": "user",
+                "id": user.id,
+                "name": "test-user",
+                "login": "test-user",
+                "avatar_url": None,
+            },
+            {
+                "kind": "user",
+                "id": other.id,
+                "name": "Other Person",
+                "login": "other",
+                "avatar_url": None,
+            },
+        ],
+        "agents": [
+            {
+                "kind": "agent",
+                "id": agent["id"],
+                "name": "Review",
+                "login": None,
+                "avatar_url": None,
+            }
+        ],
+        "workflows": [
+            {
+                "kind": "workflow",
+                "id": workflow["id"],
+                "name": "Review",
+                "login": None,
+                "avatar_url": None,
+            }
+        ],
+    }
+    assert api.get(f"/api/chats/{chat['id']}/mentionable").json() == expected
+    # Anyone the chat exists for sees who's in it; a private chat doesn't exist for outsiders.
+    private = make_chat(api, "Secret")
+    with signed_in_as(other):
+        assert api.get(f"/api/chats/{chat['id']}/mentionable").json() == expected
+        assert api.get(f"/api/chats/{private['id']}/mentionable").status_code == 404
+
+
+def test_a_deleted_agent_or_workflow_is_no_longer_a_member(api):
+    chat = make_chat(api, "Design")
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Digest")
+    add(api, chat, "agent", agent)
+    add(api, chat, "workflow", workflow)
+    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
+    assert api.delete(f"/api/workflows/{workflow['id']}").status_code == 204
+    mentionable = api.get(f"/api/chats/{chat['id']}/mentionable").json()
+    assert mentionable["agents"] == [] and mentionable["workflows"] == []
+    got = api.get(f"/api/chats/{chat['id']}").json()
+    assert got["members"]["agents"] == [] and got["members"]["workflows"] == []
+    assert got["member_count"] == 1
+    assert api.get("/api/chats").json()[0]["member_count"] == 1
+
+
+def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):
+    chat = make_chat(api, "Design")
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Digest")
+    add(api, chat, "agent", agent)
+    chat = add(api, chat, "workflow", workflow)
+    # Agents and workflows post only when a mention runs them, which comes later; as if they had.
+    db.add_all(
+        [
+            ChatMessage(
+                chat_id=chat["id"],
+                author_kind=ChatAuthorKind.agent,
+                author_agent_id=agent["id"],
+                kind=ChatMessageKind.text,
+                body="From the agent",
+            ),
+            ChatMessage(
+                chat_id=chat["id"],
+                author_kind=ChatAuthorKind.workflow,
+                author_workflow_id=workflow["id"],
+                kind=ChatMessageKind.text,
+                body="From the workflow",
+            ),
+        ]
+    )
+    db.commit()
+    for member in chat["members"]["agents"] + chat["members"]["workflows"]:
+        resp = api.delete(f"/api/chats/{chat['id']}/members/{member['id']}")
+        assert resp.status_code == 204
+    after = api.get(f"/api/chats/{chat['id']}").json()
+    assert after["members"]["agents"] == [] and after["members"]["workflows"] == []
+    posted = messages(api, chat)["messages"]
+    assert [(m["body"], m["author"]["kind"], m["author"]["name"]) for m in posted] == [
+        ("From the agent", "agent", "Review"),
+        ("From the workflow", "workflow", "Digest"),
+    ]
+
+
+def test_mentions_are_stored_structurally(api, user, other):
+    chat = make_chat(api, "Design")
+    add_user(api, chat, other)
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Review")
+    add(api, chat, "agent", agent)
+    add(api, chat, "workflow", workflow)
+    body = "@[Review](agent:{a}) and @[Review](workflow:{w}), over to @[Other Person](user:{u})"
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages",
+        json={
+            "body": body,
+            "mentions": [
+                {"kind": "agent", "id": agent["id"]},
+                {"kind": "workflow", "id": workflow["id"]},
+                {"kind": "user", "id": other.id},
+                # Twice is once.
+                {"kind": "agent", "id": agent["id"]},
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    message = resp.json()
+    assert message["mentions"] == [
+        {"kind": "agent", "id": agent["id"], "name": "Review"},
+        {"kind": "workflow", "id": workflow["id"], "name": "Review"},
+        {"kind": "user", "id": other.id, "name": "Other Person"},
+    ]
+    # The names are as they were when the message was posted.
+    resp = api.put(f"/api/agents/{agent['id']}", json={"name": "Critique"})
+    assert resp.status_code == 200, resp.text
+    assert messages(api, chat)["messages"] == [message]
+
+
+def test_a_mention_of_a_non_member_is_refused(api, other):
+    chat = make_chat(api, "Design")
+    agent = make_agent(api, "Review")
+    workflow = make_workflow(api, "Digest")
+    add(api, chat, "agent", agent)
+    gone = make_agent(api, "Gone")
+    add(api, chat, "agent", gone)
+    assert api.delete(f"/api/agents/{gone['id']}").status_code == 204
+    for mention in (
+        # Exists, but isn't in the chat.
+        {"kind": "workflow", "id": workflow["id"]},
+        {"kind": "user", "id": other.id},
+        # The agent's id, as another kind.
+        {"kind": "workflow", "id": agent["id"]},
+        # Was a member, but has since been deleted.
+        {"kind": "agent", "id": gone["id"]},
+    ):
+        resp = api.post(
+            f"/api/chats/{chat['id']}/messages", json={"body": "Hi", "mentions": [mention]}
+        )
+        assert resp.status_code == 422, mention
+        assert resp.json()["detail"] == "Only the chat's members can be mentioned in it."
+    assert messages(api, chat)["messages"] == []
