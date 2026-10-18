@@ -8,7 +8,8 @@ exists for every signed-in user ("public" is this deployment's users; organisati
 it): the list carries the public chats a user isn't in (`is_member` false) for them to find, and
 they join it in one step and leave it as easily (the owner can't: a chat always has one). Only the
 owner can change a chat, add or remove its members or delete it: a 403 for anyone else. Leaving
-or being removed deletes nothing, and whoever joins later reads the history from the start.
+or being removed deletes nothing, and whoever joins later reads the history from the start. A
+new chat's first agent is its owner's documents assistant (`aios.assistant`).
 
 Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
 to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
@@ -53,7 +54,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import firing, handoff, invocations
+from aios import assistant, firing, handoff, invocations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live, on_conflict, unique_name
@@ -323,7 +324,8 @@ def list_chats(user: CurrentUser, db: DB):
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
 def create_chat(body: ChatIn, user: CurrentUser, db: DB):
-    """Make a chat, with the user as its owner and first member."""
+    """Make a chat, with the user as its owner and first member, and their documents assistant
+    (`aios.assistant`) as its first agent."""
     chat = Chat(
         owner_id=user.id,
         name=body.name,
@@ -335,6 +337,13 @@ def create_chat(body: ChatIn, user: CurrentUser, db: DB):
             kind=ChatMemberKind.user,
             user_id=user.id,
             role=ChatMemberRole.owner,
+            added_by=user.id,
+        )
+    )
+    chat.members.append(
+        ChatMember(
+            kind=ChatMemberKind.agent,
+            agent=assistant.documents_assistant(db, user.id),
             added_by=user.id,
         )
     )

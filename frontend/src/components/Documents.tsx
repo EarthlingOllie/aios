@@ -159,8 +159,8 @@ type SharedDocuments = {
 const DocumentsContext = createContext<SharedDocuments | null>(null);
 
 /**
- * The store's status and the user's documents, held above the pages: the chat's panel, the Data
- * page and the Search page share one status, the panel and the Data page read one list, and an
+ * The store's status and the user's documents, held above the pages: the Chats section's panel,
+ * the Data page and the Search page share one status, the panel and the Data page read one list, and an
  * upload still in flight keeps its progress and errors when you switch tabs or pages.
  */
 export function DocumentsProvider({ children }: { children: ReactNode }) {
@@ -368,8 +368,8 @@ export function Documents() {
 
 /**
  * The Data page's Documents: every document with its ingest status (and why one failed), chunk
- * count, size and upload time, to download or delete. Uploads from the chat's panel land in the
- * same list.
+ * count, size and upload time, to download or delete. Uploads from the Chats section's panel land
+ * in the same list.
  */
 export function DocumentsSection() {
   const { storeStatus, storeError, documents } = useDocumentsList();

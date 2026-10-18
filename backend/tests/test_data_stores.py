@@ -18,7 +18,6 @@ from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
-from aios import agent as agent_module
 from aios import auth, ingest, search, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
@@ -133,9 +132,9 @@ def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
 
 
 def search_tool_results(api) -> list:
-    """What the model sees from one `search_documents` call in a chat."""
-    body = chat_body("fish?")
-    body["messages"][0]["role"] = "user"
+    """What the model sees from one `search_documents` call in an agent's run."""
+    agent = librarian(api)
+    run = api.post(f"/api/agents/{agent['id']}/runs").json()
     seen = []
 
     async def search_then_answer_seeing(messages, info):
@@ -146,7 +145,8 @@ def search_tool_results(api) -> list:
             yield ToolCall("search_documents", {"query": "fish"})
 
     with use_model(model(search_then_answer_seeing)):
-        assert api.post("/api/chat", json=body).status_code == 200
+        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
+        assert api.post(url, json=chat_body("fish?")).status_code == 200
     return seen
 
 
@@ -282,14 +282,13 @@ def test_the_ingest_task_skips_a_store_being_deleted(db, user, offline_ingest):
 
 @pytest.fixture
 def searches(monkeypatch) -> list[dict]:
-    """What the document search tools search (the documents chat's and the agents' tool)."""
+    """What the agents' document search tool searches."""
     calls = []
 
     async def results(**kwargs):
         calls.append(kwargs)
         return []
 
-    monkeypatch.setattr(agent_module, "document_search_results", results)
     monkeypatch.setattr(hybrid_search, "document_search_results", results)
     return calls
 
@@ -305,15 +304,6 @@ def librarian(api) -> dict:
     agent = make_agent(api, "Librarian")
     tools = [{"key": "hybrid_search", "config": {"max_results": 3}}]
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=tools)).json()
-
-
-def test_the_documents_chat_searches_the_users_store(api, user, searches):
-    body = chat_body("fish?")
-    body["messages"][0]["role"] = "user"
-    with use_model(model(search_then_answer)):
-        assert api.post("/api/chat", json=body).status_code == 200
-
-    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish"}]
 
 
 def test_an_agent_run_searches_the_users_store(api, user, searches):

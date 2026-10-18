@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatInvocation, ChatMessage } from "@/lib/api";
+import type { ChatInvocation, ChatListed, ChatMessage } from "@/lib/api";
 import {
   bodyShown,
   afterCursor,
   hasOlder,
   isAtBottom,
   isLive,
+  landingPath,
   mergeInvocations,
   mergeMessages,
   MESSAGE_PAGE,
@@ -178,5 +179,31 @@ describe("unreadBadge", () => {
     expect(unreadBadge(1)).toBe("1");
     expect(unreadBadge(99)).toBe("99");
     expect(unreadBadge(100)).toBe("99+");
+  });
+});
+
+describe("landingPath", () => {
+  const chat = (id: number, is_member: boolean): ChatListed => ({
+    id,
+    name: `chat ${id}`,
+    description: "",
+    visibility: "public",
+    owner_id: 1,
+    is_owner: is_member,
+    is_member,
+    member_count: 2,
+    created_at: "2026-10-18T09:00:00Z",
+    updated_at: "2026-10-18T09:00:00Z",
+    unread_count: is_member ? 0 : null,
+  });
+
+  it("is the most recently active chat the user is in", () => {
+    // The list comes most recently active first; a public chat they haven't joined is passed over.
+    expect(landingPath([chat(3, false), chat(2, true), chat(1, true)])).toBe("/chats/2");
+  });
+
+  it("is the new-chat form when they're in none", () => {
+    expect(landingPath([])).toBe("/chats/new");
+    expect(landingPath([chat(3, false)])).toBe("/chats/new");
   });
 });

@@ -14,7 +14,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from aios import auth, scheduler, tracing
 from aios.api import (
     agents,
-    chat,
     chats,
     data,
     documents,
@@ -60,7 +59,6 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(documents.router)
     app.include_router(data.router)
-    app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(agents.router)
     app.include_router(tools.router)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
 import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
@@ -33,7 +33,7 @@ import {
   type ChatTargetKind,
   type ChatVisibility,
 } from "@/lib/api";
-import { unreadBadge } from "@/lib/chat-messages";
+import { landingPath, unreadBadge } from "@/lib/chat-messages";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -95,6 +95,14 @@ function ChatListItem({ chat }: { chat: ChatListed }) {
       {chat.description && <div className="text-muted-foreground truncate text-xs">{chat.description}</div>}
     </>
   );
+}
+
+/** `/`: the most recently active chat the user is in, or the new-chat form if they're in none. */
+export function ChatsLanding() {
+  const { data, error } = useLoad(api.listChats);
+  if (error) return <Placeholder>{error}</Placeholder>;
+  if (!data) return null;
+  return <Navigate to={landingPath(data)} replace />;
 }
 
 export function ChatsIndex() {

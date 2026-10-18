@@ -1,13 +1,13 @@
 # aios
 
 Chat with your documents. Upload files, they're parsed and chunked with Docling, embedded with
-Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain's
-`create_agent`, on Anthropic) that calls a hybrid search tool (vector + full-text, fused with
-Reciprocal Rank Fusion).
+Voyage, and stored in Postgres/pgvector. Each new chat has a **documents assistant**: a LangGraph
+agent (LangChain's `create_agent`, on Anthropic) that calls a hybrid search tool (vector +
+full-text, fused with Reciprocal Rank Fusion). `/` opens the Chats section (see Chats below).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
 reusable instructions, and **tools** from a built-in library: web search; document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent;
+the same hybrid search as the documents assistant's, over the documents of the user running the agent;
 and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
@@ -15,7 +15,7 @@ between, and shows each passage with how the semantic and keyword branches ranke
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
 status, chunk count, size and upload time, upload, download and delete (the chat's documents
-panel uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage. A run also records how it went and what it cost: a status
@@ -148,6 +148,15 @@ other members). "Public" means every signed-in user of this deployment; organisa
 it. A public chat you aren't in can be read but not posted in until you **join** it, in one click
 (`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
 /api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
+
+Each new chat has its owner's **documents assistant** as its first agent (`aios.assistant`): an
+agent of theirs, made the first time they create a chat (`agents.builtin = 'documents'`, one live
+one per user), with the document search tool and instructions to ground its answers in the
+results, citing sources. It's mentioned and answers like any agent member (acknowledgement, brief,
+card and reply, below), and, running as its owner, searches the documents of the user who owns
+the chat. It's listed with their other agents, where it can be edited like one; deleted, a fresh
+one joins their next chat. Chats made before it existed don't get it, but their owner can add it
+like any agent. `/` lands on the most recently active chat you're in, or the new-chat form.
 Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
 the start.
 
@@ -290,7 +299,6 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user
-    api/chat.py     POST /api/chat (AI SDK UI message stream)
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
@@ -313,7 +321,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
                     runner and the egress proxy
-    agent.py        the documents chat's agent + search_documents tool, and the run context
+    agent.py        the run context (`ChatDeps`) agents' tools read
+    assistant.py    the documents assistant: the built-in agent each new chat gets
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
                     models.py (the tables every store has: documents, chunks; and the
@@ -709,8 +718,7 @@ Known limits:
   fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
   (Settings → Resources).
-- Document chat history is client-side (`useChat` sends the conversation each turn). It isn't
-  saved yet. Agent runs are different: each run is a LangGraph thread (`agent-run-<id>`) kept by
+- Agent runs: each run is a LangGraph thread (`agent-run-<id>`) kept by
   the Postgres checkpointer, the client sends only its new message, and the agent continues
   from the thread's latest checkpoint. The user's message is checkpointed before the model is
   called; if a turn fails or is stopped, the reply's text so far (or an error result for each
@@ -824,7 +832,7 @@ Known limits:
 
 ## Tracing
 
-Agent runs and the documents chat are traced to [Langfuse](https://langfuse.com) (open source,
+Agent runs (the documents assistant's too) are traced to [Langfuse](https://langfuse.com) (open source,
 self-hostable) through its LangChain callback handler, when both keys are set:
 
 ```sh

@@ -44,8 +44,10 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert chat["owner_id"] == user.id
     assert chat["is_owner"] is True
     assert chat["is_member"] is True
-    assert chat["member_count"] == 1
-    assert chat["members"]["agents"] == [] and chat["members"]["workflows"] == []
+    # The owner, and their documents assistant (see test_chat_documents_assistant.py).
+    assert chat["member_count"] == 2
+    assert [a["name"] for a in chat["members"]["agents"]] == ["Documents assistant"]
+    assert chat["members"]["workflows"] == []
     [member] = chat["members"]["users"]
     assert member["kind"] == "user"
     assert member["role"] == "owner"
@@ -82,7 +84,7 @@ def add_user(api, chat: dict, user: User) -> dict:
 def test_the_owner_adds_a_user_as_a_member(api, user, other):
     chat = make_chat(api, "Design")
     updated = add_user(api, chat, other)
-    assert updated["member_count"] == 2
+    assert updated["member_count"] == 3
     owner, member = updated["members"]["users"]
     assert owner["target_id"] == user.id and owner["role"] == "owner"
     assert member["target_id"] == other.id and member["role"] == "member"
@@ -114,7 +116,7 @@ def test_list_is_the_chats_im_in_most_recently_active_first(api, user, other):
     assert [c["name"] for c in listed] == ["Theirs with me", "Mine"]
     assert [c["visibility"] for c in listed] == ["private", "public"]
     assert [c["is_owner"] for c in listed] == [False, True]
-    assert listed[0]["member_count"] == 2
+    assert listed[0]["member_count"] == 3
     assert "members" not in listed[0]
 
     # Changing a chat makes it the most recently active.
@@ -144,7 +146,7 @@ def test_only_the_owner_changes_or_deletes_a_chat(api, user, other):
     assert updated["name"] == "Product design"
     assert updated["description"] == "Pixels"
     assert updated["visibility"] == "public"
-    assert updated["member_count"] == 2
+    assert updated["member_count"] == 3
     # A rename to another chat's name is refused.
     make_chat(api, "Taken")
     resp = api.put(f"/api/chats/{chat['id']}", json={**body, "name": "Taken"})
@@ -179,7 +181,7 @@ def test_only_the_owner_removes_a_member(api, user, other):
     assert api.delete(f"/api/chats/{chat['id']}/members/{member['id']}").status_code == 404
     after = api.get(f"/api/chats/{chat['id']}").json()
     assert [m["target_id"] for m in after["members"]["users"]] == [user.id]
-    assert after["member_count"] == 1
+    assert after["member_count"] == 2
     # Removed from a private chat, the other user no longer sees it.
     with signed_in_as(other):
         assert api.get(f"/api/chats/{chat['id']}").status_code == 404
@@ -352,8 +354,9 @@ def test_the_owner_adds_their_agents_and_workflows(api, other):
     workflow = make_workflow(api, "Review")
     add(api, chat, "agent", agent)
     chat = add(api, chat, "workflow", workflow)
-    assert chat["member_count"] == 3
-    [a] = chat["members"]["agents"]
+    assert chat["member_count"] == 4
+    [assistant, a] = chat["members"]["agents"]
+    assert assistant["name"] == "Documents assistant"
     assert (a["kind"], a["target_id"], a["name"]) == ("agent", agent["id"], "Review")
     assert a["role"] is None
     [w] = chat["members"]["workflows"]
@@ -381,7 +384,7 @@ def test_the_owner_adds_their_agents_and_workflows(api, other):
     assert api.delete(f"/api/workflows/{gone['id']}").status_code == 204
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "workflow", "id": gone["id"]})
     assert resp.status_code == 422 and resp.json()["detail"] == "Unknown workflow"
-    assert api.get("/api/chats").json()[0]["member_count"] == 3
+    assert api.get("/api/chats").json()[0]["member_count"] == 4
 
 
 def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
@@ -389,6 +392,7 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
     add_user(api, chat, other)
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Review")
+    [assistant] = chat["members"]["agents"]
     add(api, chat, "agent", agent)
     add(api, chat, "workflow", workflow)
     expected = {
@@ -411,11 +415,18 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
         "agents": [
             {
                 "kind": "agent",
+                "id": assistant["target_id"],
+                "name": "Documents assistant",
+                "login": None,
+                "avatar_url": None,
+            },
+            {
+                "kind": "agent",
                 "id": agent["id"],
                 "name": "Review",
                 "login": None,
                 "avatar_url": None,
-            }
+            },
         ],
         "workflows": [
             {
@@ -443,12 +454,15 @@ def test_a_deleted_agent_or_workflow_is_no_longer_a_member(api):
     add(api, chat, "workflow", workflow)
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
     assert api.delete(f"/api/workflows/{workflow['id']}").status_code == 204
+    # Only the documents assistant is left of its agents.
     mentionable = api.get(f"/api/chats/{chat['id']}/mentionable").json()
-    assert mentionable["agents"] == [] and mentionable["workflows"] == []
+    assert [a["name"] for a in mentionable["agents"]] == ["Documents assistant"]
+    assert mentionable["workflows"] == []
     got = api.get(f"/api/chats/{chat['id']}").json()
-    assert got["members"]["agents"] == [] and got["members"]["workflows"] == []
-    assert got["member_count"] == 1
-    assert api.get("/api/chats").json()[0]["member_count"] == 1
+    assert [a["name"] for a in got["members"]["agents"]] == ["Documents assistant"]
+    assert got["members"]["workflows"] == []
+    assert got["member_count"] == 2
+    assert api.get("/api/chats").json()[0]["member_count"] == 2
 
 
 def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):

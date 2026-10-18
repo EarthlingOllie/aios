@@ -23,8 +23,7 @@ class HybridSearchConfig(BaseModel):
 
 
 def build(config: HybridSearchConfig) -> list[AgentTool]:
-    # The same retrieval as the documents chat's `search_documents` tool, over the documents in
-    # the run's data store (the run's context).
+    # Hybrid retrieval over the documents in the run's data store (the run's context).
     @tool(parse_docstring=True)
     async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         """Search the user's uploaded documents with hybrid (semantic + keyword) retrieval.

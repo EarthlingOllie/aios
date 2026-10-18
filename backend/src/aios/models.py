@@ -250,6 +250,9 @@ class Agent(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", use_alter=True, name="fk_agents_current_version_id")
     )
+    # Which of the app's built-in agents it is, if it's one: made for its owner by the app rather
+    # than by them (`aios.assistant`), and found again by this. Null for the owner's own agents.
+    builtin: Mapped[str | None] = mapped_column(String(32))
     # Soft delete: workflow versions pin agent versions, so those must outlive the agent.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -272,6 +275,14 @@ class Agent(Base):
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # One live agent of each built-in kind per owner.
+        Index(
+            "uq_agents_owner_id_builtin_live",
+            "owner_id",
+            "builtin",
+            unique=True,
+            postgresql_where=text("builtin IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
 

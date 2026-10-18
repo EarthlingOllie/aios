@@ -24,15 +24,15 @@ test("creates a chat and opens it", async ({ page }) => {
   await expect(heading).toBeVisible();
   await expect(heading).toContainText("Public");
   await expect(heading.locator("..")).toContainText("Where design happens");
-  await expect(heading.locator("..")).toContainText("1 member");
-  // The creator is the owner and only member.
+  await expect(heading.locator("..")).toContainText("2 members");
+  // The creator is the owner and only user; their documents assistant is its first agent.
   const members = page.getByRole("region", { name: "Members" });
   await expect(members.getByText("Tester", { exact: true })).toBeVisible();
   await expect(members.getByText("owner", { exact: true })).toBeVisible();
-  await expect(members.getByText("No agents yet")).toBeVisible();
+  await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Documents assistant");
   await expect(members.getByText("No workflows yet")).toBeVisible();
   // And it's in the list.
-  await expect(page.getByRole("list").filter({ hasText: "Design" }).getByText("1 member")).toBeVisible();
+  await expect(page.getByRole("list").filter({ hasText: "Design" }).getByText("2 members")).toBeVisible();
 });
 
 test("the owner removes a member", async ({ page }) => {

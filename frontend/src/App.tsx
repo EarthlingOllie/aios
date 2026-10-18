@@ -6,7 +6,6 @@ import {
   ChartLine,
   Database,
   LogOut,
-  MessageSquare,
   MessagesSquare,
   Search,
   Settings,
@@ -15,7 +14,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { Chat } from "@/components/Chat";
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
@@ -23,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
 import { CurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
-import { ChatDetail, ChatForm, ChatsIndex, ChatsSection } from "@/pages/Chats";
+import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
   AgentDetail,
   AgentForm,
@@ -98,8 +96,8 @@ export default function App() {
   const signOut = () => api.logout().then(() => setAuth({ status: "anonymous" }));
   return (
     <Routes>
-      {/* Documents are held above every page, so the chat's panel and the Data page share one
-          list, and an upload in flight survives leaving either. */}
+      {/* Documents are held above every page, so the Chats section's panel and the Data page
+          share one list, and an upload in flight survives leaving either. */}
       <Route
         element={
           <DocumentsProvider>
@@ -111,8 +109,8 @@ export default function App() {
           </DocumentsProvider>
         }
       >
-        {/* Chat is rendered by Shell so it stays mounted across navigation. */}
-        <Route index element={null} />
+        {/* One place to chat: `/` opens the Chats section. */}
+        <Route index element={<ChatsLanding />} />
         <Route path="skills" element={<SkillsSection />}>
           <Route index element={<SkillsIndex />} />
           <Route path="new" element={<SkillForm />} />
@@ -175,7 +173,6 @@ const navItems: NavItem[] = [
     end: false,
     stub: "See how your agents are used and how they perform.",
   },
-  { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/chats", label: "Chats", icon: MessagesSquare, end: false },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
@@ -186,7 +183,9 @@ const navItems: NavItem[] = [
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
-  const onChat = useMatch("/") !== null;
+  // `/` too, which lands in the Chats section: the panel stays mounted through the redirect.
+  const onLanding = useMatch("/") !== null;
+  const onChats = useMatch("/chats/*") !== null || onLanding;
   const nav = (className: string) =>
     navItems.map(({ to, label, icon: Icon, end }) => (
       <NavLink
@@ -218,8 +217,8 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
           </Button>
         </div>
         <nav className="flex flex-col gap-0.5">{nav("")}</nav>
-        {/* Documents ground the chat assistant, so they live alongside it. */}
-        {onChat && (
+        {/* Documents ground the chats' documents assistant, so they live alongside it. */}
+        {onChats && (
           <div className="min-h-0 flex-1 border-t pt-4">
             <Documents />
           </div>
@@ -234,11 +233,6 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         </Button>
       </nav>
       <main className="min-h-0">
-        {/* Kept mounted (just hidden) off the chat route, so an in-progress conversation
-            and any streaming reply survive a trip to another section. */}
-        <div className={cn("h-full", !onChat && "hidden")}>
-          <Chat />
-        </div>
         <Outlet />
       </main>
     </div>

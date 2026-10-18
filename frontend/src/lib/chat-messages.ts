@@ -1,4 +1,4 @@
-import type { ChatInvocation, ChatMessage } from "@/lib/api";
+import type { ChatInvocation, ChatListed, ChatMessage } from "@/lib/api";
 
 /** How many messages the API returns at most per read (`MESSAGE_PAGE` in `api/chats.py`). */
 export const MESSAGE_PAGE = 50;
@@ -82,4 +82,11 @@ const UNREAD_SHOWN = 99;
 export function unreadBadge(count: number | null): string | null {
   if (!count) return null;
   return count > UNREAD_SHOWN ? `${UNREAD_SHOWN}+` : String(count);
+}
+
+/** Where `/` lands: the most recently active chat the user is in (the list comes in that order),
+ * or the new-chat form if they're in none. */
+export function landingPath(chats: ChatListed[]): string {
+  const chat = chats.find((c) => c.is_member);
+  return chat ? `/chats/${chat.id}` : "/chats/new";
 }

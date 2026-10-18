@@ -15,7 +15,8 @@ import type { Page, Route } from "@playwright/test";
  * chat's messages moves it on (`advanceInvocations`): briefing, then the handoff's ack and brief
  * (`handoffs`, by member id) and its run, until the run ends and the result is posted back. An
  * agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a read
- * adding a tool call and tokens to its run's counters.
+ * adding a tool call and tokens to its run's counters. A chat made through the API has the
+ * documents assistant (`documentsAssistant`) as its first agent; one added with `addChat` hasn't.
  */
 
 type Kind = "agent" | "workflow";
@@ -347,6 +348,8 @@ const ACKNOWLEDGEMENT = "Reading the chat…";
 export class FakeApi {
   private nextId = 100;
   agents = new Map<number, AgentRow>();
+  /** The agent that's `me`'s documents assistant, once a new chat has made it. */
+  assistantId: number | null = null;
   // Agent version id -> [agent id, version number].
   agentVersions = new Map<number, [number, number]>();
   // Agent version id -> note, for the versions that have one.
@@ -628,6 +631,15 @@ export class FakeApi {
       this.agentVersions.set(vid, [agent.id, n]);
     }
     this.agents.set(agent.id, agent);
+    return agent;
+  }
+
+  /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
+  documentsAssistant(): AgentRow {
+    const live = this.assistantId === null ? undefined : this.agents.get(this.assistantId);
+    if (live) return live;
+    const agent = this.addAgent("Documents assistant", 1, "Answers from your documents.");
+    this.assistantId = agent.id;
     return agent;
   }
 
@@ -1954,6 +1966,8 @@ export class FakeApi {
         description: body.description ?? "",
         visibility: body.visibility ?? "private",
       });
+      // A new chat's first agent is the owner's documents assistant.
+      this.addChatTarget(chat, "agent", this.documentsAssistant());
       return reply(201, this.chatOut(chat));
     }
     if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {

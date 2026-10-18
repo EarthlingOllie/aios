@@ -326,9 +326,9 @@ test("opening Documents reads the list again, picking up changes made elsewhere"
   await page.getByRole("tab", { name: "Documents" }).click();
   await expect(row(page, "elsewhere.md")).toBeVisible();
 
-  // And back on the chat, its panel reads it again too.
+  // And back in the Chats section, its panel reads it again too.
   api.addDocument("later.md");
-  await page.getByRole("link", { name: "Chat" }).first().click();
+  await page.getByRole("link", { name: "Chats" }).first().click();
   await expect(page.getByText("later.md")).toBeVisible();
 });
 
