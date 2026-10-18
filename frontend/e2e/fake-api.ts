@@ -924,6 +924,11 @@ export class FakeApi {
     return message;
   }
 
+  /** An invocation's run card: its acknowledgement. */
+  private cardOf(chat: ChatRow, invocation: InvocationRow): ChatMessageRow {
+    return chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
+  }
+
   /** The agent or workflow an invocation is of. */
   private targetOf(invocation: InvocationRow): AgentRow | WorkflowRow {
     return (invocation.target_kind === "agent" ? this.agents : this.workflows).get(invocation.target_id)!;
@@ -982,8 +987,7 @@ export class FakeApi {
       return false;
     }
     invocation.brief = handoff.brief || null;
-    const card = chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
-    card.body = handoff.ack;
+    this.cardOf(chat, invocation).body = handoff.ack;
     return true;
   }
 
@@ -1046,7 +1050,8 @@ export class FakeApi {
     if (invocation.status === "briefing") {
       const message = chat.messages.find((m) => m.id === invocation.message_id)!;
       const input = runInput(invocation.brief, message.body);
-      const run = this.addAgentRun(agent, input, 1, {
+      // Titled after what was asked, not the brief.
+      const run = this.addAgentRun(agent, messageText(message.body), 1, {
         status: "running",
         started_at: new Date().toISOString(),
         tool_call_count: 0,
@@ -1295,8 +1300,7 @@ export class FakeApi {
 
   private invocationOut(chat: ChatRow, invocation: InvocationRow) {
     const { run_id, ...invocationRest } = invocation;
-    const card = chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
-    const rest = { ...invocationRest, acknowledgement: card.body };
+    const rest = { ...invocationRest, acknowledgement: this.cardOf(chat, invocation).body };
     if (invocation.target_kind === "agent") {
       const run = run_id === null ? undefined : this.agentRuns.get(run_id);
       return {

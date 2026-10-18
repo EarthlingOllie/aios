@@ -52,6 +52,8 @@ test("an agent's acknowledgement says what it understood, and its card shows the
   expect(first.parts[0].text).toBe(
     "The team is reviewing Q3. The figures are in the shared sheet.\n\n@Scout check them",
   );
+  // Named after what was asked, not the brief.
+  expect(run.title).toBe("@Scout check them");
 });
 
 test("a workflow's card shows its brief too, and a failed handoff fails the card with why", async ({ page }) => {

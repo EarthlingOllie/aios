@@ -770,9 +770,8 @@ class TurnFiring:
         if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
         agent = invocation.agent
-        prompt = invocations.run_input(
-            invocation.brief, db.get(ChatMessage, invocation.message_id).body
-        )
+        body = db.get(ChatMessage, invocation.message_id).body
+        prompt = invocations.run_input(invocation.brief, body)
         try:
             # The agent's lock first, then the invocation's, as deleting the agent takes them.
             run = agents_api.new_agent_run(db, agent)
@@ -787,7 +786,10 @@ class TurnFiring:
         invocation.agent_run_id = run.id
         invocations.mark_running(db, self.invocation_id)
         db.commit()
-        return firing.Turn(agent.owner_id, agent.id, run.id, prompt)
+        # Titled after what was asked.
+        return firing.Turn(
+            agent.owner_id, agent.id, run.id, prompt, title=invocations.message_text(body)
+        )
 
     def beat(self, db: Session) -> None:
         invocations.beat(db, self.invocation_id)

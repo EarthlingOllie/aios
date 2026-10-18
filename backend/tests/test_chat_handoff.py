@@ -67,6 +67,9 @@ def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api):
     # The run was told the brief, a blank line, then the message.
     history = checkpoints.history(invocation["agent_run_id"])
     assert history[0].text == f"{brief}\n\n@Bot check them"
+    # Named after what was asked, not the brief.
+    [run] = api.get(f"/api/agents/{agent['id']}/runs").json()
+    assert run["title"] == "@Bot check them"
 
 
 def test_a_workflows_run_is_told_the_brief_then_the_message(api, queued):  # noqa: F811
