@@ -1,5 +1,5 @@
 import { RunStatusBadge } from "@/components/workflow/status";
-import { formatDuration, formatTokens, runCounters } from "@/lib/agent-runs";
+import { formatCounters, formatDuration, runCounters } from "@/lib/agent-runs";
 import type { RunSummary } from "@/lib/api";
 
 /** Where an agent run is, if it's tracked. */
@@ -18,11 +18,9 @@ export function RunCountersLine({
 }: { run: RunSummary; compact?: boolean; className?: string } & object) {
   const counters = runCounters(run);
   if (!counters) return <span {...props}>Not tracked</span>;
-  const tokens = compact ? formatTokens(counters.tokens) : counters.tokens.toLocaleString();
   const parts = [
     run.started_at && formatDuration(run.started_at, run.finished_at),
-    `${counters.toolCalls} tool ${counters.toolCalls === 1 ? "call" : "calls"}`,
-    `${tokens} tokens`,
+    formatCounters(counters, compact),
   ].filter(Boolean);
   return <span {...props}>{parts.join(" · ")}</span>;
 }

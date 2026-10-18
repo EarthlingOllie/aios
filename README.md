@@ -1,13 +1,13 @@
 # aios
 
 Chat with your documents. Upload files, they're parsed and chunked with Docling, embedded with
-Voyage, and stored in Postgres/pgvector. Chat uses a LangGraph agent (LangChain's
-`create_agent`, on Anthropic) that calls a hybrid search tool (vector + full-text, fused with
-Reciprocal Rank Fusion).
+Voyage, and stored in Postgres/pgvector. Each new chat has a **documents assistant**: a LangGraph
+agent (LangChain's `create_agent`, on Anthropic) that calls a hybrid search tool (vector +
+full-text, fused with Reciprocal Rank Fusion). `/` opens the Chats section (see Chats below).
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
 reusable instructions, and **tools** from a built-in library: web search; document search,
-the same hybrid search as the documents chat, over the documents of the user running the agent;
+the same hybrid search as the documents assistant's, over the documents of the user running the agent;
 and run history search, the same over their exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
@@ -15,7 +15,7 @@ between, and shows each passage with how the semantic and keyword branches ranke
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
 status, chunk count, size and upload time, upload, download and delete (the chat's documents
-panel uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage. A run also records how it went and what it cost: a status
@@ -136,13 +136,104 @@ next to run first, and creates, edits, pauses and deletes them; each agent's and
 does the same for its own (`/api/triggers`).
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
-**Chats** page lists the chats you're in, most recently active first, and opens one to its header
-and members, grouped by kind (users for now; agents and workflows have their place in
-`chat_members` and join later, with messages). A chat is **public** or **private**: a private chat
+**Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
+you can find them), most recently active first, and opens one to its header,
+messages and members, grouped by kind: users, and the owner's **agents and workflows**, with the
+icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
+user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat
 doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
 opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
 renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
-other members).
+other members). "Public" means every signed-in user of this deployment; organisations will narrow
+it. A public chat you aren't in can be read but not posted in until you **join** it, in one click
+(`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
+/api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
+
+Each new chat has its owner's **documents assistant** as its first agent (`aios.assistant`): an
+agent of theirs, made the first time they create a chat (`agents.builtin = 'documents'`, one live
+one per user), with the document search tool and instructions to ground its answers in the
+results, citing sources. It's mentioned and answers like any agent member (acknowledgement, brief,
+card and reply, below), and, running as its owner, searches the documents of the user who owns
+the chat. It's listed with their other agents, where it can be edited like one; deleted, a fresh
+one joins their next chat. Chats made before it existed don't get it, but their owner can add it
+like any agent. `/` lands on the most recently active chat you're in, or the new-chat form.
+Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
+the start.
+
+Each chat you're in shows an **unread count** in the list: the messages others posted since the
+last one you saw, tracked per chat and member by message id (`chat_members.last_read_message_id`).
+Reading the open chat to the bottom, with its tab visible, reports the newest message (`POST
+/api/chats/{id}/read` with `{message_id}`; it only moves forward) and clears the count; the list
+asks again every 5 seconds (30 while hidden). Joining counts what was already there as read; a
+member added by the owner has the history to read. Nothing is sent off-app.
+
+Members post **messages** in markdown, shown with their author's avatar and name. The open chat
+asks for what's new every second (`GET /api/chats/{id}/messages?after=N`, every 30 seconds while
+its tab is hidden, and at once when it's shown again), follows new messages when scrolled to the
+bottom and otherwise leaves the reader where they are; scrolling to the top loads the page before
+(`?before=N`, 50 at a time). Anyone a chat exists for can read it; only its members post (a 403
+for anyone else). A read returns `{messages, invocations}` (below). Posting makes a chat the most recently active; a message stays when its
+author is deleted, with no author, or removed from the chat.
+
+Typing `@` in the composer offers the chat's members (`GET /api/chats/{id}/mentionable`), grouped
+by kind so an agent and a workflow with the same name are told apart. Picking one inserts a token,
+`@[name](kind:id)`, and the message is posted with its **mentions** (`{body, mentions: [{kind,
+id}]}`), stored structurally as `[{kind, id, name}]`; the message shows each as a chip with the
+member's kind and name, and a message that mentions you is highlighted. Mentioning anyone who isn't
+a member is a 422 (and a token typed by hand for one is plain text).
+
+Mentioning a **workflow** starts a run of it (`aios.invocations`, `chat_invocations`). The post
+creates, in the message's own transaction, a queued invocation per workflow mentioned and the
+workflow's acknowledgement with a **run card** under it, and returns them with the message
+(`{messages, invocations}`), so the chat never shows a mention without its card. Just after the
+response, the run starts through the same helpers starting one by hand and schedules use (and the
+firing machinery, `aios.firing`), with the message as its input (each mention as `@name`),
+executing as the workflow's owner; the invocation records who asked, the run, and goes `running`.
+A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
+with the reason. When the run ends (in the worker, found stopped, or deleted before it finished),
+its output or error is posted back as a message from the workflow, belonging to the invocation,
+and the invocation goes `succeeded` or `failed`, in one transaction. One whose start was lost with
+its process fails when the chat's next read finds it still queued (or briefing) after 90 seconds. A read's
+`invocations` are the state of each invocation its messages belong to and of every one in the
+chat still going, each with its run as the run's page shows it (graph, steps), so a chat's live
+cards cost its one poll a second. The card draws the run's graph still, at a fixed height, with
+each node's state, "n of m nodes done" and a status badge, and opens the run's page when clicked;
+a run that couldn't start shows why, and one since deleted says so. Mentions in what a workflow
+posts start nothing, so a chat can't loop. Runs started from a chat are listed with the
+workflow's others, marked with the chat (while it exists); deleting a chat deletes its messages
+and invocations, not the runs.
+
+Mentioning an **agent** runs one turn of a new run of its current version, with the message as
+the user's, executing as the agent's owner; its acknowledgement and card come with the post in the
+same way. The turn runs in an API process through the firing machinery schedules use, under the
+same cap (`SCHEDULER_MAX_CONCURRENT_RUNS`): a process with a free slot claims it, just after the
+post or on a scheduler tick (until then it waits, queued, however long), and keeps its heartbeat
+while it runs. A turn whose heartbeat stops (its process killed, say, by a deploy) fails its card
+with "The service stopped mid-run." when the chat is next read or a tick sweeps, and a turn in
+flight as a process shuts down records the same. A process with `SCHEDULER_ENABLED=false`
+runs no chat turns either. A read's `invocations` carry each agent run's status, start and finish
+times, tool calls and tokens so far; the card shows a status badge, the time elapsed (ticking in
+the browser from the start time), the tool calls and tokens, and opens the run's page when
+clicked. When the turn ends, the agent's final reply is posted back as a message from the agent
+(or the turn's error, failing the card). Several agents and workflows mentioned in one message
+each start; mentions in an agent's reply start nothing. Runs started from a chat are listed with
+the agent's others, marked with the chat.
+
+Before a mention's run starts, a **handoff** step (`aios.handoff`) briefs it on the chat, so the
+member doesn't have to be told the context again. It runs for agents and workflows alike, and is
+never skipped: the invocation goes `queued` → `briefing` → `running`, and one structured call to
+the handoff model reads the chat up to the mentioning message (its last `HANDOFF_WINDOW_MESSAGES`
+messages, 30 by default, or about `HANDOFF_WINDOW_TOKENS`, 8000, of them, whichever is less;
+run cards aside) and returns `{ack, brief}`. The ack, a line saying what the member understood
+it's being asked to do, replaces the acknowledgement's placeholder ("Reading the chat…"), so
+whoever asked can correct it early; a read's invocations carry it (`acknowledgement`), so a card
+already on screen updates. The brief is kept on the invocation (`brief`) and the run's input is
+the brief, a blank line, then the message (just the message when the chat had nothing to brief it
+on). The card shows the brief behind a disclosure, so anyone can see exactly what the run was
+told. A handoff that fails (the model errs, takes over a minute, or answers without `{ack,
+brief}`) fails the invocation with why, as a refused start does. The model is `HANDOFF_MODEL`,
+by default the deployment's `LLM_MODEL`; each call is traced to Langfuse tagged `handoff`, with
+the invocation's id and its chat as the session (see [Tracing](#tracing)).
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
@@ -208,15 +299,15 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user
-    api/chat.py     POST /api/chat (AI SDK UI message stream)
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
-    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}]
+    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
+    invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
     dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
@@ -230,7 +321,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/tools.py    GET /api/tools (the library, with each tool's settings schema)
     sandbox/        sandboxes for the run_python tool: sessions, backends, the in-sandbox
                     runner and the egress proxy
-    agent.py        the documents chat's agent + search_documents tool, and the run context
+    agent.py        the run context (`ChatDeps`) agents' tools read
+    assistant.py    the documents assistant: the built-in agent each new chat gets
     datastores/     data stores: data_store_for(user), the one place a user becomes a store,
                     store_session(id, role), the only way to open a session on user data,
                     models.py (the tables every store has: documents, chunks; and the
@@ -654,8 +746,7 @@ Known limits:
   fails with `read-only file system`, Docker's disk is full. Run `docker builder prune` and
   `docker system prune`, then restart Docker. On Docker Desktop, also raise the disk limit
   (Settings → Resources).
-- Document chat history is client-side (`useChat` sends the conversation each turn). It isn't
-  saved yet. Agent runs are different: each run is a LangGraph thread (`agent-run-<id>`) kept by
+- Agent runs: each run is a LangGraph thread (`agent-run-<id>`) kept by
   the Postgres checkpointer, the client sends only its new message, and the agent continues
   from the thread's latest checkpoint. The user's message is checkpointed before the model is
   called; if a turn fails or is stopped, the reply's text so far (or an error result for each
@@ -769,7 +860,7 @@ Known limits:
 
 ## Tracing
 
-Agent runs and the documents chat are traced to [Langfuse](https://langfuse.com) (open source,
+Agent runs (the documents assistant's too) are traced to [Langfuse](https://langfuse.com) (open source,
 self-hostable) through its LangChain callback handler, when both keys are set:
 
 ```sh
@@ -780,5 +871,7 @@ LANGFUSE_ENVIRONMENT=production                  # optional
 ```
 
 Each trace carries the user id, the run's thread id as the Langfuse session, tags for the agent
-and version, and the run metadata above. With no keys, nothing is traced. Traces are sent in the
+and version, and the run metadata above. A chat mention's handoff (see Chats) is traced too,
+tagged `handoff`, with `invocation_id`, the chat, the message, who asked and the member as
+metadata, and `chat-<id>` as the session. With no keys, nothing is traced. Traces are sent in the
 background and flushed when the API shuts down.

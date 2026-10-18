@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { Link } from "react-router";
 import { Bell } from "lucide-react";
 
-import { formatDate, useLoad, usePoll } from "@/components/crud";
+import { formatDate, useLoad, usePoll, useVisible } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type Notification, type NotificationList } from "@/lib/api";
 import { badgeText, describeNotification } from "@/lib/notifications";
@@ -38,17 +38,6 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   return (
     <NotificationsContext.Provider value={{ data, error, reload }}>{children}</NotificationsContext.Provider>
   );
-}
-
-/** Whether the page is visible: false while its tab is in the background or minimised. */
-function useVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const onChange = () => setVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
-  }, []);
-  return visible;
 }
 
 const noRefresh = () => Promise.resolve();

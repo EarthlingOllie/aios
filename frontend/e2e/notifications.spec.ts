@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi } from "./fake-api";
+import { setHidden } from "./visibility";
 
 /**
  * Notifications: the navigation polls for them and shows an unread badge, with a list whose
@@ -27,18 +28,6 @@ test("a new request shows an unread badge without a reload", async ({ page }) =>
   await expect(bell(page)).toHaveAccessibleName("Notifications, 1 unread");
   await expect(bell(page)).toContainText("1");
 });
-
-/** As the browser does when the tab is hidden or shown again. */
-async function setHidden(page: Page, hidden: boolean) {
-  await page.evaluate((hidden) => {
-    Object.defineProperty(document, "visibilityState", {
-      configurable: true,
-      get: () => (hidden ? "hidden" : "visible"),
-    });
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
-    document.dispatchEvent(new Event("visibilitychange"));
-  }, hidden);
-}
 
 test("a hidden tab stops asking, and asks again as soon as it's shown", async ({ page }) => {
   await page.clock.install();

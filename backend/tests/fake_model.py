@@ -15,7 +15,7 @@ from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 
-from aios import llm
+from aios import handoff, llm
 
 
 @dataclass
@@ -114,6 +114,22 @@ def replies(text: str) -> FakeChatModel:
 def use_model(fake: FakeChatModel) -> Iterator[FakeChatModel]:
     """Runs agents on `fake` instead of the configured model."""
     with mock.patch.object(llm, "chat_model", lambda name=None: fake):
+        yield fake
+
+
+def briefs(ack: str = "On it.", brief: str = "") -> FakeChatModel:
+    """A handoff model (`aios.handoff`) answering with this `{ack, brief}`."""
+
+    async def script(messages, info):
+        yield ToolCall("Handoff", {"ack": ack, "brief": brief})
+
+    return model(script)
+
+
+@contextmanager
+def use_handoff(fake: FakeChatModel) -> Iterator[FakeChatModel]:
+    """Runs the handoff step on `fake` instead of `briefs()`, which every test has by default."""
+    with mock.patch.object(handoff, "model", lambda: fake):
         yield fake
 
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkflowRunStep } from "@/lib/api";
-import { edgeStates, isActive, nodeStates, stepAt } from "@/lib/runs";
+import { edgeStates, isActive, nodesDone, nodeStates, stepAt } from "@/lib/runs";
 
 function step(path: string[], status: WorkflowRunStep["status"]): WorkflowRunStep {
   return {
@@ -120,5 +120,21 @@ describe("edgeStates", () => {
     // Likewise while C is still waiting on B.
     const waiting = [step(["a"], "succeeded"), step(["b"], "running")];
     expect(edgeStates(join, waiting, [])).toEqual({ "a->c": "idle", "b->c": "idle" });
+  });
+});
+
+describe("nodesDone", () => {
+  it("counts the run's own nodes that have succeeded, not those inside a subworkflow", () => {
+    const steps = [
+      step(["a"], "succeeded"),
+      step(["b"], "running"),
+      step(["b", "inner"], "succeeded"),
+      step(["c"], "failed"),
+    ];
+    expect(nodesDone(["a", "b", "c", "d"], steps)).toEqual({ done: 1, total: 4 });
+  });
+
+  it("is none of none for a run that hasn't started", () => {
+    expect(nodesDone([], [])).toEqual({ done: 0, total: 0 });
   });
 });

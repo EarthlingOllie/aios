@@ -71,6 +71,17 @@ export function usePoll(active: boolean, reload: () => Promise<unknown>, ms = PO
   }, [active, reload, ms]);
 }
 
+/** Whether the page is visible: false while its tab is in the background or minimised. */
+export function useVisible(): boolean {
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return visible;
+}
+
 /** A native `<select>` styled like `Input`. */
 export const selectClass =
   "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
@@ -111,7 +122,7 @@ export function MasterDetail<T extends { id: number }>({
           </Button>
         </div>
         {error && <p className="text-destructive px-4 py-2 text-sm">{error}</p>}
-        <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
+        <ul aria-label={title} className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {items?.length === 0 && <li className="text-muted-foreground p-2 text-sm">{empty}</li>}
           {items?.map((item) => (
             <li key={item.id}>

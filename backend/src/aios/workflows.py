@@ -51,7 +51,7 @@ from sqlalchemy import ColumnElement, and_, false, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from aios import checkpoints, tracing
+from aios import checkpoints, invocations, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
@@ -652,6 +652,8 @@ def _end_runs(
         return
     # Before the steps forget the requests they wait on.
     close_requests(db, ended)
+    # Those a chat started post their results back to it.
+    invocations.finish_workflow_runs(db, ended)
     # However it ended (finished, failed, stopped), it goes in the run history export's outbox,
     # with its own update: once its row is locked, as deleting it locks it first.
     history.enqueue_workflow_runs(db, WorkflowRun.id.in_(ended))

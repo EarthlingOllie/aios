@@ -51,12 +51,14 @@ STOPPED = "The service stopped mid-run."
 
 
 class Turn(NamedTuple):
-    """What a cause's run starts with: whose it is, and the user's message."""
+    """What a cause's run starts with: whose it is, the user's message, and what to title the run
+    after if not that (a chat mention's request, rather than its brief)."""
 
     user_id: int
     agent_id: int
     run_id: int
     message: str
+    title: str | None = None
 
 
 class CantStart(Exception):
@@ -65,6 +67,10 @@ class CantStart(Exception):
 
 class Cause(Protocol):
     """What a caller supplies to `fire`: the parts of a firing that are the cause's own."""
+
+    async def prepare(self) -> None:
+        """Whatever the cause does before its run starts, in the fire's slot (a chat mention's
+        handoff, `aios.handoff`). Raises `CantStart` to record why the run can't start."""
 
     def start(self, db: Session) -> Turn | None:
         """Start the run and commit it, checking whatever the cause claimed is still its to
@@ -158,7 +164,7 @@ def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
         if turn is None:
             return None
         ctx = agents_api.load_chat_context(db, turn.user_id, turn.agent_id, turn.run_id)
-    agents_api._start_turn(turn.run_id, turn.message, heartbeat=True)
+    agents_api._start_turn(turn.run_id, turn.title or turn.message, heartbeat=True)
     flight.run_id = turn.run_id
     return turn, ctx
 
@@ -172,6 +178,7 @@ def _record(cause: Cause, error: str | None) -> None:
 async def _fire(flight: Fire) -> None:
     error = None
     try:
+        await flight.cause.prepare()
         started = await run_in_threadpool(_start, flight)
         if started is not None:
             turn, ctx = started

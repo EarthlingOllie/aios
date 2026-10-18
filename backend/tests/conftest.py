@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import fake_model
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
@@ -67,6 +68,15 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
     return queued
+
+
+@pytest.fixture(autouse=True)
+def handoff_model() -> Iterator[None]:
+    """The handoff step's model (`aios.handoff`), scripted rather than the provider's: it
+    acknowledges with "On it." and briefs nothing (`fake_model.use_handoff` scripts another).
+    Not with `monkeypatch`, which a test may undo."""
+    with fake_model.use_handoff(fake_model.briefs()):
+        yield
 
 
 @pytest.fixture(autouse=True)

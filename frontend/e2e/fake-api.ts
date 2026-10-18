@@ -6,7 +6,17 @@ import type { Page, Route } from "@playwright/test";
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
- * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else).
+ * chat is a 404 for a non-member; a public one is listed, readable and joined by anyone, and left
+ * by any member but its owner; the owner's actions are a 403 for anyone else), each with an
+ * unread count of others' messages since the last one read (`chatReads`), and messages
+ * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
+ * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
+ * invocation: its acknowledgement and card are posted with the message, and each read of the
+ * chat's messages moves it on (`advanceInvocations`): briefing, then the handoff's ack and brief
+ * (`handoffs`, by member id) and its run, until the run ends and the result is posted back. An
+ * agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a read
+ * adding a tool call and tokens to its run's counters. A chat made through the API has the
+ * documents assistant (`documentsAssistant`) as its first agent; one added with `addChat` hasn't.
  */
 
 type Kind = "agent" | "workflow";
@@ -238,10 +248,28 @@ export type RunRow = {
 
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
 type ChatVisibility = "public" | "private";
-export type ChatMemberRow = {
+export type ChatMemberRow =
+  | {
+      id: number;
+      kind: "user";
+      role: "owner" | "member";
+      user: ChatUser;
+      added_at: string;
+      /** The last message they've seen (`POST /api/chats/{id}/read`); null for none yet. */
+      last_read: number | null;
+    }
+  /** An agent or workflow of `agents` or `workflows`, by id; gone once it's deleted. */
+  | { id: number; kind: Kind; target_id: number; added_at: string };
+type ChatUserMemberRow = Extract<ChatMemberRow, { kind: "user" }>;
+export type ChatMention = { kind: "user" | Kind; id: number; name: string };
+type ChatMemberOut = {
   id: number;
-  role: "owner" | "member";
-  user: ChatUser;
+  kind: "user" | Kind;
+  role: "owner" | "member" | null;
+  target_id: number;
+  name: string;
+  login: string | null;
+  avatar_url: string | null;
   added_at: string;
 };
 export type ChatRow = {
@@ -251,15 +279,77 @@ export type ChatRow = {
   description: string;
   visibility: ChatVisibility;
   members: ChatMemberRow[];
+  /** Oldest first. */
+  messages: ChatMessageRow[];
   created_at: string;
   updated_at: string;
 };
+/** A message's author: a user, or an agent or workflow (by id and name). */
+export type ChatAuthor = ChatUser | { kind: Kind; id: number; name: string };
+export type ChatMessageRow = {
+  id: number;
+  author: ChatAuthor;
+  kind: "text" | "run_card";
+  body: string;
+  mentions: ChatMention[];
+  invocation_id: number | null;
+  created_at: string;
+};
+type InvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
+/** An agent's or workflow's run that a mention started. */
+export type InvocationRow = {
+  id: number;
+  chat_id: number;
+  message_id: number;
+  requested_by: number;
+  target_kind: Kind;
+  target_id: number;
+  status: InvocationStatus;
+  error: string | null;
+  /** What the handoff told its run of the chat; null until it has. */
+  brief: string | null;
+  /** The run it started; gone from `runs` (or `agentRuns`) once it's deleted. */
+  run_id: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+/** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
+function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
+  const of = (kind: ChatMention["kind"]) => members.filter((m) => m.kind === kind);
+  return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
+}
+
+/** How many messages a read returns at most, as the API's `MESSAGE_PAGE`. */
+export const MESSAGE_PAGE = 50;
 
 const NOW = "2026-10-14T09:00:00Z";
+
+/** How a mentioned agent's scripted turn goes: how many reads it runs for (each a model step
+ * adding a tool call and `tokensPerStep` tokens), then its reply, or the error it fails with. */
+export type AgentTurn = { steps: number; tokensPerStep: number; reply?: string; error?: string };
+export const AGENT_TURN: AgentTurn = { steps: 2, tokensPerStep: 120 };
+
+/** A message's text: each mention as `@name`. */
+const messageText = (body: string) =>
+  body.replace(/@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):\d+\)/g, "@$1");
+
+/** A run's input: the handoff's brief, a blank line, then the message's text (just the text with
+ * no brief). */
+const runInput = (brief: string | null, body: string) => (brief ? `${brief}\n\n${messageText(body)}` : messageText(body));
+
+/** What a mentioned member's handoff writes: what it understood and the brief, or why it failed. */
+export type Handoff = { ack: string; brief: string } | { error: string };
+export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
+/** The acknowledgement's placeholder, until the handoff writes what was understood. */
+const ACKNOWLEDGEMENT = "Reading the chat…";
 
 export class FakeApi {
   private nextId = 100;
   agents = new Map<number, AgentRow>();
+  /** The agent that's `me`'s documents assistant, once a new chat has made it. */
+  assistantId: number | null = null;
   // Agent version id -> [agent id, version number].
   agentVersions = new Map<number, [number, number]>();
   // Agent version id -> note, for the versions that have one.
@@ -274,9 +364,22 @@ export class FakeApi {
    * "edits" a workflow by taking it off the list.
    */
   agentDependents = new Map<number, AgentDependentsRow>();
+  /**
+   * The agents and workflows (by id) that another user owns. As on the server, the signed-in
+   * user can't list or read them, or do anything to them: only read a run of one, as a member
+   * of a chat that started it (which the fake doesn't check), and that read only.
+   */
+  othersOwn = new Set<number>();
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
+  invocations = new Map<number, InvocationRow>();
+  /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
+  handoffs = new Map<number, Handoff>();
+  /** Workflows whose runs a mention can't start, by id, with why (as the API refuses one). */
+  refuseStart = new Map<number, string>();
+  /** How each mentioned agent's turn goes, by agent id (`AGENT_TURN` if unset). */
+  agentTurns = new Map<number, AgentTurn>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
@@ -345,8 +448,12 @@ export class FakeApi {
   notifications: NotificationRow[] = [];
   /** How many times the app asked for the user's notifications. */
   notificationLists = 0;
+  /** The query of each read of a chat's messages, in order (e.g. "?after=12"). */
+  messageReads: string[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
+  /** Each `POST /api/chats/{id}/read`, as [chat id, message id]: not a write the user made. */
+  chatReads: [number, number][] = [];
   /** The store's `data` tables, by name. */
   dataTables: TableRow[] = [];
   /** While true, the tables endpoints answer 500. */
@@ -524,6 +631,19 @@ export class FakeApi {
       this.agentVersions.set(vid, [agent.id, n]);
     }
     this.agents.set(agent.id, agent);
+    return agent;
+  }
+
+  /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
+  documentsAssistant(): AgentRow {
+    const live = this.assistantId === null ? undefined : this.agents.get(this.assistantId);
+    if (live) return live;
+    const agent = this.addAgent(
+      "Documents assistant",
+      1,
+      "Answers from your documents. Built in: it joins each new chat you make.",
+    );
+    this.assistantId = agent.id;
     return agent;
   }
 
@@ -808,17 +928,223 @@ export class FakeApi {
       description,
       visibility,
       members: [],
+      messages: [],
       created_at: NOW,
       updated_at: NOW,
     };
-    chat.members.push({ id: this.id(), role: "owner", user: owner, added_at: NOW });
+    chat.members.push({ id: this.id(), kind: "user", role: "owner", user: owner, added_at: NOW, last_read: null });
     this.chats.set(chat.id, chat);
     return chat;
   }
 
+  /** Posts a message to a chat, as `author` (by default `me`) would, mentioning `mentions`. */
+  addChatMessage(
+    chat: ChatRow,
+    body: string,
+    author: ChatAuthor = this.me,
+    mentions: ChatMention[] = [],
+    extra: Partial<Pick<ChatMessageRow, "kind" | "invocation_id">> = {},
+  ): ChatMessageRow {
+    const message: ChatMessageRow = {
+      id: this.id(),
+      author,
+      kind: "text",
+      body,
+      mentions,
+      invocation_id: null,
+      created_at: NOW,
+      ...extra,
+    };
+    chat.messages.push(message);
+    return message;
+  }
+
+  /** An invocation's run card: its acknowledgement. */
+  private cardOf(chat: ChatRow, invocation: InvocationRow): ChatMessageRow {
+    return chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
+  }
+
+  /** The agent or workflow an invocation is of. */
+  private targetOf(invocation: InvocationRow): AgentRow | WorkflowRow {
+    return (invocation.target_kind === "agent" ? this.agents : this.workflows).get(invocation.target_id)!;
+  }
+
+  /** Queues an invocation of the agent or workflow for a message mentioning it, with its card. */
+  private invoke(chat: ChatRow, message: ChatMessageRow, kind: Kind, target: AgentRow | WorkflowRow): InvocationRow {
+    const invocation: InvocationRow = {
+      id: this.id(),
+      chat_id: chat.id,
+      message_id: message.id,
+      requested_by: this.me.id,
+      target_kind: kind,
+      target_id: target.id,
+      status: "queued",
+      error: null,
+      brief: null,
+      run_id: null,
+      created_at: NOW,
+      started_at: null,
+      finished_at: null,
+    };
+    this.invocations.set(invocation.id, invocation);
+    this.addChatMessage(
+      chat,
+      ACKNOWLEDGEMENT,
+      { kind, id: target.id, name: target.name },
+      [],
+      { kind: "run_card", invocation_id: invocation.id },
+    );
+    return invocation;
+  }
+
+  /** Ends an invocation and posts its result back from its agent or workflow, as the API does. */
+  private finishInvocation(invocation: InvocationRow, status: "succeeded" | "failed", body: string, error: string | null = null) {
+    Object.assign(invocation, { status, error, finished_at: NOW });
+    const target = this.targetOf(invocation);
+    this.addChatMessage(
+      this.chats.get(invocation.chat_id)!,
+      body,
+      { kind: invocation.target_kind, id: target.id, name: target.name },
+      [],
+      { invocation_id: invocation.id },
+    );
+  }
+
+  /**
+   * The handoff of a briefing invocation: its brief kept and its ack in place of the card's
+   * placeholder, as `handoffs` scripts it. False if it failed, which fails the invocation.
+   */
+  private handOff(chat: ChatRow, invocation: InvocationRow): boolean {
+    const handoff = this.handoffs.get(invocation.target_id) ?? HANDOFF;
+    if ("error" in handoff) {
+      const error = `The handoff failed: ${handoff.error}`;
+      this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
+      return false;
+    }
+    invocation.brief = handoff.brief || null;
+    this.cardOf(chat, invocation).body = handoff.ack;
+    return true;
+  }
+
+  /**
+   * Moves the chat's unfinished invocations on by one beat, as each read of its messages does: a
+   * queued one goes briefing; a briefing one is handed off (`handOff`) and starts its run (or
+   * fails, if `refuseStart` says so); a running one's run moves on (`advance`), and once it has
+   * ended, the result is posted back. One whose run was deleted fails.
+   */
+  advanceInvocations(chat: ChatRow) {
+    for (const invocation of this.invocations.values()) {
+      if (invocation.chat_id !== chat.id) continue;
+      if (invocation.status === "queued") {
+        invocation.status = "briefing";
+        continue;
+      }
+      if (invocation.status === "briefing" && !this.handOff(chat, invocation)) continue;
+      if (invocation.target_kind === "agent") {
+        this.advanceTurn(chat, invocation);
+        continue;
+      }
+      if (invocation.status === "briefing") {
+        const refused = this.refuseStart.get(invocation.target_id);
+        if (refused !== undefined) {
+          this.finishInvocation(invocation, "failed", `Couldn't start the run: ${refused}`, refused);
+          continue;
+        }
+        const message = chat.messages.find((m) => m.id === invocation.message_id)!;
+        const run = this.addRun(this.workflows.get(invocation.target_id)!, {
+          status: "queued",
+          input: runInput(invocation.brief, message.body),
+          started_at: null,
+        });
+        Object.assign(invocation, { status: "running", run_id: run.id, started_at: NOW });
+      } else if (invocation.status === "running") {
+        const run = this.runs.get(invocation.run_id!);
+        if (!run) {
+          const deleted = "The run was deleted before it finished.";
+          this.finishInvocation(invocation, "failed", `The run failed: ${deleted}`, deleted);
+          continue;
+        }
+        this.advance(run);
+        if (run.status === "succeeded") this.finishInvocation(invocation, "succeeded", run.output ?? "");
+        else if (run.status === "failed") {
+          this.finishInvocation(invocation, "failed", `The run failed: ${run.error}`, run.error);
+        }
+      }
+    }
+  }
+
+  /**
+   * Moves a mentioned agent's turn on by one read: a briefed one starts a run, running from now (so
+   * its card's elapsed time ticks from the real clock); each read after is a model step adding a
+   * tool call and tokens, until its `agentTurns` steps are done and its reply (or error) is
+   * posted back. One whose run was deleted fails.
+   */
+  private advanceTurn(chat: ChatRow, invocation: InvocationRow) {
+    const agent = this.agents.get(invocation.target_id)!;
+    const turn = this.agentTurns.get(agent.id) ?? AGENT_TURN;
+    if (invocation.status === "briefing") {
+      const message = chat.messages.find((m) => m.id === invocation.message_id)!;
+      const input = runInput(invocation.brief, message.body);
+      // Titled after what was asked, not the brief.
+      const run = this.addAgentRun(agent, messageText(message.body), 1, {
+        status: "running",
+        started_at: new Date().toISOString(),
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      run.ui_messages = [{ id: "u1", role: "user", parts: [{ type: "text", text: input }] }];
+      Object.assign(invocation, { status: "running", run_id: run.id, started_at: run.started_at });
+    } else if (invocation.status === "running") {
+      const run = this.agentRuns.get(invocation.run_id!);
+      if (!run) {
+        const deleted = "The run was deleted before it finished.";
+        this.finishInvocation(invocation, "failed", `The run failed: ${deleted}`, deleted);
+        return;
+      }
+      if (run.tool_call_count! < turn.steps) {
+        run.tool_call_count! += 1;
+        run.input_tokens! += turn.tokensPerStep - 20;
+        run.output_tokens! += 20;
+        return;
+      }
+      const finished_at = new Date().toISOString();
+      if (turn.error) {
+        Object.assign(run, { status: "failed", finished_at });
+        this.finishInvocation(invocation, "failed", `The run failed: ${turn.error}`, turn.error);
+        return;
+      }
+      const reply = turn.reply ?? `Done: ${run.title}`;
+      Object.assign(run, { status: "succeeded", finished_at, message_count: 2 });
+      run.ui_messages = [...run.ui_messages, { id: "a1", role: "assistant", parts: [{ type: "text", text: reply }] }];
+      this.finishInvocation(invocation, "succeeded", reply);
+    }
+  }
+
   /** Adds a user to a chat, as the owner would. */
-  addChatMember(chat: ChatRow, user: ChatUser): ChatMemberRow {
-    const member: ChatMemberRow = { id: this.id(), role: "member", user, added_at: NOW };
+  addChatMember(chat: ChatRow, user: ChatUser): ChatUserMemberRow {
+    const member: ChatUserMemberRow = { id: this.id(), kind: "user", role: "member", user, added_at: NOW, last_read: null };
+    chat.members.push(member);
+    return member;
+  }
+
+  /**
+   * A run card in the chat for a run already made: a message from `me` mentioning the agent or
+   * workflow, and its invocation, finished, pointing at the run.
+   */
+  addChatRunCard(chat: ChatRow, kind: Kind, target: AgentRow | WorkflowRow, runId: number): InvocationRow {
+    const message = this.addChatMessage(chat, `@[${target.name}](${kind}:${target.id}) Go`, this.me, [
+      { kind, id: target.id, name: target.name },
+    ]);
+    const invocation = this.invoke(chat, message, kind, target);
+    this.cardOf(chat, invocation).body = "On it.";
+    Object.assign(invocation, { status: "succeeded", run_id: runId, started_at: NOW, finished_at: NOW });
+    return invocation;
+  }
+
+  /** Adds an agent or a workflow to a chat, as the owner would. */
+  addChatTarget(chat: ChatRow, kind: Kind, target: { id: number }): ChatMemberRow {
+    const member: ChatMemberRow = { id: this.id(), kind, target_id: target.id, added_at: NOW };
     chat.members.push(member);
     return member;
   }
@@ -854,8 +1180,14 @@ export class FakeApi {
 
   private agentRunOut(run: AgentRunRow) {
     const { ui_messages: _, ...summary } = run;
+    const invocation = [...this.invocations.values()].find(
+      (i) => i.target_kind === "agent" && i.run_id === run.id,
+    );
+    const chat = invocation && this.chats.get(invocation.chat_id);
     return {
       ...summary,
+      chat_id: chat?.id ?? null,
+      chat_name: chat?.name ?? null,
       agent_version: this.agentVersions.get(run.agent_version_id)![1],
       created_at: NOW,
       updated_at: NOW,
@@ -943,30 +1275,156 @@ export class FakeApi {
       visibility: chat.visibility,
       owner_id: chat.owner.id,
       is_owner: chat.owner.id === this.me.id,
-      member_count: chat.members.length,
+      is_member: this.inChat(chat),
+      member_count: this.liveMembers(chat).length,
       created_at: chat.created_at,
       updated_at: chat.updated_at,
     };
   }
 
+  /** The agent or workflow a member is, unless it's been deleted. */
+  private chatTarget(kind: Kind, id: number) {
+    if (kind === "agent") return this.agents.get(id);
+    const workflow = this.workflows.get(id);
+    return workflow && !workflow.deleted ? workflow : undefined;
+  }
+
+  /** The chat's members as the API shows them, less deleted agents and workflows: owner first. */
+  private liveMembers(chat: ChatRow): ChatMemberOut[] {
+    return chat.members
+      .flatMap((m): ChatMemberOut[] => {
+        const { id, kind, added_at } = m;
+        if (kind === "user") {
+          const { user, role } = m;
+          const [login, avatar_url] = [user.login, user.avatar_url ?? null];
+          return [{ id, kind, role, target_id: user.id, name: user.name ?? login, login, avatar_url, added_at }];
+        }
+        const target = this.chatTarget(kind, m.target_id);
+        if (!target) return [];
+        const name = target.name;
+        return [{ id, kind, role: null, target_id: target.id, name, login: null, avatar_url: null, added_at }];
+      })
+      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
+  }
+
   chatOut(chat: ChatRow) {
-    const users = [...chat.members]
-      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id)
-      .map((m) => ({
-        id: m.id,
-        kind: "user",
-        role: m.role,
-        target_id: m.user.id,
-        name: m.user.name ?? m.user.login,
-        login: m.user.login,
-        avatar_url: m.user.avatar_url ?? null,
-        added_at: m.added_at,
-      }));
-    return { ...this.chatSummary(chat), members: { users, agents: [], workflows: [] } };
+    return { ...this.chatSummary(chat), members: byKind(this.liveMembers(chat)) };
+  }
+
+  /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
+  private mentionable(chat: ChatRow) {
+    return byKind(
+      this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
+        kind,
+        id: target_id,
+        name,
+        login,
+        avatar_url,
+      })),
+    );
+  }
+
+  private messageOut(chat: ChatRow, m: ChatMessageRow) {
+    const author = m.author;
+    return {
+      id: m.id,
+      chat_id: chat.id,
+      author:
+        "login" in author
+          ? {
+              kind: "user",
+              id: author.id,
+              name: author.name ?? author.login,
+              login: author.login,
+              avatar_url: author.avatar_url ?? null,
+            }
+          : { ...author, login: null, avatar_url: null },
+      kind: m.kind,
+      body: m.body,
+      mentions: m.mentions,
+      invocation_id: m.invocation_id,
+      created_at: m.created_at,
+    };
+  }
+
+  private invocationOut(chat: ChatRow, invocation: InvocationRow) {
+    const { run_id, ...invocationRest } = invocation;
+    const rest = { ...invocationRest, acknowledgement: this.cardOf(chat, invocation).body };
+    if (invocation.target_kind === "agent") {
+      const run = run_id === null ? undefined : this.agentRuns.get(run_id);
+      return {
+        ...rest,
+        workflow_run_id: null,
+        agent_run_id: run ? run.id : null,
+        run_deleted: invocation.started_at !== null && !run,
+        workflow_run: null,
+        agent_run: run
+          ? {
+              id: run.id,
+              status: run.status,
+              started_at: run.started_at,
+              finished_at: run.finished_at,
+              tool_call_count: run.tool_call_count,
+              input_tokens: run.input_tokens,
+              output_tokens: run.output_tokens,
+            }
+          : null,
+      };
+    }
+    const run = run_id === null ? undefined : this.runs.get(run_id);
+    return {
+      ...rest,
+      workflow_run_id: run ? run.id : null,
+      agent_run_id: null,
+      run_deleted: invocation.started_at !== null && !run,
+      workflow_run: run ? this.runOut(run) : null,
+      agent_run: null,
+    };
+  }
+
+  /** Messages as the API returns them, with the invocations they belong to and those still going. */
+  private messagesOut(chat: ChatRow, messages: ChatMessageRow[]) {
+    const ids = new Set(messages.map((m) => m.invocation_id));
+    const invocations = [...this.invocations.values()].filter(
+      (i) => i.chat_id === chat.id && (ids.has(i.id) || (i.status !== "succeeded" && i.status !== "failed")),
+    );
+    return {
+      messages: messages.map((m) => this.messageOut(chat, m)),
+      invocations: invocations.map((i) => this.invocationOut(chat, i)),
+    };
+  }
+
+  /** The page of a chat's messages a read asks for, oldest first, as the API pages them. */
+  private messagesPage(chat: ChatRow, query: URLSearchParams) {
+    const after = query.get("after");
+    const before = query.get("before");
+    let page: ChatMessageRow[];
+    if (after !== null) {
+      page = chat.messages.filter((m) => m.id > Number(after)).slice(0, MESSAGE_PAGE);
+    } else {
+      const older = before === null ? chat.messages : chat.messages.filter((m) => m.id < Number(before));
+      page = older.slice(-MESSAGE_PAGE);
+    }
+    return this.messagesOut(chat, page);
   }
 
   private inChat(chat: ChatRow) {
-    return chat.members.some((m) => m.user.id === this.me.id);
+    return this.myMembership(chat) !== undefined;
+  }
+
+  private myMembership(chat: ChatRow) {
+    return chat.members.find(
+      (m): m is ChatUserMemberRow => m.kind === "user" && m.user.id === this.me.id,
+    );
+  }
+
+  /** What `me` hasn't seen of a chat they're in: others' messages since their last read. */
+  private unreadCount(chat: ChatRow) {
+    const mine = this.myMembership(chat);
+    if (!mine) return null;
+    return chat.messages.filter(
+      (m) => m.id > (mine.last_read ?? 0) && !("login" in m.author && m.author.id === this.me.id),
+    ).length;
   }
 
   /** The workflows whose versions `version` runs, at any depth. */
@@ -1009,7 +1467,8 @@ export class FakeApi {
   private async handle(route: Route) {
     const request = route.request();
     const method = request.method();
-    const path = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const path = url.pathname;
     // As postDataJSON gives it (`any`), or a placeholder for an upload.
     let body: ReturnType<typeof request.postDataJSON> = null;
     try {
@@ -1018,7 +1477,7 @@ export class FakeApi {
       // Not JSON: an upload's multipart form.
       body = "(form)";
     }
-    if (method !== "GET") this.writes.push([method, path, body]);
+    if (method !== "GET" && !/^\/api\/chats\/\d+\/read$/.test(path)) this.writes.push([method, path, body]);
     const reply = (status: number, json?: unknown) =>
       route.fulfill({
         status,
@@ -1027,6 +1486,12 @@ export class FakeApi {
       });
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
+
+    // Another user's agent or workflow: only a run of it can be read (see `othersOwn`).
+    if ((m = path.match(/^\/api\/(?:agents|workflows)\/(\d+)(\/.*)?$/)) && this.othersOwn.has(Number(m[1]))) {
+      const readable = method === "GET" && /^\/runs\/\d+(\/subworkflow)?$/.test(m[2] ?? "");
+      if (!readable) return fail(404, "Not Found");
+    }
 
     if (path === "/api/me") return reply(200, this.me);
     if (path === "/api/data-store") {
@@ -1218,7 +1683,7 @@ export class FakeApi {
     if (path === "/api/agents") {
       return reply(
         200,
-        [...this.agents.values()].map((a) => ({
+        [...this.agents.values()].filter((a) => !this.othersOwn.has(a.id)).map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -1288,6 +1753,8 @@ export class FakeApi {
         if (!run || run.agent_id !== agent.id) return fail(404, "Not Found");
         return reply(200, {
           ...this.agentRunOut(run),
+          agent_name: agent.name,
+          is_owner: !this.othersOwn.has(agent.id),
           ui_messages: run.ui_messages,
           messages: [],
           instructions: agent.base_prompt,
@@ -1336,7 +1803,7 @@ export class FakeApi {
     if (path === "/api/workflows" && method === "GET") {
       return reply(
         200,
-        this.live().map((w) => ({
+        this.live().filter((w) => !this.othersOwn.has(w.id)).map((w) => ({
           id: w.id,
           name: w.name,
           description: w.description,
@@ -1443,11 +1910,22 @@ export class FakeApi {
           return reply(204);
         }
         return reply(200, {
-          ...this.runSummary(run),
-          version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
-          steps: run.steps,
-          stale_pins: run.stale_pins,
+          ...this.runOut(run),
+          workflow_name: workflow.name,
+          is_owner: !this.othersOwn.has(workflow.id),
         });
+      }
+      if ((m = rest.match(/^\/runs\/(\d+)\/subworkflow$/)) && method === "GET") {
+        const run = this.runs.get(Number(m[1]));
+        if (!run || run.workflow_id !== workflow.id) return fail(404, "Not Found");
+        // The version pinned at the path's workflow node, along the run's graph.
+        let version = this.workflowVersions.get(run.workflow_version_id)!;
+        for (const key of url.searchParams.getAll("path")) {
+          const node = version.nodes.find((n) => n.key === key);
+          if (!node || node.kind !== "workflow") return fail(404, "Not Found");
+          version = this.workflowVersions.get(node.version_id)!;
+        }
+        return reply(200, this.versionOut(version));
       }
       if (rest === "/versions") {
         return reply(
@@ -1478,9 +1956,10 @@ export class FakeApi {
       return reply(
         200,
         [...this.chats.values()]
-          .filter((c) => this.inChat(c))
+          // Mine, and the public ones I'm not in, for me to find.
+          .filter((c) => this.inChat(c) || c.visibility === "public")
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
-          .map((c) => this.chatSummary(c)),
+          .map((c) => ({ ...this.chatSummary(c), unread_count: this.unreadCount(c) })),
       );
     }
     if (path === "/api/chats" && method === "POST") {
@@ -1491,6 +1970,8 @@ export class FakeApi {
         description: body.description ?? "",
         visibility: body.visibility ?? "private",
       });
+      // A new chat's first agent is the owner's documents assistant.
+      this.addChatTarget(chat, "agent", this.documentsAssistant());
       return reply(201, this.chatOut(chat));
     }
     if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {
@@ -1500,6 +1981,56 @@ export class FakeApi {
         return fail(404, "Not Found");
       }
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
+      if (rest === "/messages" && method === "GET") {
+        this.messageReads.push(url.search);
+        this.advanceInvocations(chat);
+        return reply(200, this.messagesPage(chat, url.searchParams));
+      }
+      if (rest === "/mentionable" && method === "GET") return reply(200, this.mentionable(chat));
+      if (rest === "/join" && method === "POST") {
+        if (this.inChat(chat)) return fail(409, "Already a member of this chat.");
+        // What was there to read before they joined counts as seen.
+        this.addChatMember(chat, this.me).last_read = chat.messages.at(-1)?.id ?? null;
+        return reply(200, this.chatOut(chat));
+      }
+      if (rest === "/leave" && method === "POST") {
+        const mine = this.myMembership(chat);
+        if (!mine) return fail(409, "Not a member of this chat.");
+        if (mine.role === "owner") return fail(422, "The owner can't leave the chat.");
+        chat.members = chat.members.filter((x) => x !== mine);
+        return reply(204);
+      }
+      if (rest === "/read" && method === "POST") {
+        const mine = this.myMembership(chat);
+        if (!mine) return fail(403, "Only the chat's members keep track of what they've read in it.");
+        this.chatReads.push([chat.id, body.message_id]);
+        const seen = Math.min(body.message_id, chat.messages.at(-1)?.id ?? 0);
+        mine.last_read = Math.max(mine.last_read ?? 0, seen);
+        return reply(204);
+      }
+      if (rest === "/messages" && method === "POST") {
+        if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
+        const members = Object.values(this.mentionable(chat)).flat();
+        const mentions: ChatMention[] = [];
+        for (const { kind, id } of (body.mentions ?? []) as ChatMention[]) {
+          const member = members.find((x) => x.kind === kind && x.id === id);
+          if (!member) return fail(422, "Only the chat's members can be mentioned in it.");
+          const twice = mentions.some((x) => x.kind === kind && x.id === id);
+          if (!twice) mentions.push({ kind, id, name: member.name });
+        }
+        const message = this.addChatMessage(chat, body.body, this.me, mentions);
+        const invoked = mentions.flatMap((x) =>
+          x.kind === "user" ? [] : [this.invoke(chat, message, x.kind, (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!)],
+        );
+        const ids = new Set(invoked.map((i) => i.id));
+        return reply(
+          201,
+          this.messagesOut(
+            chat,
+            chat.messages.filter((x) => x === message || ids.has(x.invocation_id!)),
+          ),
+        );
+      }
       if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
         if ([...this.chats.values()].some((c) => c.name === body.name && c !== chat)) {
@@ -1514,12 +2045,26 @@ export class FakeApi {
       }
       if (rest === "" && method === "DELETE") {
         this.chats.delete(chat.id);
+        // Its messages and invocations go with it; the runs stay.
+        for (const i of this.invocations.values()) if (i.chat_id === chat.id) this.invocations.delete(i.id);
         return reply(204);
+      }
+      if (rest === "/members" && method === "POST") {
+        const kind = body.kind as ChatMention["kind"];
+        if (kind === "user") return fail(422, "fake API: add users with addChatMember");
+        if (!this.chatTarget(kind, body.id)) return fail(422, `Unknown ${kind}`);
+        if (chat.members.some((x) => x.kind === kind && x.target_id === body.id)) {
+          return fail(409, "Already a member of this chat.");
+        }
+        this.addChatTarget(chat, kind, { id: body.id });
+        return reply(201, this.chatOut(chat));
       }
       if ((m = rest.match(/^\/members\/(\d+)$/)) && method === "DELETE") {
         const member = chat.members.find((x) => x.id === Number(m![1]));
         if (!member) return fail(404, "Not Found");
-        if (member.role === "owner") return fail(422, "The owner can't be removed from the chat.");
+        if (member.kind === "user" && member.role === "owner") {
+          return fail(422, "The owner can't be removed from the chat.");
+        }
         chat.members = chat.members.filter((x) => x !== member);
         return reply(204);
       }
@@ -1528,9 +2073,25 @@ export class FakeApi {
   }
 
   private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
+    const invocation = [...this.invocations.values()].find(
+      (i) => i.target_kind === "workflow" && i.run_id === run.id,
+    );
+    const chat = invocation && this.chats.get(invocation.chat_id);
     return {
       ...run,
       workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,
+      chat_id: chat?.id ?? null,
+      chat_name: chat?.name ?? null,
+    };
+  }
+
+  /** A run as its page shows it. */
+  private runOut(run: RunRow) {
+    return {
+      ...this.runSummary(run),
+      version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
+      steps: run.steps,
+      stale_pins: run.stale_pins,
     };
   }
 

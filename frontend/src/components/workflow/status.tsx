@@ -1,11 +1,12 @@
 import { Badge } from "@/components/ui/badge";
-import type { WorkflowRunStatus } from "@/lib/api";
+import type { ChatInvocationStatus, WorkflowRunStatus } from "@/lib/api";
 import type { NodeState } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 // How a run, and each node it reaches, reads: one set of words and colours for both.
-export const statusLabel: Record<WorkflowRunStatus | NodeState, string> = {
+export const statusLabel: Record<WorkflowRunStatus | ChatInvocationStatus | NodeState, string> = {
   queued: "Queued",
+  briefing: "Briefing",
   running: "Running",
   succeeded: "Succeeded",
   failed: "Failed",
@@ -40,14 +41,17 @@ export function StateBadge({ state }: { state: NodeState }) {
   );
 }
 
-/** Where a whole run is. */
-export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus } & object) {
+/** Where a whole run is, or a chat invocation of one. */
+export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus | ChatInvocationStatus } & object) {
   return (
     <Badge
       variant={
         status === "failed" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
       }
-      className={cn(status === "running" && runningClass, status === "waiting" && waitingClass)}
+      className={cn(
+        (status === "running" || status === "briefing") && runningClass,
+        status === "waiting" && waitingClass,
+      )}
       {...props}
     >
       {statusLabel[status]}

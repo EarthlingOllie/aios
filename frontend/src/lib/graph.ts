@@ -98,19 +98,25 @@ export function layoutGraph(
 export const MIN_ZOOM = 0.8;
 /** While editing the whole graph is kept in view, to drag between any two nodes: smaller, then. */
 export const MIN_EDITING_ZOOM = 0.4;
+/** How far a graph that's only looked at (`fitGraph`'s fixed height) may shrink to fit. */
+export const MIN_STILL_ZOOM = 0.2;
 const MAX_ZOOM = 1;
 const PADDING = 32;
 export const MIN_CANVAS_HEIGHT = 288;
 export const MAX_CANVAS_HEIGHT = 640;
 
-/** The canvas height and viewport to first show nodes at these positions on a canvas this wide. */
+/**
+ * The canvas height and viewport to first show nodes at these positions on a canvas this wide:
+ * as tall as the graph within limits, or `fixedHeight` tall (a card's), shrinking it to fit.
+ */
 export function fitGraph(
   positions: NodePosition[],
   width: number,
   minZoom = MIN_ZOOM,
+  fixedHeight?: number,
 ): { height: number; viewport: { x: number; y: number; zoom: number } } {
   if (positions.length === 0) {
-    return { height: MIN_CANVAS_HEIGHT, viewport: { x: 0, y: 0, zoom: MAX_ZOOM } };
+    return { height: fixedHeight ?? MIN_CANVAS_HEIGHT, viewport: { x: 0, y: 0, zoom: MAX_ZOOM } };
   }
   const left = Math.min(...positions.map((p) => p.x));
   const top = Math.min(...positions.map((p) => p.y));
@@ -119,10 +125,9 @@ export function fitGraph(
   const fit = (room: number, size: number) => (room - 2 * PADDING) / size;
   const clamp = (zoom: number) => Math.max(minZoom, Math.min(MAX_ZOOM, zoom));
   let zoom = clamp(fit(width, graphWidth));
-  const height = Math.max(
-    MIN_CANVAS_HEIGHT,
-    Math.min(MAX_CANVAS_HEIGHT, graphHeight * zoom + 2 * PADDING),
-  );
+  const height =
+    fixedHeight ??
+    Math.max(MIN_CANVAS_HEIGHT, Math.min(MAX_CANVAS_HEIGHT, graphHeight * zoom + 2 * PADDING));
   zoom = clamp(Math.min(zoom, fit(height, graphHeight)));
   // Centred where it fits; otherwise from its left (where it starts) or top edge.
   const offset = (room: number, size: number, start: number) =>

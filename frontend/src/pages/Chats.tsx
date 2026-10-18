@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Bot, Lock, Pencil, Trash2, UserMinus, Workflow } from "lucide-react";
+import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
+import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
+import { MEMBER_KIND } from "@/components/ChatComposer";
+import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
 import {
   DetailPage,
   ErrorBanner,
@@ -9,9 +11,12 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
+  POLL_MS,
   Section,
   selectClass,
   useLoad,
+  usePoll,
+  useVisible,
   type ListContext,
 } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
@@ -23,9 +28,13 @@ import {
   describeError,
   type Chat,
   type ChatInput,
+  type ChatListed,
   type ChatMember,
+  type ChatTargetKind,
   type ChatVisibility,
 } from "@/lib/api";
+import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
 const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
@@ -33,8 +42,15 @@ const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
   private: { label: "Private", hint: "Only its members can see it." },
 };
 
+/** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
+export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
+const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
+
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
+  const visible = useVisible();
+  // Unread counts go up as others post, in chats other than the one open.
+  usePoll(data !== undefined, reload, visible ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
   return (
     <MasterDetail
       title="Chats"
@@ -43,24 +59,50 @@ export function ChatsSection() {
       error={error}
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
-      renderItem={(chat) => (
-        <>
-          <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium">{chat.name}</span>
-            {chat.visibility === "private" && (
-              <Lock className="text-muted-foreground size-3.5 shrink-0" role="img" aria-label="Private" />
-            )}
-            <span className="text-muted-foreground shrink-0 text-xs">
-              {plural(chat.member_count, "member")}
-            </span>
-          </div>
-          {chat.description && (
-            <div className="text-muted-foreground truncate text-xs">{chat.description}</div>
-          )}
-        </>
-      )}
+      renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
+}
+
+/** A chat in the list: its name, privacy, members (or that it's not joined) and unread count. */
+function ChatListItem({ chat }: { chat: ChatListed }) {
+  const unread = unreadBadge(chat.unread_count);
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span className={cn("min-w-0 flex-1 truncate font-medium", !chat.is_member && "text-muted-foreground")}>
+          {chat.name}
+        </span>
+        {chat.visibility === "private" && (
+          <Lock className="text-muted-foreground size-3.5 shrink-0" role="img" aria-label="Private" />
+        )}
+        {chat.is_member ? (
+          <span className="text-muted-foreground shrink-0 text-xs">{plural(chat.member_count, "member")}</span>
+        ) : (
+          <Badge variant="outline" className="shrink-0">
+            Not joined
+          </Badge>
+        )}
+        {unread && (
+          <span
+            aria-label={`${unread} unread`}
+            className="bg-primary text-primary-foreground shrink-0 rounded-full px-1.5 text-xs font-medium"
+          >
+            {unread}
+          </span>
+        )}
+      </div>
+      {chat.description && <div className="text-muted-foreground truncate text-xs">{chat.description}</div>}
+    </>
+  );
+}
+
+/** `/`: the most recently active chat the user is in, or the new-chat form if they're in none. */
+export function ChatsLanding() {
+  const { data, error } = useLoad(api.listChats);
+  if (error) return <Placeholder>{error}</Placeholder>;
+  if (!data) return null;
+  return <Navigate to={landingPath(data)} replace />;
 }
 
 export function ChatsIndex() {
@@ -71,8 +113,21 @@ export function ChatDetail() {
   const id = Number(useParams().chatId);
   const navigate = useNavigate();
   const { reloadList } = useOutletContext<ListContext>();
-  const { data: chat, error, reload } = useLoad(useCallback(() => api.getChat(id), [id]));
+  const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
+  // Who the composer offers to mention: the members, again whenever they change.
+  const { data: mentionable, reload: reloadMentionable } = useLoad(
+    useCallback(() => api.listChatMentionable(id), [id]),
+  );
+  const reload = useCallback(
+    () => Promise.all([reloadChat(), reloadMentionable()]),
+    [reloadChat, reloadMentionable],
+  );
   const [actionError, setActionError] = useState<string>();
+  // Reading to the bottom clears the chat's unread count in the list.
+  const onRead = useCallback(
+    (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
+    [id, reloadList],
+  );
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!chat) return null;
@@ -83,6 +138,37 @@ export function ChatDetail() {
       await api.deleteChat(id);
       await reloadList();
       navigate("/chats");
+    } catch (err) {
+      setActionError(describeError(err));
+    }
+  }
+
+  async function onJoin() {
+    try {
+      await api.joinChat(id);
+      await Promise.all([reload(), reloadList()]);
+    } catch (err) {
+      setActionError(describeError(err));
+    }
+  }
+
+  async function onLeave() {
+    if (!window.confirm(`Leave the chat “${chat!.name}”?`)) return;
+    try {
+      await api.leaveChat(id);
+      await reloadList();
+      // A private chat is gone for them once they've left; a public one is still there to read.
+      if (chat!.visibility === "private") navigate("/chats");
+      else await reload();
+    } catch (err) {
+      setActionError(describeError(err));
+    }
+  }
+
+  async function onAdd(kind: ChatTargetKind, targetId: number) {
+    try {
+      await api.addChatMember(id, { kind, id: targetId });
+      await Promise.all([reload(), reloadList()]);
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -115,7 +201,7 @@ export function ChatDetail() {
         </>
       }
       actions={
-        chat.is_owner && (
+        chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
               <Link to="edit">
@@ -128,12 +214,34 @@ export function ChatDetail() {
               Delete
             </Button>
           </>
+        ) : chat.is_member ? (
+          <Button variant="outline" size="sm" onClick={onLeave}>
+            <LogOut />
+            Leave
+          </Button>
+        ) : (
+          <Button size="sm" onClick={onJoin}>
+            <LogIn />
+            Join
+          </Button>
         )
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      <ChatRoom
+        key={chat.id}
+        chatId={chat.id}
+        canPost={chat.is_member}
+        mentionable={mentionable}
+        onPosted={reloadList}
+        onRead={chat.is_member ? onRead : undefined}
+      />
       <Section title="Members" label="Members">
-        <MembersPanel chat={chat} onRemove={chat.is_owner ? onRemove : undefined} />
+        <MembersPanel
+          chat={chat}
+          onAdd={chat.is_owner ? onAdd : undefined}
+          onRemove={chat.is_owner ? onRemove : undefined}
+        />
       </Section>
     </DetailPage>
   );
@@ -141,29 +249,38 @@ export function ChatDetail() {
 
 function MembersPanel({
   chat,
+  onAdd,
   onRemove,
 }: {
   chat: Chat;
+  /** Set for the owner, who can add their own agents and workflows. */
+  onAdd?: (kind: ChatTargetKind, id: number) => Promise<void>;
   /** Set for the owner, who can remove any member but themselves. */
   onRemove?: (member: ChatMember) => void;
 }) {
-  const groups: { title: string; members: ChatMember[]; empty: string }[] = [
+  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatTargetKind }[] = [
     { title: "Users", members: chat.members.users, empty: "No users." },
-    { title: "Agents", members: chat.members.agents, empty: "No agents yet." },
-    { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet." },
+    { title: "Agents", members: chat.members.agents, empty: "No agents yet.", add: "agent" },
+    { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet.", add: "workflow" },
   ];
   return (
     <div className="flex flex-col gap-4">
-      {groups.map(({ title, members, empty }) => (
+      {groups.map(({ title, members, empty, add }) => (
         <div key={title} className="flex flex-col gap-1.5">
           <h4 className="text-sm font-medium">{title}</h4>
           {members.length === 0 ? (
             <p className="text-muted-foreground text-sm">{empty}</p>
           ) : (
-            <ul className="divide-y rounded-md border">
+            <ul aria-label={title} className="divide-y rounded-md border">
               {members.map((member) => (
                 <li key={member.id} className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <MemberAvatar member={member} />
+                  <ChatAvatar
+                    kind={member.kind}
+                    name={member.name}
+                    avatarUrl={member.avatar_url}
+                    // The name is beside it; an agent's or workflow's icon says which it is.
+                    alt={member.kind === "user" ? "" : MEMBER_KIND[member.kind].label}
+                  />
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate">
                     <span>{member.name}</span>
                     {member.login && member.login !== member.name && (
@@ -185,20 +302,70 @@ function MembersPanel({
               ))}
             </ul>
           )}
+          {onAdd && add && (
+            <AddMember kind={add} members={members} onAdd={(targetId) => onAdd(add, targetId)} />
+          )}
         </div>
       ))}
     </div>
   );
 }
 
-function MemberAvatar({ member }: { member: ChatMember }) {
-  if (member.kind === "agent") return <Bot className="text-muted-foreground size-5" />;
-  if (member.kind === "workflow") return <Workflow className="text-muted-foreground size-5" />;
-  if (member.avatar_url) return <img src={member.avatar_url} alt="" className="size-5 rounded-full" />;
+const ADDABLE = {
+  agent: { list: api.listAgents, a: "an agent" },
+  workflow: { list: api.listWorkflows, a: "a workflow" },
+};
+
+/** The owner's picker for adding one of their agents or workflows that isn't a member yet. */
+function AddMember({
+  kind,
+  members,
+  onAdd,
+}: {
+  kind: ChatTargetKind;
+  members: ChatMember[];
+  onAdd: (id: number) => Promise<void>;
+}) {
+  const { list, a } = ADDABLE[kind];
+  const { data: owned } = useLoad<{ id: number; name: string }[]>(list);
+  const [chosen, setChosen] = useState("");
+  const [adding, setAdding] = useState(false);
+  const inChat = new Set(members.map((m) => m.target_id));
+  const choices = (owned ?? []).filter((t) => !inChat.has(t.id));
+  if (owned && choices.length === 0) return null;
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!chosen) return;
+    setAdding(true);
+    try {
+      await onAdd(Number(chosen));
+      setChosen("");
+    } finally {
+      setAdding(false);
+    }
+  }
+
   return (
-    <span className="bg-muted flex size-5 items-center justify-center rounded-full text-[10px] font-medium uppercase">
-      {member.name.slice(0, 1)}
-    </span>
+    <form className="flex items-center gap-2" onSubmit={onSubmit}>
+      <select
+        aria-label={`Add ${a}`}
+        className={cn(selectClass, "min-w-0 flex-1")}
+        value={chosen}
+        onChange={(e) => setChosen(e.target.value)}
+      >
+        <option value="">Choose {a}</option>
+        {choices.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+      <Button type="submit" variant="outline" size="sm" disabled={!chosen || adding}>
+        <Plus />
+        Add {kind}
+      </Button>
+    </form>
   );
 }
 

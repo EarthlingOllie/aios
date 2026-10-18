@@ -258,6 +258,9 @@ export type RunSummary = {
   tool_call_count: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** The chat a mention in it started it from, while that chat exists. */
+  chat_id: number | null;
+  chat_name: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -369,6 +372,13 @@ export type NotificationList = {
 };
 
 export type Run = RunSummary & {
+  /** The agent's name: the reader may not own it, and so can't read the agent itself. */
+  agent_name: string;
+  /**
+   * Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
+   * started it, and only reads it: they can't message the agent or delete the run.
+   */
+  is_owner: boolean;
   ui_messages: UIMessage[];
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
@@ -471,6 +481,9 @@ export type WorkflowRunSummary = {
    * count towards its time limit. */
   waiting_since: string | null;
   waited_seconds: number;
+  /** The chat a mention in it started it from, while that chat exists. */
+  chat_id: number | null;
+  chat_name: string | null;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -512,6 +525,17 @@ export type WorkflowRun = WorkflowRunSummary & {
   steps: WorkflowRunStep[];
   /** While it waits: the pins it would resume on that are no longer current. */
   stale_pins: StalePin[];
+};
+
+/** A workflow run as its page reads it. */
+export type WorkflowRunPage = WorkflowRun & {
+  /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
+  workflow_name: string;
+  /**
+   * Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat that
+   * started it, and only reads it: they can't delete it or decide what it waits on.
+   */
+  is_owner: boolean;
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
@@ -613,8 +637,10 @@ export type AgentDeleteResolutions = {
 };
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
+/** The kinds of member a chat's owner adds from what they own. */
+export type ChatTargetKind = Exclude<ChatMemberKind, "user">;
 
-/** Someone in a chat: a user (with a role), or, later, an agent or a workflow. */
+/** Someone in a chat: a user (with a role), an agent or a workflow. */
 export type ChatMember = {
   /** The membership's id, which removing the member takes. */
   id: number;
@@ -639,10 +665,18 @@ export type ChatSummary = {
   owner_id: number;
   /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
   is_owner: boolean;
+  /** Whether the signed-in user is in it, and so can post: anyone can read a public chat. */
+  is_member: boolean;
   member_count: number;
   created_at: string;
   /** When it was last active. */
   updated_at: string;
+};
+
+/** A chat as the list shows it: those the user is in, and the public ones they could join. */
+export type ChatListed = ChatSummary & {
+  /** Others' messages since the last one the user read; null for a chat they're not in. */
+  unread_count: number | null;
 };
 
 export type Chat = ChatSummary & {
@@ -651,6 +685,93 @@ export type Chat = ChatSummary & {
 };
 
 export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
+
+/** A member a message mentions: a user, an agent or a workflow, by id within its kind. */
+export type ChatMentionRef = { kind: ChatMemberKind; id: number };
+export type ChatMention = ChatMentionRef & { name: string };
+
+/** A member the composer offers to mention. */
+export type ChatMentionable = ChatMention & { login: string | null; avatar_url: string | null };
+/** Who can be mentioned in a chat (its members), grouped by kind. */
+export type ChatMentionables = {
+  users: ChatMentionable[];
+  agents: ChatMentionable[];
+  workflows: ChatMentionable[];
+};
+
+/** Who posted a chat message: a user (with a login and maybe an avatar), an agent or a workflow. */
+export type ChatMessageAuthor = {
+  kind: "user" | "agent" | "workflow" | "system";
+  id: number;
+  name: string;
+  login: string | null;
+  avatar_url: string | null;
+};
+
+export type ChatMessage = {
+  id: number;
+  chat_id: number;
+  /** Null for a message from the chat itself, or once its author has been deleted. */
+  author: ChatMessageAuthor | null;
+  kind: "text" | "run_card";
+  /** Markdown. */
+  body: string;
+  /** Who it mentions, as they were named when it was posted; its body has a token for each. */
+  mentions: ChatMention[];
+  /** The invocation it belongs to: a run card's (`run_card`), or the result its run posted back. */
+  invocation_id: number | null;
+  created_at: string;
+};
+
+/** queued: waiting to start; briefing: the handoff is briefing its run on the chat, which starts next. */
+export type ChatInvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
+
+/** A run a mention in a chat started, as its card follows it. */
+export type ChatInvocation = {
+  id: number;
+  chat_id: number;
+  /** The message that mentioned it, and who posted it. */
+  message_id: number;
+  requested_by: number | null;
+  target_kind: ChatTargetKind;
+  /** The agent's or workflow's id. */
+  target_id: number;
+  status: ChatInvocationStatus;
+  /** Why it failed: the run's error, or why it couldn't start. */
+  error: string | null;
+  /** Its acknowledgement's text as it is now: a placeholder until the handoff writes what the
+   * member understood it's being asked to do. */
+  acknowledgement: string;
+  /** What the handoff told the run of the chat, before the message; null until it has. */
+  brief: string | null;
+  workflow_run_id: number | null;
+  agent_run_id: number | null;
+  /** Whether it started a run that has since been deleted. */
+  run_deleted: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The workflow run as its page shows it; null without one. */
+  workflow_run: WorkflowRun | null;
+  /** The agent run's status, times and counters so far; null without one. */
+  agent_run: ChatAgentRun | null;
+};
+
+/** How an agent run a mention started is going, as its card shows it (elapsed ticks from
+ * `started_at` on the client). */
+export type ChatAgentRun = Pick<
+  RunSummary,
+  "id" | "status" | "started_at" | "finished_at" | "tool_call_count" | "input_tokens" | "output_tokens"
+>;
+
+/**
+ * Messages of a chat, oldest first, and the state of each invocation they belong to and of every
+ * one in the chat still going.
+ */
+export type ChatMessages = { messages: ChatMessage[]; invocations: ChatInvocation[] };
+
+/** Which page of messages to read: what's new `after` an id, the history `before` one, or the latest. */
+export type ChatMessagesCursor = { after: number } | { before: number } | Record<string, never>;
 
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -795,7 +916,12 @@ export const api = {
     request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
   listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`/api/workflows/${id}/runs`),
   getWorkflowRun: (id: number, runId: number) =>
-    request<WorkflowRun>(`/api/workflows/${id}/runs/${runId}`),
+    request<WorkflowRunPage>(`/api/workflows/${id}/runs/${runId}`),
+  /** The version the run pinned for the workflow node at `path` (node keys, outermost first). */
+  getRunSubworkflow: (id: number, runId: number, path: string[]) =>
+    request<WorkflowVersion>(
+      `/api/workflows/${id}/runs/${runId}/subworkflow?${new URLSearchParams(path.map((key) => ["path", key]))}`,
+    ),
   createWorkflowRun: (id: number, input: string) =>
     request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
   deleteWorkflowRun: (id: number, runId: number) =>
@@ -815,7 +941,7 @@ export const api = {
     request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
 
-  listChats: () => request<ChatSummary[]>("/api/chats"),
+  listChats: () => request<ChatListed[]>("/api/chats"),
   getChat: (id: number) => request<Chat>(`/api/chats/${id}`),
   createChat: (body: ChatInput) => request<Chat>("/api/chats", json("POST", body)),
   updateChat: (id: number, body: ChatInput) =>
@@ -823,4 +949,20 @@ export const api = {
   deleteChat: (id: number) => request<void>(`/api/chats/${id}`, { method: "DELETE" }),
   removeChatMember: (id: number, memberId: number) =>
     request<void>(`/api/chats/${id}/members/${memberId}`, { method: "DELETE" }),
+  listChatMessages: (id: number, cursor: ChatMessagesCursor = {}) =>
+    request<ChatMessages>(
+      `/api/chats/${id}/messages?${new URLSearchParams(
+        Object.entries(cursor).map(([k, v]) => [k, String(v)]),
+      )}`,
+    ),
+  postChatMessage: (id: number, body: string, mentions: ChatMentionRef[] = []) =>
+    request<ChatMessages>(`/api/chats/${id}/messages`, json("POST", { body, mentions })),
+  listChatMentionable: (id: number) => request<ChatMentionables>(`/api/chats/${id}/mentionable`),
+  addChatMember: (id: number, member: ChatMentionRef) =>
+    request<Chat>(`/api/chats/${id}/members`, json("POST", member)),
+  joinChat: (id: number) => request<Chat>(`/api/chats/${id}/join`, { method: "POST" }),
+  leaveChat: (id: number) => request<void>(`/api/chats/${id}/leave`, { method: "POST" }),
+  /** Notes that the user has seen the chat's messages up to `messageId`, clearing their unread count. */
+  markChatRead: (id: number, messageId: number) =>
+    request<void>(`/api/chats/${id}/read`, json("POST", { message_id: messageId })),
 };

@@ -1,14 +1,14 @@
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import checkpoints
+from aios import checkpoints, invocations
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentUser
@@ -18,6 +18,8 @@ from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    Chat,
+    ChatInvocation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Trigger,
@@ -617,6 +619,9 @@ class WorkflowRunSummary(BaseModel):
     # towards its time limit.
     waiting_since: datetime | None
     waited_seconds: float
+    # The chat a mention in it started it from, while the chat exists.
+    chat_id: int | None
+    chat_name: str | None
 
 
 class WorkflowRunStepOut(BaseModel):
@@ -765,6 +770,27 @@ def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list
     ]
 
 
+def get_readable_workflow_run(
+    db: Session, user_id: int, workflow_id: int, run_id: int
+) -> WorkflowRun:
+    """The run, for reading: its workflow's owner's, or one shared with them through a chat
+    (`invocations.shares_workflow_run`). Otherwise a 404, as if it didn't exist."""
+    workflow = db.get(Workflow, workflow_id)
+    run = db.get(WorkflowRun, run_id)
+    if (
+        workflow is None
+        or workflow.deleted_at is not None
+        or run is None
+        or run.workflow_id != workflow.id
+        or (
+            workflow.owner_id != user_id
+            and not invocations.shares_workflow_run(db, user_id, run.id)
+        )
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return run
+
+
 def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
     workflow = get_owned_workflow(db, user_id, workflow_id)
     run = db.get(WorkflowRun, run_id)
@@ -774,21 +800,28 @@ def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: 
 
 
 def workflow_run_summary_query():
-    return select(
-        WorkflowRun.id,
-        WorkflowRun.workflow_id,
-        WorkflowRun.workflow_version_id,
-        WorkflowVersion.version.label("workflow_version"),
-        WorkflowRun.status,
-        WorkflowRun.input,
-        WorkflowRun.output,
-        WorkflowRun.error,
-        WorkflowRun.created_at,
-        WorkflowRun.started_at,
-        WorkflowRun.finished_at,
-        WorkflowRun.waiting_since,
-        WorkflowRun.waited_seconds,
-    ).join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+    return (
+        select(
+            WorkflowRun.id,
+            WorkflowRun.workflow_id,
+            WorkflowRun.workflow_version_id,
+            WorkflowVersion.version.label("workflow_version"),
+            WorkflowRun.status,
+            WorkflowRun.input,
+            WorkflowRun.output,
+            WorkflowRun.error,
+            WorkflowRun.created_at,
+            WorkflowRun.started_at,
+            WorkflowRun.finished_at,
+            WorkflowRun.waiting_since,
+            WorkflowRun.waited_seconds,
+            Chat.id.label("chat_id"),
+            Chat.name.label("chat_name"),
+        )
+        .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+        .outerjoin(ChatInvocation, ChatInvocation.workflow_run_id == WorkflowRun.id)
+        .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
+    )
 
 
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
@@ -866,19 +899,41 @@ def queue_workflow_run(db: Session, run: WorkflowRun) -> None:
         ) from exc
 
 
-@router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunOut)
+class WorkflowRunPageOut(WorkflowRunOut):
+    """The run as its page reads it."""
+
+    # The workflow's name: the reader may not own it, and so can't read the workflow itself.
+    workflow_name: str
+    # Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat
+    # that started it (`invocations.shares_workflow_run`): only its owner deletes it, or decides
+    # what it waits on.
+    is_owner: bool
+
+
+@router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunPageOut)
 def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
-    run = get_owned_workflow_run(db, user.id, workflow_id, run_id)
+    run = get_readable_workflow_run(db, user.id, workflow_id, run_id)
+    workflow = db.get(Workflow, run.workflow_id)
+    # Read now: `workflow_run_out` expires the session's rows.
+    name, is_owner = workflow.name, workflow.owner_id == user.id
     # A run whose worker died is failed when it's read: its task may never come round again to
     # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
     # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
     # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
     fail_stopped_runs(db, WorkflowRun.id == run.id)
-    summary = workflow_run_summary(db, run.id)
+    return WorkflowRunPageOut(
+        **workflow_run_out(db, run.id).model_dump(), workflow_name=name, is_owner=is_owner
+    )
+
+
+def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
+    """The run as its page shows it: its summary, pinned graph and steps. Also what a chat's
+    card of it draws (`aios.api.chats`). Expires the session's rows."""
+    summary = workflow_run_summary(db, run_id)
     steps = db.execute(
         select(WorkflowRunStep, AgentRun.agent_id)
         .outerjoin(AgentRun, AgentRun.id == WorkflowRunStep.agent_run_id)
-        .where(WorkflowRunStep.run_id == run.id)
+        .where(WorkflowRunStep.run_id == run_id)
         .order_by(WorkflowRunStep.id)
     ).all()
     waits = waiting_requests(db, [step for step, _ in steps])
@@ -910,6 +965,27 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
     )
 
 
+@router.get("/workflows/{workflow_id}/runs/{run_id}/subworkflow", response_model=WorkflowVersionOut)
+def get_run_subworkflow(
+    workflow_id: DbId,
+    run_id: DbId,
+    path: Annotated[list[str], Query(min_length=1)],
+    user: CurrentUser,
+    db: DB,
+):
+    """The version the run's graph pinned for the workflow node at `path` (node keys, outermost
+    first): what its page draws on opening a subworkflow. Read through the run, so anyone who
+    may read the run may read it, without being able to read the subworkflow itself."""
+    run = get_readable_workflow_run(db, user.id, workflow_id, run_id)
+    version_id = run.workflow_version_id
+    for key in path:
+        node = db.get(WorkflowNode, (version_id, key))
+        if node is None or node.kind != WorkflowNodeKind.workflow:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        version_id = node.subworkflow_version_id
+    return version_out(load_version(db, version_id))
+
+
 @router.delete("/workflows/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workflow_run(
     workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
@@ -937,6 +1013,8 @@ def delete_workflow_run(
     sandboxes = run_sandboxes(db, agent_run_ids)
     # Before they go (their requests keep no link to them): a pending one can't be approved.
     close_requests(db, [run.id])
+    # A chat that started it and is still following it is told it's gone.
+    invocations.fail_deleted_run(db, run.id)
     # Their exported copies go too, and its own (its agent runs' rows first, as the export
     # marks them).
     history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)

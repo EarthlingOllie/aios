@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RunSummary } from "@/lib/api";
-import { formatDuration, formatTokens, runCounters } from "@/lib/agent-runs";
+import { formatCounters, formatDuration, formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
 
 function run(changes: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -18,6 +18,8 @@ function run(changes: Partial<RunSummary> = {}): RunSummary {
     tool_call_count: null,
     input_tokens: null,
     output_tokens: null,
+    chat_id: null,
+    chat_name: null,
     created_at: "2026-10-14T09:00:00Z",
     updated_at: "2026-10-14T09:00:05Z",
     ...changes,
@@ -42,6 +44,30 @@ describe("formatDuration", () => {
   });
 });
 
+describe("formatElapsed", () => {
+  const from = "2026-10-14T09:00:00Z";
+  const at = (iso: string) => Date.parse(iso);
+
+  it("counts whole seconds, so a clock ticking each second moves a step at a time", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T09:00:00.400Z"))).toBe("0s");
+    expect(formatElapsed(from, null, at("2026-10-14T09:00:07.900Z"))).toBe("7s");
+  });
+
+  it("reads in minutes and seconds, then hours and minutes, padded so it doesn't jump about", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T09:03:05Z"))).toBe("3m 05s");
+    expect(formatElapsed(from, null, at("2026-10-14T10:02:30Z"))).toBe("1h 02m");
+  });
+
+  it("stops at the end once it has ended, whatever the time now", () => {
+    const later = at("2026-10-14T12:00:00Z");
+    expect(formatElapsed(from, "2026-10-14T09:00:42Z", later)).toBe("42s");
+  });
+
+  it("never goes negative when the clocks disagree", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T08:59:58Z"))).toBe("0s");
+  });
+});
+
 describe("formatTokens", () => {
   it("shows small counts whole and large ones rounded with a unit", () => {
     expect(formatTokens(0)).toBe("0");
@@ -49,6 +75,15 @@ describe("formatTokens", () => {
     expect(formatTokens(1234)).toBe("1.2k");
     expect(formatTokens(48_000)).toBe("48k");
     expect(formatTokens(2_345_678)).toBe("2.3M");
+  });
+});
+
+describe("formatCounters", () => {
+  it("names one tool call, or several, with the tokens short or in full", () => {
+    expect(formatCounters({ status: "running", toolCalls: 1, tokens: 600 })).toBe("1 tool call · 600 tokens");
+    expect(formatCounters({ status: "running", toolCalls: 2, tokens: 1234 }, true)).toBe(
+      "2 tool calls · 1.2k tokens",
+    );
   });
 });
 
