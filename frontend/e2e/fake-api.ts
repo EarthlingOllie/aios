@@ -638,7 +638,11 @@ export class FakeApi {
   documentsAssistant(): AgentRow {
     const live = this.assistantId === null ? undefined : this.agents.get(this.assistantId);
     if (live) return live;
-    const agent = this.addAgent("Documents assistant", 1, "Answers from your documents.");
+    const agent = this.addAgent(
+      "Documents assistant",
+      1,
+      "Answers from your documents. Built in: it joins each new chat you make.",
+    );
     this.assistantId = agent.id;
     return agent;
   }
