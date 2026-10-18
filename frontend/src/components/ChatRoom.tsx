@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { Bot, Workflow } from "lucide-react";
 
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
@@ -39,8 +38,10 @@ export function ChatAvatar({
   alt?: string;
 }) {
   const label = alt ? { role: "img", "aria-label": alt } : { "aria-hidden": true };
-  if (kind === "agent") return <Bot className="text-muted-foreground size-5 shrink-0" {...label} />;
-  if (kind === "workflow") return <Workflow className="text-muted-foreground size-5 shrink-0" {...label} />;
+  if (kind === "agent" || kind === "workflow") {
+    const Icon = MEMBER_KIND[kind].icon;
+    return <Icon className="text-muted-foreground size-5 shrink-0" {...label} />;
+  }
   if (avatarUrl) return <img src={avatarUrl} alt={alt} className="size-5 shrink-0 rounded-full" />;
   return (
     <span

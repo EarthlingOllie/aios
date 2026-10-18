@@ -26,6 +26,7 @@ import {
   type Chat,
   type ChatInput,
   type ChatMember,
+  type ChatTargetKind,
   type ChatVisibility,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -99,7 +100,7 @@ export function ChatDetail() {
     }
   }
 
-  async function onAdd(kind: "agent" | "workflow", targetId: number) {
+  async function onAdd(kind: ChatTargetKind, targetId: number) {
     try {
       await api.addChatMember(id, { kind, id: targetId });
       await Promise.all([reload(), reloadList()]);
@@ -177,11 +178,11 @@ function MembersPanel({
 }: {
   chat: Chat;
   /** Set for the owner, who can add their own agents and workflows. */
-  onAdd?: (kind: "agent" | "workflow", id: number) => Promise<void>;
+  onAdd?: (kind: ChatTargetKind, id: number) => Promise<void>;
   /** Set for the owner, who can remove any member but themselves. */
   onRemove?: (member: ChatMember) => void;
 }) {
-  const groups: { title: string; members: ChatMember[]; empty: string; add?: "agent" | "workflow" }[] = [
+  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatTargetKind }[] = [
     { title: "Users", members: chat.members.users, empty: "No users." },
     { title: "Agents", members: chat.members.agents, empty: "No agents yet.", add: "agent" },
     { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet.", add: "workflow" },
@@ -245,7 +246,7 @@ function AddMember({
   members,
   onAdd,
 }: {
-  kind: "agent" | "workflow";
+  kind: ChatTargetKind;
   members: ChatMember[];
   onAdd: (id: number) => Promise<void>;
 }) {

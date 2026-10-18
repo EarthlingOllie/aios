@@ -46,6 +46,11 @@ router = APIRouter(prefix="/api")
 
 CHAT_NAME_CONSTRAINT = "chats_name_key"
 NAME_TAKEN = "A chat with that name already exists."
+# What an agent or workflow member is.
+TARGET_MODELS: dict[ChatMemberKind, type[Agent] | type[Workflow]] = {
+    ChatMemberKind.agent: Agent,
+    ChatMemberKind.workflow: Workflow,
+}
 # One row per (chat, user), (chat, agent) and (chat, workflow).
 MEMBER_CONSTRAINTS = {
     ChatMemberKind.user: "chat_members_chat_id_user_id_key",
@@ -290,22 +295,22 @@ class MentionablesOut(BaseModel):
     workflows: list[MentionableOut]
 
 
+def mentionable_out(member: ChatMemberOut) -> MentionableOut:
+    return MentionableOut(
+        kind=member.kind,
+        id=member.target_id,
+        name=member.name,
+        login=member.login,
+        avatar_url=member.avatar_url,
+    )
+
+
 def mentionables(chat: Chat) -> MentionablesOut:
     members = members_out(chat)
     return MentionablesOut(
-        **{
-            group: [
-                MentionableOut(
-                    kind=m.kind,
-                    id=m.target_id,
-                    name=m.name,
-                    login=m.login,
-                    avatar_url=m.avatar_url,
-                )
-                for m in getattr(members, group)
-            ]
-            for group in ("users", "agents", "workflows")
-        }
+        users=[mentionable_out(m) for m in members.users],
+        agents=[mentionable_out(m) for m in members.agents],
+        workflows=[mentionable_out(m) for m in members.workflows],
     )
 
 
@@ -340,7 +345,7 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
             kind=body.kind, user_id=body.id, role=ChatMemberRole.member, added_by=user.id
         )
     else:
-        model = Agent if body.kind == ChatMemberKind.agent else Workflow
+        model = TARGET_MODELS[body.kind]
         target = db.get(model, body.id)
         # Locked until commit, so a concurrent delete either waits for the add or wins it.
         if (
@@ -349,11 +354,7 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
             or not lock_live(db, model, [target.id], read=True)
         ):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.kind}")
-        member = ChatMember(kind=body.kind, added_by=user.id)
-        if body.kind == ChatMemberKind.agent:
-            member.agent_id = target.id
-        else:
-            member.workflow_id = target.id
+        member = ChatMember(kind=body.kind, added_by=user.id, **{f"{body.kind}_id": target.id})
     if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
     chat.members.append(member)

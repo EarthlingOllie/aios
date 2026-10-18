@@ -613,6 +613,8 @@ export type AgentDeleteResolutions = {
 };
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
+/** The kinds of member a chat's owner adds from what they own. */
+export type ChatTargetKind = Exclude<ChatMemberKind, "user">;
 
 /** Someone in a chat: a user (with a role), an agent or a workflow. */
 export type ChatMember = {

@@ -275,6 +275,12 @@ export type ChatMessageRow = {
   created_at: string;
 };
 
+/** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
+function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
+  const of = (kind: ChatMention["kind"]) => members.filter((m) => m.kind === kind);
+  return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
+}
+
 /** How many messages a read returns at most, as the API's `MESSAGE_PAGE`. */
 export const MESSAGE_PAGE = 50;
 
@@ -1021,25 +1027,20 @@ export class FakeApi {
   }
 
   chatOut(chat: ChatRow) {
-    const members = this.liveMembers(chat);
-    const of = (kind: string) => members.filter((m) => m.kind === kind);
-    return {
-      ...this.chatSummary(chat),
-      members: { users: of("user"), agents: of("agent"), workflows: of("workflow") },
-    };
+    return { ...this.chatSummary(chat), members: byKind(this.liveMembers(chat)) };
   }
 
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
   private mentionable(chat: ChatRow) {
-    const members = this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
-      kind,
-      id: target_id,
-      name,
-      login,
-      avatar_url,
-    }));
-    const of = (kind: string) => members.filter((m) => m.kind === kind);
-    return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
+    return byKind(
+      this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
+        kind,
+        id: target_id,
+        name,
+        login,
+        avatar_url,
+      })),
+    );
   }
 
   private messageOut(chat: ChatRow, m: ChatMessageRow) {
