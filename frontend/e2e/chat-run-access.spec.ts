@@ -102,3 +102,25 @@ test("the owner's run pages keep their actions", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
   await expect(page.getByText(/Researcher · v1/).getByRole("link", { name: "v1" })).toBeVisible();
 });
+
+test("a member sees a run wait, but what it waits on is its owner's to decide", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { chat, report } = seed(api);
+  const request = api.addSchemaChange();
+  const run = api.addRun(report, {
+    status: "waiting",
+    waiting_since: "2026-10-15T12:01:00Z",
+    steps: [{ path: ["research"], status: "waiting", waiting_on_request_ids: [request.id] }],
+  });
+  api.addChatRunCard(chat, "workflow", report, run.id);
+  const reads: string[] = [];
+  page.on("request", (r) => reads.push(new URL(r.url()).pathname));
+
+  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(page.getByTestId("run-status")).toHaveText(/^Waiting/);
+  await expect(page.getByRole("region", { name: "Waiting for your decision" })).toHaveCount(0);
+  await page.locator('.react-flow__node[data-id="research"]').click();
+  await expect(page.getByText("Waiting for its owner's decision on a schema change request.")).toBeVisible();
+  // The request is in the owner's store: not read.
+  expect(reads.filter((p) => p.startsWith(`/api/schema-changes/${request.id}`))).toEqual([]);
+});

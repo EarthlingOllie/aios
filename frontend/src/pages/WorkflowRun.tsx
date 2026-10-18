@@ -300,6 +300,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
                   step={stepAt(r.steps, [...prefix, selected.key])}
                   state={states[selected.key]}
                   requests={waiting.requests}
+                  isOwner={r.is_owner}
                   onOpen={() => open(selected)}
                 />
               )}
@@ -333,12 +334,15 @@ function StepDetails({
   step,
   state,
   requests,
+  isOwner,
   onOpen,
 }: {
   node: WorkflowNode;
   step: WorkflowRunStep | undefined;
   state: NodeState;
   requests: Record<string, SchemaChangeRequest>;
+  /** Whether the reader owns the run, and so decides what it waits on. */
+  isOwner: boolean;
   onOpen: () => void;
 }) {
   const asks = (step?.waiting_on_request_ids ?? []).map((id) => requests[id]).filter(Boolean);
@@ -358,11 +362,13 @@ function StepDetails({
           {step.error && <p className="text-destructive text-sm break-words">{step.error}</p>}
           {step.status === "waiting" && (
             <p className="text-sm">
-              {asks.length > 0
-                ? `Waiting for your decision on: ${asks.map((r) => r.summary).join("; ")}`
-                : step.kind === "workflow"
-                  ? "Waiting: a node inside it waits for your decision."
-                  : "Waiting for your decision on a schema change request."}
+              {!isOwner
+                ? "Waiting for its owner's decision on a schema change request."
+                : asks.length > 0
+                  ? `Waiting for your decision on: ${asks.map((r) => r.summary).join("; ")}`
+                  : step.kind === "workflow"
+                    ? "Waiting: a node inside it waits for your decision."
+                    : "Waiting for your decision on a schema change request."}
             </p>
           )}
           <TextBlock label="Step input">{step.input}</TextBlock>
