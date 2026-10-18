@@ -39,12 +39,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-editable --extra ingest
 
-# Bake Docling's layout/table models and the chunker tokenizer into the image so
-# workers never download at runtime.
+# Bake Docling's models and the chunker tokenizer into the image so workers never download
+# at runtime. Only the models the default DocumentConverter in aios.ingest runs: layout, table
+# structure and OCR (auto picks RapidOCR on torch). The CLI's default set also pulls
+# code_formula and picture_classifier, which are off in that pipeline and run to several GB.
 ENV HF_HOME=/opt/hf \
     DOCLING_ARTIFACTS_PATH=/opt/docling-models
 ARG CHUNK_TOKENIZER=sentence-transformers/all-MiniLM-L6-v2
-RUN docling-tools models download -o "$DOCLING_ARTIFACTS_PATH" \
+RUN docling-tools models download -o "$DOCLING_ARTIFACTS_PATH" layout tableformer rapidocr \
     && python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('${CHUNK_TOKENIZER}')" \
     && chmod -R a+rX /opt/hf /opt/docling-models
 ENV HF_HUB_OFFLINE=1
