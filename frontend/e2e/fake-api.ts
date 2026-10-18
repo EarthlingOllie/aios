@@ -8,9 +8,11 @@ import type { Page, Route } from "@playwright/test";
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
  * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else) and messages
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
- * anyone who isn't a member is a 422). Mentioning a workflow starts a scripted invocation: its
- * acknowledgement and card are posted with the message, and each read of the chat's messages
- * moves it on (`advanceInvocations`) until its run ends and the result is posted back.
+ * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
+ * invocation: its acknowledgement and card are posted with the message, and each read of the
+ * chat's messages moves it on (`advanceInvocations`) until its run ends and the result is posted
+ * back. An agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a
+ * read adding a tool call and tokens to its run's counters.
  */
 
 type Kind = "agent" | "workflow";
@@ -281,16 +283,17 @@ export type ChatMessageRow = {
   created_at: string;
 };
 type InvocationStatus = "queued" | "running" | "succeeded" | "failed";
-/** A workflow's run that a mention started (agents' come later). */
+/** An agent's or workflow's run that a mention started. */
 export type InvocationRow = {
   id: number;
   chat_id: number;
   message_id: number;
   requested_by: number;
-  workflow_id: number;
+  target_kind: Kind;
+  target_id: number;
   status: InvocationStatus;
   error: string | null;
-  /** The run it started; gone from `runs` once it's deleted. */
+  /** The run it started; gone from `runs` (or `agentRuns`) once it's deleted. */
   run_id: number | null;
   created_at: string;
   started_at: string | null;
@@ -307,6 +310,15 @@ function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
 export const MESSAGE_PAGE = 50;
 
 const NOW = "2026-10-14T09:00:00Z";
+
+/** How a mentioned agent's scripted turn goes: how many reads it runs for (each a model step
+ * adding a tool call and `tokensPerStep` tokens), then its reply, or the error it fails with. */
+export type AgentTurn = { steps: number; tokensPerStep: number; reply?: string; error?: string };
+export const AGENT_TURN: AgentTurn = { steps: 2, tokensPerStep: 120 };
+
+/** A message as a run's input: each mention as `@name`. */
+const runInput = (body: string) =>
+  body.replace(/@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):\d+\)/g, "@$1");
 
 export class FakeApi {
   private nextId = 100;
@@ -331,6 +343,8 @@ export class FakeApi {
   invocations = new Map<number, InvocationRow>();
   /** Workflows whose runs a mention can't start, by id, with why (as the API refuses one). */
   refuseStart = new Map<number, string>();
+  /** How each mentioned agent's turn goes, by agent id (`AGENT_TURN` if unset). */
+  agentTurns = new Map<number, AgentTurn>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
@@ -895,14 +909,20 @@ export class FakeApi {
     return message;
   }
 
-  /** Queues an invocation of the workflow for a message mentioning it, with its card. */
-  private invoke(chat: ChatRow, message: ChatMessageRow, workflow: WorkflowRow): InvocationRow {
+  /** The agent or workflow an invocation is of. */
+  private targetOf(invocation: InvocationRow): AgentRow | WorkflowRow {
+    return (invocation.target_kind === "agent" ? this.agents : this.workflows).get(invocation.target_id)!;
+  }
+
+  /** Queues an invocation of the agent or workflow for a message mentioning it, with its card. */
+  private invoke(chat: ChatRow, message: ChatMessageRow, kind: Kind, target: AgentRow | WorkflowRow): InvocationRow {
     const invocation: InvocationRow = {
       id: this.id(),
       chat_id: chat.id,
       message_id: message.id,
       requested_by: this.me.id,
-      workflow_id: workflow.id,
+      target_kind: kind,
+      target_id: target.id,
       status: "queued",
       error: null,
       run_id: null,
@@ -914,21 +934,21 @@ export class FakeApi {
     this.addChatMessage(
       chat,
       "Starting a run with this message.",
-      { kind: "workflow", id: workflow.id, name: workflow.name },
+      { kind, id: target.id, name: target.name },
       [],
       { kind: "run_card", invocation_id: invocation.id },
     );
     return invocation;
   }
 
-  /** Ends an invocation and posts its result back from its workflow, as the API does. */
+  /** Ends an invocation and posts its result back from its agent or workflow, as the API does. */
   private finishInvocation(invocation: InvocationRow, status: "succeeded" | "failed", body: string, error: string | null = null) {
     Object.assign(invocation, { status, error, finished_at: NOW });
-    const workflow = this.workflows.get(invocation.workflow_id)!;
+    const target = this.targetOf(invocation);
     this.addChatMessage(
       this.chats.get(invocation.chat_id)!,
       body,
-      { kind: "workflow", id: workflow.id, name: workflow.name },
+      { kind: invocation.target_kind, id: target.id, name: target.name },
       [],
       { invocation_id: invocation.id },
     );
@@ -942,17 +962,20 @@ export class FakeApi {
   advanceInvocations(chat: ChatRow) {
     for (const invocation of this.invocations.values()) {
       if (invocation.chat_id !== chat.id) continue;
+      if (invocation.target_kind === "agent") {
+        this.advanceTurn(chat, invocation);
+        continue;
+      }
       if (invocation.status === "queued") {
-        const refused = this.refuseStart.get(invocation.workflow_id);
+        const refused = this.refuseStart.get(invocation.target_id);
         if (refused !== undefined) {
           this.finishInvocation(invocation, "failed", `Couldn't start the run: ${refused}`, refused);
           continue;
         }
         const message = chat.messages.find((m) => m.id === invocation.message_id)!;
-        const run = this.addRun(this.workflows.get(invocation.workflow_id)!, {
+        const run = this.addRun(this.workflows.get(invocation.target_id)!, {
           status: "queued",
-          // The message, each mention as `@name`.
-          input: message.body.replace(/@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):\d+\)/g, "@$1"),
+          input: runInput(message.body),
           started_at: null,
         });
         Object.assign(invocation, { status: "running", run_id: run.id, started_at: NOW });
@@ -969,6 +992,53 @@ export class FakeApi {
           this.finishInvocation(invocation, "failed", `The run failed: ${run.error}`, run.error);
         }
       }
+    }
+  }
+
+  /**
+   * Moves a mentioned agent's turn on by one read: a queued one starts a run, running from now (so
+   * its card's elapsed time ticks from the real clock); each read after is a model step adding a
+   * tool call and tokens, until its `agentTurns` steps are done and its reply (or error) is
+   * posted back. One whose run was deleted fails.
+   */
+  private advanceTurn(chat: ChatRow, invocation: InvocationRow) {
+    const agent = this.agents.get(invocation.target_id)!;
+    const turn = this.agentTurns.get(agent.id) ?? AGENT_TURN;
+    if (invocation.status === "queued") {
+      const message = chat.messages.find((m) => m.id === invocation.message_id)!;
+      const input = runInput(message.body);
+      const run = this.addAgentRun(agent, input, 1, {
+        status: "running",
+        started_at: new Date().toISOString(),
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      run.ui_messages = [{ id: "u1", role: "user", parts: [{ type: "text", text: input }] }];
+      Object.assign(invocation, { status: "running", run_id: run.id, started_at: run.started_at });
+    } else if (invocation.status === "running") {
+      const run = this.agentRuns.get(invocation.run_id!);
+      if (!run) {
+        const deleted = "The run was deleted before it finished.";
+        this.finishInvocation(invocation, "failed", `The run failed: ${deleted}`, deleted);
+        return;
+      }
+      if (run.tool_call_count! < turn.steps) {
+        run.tool_call_count! += 1;
+        run.input_tokens! += turn.tokensPerStep - 20;
+        run.output_tokens! += 20;
+        return;
+      }
+      const finished_at = new Date().toISOString();
+      if (turn.error) {
+        Object.assign(run, { status: "failed", finished_at });
+        this.finishInvocation(invocation, "failed", `The run failed: ${turn.error}`, turn.error);
+        return;
+      }
+      const reply = turn.reply ?? `Done: ${run.title}`;
+      Object.assign(run, { status: "succeeded", finished_at, message_count: 2 });
+      run.ui_messages = [...run.ui_messages, { id: "a1", role: "assistant", parts: [{ type: "text", text: reply }] }];
+      this.finishInvocation(invocation, "succeeded", reply);
     }
   }
 
@@ -1017,8 +1087,14 @@ export class FakeApi {
 
   private agentRunOut(run: AgentRunRow) {
     const { ui_messages: _, ...summary } = run;
+    const invocation = [...this.invocations.values()].find(
+      (i) => i.target_kind === "agent" && i.run_id === run.id,
+    );
+    const chat = invocation && this.chats.get(invocation.chat_id);
     return {
       ...summary,
+      chat_id: chat?.id ?? null,
+      chat_name: chat?.name ?? null,
       agent_version: this.agentVersions.get(run.agent_version_id)![1],
       created_at: NOW,
       updated_at: NOW,
@@ -1179,15 +1255,36 @@ export class FakeApi {
   }
 
   private invocationOut(invocation: InvocationRow) {
-    const { workflow_id, run_id, ...rest } = invocation;
+    const { run_id, ...rest } = invocation;
+    if (invocation.target_kind === "agent") {
+      const run = run_id === null ? undefined : this.agentRuns.get(run_id);
+      return {
+        ...rest,
+        workflow_run_id: null,
+        agent_run_id: run ? run.id : null,
+        run_deleted: invocation.started_at !== null && !run,
+        workflow_run: null,
+        agent_run: run
+          ? {
+              id: run.id,
+              status: run.status,
+              started_at: run.started_at,
+              finished_at: run.finished_at,
+              tool_call_count: run.tool_call_count,
+              input_tokens: run.input_tokens,
+              output_tokens: run.output_tokens,
+            }
+          : null,
+      };
+    }
     const run = run_id === null ? undefined : this.runs.get(run_id);
     return {
       ...rest,
-      target_kind: "workflow",
-      target_id: workflow_id,
       workflow_run_id: run ? run.id : null,
+      agent_run_id: null,
       run_deleted: invocation.started_at !== null && !run,
       workflow_run: run ? this.runOut(run) : null,
+      agent_run: null,
     };
   }
 
@@ -1765,9 +1862,9 @@ export class FakeApi {
           if (!twice) mentions.push({ kind, id, name: member.name });
         }
         const message = this.addChatMessage(chat, body.body, this.me, mentions);
-        const invoked = mentions
-          .filter((x) => x.kind === "workflow")
-          .map((x) => this.invoke(chat, message, this.workflows.get(x.id)!));
+        const invoked = mentions.flatMap((x) =>
+          x.kind === "user" ? [] : [this.invoke(chat, message, x.kind, (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!)],
+        );
         const ids = new Set(invoked.map((i) => i.id));
         return reply(
           201,
@@ -1819,7 +1916,9 @@ export class FakeApi {
   }
 
   private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
-    const invocation = [...this.invocations.values()].find((i) => i.run_id === run.id);
+    const invocation = [...this.invocations.values()].find(
+      (i) => i.target_kind === "workflow" && i.run_id === run.id,
+    );
     const chat = invocation && this.chats.get(invocation.chat_id);
     return {
       ...run,

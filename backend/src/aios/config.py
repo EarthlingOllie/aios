@@ -163,13 +163,15 @@ class Settings(BaseSettings):
 
     # Schedules (`aios.scheduler`): each API process polls for due ones this often. Replicas share
     # the work safely (each schedule is claimed by one), so turning it off is only needed to keep
-    # a process from running agents, e.g. one serving requests that must stay light.
+    # a process from running agents, e.g. one serving requests that must stay light: it then runs
+    # no schedules, nor the turns of agents mentioned in chats (`aios.api.chats.launch_turns`).
     scheduler_enabled: bool = True
     scheduler_interval_seconds: float = 15
-    # Most schedules a process fires at once. An agent's runs its whole turn in the process, next
-    # to the chat it serves, so this keeps a burst (many sharing `0 9 * * *`) from crowding chat
-    # out of the database pool and threadpool. A process with no free slot claims nothing, which
-    # leaves what's due for another replica or a later tick.
+    # Most schedules and chat mentions' agent turns a process fires at once. An agent's runs its
+    # whole turn in the process, next to the chat it serves, so this keeps a burst (many sharing
+    # `0 9 * * *`, or a busy chat) from crowding chat out of the database pool and threadpool. A
+    # process with no free slot claims nothing, which leaves what's due for another replica or a
+    # later tick.
     scheduler_max_concurrent_runs: int = Field(default=5, ge=1)
 
     @property

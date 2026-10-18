@@ -22,6 +22,14 @@ the run starts just after (`InvocationFiring`). A read's `invocations` are the s
 invocation its messages belong to and of every one in the chat still going, each with its run
 as the run's page shows it, so a chat's live cards cost its one poll. When the run ends, its
 result is posted back as a message from the workflow.
+
+Mentioning an agent runs one turn of a new run of it, with the message as the user's, the same
+way: its acknowledgement and card come with the post, and the turn runs in this process through
+the firing machinery schedules use (`TurnFiring`, `aios.firing`), under its cap: it's claimed
+when there's a free slot (`launch_turns`, just after the post or on a scheduler tick), beaten
+while it runs, and failed if its heartbeat stops (`fail_stopped_turns`), so a turn lost with its
+process fails its card. A read's `invocations` carry an agent run's status, start and counters
+(`agent_run`), and the agent's final reply is posted back when the turn ends.
 """
 
 import asyncio
@@ -30,17 +38,22 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aios import firing, invocations
+from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live, on_conflict, unique_name
 from aios.auth import CurrentUser
-from aios.db import DB, DbId
+from aios.config import get_settings
+from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
+    AgentRun,
+    AgentRunStatus,
     Chat,
     ChatAuthorKind,
     ChatInvocation,
@@ -455,6 +468,19 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
+class AgentRunLiveOut(BaseModel):
+    """How an agent run is going, as its card shows it: the card ticks its elapsed time from
+    `started_at` itself."""
+
+    id: int
+    status: AgentRunStatus | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    tool_call_count: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+
+
 class InvocationOut(BaseModel):
     """A run a mention started, as its card follows it."""
 
@@ -470,6 +496,7 @@ class InvocationOut(BaseModel):
     # Why it failed: the run's error, or why it couldn't start.
     error: str | None
     workflow_run_id: int | None
+    agent_run_id: int | None
     # Whether it started a run that has since been deleted.
     run_deleted: bool
     created_at: datetime
@@ -477,6 +504,8 @@ class InvocationOut(BaseModel):
     finished_at: datetime | None
     # The workflow run as its page shows it (graph, steps and all); null without one.
     workflow_run: workflows_api.WorkflowRunOut | None
+    # The agent run's status, times and counters so far; null without one.
+    agent_run: AgentRunLiveOut | None
 
 
 class MessagesOut(BaseModel):
@@ -520,7 +549,7 @@ def message_out(message: ChatMessage) -> MessageOut:
 
 def invocation_out(invocation: ChatInvocation) -> InvocationOut:
     """The invocation, without its run (`with_runs` adds it)."""
-    run_id = invocation.workflow_run_id
+    run_id = invocation.workflow_run_id or invocation.agent_run_id
     return InvocationOut(
         id=invocation.id,
         chat_id=invocation.chat_id,
@@ -530,19 +559,37 @@ def invocation_out(invocation: ChatInvocation) -> InvocationOut:
         target_id=invocation.workflow_id or invocation.agent_id,
         status=invocation.status,
         error=invocation.error,
-        workflow_run_id=run_id,
+        workflow_run_id=invocation.workflow_run_id,
+        agent_run_id=invocation.agent_run_id,
         run_deleted=invocation.started_at is not None and run_id is None,
         created_at=invocation.created_at,
         started_at=invocation.started_at,
         finished_at=invocation.finished_at,
         workflow_run=None,
+        agent_run=None,
     )
 
 
 def with_runs(db: Session, outs: list[InvocationOut]) -> list[InvocationOut]:
     """The invocations with their runs as the run page shows them. Read once the rest has been,
     since reading a run expires the session's rows."""
+    agent_runs = {
+        run.id: AgentRunLiveOut.model_validate(run, from_attributes=True)
+        for run in db.execute(
+            select(
+                AgentRun.id,
+                AgentRun.status,
+                AgentRun.started_at,
+                AgentRun.finished_at,
+                AgentRun.tool_call_count,
+                AgentRun.input_tokens,
+                AgentRun.output_tokens,
+            ).where(AgentRun.id.in_([o.agent_run_id for o in outs if o.agent_run_id]))
+        )
+    }
     for out in outs:
+        if out.agent_run_id is not None:
+            out.agent_run = agent_runs.get(out.agent_run_id)
         if out.workflow_run_id is not None:
             out.workflow_run = workflows_api.workflow_run_out(db, out.workflow_run_id)
     return outs
@@ -567,7 +614,8 @@ def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> Mess
 
 def catch_up(db: Session, chat_id: int) -> None:
     """Bring the chat's unfinished invocations up to date before they're read: fail their runs
-    whose worker died (which posts their results back), and those that never started. Commits."""
+    whose worker died (which posts their results back), their agent turns whose process died,
+    and those that never started. Commits."""
     fail_stopped_runs(
         db,
         WorkflowRun.id.in_(
@@ -577,6 +625,7 @@ def catch_up(db: Session, chat_id: int) -> None:
             )
         ),
     )
+    fail_stopped_turns(db, chat_id)
     invocations.fail_stalled(db, chat_id)
 
 
@@ -672,12 +721,86 @@ class InvocationFiring:
             invocations.fail_unstarted(db, self.invocation_id, error)
 
 
-async def start_invocations(invocation_ids: list[int]) -> None:
-    """Start the invocations' runs, each as a fire of its own (`aios.firing`), at once. Starting
-    one only queues its run, so these don't wait for a free slot under the cap."""
-    await asyncio.gather(
-        *(firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in invocation_ids)
+@dataclass(frozen=True)
+class TurnFiring:
+    """Running an agent invocation's turn in this process, which has claimed it
+    (`invocations.claim_turns`), as a cause of a run (`aios.firing.Cause`): capped, beaten while
+    it runs, and failed if its heartbeat stops (`fail_stopped_turns`)."""
+
+    invocation_id: int
+
+    def start(self, db: Session) -> firing.Turn | None:
+        """Start a run of the agent's current version, as its owner, with the message as the
+        user's; the invocation records it and goes running. None if it has finished since it
+        was claimed. Raises `HTTPException` as starting one by hand would, or `CantStart`."""
+        invocation = db.get(ChatInvocation, self.invocation_id)
+        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+            return None
+        agent = invocation.agent
+        prompt = invocations.run_input(db.get(ChatMessage, invocation.message_id).body)
+        try:
+            # The agent's lock first, then the invocation's, as deleting the agent takes them.
+            run = agents_api.new_agent_run(db, agent)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                raise firing.CantStart("The agent has been deleted.") from exc
+            raise
+        invocation = invocations.lock(db, self.invocation_id)
+        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+            db.rollback()
+            return None
+        invocation.agent_run_id = run.id
+        invocations.mark_running(db, self.invocation_id)
+        db.commit()
+        return firing.Turn(agent.owner_id, agent.id, run.id, prompt)
+
+    def beat(self, db: Session) -> None:
+        invocations.beat(db, self.invocation_id)
+
+    def record(self, db: Session, error: str | None) -> None:
+        invocations.finish_turn(db, self.invocation_id, error)
+
+
+def fail_stopped_turns(db: Session, chat_id: int | None = None) -> None:
+    """Fail the agent invocations (the chat's, or all) whose turn's process has gone: their
+    heartbeat stopped (`aios.firing`). Posts why, and fails their runs. Commits."""
+    invocations.fail_stopped_turns(
+        db, stale_after=firing.STALE_AFTER, error=firing.STOPPED, chat_id=chat_id
     )
+    db.commit()
+
+
+def _claim_turns(limit: int) -> list[int]:
+    with SessionLocal() as db:
+        return invocations.claim_turns(db, limit)
+
+
+async def launch_turns() -> list[asyncio.Task]:
+    """Claim the agent invocations waiting for a turn, as many as this process has free slots
+    for under the cap, and run each in a fire of its own (`aios.firing.launch`). Those left wait
+    for a slot here or on another replica: the scheduler's tick calls this too. None in a process
+    kept from running agents (`scheduler_enabled`), which beats no fires."""
+    free = firing.free_slots() if get_settings().scheduler_enabled else 0
+    if free <= 0:
+        return []
+    claimed = await run_in_threadpool(_claim_turns, free)
+    return [firing.launch(TurnFiring(i), name=f"invocation-{i}") for i in claimed]
+
+
+async def start_invocations(workflow_invocation_ids: list[int], turns: bool) -> None:
+    """Start the workflow invocations' runs, each as a fire of its own (`aios.firing`), at once:
+    starting one only queues its run, so these don't wait for a free slot under the cap. With
+    `turns`, also run the agent invocations waiting for a turn, as slots allow, until none is
+    left waiting or every slot is taken."""
+    fires = [
+        firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in workflow_invocation_ids
+    ]
+    if turns:
+        fires += await launch_turns()
+    while fires:
+        await asyncio.gather(*fires)
+        # Their slots are free again.
+        fires = await launch_turns() if turns else []
 
 
 @router.post(
@@ -703,14 +826,24 @@ def post_message(
     )
     db.add(message)
     started = invocations.create(
-        db, message, [m.id for m in mentions if m.kind == ChatMemberKind.workflow]
+        db,
+        message,
+        [
+            (TriggerTargetKind(m.kind.value), m.id)
+            for m in mentions
+            if m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow)
+        ],
     )
     # Posting is activity.
     chat.updated_at = func.now()
     db.commit()
     invocation_ids = [i.id for i in started]
     if invocation_ids:
-        background.add_task(start_invocations, invocation_ids)
+        background.add_task(
+            start_invocations,
+            [i.id for i in started if i.target_kind == TriggerTargetKind.workflow],
+            any(i.target_kind == TriggerTargetKind.agent for i in started),
+        )
     db.expire_all()
     posted = db.scalars(
         select(ChatMessage)

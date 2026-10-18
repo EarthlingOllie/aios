@@ -1057,8 +1057,13 @@ class ChatInvocation(Base):
     # When its run started (null if it never did), and when it finished.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # An agent's: set when a process claims it to run its turn (`aios.firing`) and refreshed
+    # while the turn runs; one whose heartbeat has stopped lost its process, and is failed. Null
+    # while it waits for a free slot, and for a workflow's, whose run the worker looks after.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     workflow: Mapped[Workflow | None] = relationship()
+    agent: Mapped[Agent | None] = relationship()
 
     __table_args__ = (
         CheckConstraint(

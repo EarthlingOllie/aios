@@ -9,6 +9,8 @@ own is `ScheduleFiring`: what it claims, and where its heartbeat and outcome liv
 - A process fires at most `scheduler_max_concurrent_runs` at once, and claims no more than it has
   free slots for: claiming moves a schedule on, so one claimed but left waiting would be late or,
   if the process stopped, lost. What it leaves stays due, for another replica or a later tick.
+  With the slots left, it also runs the turns of agents mentioned in chats that are waiting for
+  one (`aios.api.chats.launch_turns`), and its sweep fails those whose process has gone.
 
 - Claiming locks the due rows with SKIP LOCKED and moves each schedule's `next_run_at` on in the
   same transaction, so however many replicas poll, each run of a schedule is claimed once.
@@ -50,6 +52,7 @@ from sqlalchemy import func, or_, select, update
 
 from aios import cron, firing
 from aios.api import agents as agents_api
+from aios.api import chats as chats_api
 from aios.api import workflows as workflows_api
 from aios.db import SessionLocal
 from aios.firing import HEARTBEAT_SECONDS, STALE_AFTER, STOPPED, CantStart
@@ -117,6 +120,8 @@ def _sweep() -> None:
         # when it's claimed, before it has a run.
         firing.fail_stalled(db)
         fail_stalled(db)
+        # And the chat mentions' turns.
+        chats_api.fail_stopped_turns(db)
 
 
 def _claim(now: datetime, limit: int) -> list[int]:
@@ -263,6 +268,8 @@ async def tick(now: datetime | None = None) -> dict[int, asyncio.Task]:
         fired[trigger_id] = firing.launch(
             ScheduleFiring(trigger_id, now), name=f"trigger-{trigger_id}"
         )
+    # Then the chat mentions' agent turns still waiting for a slot, with what's left.
+    await chats_api.launch_turns()
     return fired
 
 

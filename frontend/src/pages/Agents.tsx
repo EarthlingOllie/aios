@@ -4,6 +4,7 @@ import {
   ArrowUpCircle,
   CalendarClock,
   MessageSquare,
+  MessagesSquare,
   Pencil,
   Play,
   Trash2,
@@ -314,6 +315,11 @@ export function AgentDetail() {
                               className="text-muted-foreground size-4 shrink-0"
                               aria-label="Started by a schedule"
                             />
+                          ) : run.chat_id !== null ? (
+                            <MessagesSquare
+                              className="text-muted-foreground size-4 shrink-0"
+                              aria-label="Started from a chat"
+                            />
                           ) : (
                             <MessageSquare className="text-muted-foreground size-4 shrink-0" />
                           )}
@@ -326,6 +332,12 @@ export function AgentDetail() {
                             <span className="text-muted-foreground block truncate text-xs">
                               {formatDate(run.updated_at)} ·{" "}
                               <RunCountersLine run={run} compact />
+                              {run.chat_id !== null && (
+                                <span data-testid="started-from-chat">
+                                  {" "}
+                                  · Started from the chat {run.chat_name}
+                                </span>
+                              )}
                             </span>
                           </span>
                           <AgentRunStatusBadge run={run} />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RunSummary } from "@/lib/api";
-import { formatDuration, formatTokens, runCounters } from "@/lib/agent-runs";
+import { formatDuration, formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
 
 function run(changes: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -18,6 +18,8 @@ function run(changes: Partial<RunSummary> = {}): RunSummary {
     tool_call_count: null,
     input_tokens: null,
     output_tokens: null,
+    chat_id: null,
+    chat_name: null,
     created_at: "2026-10-14T09:00:00Z",
     updated_at: "2026-10-14T09:00:05Z",
     ...changes,
@@ -39,6 +41,30 @@ describe("formatDuration", () => {
   it("never goes negative when the clocks disagree", () => {
     const now = Date.parse("2026-10-14T08:59:59Z");
     expect(formatDuration("2026-10-14T09:00:00Z", null, now)).toBe("0.0s");
+  });
+});
+
+describe("formatElapsed", () => {
+  const from = "2026-10-14T09:00:00Z";
+  const at = (iso: string) => Date.parse(iso);
+
+  it("counts whole seconds, so a clock ticking each second moves a step at a time", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T09:00:00.400Z"))).toBe("0s");
+    expect(formatElapsed(from, null, at("2026-10-14T09:00:07.900Z"))).toBe("7s");
+  });
+
+  it("reads in minutes and seconds, then hours and minutes, padded so it doesn't jump about", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T09:03:05Z"))).toBe("3m 05s");
+    expect(formatElapsed(from, null, at("2026-10-14T10:02:30Z"))).toBe("1h 02m");
+  });
+
+  it("stops at the end once it has ended, whatever the time now", () => {
+    const later = at("2026-10-14T12:00:00Z");
+    expect(formatElapsed(from, "2026-10-14T09:00:42Z", later)).toBe("42s");
+  });
+
+  it("never goes negative when the clocks disagree", () => {
+    expect(formatElapsed(from, null, at("2026-10-14T08:59:58Z"))).toBe("0s");
   });
 });
 

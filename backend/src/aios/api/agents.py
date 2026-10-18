@@ -30,6 +30,8 @@ from aios.models import (
     AgentRunStatus,
     AgentVersion,
     AgentVersionTool,
+    Chat,
+    ChatInvocation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Skill,
@@ -165,6 +167,9 @@ class RunSummary(BaseModel):
     tool_call_count: int | None
     input_tokens: int | None
     output_tokens: int | None
+    # The chat a mention in it started it from, while the chat exists.
+    chat_id: int | None
+    chat_name: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -582,23 +587,30 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
 
 
 def run_summary_query():
-    return select(
-        AgentRun.id,
-        AgentRun.agent_id,
-        AgentRun.agent_version_id,
-        AgentVersion.version.label("agent_version"),
-        AgentRun.title,
-        AgentRun.message_count,
-        AgentRun.trigger_id,
-        AgentRun.status,
-        AgentRun.started_at,
-        AgentRun.finished_at,
-        AgentRun.tool_call_count,
-        AgentRun.input_tokens,
-        AgentRun.output_tokens,
-        AgentRun.created_at,
-        AgentRun.updated_at,
-    ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
+    return (
+        select(
+            AgentRun.id,
+            AgentRun.agent_id,
+            AgentRun.agent_version_id,
+            AgentVersion.version.label("agent_version"),
+            AgentRun.title,
+            AgentRun.message_count,
+            AgentRun.trigger_id,
+            AgentRun.status,
+            AgentRun.started_at,
+            AgentRun.finished_at,
+            AgentRun.tool_call_count,
+            AgentRun.input_tokens,
+            AgentRun.output_tokens,
+            Chat.id.label("chat_id"),
+            Chat.name.label("chat_name"),
+            AgentRun.created_at,
+            AgentRun.updated_at,
+        )
+        .join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
+        .outerjoin(ChatInvocation, ChatInvocation.agent_run_id == AgentRun.id)
+        .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
+    )
 
 
 def build_version_tools(

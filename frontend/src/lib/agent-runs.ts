@@ -23,6 +23,19 @@ export function formatDuration(from: string, to: string | null, now = Date.now()
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/**
+ * How long a run has been going, from `from` to `to` (or to now while it's still going), in whole
+ * seconds: what a ticking clock shows, a second at a time. 7s, 3m 05s, 1h 02m.
+ */
+export function formatElapsed(from: string, to: string | null, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor(((to ? Date.parse(to) : now) - Date.parse(from)) / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${pad(seconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h ${pad(minutes % 60)}m`;
+}
+
 /** A token count, short enough for a list: whole under a thousand, then 1.2k, 48k, 2.3M. */
 export function formatTokens(n: number) {
   const short = (value: number, unit: string) =>
@@ -34,7 +47,9 @@ export function formatTokens(n: number) {
 
 /** The run's counters, or null if it's from before they were kept. A run that's tracked but
  * hasn't reached a model step yet has nothing to count so far. */
-export function runCounters(run: RunSummary): RunCounters | null {
+export function runCounters(
+  run: Pick<RunSummary, "status" | "tool_call_count" | "input_tokens" | "output_tokens">,
+): RunCounters | null {
   if (!run.status) return null;
   return {
     status: run.status,

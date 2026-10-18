@@ -179,7 +179,23 @@ each node's state, "n of m nodes done" and a status badge, and opens the run's p
 a run that couldn't start shows why, and one since deleted says so. Mentions in what a workflow
 posts start nothing, so a chat can't loop. Runs started from a chat are listed with the
 workflow's others, marked with the chat (while it exists); deleting a chat deletes its messages
-and invocations, not the runs. (Mentioning an agent starts nothing yet.)
+and invocations, not the runs.
+
+Mentioning an **agent** runs one turn of a new run of its current version, with the message as
+the user's, executing as the agent's owner; its acknowledgement and card come with the post in the
+same way. The turn runs in an API process through the firing machinery schedules use, under the
+same cap (`SCHEDULER_MAX_CONCURRENT_RUNS`): a process with a free slot claims it, just after the
+post or on a scheduler tick (until then it waits, queued, however long), and keeps its heartbeat
+while it runs. A turn whose heartbeat stops (its process killed, say, by a deploy) fails its card
+with "The service stopped mid-run." when the chat is next read or a tick sweeps, and a turn in
+flight as a process shuts down records the same. A process with `SCHEDULER_ENABLED=false`
+runs no chat turns either. A read's `invocations` carry each agent run's status, start and finish
+times, tool calls and tokens so far; the card shows a status badge, the time elapsed (ticking in
+the browser from the start time), the tool calls and tokens, and opens the run's page when
+clicked. When the turn ends, the agent's final reply is posted back as a message from the agent
+(or the turn's error, failing the card). Several agents and workflows mentioned in one message
+each start; mentions in an agent's reply start nothing. Runs started from a chat are listed with
+the agent's others, marked with the chat.
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does

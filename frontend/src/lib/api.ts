@@ -258,6 +258,9 @@ export type RunSummary = {
   tool_call_count: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** The chat a mention in it started it from, while that chat exists. */
+  chat_id: number | null;
+  chat_name: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -713,6 +716,7 @@ export type ChatInvocation = {
   /** Why it failed: the run's error, or why it couldn't start. */
   error: string | null;
   workflow_run_id: number | null;
+  agent_run_id: number | null;
   /** Whether it started a run that has since been deleted. */
   run_deleted: boolean;
   created_at: string;
@@ -720,7 +724,16 @@ export type ChatInvocation = {
   finished_at: string | null;
   /** The workflow run as its page shows it; null without one. */
   workflow_run: WorkflowRun | null;
+  /** The agent run's status, times and counters so far; null without one. */
+  agent_run: ChatAgentRun | null;
 };
+
+/** How an agent run a mention started is going, as its card shows it (elapsed ticks from
+ * `started_at` on the client). */
+export type ChatAgentRun = Pick<
+  RunSummary,
+  "id" | "status" | "started_at" | "finished_at" | "tool_call_count" | "input_tokens" | "output_tokens"
+>;
 
 /**
  * Messages of a chat, oldest first, and the state of each invocation they belong to and of every

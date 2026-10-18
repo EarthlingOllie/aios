@@ -86,11 +86,13 @@ function invocation(id: number, status: ChatInvocation["status"]): ChatInvocatio
     status,
     error: null,
     workflow_run_id: null,
+    agent_run_id: null,
     run_deleted: false,
     created_at: "2026-10-18T09:00:00Z",
     started_at: null,
     finished_at: null,
     workflow_run: null,
+    agent_run: null,
   };
 }
 
