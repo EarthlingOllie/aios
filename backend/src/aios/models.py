@@ -901,6 +901,9 @@ class ChatMember(Base):
     )
     added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Users only: the id of the last of the chat's messages they've seen (null: none yet), from
+    # which their unread count is counted. A cursor, not a reference: it only goes up.
+    last_read_message_id: Mapped[int | None]
 
     chat: Mapped[Chat] = relationship(back_populates="members")
     user: Mapped[User | None] = relationship(foreign_keys=[user_id])

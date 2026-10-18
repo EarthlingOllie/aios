@@ -122,7 +122,7 @@ export function MasterDetail<T extends { id: number }>({
           </Button>
         </div>
         {error && <p className="text-destructive px-4 py-2 text-sm">{error}</p>}
-        <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
+        <ul aria-label={title} className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {items?.length === 0 && <li className="text-muted-foreground p-2 text-sm">{empty}</li>}
           {items?.map((item) => (
             <li key={item.id}>

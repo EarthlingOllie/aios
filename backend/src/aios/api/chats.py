@@ -3,8 +3,15 @@
 A chat has an owner (the user who made it), a name unique among chats, a description and a
 visibility. Its members are users, and agents and workflows the owner owns (an agent or workflow
 since deleted is no longer one; its row stays, and what it posted stays either way). A private
-chat doesn't exist for a user who isn't in it: every endpoint is a 404 for them. Only the owner
-can change a chat, add or remove its members or delete it: a 403 for anyone else.
+chat doesn't exist for a user who isn't in it: every endpoint is a 404 for them. A public one
+exists for every signed-in user ("public" is this deployment's users; organisations will narrow
+it): the list carries the public chats a user isn't in (`is_member` false) for them to find, and
+they join it in one step and leave it as easily (the owner can't: a chat always has one). Only the
+owner can change a chat, add or remove its members or delete it: a 403 for anyone else. Leaving
+or being removed deletes nothing, and whoever joins later reads the history from the start.
+
+Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
+to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
 
 Its members post markdown messages, read by id: `?after=N` for what's new (what the open chat
 polls), `?before=N` for the page of history before N, and neither for the latest page. Anyone
@@ -43,8 +50,8 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import firing, handoff, invocations
 from aios.api import agents as agents_api
@@ -238,8 +245,15 @@ def member_key(member: ChatMember) -> tuple[ChatMemberKind, int | None]:
     return member.kind, member.user_id or member.agent_id or member.workflow_id
 
 
+def user_member(chat: Chat, user_id: int) -> ChatMember | None:
+    """The user's membership of the chat, if they're in it."""
+    return next(
+        (m for m in chat.members if m.kind == ChatMemberKind.user and m.user_id == user_id), None
+    )
+
+
 def is_member(chat: Chat, user_id: int) -> bool:
-    return any(m.kind == ChatMemberKind.user and m.user_id == user_id for m in chat.members)
+    return user_member(chat, user_id) is not None
 
 
 def get_visible_chat(db: Session, user_id: int, chat_id: int) -> Chat:
@@ -258,24 +272,53 @@ def get_owned_chat(db: Session, user_id: int, chat_id: int) -> Chat:
     return chat
 
 
-@router.get("/chats", response_model=list[ChatSummary])
+class ChatListed(ChatSummary):
+    # How many of its messages others posted since the last one the user saw (`POST
+    # /api/chats/{id}/read`); null for a public chat they're not in.
+    unread_count: int | None
+
+
+@router.get("/chats", response_model=list[ChatListed])
 def list_chats(user: CurrentUser, db: DB):
-    """The chats the user is a member of, the most recently active first."""
-    rows = db.execute(
-        select(Chat, func.count(ChatMember.id))
-        .join(ChatMember, ChatMember.chat_id == Chat.id)
+    """The chats the user is a member of, and the public ones they aren't (`is_member` false),
+    the most recently active first."""
+    mine = aliased(ChatMember)
+    member_count = (
+        select(func.count(ChatMember.id))
         # Not counting agents or workflows since deleted (see `live_members`).
         .outerjoin(Agent, Agent.id == ChatMember.agent_id)
         .outerjoin(Workflow, Workflow.id == ChatMember.workflow_id)
         .where(
-            Chat.id.in_(select(ChatMember.chat_id).where(ChatMember.user_id == user.id)),
+            ChatMember.chat_id == Chat.id,
             Agent.deleted_at.is_(None),
             Workflow.deleted_at.is_(None),
         )
-        .group_by(Chat.id)
+        .scalar_subquery()
+    )
+    unread = case(
+        (mine.id.is_(None), None),
+        else_=select(func.count(ChatMessage.id))
+        .where(
+            ChatMessage.chat_id == Chat.id,
+            ChatMessage.id > func.coalesce(mine.last_read_message_id, 0),
+            # What they posted themselves they've seen.
+            ChatMessage.author_user_id.is_distinct_from(user.id),
+        )
+        .scalar_subquery(),
+    )
+    rows = db.execute(
+        select(Chat, member_count, mine.id, unread)
+        .outerjoin(mine, and_(mine.chat_id == Chat.id, mine.user_id == user.id))
+        .where(or_(mine.id.is_not(None), Chat.visibility == ChatVisibility.public))
         .order_by(Chat.updated_at.desc(), Chat.id.desc())
     )
-    return [chat_summary(chat, user.id, count, member=True) for chat, count in rows]
+    return [
+        ChatListed(
+            **chat_summary(chat, user.id, count, member=member_id is not None).model_dump(),
+            unread_count=unread_count,
+        )
+        for chat, count, member_id, unread_count in rows
+    ]
 
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
@@ -396,6 +439,50 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, db: DB):
     with on_conflict(db, MEMBER_CONSTRAINTS[body.kind], ALREADY_A_MEMBER):
         db.commit()
     return chat_out(load(db, chat.id), user.id)
+
+
+@router.post("/chats/{chat_id}/join", response_model=ChatOut)
+def join_chat(chat_id: DbId, user: CurrentUser, db: DB):
+    """Join a public chat as a member (a private one exists only for its members). What was
+    posted before they joined counts as seen: they could read it, and it's all there to scroll."""
+    chat = get_visible_chat(db, user.id, chat_id)
+    if is_member(chat, user.id):
+        raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
+    chat.members.append(
+        ChatMember(
+            kind=ChatMemberKind.user,
+            user_id=user.id,
+            role=ChatMemberRole.member,
+            added_by=user.id,
+            last_read_message_id=db.scalar(
+                select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat.id)
+            ),
+        )
+    )
+    # Joining is activity, as adding a member is.
+    chat.updated_at = func.now()
+    # Two joins at once: the second loses here.
+    with on_conflict(db, MEMBER_CONSTRAINTS[ChatMemberKind.user], ALREADY_A_MEMBER):
+        db.commit()
+    return chat_out(load(db, chat.id), user.id)
+
+
+@router.post("/chats/{chat_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+def leave_chat(chat_id: DbId, user: CurrentUser, db: DB) -> None:
+    """Leave a chat the user is a member of but doesn't own (a chat always has its owner).
+    Nothing they posted goes with them; a private chat stops existing for them."""
+    chat = get_visible_chat(db, user.id, chat_id)
+    member = user_member(chat, user.id)
+    if member is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Not a member of this chat.")
+    if member.role == ChatMemberRole.owner:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't leave the chat."
+        )
+    chat.members.remove(member)
+    # As removing a member is.
+    chat.updated_at = func.now()
+    db.commit()
 
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -706,6 +793,39 @@ def list_messages(
     if after is None:
         rows.reverse()
     return messages_out(db, chat_id, rows)
+
+
+NOT_A_MEMBER_READING = "Only the chat's members keep track of what they've read in it."
+
+
+class ReadIn(BaseModel):
+    # The last of the chat's messages the user has seen: the newest, once they've read to the
+    # bottom.
+    message_id: DbId
+
+
+@router.post("/chats/{chat_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+def mark_read(chat_id: DbId, body: ReadIn, user: CurrentUser, db: DB) -> None:
+    """Note that the user, a member, has seen the chat's messages up to `message_id`, which
+    clears their unread count of those. Never back: a read of an earlier message (another tab's)
+    leaves it, and never past the chat's newest message."""
+    chat = get_visible_chat(db, user.id, chat_id)
+    member = user_member(chat, user.id)
+    if member is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER_READING)
+    newest = db.scalar(select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat.id)) or 0
+    seen = min(body.message_id, newest)
+    # In one statement, so two tabs reading at once leave the later of the two.
+    db.execute(
+        update(ChatMember)
+        .where(ChatMember.id == member.id)
+        .values(
+            last_read_message_id=func.greatest(
+                func.coalesce(ChatMember.last_read_message_id, 0), seen
+            )
+        )
+    )
+    db.commit()
 
 
 @dataclass(frozen=True)

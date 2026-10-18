@@ -124,5 +124,5 @@ test("someone not in a public chat reads it but can't post", async ({ page }) =>
   await page.goto(`/chats/${chat.id}`);
   await expect(message(page, "Welcome")).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
-  await expect(page.getByText("Only the chat's members can post in it.")).toBeVisible();
+  await expect(page.getByText("Join the chat to post in it.")).toBeVisible();
 });

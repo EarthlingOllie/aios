@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
+import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
@@ -11,9 +11,12 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
+  POLL_MS,
   Section,
   selectClass,
   useLoad,
+  usePoll,
+  useVisible,
   type ListContext,
 } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
@@ -25,10 +28,12 @@ import {
   describeError,
   type Chat,
   type ChatInput,
+  type ChatListed,
   type ChatMember,
   type ChatTargetKind,
   type ChatVisibility,
 } from "@/lib/api";
+import { unreadBadge } from "@/lib/chat-messages";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -37,8 +42,14 @@ const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
   private: { label: "Private", hint: "Only its members can see it." },
 };
 
+/** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
+export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
+const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
+
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
+  // Unread counts go up as others post, in chats other than the one open.
+  usePoll(data !== undefined, reload, useVisible() ? CHAT_LIST_POLL_MS : CHAT_LIST_HIDDEN_POLL_MS);
   return (
     <MasterDetail
       title="Chats"
@@ -47,23 +58,41 @@ export function ChatsSection() {
       error={error}
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
-      renderItem={(chat) => (
-        <>
-          <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium">{chat.name}</span>
-            {chat.visibility === "private" && (
-              <Lock className="text-muted-foreground size-3.5 shrink-0" role="img" aria-label="Private" />
-            )}
-            <span className="text-muted-foreground shrink-0 text-xs">
-              {plural(chat.member_count, "member")}
-            </span>
-          </div>
-          {chat.description && (
-            <div className="text-muted-foreground truncate text-xs">{chat.description}</div>
-          )}
-        </>
-      )}
+      renderItem={(chat) => <ChatListItem chat={chat} />}
     />
+  );
+}
+
+/** A chat in the list: its name, privacy, members (or that it's not joined) and unread count. */
+function ChatListItem({ chat }: { chat: ChatListed }) {
+  const unread = unreadBadge(chat.unread_count);
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span className={cn("min-w-0 flex-1 truncate font-medium", !chat.is_member && "text-muted-foreground")}>
+          {chat.name}
+        </span>
+        {chat.visibility === "private" && (
+          <Lock className="text-muted-foreground size-3.5 shrink-0" role="img" aria-label="Private" />
+        )}
+        {chat.is_member ? (
+          <span className="text-muted-foreground shrink-0 text-xs">{plural(chat.member_count, "member")}</span>
+        ) : (
+          <Badge variant="outline" className="shrink-0">
+            Not joined
+          </Badge>
+        )}
+        {unread && (
+          <span
+            aria-label={`${unread} unread`}
+            className="bg-primary text-primary-foreground shrink-0 rounded-full px-1.5 text-xs font-medium"
+          >
+            {unread}
+          </span>
+        )}
+      </div>
+      {chat.description && <div className="text-muted-foreground truncate text-xs">{chat.description}</div>}
+    </>
   );
 }
 
@@ -85,6 +114,13 @@ export function ChatDetail() {
     [reloadChat, reloadMentionable],
   );
   const [actionError, setActionError] = useState<string>();
+  // Reading to the bottom clears the chat's unread count in the list.
+  const onRead = useCallback(
+    (messageId: number) => {
+      api.markChatRead(id, messageId).then(reloadList, () => undefined);
+    },
+    [id, reloadList],
+  );
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!chat) return null;
@@ -95,6 +131,28 @@ export function ChatDetail() {
       await api.deleteChat(id);
       await reloadList();
       navigate("/chats");
+    } catch (err) {
+      setActionError(describeError(err));
+    }
+  }
+
+  async function onJoin() {
+    try {
+      await api.joinChat(id);
+      await Promise.all([reload(), reloadList()]);
+    } catch (err) {
+      setActionError(describeError(err));
+    }
+  }
+
+  async function onLeave() {
+    if (!window.confirm(`Leave the chat “${chat!.name}”?`)) return;
+    try {
+      await api.leaveChat(id);
+      await reloadList();
+      // A private chat is gone for them once they've left; a public one is still there to read.
+      if (chat!.visibility === "private") navigate("/chats");
+      else await reload();
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -136,7 +194,7 @@ export function ChatDetail() {
         </>
       }
       actions={
-        chat.is_owner && (
+        chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
               <Link to="edit">
@@ -149,6 +207,16 @@ export function ChatDetail() {
               Delete
             </Button>
           </>
+        ) : chat.is_member ? (
+          <Button variant="outline" size="sm" onClick={onLeave}>
+            <LogOut />
+            Leave
+          </Button>
+        ) : (
+          <Button size="sm" onClick={onJoin}>
+            <LogIn />
+            Join
+          </Button>
         )
       }
     >
@@ -159,6 +227,7 @@ export function ChatDetail() {
         canPost={chat.is_member}
         mentionable={mentionable}
         onPosted={reloadList}
+        onRead={chat.is_member ? onRead : undefined}
       />
       <Section title="Members" label="Members">
         <MembersPanel

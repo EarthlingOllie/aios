@@ -6,7 +6,9 @@ import type { Page, Route } from "@playwright/test";
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
- * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else) and messages
+ * chat is a 404 for a non-member; a public one is listed, readable and joined by anyone, and left
+ * by any member but its owner; the owner's actions are a 403 for anyone else), each with an
+ * unread count of others' messages since the last one read (`chatReads`), and messages
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
  * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
  * invocation: its acknowledgement and card are posted with the message, and each read of the
@@ -246,9 +248,18 @@ export type RunRow = {
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
-  | { id: number; kind: "user"; role: "owner" | "member"; user: ChatUser; added_at: string }
+  | {
+      id: number;
+      kind: "user";
+      role: "owner" | "member";
+      user: ChatUser;
+      added_at: string;
+      /** The last message they've seen (`POST /api/chats/{id}/read`); null for none yet. */
+      last_read: number | null;
+    }
   /** An agent or workflow of `agents` or `workflows`, by id; gone once it's deleted. */
   | { id: number; kind: Kind; target_id: number; added_at: string };
+type ChatUserMemberRow = Extract<ChatMemberRow, { kind: "user" }>;
 export type ChatMention = { kind: "user" | Kind; id: number; name: string };
 type ChatMemberOut = {
   id: number;
@@ -438,6 +449,8 @@ export class FakeApi {
   messageReads: string[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
+  /** Each `POST /api/chats/{id}/read`, as [chat id, message id]: not a write the user made. */
+  chatReads: [number, number][] = [];
   /** The store's `data` tables, by name. */
   dataTables: TableRow[] = [];
   /** While true, the tables endpoints answer 500. */
@@ -903,7 +916,7 @@ export class FakeApi {
       created_at: NOW,
       updated_at: NOW,
     };
-    chat.members.push({ id: this.id(), kind: "user", role: "owner", user: owner, added_at: NOW });
+    chat.members.push({ id: this.id(), kind: "user", role: "owner", user: owner, added_at: NOW, last_read: null });
     this.chats.set(chat.id, chat);
     return chat;
   }
@@ -1093,8 +1106,8 @@ export class FakeApi {
   }
 
   /** Adds a user to a chat, as the owner would. */
-  addChatMember(chat: ChatRow, user: ChatUser): ChatMemberRow {
-    const member: ChatMemberRow = { id: this.id(), kind: "user", role: "member", user, added_at: NOW };
+  addChatMember(chat: ChatRow, user: ChatUser): ChatUserMemberRow {
+    const member: ChatUserMemberRow = { id: this.id(), kind: "user", role: "member", user, added_at: NOW, last_read: null };
     chat.members.push(member);
     return member;
   }
@@ -1380,7 +1393,22 @@ export class FakeApi {
   }
 
   private inChat(chat: ChatRow) {
-    return chat.members.some((m) => m.kind === "user" && m.user.id === this.me.id);
+    return this.myMembership(chat) !== undefined;
+  }
+
+  private myMembership(chat: ChatRow) {
+    return chat.members.find(
+      (m): m is ChatUserMemberRow => m.kind === "user" && m.user.id === this.me.id,
+    );
+  }
+
+  /** What `me` hasn't seen of a chat they're in: others' messages since their last read. */
+  private unreadCount(chat: ChatRow) {
+    const mine = this.myMembership(chat);
+    if (!mine) return null;
+    return chat.messages.filter(
+      (m) => m.id > (mine.last_read ?? 0) && !("login" in m.author && m.author.id === this.me.id),
+    ).length;
   }
 
   /** The workflows whose versions `version` runs, at any depth. */
@@ -1433,7 +1461,7 @@ export class FakeApi {
       // Not JSON: an upload's multipart form.
       body = "(form)";
     }
-    if (method !== "GET") this.writes.push([method, path, body]);
+    if (method !== "GET" && !/^\/api\/chats\/\d+\/read$/.test(path)) this.writes.push([method, path, body]);
     const reply = (status: number, json?: unknown) =>
       route.fulfill({
         status,
@@ -1912,9 +1940,10 @@ export class FakeApi {
       return reply(
         200,
         [...this.chats.values()]
-          .filter((c) => this.inChat(c))
+          // Mine, and the public ones I'm not in, for me to find.
+          .filter((c) => this.inChat(c) || c.visibility === "public")
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
-          .map((c) => this.chatSummary(c)),
+          .map((c) => ({ ...this.chatSummary(c), unread_count: this.unreadCount(c) })),
       );
     }
     if (path === "/api/chats" && method === "POST") {
@@ -1940,6 +1969,27 @@ export class FakeApi {
         return reply(200, this.messagesPage(chat, url.searchParams));
       }
       if (rest === "/mentionable" && method === "GET") return reply(200, this.mentionable(chat));
+      if (rest === "/join" && method === "POST") {
+        if (this.inChat(chat)) return fail(409, "Already a member of this chat.");
+        // What was there to read before they joined counts as seen.
+        this.addChatMember(chat, this.me).last_read = chat.messages.at(-1)?.id ?? null;
+        return reply(200, this.chatOut(chat));
+      }
+      if (rest === "/leave" && method === "POST") {
+        const mine = this.myMembership(chat);
+        if (!mine) return fail(409, "Not a member of this chat.");
+        if (mine.role === "owner") return fail(422, "The owner can't leave the chat.");
+        chat.members = chat.members.filter((x) => x !== mine);
+        return reply(204);
+      }
+      if (rest === "/read" && method === "POST") {
+        const mine = this.myMembership(chat);
+        if (!mine) return fail(403, "Only the chat's members keep track of what they've read in it.");
+        this.chatReads.push([chat.id, body.message_id]);
+        const seen = Math.min(body.message_id, chat.messages.at(-1)?.id ?? 0);
+        mine.last_read = Math.max(mine.last_read ?? 0, seen);
+        return reply(204);
+      }
       if (rest === "/messages" && method === "POST") {
         if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
         const members = Object.values(this.mentionable(chat)).flat();

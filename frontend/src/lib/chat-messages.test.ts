@@ -10,6 +10,8 @@ import {
   mergeInvocations,
   mergeMessages,
   MESSAGE_PAGE,
+  newlyRead,
+  unreadBadge,
 } from "@/lib/chat-messages";
 
 function message(id: number, body = `message ${id}`): ChatMessage {
@@ -143,5 +145,38 @@ describe("bodyShown", () => {
   it("is a plain message's own text", () => {
     const reply = { ...message(8, "Done."), invocation_id: 1 };
     expect(bodyShown(reply, invocation(1, "succeeded", { acknowledgement: "On it." }))).toBe("Done.");
+  });
+});
+
+describe("newlyRead", () => {
+  const shown = [message(3), message(5), message(8)];
+  const seeing = { atBottom: true, visible: true };
+
+  it("is the newest message once the reader is at the bottom of a visible chat", () => {
+    expect(newlyRead(shown, 0, seeing)).toBe(8);
+    expect(newlyRead(shown, 5, seeing)).toBe(8);
+  });
+
+  it("is nothing new when the newest has been reported already", () => {
+    expect(newlyRead(shown, 8, seeing)).toBeNull();
+  });
+
+  it("is nothing while the reader is scrolled up or the tab is hidden", () => {
+    expect(newlyRead(shown, 0, { atBottom: false, visible: true })).toBeNull();
+    expect(newlyRead(shown, 0, { atBottom: true, visible: false })).toBeNull();
+  });
+
+  it("is nothing in a chat with no messages", () => {
+    expect(newlyRead([], 0, seeing)).toBeNull();
+  });
+});
+
+describe("unreadBadge", () => {
+  it("shows a count, capped, and nothing for none or a chat the user isn't in", () => {
+    expect(unreadBadge(0)).toBeNull();
+    expect(unreadBadge(null)).toBeNull();
+    expect(unreadBadge(1)).toBe("1");
+    expect(unreadBadge(99)).toBe("99");
+    expect(unreadBadge(100)).toBe("99+");
   });
 });

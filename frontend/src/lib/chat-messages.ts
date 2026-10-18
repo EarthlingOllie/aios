@@ -61,3 +61,25 @@ const BOTTOM_SLACK = 16;
 export function isAtBottom(view: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
   return view.scrollHeight - view.scrollTop - view.clientHeight <= BOTTOM_SLACK;
 }
+
+/**
+ * The message to report as read, if there's a newer one than `reported`: the newest shown, once
+ * the reader has it in view (at the bottom of a visible chat). Null when there's nothing new to say.
+ */
+export function newlyRead(
+  messages: ChatMessage[],
+  reported: number,
+  { atBottom, visible }: { atBottom: boolean; visible: boolean },
+): number | null {
+  const newest = afterCursor(messages);
+  return atBottom && visible && newest > reported ? newest : null;
+}
+
+/** The most an unread count shows exactly; more is "99+". */
+const UNREAD_SHOWN = 99;
+
+/** What a chat's unread badge says: its count (capped), or null for no badge. */
+export function unreadBadge(count: number | null): string | null {
+  if (!count) return null;
+  return count > UNREAD_SHOWN ? `${UNREAD_SHOWN}+` : String(count);
+}

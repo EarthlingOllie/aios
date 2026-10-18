@@ -108,7 +108,6 @@ def test_list_is_the_chats_im_in_most_recently_active_first(api, user, other):
     mine = make_chat(api, "Mine", visibility="public")
     with signed_in_as(other):
         theirs_with_me = make_chat(api, "Theirs with me", visibility="private")
-        make_chat(api, "Theirs public", visibility="public")
         make_chat(api, "Theirs private", visibility="private")
         add_user(api, theirs_with_me, user)
     listed = api.get("/api/chats").json()
@@ -206,8 +205,10 @@ def test_a_private_chat_im_not_in_is_a_404_everywhere(api, user, other):
         assert api.get(f"/api/chats/{public['id']}").json()["is_owner"] is False
         assert api.put(f"/api/chats/{public['id']}", json=body).status_code == 403
         assert api.delete(f"/api/chats/{public['id']}").status_code == 403
-        # Not a member, so not listed.
-        assert api.get("/api/chats").json() == []
+        # Listed for them to find, as one they're not in.
+        assert [(c["name"], c["is_member"]) for c in api.get("/api/chats").json()] == [
+            ("Open", False)
+        ]
 
 
 def post(api, chat: dict, body: str) -> dict:

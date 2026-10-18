@@ -24,6 +24,7 @@ import {
   isLive,
   mergeInvocations,
   mergeMessages,
+  newlyRead,
   type Invocations,
 } from "@/lib/chat-messages";
 import { useCurrentUser } from "@/lib/current-user";
@@ -80,13 +81,15 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * new messages scroll into view only when the reader is already at the bottom. `@` in the composer
  * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned agent's
  * or workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
- * which brings the state of every invocation still going.
+ * which brings the state of every invocation still going. Whenever the reader is at the bottom of
+ * the visible chat, `onRead` hears of the newest message, once each.
  */
 export function ChatRoom({
   chatId,
   canPost,
   mentionable,
   onPosted,
+  onRead,
 }: {
   chatId: number;
   /** Members post; anyone else may only read. */
@@ -95,6 +98,8 @@ export function ChatRoom({
   mentionable?: ChatMentionables;
   /** After a message is posted, e.g. to re-sort the list of chats. */
   onPosted?: () => void;
+  /** The reader has seen the messages up to this one (only for a member, who keeps a place). */
+  onRead?: (messageId: number) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
@@ -110,6 +115,20 @@ export function ChatRoom({
   const shown = useRef<ChatMessage[]>([]);
   const intent = useRef<ScrollIntent>(null);
   const visible = useVisible();
+  // The newest message `onRead` has heard of.
+  const reported = useRef(0);
+
+  /** Tells `onRead` of the newest message if the reader has it in view and it hasn't heard. */
+  const noteRead = useCallback(() => {
+    const el = list.current;
+    const seen = newlyRead(shown.current, reported.current, {
+      atBottom: !el || isAtBottom(el),
+      visible: document.visibilityState !== "hidden",
+    });
+    if (seen === null || !onRead) return;
+    reported.current = seen;
+    onRead(seen);
+  }, [onRead]);
 
   /**
    * Shows what a read brought, saying what that does to the scroll. Nothing new keeps the same
@@ -184,6 +203,12 @@ export function ChatRoom({
     else el.scrollTop = scroll.scrollTop + (el.scrollHeight - scroll.scrollHeight);
   }, [messages]);
 
+  // What's shown now may have been read: after each render of new messages (scrolled by then),
+  // on being shown again, and on joining (when there's someone to tell).
+  useEffect(() => {
+    if (messages !== undefined) noteRead();
+  }, [messages, visible, noteRead]);
+
   async function onSubmit() {
     const body = draft;
     if (!body.trim() || posting) return;
@@ -216,6 +241,7 @@ export function ChatRoom({
         className="flex h-[55vh] min-h-64 flex-col gap-3 overflow-y-auto rounded-md border p-3 [overflow-anchor:none]"
         onScroll={(e) => {
           if (e.currentTarget.scrollTop <= LOAD_OLDER_WITHIN) void loadOlder();
+          noteRead();
         }}
       >
         {older && (
@@ -247,7 +273,7 @@ export function ChatRoom({
           mentionable={mentionable}
         />
       ) : (
-        <p className="text-muted-foreground text-sm">Only the chat's members can post in it.</p>
+        <p className="text-muted-foreground text-sm">Join the chat to post in it.</p>
       )}
     </div>
   );

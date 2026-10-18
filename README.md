@@ -136,14 +136,27 @@ next to run first, and creates, edits, pauses and deletes them; each agent's and
 does the same for its own (`/api/triggers`).
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
-**Chats** page lists the chats you're in, most recently active first, and opens one to its header,
+**Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
+you can find them), most recently active first, and opens one to its header,
 messages and members, grouped by kind: users, and the owner's **agents and workflows**, with the
 icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
 user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat
 doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
 opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
 renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
-other members).
+other members). "Public" means every signed-in user of this deployment; organisations will narrow
+it. A public chat you aren't in can be read but not posted in until you **join** it, in one click
+(`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
+/api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
+Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
+the start.
+
+Each chat you're in shows an **unread count** in the list: the messages others posted since the
+last one you saw, tracked per chat and member by message id (`chat_members.last_read_message_id`).
+Reading the open chat to the bottom, with its tab visible, reports the newest message (`POST
+/api/chats/{id}/read` with `{message_id}`; it only moves forward) and clears the count; the list
+asks again every 5 seconds (30 while hidden). Joining counts what was already there as read; a
+member added by the owner has the history to read. Nothing is sent off-app.
 
 Members post **messages** in markdown, shown with their author's avatar and name. The open chat
 asks for what's new every second (`GET /api/chats/{id}/messages?after=N`, every 30 seconds while

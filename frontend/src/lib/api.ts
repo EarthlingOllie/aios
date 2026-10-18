@@ -673,6 +673,12 @@ export type ChatSummary = {
   updated_at: string;
 };
 
+/** A chat as the list shows it: those the user is in, and the public ones they could join. */
+export type ChatListed = ChatSummary & {
+  /** Others' messages since the last one the user read; null for a chat they're not in. */
+  unread_count: number | null;
+};
+
 export type Chat = ChatSummary & {
   /** Grouped by kind; the owner first, then in the order they were added. */
   members: { users: ChatMember[]; agents: ChatMember[]; workflows: ChatMember[] };
@@ -935,7 +941,7 @@ export const api = {
     request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
 
-  listChats: () => request<ChatSummary[]>("/api/chats"),
+  listChats: () => request<ChatListed[]>("/api/chats"),
   getChat: (id: number) => request<Chat>(`/api/chats/${id}`),
   createChat: (body: ChatInput) => request<Chat>("/api/chats", json("POST", body)),
   updateChat: (id: number, body: ChatInput) =>
@@ -954,4 +960,9 @@ export const api = {
   listChatMentionable: (id: number) => request<ChatMentionables>(`/api/chats/${id}/mentionable`),
   addChatMember: (id: number, member: ChatMentionRef) =>
     request<Chat>(`/api/chats/${id}/members`, json("POST", member)),
+  joinChat: (id: number) => request<Chat>(`/api/chats/${id}/join`, { method: "POST" }),
+  leaveChat: (id: number) => request<void>(`/api/chats/${id}/leave`, { method: "POST" }),
+  /** Notes that the user has seen the chat's messages up to `messageId`, clearing their unread count. */
+  markChatRead: (id: number, messageId: number) =>
+    request<void>(`/api/chats/${id}/read`, json("POST", { message_id: messageId })),
 };
