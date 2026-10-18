@@ -14,7 +14,7 @@ Every invocation ends the same way, in one transaction: it's marked succeeded or
 result is posted back as a message from the agent or workflow, belonging to the invocation
 (`_finish`), so whoever is following the card sees it end with the message. A workflow run ends
 in the worker or when it's found stopped (`aios.workflows._end_runs`, which calls
-`finish_workflow_runs`), or is deleted before it does (`run_deleted`). An invocation that never
+`finish_workflow_runs`), or is deleted before it does (`fail_deleted_run`). An invocation that never
 got as far as starting, because its process stopped first, is failed when the chat is next read
 (`fail_stalled`).
 """
@@ -180,7 +180,7 @@ def finish_workflow_runs(db: Session, run_ids: Sequence[int]) -> None:
             failed(db, invocation, run.error or "The run failed.")
 
 
-def run_deleted(db: Session, workflow_run_id: int) -> None:
+def fail_deleted_run(db: Session, workflow_run_id: int) -> None:
     """Fail the invocation of a workflow run being deleted before it finished; in the caller's
     transaction, before the run goes."""
     for invocation in db.scalars(

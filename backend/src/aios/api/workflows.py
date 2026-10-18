@@ -956,7 +956,7 @@ def delete_workflow_run(
     # Before they go (their requests keep no link to them): a pending one can't be approved.
     close_requests(db, [run.id])
     # A chat that started it and is still following it is told it's gone.
-    invocations.run_deleted(db, run.id)
+    invocations.fail_deleted_run(db, run.id)
     # Their exported copies go too, and its own (its agent runs' rows first, as the export
     # marks them).
     history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)

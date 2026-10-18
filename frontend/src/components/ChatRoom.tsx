@@ -73,8 +73,8 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
 
 /**
  * An open chat's messages and its composer. Shows the latest page, scrolled to the newest, and
- * asks for what's new every `POLL_MS` (`CHAT_HIDDEN_POLL_MS` while the tab is hidden, and at once
- * when it's shown again). Scrolling to the top loads the page before, keeping the reader's place;
+ * asks for what's new every `POLL_MS` (`CHAT_HIDDEN_POLL_MS` while the tab is hidden and no run is
+ * live, and at once when it's shown again). Scrolling to the top loads the page before, keeping the reader's place;
  * new messages scroll into view only when the reader is already at the bottom. `@` in the composer
  * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned
  * workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
@@ -142,7 +142,12 @@ export function ChatRoom({
       ),
     [read, show],
   );
-  usePoll(loaded, poll, visible ? POLL_MS : CHAT_HIDDEN_POLL_MS);
+  // A run still going is followed every second, even while the tab is hidden.
+  const live = useMemo(
+    () => Object.values(invocations).some((i) => i.status === "queued" || i.status === "running"),
+    [invocations],
+  );
+  usePoll(loaded, poll, visible || live ? POLL_MS : CHAT_HIDDEN_POLL_MS);
   const wasVisible = useRef(visible);
   useEffect(() => {
     // Shown again: what was posted meanwhile, now.

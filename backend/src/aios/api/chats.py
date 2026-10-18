@@ -24,6 +24,7 @@ as the run's page shows it, so a chat's live cards cost its one poll. When the r
 result is posted back as a message from the workflow.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
@@ -517,9 +518,10 @@ def message_out(message: ChatMessage) -> MessageOut:
     )
 
 
-def invocation_out(db: Session, invocation: ChatInvocation) -> InvocationOut:
+def invocation_out(invocation: ChatInvocation) -> InvocationOut:
+    """The invocation, without its run (`with_runs` adds it)."""
     run_id = invocation.workflow_run_id
-    out = InvocationOut(
+    return InvocationOut(
         id=invocation.id,
         chat_id=invocation.chat_id,
         message_id=invocation.message_id,
@@ -535,10 +537,15 @@ def invocation_out(db: Session, invocation: ChatInvocation) -> InvocationOut:
         finished_at=invocation.finished_at,
         workflow_run=None,
     )
-    # Read last: it expires the session's rows.
-    if run_id is not None:
-        out.workflow_run = workflows_api.workflow_run_out(db, run_id)
-    return out
+
+
+def with_runs(db: Session, outs: list[InvocationOut]) -> list[InvocationOut]:
+    """The invocations with their runs as the run page shows them. Read once the rest has been,
+    since reading a run expires the session's rows."""
+    for out in outs:
+        if out.workflow_run_id is not None:
+            out.workflow_run = workflows_api.workflow_run_out(db, out.workflow_run_id)
+    return outs
 
 
 def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> MessagesOut:
@@ -555,7 +562,7 @@ def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> Mess
         )
         .order_by(ChatInvocation.id)
     ).all()
-    return MessagesOut(messages=out, invocations=[invocation_out(db, i) for i in found])
+    return MessagesOut(messages=out, invocations=with_runs(db, [invocation_out(i) for i in found]))
 
 
 def catch_up(db: Session, chat_id: int) -> None:
@@ -666,9 +673,11 @@ class InvocationFiring:
 
 
 async def start_invocations(invocation_ids: list[int]) -> None:
-    """Start the invocations' runs, each as a fire of its own (`aios.firing`)."""
-    for invocation_id in invocation_ids:
-        await firing.launch(InvocationFiring(invocation_id), name=f"invocation-{invocation_id}")
+    """Start the invocations' runs, each as a fire of its own (`aios.firing`), at once. Starting
+    one only queues its run, so these don't wait for a free slot under the cap."""
+    await asyncio.gather(
+        *(firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in invocation_ids)
+    )
 
 
 @router.post(

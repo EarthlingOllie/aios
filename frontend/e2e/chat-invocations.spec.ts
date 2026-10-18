@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, type FakeApi } from "./fake-api";
+import { setHidden } from "./visibility";
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
 const message = (page: Page, text: string | RegExp) =>
@@ -128,4 +129,15 @@ test("a card whose run has been deleted says so", async ({ page }) => {
   await expect(card(page).getByText("Succeeded")).toBeVisible();
   await expect(messageList(page).getByRole("link", { name: /Open run/ })).toHaveCount(0);
   await expect(message(page, "review done")).toBeVisible();
+});
+
+test("a live run is followed every second even while the tab is hidden", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { chat, report } = seed(api);
+  await page.goto(`/chats/${chat.id}`);
+  await mention(page, report, "Go");
+  await expect(card(page)).toBeVisible();
+  await setHidden(page, true);
+  // Hidden, a quiet chat is read every 30 seconds; this one has a run going.
+  await expect(message(page, "review done")).toBeVisible({ timeout: 10_000 });
 });
