@@ -89,7 +89,7 @@ class ChatSummary(BaseModel):
     is_member: bool
     member_count: int
     created_at: datetime
-    # When it was last active: for now, when it was last changed.
+    # When it was last active: when it was last changed, or a message was last posted.
     updated_at: datetime
 
 
@@ -152,7 +152,9 @@ def chat_summary(chat: Chat, user_id: int, member_count: int, member: bool) -> C
 
 def chat_out(chat: Chat, user_id: int) -> ChatOut:
     return ChatOut(
-        **chat_summary(chat, user_id, len(chat.members), is_member(chat, user_id)).model_dump(),
+        **chat_summary(
+            chat, user_id, len(chat.members), member=is_member(chat, user_id)
+        ).model_dump(),
         members=members_out(chat),
     )
 
@@ -200,7 +202,7 @@ def list_chats(user: CurrentUser, db: DB):
         .group_by(Chat.id)
         .order_by(Chat.updated_at.desc(), Chat.id.desc())
     )
-    return [chat_summary(chat, user.id, count, True) for chat, count in rows]
+    return [chat_summary(chat, user.id, count, member=True) for chat, count in rows]
 
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)

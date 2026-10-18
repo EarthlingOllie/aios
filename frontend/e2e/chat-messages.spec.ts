@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, type ChatUser } from "./fake-api";
+import { setHidden } from "./visibility";
 
 const sam: ChatUser = { id: 2, login: "sam", name: "Sam", avatar_url: "/sam.png" };
 // How often the open chat asks for what's new (POLL_MS), and how often once its tab is hidden.
@@ -91,18 +92,6 @@ test("follows new messages at the bottom, but not while reading older ones", asy
   expect((await scroll(page)).top).toBe(100);
   await expect(message(page, "Newest")).not.toBeInViewport();
 });
-
-/** As the browser does when the tab is hidden or shown again. */
-async function setHidden(page: Page, hidden: boolean) {
-  await page.evaluate((hidden) => {
-    Object.defineProperty(document, "visibilityState", {
-      configurable: true,
-      get: () => (hidden ? "hidden" : "visible"),
-    });
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
-    document.dispatchEvent(new Event("visibilitychange"));
-  }, hidden);
-}
 
 test("a hidden tab asks less often, and catches up as soon as it's shown", async ({ page }) => {
   await page.clock.install();

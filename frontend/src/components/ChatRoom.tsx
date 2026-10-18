@@ -5,7 +5,14 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
-import { api, describeError, type ChatMessage, type ChatMessagesCursor } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type ChatMemberKind,
+  type ChatMessage,
+  type ChatMessageAuthor,
+  type ChatMessagesCursor,
+} from "@/lib/api";
 import { afterCursor, hasOlder, isAtBottom, mergeMessages } from "@/lib/chat-messages";
 
 /** How often an open chat asks for what's new while its tab is hidden (ms). */
@@ -21,7 +28,7 @@ export function ChatAvatar({
   avatarUrl,
   alt = "",
 }: {
-  kind: string;
+  kind: ChatMemberKind | ChatMessageAuthor["kind"];
   name: string;
   avatarUrl: string | null;
   /** What it says to a screen reader; nothing when the name is shown beside it. */
@@ -69,6 +76,8 @@ export function ChatRoom({
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [older, setOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // Set at once, unlike the state: scroll events come faster than renders.
+  const loadingOlderNow = useRef(false);
   const [error, setError] = useState<string>();
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
@@ -78,8 +87,10 @@ export function ChatRoom({
   const intent = useRef<ScrollIntent>(null);
   const visible = useVisible();
 
-  /** Shows what a read brought, saying what that does to the scroll. */
-  // Nothing new keeps the same list, so nothing renders and the intent waits for the next read.
+  /**
+   * Shows what a read brought, saying what that does to the scroll. Nothing new keeps the same
+   * list, so nothing renders and the intent is replaced by the next read's.
+   */
   const show = useCallback((incoming: ChatMessage[], scroll: ScrollIntent) => {
     shown.current = mergeMessages(shown.current, incoming);
     intent.current = scroll;
@@ -117,7 +128,8 @@ export function ChatRoom({
   }, [loaded, visible, poll]);
 
   const loadOlder = useCallback(async () => {
-    if (loadingOlder || !older || shown.current.length === 0) return;
+    if (loadingOlderNow.current || !older || shown.current.length === 0) return;
+    loadingOlderNow.current = true;
     setLoadingOlder(true);
     try {
       const { messages: page } = await read({ before: shown.current[0].id });
@@ -127,9 +139,10 @@ export function ChatRoom({
     } catch (err) {
       setError(describeError(err));
     } finally {
+      loadingOlderNow.current = false;
       setLoadingOlder(false);
     }
-  }, [loadingOlder, older, read, show]);
+  }, [older, read, show]);
 
   useLayoutEffect(() => {
     const el = list.current;
