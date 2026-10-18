@@ -851,7 +851,7 @@ class ChatMemberRole(enum.StrEnum):
 
 
 class Chat(Base):
-    """A group conversation. Its members are `ChatMember` rows; messages come later."""
+    """A group conversation. Its members are `ChatMember` rows, its messages `ChatMessage`s."""
 
     __tablename__ = "chats"
 
@@ -863,7 +863,7 @@ class Chat(Base):
     # A private chat doesn't exist for a user who isn't a member of it.
     visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # When it was last active: for now, when it was last changed; messages will bump it.
+    # When it was last active: when it was last changed, or a message was last posted.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -923,4 +923,62 @@ class ChatMember(Base):
         UniqueConstraint("chat_id", "user_id"),
         UniqueConstraint("chat_id", "agent_id"),
         UniqueConstraint("chat_id", "workflow_id"),
+    )
+
+
+class ChatAuthorKind(enum.StrEnum):
+    user = "user"
+    agent = "agent"
+    workflow = "workflow"
+    # The chat itself (no author), for messages about it.
+    system = "system"
+
+
+class ChatMessageKind(enum.StrEnum):
+    # Markdown, as written.
+    text = "text"
+    # A card following a run a mention started (not yet posted).
+    run_card = "run_card"
+
+
+class ChatMessage(Base):
+    """A message in a chat, read in id order: `?after=` and `?before=` page by id."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"))
+    author_kind: Mapped[ChatAuthorKind] = mapped_column(
+        Enum(ChatAuthorKind, name="chat_author_kind")
+    )
+    # At most one is set, matching `author_kind`; none for a system message. Deleting the author
+    # leaves what they posted, with no author.
+    author_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    author_agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="SET NULL"), index=True
+    )
+    author_workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), index=True
+    )
+    kind: Mapped[ChatMessageKind] = mapped_column(Enum(ChatMessageKind, name="chat_message_kind"))
+    body: Mapped[str] = mapped_column(Text)
+    # Who the message mentions, `[{kind, id, name}]`; empty until mentions arrive.
+    mentions: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    author_user: Mapped[User | None] = relationship()
+    author_agent: Mapped[Agent | None] = relationship()
+    author_workflow: Mapped[Workflow | None] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "(author_kind = 'user' OR author_user_id IS NULL)"
+            " AND (author_kind = 'agent' OR author_agent_id IS NULL)"
+            " AND (author_kind = 'workflow' OR author_workflow_id IS NULL)",
+            name="ck_chat_messages_author",
+        ),
+        # A chat's messages in order, for the cursor reads.
+        Index("ix_chat_messages_chat_id_id", "chat_id", "id"),
     )

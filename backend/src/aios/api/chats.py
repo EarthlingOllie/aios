@@ -3,13 +3,18 @@
 A chat has an owner (the user who made it), a name unique among chats, a description and a
 visibility. Its members are users so far (`ChatMember` has room for agents and workflows). A
 private chat doesn't exist for a user who isn't in it: every endpoint is a 404 for them. Only the
-owner can change a chat, remove its members or delete it: a 403 for anyone else. Messages come
-later; until then a chat's last activity is when it was last changed.
+owner can change a chat, remove its members or delete it: a 403 for anyone else.
+
+Its members post markdown messages, read by id: `?after=N` for what's new (what the open chat
+polls), `?before=N` for the page of history before N, and neither for the latest page. Anyone
+the chat exists for can read them; only a member can post (a 403 for anyone else). A chat's last
+activity is when it was last changed or a message was last posted.
 """
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -17,7 +22,17 @@ from sqlalchemy.orm import Session, selectinload
 from aios.api.skills import on_conflict, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
-from aios.models import Chat, ChatMember, ChatMemberKind, ChatMemberRole, ChatVisibility, User
+from aios.models import (
+    Chat,
+    ChatAuthorKind,
+    ChatMember,
+    ChatMemberKind,
+    ChatMemberRole,
+    ChatMessage,
+    ChatMessageKind,
+    ChatVisibility,
+    User,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -70,6 +85,8 @@ class ChatSummary(BaseModel):
     owner_id: int
     # Whether the signed-in user owns it, so the UI knows to offer the owner's actions.
     is_owner: bool
+    # Whether the signed-in user is in it, and so can post (a public chat can be read by anyone).
+    is_member: bool
     member_count: int
     created_at: datetime
     # When it was last active: for now, when it was last changed.
@@ -118,7 +135,7 @@ def members_out(chat: Chat) -> ChatMembersOut:
     )
 
 
-def chat_summary(chat: Chat, user_id: int, member_count: int) -> ChatSummary:
+def chat_summary(chat: Chat, user_id: int, member_count: int, member: bool) -> ChatSummary:
     return ChatSummary(
         id=chat.id,
         name=chat.name,
@@ -126,6 +143,7 @@ def chat_summary(chat: Chat, user_id: int, member_count: int) -> ChatSummary:
         visibility=chat.visibility,
         owner_id=chat.owner_id,
         is_owner=chat.owner_id == user_id,
+        is_member=member,
         member_count=member_count,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
@@ -134,7 +152,8 @@ def chat_summary(chat: Chat, user_id: int, member_count: int) -> ChatSummary:
 
 def chat_out(chat: Chat, user_id: int) -> ChatOut:
     return ChatOut(
-        **chat_summary(chat, user_id, len(chat.members)).model_dump(), members=members_out(chat)
+        **chat_summary(chat, user_id, len(chat.members), is_member(chat, user_id)).model_dump(),
+        members=members_out(chat),
     )
 
 
@@ -181,7 +200,7 @@ def list_chats(user: CurrentUser, db: DB):
         .group_by(Chat.id)
         .order_by(Chat.updated_at.desc(), Chat.id.desc())
     )
-    return [chat_summary(chat, user.id, count) for chat, count in rows]
+    return [chat_summary(chat, user.id, count, True) for chat, count in rows]
 
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
@@ -275,3 +294,135 @@ def remove_member(chat_id: DbId, member_id: DbId, user: CurrentUser, db: DB) -> 
     chat.members.remove(member)
     chat.updated_at = func.now()
     db.commit()
+
+
+# How many messages a read returns at most: the latest page, a page of history, or what's new.
+MESSAGE_PAGE = 50
+NOT_A_MEMBER = "Only the chat's members can post in it."
+
+
+class MessageIn(BaseModel):
+    body: str = Field(min_length=1, max_length=100_000, pattern=r"\S")
+
+
+class MessageAuthorOut(BaseModel):
+    kind: ChatAuthorKind
+    # The user's, agent's or workflow's id.
+    id: int
+    name: str
+    # Users only.
+    login: str | None
+    avatar_url: str | None
+
+
+class MessageOut(BaseModel):
+    id: int
+    chat_id: int
+    # Null for a system message, or once the author has been deleted.
+    author: MessageAuthorOut | None
+    kind: ChatMessageKind
+    # Markdown.
+    body: str
+    mentions: list[dict]
+    created_at: datetime
+
+
+class MessagesOut(BaseModel):
+    """A page of a chat's messages, oldest first. `invocations` will carry the live state of the
+    runs its mentions started; empty for now."""
+
+    messages: list[MessageOut]
+    invocations: list[dict]
+
+
+def author_out(message: ChatMessage) -> MessageAuthorOut | None:
+    if message.author_user is not None:
+        user = message.author_user
+        return MessageAuthorOut(
+            kind=ChatAuthorKind.user,
+            id=user.id,
+            name=user.name or user.login,
+            login=user.login,
+            avatar_url=user.avatar_url,
+        )
+    target = message.author_agent or message.author_workflow
+    if target is None:
+        return None
+    return MessageAuthorOut(
+        kind=message.author_kind, id=target.id, name=target.name, login=None, avatar_url=None
+    )
+
+
+def message_out(message: ChatMessage) -> MessageOut:
+    return MessageOut(
+        id=message.id,
+        chat_id=message.chat_id,
+        author=author_out(message),
+        kind=message.kind,
+        body=message.body,
+        mentions=message.mentions,
+        created_at=message.created_at,
+    )
+
+
+MESSAGE_LOAD = (
+    selectinload(ChatMessage.author_user),
+    selectinload(ChatMessage.author_agent),
+    selectinload(ChatMessage.author_workflow),
+)
+
+
+@router.get("/chats/{chat_id}/messages", response_model=MessagesOut)
+def list_messages(
+    chat_id: DbId,
+    user: CurrentUser,
+    db: DB,
+    after: Annotated[int | None, Query(ge=0)] = None,
+    before: Annotated[int | None, Query(ge=1)] = None,
+):
+    """A page of the chat's messages, oldest first: the next ones after `after` (what's new), the
+    ones just before `before` (history), or with neither the latest. A page is at most
+    `MESSAGE_PAGE` messages; a shorter one is all there is."""
+    if after is not None and before is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Give `after` or `before`, not both."
+        )
+    get_visible_chat(db, user.id, chat_id)
+    query = select(ChatMessage).where(ChatMessage.chat_id == chat_id).options(*MESSAGE_LOAD)
+    if after is not None:
+        query = query.where(ChatMessage.id > after).order_by(ChatMessage.id)
+    else:
+        if before is not None:
+            query = query.where(ChatMessage.id < before)
+        query = query.order_by(ChatMessage.id.desc())
+    rows = list(db.scalars(query.limit(MESSAGE_PAGE)))
+    if after is None:
+        rows.reverse()
+    return MessagesOut(messages=[message_out(m) for m in rows], invocations=[])
+
+
+@router.post(
+    "/chats/{chat_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED
+)
+def post_message(chat_id: DbId, body: MessageIn, user: CurrentUser, db: DB):
+    """Post a markdown message to the chat as the user, who must be a member of it."""
+    chat = get_visible_chat(db, user.id, chat_id)
+    if not is_member(chat, user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
+    message = ChatMessage(
+        chat_id=chat.id,
+        author_kind=ChatAuthorKind.user,
+        author_user_id=user.id,
+        kind=ChatMessageKind.text,
+        body=body.body,
+    )
+    db.add(message)
+    # Posting is activity.
+    chat.updated_at = func.now()
+    db.commit()
+    db.expire_all()
+    return message_out(
+        db.scalars(
+            select(ChatMessage).where(ChatMessage.id == message.id).options(*MESSAGE_LOAD)
+        ).one()
+    )

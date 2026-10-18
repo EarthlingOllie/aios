@@ -136,13 +136,22 @@ next to run first, and creates, edits, pauses and deletes them; each agent's and
 does the same for its own (`/api/triggers`).
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
-**Chats** page lists the chats you're in, most recently active first, and opens one to its header
-and members, grouped by kind (users for now; agents and workflows have their place in
+**Chats** page lists the chats you're in, most recently active first, and opens one to its header,
+messages and members, grouped by kind (users for now; agents and workflows have their place in
 `chat_members` and join later, with messages). A chat is **public** or **private**: a private chat
 doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
 opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
 renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
 other members).
+
+Members post **messages** in markdown, shown with their author's avatar and name. The open chat
+asks for what's new every second (`GET /api/chats/{id}/messages?after=N`, every 30 seconds while
+its tab is hidden, and at once when it's shown again), follows new messages when scrolled to the
+bottom and otherwise leaves the reader where they are; scrolling to the top loads the page before
+(`?before=N`, 50 at a time). Anyone a chat exists for can read it; only its members post (a 403
+for anyone else). A read returns `{messages, invocations}`, the second for the runs mentions will
+start (empty for now). Posting makes a chat the most recently active; a message stays when its
+author is deleted, with no author.
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does

@@ -6,7 +6,8 @@ import type { Page, Route } from "@playwright/test";
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
- * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else).
+ * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else) and messages
+ * (read a page at a time by id, `after` or `before` a cursor; only members post).
  */
 
 type Kind = "agent" | "workflow";
@@ -251,9 +252,15 @@ export type ChatRow = {
   description: string;
   visibility: ChatVisibility;
   members: ChatMemberRow[];
+  /** Oldest first. */
+  messages: ChatMessageRow[];
   created_at: string;
   updated_at: string;
 };
+export type ChatMessageRow = { id: number; author: ChatUser; body: string; created_at: string };
+
+/** How many messages a read returns at most, as the API's `MESSAGE_PAGE`. */
+export const MESSAGE_PAGE = 50;
 
 const NOW = "2026-10-14T09:00:00Z";
 
@@ -345,6 +352,8 @@ export class FakeApi {
   notifications: NotificationRow[] = [];
   /** How many times the app asked for the user's notifications. */
   notificationLists = 0;
+  /** The query of each read of a chat's messages, in order (e.g. "?after=12"). */
+  messageReads: string[] = [];
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
   /** The store's `data` tables, by name. */
@@ -808,12 +817,20 @@ export class FakeApi {
       description,
       visibility,
       members: [],
+      messages: [],
       created_at: NOW,
       updated_at: NOW,
     };
     chat.members.push({ id: this.id(), role: "owner", user: owner, added_at: NOW });
     this.chats.set(chat.id, chat);
     return chat;
+  }
+
+  /** Posts a message to a chat, as `author` (by default `me`) would. */
+  addChatMessage(chat: ChatRow, body: string, author: ChatUser = this.me): ChatMessageRow {
+    const message: ChatMessageRow = { id: this.id(), author, body, created_at: NOW };
+    chat.messages.push(message);
+    return message;
   }
 
   /** Adds a user to a chat, as the owner would. */
@@ -943,6 +960,7 @@ export class FakeApi {
       visibility: chat.visibility,
       owner_id: chat.owner.id,
       is_owner: chat.owner.id === this.me.id,
+      is_member: this.inChat(chat),
       member_count: chat.members.length,
       created_at: chat.created_at,
       updated_at: chat.updated_at,
@@ -963,6 +981,38 @@ export class FakeApi {
         added_at: m.added_at,
       }));
     return { ...this.chatSummary(chat), members: { users, agents: [], workflows: [] } };
+  }
+
+  private messageOut(chat: ChatRow, m: ChatMessageRow) {
+    return {
+      id: m.id,
+      chat_id: chat.id,
+      author: {
+        kind: "user",
+        id: m.author.id,
+        name: m.author.name ?? m.author.login,
+        login: m.author.login,
+        avatar_url: m.author.avatar_url ?? null,
+      },
+      kind: "text",
+      body: m.body,
+      mentions: [],
+      created_at: m.created_at,
+    };
+  }
+
+  /** The page of a chat's messages a read asks for, oldest first, as the API pages them. */
+  private messagesPage(chat: ChatRow, query: URLSearchParams) {
+    const after = query.get("after");
+    const before = query.get("before");
+    let page: ChatMessageRow[];
+    if (after !== null) {
+      page = chat.messages.filter((m) => m.id > Number(after)).slice(0, MESSAGE_PAGE);
+    } else {
+      const older = before === null ? chat.messages : chat.messages.filter((m) => m.id < Number(before));
+      page = older.slice(-MESSAGE_PAGE);
+    }
+    return { messages: page.map((m) => this.messageOut(chat, m)), invocations: [] };
   }
 
   private inChat(chat: ChatRow) {
@@ -1009,7 +1059,8 @@ export class FakeApi {
   private async handle(route: Route) {
     const request = route.request();
     const method = request.method();
-    const path = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const path = url.pathname;
     // As postDataJSON gives it (`any`), or a placeholder for an upload.
     let body: ReturnType<typeof request.postDataJSON> = null;
     try {
@@ -1500,6 +1551,14 @@ export class FakeApi {
         return fail(404, "Not Found");
       }
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
+      if (rest === "/messages" && method === "GET") {
+        this.messageReads.push(url.search);
+        return reply(200, this.messagesPage(chat, url.searchParams));
+      }
+      if (rest === "/messages" && method === "POST") {
+        if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
+        return reply(201, this.messageOut(chat, this.addChatMessage(chat, body.body)));
+      }
       if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
         if ([...this.chats.values()].some((c) => c.name === body.name && c !== chat)) {

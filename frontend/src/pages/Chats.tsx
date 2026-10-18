@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Bot, Lock, Pencil, Trash2, UserMinus, Workflow } from "lucide-react";
+import { Lock, Pencil, Trash2, UserMinus } from "lucide-react";
 
+import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
 import {
   DetailPage,
   ErrorBanner,
@@ -132,6 +133,7 @@ export function ChatDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      <ChatRoom key={chat.id} chatId={chat.id} canPost={chat.is_member} onPosted={reloadList} />
       <Section title="Members" label="Members">
         <MembersPanel chat={chat} onRemove={chat.is_owner ? onRemove : undefined} />
       </Section>
@@ -163,7 +165,7 @@ function MembersPanel({
             <ul className="divide-y rounded-md border">
               {members.map((member) => (
                 <li key={member.id} className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <MemberAvatar member={member} />
+                  <ChatAvatar kind={member.kind} name={member.name} avatarUrl={member.avatar_url} />
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate">
                     <span>{member.name}</span>
                     {member.login && member.login !== member.name && (
@@ -188,17 +190,6 @@ function MembersPanel({
         </div>
       ))}
     </div>
-  );
-}
-
-function MemberAvatar({ member }: { member: ChatMember }) {
-  if (member.kind === "agent") return <Bot className="text-muted-foreground size-5" />;
-  if (member.kind === "workflow") return <Workflow className="text-muted-foreground size-5" />;
-  if (member.avatar_url) return <img src={member.avatar_url} alt="" className="size-5 rounded-full" />;
-  return (
-    <span className="bg-muted flex size-5 items-center justify-center rounded-full text-[10px] font-medium uppercase">
-      {member.name.slice(0, 1)}
-    </span>
   );
 }
 

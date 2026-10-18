@@ -639,6 +639,8 @@ export type ChatSummary = {
   owner_id: number;
   /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
   is_owner: boolean;
+  /** Whether the signed-in user is in it, and so can post: anyone can read a public chat. */
+  is_member: boolean;
   member_count: number;
   created_at: string;
   /** When it was last active. */
@@ -651,6 +653,33 @@ export type Chat = ChatSummary & {
 };
 
 export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
+
+/** Who posted a chat message: a user (with a login and maybe an avatar), an agent or a workflow. */
+export type ChatMessageAuthor = {
+  kind: "user" | "agent" | "workflow" | "system";
+  id: number;
+  name: string;
+  login: string | null;
+  avatar_url: string | null;
+};
+
+export type ChatMessage = {
+  id: number;
+  chat_id: number;
+  /** Null for a message from the chat itself, or once its author has been deleted. */
+  author: ChatMessageAuthor | null;
+  kind: "text" | "run_card";
+  /** Markdown. */
+  body: string;
+  mentions: { kind: ChatMemberKind; id: number; name: string }[];
+  created_at: string;
+};
+
+/** A page of a chat's messages, oldest first; `invocations` are its live runs (none yet). */
+export type ChatMessages = { messages: ChatMessage[]; invocations: unknown[] };
+
+/** Which page of messages to read: what's new `after` an id, the history `before` one, or the latest. */
+export type ChatMessagesCursor = { after: number } | { before: number } | Record<string, never>;
 
 // Same-origin requests: the browser attaches the session cookie automatically.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -823,4 +852,12 @@ export const api = {
   deleteChat: (id: number) => request<void>(`/api/chats/${id}`, { method: "DELETE" }),
   removeChatMember: (id: number, memberId: number) =>
     request<void>(`/api/chats/${id}/members/${memberId}`, { method: "DELETE" }),
+  listChatMessages: (id: number, cursor: ChatMessagesCursor = {}) =>
+    request<ChatMessages>(
+      `/api/chats/${id}/messages?${new URLSearchParams(
+        Object.entries(cursor).map(([k, v]) => [k, String(v)]),
+      )}`,
+    ),
+  postChatMessage: (id: number, body: string) =>
+    request<ChatMessage>(`/api/chats/${id}/messages`, json("POST", { body })),
 };

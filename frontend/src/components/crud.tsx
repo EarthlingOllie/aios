@@ -71,6 +71,17 @@ export function usePoll(active: boolean, reload: () => Promise<unknown>, ms = PO
   }, [active, reload, ms]);
 }
 
+/** Whether the page is visible: false while its tab is in the background or minimised. */
+export function useVisible(): boolean {
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const onChange = () => setVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return visible;
+}
+
 /** A native `<select>` styled like `Input`. */
 export const selectClass =
   "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
