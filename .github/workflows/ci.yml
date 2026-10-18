@@ -21,8 +21,25 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U aios" --health-interval 2s --health-retries 30
+      # Stands in for S3, as in Compose: uploaded files (aios.datastores.files).
+      rustfs:
+        image: rustfs/rustfs:1.0.1
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -fs http://localhost:9000/health" --health-interval 2s
+          --health-retries 30
+    # As deployed: the master user (`aios`) only creates the roles; migrations and tests run as
+    # the app's role. The master user's DSN also lets tests/test_db_roles.py run.
     env:
-      DATABASE_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
+      DATABASE_URL: postgresql+psycopg://aios_app:aios_app@localhost:5432/aios
+      DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios
+      DATABASE_ADMIN_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
+      DATA_STORE_FILES_ENDPOINT: http://localhost:9000
+      DATA_STORE_FILES_ACCESS_KEY: rustfsadmin
+      DATA_STORE_FILES_SECRET_KEY: rustfsadmin
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
@@ -31,6 +48,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run python -m aios.db_roles
       - run: uv run alembic upgrade head
       - run: uv run alembic check
       - run: uv run pytest
@@ -76,3 +94,5 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false
       - run: terraform validate
+      # Applies the configuration to a mocked AWS and checks it (tests/): no account needed.
+      - run: terraform test

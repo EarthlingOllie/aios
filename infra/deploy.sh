@@ -51,22 +51,65 @@ else
   echo "==> First deploy: applying infrastructure with services scaled to zero"
   PREP_VARS=(-var "image_tag=$TAG" -var "run_services=false")
 fi
+
+# Runs a one-off task (a task definition family) to completion, in the network that the
+# migrate_task output names; fails if it does.
+run_task() {
+  local taskdef="$1" logs="$2" netcfg task_arn exit_code
+  CLUSTER="$(tf output -raw ecs_cluster)"
+  netcfg="$(tf output -json migrate_task | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
+  task_arn="$(aws ecs run-task --region "$REGION" --cluster "$CLUSTER" --launch-type FARGATE \
+    --task-definition "$taskdef" --network-configuration "$netcfg" \
+    --query 'tasks[0].taskArn' --output text)"
+  aws ecs wait tasks-stopped --region "$REGION" --cluster "$CLUSTER" --tasks "$task_arn"
+  exit_code="$(aws ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$task_arn" \
+    --query 'tasks[0].containers[0].exitCode' --output text)"
+  if [[ "$exit_code" != "0" ]]; then
+    echo "$taskdef failed (exit $exit_code); see CloudWatch log group /ecs/*/$logs" >&2
+    return 1
+  fi
+}
+
+# The only use of the master user: create the app's and the provisioner's roles (or update
+# their passwords) and hand the app's role the schema (the db-roles task). Services still
+# running as the master user keep working: it's a member of the app's role.
+#
+# The full apply below switches the app's secret to the app's role, and ECS reads the secret
+# whenever it starts a task. So on a stack with running services, the roles are created first,
+# from the master user's secret alone (it also holds the roles' DSNs), with only that task and
+# its secret applied: a task replaced in between still gets credentials that work. (A targeted
+# apply only writes an output whose every resource is targeted, which is why the task runs in
+# migrate_task's network: that output is the previous deploy's, from its full apply.)
+create_roles() {
+  echo "==> Creating database roles"
+  run_task "$(tf output -raw db_roles_task_definition)" db-roles
+}
+if [[ -n "$CURRENT_TAG" ]]; then
+  tf apply -auto-approve -input=false "${PREP_VARS[@]}" -var "migrate_image_tag=$TAG" \
+    -target=aws_secretsmanager_secret_version.db_master \
+    -target=aws_ecs_task_definition.db_roles \
+    -target=aws_iam_role_policy.execution_db_roles_secrets \
+    -target=aws_iam_role_policy_attachment.execution_db_roles
+  create_roles
+fi
+
 tf apply -auto-approve -input=false "${PREP_VARS[@]}" -var "migrate_image_tag=$TAG"
 
+# On a first deploy nothing runs yet, and the db-roles task needs the network the full apply
+# creates.
+if [[ -z "$CURRENT_TAG" ]]; then
+  create_roles
+fi
+
 echo "==> Running database migrations"
-CLUSTER="$(tf output -raw ecs_cluster)"
-MIGRATE="$(tf output -json migrate_task)"
-TASKDEF="$(echo "$MIGRATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')"
-NETCFG="$(echo "$MIGRATE" | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({"awsvpcConfiguration": {"subnets": m["subnets"], "securityGroups": [m["security_group"]], "assignPublicIp": "DISABLED"}}))')"
-TASK_ARN="$(aws ecs run-task --region "$REGION" --cluster "$CLUSTER" --launch-type FARGATE \
-  --task-definition "$TASKDEF" --network-configuration "$NETCFG" \
-  --query 'tasks[0].taskArn' --output text)"
-aws ecs wait tasks-stopped --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN"
-EXIT_CODE="$(aws ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN" \
-  --query 'tasks[0].containers[0].exitCode' --output text)"
-if [[ "$EXIT_CODE" != "0" ]]; then
-  echo "Migration failed (exit $EXIT_CODE); see CloudWatch log group /ecs/*/migrate" >&2
-  exit 1
+run_task "$(tf output -json migrate_task | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_definition"])')" migrate
+
+# Every ready data store to the store tree's head (and any store left provisioning is finished),
+# one at a time, as the provisioner. Store migrations work with the release still running, so
+# the services roll out either way: a store that fails keeps its revision and is reported.
+echo "==> Migrating data stores"
+if ! run_task "$(tf output -raw migrate_stores_task_definition)" migrate-stores; then
+  echo "WARNING: some data stores weren't migrated; the migrate-stores log names them" >&2
 fi
 
 echo "==> Rolling out services"

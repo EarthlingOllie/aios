@@ -1,9 +1,11 @@
 import json
+import uuid
 
 from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 
 from aios import agent as agent_module
-from aios.auth import current_user
+from aios.auth import current_data_store, current_user
+from aios.datastores import data_store_for
 from aios.main import app
 from aios.models import User
 
@@ -16,8 +18,9 @@ def events(resp) -> list[dict]:
     ]
 
 
-def test_chat_streams_ai_sdk_protocol(client):
-    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+def test_chat_streams_ai_sdk_protocol(client, user):
+    # A user in the database: the turn resolves their data store.
+    app.dependency_overrides[current_user] = lambda: user
     body = {
         "trigger": "submit-message",
         "id": "chat-1",
@@ -45,7 +48,7 @@ def test_chat_streams_ai_sdk_protocol(client):
     assert resp.text.endswith("data: [DONE]\n\n")
 
 
-def test_chat_searches_the_users_documents(client, monkeypatch):
+def test_chat_searches_the_users_documents(client, user, monkeypatch):
     calls = []
 
     async def results(**kwargs):
@@ -59,7 +62,7 @@ def test_chat_searches_the_users_documents(client, monkeypatch):
             yield ToolCall("search_documents", {"query": "a"}, id="call-1")
 
     monkeypatch.setattr(agent_module, "document_search_results", results)
-    app.dependency_overrides[current_user] = lambda: User(id=7, github_id=7, login="t")
+    app.dependency_overrides[current_user] = lambda: user
     body = {
         "trigger": "submit-message",
         "id": "chat-1",
@@ -72,7 +75,7 @@ def test_chat_searches_the_users_documents(client, monkeypatch):
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert calls == [{"owner_id": 7, "query": "a"}]
+    assert calls == [{"data_store_id": data_store_for(user.id), "query": "a"}]
     chunks = events(resp)
     tool = [e for e in chunks if e["type"].startswith("tool-")]
     assert [e["type"] for e in tool] == [
@@ -86,7 +89,7 @@ def test_chat_searches_the_users_documents(client, monkeypatch):
     assert "".join(e["delta"] for e in chunks if e["type"] == "text-delta") == "found Zebrafish."
 
 
-def test_chat_replays_the_clients_conversation(client):
+def test_chat_replays_the_clients_conversation(client, user):
     """The client sends the whole conversation, tool calls and results included."""
     seen = []
 
@@ -118,7 +121,7 @@ def test_chat_replays_the_clients_conversation(client):
             {"id": "m3", "role": "user", "parts": [{"type": "text", "text": "more?"}]},
         ],
     }
-    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_user] = lambda: user
     try:
         with use_model(model(script)):
             assert client.post("/api/chat", json=body).status_code == 200
@@ -132,6 +135,7 @@ def test_chat_replays_the_clients_conversation(client):
 
 def test_chat_rejects_a_malformed_body(client):
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         assert client.post("/api/chat", json={"messages": []}).status_code == 422
         blank = {"messages": [{"id": "m", "role": "user", "parts": [{"type": "text", "text": ""}]}]}

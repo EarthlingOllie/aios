@@ -75,6 +75,13 @@ variable "db_engine_version" {
   description = "RDS PostgreSQL version (pgvector ships with RDS; the migration runs CREATE EXTENSION vector)."
   type        = string
   default     = "17"
+
+  # Before 16, CREATEROLE (which the provisioner's role has) reaches every role but a superuser,
+  # the master user's included. `python -m aios.db_roles` refuses such a server too.
+  validation {
+    condition     = can(regex("^[0-9]+(\\.[0-9]+)?$", var.db_engine_version)) ? tonumber(split(".", var.db_engine_version)[0]) >= 16 : false
+    error_message = "db_engine_version must be PostgreSQL 16 or later (e.g. \"17\" or \"16.4\")."
+  }
 }
 
 variable "db_multi_az" {
@@ -114,6 +121,12 @@ variable "workflow_worker" {
   description = "Runs workflows (mostly waiting on the model), on their own queue so ingests don't wait behind them."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })
   default     = { cpu = 512, memory = 2048, count = 1, concurrency = 2 }
+}
+
+variable "provisioning_worker" {
+  description = "Creates and migrates data stores (the provisioning queue): small and mostly idle. Each runs the retry beat, so keep count at 1 (more only retries twice)."
+  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
+  default     = { cpu = 256, memory = 512, count = 1, concurrency = 1 }
 }
 
 # --- run_python sandboxes (sandbox.tf) ---

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -10,24 +11,32 @@ from anyio import CancelScope
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, tracing, ui_stream
+from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
+from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
-from aios.api.workflows import workflows_using
+from aios.api.triggers import delete_triggers, disable_triggers
 from aios.auth import CurrentUser
+from aios.datastores import data_store_for, history, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
     AgentRun,
+    AgentRunStatus,
     AgentVersion,
     AgentVersionTool,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
     Skill,
     SkillVersion,
-    WorkflowNode,
+    Trigger,
+    Workflow,
+    WorkflowRunStep,
     agent_version_skills,
 )
 from aios.runner import build_agent, run_title, version_tools
@@ -47,6 +56,7 @@ from aios.tools import (
     validate_tool,
 )
 from aios.versioning import save_agent_version
+from aios.workflows import cancel_runs
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +155,16 @@ class RunSummary(BaseModel):
     agent_version: int
     title: str | None
     message_count: int
+    # The trigger that started the run (e.g. a schedule), if one did and it still exists.
+    trigger_id: int | None
+    # How its latest turn is going or went, and when it began and ended; the model's tool calls
+    # and tokens over all its turns. All null for a run from before these were kept.
+    status: AgentRunStatus | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    tool_call_count: int | None
+    input_tokens: int | None
+    output_tokens: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -156,6 +176,10 @@ class RunOut(RunSummary):
     messages: list[dict[str, Any]]
     # The pinned version's instructions: the system prompt of every model call in the run.
     instructions: str
+    # The schema change requests the run made (oldest first), each at its tool call.
+    schema_change_requests: list[SchemaChangeOut]
+    # Whether it waits on one of them, and takes no new messages until it's resumed.
+    waiting: bool
 
 
 def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
@@ -402,29 +426,87 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
     return agent_out(agent)
 
 
-@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(agent_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks) -> None:
+@router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
+def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
+    """What depends on the agent: what deleting it would cut off, and so has to be resolved
+    first (see `delete_agent`)."""
     agent = get_owned_agent(db, user.id, agent_id)
-    # Hold the row lock across the usage check and the delete; workflow saves that run the agent
-    # take it too (`aios.api.workflows.lock_graph`), and so does starting a run.
+    dependents.fail_stopped_runs(db, agent)
+    return dependents.find(db, agent)
+
+
+class AgentDeleteIn(BaseModel):
+    """How to resolve what depends on the agent (`GET /api/agents/{id}/dependents`), as the user
+    chose. Runs are named one by one, so one that starts after the user looked isn't cancelled
+    unseen: the delete is refused, listing it."""
+
+    # Chat runs to stop (they're deleted with the agent, and their requests cancelled).
+    cancel_agent_runs: list[DbId] = []
+    # Workflow runs to stop: they fail, and their requests are cancelled.
+    cancel_workflow_runs: list[DbId] = []
+    # Workflows to deactivate: their schedules are turned off. Any other workflow that runs the
+    # agent must be edited to stop running it first.
+    deactivate_workflows: list[DbId] = []
+
+
+@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent(
+    agent_id: DbId,
+    user: CurrentUser,
+    db: DB,
+    background: BackgroundTasks,
+    body: AgentDeleteIn | None = None,
+) -> None:
+    """Delete the agent once what depends on it is resolved: the runs still going are named in
+    `cancel_*`, and each workflow that runs it is deactivated or has been edited. Otherwise a
+    409 whose detail has a `message` and the `dependents`. All in one transaction: refused,
+    nothing changes."""
+    body = body or AgentDeleteIn()
+    agent = get_owned_agent(db, user.id, agent_id)
+    dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
+    # Hold the row lock across the check and the delete; workflow saves that run the agent take
+    # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
     lock_live_agent(db, agent)
-    used_by = workflows_using(
-        db,
-        WorkflowNode.agent_version_id.in_(
-            select(AgentVersion.id).where(AgentVersion.agent_id == agent.id)
-        ),
+    # Starting a run of a workflow share-locks the workflow (`new_workflow_run`), so with the
+    # workflows that run the agent locked, a run being started is waited for and then seen,
+    # and one started after waits for this, and then can't (it would run a deleted agent).
+    # Until none is found that isn't locked: a save waited for meanwhile may nest one in another.
+    locked: set[int] = set()
+    while unlocked := dependents.workflow_ids(db, agent) - locked:
+        lock_live(db, Workflow, unlocked)
+        locked |= unlocked
+    found = dependents.find(db, agent)
+    refusal = dependents.unresolved(
+        found,
+        cancel_agent_runs=set(body.cancel_agent_runs),
+        cancel_workflow_runs=set(body.cancel_workflow_runs),
+        deactivate_workflows=set(body.deactivate_workflows),
     )
-    if used_by:
+    if refusal is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Remove this agent from these workflows first: {', '.join(used_by)}.",
+            {"message": refusal, "dependents": found.model_dump(mode="json")},
         )
+    # Before the agent runs go: found by their steps, their requests are cancelled.
+    cancel_runs(
+        db,
+        [r.id for r in found.workflow_runs],
+        f"Cancelled: the agent {agent.name} was deleted.",
+    )
+    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]))
     # Soft delete: older workflow versions may still pin its versions, so the agent and its
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
+    cancel_chat_requests(db, run_ids)
+    history.enqueue_runs(db, AgentRun.agent_id == agent.id, deleting=True)  # their copies go too
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
+    delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
+    db.commit()
+    # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
+    # rather than carrying on with tool calls for runs that are gone.
+    checkpoints.stop_turns(db, run_ids)
     db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
@@ -507,6 +589,13 @@ def run_summary_query():
         AgentVersion.version.label("agent_version"),
         AgentRun.title,
         AgentRun.message_count,
+        AgentRun.trigger_id,
+        AgentRun.status,
+        AgentRun.started_at,
+        AgentRun.finished_at,
+        AgentRun.tool_call_count,
+        AgentRun.input_tokens,
+        AgentRun.output_tokens,
         AgentRun.created_at,
         AgentRun.updated_at,
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
@@ -534,18 +623,30 @@ def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
     return [RunSummary.model_validate(row, from_attributes=True) for row in rows]
 
 
+def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -> AgentRun:
+    """Add (and flush, not commit) a run of the agent's current version.
+
+    Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
+    version can't be built. The caller commits; the share lock taken here, held until then,
+    keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
+    starts one (`aios.scheduler`), passing its `trigger_id`.
+    """
+    lock_live_agent(db, agent, read=True)
+    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
+    build_version_tools(agent.current_version)
+    # Pin the version: later edits to the agent don't change this conversation.
+    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger_id)
+    db.add(run)
+    db.flush()
+    return run
+
+
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
 def create_run(agent_id: DbId, user: CurrentUser, db: DB):
     agent = get_owned_agent(db, user.id, agent_id)
-    # Keeps a concurrent delete from missing this run, which would be left behind.
-    lock_live_agent(db, agent, read=True)
-    # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
-    build_version_tools(agent.current_version)
-    # Pin the version: later edits to the agent don't change this conversation.
-    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id)
-    db.add(run)
+    run = new_agent_run(db, agent)
     db.commit()
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     return RunSummary.model_validate(row, from_attributes=True)
@@ -555,12 +656,14 @@ def create_run(agent_id: DbId, user: CurrentUser, db: DB):
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
     run = get_owned_run(db, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
-    history = checkpoints.history(run.id)
+    messages = checkpoints.history(run.id)
     return RunOut(
         **RunSummary.model_validate(row, from_attributes=True).model_dump(),
-        ui_messages=ui_stream.to_ui_messages(history),
-        messages=checkpoints.messages_out(history),
+        ui_messages=ui_stream.to_ui_messages(messages),
+        messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
+        schema_change_requests=run_requests(db, run.id, user.id),
+        waiting=waiting_on(db, run.id),
     )
 
 
@@ -570,6 +673,9 @@ def delete_run(
 ) -> None:
     run = get_owned_run(db, user.id, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
+    cancel_chat_requests(db, [run.id])
+    # Its exported copy goes too (found through the run, so before it's deleted).
+    history.enqueue_runs(db, AgentRun.id == run.id, deleting=True)
     db.delete(run)
     db.commit()
     background.add_task(checkpoints.delete_threads, [run_id])
@@ -601,6 +707,8 @@ class ChatContext:
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
     # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
+    # The data store the turn's tools use: the user's.
+    data_store_id: uuid.UUID | None = None
 
 
 def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
@@ -621,44 +729,105 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
+    # On this session, rather than one of its own alongside it; committed in case it's created.
+    data_store_id = data_store_for(user_id, db)
+    db.commit()
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
         metadata=trace_metadata(run, user_id),
         tools=tools,
         sandbox_domains=sandbox_domains,
+        data_store_id=data_store_id,
     )
 
 
-def _start_turn(run_id: int, prompt: str) -> None:
-    """Title an untitled run after its first message."""
-    title = run_title(prompt)
-    with SessionLocal() as db:
-        db.execute(
-            update(AgentRun)
-            .where(AgentRun.id == run_id, AgentRun.title.is_(None))
-            .values(title=title)
-        )
-        db.commit()
+def _start_turn(run_id: int, prompt: str, *, heartbeat: bool = False) -> None:
+    """Mark the run running as a turn begins, and title it after its first message.
 
-
-def _end_turn(run_id: int, message_count: int) -> None:
+    With `heartbeat`, the turn runs outside a request and its process will keep the run's
+    heartbeat (`aios.firing`); without, any earlier one is cleared, so a request's turn isn't
+    failed as stalled."""
     with SessionLocal() as db:
-        # A no-op if the run was deleted mid-turn.
         db.execute(
             update(AgentRun)
             .where(AgentRun.id == run_id)
-            .values(message_count=message_count, updated_at=func.now())
+            .values(
+                title=func.coalesce(AgentRun.title, run_title(prompt)),
+                status=AgentRunStatus.running,
+                started_at=func.now(),
+                finished_at=None,
+                heartbeat_at=func.now() if heartbeat else None,
+            )
         )
         db.commit()
 
 
-async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> None:
+def tool_call_count(response: AIMessage) -> int:
+    """The tool calls in a model response: the agent's, and the provider's own (e.g. web
+    search), which are content blocks of the response (as the run page counts them)."""
+    blocks = response.content if isinstance(response.content, list) else []
+    server = sum(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in blocks)
+    return len(response.tool_calls) + server
+
+
+def _count_step(run_id: int, response: AIMessage) -> None:
+    """Add a model step to the run's counters: its tool calls, and what the call cost."""
+    usage = response.usage_metadata or {}
+    with SessionLocal() as db:
+        db.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(
+                tool_call_count=func.coalesce(AgentRun.tool_call_count, 0)
+                + tool_call_count(response),
+                input_tokens=func.coalesce(AgentRun.input_tokens, 0) + usage.get("input_tokens", 0),
+                output_tokens=func.coalesce(AgentRun.output_tokens, 0)
+                + usage.get("output_tokens", 0),
+            )
+        )
+        db.commit()
+
+
+def _end_turn(run_id: int, *, failed: bool, message_count: int | None = None) -> None:
+    """Record how the turn ended; `message_count` is left as it was if the turn never started."""
+    values: dict[str, Any] = {
+        "status": AgentRunStatus.failed if failed else AgentRunStatus.succeeded,
+        "finished_at": func.now(),
+        "updated_at": func.now(),
+    }
+    if message_count is not None:
+        values["message_count"] = message_count
+    with SessionLocal() as db:
+        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: with
+        # the run's own update, it goes in the run history export's outbox. The outbox row
+        # first, as deleting a run does, so the two never each hold the row the other wants.
+        history.enqueue_runs(db, AgentRun.id == run_id)
+        # A no-op if the run was deleted mid-turn.
+        db.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
+        db.commit()
+
+
+def model_responses(mode: str, data: Any) -> list[AIMessage]:
+    """The model's finished responses in one item of the agent's stream: each is a step."""
+    if mode != "updates":
+        return []
+    return [
+        message
+        for node, update in data.items()
+        if node == "model"
+        for message in (update or {}).get("messages", [])
+        if isinstance(message, AIMessage)
+    ]
+
+
+async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> list[str]:
     """Record a turn that failed or was stopped, so the next turn sees what the user saw.
 
     The user's message is already in the thread (it's checkpointed before the model is called).
     What's added: the reply's text so far, and, if it stopped while tools were running, a result
     for each call still waiting for one (a call without a result can't be sent to the model).
+    Returns the ids of those calls.
     """
     state = await agent.aget_state(config)
     messages = state.values.get("messages", [])
@@ -690,14 +859,55 @@ async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> Non
     # model has finished it.
     if partial is not None and isinstance(last, HumanMessage | ToolMessage):
         await agent.aupdate_state(config, {"messages": [partial]}, as_node="model")
+    return [m.tool_call_id for m in stopped]
+
+
+def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
+    """Cancel the pending schema change requests these tool calls made: the model has been told
+    the calls didn't finish, so nothing waits on them any more."""
+    if not tool_call_ids:
+        return
+    with SessionLocal() as db:
+        schema_changes.cancel(
+            db,
+            SchemaChangeRequest.requested_by_run == run_id,
+            SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
+        )
+        db.commit()
+
+
+def cancel_chat_requests(db: Session, run_ids: list[int]) -> None:
+    """Before these agent runs are deleted (their requests keep no link to them): cancel the
+    pending requests their chats wait on, so none can be approved with nothing left to resume.
+    A workflow node's run is left alone: its workflow run still waits on the request and resumes
+    on its decision (`aios.workflows.workflow_run_waiting_on`), and ending or deleting that run
+    closes it out (`aios.workflows.close_requests`). In the caller's transaction.
+
+    The runs are locked first: a turn recording a request meanwhile holds a key share on its
+    run until it commits, so this waits and then sees it; one that starts later fails to
+    record it once the run has gone."""
+    db.execute(select(AgentRun.id).where(AgentRun.id.in_(run_ids)).with_for_update())
+    schema_changes.cancel(
+        db,
+        SchemaChangeRequest.requested_by_run.in_(run_ids),
+        SchemaChangeRequest.requested_by_run.not_in(
+            select(WorkflowRunStep.agent_run_id).where(WorkflowRunStep.agent_run_id.in_(run_ids))
+        ),
+    )
 
 
 async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -> None:
     try:
         if not finished:
-            await _keep_unfinished_turn(agent, config, partial)
+            stopped = await _keep_unfinished_turn(agent, config, partial)
+            await run_in_threadpool(_cancel_requests, run_id, stopped)
         state = await agent.aget_state(config)
-        await run_in_threadpool(_end_turn, run_id, len(state.values.get("messages", [])))
+        await run_in_threadpool(
+            _end_turn,
+            run_id,
+            failed=not finished,
+            message_count=len(state.values.get("messages", [])),
+        )
     except Exception:
         log.exception("couldn't record the end of a turn of run %s", run_id)
 
@@ -723,6 +933,225 @@ def prewarm_sandbox(run_id: int, allowed_domains: list[str]) -> None:
     task.add_done_callback(_prewarming.discard)
 
 
+# What a new message to a run waiting on a schema change request is told.
+WAITING = (
+    "This run is waiting for a decision on its schema change request: approve or reject it"
+    " first, then carry on."
+)
+
+
+class RunWaiting(Exception):
+    """A new message to a run that waits on a schema change request."""
+
+    def __init__(self) -> None:
+        super().__init__(WAITING)
+
+
+@dataclass
+class Resume:
+    """A turn that resumes a run waiting on schema change requests, giving each waiting tool
+    call its request's outcome, for those decided (`resume_run`). The turn fills in which
+    requests it dealt with, once it has the run to itself."""
+
+    # The decided requests (not yet resumed) it found: given to their calls, or with no call
+    # waiting on them any more.
+    dealt_with: list[uuid.UUID] | None = None
+
+
+def _decided_requests(run_id: int) -> dict[str, dict[str, Any]]:
+    """The run's decided requests it hasn't been given yet, with their outcomes, by id."""
+    with SessionLocal() as db:
+        requests = db.scalars(
+            select(SchemaChangeRequest).where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.resumed_at.is_(None),
+            )
+        ).all()
+        return {str(r.id): schema_changes.outcome(r) for r in requests if r.status.decided}
+
+
+async def _resume_command(agent, config, run_id: int, resume: Resume) -> Command | None:
+    """The command resuming the run's waiting tool calls whose requests are decided (by
+    interrupt id, so others keep waiting); None if none are."""
+    from aios.tools.schema_change import REQUEST_KEY
+
+    state = await agent.aget_state(config)
+    waiting = {
+        i.id: i.value[REQUEST_KEY]
+        for i in state.interrupts
+        if isinstance(i.value, dict) and REQUEST_KEY in i.value
+    }
+    outcomes = await run_in_threadpool(_decided_requests, run_id)
+    # Those decided after this aren't dealt with: their own resume gives them to the run.
+    resume.dealt_with = [uuid.UUID(rid) for rid in outcomes]
+    values = {iid: outcomes[rid] for iid, rid in waiting.items() if rid in outcomes}
+    return Command(resume=values) if values else None
+
+
+def _check_not_waiting(run_id: int) -> None:
+    with SessionLocal() as db:
+        if waiting_on(db, run_id):
+            raise RunWaiting
+
+
+async def turn_stream(
+    ctx: ChatContext, user_id: int, run_id: int, turn: HumanMessage | Resume
+) -> AsyncIterator[ui_stream.Chunk]:
+    """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
+    the model is called, and whatever the reply got to is kept however the turn ends (it
+    completes, fails, or the consumer stops it). A failure is reported as an `error` chunk.
+
+    `turn` is the user's message, or `Resume` to carry on a run that waits on schema change
+    requests now they're decided; a message to a run still waiting is refused (an `error`
+    chunk), checked once the turn has the run to itself.
+
+    Shared by the chat endpoint, the scheduler (`aios.scheduler`) and `resume_run`."""
+    config = {
+        **checkpoints.thread_config(run_id),
+        "callbacks": tracing.callbacks(),
+        "run_name": "agent-run",
+        "metadata": ctx.metadata,
+    }
+    ui = ui_stream.UIStream()
+    for chunk in ui.start():
+        yield chunk
+    if ctx.sandbox_domains is not None:
+        prewarm_sandbox(run_id, ctx.sandbox_domains)
+    try:
+        # Waits for any other turn of this run to finish (see `checkpoints.turn`).
+        async with checkpoints.turn(run_id) as saver:
+            agent = build_agent(
+                model=ctx.model,
+                instructions=ctx.instructions,
+                tools=ctx.tools,
+                checkpointer=saver,
+            )
+            if isinstance(turn, Resume):
+                graph_input = await _resume_command(agent, config, run_id, turn)
+            else:
+                await run_in_threadpool(_check_not_waiting, run_id)
+                graph_input = {"messages": [turn]}
+            if graph_input is not None:
+                # Closed here if the consumer stops the turn, so the turn is recorded while the
+                # checkpointer's connection is still open.
+                turn_chunks = _run_turn(agent, config, ctx, ui, user_id, run_id, graph_input)
+                async with aclosing(turn_chunks):
+                    async for chunk in turn_chunks:
+                        yield chunk
+    except Exception as exc:
+        # The turn couldn't start: the run waits on schema change requests, or e.g. the
+        # database or the model's configuration failed.
+        if not isinstance(exc, RunWaiting):
+            log.exception("agent run %s couldn't start a turn", run_id)
+        with CancelScope(shield=True):
+            try:
+                await run_in_threadpool(_end_turn, run_id, failed=True)
+            except Exception:
+                log.exception("couldn't record the end of a turn of run %s", run_id)
+        for chunk in ui.error(exc):
+            yield chunk
+    for chunk in ui.finish():
+        yield chunk
+
+
+async def _run_turn(
+    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, user_id: int, run_id: int, graph_input
+) -> AsyncIterator[ui_stream.Chunk]:
+    finished = False
+    # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool call)
+    # before the turn is recorded: a stopped turn's response can be dropped while this waits at
+    # a `yield`, which doesn't close the stream itself.
+    events = agent.astream(
+        graph_input,
+        config,
+        context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
+        stream_mode=["messages", "updates"],
+        # Checkpoint each step before the next starts, so the user's message is saved before
+        # the model is called.
+        durability="sync",
+    )
+    try:
+        async with aclosing(events):
+            async for mode, data in events:
+                for chunk in ui.feed(mode, data):
+                    yield chunk
+                # One small update per model step, so the run's counters are live.
+                for response in model_responses(mode, data):
+                    await run_in_threadpool(_count_step, run_id, response)
+        finished = True
+    except Exception as exc:
+        log.exception("agent run %s failed", run_id)
+        for chunk in ui.error(exc):
+            yield chunk
+    finally:
+        # Also when the client stops the turn, which cancels this task.
+        with CancelScope(shield=True):
+            await _record_turn(agent, config, run_id, finished=finished, partial=ui.partial_reply())
+
+
+def _run_owner(run_id: int) -> tuple[int, int] | None:
+    """The run's agent, and its owner (who it runs for); None if it's gone."""
+    with SessionLocal() as db:
+        row = db.execute(
+            select(Agent.id, Agent.owner_id)
+            .join(AgentRun, AgentRun.agent_id == Agent.id)
+            .where(AgentRun.id == run_id)
+        ).first()
+        return (row.id, row.owner_id) if row else None
+
+
+def _mark_resumed(run_id: int, request_ids: list[uuid.UUID] | None = None) -> None:
+    """The run has been given these requests' outcomes (None: all its decided ones'): it takes
+    new messages again, unless another still waits."""
+    with SessionLocal() as db:
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.requested_by_run == run_id,
+                SchemaChangeRequest.resumed_at.is_(None),
+                SchemaChangeRequest.status.not_in(
+                    [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
+                ),
+                true() if request_ids is None else SchemaChangeRequest.id.in_(request_ids),
+            )
+            .values(resumed_at=func.now())
+        )
+        db.commit()
+
+
+class ResumeFailed(RuntimeError):
+    """A resume that couldn't give the run its outcomes (it never got the run to itself): worth
+    trying again."""
+
+
+async def resume_run(run_id: int) -> None:
+    """Carry on a run that waits on schema change requests, now some are decided: their tool
+    calls return the outcomes, and the turn goes on from there, as the run's owner. The rest
+    of the turn is in the run's history, for its chat to show.
+
+    Raises `ResumeFailed` if the turn couldn't start (the run stays waiting)."""
+    owner = await run_in_threadpool(_run_owner, run_id)
+    if owner is None:
+        return
+    agent_id, user_id = owner
+    try:
+        with SessionLocal() as db:
+            ctx = await run_in_threadpool(load_chat_context, db, user_id, agent_id, run_id)
+    except HTTPException as exc:
+        # Its version can't run any more (a tool left the library, say): no turn of it can, so
+        # it isn't left waiting on what can't come.
+        log.warning("agent run %s can't be resumed: %s", run_id, exc.detail)
+        await run_in_threadpool(_mark_resumed, run_id)
+        return
+    resume = Resume()
+    async for chunk in turn_stream(ctx, user_id, run_id, resume):
+        if chunk["type"] == "error":
+            log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
+    if resume.dealt_with is None:
+        raise ResumeFailed(f"Agent run {run_id} couldn't be resumed")
+    await run_in_threadpool(_mark_resumed, run_id, resume.dealt_with)
+
+
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
 async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
     """Continue a run. The client sends only its new message; history comes from the run's
@@ -742,65 +1171,10 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
     if message.role != "user":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")
     prompt = ui_stream.human_message(message)
+    try:
+        await run_in_threadpool(_check_not_waiting, run_id)
+    except RunWaiting as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
     await run_in_threadpool(_start_turn, run_id, prompt.text)
 
-    config = {
-        **checkpoints.thread_config(run_id),
-        "callbacks": tracing.callbacks(),
-        "run_name": "agent-run",
-        "metadata": ctx.metadata,
-    }
-
-    async def stream() -> AsyncIterator[ui_stream.Chunk]:
-        ui = ui_stream.UIStream()
-        for chunk in ui.start():
-            yield chunk
-        if ctx.sandbox_domains is not None:
-            prewarm_sandbox(run_id, ctx.sandbox_domains)
-        try:
-            # Waits for any other turn of this run to finish (see `checkpoints.turn`).
-            async with checkpoints.turn(run_id) as saver:
-                agent = build_agent(
-                    model=ctx.model,
-                    instructions=ctx.instructions,
-                    tools=ctx.tools,
-                    checkpointer=saver,
-                )
-                finished = False
-                # Closed however the turn ends, which cancels the graph's running tasks (e.g. a
-                # tool call) before the turn is recorded: a stopped turn's response can be
-                # dropped while this waits at a `yield`, which doesn't close the stream itself.
-                events = agent.astream(
-                    {"messages": [prompt]},
-                    config,
-                    context=ChatDeps(user_id=user.id, run_id=run_id),
-                    stream_mode=["messages", "updates"],
-                    # Checkpoint each step before the next starts, so the user's message is
-                    # saved before the model is called.
-                    durability="sync",
-                )
-                try:
-                    async with aclosing(events):
-                        async for mode, data in events:
-                            for chunk in ui.feed(mode, data):
-                                yield chunk
-                    finished = True
-                except Exception as exc:
-                    log.exception("agent run %s failed", run_id)
-                    for chunk in ui.error(exc):
-                        yield chunk
-                finally:
-                    # Also when the client stops the turn, which cancels this task.
-                    with CancelScope(shield=True):
-                        await _record_turn(
-                            agent, config, run_id, finished=finished, partial=ui.partial_reply()
-                        )
-        except Exception as exc:
-            # The turn couldn't start, e.g. the database or the model's configuration.
-            log.exception("agent run %s couldn't start a turn", run_id)
-            for chunk in ui.error(exc):
-                yield chunk
-        for chunk in ui.finish():
-            yield chunk
-
-    return ui_stream.streaming_response(stream())
+    return ui_stream.streaming_response(turn_stream(ctx, user.id, run_id, prompt))

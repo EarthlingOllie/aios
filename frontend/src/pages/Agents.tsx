@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { ArrowUpCircle, MessageSquare, Pencil, Play, Trash2 } from "lucide-react";
+import {
+  ArrowUpCircle,
+  CalendarClock,
+  MessageSquare,
+  Pencil,
+  Play,
+  Trash2,
+} from "lucide-react";
 
 import {
   DetailPage,
@@ -13,10 +20,14 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
+import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { TargetSchedules } from "@/components/schedules";
+import { Tabs } from "@/components/tabs";
 import { ToolChanges, ToolList, ToolSettingsFields } from "@/components/tools";
 import {
   CompareVersions,
@@ -131,6 +142,7 @@ export function AgentDetail() {
   const catalog = useLoad(api.listTools);
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
   if (!agent.data) return null;
@@ -149,13 +161,9 @@ export function AgentDetail() {
     }
   }
 
-  const onDelete = () => {
-    if (!window.confirm(`Delete the agent “${a.name}”, its versions and all of its runs?`)) return;
-    act(async () => {
-      await api.deleteAgent(id);
-      await reloadList();
-      navigate("/agents");
-    });
+  const onDeleted = async () => {
+    await reloadList();
+    navigate("/agents");
   };
 
   const onNewRun = () =>
@@ -220,106 +228,153 @@ export function AgentDetail() {
               Edit
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={onDelete} aria-label="Delete agent">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDeleting(true)}
+            aria-label="Delete agent"
+          >
             <Trash2 />
           </Button>
         </>
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {deleting && (
+        <AgentDeleteDialog agent={a} onClose={() => setDeleting(false)} onDeleted={onDeleted} />
+      )}
 
-      <Section title="Skills">
-        {current.skills.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No skills attached.</p>
-        ) : (
-          <ul className="divide-y rounded-md border">
-            {current.skills.map((skill) => (
-              <SkillRow
-                key={skill.skill_id}
-                skill={skill}
-                action={
-                  skill.latest_version !== null &&
-                  skill.latest_version > skill.version && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => onUpdateSkill(skill)}
-                    >
-                      <ArrowUpCircle />
-                      Update to v{skill.latest_version}
-                    </Button>
-                  )
-                }
+      <Tabs
+        label="Agent details"
+        tabs={[
+          {
+            id: "context",
+            label: "Context",
+            content: (
+              <>
+                <Section title="Skills">
+                  {current.skills.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No skills attached.</p>
+                  ) : (
+                    <ul className="divide-y rounded-md border">
+                      {current.skills.map((skill) => (
+                        <SkillRow
+                          key={skill.skill_id}
+                          skill={skill}
+                          action={
+                            skill.latest_version !== null &&
+                            skill.latest_version > skill.version && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => onUpdateSkill(skill)}
+                              >
+                                <ArrowUpCircle />
+                                Update to v{skill.latest_version}
+                              </Button>
+                            )
+                          }
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </Section>
+
+                <Section title="Tools">
+                  <ToolList tools={current.tools} catalog={catalog.data} />
+                </Section>
+
+                <VersionConfig version={current} />
+              </>
+            ),
+          },
+          {
+            id: "runs",
+            label: "Runs",
+            count: runs.data?.length,
+            content: (
+              <>
+                {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
+                {runs.data?.length === 0 && (
+                  <p className="text-muted-foreground text-sm">
+                    No runs yet. Start one to chat with this agent.
+                  </p>
+                )}
+                {!!runs.data?.length && (
+                  <ul className="divide-y rounded-md border">
+                    {runs.data.map((run) => (
+                      <li key={run.id} className="group flex items-center gap-2 pr-2">
+                        <Link
+                          to={`runs/${run.id}`}
+                          className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
+                        >
+                          {run.trigger_id ? (
+                            <CalendarClock
+                              className="text-muted-foreground size-4 shrink-0"
+                              aria-label="Started by a schedule"
+                            />
+                          ) : (
+                            <MessageSquare className="text-muted-foreground size-4 shrink-0" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm">
+                              {run.title ?? (
+                                <span className="text-muted-foreground">Untitled run</span>
+                              )}
+                            </span>
+                            <span className="text-muted-foreground block truncate text-xs">
+                              {formatDate(run.updated_at)} ·{" "}
+                              <RunCountersLine run={run} compact />
+                            </span>
+                          </span>
+                          <AgentRunStatusBadge run={run} />
+                          <VersionBadge version={run.agent_version} />
+                          <Badge variant="secondary">{run.message_count} msgs</Badge>
+                        </Link>
+                        <button
+                          className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                          onClick={() => onDeleteRun(run.id)}
+                          aria-label="Delete run"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ),
+          },
+          {
+            id: "versions",
+            label: "Versions",
+            count: versions.data?.length,
+            content: (
+              <VersionHistory
+                versions={versions.data}
+                error={versions.error}
+                current={current.version}
+                href={(v) => `/agents/${id}/versions/${v}`}
+                detail={(v) => {
+                  const s = versions.data?.find((x) => x.version === v);
+                  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+                  return [
+                    count(s?.skill_count ?? 0, "skill"),
+                    count(s?.tool_count ?? 0, "tool"),
+                    count(s?.run_count ?? 0, "run"),
+                  ].join(" · ");
+                }}
               />
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title="Tools">
-        <ToolList tools={current.tools} catalog={catalog.data} />
-      </Section>
-
-      <VersionConfig version={current} />
-
-      <Section title="Runs">
-        {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
-        {runs.data?.length === 0 && (
-          <p className="text-muted-foreground text-sm">
-            No runs yet. Start one to chat with this agent.
-          </p>
-        )}
-        {!!runs.data?.length && (
-          <ul className="divide-y rounded-md border">
-            {runs.data.map((run) => (
-              <li key={run.id} className="group flex items-center gap-2 pr-2">
-                <Link
-                  to={`runs/${run.id}`}
-                  className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
-                >
-                  <MessageSquare className="text-muted-foreground size-4 shrink-0" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">
-                      {run.title ?? <span className="text-muted-foreground">Untitled run</span>}
-                    </span>
-                    <span className="text-muted-foreground block text-xs">
-                      {formatDate(run.updated_at)}
-                    </span>
-                  </span>
-                  <VersionBadge version={run.agent_version} />
-                  <Badge variant="secondary">{run.message_count} msgs</Badge>
-                </Link>
-                <button
-                  className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
-                  onClick={() => onDeleteRun(run.id)}
-                  aria-label="Delete run"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title="Version history">
-        <VersionHistory
-          versions={versions.data}
-          error={versions.error}
-          current={current.version}
-          href={(v) => `/agents/${id}/versions/${v}`}
-          detail={(v) => {
-            const s = versions.data?.find((x) => x.version === v);
-            const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-            return [
-              count(s?.skill_count ?? 0, "skill"),
-              count(s?.tool_count ?? 0, "tool"),
-              count(s?.run_count ?? 0, "run"),
-            ].join(" · ");
-          }}
-        />
-      </Section>
+            ),
+          },
+          {
+            id: "schedule",
+            label: "Schedule",
+            content: <TargetSchedules kind="agent" id={id} />,
+          },
+        ]}
+      />
     </DetailPage>
   );
 }
@@ -362,7 +417,8 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreAgentVersion(id, number);
       await reloadList();
-      navigate(`/agents/${id}`);
+      // Back to where the version was opened from, which now lists the restored copy as current.
+      navigate(`/agents/${id}?tab=versions`);
     } catch (err) {
       setError(describeError(err));
     }
@@ -372,7 +428,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/agents/${id}`} className="hover:underline">
+          <Link to={`/agents/${id}?tab=versions`} className="hover:underline">
             {agent.data.name}
           </Link>
           <VersionBadge version={v.version} />
@@ -616,7 +672,7 @@ export function AgentForm() {
                       <span className="text-muted-foreground block text-xs">{tool.description}</span>
                     </span>
                   </label>
-                  {attached && (
+                  {attached && Object.keys(tool.config_schema.properties ?? {}).length > 0 && (
                     <div className="px-3 pt-1 pb-3 pl-9">
                       <ToolSettingsFields
                         tool={tool}

@@ -281,6 +281,10 @@ class UIStream:
                 yield from self._model_chunk(message)
         elif mode == "updates":
             for node, update in data.items():
+                if node == "__interrupt__":
+                    # The run paused (e.g. a schema change request waiting for the user): its
+                    # tool call has no result until it's resumed.
+                    continue
                 for message in (update or {}).get("messages", []):
                     if isinstance(message, AIMessage) and node == "model":
                         yield from self._model_done(message)

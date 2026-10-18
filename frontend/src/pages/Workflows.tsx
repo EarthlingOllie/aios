@@ -17,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TargetSchedules } from "@/components/schedules";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -24,10 +25,10 @@ import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
+import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
-import { isActive } from "@/lib/runs";
+import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
-const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 export function WorkflowsSection() {
   const { data, error, reload } = useLoad(api.listWorkflows);
@@ -121,8 +122,15 @@ function WorkflowDetailView({ id }: { id: number }) {
   const [runInput, setRunInput] = useState<string>();
   const [starting, setStarting] = useState(false);
 
-  // Keep the list's statuses current while any run is still going, as the run page does.
-  usePoll(!!runs.data?.some((r) => isActive(r.status)), runs.reload);
+  // Keep the list's statuses current while any run is still going, as the run page does (less
+  // often while those left only wait for the user).
+  usePoll(
+    !!runs.data?.some((r) => isActive(r.status)),
+    runs.reload,
+    runs.data?.some((r) => r.status === "queued" || r.status === "running")
+      ? undefined
+      : WAITING_POLL_MS,
+  );
 
   if (workflow.error) return <Placeholder>{workflow.error}</Placeholder>;
   if (!workflow.data) return null;
@@ -222,6 +230,7 @@ function WorkflowDetailView({ id }: { id: number }) {
           editHref={`/workflows/${id}/edit`}
         />
       </Section>
+      <TargetSchedules kind="workflow" id={id} />
       <Section title="Runs">
         {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
         {runs.data?.length === 0 && (

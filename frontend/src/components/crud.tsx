@@ -52,24 +52,28 @@ export function useLoad<T>(fn: () => Promise<T>) {
 export const POLL_MS = 1000;
 
 /**
- * While `active`, calls `reload` again `POLL_MS` after each call settles, failed or not, so one
- * failed read doesn't stop the polling.
+ * While `active`, calls `reload` again `ms` (by default `POLL_MS`) after each call settles,
+ * failed or not, so one failed read doesn't stop the polling.
  */
-export function usePoll(active: boolean, reload: () => Promise<unknown>) {
+export function usePoll(active: boolean, reload: () => Promise<unknown>, ms = POLL_MS) {
   useEffect(() => {
     if (!active) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = () => {
-      timer = setTimeout(() => reload().finally(() => stopped || poll()), POLL_MS);
+      timer = setTimeout(() => reload().finally(() => stopped || poll()), ms);
     };
     poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [active, reload]);
+  }, [active, reload, ms]);
 }
+
+/** A native `<select>` styled like `Input`. */
+export const selectClass =
+  "border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-2 text-sm";
 
 /** Passed to the detail routes so they can refresh the list after a change. */
 export type ListContext = { reloadList: () => Promise<void> };
@@ -174,14 +178,17 @@ export function DetailPage({
 export function Section({
   title,
   actions,
+  label,
   children,
 }: {
   title: string;
   actions?: ReactNode;
+  /** Names the section as a landmark region, so it can be found by name. */
+  label?: string;
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex flex-col gap-2" aria-label={label}>
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
           {title}
@@ -232,6 +239,10 @@ export function ErrorBanner({ message, onDismiss }: { message?: string; onDismis
   );
 }
 
+// Built once: `toLocaleString` with options builds a new formatter on every call, which costs
+// hundreds of microseconds, and lists call this once per row on every render.
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
 export function formatDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return dateFormat.format(new Date(iso));
 }

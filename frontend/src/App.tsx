@@ -4,8 +4,10 @@ import {
   Bot,
   CalendarClock,
   ChartLine,
+  Database,
   LogOut,
   MessageSquare,
+  MessagesSquare,
   Search,
   Settings,
   Sparkles,
@@ -14,11 +16,13 @@ import {
 } from "lucide-react";
 
 import { Chat } from "@/components/Chat";
-import { Documents } from "@/components/Documents";
+import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
+import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, type User } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ChatDetail, ChatForm, ChatsIndex, ChatsSection } from "@/pages/Chats";
 import {
   AgentDetail,
   AgentForm,
@@ -26,8 +30,11 @@ import {
   AgentsSection,
   AgentVersionPage,
 } from "@/pages/Agents";
+import { DataPage } from "@/pages/Data";
 import { RunPage } from "@/pages/Run";
+import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
+import { SettingsPage } from "@/pages/Settings";
 import {
   SkillDetail,
   SkillForm,
@@ -90,7 +97,17 @@ export default function App() {
   const signOut = () => api.logout().then(() => setAuth({ status: "anonymous" }));
   return (
     <Routes>
-      <Route element={<Shell user={auth.user} onSignOut={signOut} />}>
+      {/* Documents are held above every page, so the chat's panel and the Data page share one
+          list, and an upload in flight survives leaving either. */}
+      <Route
+        element={
+          <DocumentsProvider>
+            <NotificationsProvider>
+              <Shell user={auth.user} onSignOut={signOut} />
+            </NotificationsProvider>
+          </DocumentsProvider>
+        }
+      >
         {/* Chat is rendered by Shell so it stays mounted across navigation. */}
         <Route index element={null} />
         <Route path="skills" element={<SkillsSection />}>
@@ -116,6 +133,15 @@ export default function App() {
           <Route path=":workflowId/edit" element={<WorkflowEditorPage />} />
           <Route path=":workflowId/runs/:runId" element={<WorkflowRunPage />} />
           <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
+        </Route>
+        <Route path="scheduler" element={<SchedulerPage />} />
+        <Route path="data" element={<DataPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="chats" element={<ChatsSection />}>
+          <Route index element={<ChatsIndex />} />
+          <Route path="new" element={<ChatForm />} />
+          <Route path=":chatId" element={<ChatDetail />} />
+          <Route path=":chatId/edit" element={<ChatForm />} />
         </Route>
         {navItems
           .filter((item): item is NavItem & { stub: string } => Boolean(item.stub))
@@ -147,11 +173,13 @@ const navItems: NavItem[] = [
     stub: "See how your agents are used and how they perform.",
   },
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
+  { to: "/chats", label: "Chats", icon: MessagesSquare, end: false },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },
   { to: "/workflows", label: "Workflows", icon: Workflow, end: false },
-  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false, stub: "Run agents on a schedule." },
-  { to: "/settings", label: "Settings", icon: Settings, end: false, stub: "Manage your account and workspace." },
+  { to: "/scheduler", label: "Scheduler", icon: CalendarClock, end: false },
+  { to: "/data", label: "Data", icon: Database, end: false },
+  { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
 function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
@@ -181,6 +209,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <div className="flex items-center gap-2">
           {user.avatar_url && <img src={user.avatar_url} alt="" className="size-7 rounded-full" />}
           <span className="flex-1 truncate text-sm font-medium">{user.name ?? user.login}</span>
+          <NotificationsMenu />
           <Button variant="ghost" size="icon" aria-label="Sign out" onClick={onSignOut}>
             <LogOut />
           </Button>
@@ -196,6 +225,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
         {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <NotificationsMenu className="shrink-0" />
         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
         </Button>
