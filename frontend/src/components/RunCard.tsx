@@ -3,7 +3,7 @@ import { Link } from "react-router";
 
 import { WorkflowCanvas } from "@/components/workflow/canvas";
 import { RunStatusBadge } from "@/components/workflow/status";
-import { formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
+import { formatCounters, formatElapsed, runCounters } from "@/lib/agent-runs";
 import type { ChatAgentRun, ChatInvocation, NodePosition, WorkflowVersion } from "@/lib/api";
 import { edgeStates, isActive, nodesDone, nodeStates } from "@/lib/runs";
 
@@ -81,8 +81,7 @@ function AgentRunCard({ agentId, run }: { agentId: number; run: ChatAgentRun }) 
         </span>
       )}
       <span data-testid="run-card-counters" className="text-muted-foreground flex-1 text-xs">
-        {counters &&
-          `${counters.toolCalls} tool ${counters.toolCalls === 1 ? "call" : "calls"} · ${formatTokens(counters.tokens)} tokens`}
+        {counters && formatCounters(counters, true)}
       </span>
       {run.status && <RunStatusBadge status={run.status} data-testid="run-card-status" />}
     </Link>

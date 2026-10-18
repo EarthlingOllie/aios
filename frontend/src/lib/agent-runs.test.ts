@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RunSummary } from "@/lib/api";
-import { formatDuration, formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
+import { formatCounters, formatDuration, formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
 
 function run(changes: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -75,6 +75,15 @@ describe("formatTokens", () => {
     expect(formatTokens(1234)).toBe("1.2k");
     expect(formatTokens(48_000)).toBe("48k");
     expect(formatTokens(2_345_678)).toBe("2.3M");
+  });
+});
+
+describe("formatCounters", () => {
+  it("names one tool call, or several, with the tokens short or in full", () => {
+    expect(formatCounters({ status: "running", toolCalls: 1, tokens: 600 })).toBe("1 tool call · 600 tokens");
+    expect(formatCounters({ status: "running", toolCalls: 2, tokens: 1234 }, true)).toBe(
+      "2 tool calls · 1.2k tokens",
+    );
   });
 });
 

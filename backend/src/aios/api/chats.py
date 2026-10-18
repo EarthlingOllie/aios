@@ -570,23 +570,28 @@ def invocation_out(invocation: ChatInvocation) -> InvocationOut:
     )
 
 
+def agent_runs_live(db: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
+    """How each of these agent runs is going, by id; without a query when there are none."""
+    if not run_ids:
+        return {}
+    rows = db.execute(
+        select(
+            AgentRun.id,
+            AgentRun.status,
+            AgentRun.started_at,
+            AgentRun.finished_at,
+            AgentRun.tool_call_count,
+            AgentRun.input_tokens,
+            AgentRun.output_tokens,
+        ).where(AgentRun.id.in_(run_ids))
+    )
+    return {row.id: AgentRunLiveOut.model_validate(row, from_attributes=True) for row in rows}
+
+
 def with_runs(db: Session, outs: list[InvocationOut]) -> list[InvocationOut]:
     """The invocations with their runs as the run page shows them. Read once the rest has been,
     since reading a run expires the session's rows."""
-    agent_runs = {
-        run.id: AgentRunLiveOut.model_validate(run, from_attributes=True)
-        for run in db.execute(
-            select(
-                AgentRun.id,
-                AgentRun.status,
-                AgentRun.started_at,
-                AgentRun.finished_at,
-                AgentRun.tool_call_count,
-                AgentRun.input_tokens,
-                AgentRun.output_tokens,
-            ).where(AgentRun.id.in_([o.agent_run_id for o in outs if o.agent_run_id]))
-        )
-    }
+    agent_runs = agent_runs_live(db, [o.agent_run_id for o in outs if o.agent_run_id is not None])
     for out in outs:
         if out.agent_run_id is not None:
             out.agent_run = agent_runs.get(out.agent_run_id)
@@ -787,20 +792,19 @@ async def launch_turns() -> list[asyncio.Task]:
     return [firing.launch(TurnFiring(i), name=f"invocation-{i}") for i in claimed]
 
 
-async def start_invocations(workflow_invocation_ids: list[int], turns: bool) -> None:
-    """Start the workflow invocations' runs, each as a fire of its own (`aios.firing`), at once:
-    starting one only queues its run, so these don't wait for a free slot under the cap. With
-    `turns`, also run the agent invocations waiting for a turn, as slots allow, until none is
-    left waiting or every slot is taken."""
-    fires = [
-        firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in workflow_invocation_ids
-    ]
-    if turns:
-        fires += await launch_turns()
-    while fires:
+async def start_invocations(invocation_ids: list[int]) -> None:
+    """Start the workflow invocations' runs, each as a fire of its own (`aios.firing`), at once.
+    Starting one only queues its run, so these don't wait for a free slot under the cap."""
+    await asyncio.gather(
+        *(firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in invocation_ids)
+    )
+
+
+async def run_turns() -> None:
+    """Run the agent invocations waiting for a turn, as slots free up under the cap, until none
+    is left waiting or every slot is taken (the scheduler's ticks take it from there)."""
+    while fires := await launch_turns():
         await asyncio.gather(*fires)
-        # Their slots are free again.
-        fires = await launch_turns() if turns else []
 
 
 @router.post(
@@ -839,11 +843,10 @@ def post_message(
     db.commit()
     invocation_ids = [i.id for i in started]
     if invocation_ids:
-        background.add_task(
-            start_invocations,
-            [i.id for i in started if i.target_kind == TriggerTargetKind.workflow],
-            any(i.target_kind == TriggerTargetKind.agent for i in started),
-        )
+        if workflow_ids := [i.id for i in started if i.target_kind == TriggerTargetKind.workflow]:
+            background.add_task(start_invocations, workflow_ids)
+        if any(i.target_kind == TriggerTargetKind.agent for i in started):
+            background.add_task(run_turns)
     db.expire_all()
     posted = db.scalars(
         select(ChatMessage)

@@ -272,7 +272,7 @@ def test_a_run_whose_worker_died_fails_its_card_when_the_chat_is_read(api, queue
 def test_an_invocation_whose_start_was_lost_fails_when_the_chat_is_read(
     api, db, queued, monkeypatch
 ):
-    async def lost(*args):
+    async def lost(invocation_ids):
         """The process stops between posting the message and starting the run."""
 
     monkeypatch.setattr(chats, "start_invocations", lost)

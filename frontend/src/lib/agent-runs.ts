@@ -45,6 +45,13 @@ export function formatTokens(n: number) {
   return short(n / 1_000_000, "M");
 }
 
+/** Tool calls and tokens, in words: "2 tool calls · 1.2k tokens" (`compact`), or with the
+ * tokens in full. */
+export function formatCounters(counters: RunCounters, compact = false) {
+  const tokens = compact ? formatTokens(counters.tokens) : counters.tokens.toLocaleString();
+  return `${counters.toolCalls} tool ${counters.toolCalls === 1 ? "call" : "calls"} · ${tokens} tokens`;
+}
+
 /** The run's counters, or null if it's from before they were kept. A run that's tracked but
  * hasn't reached a model step yet has nothing to count so far. */
 export function runCounters(
