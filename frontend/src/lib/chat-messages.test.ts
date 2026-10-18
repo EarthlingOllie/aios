@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatInvocation, ChatMessage } from "@/lib/api";
 import {
+  bodyShown,
   afterCursor,
   hasOlder,
   isAtBottom,
+  isLive,
   mergeInvocations,
   mergeMessages,
   MESSAGE_PAGE,
@@ -75,7 +77,7 @@ describe("isAtBottom", () => {
   });
 });
 
-function invocation(id: number, status: ChatInvocation["status"]): ChatInvocation {
+function invocation(id: number, status: ChatInvocation["status"], extra: Partial<ChatInvocation> = {}): ChatInvocation {
   return {
     id,
     chat_id: 1,
@@ -85,6 +87,8 @@ function invocation(id: number, status: ChatInvocation["status"]): ChatInvocatio
     target_id: 5,
     status,
     error: null,
+    acknowledgement: "Reading the chat…",
+    brief: null,
     workflow_run_id: null,
     agent_run_id: null,
     run_deleted: false,
@@ -93,6 +97,7 @@ function invocation(id: number, status: ChatInvocation["status"]): ChatInvocatio
     finished_at: null,
     workflow_run: null,
     agent_run: null,
+    ...extra,
   };
 }
 
@@ -112,5 +117,31 @@ describe("mergeInvocations", () => {
   it("keeps the same object when a read brings none, so nothing re-renders", () => {
     const shown = { 1: invocation(1, "running") };
     expect(mergeInvocations(shown, [])).toBe(shown);
+  });
+});
+
+describe("isLive", () => {
+  it("is an invocation that hasn't finished: queued, briefing or running", () => {
+    expect(
+      (["queued", "briefing", "running", "succeeded", "failed"] as const).map((s) => isLive(invocation(1, s))),
+    ).toEqual([true, true, true, false, false]);
+  });
+});
+
+describe("bodyShown", () => {
+  const card = { ...message(7, "Reading the chat…"), kind: "run_card" as const, invocation_id: 1 };
+
+  it("is the invocation's latest, once the handoff has said what was understood", () => {
+    const briefed = invocation(1, "running", { acknowledgement: "I'll sum up the week." });
+    expect(bodyShown(card, briefed)).toBe("I'll sum up the week.");
+  });
+
+  it("is the card's own text until its invocation has been read", () => {
+    expect(bodyShown(card, undefined)).toBe("Reading the chat…");
+  });
+
+  it("is a plain message's own text", () => {
+    const reply = { ...message(8, "Done."), invocation_id: 1 };
+    expect(bodyShown(reply, invocation(1, "succeeded", { acknowledgement: "On it." }))).toBe("Done.");
   });
 });

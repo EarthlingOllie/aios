@@ -699,8 +699,8 @@ export type ChatMessage = {
   created_at: string;
 };
 
-/** queued: its run hasn't started yet. */
-export type ChatInvocationStatus = "queued" | "running" | "succeeded" | "failed";
+/** queued: waiting to start; briefing: the handoff is briefing its run on the chat, which starts next. */
+export type ChatInvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
 
 /** A run a mention in a chat started, as its card follows it. */
 export type ChatInvocation = {
@@ -715,6 +715,11 @@ export type ChatInvocation = {
   status: ChatInvocationStatus;
   /** Why it failed: the run's error, or why it couldn't start. */
   error: string | null;
+  /** Its acknowledgement's text as it is now: a placeholder until the handoff writes what the
+   * member understood it's being asked to do. */
+  acknowledgement: string;
+  /** What the handoff told the run of the chat, before the message; null until it has. */
+  brief: string | null;
   workflow_run_id: number | null;
   agent_run_id: number | null;
   /** Whether it started a run that has since been deleted. */

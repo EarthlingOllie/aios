@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     # needs a migration too (in the data store tree).
     embedding_model: str = "voyageai:voyage-4"
     embedding_batch_size: int = 64
+    # The handoff (`aios.handoff`): before a chat mention's run starts, one call to this model
+    # (empty: `llm_model`, the deployment's default) briefs it on the chat and writes the
+    # acknowledgement, over the chat's last `handoff_window_messages` messages or about
+    # `handoff_window_tokens` tokens of them, whichever is less.
+    handoff_model: str = ""
+    handoff_window_messages: int = Field(default=30, ge=1)
+    handoff_window_tokens: int = Field(default=8_000, ge=1)
 
     # Tracing agent runs to Langfuse (`aios.tracing`). Off unless both keys are set.
     langfuse_public_key: str = ""

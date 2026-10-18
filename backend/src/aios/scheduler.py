@@ -207,6 +207,10 @@ class ScheduleFiring:
     trigger_id: int
     fired_at: datetime
 
+    async def prepare(self) -> None:
+        # A schedule's run starts with its stored input: nothing to do first.
+        pass
+
     def start(self, db) -> firing.Turn | None:
         """The agent's turn to run; None for a workflow (queued for the worker, so the trigger
         shows how the run goes from here) or a trigger that's gone or fired again."""

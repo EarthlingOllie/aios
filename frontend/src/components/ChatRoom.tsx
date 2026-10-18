@@ -18,8 +18,10 @@ import {
 } from "@/lib/api";
 import {
   afterCursor,
+  bodyShown,
   hasOlder,
   isAtBottom,
+  isLive,
   mergeInvocations,
   mergeMessages,
   type Invocations,
@@ -144,7 +146,7 @@ export function ChatRoom({
   );
   // A run still going is followed every second, even while the tab is hidden.
   const live = useMemo(
-    () => Object.values(invocations).some((i) => i.status === "queued" || i.status === "running"),
+    () => Object.values(invocations).some(isLive),
     [invocations],
   );
   usePoll(loaded, poll, visible || live ? POLL_MS : CHAT_HIDDEN_POLL_MS);
@@ -280,7 +282,7 @@ function MessageItem({ message, invocation }: { message: ChatMessage; invocation
           {mentionsMe && <span className="text-xs font-medium text-amber-700 dark:text-amber-400">Mentions you</span>}
         </div>
         <MarkdownView className="text-sm" remarkPlugins={plugins} components={mentionComponents}>
-          {message.body}
+          {bodyShown(message, invocation)}
         </MarkdownView>
         {message.kind === "run_card" && (
           <div className="mt-1">

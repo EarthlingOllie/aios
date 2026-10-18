@@ -171,7 +171,7 @@ A start that's refused (no nodes, an agent that can't run, the queue down) fails
 with the reason. When the run ends (in the worker, found stopped, or deleted before it finished),
 its output or error is posted back as a message from the workflow, belonging to the invocation,
 and the invocation goes `succeeded` or `failed`, in one transaction. One whose start was lost with
-its process fails when the chat's next read finds it still queued after 90 seconds. A read's
+its process fails when the chat's next read finds it still queued (or briefing) after 90 seconds. A read's
 `invocations` are the state of each invocation its messages belong to and of every one in the
 chat still going, each with its run as the run's page shows it (graph, steps), so a chat's live
 cards cost its one poll a second. The card draws the run's graph still, at a fixed height, with
@@ -196,6 +196,22 @@ clicked. When the turn ends, the agent's final reply is posted back as a message
 (or the turn's error, failing the card). Several agents and workflows mentioned in one message
 each start; mentions in an agent's reply start nothing. Runs started from a chat are listed with
 the agent's others, marked with the chat.
+
+Before a mention's run starts, a **handoff** step (`aios.handoff`) briefs it on the chat, so the
+member doesn't have to be told the context again. It runs for agents and workflows alike, and is
+never skipped: the invocation goes `queued` → `briefing` → `running`, and one structured call to
+the handoff model reads the chat up to the mentioning message (its last `HANDOFF_WINDOW_MESSAGES`
+messages, 30 by default, or about `HANDOFF_WINDOW_TOKENS`, 8000, of them, whichever is less;
+run cards aside) and returns `{ack, brief}`. The ack, a line saying what the member understood
+it's being asked to do, replaces the acknowledgement's placeholder ("Reading the chat…"), so
+whoever asked can correct it early; a read's invocations carry it (`acknowledgement`), so a card
+already on screen updates. The brief is kept on the invocation (`brief`) and the run's input is
+the brief, a blank line, then the message (just the message when the chat had nothing to brief it
+on). The card shows the brief behind a disclosure, so anyone can see exactly what the run was
+told. A handoff that fails (the model errs, takes over a minute, or answers without `{ack,
+brief}`) fails the invocation with why, as a refused start does. The model is `HANDOFF_MODEL`,
+by default the deployment's `LLM_MODEL`; each call is traced to Langfuse tagged `handoff`, with
+the invocation's id and its chat as the session (see [Tracing](#tracing)).
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
@@ -806,5 +822,7 @@ LANGFUSE_ENVIRONMENT=production                  # optional
 ```
 
 Each trace carries the user id, the run's thread id as the Langfuse session, tags for the agent
-and version, and the run metadata above. With no keys, nothing is traced. Traces are sent in the
+and version, and the run metadata above. A chat mention's handoff (see Chats) is traced too,
+tagged `handoff`, with `invocation_id`, the chat, the message, who asked and the member as
+metadata, and `chat-<id>` as the session. With no keys, nothing is traced. Traces are sent in the
 background and flushed when the API shuts down.

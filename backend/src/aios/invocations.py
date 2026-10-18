@@ -6,9 +6,12 @@ chat never shows a mention without its card. Only a user's message does this: wh
 workflow posts (a result) starts nothing, whatever it mentions, so a chat can't loop.
 
 For a workflow, after the response, a background step starts the run
-(`aios.api.chats.InvocationFiring`) through the helpers the UI and schedules use, with the
-message as its input (`run_input`), as the workflow's owner. The invocation records the run,
-and goes `running` once it's queued (`mark_running`). A start that's refused fails it with the
+(`aios.api.chats.InvocationFiring`). First the handoff (`aios.handoff`) briefs it: the invocation
+goes `briefing` (`begin_briefing`), and one model call writes the brief, kept on the invocation,
+and the ack, which replaces the acknowledgement's placeholder (`record_handoff`). Then the run
+starts through the helpers the UI and schedules use, with the brief and the message as its input
+(`run_input`), as the workflow's owner. The invocation records the run, and goes `running` once
+it's queued (`mark_running`). A start that's refused, or a handoff that fails, fails it with the
 reason (`fail_unstarted`).
 
 Every invocation ends the same way, in one transaction: it's marked succeeded or failed and its
@@ -21,7 +24,8 @@ got as far as starting, because its process stopped first, is failed when the ch
 
 Mentioning an agent queues an invocation the same way, but its turn runs in an API process
 (`aios.api.chats.TurnFiring`), under the firing machinery's cap: it waits, queued, until a
-process with a free slot claims it (`claim_turns`), which beats it while the turn runs (`beat`).
+process with a free slot claims it (`claim_turns`), which beats it while the handoff and then the
+turn run (`beat`).
 When the turn ends its reply, or why it failed, is posted back (`finish_turn`); one whose
 heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`).
 """
@@ -48,8 +52,9 @@ from aios.models import (
     WorkflowRunStatus,
 )
 
-# The acknowledgement a run card carries.
-ACKNOWLEDGEMENT = "Starting a run with this message."
+# The acknowledgement a run card carries until the handoff replaces it with what the member
+# understood (`aios.handoff`).
+ACKNOWLEDGEMENT = "Reading the chat…"
 # How long an invocation can wait to start before it counts as lost with its process: the start
 # runs straight after the message is posted and takes moments.
 START_WITHIN = timedelta(seconds=90)
@@ -58,15 +63,24 @@ RUN_DELETED = "The run was deleted before it finished."
 NO_OUTPUT = "_The run finished with no output._"
 NO_REPLY = "_The agent finished without a reply._"
 
-UNFINISHED = (ChatInvocationStatus.queued, ChatInvocationStatus.running)
+# Before its run has started, and before it has finished.
+NOT_STARTED = (ChatInvocationStatus.queued, ChatInvocationStatus.briefing)
+UNFINISHED = (*NOT_STARTED, ChatInvocationStatus.running)
 
 # A mention's token in a message (`@[name](kind:id)`, the name with `\`, `[` and `]` escaped).
 TOKEN = re.compile(r"@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):[1-9]\d*\)")
 
 
-def run_input(body: str) -> str:
-    """A message as a run's input: its text, with each mention as `@name`."""
+def message_text(body: str) -> str:
+    """A message's text, with each mention as `@name`."""
     return TOKEN.sub(lambda m: "@" + re.sub(r"\\(.)", r"\1", m.group(1)), body)
+
+
+def run_input(brief: str | None, body: str) -> str:
+    """A run's input: the handoff's brief, a blank line, then the message's text (just the
+    text if the chat had nothing to brief it on)."""
+    text = message_text(body)
+    return f"{brief}\n\n{text}" if brief else text
 
 
 def create(
@@ -118,13 +132,41 @@ def lock(db: Session, invocation_id: int) -> ChatInvocation | None:
     ).one_or_none()
 
 
+def begin_briefing(db: Session, invocation_id: int) -> ChatInvocation | None:
+    """The queued invocation, locked and now briefing (`aios.handoff`); None if it isn't
+    queued. In the caller's transaction."""
+    invocation = lock(db, invocation_id)
+    if invocation is None or invocation.status != ChatInvocationStatus.queued:
+        return None
+    invocation.status = ChatInvocationStatus.briefing
+    return invocation
+
+
+def record_handoff(db: Session, invocation_id: int, ack: str, brief: str) -> None:
+    """Keep the handoff's brief for the run, and put its ack in place of the acknowledgement's
+    placeholder; in the caller's transaction. A no-op unless it's still briefing."""
+    invocation = lock(db, invocation_id)
+    if invocation is None or invocation.status != ChatInvocationStatus.briefing:
+        return
+    invocation.brief = brief
+    if ack:
+        db.execute(
+            update(ChatMessage)
+            .where(
+                ChatMessage.invocation_id == invocation_id,
+                ChatMessage.kind == ChatMessageKind.run_card,
+            )
+            .values(body=ack)
+        )
+
+
 def mark_running(db: Session, invocation_id: int) -> None:
     """Its run has been queued: it's running. A no-op if the run has already ended it."""
     db.execute(
         update(ChatInvocation)
         .where(
             ChatInvocation.id == invocation_id,
-            ChatInvocation.status == ChatInvocationStatus.queued,
+            ChatInvocation.status.in_(NOT_STARTED),
         )
         .values(
             status=ChatInvocationStatus.running,
@@ -163,7 +205,7 @@ def fail_unstarted(db: Session, invocation_id: int, error: str) -> None:
     """Fail an invocation whose run couldn't start, with why; in the caller's transaction. A
     no-op once its run has started (it finishes when the run does), or it has finished."""
     invocation = lock(db, invocation_id)
-    if invocation is None or invocation.status != ChatInvocationStatus.queued:
+    if invocation is None or invocation.status not in NOT_STARTED:
         return
     _finish(
         db,
@@ -211,15 +253,15 @@ def fail_deleted_run(db: Session, workflow_run_id: int) -> None:
 
 
 def fail_stalled(db: Session, chat_id: int) -> None:
-    """Fail the chat's workflow invocations that never started and never will: still queued
-    without a run long after they were made, their process gone. Commits. (An agent's waits for
-    a free slot, however long; see `claim_turns`.)"""
+    """Fail the chat's workflow invocations that never started and never will: still queued or
+    briefing without a run long after they were made, their process gone. Commits. (An agent's
+    waits for a free slot, however long; see `claim_turns`.)"""
     for invocation in db.scalars(
         select(ChatInvocation)
         .where(
             ChatInvocation.chat_id == chat_id,
             ChatInvocation.target_kind == TriggerTargetKind.workflow,
-            ChatInvocation.status == ChatInvocationStatus.queued,
+            ChatInvocation.status.in_(NOT_STARTED),
             ChatInvocation.workflow_run_id.is_(None),
             ChatInvocation.agent_run_id.is_(None),
             ChatInvocation.created_at < func.now() - START_WITHIN,
@@ -276,7 +318,7 @@ def finish_turn(db: Session, invocation_id: int, error: str | None) -> None:
     invocation = lock(db, invocation_id)
     if invocation is None:
         return
-    if invocation.status == ChatInvocationStatus.queued:
+    if invocation.status in NOT_STARTED:
         # The run never started.
         _finish(
             db,

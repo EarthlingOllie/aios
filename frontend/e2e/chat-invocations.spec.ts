@@ -42,7 +42,7 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
 
   await mention(page, report, "Summarise the week");
   // The acknowledgement and its card come with the message, before any poll.
-  const ack = message(page, "Starting a run with this message.");
+  const ack = message(page, "Reading the chat…");
   await expect(ack).toBeVisible();
   await expect(ack.getByText("Report", { exact: true })).toBeVisible();
   await expect(card(page)).toBeVisible();

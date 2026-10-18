@@ -26,11 +26,20 @@ class Mention:
     agent_id: int
     message: str
     cant_start: str | None = None
+    # Why its preparation fails, if it does (as a chat mention's handoff can).
+    cant_prepare: str | None = None
+    prepared: bool = False
     run_id: int | None = None
     beats: int = 0
     outcomes: list[str | None] = field(default_factory=list)
 
+    async def prepare(self) -> None:
+        if self.cant_prepare:
+            raise firing.CantStart(self.cant_prepare)
+        self.prepared = True
+
     def start(self, db) -> firing.Turn:
+        assert self.prepared
         if self.cant_start:
             raise firing.CantStart(self.cant_start)
         run = new_agent_run(db, db.get(Agent, self.agent_id))
@@ -89,6 +98,14 @@ def test_a_cause_that_cant_start_records_why_without_a_run(api, user, db):
     mention = Mention(user.id, agent["id"], "Go", cant_start="The chat has been deleted.")
     asyncio.run(firing.fire(mention))
     assert mention.outcomes == ["The chat has been deleted."]
+    assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+
+
+def test_a_cause_that_cant_prepare_records_why_and_starts_nothing(api, user, db):
+    agent = make_agent(api, "Bot")
+    mention = Mention(user.id, agent["id"], "Go", cant_prepare="The handoff failed: overloaded")
+    asyncio.run(firing.fire(mention))
+    assert mention.outcomes == ["The handoff failed: overloaded"]
     assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
 
 

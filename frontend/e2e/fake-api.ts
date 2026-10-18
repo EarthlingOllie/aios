@@ -10,9 +10,10 @@ import type { Page, Route } from "@playwright/test";
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
  * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
  * invocation: its acknowledgement and card are posted with the message, and each read of the
- * chat's messages moves it on (`advanceInvocations`) until its run ends and the result is posted
- * back. An agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a
- * read adding a tool call and tokens to its run's counters.
+ * chat's messages moves it on (`advanceInvocations`): briefing, then the handoff's ack and brief
+ * (`handoffs`, by member id) and its run, until the run ends and the result is posted back. An
+ * agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a read
+ * adding a tool call and tokens to its run's counters.
  */
 
 type Kind = "agent" | "workflow";
@@ -282,7 +283,7 @@ export type ChatMessageRow = {
   invocation_id: number | null;
   created_at: string;
 };
-type InvocationStatus = "queued" | "running" | "succeeded" | "failed";
+type InvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
 /** An agent's or workflow's run that a mention started. */
 export type InvocationRow = {
   id: number;
@@ -293,6 +294,8 @@ export type InvocationRow = {
   target_id: number;
   status: InvocationStatus;
   error: string | null;
+  /** What the handoff told its run of the chat; null until it has. */
+  brief: string | null;
   /** The run it started; gone from `runs` (or `agentRuns`) once it's deleted. */
   run_id: number | null;
   created_at: string;
@@ -316,9 +319,19 @@ const NOW = "2026-10-14T09:00:00Z";
 export type AgentTurn = { steps: number; tokensPerStep: number; reply?: string; error?: string };
 export const AGENT_TURN: AgentTurn = { steps: 2, tokensPerStep: 120 };
 
-/** A message as a run's input: each mention as `@name`. */
-const runInput = (body: string) =>
+/** A message's text: each mention as `@name`. */
+const messageText = (body: string) =>
   body.replace(/@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):\d+\)/g, "@$1");
+
+/** A run's input: the handoff's brief, a blank line, then the message's text (just the text with
+ * no brief). */
+const runInput = (brief: string | null, body: string) => (brief ? `${brief}\n\n${messageText(body)}` : messageText(body));
+
+/** What a mentioned member's handoff writes: what it understood and the brief, or why it failed. */
+export type Handoff = { ack: string; brief: string } | { error: string };
+export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
+/** The acknowledgement's placeholder, until the handoff writes what was understood. */
+const ACKNOWLEDGEMENT = "Reading the chat…";
 
 export class FakeApi {
   private nextId = 100;
@@ -341,6 +354,8 @@ export class FakeApi {
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
+  /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
+  handoffs = new Map<number, Handoff>();
   /** Workflows whose runs a mention can't start, by id, with why (as the API refuses one). */
   refuseStart = new Map<number, string>();
   /** How each mentioned agent's turn goes, by agent id (`AGENT_TURN` if unset). */
@@ -925,6 +940,7 @@ export class FakeApi {
       target_id: target.id,
       status: "queued",
       error: null,
+      brief: null,
       run_id: null,
       created_at: NOW,
       started_at: null,
@@ -933,7 +949,7 @@ export class FakeApi {
     this.invocations.set(invocation.id, invocation);
     this.addChatMessage(
       chat,
-      "Starting a run with this message.",
+      ACKNOWLEDGEMENT,
       { kind, id: target.id, name: target.name },
       [],
       { kind: "run_card", invocation_id: invocation.id },
@@ -955,18 +971,41 @@ export class FakeApi {
   }
 
   /**
+   * The handoff of a briefing invocation: its brief kept and its ack in place of the card's
+   * placeholder, as `handoffs` scripts it. False if it failed, which fails the invocation.
+   */
+  private handOff(chat: ChatRow, invocation: InvocationRow): boolean {
+    const handoff = this.handoffs.get(invocation.target_id) ?? HANDOFF;
+    if ("error" in handoff) {
+      const error = `The handoff failed: ${handoff.error}`;
+      this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
+      return false;
+    }
+    invocation.brief = handoff.brief || null;
+    const card = chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
+    card.body = handoff.ack;
+    return true;
+  }
+
+  /**
    * Moves the chat's unfinished invocations on by one beat, as each read of its messages does: a
-   * queued one starts its run (or fails, if `refuseStart` says so); a running one's run moves on
-   * (`advance`), and once it has ended, the result is posted back. One whose run was deleted fails.
+   * queued one goes briefing; a briefing one is handed off (`handOff`) and starts its run (or
+   * fails, if `refuseStart` says so); a running one's run moves on (`advance`), and once it has
+   * ended, the result is posted back. One whose run was deleted fails.
    */
   advanceInvocations(chat: ChatRow) {
     for (const invocation of this.invocations.values()) {
       if (invocation.chat_id !== chat.id) continue;
+      if (invocation.status === "queued") {
+        invocation.status = "briefing";
+        continue;
+      }
+      if (invocation.status === "briefing" && !this.handOff(chat, invocation)) continue;
       if (invocation.target_kind === "agent") {
         this.advanceTurn(chat, invocation);
         continue;
       }
-      if (invocation.status === "queued") {
+      if (invocation.status === "briefing") {
         const refused = this.refuseStart.get(invocation.target_id);
         if (refused !== undefined) {
           this.finishInvocation(invocation, "failed", `Couldn't start the run: ${refused}`, refused);
@@ -975,7 +1014,7 @@ export class FakeApi {
         const message = chat.messages.find((m) => m.id === invocation.message_id)!;
         const run = this.addRun(this.workflows.get(invocation.target_id)!, {
           status: "queued",
-          input: runInput(message.body),
+          input: runInput(invocation.brief, message.body),
           started_at: null,
         });
         Object.assign(invocation, { status: "running", run_id: run.id, started_at: NOW });
@@ -996,7 +1035,7 @@ export class FakeApi {
   }
 
   /**
-   * Moves a mentioned agent's turn on by one read: a queued one starts a run, running from now (so
+   * Moves a mentioned agent's turn on by one read: a briefed one starts a run, running from now (so
    * its card's elapsed time ticks from the real clock); each read after is a model step adding a
    * tool call and tokens, until its `agentTurns` steps are done and its reply (or error) is
    * posted back. One whose run was deleted fails.
@@ -1004,9 +1043,9 @@ export class FakeApi {
   private advanceTurn(chat: ChatRow, invocation: InvocationRow) {
     const agent = this.agents.get(invocation.target_id)!;
     const turn = this.agentTurns.get(agent.id) ?? AGENT_TURN;
-    if (invocation.status === "queued") {
+    if (invocation.status === "briefing") {
       const message = chat.messages.find((m) => m.id === invocation.message_id)!;
-      const input = runInput(message.body);
+      const input = runInput(invocation.brief, message.body);
       const run = this.addAgentRun(agent, input, 1, {
         status: "running",
         started_at: new Date().toISOString(),
@@ -1254,8 +1293,10 @@ export class FakeApi {
     };
   }
 
-  private invocationOut(invocation: InvocationRow) {
-    const { run_id, ...rest } = invocation;
+  private invocationOut(chat: ChatRow, invocation: InvocationRow) {
+    const { run_id, ...invocationRest } = invocation;
+    const card = chat.messages.find((m) => m.kind === "run_card" && m.invocation_id === invocation.id)!;
+    const rest = { ...invocationRest, acknowledgement: card.body };
     if (invocation.target_kind === "agent") {
       const run = run_id === null ? undefined : this.agentRuns.get(run_id);
       return {
@@ -1292,11 +1333,11 @@ export class FakeApi {
   private messagesOut(chat: ChatRow, messages: ChatMessageRow[]) {
     const ids = new Set(messages.map((m) => m.invocation_id));
     const invocations = [...this.invocations.values()].filter(
-      (i) => i.chat_id === chat.id && (ids.has(i.id) || i.status === "queued" || i.status === "running"),
+      (i) => i.chat_id === chat.id && (ids.has(i.id) || (i.status !== "succeeded" && i.status !== "failed")),
     );
     return {
       messages: messages.map((m) => this.messageOut(chat, m)),
-      invocations: invocations.map((i) => this.invocationOut(i)),
+      invocations: invocations.map((i) => this.invocationOut(chat, i)),
     };
   }
 

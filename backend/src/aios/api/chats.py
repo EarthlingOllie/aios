@@ -18,18 +18,21 @@ anyone who isn't a member is a 422.
 
 Mentioning a workflow starts a run of it, with the message as its input (`aios.invocations`): the
 response to the post carries the workflow's acknowledgement and run card with the message, and
-the run starts just after (`InvocationFiring`). A read's `invocations` are the state of each
+the run starts just after (`InvocationFiring`). Before it does, the handoff (`aios.handoff`)
+briefs it on the chat: the invocation is `briefing`, then its `brief` is kept and prepended to the
+run's input, and its ack replaces the acknowledgement's placeholder (`acknowledgement`, which the
+poll carries, so a card already shown follows it). A read's `invocations` are the state of each
 invocation its messages belong to and of every one in the chat still going, each with its run
 as the run's page shows it, so a chat's live cards cost its one poll. When the run ends, its
 result is posted back as a message from the workflow.
 
-Mentioning an agent runs one turn of a new run of it, with the message as the user's, the same
-way: its acknowledgement and card come with the post, and the turn runs in this process through
-the firing machinery schedules use (`TurnFiring`, `aios.firing`), under its cap: it's claimed
-when there's a free slot (`launch_turns`, just after the post or on a scheduler tick), beaten
-while it runs, and failed if its heartbeat stops (`fail_stopped_turns`), so a turn lost with its
-process fails its card. A read's `invocations` carry an agent run's status, start and counters
-(`agent_run`), and the agent's final reply is posted back when the turn ends.
+Mentioning an agent runs one turn of a new run of it, with the brief and the message as the
+user's, the same way: its acknowledgement and card come with the post, and the turn runs in this
+process through the firing machinery schedules use (`TurnFiring`, `aios.firing`), under its cap:
+it's claimed when there's a free slot (`launch_turns`, just after the post or on a scheduler
+tick), beaten while it runs, and failed if its heartbeat stops (`fail_stopped_turns`), so a turn
+lost with its process fails its card. A read's `invocations` carry an agent run's status, start
+and counters (`agent_run`), and the agent's final reply is posted back when the turn ends.
 """
 
 import asyncio
@@ -43,7 +46,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from aios import firing, invocations
+from aios import firing, handoff, invocations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live, on_conflict, unique_name
@@ -495,6 +498,11 @@ class InvocationOut(BaseModel):
     status: ChatInvocationStatus
     # Why it failed: the run's error, or why it couldn't start.
     error: str | None
+    # The acknowledgement's text as it is now: its placeholder until the handoff writes what the
+    # member understood it's being asked to do (the run card's message has the same).
+    acknowledgement: str
+    # What the handoff told the run of the chat, before the message; null until it has.
+    brief: str | None
     workflow_run_id: int | None
     agent_run_id: int | None
     # Whether it started a run that has since been deleted.
@@ -547,8 +555,8 @@ def message_out(message: ChatMessage) -> MessageOut:
     )
 
 
-def invocation_out(invocation: ChatInvocation) -> InvocationOut:
-    """The invocation, without its run (`with_runs` adds it)."""
+def invocation_out(invocation: ChatInvocation, acknowledgement: str) -> InvocationOut:
+    """The invocation, with its acknowledgement's text, without its run (`with_runs` adds it)."""
     run_id = invocation.workflow_run_id or invocation.agent_run_id
     return InvocationOut(
         id=invocation.id,
@@ -559,6 +567,8 @@ def invocation_out(invocation: ChatInvocation) -> InvocationOut:
         target_id=invocation.workflow_id or invocation.agent_id,
         status=invocation.status,
         error=invocation.error,
+        acknowledgement=acknowledgement,
+        brief=invocation.brief,
         workflow_run_id=invocation.workflow_run_id,
         agent_run_id=invocation.agent_run_id,
         run_deleted=invocation.started_at is not None and run_id is None,
@@ -614,7 +624,18 @@ def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> Mess
         )
         .order_by(ChatInvocation.id)
     ).all()
-    return MessagesOut(messages=out, invocations=with_runs(db, [invocation_out(i) for i in found]))
+    acknowledgements = dict(
+        db.execute(
+            select(ChatMessage.invocation_id, ChatMessage.body).where(
+                ChatMessage.invocation_id.in_([i.id for i in found]),
+                ChatMessage.kind == ChatMessageKind.run_card,
+            )
+        ).all()
+    )
+    return MessagesOut(
+        messages=out,
+        invocations=with_runs(db, [invocation_out(i, acknowledgements[i.id]) for i in found]),
+    )
 
 
 def catch_up(db: Session, chat_id: int) -> None:
@@ -693,17 +714,20 @@ class InvocationFiring:
 
     invocation_id: int
 
+    async def prepare(self) -> None:
+        await handoff.brief(self.invocation_id)
+
     def start(self, db: Session) -> None:
-        """Start the workflow's run with the message as its input and queue it for the worker;
-        the run then finishes the invocation (`aios.invocations`). Raises `HTTPException` as
-        starting one by hand would, or `CantStart`."""
+        """Start the workflow's run with the brief and the message as its input and queue it for
+        the worker; the run then finishes the invocation (`aios.invocations`). Raises
+        `HTTPException` as starting one by hand would, or `CantStart`."""
         invocation = invocations.lock(db, self.invocation_id)
-        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+        if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
         message = db.get(ChatMessage, invocation.message_id)
         try:
             run = workflows_api.new_workflow_run(
-                db, invocation.workflow, invocations.run_input(message.body)
+                db, invocation.workflow, invocations.run_input(invocation.brief, message.body)
             )
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
@@ -734,15 +758,21 @@ class TurnFiring:
 
     invocation_id: int
 
+    async def prepare(self) -> None:
+        await handoff.brief(self.invocation_id)
+
     def start(self, db: Session) -> firing.Turn | None:
-        """Start a run of the agent's current version, as its owner, with the message as the
-        user's; the invocation records it and goes running. None if it has finished since it
-        was claimed. Raises `HTTPException` as starting one by hand would, or `CantStart`."""
+        """Start a run of the agent's current version, as its owner, with the brief and the
+        message as the user's; the invocation records it and goes running. None if it has
+        finished since it was claimed. Raises `HTTPException` as starting one by hand would, or
+        `CantStart`."""
         invocation = db.get(ChatInvocation, self.invocation_id)
-        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+        if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
         agent = invocation.agent
-        prompt = invocations.run_input(db.get(ChatMessage, invocation.message_id).body)
+        prompt = invocations.run_input(
+            invocation.brief, db.get(ChatMessage, invocation.message_id).body
+        )
         try:
             # The agent's lock first, then the invocation's, as deleting the agent takes them.
             run = agents_api.new_agent_run(db, agent)
@@ -751,7 +781,7 @@ class TurnFiring:
                 raise firing.CantStart("The agent has been deleted.") from exc
             raise
         invocation = invocations.lock(db, self.invocation_id)
-        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+        if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             db.rollback()
             return None
         invocation.agent_run_id = run.id
@@ -794,7 +824,8 @@ async def launch_turns() -> list[asyncio.Task]:
 
 async def start_invocations(invocation_ids: list[int]) -> None:
     """Start the workflow invocations' runs, each as a fire of its own (`aios.firing`), at once.
-    Starting one only queues its run, so these don't wait for a free slot under the cap."""
+    Starting one only briefs it (one model call) and queues its run, so these don't wait for a
+    free slot under the cap."""
     await asyncio.gather(
         *(firing.launch(InvocationFiring(i), name=f"invocation-{i}") for i in invocation_ids)
     )

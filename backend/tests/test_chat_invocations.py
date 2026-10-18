@@ -66,8 +66,8 @@ def test_mentioning_a_workflow_posts_its_acknowledgement_and_card_at_once(api, u
     # The response is from before the run starts, which happens after it.
     assert invocation["status"] == "queued"
     assert invocation["workflow_run_id"] is None and invocation["workflow_run"] is None
-    # And the chat shows them together.
-    assert messages(api, chat)["messages"] == [message, card]
+    # And the chat shows them together, the acknowledgement now the handoff's (`briefs`).
+    assert messages(api, chat)["messages"] == [message, {**card, "body": "On it."}]
 
 
 def test_the_run_starts_with_the_message_and_the_poll_follows_it_to_its_result(api, queued):

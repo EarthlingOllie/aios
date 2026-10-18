@@ -30,6 +30,20 @@ export function mergeInvocations(current: Invocations, incoming: ChatInvocation[
   return merged;
 }
 
+/** Whether an invocation is still going (its card is live): it hasn't finished. */
+export function isLive(invocation: ChatInvocation): boolean {
+  return invocation.status !== "succeeded" && invocation.status !== "failed";
+}
+
+/**
+ * The text a message shows. A run card's is its acknowledgement as of the latest read of its
+ * invocation, which the handoff rewrites (from the placeholder to what the member understood)
+ * after the card was read; any other message's is its own.
+ */
+export function bodyShown(message: ChatMessage, invocation: ChatInvocation | undefined): string {
+  return message.kind === "run_card" && invocation ? invocation.acknowledgement : message.body;
+}
+
 /** The `after` cursor for what's new: the newest message's id, or 0 before there are any. */
 export function afterCursor(messages: ChatMessage[]): number {
   return messages.length === 0 ? 0 : messages[messages.length - 1].id;

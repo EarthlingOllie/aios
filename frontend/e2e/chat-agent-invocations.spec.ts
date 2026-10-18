@@ -32,7 +32,7 @@ test("mentioning an agent shows its card at once, ticking and counting, then pos
 
   await post(page, `@[Scout](agent:${agent.id}) find sources`);
   // The acknowledgement and its card come with the message, before any poll.
-  const ack = message(page, "Starting a run with this message.");
+  const ack = message(page, "Reading the chat…");
   await expect(ack).toBeVisible();
   await expect(ack.getByText("Scout", { exact: true })).toBeVisible();
   await expect(card(page)).toBeVisible();
@@ -99,7 +99,7 @@ test("an agent's card whose run has been deleted says so", async ({ page }) => {
   const { chat, agent } = seed(api);
   await page.goto(`/chats/${chat.id}`);
   await post(page, `@[Scout](agent:${agent.id}) go`);
-  await expect(message(page, "Done: @Scout go")).toBeVisible();
+  await expect(message(page, "Done: @Scout go")).toBeVisible({ timeout: 10_000 });
 
   const [run] = [...api.agentRuns.values()];
   api.agentRuns.delete(run.id);

@@ -1002,6 +1002,8 @@ class ChatMessage(Base):
 class ChatInvocationStatus(enum.StrEnum):
     # Waiting for its run to start (`aios.invocations`).
     queued = "queued"
+    # The handoff is briefing its run on the chat (`aios.handoff`); the run starts next.
+    briefing = "briefing"
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
@@ -1045,6 +1047,8 @@ class ChatInvocation(Base):
     )
     # Why it failed: the run's error, or why it couldn't start.
     error: Mapped[str | None] = mapped_column(Text)
+    # What the handoff told its run of the chat (`aios.handoff`); null until it has.
+    brief: Mapped[str | None] = mapped_column(Text)
     # The run it started; null until it has, and once that run has been deleted (the card says
     # so). Deleting the chat leaves the run.
     agent_run_id: Mapped[int | None] = mapped_column(
@@ -1075,6 +1079,6 @@ class ChatInvocation(Base):
         Index(
             "ix_chat_invocations_unfinished",
             "chat_id",
-            postgresql_where=text("status IN ('queued', 'running')"),
+            postgresql_where=text("status IN ('queued', 'briefing', 'running')"),
         ),
     )

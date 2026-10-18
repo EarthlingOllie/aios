@@ -66,6 +66,10 @@ class CantStart(Exception):
 class Cause(Protocol):
     """What a caller supplies to `fire`: the parts of a firing that are the cause's own."""
 
+    async def prepare(self) -> None:
+        """Whatever the cause does before its run starts, in the fire's slot (a chat mention's
+        handoff, `aios.handoff`). Raises `CantStart` to record why the run can't start."""
+
     def start(self, db: Session) -> Turn | None:
         """Start the run and commit it, checking whatever the cause claimed is still its to
         run: the turn to run here, or None if there's nothing to run in this process (the
@@ -172,6 +176,7 @@ def _record(cause: Cause, error: str | None) -> None:
 async def _fire(flight: Fire) -> None:
     error = None
     try:
+        await flight.cause.prepare()
         started = await run_in_threadpool(_start, flight)
         if started is not None:
             turn, ctx = started

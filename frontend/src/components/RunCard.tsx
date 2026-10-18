@@ -23,9 +23,19 @@ const TICK_MS = 1000;
  * run page draws it (still, at a fixed height, with no inspector) and how many nodes are done;
  * an agent's, its status, the time elapsed (ticking while it runs) and its tool calls and tokens
  * so far. Clicking anywhere on it opens the run. A run that couldn't start shows why; one since
- * deleted says so.
+ * deleted says so. Under it, behind a disclosure, is the brief the handoff gave the run, so
+ * anyone can see exactly what it was told.
  */
 export function RunCard({ invocation }: { invocation: ChatInvocation | undefined }) {
+  return (
+    <>
+      <Card invocation={invocation} />
+      {invocation?.brief && <Brief brief={invocation.brief} />}
+    </>
+  );
+}
+
+function Card({ invocation }: { invocation: ChatInvocation | undefined }) {
   if (invocation?.target_kind === "agent") {
     const run = invocation.agent_run;
     if (!run) return <Unstarted invocation={invocation} />;
@@ -34,16 +44,30 @@ export function RunCard({ invocation }: { invocation: ChatInvocation | undefined
   return <WorkflowRunCard invocation={invocation} />;
 }
 
-/** A card with no run to show: starting, couldn't start, or deleted since. */
+/** What the handoff told the run of the chat, before the message: closed until asked for. */
+function Brief({ brief }: { brief: string }) {
+  return (
+    <details data-testid="run-card-brief" className="mt-1 max-w-xl text-sm">
+      <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+        Brief
+      </summary>
+      <p className="text-muted-foreground mt-1 border-l-2 pl-2 break-words whitespace-pre-wrap">{brief}</p>
+    </details>
+  );
+}
+
+/** A card with no run to show: briefing or starting, couldn't start, or deleted since. */
 function Unstarted({ invocation }: { invocation: ChatInvocation }) {
   return (
-    <Frame status={<RunStatusBadge status={invocation.status} />}>
+    <Frame status={<RunStatusBadge status={invocation.status} data-testid="run-card-status" />}>
       {invocation.run_deleted ? (
         <p className="text-muted-foreground">The run has been deleted.</p>
       ) : invocation.status === "failed" ? (
         <p role="alert" className="text-destructive break-words">
           Couldn't start the run: {invocation.error}
         </p>
+      ) : invocation.status === "briefing" ? (
+        <p className="text-muted-foreground">Briefing the run on the chat…</p>
       ) : (
         <p className="text-muted-foreground">Starting the run…</p>
       )}
