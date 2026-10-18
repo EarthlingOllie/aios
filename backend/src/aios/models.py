@@ -937,7 +937,8 @@ class ChatAuthorKind(enum.StrEnum):
 class ChatMessageKind(enum.StrEnum):
     # Markdown, as written.
     text = "text"
-    # A card following a run a mention started (not yet posted).
+    # An acknowledgement from the agent or workflow a mention started, with a card under it
+    # following the run (`invocation_id`).
     run_card = "run_card"
 
 
@@ -966,6 +967,17 @@ class ChatMessage(Base):
     body: Mapped[str] = mapped_column(Text)
     # Who the message mentions, `[{kind, id, name}]`, with the names as they were when posted.
     mentions: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    # The invocation it's part of: a run card's, or the result the run posted back. Deleted with
+    # the chat, as the invocation is.
+    invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "chat_invocations.id",
+            ondelete="CASCADE",
+            use_alter=True,
+            name="fk_chat_messages_invocation_id",
+        ),
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     author_user: Mapped[User | None] = relationship()
@@ -979,6 +991,85 @@ class ChatMessage(Base):
             " AND (author_kind = 'workflow' OR author_workflow_id IS NULL)",
             name="ck_chat_messages_author",
         ),
+        CheckConstraint(
+            "kind <> 'run_card' OR invocation_id IS NOT NULL", name="ck_chat_messages_run_card"
+        ),
         # A chat's messages in order, for the cursor reads.
         Index("ix_chat_messages_chat_id_id", "chat_id", "id"),
+    )
+
+
+class ChatInvocationStatus(enum.StrEnum):
+    # Waiting for its run to start (`aios.invocations`).
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+    @property
+    def finished(self) -> bool:
+        return self in (ChatInvocationStatus.succeeded, ChatInvocationStatus.failed)
+
+
+class ChatInvocation(Base):
+    """A run of an agent or workflow that a mention in a chat started (`aios.invocations`): one
+    per mention, shaped like a trigger's outcome but one event rather than a standing rule. Its
+    card follows the run; when the run ends, its result is posted back and it finishes."""
+
+    __tablename__ = "chat_invocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
+    # The message that mentioned it.
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True
+    )
+    # Who mentioned it. The run executes as its agent's or workflow's owner, as runs do.
+    requested_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    target_kind: Mapped[TriggerTargetKind] = mapped_column(
+        Enum(TriggerTargetKind, name="chat_invocation_target_kind")
+    )
+    # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted; the
+    # cascades are for deleting a user, which deletes their agents and workflows too.
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), index=True
+    )
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[ChatInvocationStatus] = mapped_column(
+        Enum(ChatInvocationStatus, name="chat_invocation_status"),
+        default=ChatInvocationStatus.queued,
+    )
+    # Why it failed: the run's error, or why it couldn't start.
+    error: Mapped[str | None] = mapped_column(Text)
+    # The run it started; null until it has, and once that run has been deleted (the card says
+    # so). Deleting the chat leaves the run.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), unique=True
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"), unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When its run started (null if it never did), and when it finished.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    workflow: Mapped[Workflow | None] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL)"
+            " OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
+            name="ck_chat_invocations_target",
+        ),
+        # A chat's unfinished invocations: what its poll reports on.
+        Index(
+            "ix_chat_invocations_unfinished",
+            "chat_id",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@/lib/api";
+import type { ChatInvocation, ChatMessage } from "@/lib/api";
 
 /** How many messages the API returns at most per read (`MESSAGE_PAGE` in `api/chats.py`). */
 export const MESSAGE_PAGE = 50;
@@ -13,6 +13,21 @@ export function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): 
   const byId = new Map(current.map((m) => [m.id, m]));
   for (const m of incoming) byId.set(m.id, m);
   return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/** The invocations shown, by id, with those a read brought: a read's state replaces the one shown. */
+export type Invocations = Record<number, ChatInvocation>;
+
+/**
+ * The invocations shown plus those a read brought, which are as of that read and so replace
+ * what's shown. Returns `current` itself when nothing was brought, so a quiet poll doesn't
+ * re-render.
+ */
+export function mergeInvocations(current: Invocations, incoming: ChatInvocation[]): Invocations {
+  if (incoming.length === 0) return current;
+  const merged = { ...current };
+  for (const invocation of incoming) merged[invocation.id] = invocation;
+  return merged;
 }
 
 /** The `after` cursor for what's new: the newest message's id, or 0 before there are any. */

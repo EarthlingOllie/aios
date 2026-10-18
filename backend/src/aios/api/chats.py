@@ -14,17 +14,27 @@ activity is when it was last changed or a message was last posted.
 A message can mention members: the composer picks them from `GET /api/chats/{id}/mentionable`, the
 body carries a token for each (`@[name](kind:id)`) and the message stores them structurally,
 `[{kind, id, name}]`, so an agent and a workflow with the same name are never confused. Mentioning
-anyone who isn't a member is a 422. Mentions trigger nothing yet.
+anyone who isn't a member is a 422.
+
+Mentioning a workflow starts a run of it, with the message as its input (`aios.invocations`): the
+response to the post carries the workflow's acknowledgement and run card with the message, and
+the run starts just after (`InvocationFiring`). A read's `invocations` are the state of each
+invocation its messages belong to and of every one in the chat still going, each with its run
+as the run's page shows it, so a chat's live cards cost its one poll. When the run ends, its
+result is posted back as a message from the workflow.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from aios import firing, invocations
+from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live, on_conflict, unique_name
 from aios.auth import CurrentUser
 from aios.db import DB, DbId
@@ -32,15 +42,20 @@ from aios.models import (
     Agent,
     Chat,
     ChatAuthorKind,
+    ChatInvocation,
+    ChatInvocationStatus,
     ChatMember,
     ChatMemberKind,
     ChatMemberRole,
     ChatMessage,
     ChatMessageKind,
     ChatVisibility,
+    TriggerTargetKind,
     User,
     Workflow,
+    WorkflowRun,
 )
+from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
 
@@ -434,15 +449,41 @@ class MessageOut(BaseModel):
     # Markdown.
     body: str
     mentions: list[MentionOut]
+    # The invocation it belongs to: a run card's, or the result its run posted back.
+    invocation_id: int | None
     created_at: datetime
 
 
+class InvocationOut(BaseModel):
+    """A run a mention started, as its card follows it."""
+
+    id: int
+    chat_id: int
+    # The message that mentioned it, and who posted it (null once they're deleted).
+    message_id: int
+    requested_by: int | None
+    target_kind: TriggerTargetKind
+    # The agent's or workflow's id.
+    target_id: int
+    status: ChatInvocationStatus
+    # Why it failed: the run's error, or why it couldn't start.
+    error: str | None
+    workflow_run_id: int | None
+    # Whether it started a run that has since been deleted.
+    run_deleted: bool
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    # The workflow run as its page shows it (graph, steps and all); null without one.
+    workflow_run: workflows_api.WorkflowRunOut | None
+
+
 class MessagesOut(BaseModel):
-    """A page of a chat's messages, oldest first. `invocations` will carry the live state of the
-    runs its mentions started; empty for now."""
+    """Messages of a chat, oldest first, and `invocations`: the state of each invocation they
+    belong to and of every one in the chat that hasn't finished, oldest first."""
 
     messages: list[MessageOut]
-    invocations: list[dict]
+    invocations: list[InvocationOut]
 
 
 def author_out(message: ChatMessage) -> MessageAuthorOut | None:
@@ -471,8 +512,65 @@ def message_out(message: ChatMessage) -> MessageOut:
         kind=message.kind,
         body=message.body,
         mentions=message.mentions,
+        invocation_id=message.invocation_id,
         created_at=message.created_at,
     )
+
+
+def invocation_out(db: Session, invocation: ChatInvocation) -> InvocationOut:
+    run_id = invocation.workflow_run_id
+    out = InvocationOut(
+        id=invocation.id,
+        chat_id=invocation.chat_id,
+        message_id=invocation.message_id,
+        requested_by=invocation.requested_by,
+        target_kind=invocation.target_kind,
+        target_id=invocation.workflow_id or invocation.agent_id,
+        status=invocation.status,
+        error=invocation.error,
+        workflow_run_id=run_id,
+        run_deleted=invocation.started_at is not None and run_id is None,
+        created_at=invocation.created_at,
+        started_at=invocation.started_at,
+        finished_at=invocation.finished_at,
+        workflow_run=None,
+    )
+    # Read last: it expires the session's rows.
+    if run_id is not None:
+        out.workflow_run = workflows_api.workflow_run_out(db, run_id)
+    return out
+
+
+def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> MessagesOut:
+    """The messages, and the invocations they belong to and those of the chat still going."""
+    out = [message_out(m) for m in messages]
+    found = db.scalars(
+        select(ChatInvocation)
+        .where(
+            ChatInvocation.chat_id == chat_id,
+            or_(
+                ChatInvocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
+                ChatInvocation.status.in_(invocations.UNFINISHED),
+            ),
+        )
+        .order_by(ChatInvocation.id)
+    ).all()
+    return MessagesOut(messages=out, invocations=[invocation_out(db, i) for i in found])
+
+
+def catch_up(db: Session, chat_id: int) -> None:
+    """Bring the chat's unfinished invocations up to date before they're read: fail their runs
+    whose worker died (which posts their results back), and those that never started. Commits."""
+    fail_stopped_runs(
+        db,
+        WorkflowRun.id.in_(
+            select(ChatInvocation.workflow_run_id).where(
+                ChatInvocation.chat_id == chat_id,
+                ChatInvocation.status.in_(invocations.UNFINISHED),
+            )
+        ),
+    )
+    invocations.fail_stalled(db, chat_id)
 
 
 MESSAGE_LOAD = (
@@ -514,6 +612,7 @@ def list_messages(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Give `after` or `before`, not both."
         )
     get_visible_chat(db, user.id, chat_id)
+    catch_up(db, chat_id)
     query = select(ChatMessage).where(ChatMessage.chat_id == chat_id).options(*MESSAGE_LOAD)
     if after is not None:
         query = query.where(ChatMessage.id > after).order_by(ChatMessage.id)
@@ -524,14 +623,63 @@ def list_messages(
     rows = list(db.scalars(query.limit(MESSAGE_PAGE)))
     if after is None:
         rows.reverse()
-    return MessagesOut(messages=[message_out(m) for m in rows], invocations=[])
+    return messages_out(db, chat_id, rows)
+
+
+@dataclass(frozen=True)
+class InvocationFiring:
+    """Starting an invocation's run, as a cause of a run (`aios.firing.Cause`)."""
+
+    invocation_id: int
+
+    def start(self, db: Session) -> None:
+        """Start the workflow's run with the message as its input and queue it for the worker;
+        the run then finishes the invocation (`aios.invocations`). Raises `HTTPException` as
+        starting one by hand would, or `CantStart`."""
+        invocation = invocations.lock(db, self.invocation_id)
+        if invocation is None or invocation.status != ChatInvocationStatus.queued:
+            return None
+        message = db.get(ChatMessage, invocation.message_id)
+        try:
+            run = workflows_api.new_workflow_run(
+                db, invocation.workflow, invocations.run_input(message.body)
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                raise firing.CantStart("The workflow has been deleted.") from exc
+            raise
+        invocation.workflow_run_id = run.id
+        # Commits the run and the link to it; if it can't be queued the run is deleted, and the
+        # link with it (SET NULL).
+        workflows_api.queue_workflow_run(db, run)
+        invocations.mark_running(db, self.invocation_id)
+        db.commit()
+        return None
+
+    def beat(self, db: Session) -> None:
+        # Nothing of its own to keep alive: it only starts a run, which the worker looks after.
+        pass
+
+    def record(self, db: Session, error: str | None) -> None:
+        if error is not None:
+            invocations.fail_unstarted(db, self.invocation_id, error)
+
+
+async def start_invocations(invocation_ids: list[int]) -> None:
+    """Start the invocations' runs, each as a fire of its own (`aios.firing`)."""
+    for invocation_id in invocation_ids:
+        await firing.launch(InvocationFiring(invocation_id), name=f"invocation-{invocation_id}")
 
 
 @router.post(
-    "/chats/{chat_id}/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED
+    "/chats/{chat_id}/messages", response_model=MessagesOut, status_code=status.HTTP_201_CREATED
 )
-def post_message(chat_id: DbId, body: MessageIn, user: CurrentUser, db: DB):
-    """Post a markdown message to the chat as the user, who must be a member of it."""
+def post_message(
+    chat_id: DbId, body: MessageIn, user: CurrentUser, db: DB, background: BackgroundTasks
+):
+    """Post a markdown message to the chat as the user, who must be a member of it. Returns it,
+    and for each workflow it mentions the workflow's acknowledgement with a card and its queued
+    invocation, whose run starts after the response."""
     chat = get_visible_chat(db, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
@@ -545,12 +693,20 @@ def post_message(chat_id: DbId, body: MessageIn, user: CurrentUser, db: DB):
         mentions=[m.model_dump(mode="json") for m in mentions],
     )
     db.add(message)
+    started = invocations.create(
+        db, message, [m.id for m in mentions if m.kind == ChatMemberKind.workflow]
+    )
     # Posting is activity.
     chat.updated_at = func.now()
     db.commit()
+    invocation_ids = [i.id for i in started]
+    if invocation_ids:
+        background.add_task(start_invocations, invocation_ids)
     db.expire_all()
-    return message_out(
-        db.scalars(
-            select(ChatMessage).where(ChatMessage.id == message.id).options(*MESSAGE_LOAD)
-        ).one()
-    )
+    posted = db.scalars(
+        select(ChatMessage)
+        .where(or_(ChatMessage.id == message.id, ChatMessage.invocation_id.in_(invocation_ids)))
+        .options(*MESSAGE_LOAD)
+        .order_by(ChatMessage.id)
+    ).all()
+    return messages_out(db, chat.id, list(posted))

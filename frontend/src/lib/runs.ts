@@ -66,3 +66,9 @@ export function edgeStates(
     }),
   );
 }
+
+/** How many of the run's own nodes (`keys`, not those inside its subworkflows) have succeeded. */
+export function nodesDone(keys: string[], steps: WorkflowRunStep[]): { done: number; total: number } {
+  const done = keys.filter((key) => stepAt(steps, [key])?.status === "succeeded").length;
+  return { done, total: keys.length };
+}

@@ -211,9 +211,13 @@ def test_a_private_chat_im_not_in_is_a_404_everywhere(api, user, other):
 
 
 def post(api, chat: dict, body: str) -> dict:
+    """Post a message mentioning no one; returns it."""
     resp = api.post(f"/api/chats/{chat['id']}/messages", json={"body": body})
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    posted = resp.json()
+    assert posted["invocations"] == []
+    [message] = posted["messages"]
+    return message
 
 
 def messages(api, chat: dict, **cursor) -> dict:
@@ -229,6 +233,7 @@ def test_a_member_posts_a_markdown_message(api, user):
     assert message["kind"] == "text"
     assert message["body"] == "Hello, **world**"
     assert message["mentions"] == []
+    assert message["invocation_id"] is None
     assert message["author"] == {
         "kind": "user",
         "id": user.id,
@@ -505,7 +510,8 @@ def test_mentions_are_stored_structurally(api, user, other):
         },
     )
     assert resp.status_code == 201, resp.text
-    message = resp.json()
+    # (The workflow's card follows it.)
+    message = resp.json()["messages"][0]
     assert message["mentions"] == [
         {"kind": "agent", "id": agent["id"], "name": "Review"},
         {"kind": "workflow", "id": workflow["id"], "name": "Review"},
@@ -514,7 +520,7 @@ def test_mentions_are_stored_structurally(api, user, other):
     # The names are as they were when the message was posted.
     resp = api.put(f"/api/agents/{agent['id']}", json={"name": "Critique"})
     assert resp.status_code == 200, resp.text
-    assert messages(api, chat)["messages"] == [message]
+    assert messages(api, chat)["messages"][0] == message
 
 
 def test_a_mention_of_a_non_member_is_refused(api, other):

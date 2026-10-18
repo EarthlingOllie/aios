@@ -3,17 +3,27 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
+import { RunCard } from "@/components/RunCard";
 import { Button } from "@/components/ui/button";
 import {
   api,
   describeError,
   type ChatMemberKind,
+  type ChatInvocation,
   type ChatMessage,
   type ChatMessageAuthor,
+  type ChatMessages,
   type ChatMessagesCursor,
   type ChatMentionables,
 } from "@/lib/api";
-import { afterCursor, hasOlder, isAtBottom, mergeMessages } from "@/lib/chat-messages";
+import {
+  afterCursor,
+  hasOlder,
+  isAtBottom,
+  mergeInvocations,
+  mergeMessages,
+  type Invocations,
+} from "@/lib/chat-messages";
 import { useCurrentUser } from "@/lib/current-user";
 import { mentionAt, mentionsIn, remarkMentions } from "@/lib/mentions";
 import { cn } from "@/lib/utils";
@@ -66,7 +76,9 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * asks for what's new every `POLL_MS` (`CHAT_HIDDEN_POLL_MS` while the tab is hidden, and at once
  * when it's shown again). Scrolling to the top loads the page before, keeping the reader's place;
  * new messages scroll into view only when the reader is already at the bottom. `@` in the composer
- * offers `mentionable`; a message mentioning the signed-in user is highlighted.
+ * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned
+ * workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
+ * which brings the state of every invocation still going.
  */
 export function ChatRoom({
   chatId,
@@ -83,6 +95,7 @@ export function ChatRoom({
   onPosted?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
+  const [invocations, setInvocations] = useState<Invocations>({});
   const [older, setOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   // Set at once, unlike the state: scroll events come faster than renders.
@@ -100,18 +113,19 @@ export function ChatRoom({
    * Shows what a read brought, saying what that does to the scroll. Nothing new keeps the same
    * list, so nothing renders and the intent is replaced by the next read's.
    */
-  const show = useCallback((incoming: ChatMessage[], scroll: ScrollIntent) => {
+  const show = useCallback(({ messages: incoming, invocations: states }: ChatMessages, scroll: ScrollIntent) => {
     shown.current = mergeMessages(shown.current, incoming);
     intent.current = scroll;
     setMessages(shown.current);
+    setInvocations((current) => mergeInvocations(current, states));
   }, []);
 
   const read = useCallback((cursor: ChatMessagesCursor) => api.listChatMessages(chatId, cursor), [chatId]);
 
   useEffect(() => {
     read({}).then(
-      ({ messages: page }) => {
-        setOlder(hasOlder(page));
+      (page) => {
+        setOlder(hasOlder(page.messages));
         show(page, { to: "bottom" });
       },
       (err) => setError(describeError(err)),
@@ -122,7 +136,7 @@ export function ChatRoom({
   const poll = useCallback(
     () =>
       read({ after: afterCursor(shown.current) }).then(
-        ({ messages: page }) => show(page, followIfAtBottom(list.current)),
+        (page) => show(page, followIfAtBottom(list.current)),
         // A failed read is tried again at the next poll.
         () => undefined,
       ),
@@ -141,9 +155,9 @@ export function ChatRoom({
     loadingOlderNow.current = true;
     setLoadingOlder(true);
     try {
-      const { messages: page } = await read({ before: shown.current[0].id });
+      const page = await read({ before: shown.current[0].id });
       const el = list.current;
-      setOlder(hasOlder(page));
+      setOlder(hasOlder(page.messages));
       show(page, el ? { to: "keep", scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null);
     } catch (err) {
       setError(describeError(err));
@@ -171,9 +185,10 @@ export function ChatRoom({
     try {
       // Only the members the composer offered are mentions; any other token is plain text.
       const mentions = mentionable ? mentionsIn(body, mentionable) : [];
-      const message = await api.postChatMessage(chatId, body, mentions);
+      // The message, and the acknowledgement and card of each workflow it mentions.
+      const posted = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
-      show([message], { to: "bottom" });
+      show(posted, { to: "bottom" });
       setDraft("");
       onPosted?.();
     } catch (err) {
@@ -204,7 +219,13 @@ export function ChatRoom({
         {messages?.length === 0 && (
           <p className="text-muted-foreground m-auto text-sm">No messages yet. Say hello.</p>
         )}
-        {messages?.map((message) => <MessageItem key={message.id} message={message} />)}
+        {messages?.map((message) => (
+          <MessageItem
+            key={message.id}
+            message={message}
+            invocation={message.invocation_id === null ? undefined : invocations[message.invocation_id]}
+          />
+        ))}
       </div>
       {canPost ? (
         <ChatComposer
@@ -225,7 +246,7 @@ export function ChatRoom({
   );
 }
 
-function MessageItem({ message }: { message: ChatMessage }) {
+function MessageItem({ message, invocation }: { message: ChatMessage; invocation?: ChatInvocation }) {
   const me = useCurrentUser();
   const author = message.author;
   const name = author?.name ?? "Deleted user";
@@ -256,6 +277,11 @@ function MessageItem({ message }: { message: ChatMessage }) {
         <MarkdownView className="text-sm" remarkPlugins={plugins} components={mentionComponents}>
           {message.body}
         </MarkdownView>
+        {message.kind === "run_card" && (
+          <div className="mt-1">
+            <RunCard invocation={invocation} />
+          </div>
+        )}
       </div>
     </article>
   );

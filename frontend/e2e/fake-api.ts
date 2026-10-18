@@ -8,7 +8,9 @@ import type { Page, Route } from "@playwright/test";
  * is refused), plus schedules' preview and timezones, and chats with their members (a private
  * chat is a 404 for a non-member; the owner's actions are a 403 for anyone else) and messages
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
- * anyone who isn't a member is a 422).
+ * anyone who isn't a member is a 422). Mentioning a workflow starts a scripted invocation: its
+ * acknowledgement and card are posted with the message, and each read of the chat's messages
+ * moves it on (`advanceInvocations`) until its run ends and the result is posted back.
  */
 
 type Kind = "agent" | "workflow";
@@ -267,12 +269,32 @@ export type ChatRow = {
   created_at: string;
   updated_at: string;
 };
+/** A message's author: a user, or an agent or workflow (by id and name). */
+export type ChatAuthor = ChatUser | { kind: Kind; id: number; name: string };
 export type ChatMessageRow = {
   id: number;
-  author: ChatUser;
+  author: ChatAuthor;
+  kind: "text" | "run_card";
   body: string;
   mentions: ChatMention[];
+  invocation_id: number | null;
   created_at: string;
+};
+type InvocationStatus = "queued" | "running" | "succeeded" | "failed";
+/** A workflow's run that a mention started (agents' come later). */
+export type InvocationRow = {
+  id: number;
+  chat_id: number;
+  message_id: number;
+  requested_by: number;
+  workflow_id: number;
+  status: InvocationStatus;
+  error: string | null;
+  /** The run it started; gone from `runs` once it's deleted. */
+  run_id: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 };
 
 /** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
@@ -306,6 +328,9 @@ export class FakeApi {
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
+  invocations = new Map<number, InvocationRow>();
+  /** Workflows whose runs a mention can't start, by id, with why (as the API refuses one). */
+  refuseStart = new Map<number, string>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
   /** The user's data store's status: documents and search answer 409 until it's "ready". */
@@ -852,12 +877,99 @@ export class FakeApi {
   addChatMessage(
     chat: ChatRow,
     body: string,
-    author: ChatUser = this.me,
+    author: ChatAuthor = this.me,
     mentions: ChatMention[] = [],
+    extra: Partial<Pick<ChatMessageRow, "kind" | "invocation_id">> = {},
   ): ChatMessageRow {
-    const message: ChatMessageRow = { id: this.id(), author, body, mentions, created_at: NOW };
+    const message: ChatMessageRow = {
+      id: this.id(),
+      author,
+      kind: "text",
+      body,
+      mentions,
+      invocation_id: null,
+      created_at: NOW,
+      ...extra,
+    };
     chat.messages.push(message);
     return message;
+  }
+
+  /** Queues an invocation of the workflow for a message mentioning it, with its card. */
+  private invoke(chat: ChatRow, message: ChatMessageRow, workflow: WorkflowRow): InvocationRow {
+    const invocation: InvocationRow = {
+      id: this.id(),
+      chat_id: chat.id,
+      message_id: message.id,
+      requested_by: this.me.id,
+      workflow_id: workflow.id,
+      status: "queued",
+      error: null,
+      run_id: null,
+      created_at: NOW,
+      started_at: null,
+      finished_at: null,
+    };
+    this.invocations.set(invocation.id, invocation);
+    this.addChatMessage(
+      chat,
+      "Starting a run with this message.",
+      { kind: "workflow", id: workflow.id, name: workflow.name },
+      [],
+      { kind: "run_card", invocation_id: invocation.id },
+    );
+    return invocation;
+  }
+
+  /** Ends an invocation and posts its result back from its workflow, as the API does. */
+  private finishInvocation(invocation: InvocationRow, status: "succeeded" | "failed", body: string, error: string | null = null) {
+    Object.assign(invocation, { status, error, finished_at: NOW });
+    const workflow = this.workflows.get(invocation.workflow_id)!;
+    this.addChatMessage(
+      this.chats.get(invocation.chat_id)!,
+      body,
+      { kind: "workflow", id: workflow.id, name: workflow.name },
+      [],
+      { invocation_id: invocation.id },
+    );
+  }
+
+  /**
+   * Moves the chat's unfinished invocations on by one beat, as each read of its messages does: a
+   * queued one starts its run (or fails, if `refuseStart` says so); a running one's run moves on
+   * (`advance`), and once it has ended, the result is posted back. One whose run was deleted fails.
+   */
+  advanceInvocations(chat: ChatRow) {
+    for (const invocation of this.invocations.values()) {
+      if (invocation.chat_id !== chat.id) continue;
+      if (invocation.status === "queued") {
+        const refused = this.refuseStart.get(invocation.workflow_id);
+        if (refused !== undefined) {
+          this.finishInvocation(invocation, "failed", `Couldn't start the run: ${refused}`, refused);
+          continue;
+        }
+        const message = chat.messages.find((m) => m.id === invocation.message_id)!;
+        const run = this.addRun(this.workflows.get(invocation.workflow_id)!, {
+          status: "queued",
+          // The message, each mention as `@name`.
+          input: message.body.replace(/@\[((?:\\.|[^\\\]])*)\]\((?:user|agent|workflow):\d+\)/g, "@$1"),
+          started_at: null,
+        });
+        Object.assign(invocation, { status: "running", run_id: run.id, started_at: NOW });
+      } else if (invocation.status === "running") {
+        const run = this.runs.get(invocation.run_id!);
+        if (!run) {
+          const deleted = "The run was deleted before it finished.";
+          this.finishInvocation(invocation, "failed", `The run failed: ${deleted}`, deleted);
+          continue;
+        }
+        this.advance(run);
+        if (run.status === "succeeded") this.finishInvocation(invocation, "succeeded", run.output ?? "");
+        else if (run.status === "failed") {
+          this.finishInvocation(invocation, "failed", `The run failed: ${run.error}`, run.error);
+        }
+      }
+    }
   }
 
   /** Adds a user to a chat, as the owner would. */
@@ -1044,20 +1156,50 @@ export class FakeApi {
   }
 
   private messageOut(chat: ChatRow, m: ChatMessageRow) {
+    const author = m.author;
     return {
       id: m.id,
       chat_id: chat.id,
-      author: {
-        kind: "user",
-        id: m.author.id,
-        name: m.author.name ?? m.author.login,
-        login: m.author.login,
-        avatar_url: m.author.avatar_url ?? null,
-      },
-      kind: "text",
+      author:
+        "login" in author
+          ? {
+              kind: "user",
+              id: author.id,
+              name: author.name ?? author.login,
+              login: author.login,
+              avatar_url: author.avatar_url ?? null,
+            }
+          : { ...author, login: null, avatar_url: null },
+      kind: m.kind,
       body: m.body,
       mentions: m.mentions,
+      invocation_id: m.invocation_id,
       created_at: m.created_at,
+    };
+  }
+
+  private invocationOut(invocation: InvocationRow) {
+    const { workflow_id, run_id, ...rest } = invocation;
+    const run = run_id === null ? undefined : this.runs.get(run_id);
+    return {
+      ...rest,
+      target_kind: "workflow",
+      target_id: workflow_id,
+      workflow_run_id: run ? run.id : null,
+      run_deleted: invocation.started_at !== null && !run,
+      workflow_run: run ? this.runOut(run) : null,
+    };
+  }
+
+  /** Messages as the API returns them, with the invocations they belong to and those still going. */
+  private messagesOut(chat: ChatRow, messages: ChatMessageRow[]) {
+    const ids = new Set(messages.map((m) => m.invocation_id));
+    const invocations = [...this.invocations.values()].filter(
+      (i) => i.chat_id === chat.id && (ids.has(i.id) || i.status === "queued" || i.status === "running"),
+    );
+    return {
+      messages: messages.map((m) => this.messageOut(chat, m)),
+      invocations: invocations.map((i) => this.invocationOut(i)),
     };
   }
 
@@ -1072,7 +1214,7 @@ export class FakeApi {
       const older = before === null ? chat.messages : chat.messages.filter((m) => m.id < Number(before));
       page = older.slice(-MESSAGE_PAGE);
     }
-    return { messages: page.map((m) => this.messageOut(chat, m)), invocations: [] };
+    return this.messagesOut(chat, page);
   }
 
   private inChat(chat: ChatRow) {
@@ -1553,12 +1695,7 @@ export class FakeApi {
           this.runs.delete(run.id);
           return reply(204);
         }
-        return reply(200, {
-          ...this.runSummary(run),
-          version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
-          steps: run.steps,
-          stale_pins: run.stale_pins,
-        });
+        return reply(200, this.runOut(run));
       }
       if (rest === "/versions") {
         return reply(
@@ -1613,6 +1750,7 @@ export class FakeApi {
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
       if (rest === "/messages" && method === "GET") {
         this.messageReads.push(url.search);
+        this.advanceInvocations(chat);
         return reply(200, this.messagesPage(chat, url.searchParams));
       }
       if (rest === "/mentionable" && method === "GET") return reply(200, this.mentionable(chat));
@@ -1626,7 +1764,18 @@ export class FakeApi {
           const twice = mentions.some((x) => x.kind === kind && x.id === id);
           if (!twice) mentions.push({ kind, id, name: member.name });
         }
-        return reply(201, this.messageOut(chat, this.addChatMessage(chat, body.body, this.me, mentions)));
+        const message = this.addChatMessage(chat, body.body, this.me, mentions);
+        const invoked = mentions
+          .filter((x) => x.kind === "workflow")
+          .map((x) => this.invoke(chat, message, this.workflows.get(x.id)!));
+        const ids = new Set(invoked.map((i) => i.id));
+        return reply(
+          201,
+          this.messagesOut(
+            chat,
+            chat.messages.filter((x) => x === message || ids.has(x.invocation_id!)),
+          ),
+        );
       }
       if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
@@ -1642,6 +1791,8 @@ export class FakeApi {
       }
       if (rest === "" && method === "DELETE") {
         this.chats.delete(chat.id);
+        // Its messages and invocations go with it; the runs stay.
+        for (const i of this.invocations.values()) if (i.chat_id === chat.id) this.invocations.delete(i.id);
         return reply(204);
       }
       if (rest === "/members" && method === "POST") {
@@ -1668,9 +1819,23 @@ export class FakeApi {
   }
 
   private runSummary({ steps: _steps, stale_pins: _pins, ...run }: RunRow) {
+    const invocation = [...this.invocations.values()].find((i) => i.run_id === run.id);
+    const chat = invocation && this.chats.get(invocation.chat_id);
     return {
       ...run,
       workflow_version: this.workflowVersions.get(run.workflow_version_id)!.version,
+      chat_id: chat?.id ?? null,
+      chat_name: chat?.name ?? null,
+    };
+  }
+
+  /** A run as its page shows it. */
+  private runOut(run: RunRow) {
+    return {
+      ...this.runSummary(run),
+      version: this.versionOut(this.workflowVersions.get(run.workflow_version_id)!),
+      steps: run.steps,
+      stale_pins: run.stale_pins,
     };
   }
 

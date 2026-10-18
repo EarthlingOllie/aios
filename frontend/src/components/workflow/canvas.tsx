@@ -34,6 +34,7 @@ import {
   fitGraph,
   layoutGraph,
   MIN_EDITING_ZOOM,
+  MIN_STILL_ZOOM,
   NODE_HEIGHT,
   NODE_WIDTH,
   startKeys,
@@ -175,6 +176,8 @@ export type CanvasEditing = {
  *
  * When `editing` is given, nodes can be dragged, connected by dragging from a node's right
  * handle to another's left, and deleted with the keyboard; `layout` must then place every node.
+ * When `still` is, it's a picture `still` pixels tall: the graph fitted into it, with nothing to
+ * pan, zoom, select or focus (e.g. a chat's run card, whose click opens the run).
  */
 export function WorkflowCanvas({
   nodes,
@@ -184,6 +187,7 @@ export function WorkflowCanvas({
   onSelect,
   editing,
   run,
+  still,
   className,
   children,
 }: {
@@ -196,6 +200,8 @@ export function WorkflowCanvas({
   editing?: CanvasEditing;
   /** A run's progress, drawn on the graph: each node's state, and each edge's by edge id. */
   run?: { nodes: Record<string, NodeState>; edges: Record<string, EdgeState> };
+  /** A fixed height, for a graph that's only looked at. */
+  still?: number;
   className?: string;
   /** Overlaid on the canvas, e.g. a legend. */
   children?: ReactNode;
@@ -313,9 +319,10 @@ export function WorkflowCanvas({
   const [fit, setFit] = useState<ReturnType<typeof fitGraph> & { shape: string }>();
   useLayoutEffect(() => {
     if (fit && (!isEditing || fit.shape === shape)) return;
-    const minZoom = isEditing ? MIN_EDITING_ZOOM : undefined;
-    setFit({ ...fitGraph(Object.values(positions), ref.current!.clientWidth, minZoom), shape });
-  }, [fit, isEditing, shape, positions]);
+    const minZoom = isEditing ? MIN_EDITING_ZOOM : still ? MIN_STILL_ZOOM : undefined;
+    const width = ref.current!.clientWidth;
+    setFit({ ...fitGraph(Object.values(positions), width, minZoom, still), shape });
+  }, [fit, isEditing, still, shape, positions]);
   if (!fit) return <div ref={ref} className={cn("rounded-md border", className)} />;
 
   return (
@@ -333,7 +340,15 @@ export function WorkflowCanvas({
         defaultViewport={fit.viewport}
         nodesConnectable={isEditing}
         nodesDraggable={isEditing}
-        elementsSelectable
+        elementsSelectable={!still}
+        nodesFocusable={!still}
+        edgesFocusable={!still}
+        panOnDrag={!still}
+        zoomOnScroll={!still}
+        zoomOnPinch={!still}
+        zoomOnDoubleClick={!still}
+        // A still picture leaves the wheel to the page around it.
+        preventScrolling={!still}
         // One thing is selected at a time (`selection`): no Shift-click or box selection.
         multiSelectionKeyCode={null}
         selectionKeyCode={null}
@@ -347,7 +362,7 @@ export function WorkflowCanvas({
         proOptions={proOptions}
       >
         <Background />
-        <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
+        {!still && <Controls showInteractive={false} fitViewOptions={fitViewOptions} />}
         {editing && <FitOnChange viewport={fit.viewport} />}
       </ReactFlow>
       {children}

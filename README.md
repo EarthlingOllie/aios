@@ -150,8 +150,7 @@ asks for what's new every second (`GET /api/chats/{id}/messages?after=N`, every 
 its tab is hidden, and at once when it's shown again), follows new messages when scrolled to the
 bottom and otherwise leaves the reader where they are; scrolling to the top loads the page before
 (`?before=N`, 50 at a time). Anyone a chat exists for can read it; only its members post (a 403
-for anyone else). A read returns `{messages, invocations}`, the second for the runs mentions will
-start (empty for now). Posting makes a chat the most recently active; a message stays when its
+for anyone else). A read returns `{messages, invocations}` (below). Posting makes a chat the most recently active; a message stays when its
 author is deleted, with no author, or removed from the chat.
 
 Typing `@` in the composer offers the chat's members (`GET /api/chats/{id}/mentionable`), grouped
@@ -159,7 +158,28 @@ by kind so an agent and a workflow with the same name are told apart. Picking on
 `@[name](kind:id)`, and the message is posted with its **mentions** (`{body, mentions: [{kind,
 id}]}`), stored structurally as `[{kind, id, name}]`; the message shows each as a chip with the
 member's kind and name, and a message that mentions you is highlighted. Mentioning anyone who isn't
-a member is a 422 (and a token typed by hand for one is plain text). Mentions start nothing yet.
+a member is a 422 (and a token typed by hand for one is plain text).
+
+Mentioning a **workflow** starts a run of it (`aios.invocations`, `chat_invocations`). The post
+creates, in the message's own transaction, a queued invocation per workflow mentioned and the
+workflow's acknowledgement with a **run card** under it, and returns them with the message
+(`{messages, invocations}`), so the chat never shows a mention without its card. Just after the
+response, the run starts through the same helpers starting one by hand and schedules use (and the
+firing machinery, `aios.firing`), with the message as its input (each mention as `@name`),
+executing as the workflow's owner; the invocation records who asked, the run, and goes `running`.
+A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
+with the reason. When the run ends (in the worker, found stopped, or deleted before it finished),
+its output or error is posted back as a message from the workflow, belonging to the invocation,
+and the invocation goes `succeeded` or `failed`, in one transaction. One whose start was lost with
+its process fails when the chat's next read finds it still queued after 90 seconds. A read's
+`invocations` are the state of each invocation its messages belong to and of every one in the
+chat still going, each with its run as the run's page shows it (graph, steps), so a chat's live
+cards cost its one poll a second. The card draws the run's graph still, at a fixed height, with
+each node's state, "n of m nodes done" and a status badge, and opens the run's page when clicked;
+a run that couldn't start shows why, and one since deleted says so. Mentions in what a workflow
+posts start nothing, so a chat can't loop. Runs started from a chat are listed with the
+workflow's others, marked with the chat (while it exists); deleting a chat deletes its messages
+and invocations, not the runs. (Mentioning an agent starts nothing yet.)
 
 - An agent's schedule carries a message. Each time it fires, a new run of the agent's *current*
   version starts with that message as the user's, and runs one turn exactly as a chat turn does
@@ -234,6 +254,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
+    invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
     workflows.py    workflow graph validation, and running workflows
     dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it

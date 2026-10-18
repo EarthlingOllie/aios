@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import checkpoints
+from aios import checkpoints, invocations
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentUser
@@ -18,6 +18,8 @@ from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    Chat,
+    ChatInvocation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Trigger,
@@ -617,6 +619,9 @@ class WorkflowRunSummary(BaseModel):
     # towards its time limit.
     waiting_since: datetime | None
     waited_seconds: float
+    # The chat a mention in it started it from, while the chat exists.
+    chat_id: int | None
+    chat_name: str | None
 
 
 class WorkflowRunStepOut(BaseModel):
@@ -774,21 +779,28 @@ def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: 
 
 
 def workflow_run_summary_query():
-    return select(
-        WorkflowRun.id,
-        WorkflowRun.workflow_id,
-        WorkflowRun.workflow_version_id,
-        WorkflowVersion.version.label("workflow_version"),
-        WorkflowRun.status,
-        WorkflowRun.input,
-        WorkflowRun.output,
-        WorkflowRun.error,
-        WorkflowRun.created_at,
-        WorkflowRun.started_at,
-        WorkflowRun.finished_at,
-        WorkflowRun.waiting_since,
-        WorkflowRun.waited_seconds,
-    ).join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+    return (
+        select(
+            WorkflowRun.id,
+            WorkflowRun.workflow_id,
+            WorkflowRun.workflow_version_id,
+            WorkflowVersion.version.label("workflow_version"),
+            WorkflowRun.status,
+            WorkflowRun.input,
+            WorkflowRun.output,
+            WorkflowRun.error,
+            WorkflowRun.created_at,
+            WorkflowRun.started_at,
+            WorkflowRun.finished_at,
+            WorkflowRun.waiting_since,
+            WorkflowRun.waited_seconds,
+            Chat.id.label("chat_id"),
+            Chat.name.label("chat_name"),
+        )
+        .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
+        .outerjoin(ChatInvocation, ChatInvocation.workflow_run_id == WorkflowRun.id)
+        .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
+    )
 
 
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
@@ -874,11 +886,17 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB)
     # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
     # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
     fail_stopped_runs(db, WorkflowRun.id == run.id)
-    summary = workflow_run_summary(db, run.id)
+    return workflow_run_out(db, run.id)
+
+
+def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
+    """The run as its page shows it: its summary, pinned graph and steps. Also what a chat's
+    card of it draws (`aios.api.chats`). Expires the session's rows."""
+    summary = workflow_run_summary(db, run_id)
     steps = db.execute(
         select(WorkflowRunStep, AgentRun.agent_id)
         .outerjoin(AgentRun, AgentRun.id == WorkflowRunStep.agent_run_id)
-        .where(WorkflowRunStep.run_id == run.id)
+        .where(WorkflowRunStep.run_id == run_id)
         .order_by(WorkflowRunStep.id)
     ).all()
     waits = waiting_requests(db, [step for step, _ in steps])
@@ -937,6 +955,8 @@ def delete_workflow_run(
     sandboxes = run_sandboxes(db, agent_run_ids)
     # Before they go (their requests keep no link to them): a pending one can't be approved.
     close_requests(db, [run.id])
+    # A chat that started it and is still following it is told it's gone.
+    invocations.run_deleted(db, run.id)
     # Their exported copies go too, and its own (its agent runs' rows first, as the export
     # marks them).
     history.enqueue_runs(db, AgentRun.id.in_(agent_run_ids), deleting=True)

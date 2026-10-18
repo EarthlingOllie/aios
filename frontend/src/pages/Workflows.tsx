@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useBlocker, useNavigate, useOutletContext, useParams } from "react-router";
-import { Pencil, Play, Trash2 } from "lucide-react";
+import { MessagesSquare, Pencil, Play, Trash2 } from "lucide-react";
 
 import {
   DetailPage,
@@ -246,8 +246,14 @@ function WorkflowDetailView({ id }: { id: number }) {
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">{run.input}</span>
-                    <span className="text-muted-foreground block text-xs">
+                    <span className="text-muted-foreground flex items-center gap-1 text-xs">
                       {formatDate(run.created_at)}
+                      {run.chat_id !== null && (
+                        <span className="flex min-w-0 items-center gap-1" data-testid="started-from-chat">
+                          · <MessagesSquare className="size-3.5 shrink-0" aria-hidden />
+                          <span className="truncate">Started from the chat {run.chat_name}</span>
+                        </span>
+                      )}
                     </span>
                   </span>
                   <VersionBadge version={run.workflow_version} />

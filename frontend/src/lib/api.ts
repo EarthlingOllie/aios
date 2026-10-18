@@ -471,6 +471,9 @@ export type WorkflowRunSummary = {
    * count towards its time limit. */
   waiting_since: string | null;
   waited_seconds: number;
+  /** The chat a mention in it started it from, while that chat exists. */
+  chat_id: number | null;
+  chat_name: string | null;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -688,11 +691,42 @@ export type ChatMessage = {
   body: string;
   /** Who it mentions, as they were named when it was posted; its body has a token for each. */
   mentions: ChatMention[];
+  /** The invocation it belongs to: a run card's (`run_card`), or the result its run posted back. */
+  invocation_id: number | null;
   created_at: string;
 };
 
-/** A page of a chat's messages, oldest first; `invocations` are its live runs (none yet). */
-export type ChatMessages = { messages: ChatMessage[]; invocations: unknown[] };
+/** queued: its run hasn't started yet. */
+export type ChatInvocationStatus = "queued" | "running" | "succeeded" | "failed";
+
+/** A run a mention in a chat started, as its card follows it. */
+export type ChatInvocation = {
+  id: number;
+  chat_id: number;
+  /** The message that mentioned it, and who posted it. */
+  message_id: number;
+  requested_by: number | null;
+  target_kind: ChatTargetKind;
+  /** The agent's or workflow's id. */
+  target_id: number;
+  status: ChatInvocationStatus;
+  /** Why it failed: the run's error, or why it couldn't start. */
+  error: string | null;
+  workflow_run_id: number | null;
+  /** Whether it started a run that has since been deleted. */
+  run_deleted: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  /** The workflow run as its page shows it; null without one. */
+  workflow_run: WorkflowRun | null;
+};
+
+/**
+ * Messages of a chat, oldest first, and the state of each invocation they belong to and of every
+ * one in the chat still going.
+ */
+export type ChatMessages = { messages: ChatMessage[]; invocations: ChatInvocation[] };
 
 /** Which page of messages to read: what's new `after` an id, the history `before` one, or the latest. */
 export type ChatMessagesCursor = { after: number } | { before: number } | Record<string, never>;
@@ -875,7 +909,7 @@ export const api = {
       )}`,
     ),
   postChatMessage: (id: number, body: string, mentions: ChatMentionRef[] = []) =>
-    request<ChatMessage>(`/api/chats/${id}/messages`, json("POST", { body, mentions })),
+    request<ChatMessages>(`/api/chats/${id}/messages`, json("POST", { body, mentions })),
   listChatMentionable: (id: number) => request<ChatMentionables>(`/api/chats/${id}/mentionable`),
   addChatMember: (id: number, member: ChatMentionRef) =>
     request<Chat>(`/api/chats/${id}/members`, json("POST", member)),

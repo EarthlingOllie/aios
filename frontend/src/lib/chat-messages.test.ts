@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatMessage } from "@/lib/api";
-import { afterCursor, hasOlder, isAtBottom, mergeMessages, MESSAGE_PAGE } from "@/lib/chat-messages";
+import type { ChatInvocation, ChatMessage } from "@/lib/api";
+import {
+  afterCursor,
+  hasOlder,
+  isAtBottom,
+  mergeInvocations,
+  mergeMessages,
+  MESSAGE_PAGE,
+} from "@/lib/chat-messages";
 
 function message(id: number, body = `message ${id}`): ChatMessage {
   return {
@@ -11,6 +18,7 @@ function message(id: number, body = `message ${id}`): ChatMessage {
     kind: "text",
     body,
     mentions: [],
+    invocation_id: null,
     created_at: "2026-10-18T09:00:00Z",
   };
 }
@@ -64,5 +72,43 @@ describe("isAtBottom", () => {
 
   it("counts a view with nothing to scroll as at the bottom", () => {
     expect(isAtBottom({ scrollTop: 0, scrollHeight: 300, clientHeight: 400 })).toBe(true);
+  });
+});
+
+function invocation(id: number, status: ChatInvocation["status"]): ChatInvocation {
+  return {
+    id,
+    chat_id: 1,
+    message_id: 1,
+    requested_by: 1,
+    target_kind: "workflow",
+    target_id: 5,
+    status,
+    error: null,
+    workflow_run_id: null,
+    run_deleted: false,
+    created_at: "2026-10-18T09:00:00Z",
+    started_at: null,
+    finished_at: null,
+    workflow_run: null,
+  };
+}
+
+describe("mergeInvocations", () => {
+  it("takes each invocation's state from the latest read, and keeps the rest", () => {
+    const shown = { 1: invocation(1, "succeeded"), 2: invocation(2, "queued") };
+    const merged = mergeInvocations(shown, [invocation(2, "running"), invocation(3, "queued")]);
+    expect(Object.values(merged).map((i) => [i.id, i.status])).toEqual([
+      [1, "succeeded"],
+      [2, "running"],
+      [3, "queued"],
+    ]);
+    // Not changed in place: the state shown is replaced.
+    expect(shown[2].status).toBe("queued");
+  });
+
+  it("keeps the same object when a read brings none, so nothing re-renders", () => {
+    const shown = { 1: invocation(1, "running") };
+    expect(mergeInvocations(shown, [])).toBe(shown);
   });
 });

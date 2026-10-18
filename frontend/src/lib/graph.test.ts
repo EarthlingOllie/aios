@@ -109,4 +109,17 @@ describe("fitGraph", () => {
   it("has a canvas to add nodes to when there are none", () => {
     expect(fitGraph([], 800).height).toBe(MIN_CANVAS_HEIGHT);
   });
+
+  it("fits a graph into a canvas of a fixed height, e.g. a card's", () => {
+    const tall = fitGraph(column(5), 800, 0.1, 160);
+    expect(tall.height).toBe(160);
+    expect(tall.viewport.zoom).toBeCloseTo((160 - 64) / (4 * 96 + NODE_HEIGHT));
+    expect(tall.viewport.y).toBe(32);
+    // A small one is centred at its own size, however short the canvas.
+    const small = fitGraph([{ x: 0, y: 0 }], 800, 0.1, 160);
+    expect(small.height).toBe(160);
+    expect(small.viewport.zoom).toBe(1);
+    expect(small.viewport.y).toBe((160 - NODE_HEIGHT) / 2);
+    expect(fitGraph([], 800, 0.1, 160).height).toBe(160);
+  });
 });
