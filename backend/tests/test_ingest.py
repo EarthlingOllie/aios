@@ -1,16 +1,18 @@
-"""End-to-end ingestion with a whitespace tokenizer and fake embeddings (no network)."""
+"""End-to-end ingestion, in the user's data store, with a whitespace tokenizer and fake
+embeddings (no network)."""
 
 import pytest
 
 pytest.importorskip("docling")
 
+from conftest import add_document  # noqa: E402
 from docling.chunking import HybridChunker  # noqa: E402
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
 
 from aios import ingest  # noqa: E402
-from aios.db import SessionLocal  # noqa: E402
-from aios.models import Document, DocumentStatus  # noqa: E402
+from aios.datastores import data_store_for, store_session  # noqa: E402
+from aios.datastores.models import Document, DocumentStatus  # noqa: E402
 
 MARKDOWN = b"""# Field guide
 
@@ -60,14 +62,26 @@ def test_chunk_document_keeps_headings():
     )
 
 
-def test_ingest_document_stores_chunks(db, user):
-    doc = Document(owner_id=user.id, filename="guide.md", data=MARKDOWN)
-    db.add(doc)
-    db.commit()
+@pytest.fixture
+def store(user, files_bucket):
+    """A read-write session on `user`'s store."""
+    with store_session(data_store_for(user.id), "rw") as session:
+        session.info["store_id"] = data_store_for(user.id)
+        yield session
 
-    ingest.ingest_document(db, doc.id)
 
-    db.refresh(doc)
+def add(store, data: bytes = MARKDOWN, **values) -> Document:
+    """A document, with its file in S3, as an upload leaves it."""
+    doc_id = add_document(store.info["store_id"], data, **{"filename": "guide.md", **values})
+    return store.get(Document, doc_id)
+
+
+def test_ingest_document_stores_chunks(store):
+    doc = add(store)
+
+    ingest.ingest_document(store, doc.id)
+
+    store.refresh(doc)
     assert doc.status == DocumentStatus.ready
     assert len(doc.chunks) >= 2
     assert [c.ordinal for c in doc.chunks] == list(range(len(doc.chunks)))
@@ -77,57 +91,50 @@ def _no_conversion(*args, **kwargs):
     raise AssertionError("chunk_document should not run")
 
 
-def test_ingest_gives_up_after_max_attempts(db, user, monkeypatch):
+def test_ingest_gives_up_after_max_attempts(store, monkeypatch):
     # Previous deliveries died mid-conversion (e.g. OOM) and left the row `processing`.
-    doc = Document(
-        owner_id=user.id,
-        filename="huge.pdf",
+    doc = add(
+        store,
         data=b"%PDF",
+        filename="huge.pdf",
         status=DocumentStatus.processing,
         attempts=ingest.MAX_ATTEMPTS,
     )
-    db.add(doc)
-    db.commit()
     monkeypatch.setattr(ingest, "chunk_document", _no_conversion)
 
-    ingest.ingest_document(db, doc.id)
+    ingest.ingest_document(store, doc.id)
 
-    db.refresh(doc)
+    store.refresh(doc)
     assert doc.status == DocumentStatus.failed
     assert doc.attempts == ingest.MAX_ATTEMPTS + 1
     assert "attempts" in doc.error
 
 
-def test_ingest_skips_finished_document(db, user, monkeypatch):
-    doc = Document(owner_id=user.id, filename="guide.md", data=MARKDOWN)
-    db.add(doc)
-    db.commit()
-    ingest.ingest_document(db, doc.id)
+def test_ingest_skips_finished_document(store, monkeypatch):
+    doc = add(store)
+    ingest.ingest_document(store, doc.id)
     monkeypatch.setattr(ingest, "chunk_document", _no_conversion)
 
-    ingest.ingest_document(db, doc.id)  # duplicate delivery
+    ingest.ingest_document(store, doc.id)  # duplicate delivery
 
-    db.refresh(doc)
+    store.refresh(doc)
     assert doc.status == DocumentStatus.ready
     assert doc.attempts == 1
 
 
-def test_ingest_tolerates_document_deleted_mid_ingest(db, user, monkeypatch):
-    doc = Document(owner_id=user.id, filename="guide.md", data=MARKDOWN)
-    db.add(doc)
-    db.commit()
-    doc_id = doc.id
+def test_ingest_tolerates_document_deleted_mid_ingest(user, store, monkeypatch):
+    doc_id = add(store).id
     real_chunk_document = ingest.chunk_document
 
     def delete_then_chunk(filename, data):
-        with SessionLocal() as other:
+        with store_session(data_store_for(user.id), "rw") as other:
             other.execute(delete(Document).where(Document.id == doc_id))
             other.commit()
         return real_chunk_document(filename, data)
 
     monkeypatch.setattr(ingest, "chunk_document", delete_then_chunk)
 
-    ingest.ingest_document(db, doc_id)  # chunk insert hits the FK; must not raise
+    ingest.ingest_document(store, doc_id)  # chunk insert hits the FK; must not raise
 
-    db.expunge_all()
-    assert db.get(Document, doc_id) is None
+    store.expunge_all()
+    assert store.get(Document, doc_id) is None

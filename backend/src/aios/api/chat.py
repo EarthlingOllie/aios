@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 from aios import tracing, ui_stream
 from aios.agent import ChatDeps, documents_agent
-from aios.auth import CurrentUser
+from aios.auth import CurrentDataStore, CurrentUser
 
 log = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api")
 
 
 @router.post("/chat")
-async def chat(body: dict, user: CurrentUser):
+async def chat(body: dict, user: CurrentUser, data_store_id: CurrentDataStore):
     # Accepts the AI SDK `useChat` request body and streams back the UI message stream protocol.
     # The conversation lives in the client, which sends all of it each turn.
     messages = ui_stream.to_langchain(ui_stream.parse_request(body).messages)
@@ -33,7 +33,7 @@ async def chat(body: dict, user: CurrentUser):
                         session_id=None, user_id=user.id, tags=["documents-chat"]
                     ),
                 },
-                context=ChatDeps(user_id=user.id),
+                context=ChatDeps(user_id=user.id, data_store_id=data_store_id),
                 stream_mode=["messages", "updates"],
             ):
                 for chunk in ui.feed(mode, data):

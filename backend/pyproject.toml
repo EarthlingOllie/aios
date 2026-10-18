@@ -23,6 +23,7 @@ dependencies = [
     "langfuse==4.16.0",
     "boto3==1.43.108",
     "cronsim==2.7",
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]

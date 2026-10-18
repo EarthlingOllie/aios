@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import uuid
 from dataclasses import dataclass
 
 import psycopg
@@ -41,7 +42,9 @@ def spy_run(monkeypatch) -> dict:
     @dataclass
     class SpyDeps(ChatDeps):
         def __post_init__(self):
-            seen["deps"] = ChatDeps(user_id=self.user_id, run_id=self.run_id)
+            seen["deps"] = ChatDeps(
+                user_id=self.user_id, data_store_id=self.data_store_id, run_id=self.run_id
+            )
 
     monkeypatch.setattr(agents_api, "load_chat_context", spy_load)
     monkeypatch.setattr(agents_api, "ChatDeps", SpyDeps)
@@ -517,7 +520,9 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
 
     def fake_load(db, user_id, agent_id, run_id):
         events.append(("load on loop", on_event_loop()))
-        return agents_api.ChatContext(model=None, instructions="Hi.", metadata={})
+        return agents_api.ChatContext(
+            model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()
+        )
 
     def fake_start(run_id, prompt):
         events.append(("title on loop", on_event_loop()))
@@ -529,9 +534,14 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
         events.append("model")
         yield "arr"
 
+    async def run_there(conn, run_id):
+        return False
+
     monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
     monkeypatch.setattr(agents_api, "_start_turn", fake_start)
     monkeypatch.setattr(agents_api, "_end_turn", fake_end)
+    # Run 1 is made up, like the rest of what the turn loads.
+    monkeypatch.setattr(checkpoints, "_run_gone", run_there)
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
     app.dependency_overrides[get_db] = fake_db
     try:
@@ -654,7 +664,7 @@ def stop_during_searches(
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
 
-    async def search(owner_id, query, limit):
+    async def search(data_store_id, query, limit):
         if query == "slow":
             events.append("search started")
             try:

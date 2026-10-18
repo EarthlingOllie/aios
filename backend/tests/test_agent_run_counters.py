@@ -18,7 +18,7 @@ def searching_agent(api, monkeypatch) -> tuple[dict, str]:
     resp = api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
     assert resp.status_code == 200, resp.text
 
-    async def search(owner_id, query, limit):
+    async def search(*, data_store_id, query, limit):
         return [{"source": f"{query}.md", "headings": [], "text": query}]
 
     monkeypatch.setattr(hybrid_search, "document_search_results", search)

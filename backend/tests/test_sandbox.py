@@ -109,7 +109,9 @@ def connect_request(host: str, token: str | None, port: int = 443, method="CONNE
     return f"{method} {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth}\r\n".encode()
 
 
-def token(domains=("api.example.com",), ttl=60) -> str:
+# Long enough to outlast the rest of the suite: the parametrized cases below mint theirs when
+# the tests are collected, not when they run.
+def token(domains=("api.example.com",), ttl=3600) -> str:
     return proxy_token.mint(SECRET, session="agent-run-7", domains=list(domains), ttl=ttl)
 
 

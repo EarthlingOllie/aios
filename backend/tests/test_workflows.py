@@ -44,6 +44,14 @@ def workflow_body(name: str, nodes=(), edges=(), **extra) -> dict:
     }
 
 
+def in_use_by(refusal) -> list[str]:
+    """The workflows an agent's refused delete says still run it (in its message too)."""
+    detail = refusal.json()["detail"]
+    names = [w["name"] for w in detail["dependents"]["workflows"]]
+    assert ", ".join(names) in detail["message"]
+    return names
+
+
 def test_validate_graph():
     validate_graph(["a", "b", "c"], [("a", "b"), ("a", "c"), ("b", "c")])
     with pytest.raises(GraphError, match="only once"):
@@ -182,13 +190,13 @@ def test_workflows_nest_as_subgraphs(api):
     assert resp.json()["detail"] == "Remove this workflow from these workflows first: outer."
     resp = api.delete(f"/api/agents/{agent['id']}")
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "Remove this agent from these workflows first: inner, outer."
+    assert in_use_by(resp) == ["inner", "outer"]
 
     # A deleted workflow no longer counts as running anything, though its versions still pin
     # them. Deleting it first frees inner, and then inner frees the agent.
     assert api.delete(f"/api/workflows/{outer['id']}").status_code == 204
     resp = api.delete(f"/api/agents/{agent['id']}")
-    assert resp.json()["detail"] == "Remove this agent from these workflows first: inner."
+    assert in_use_by(resp) == ["inner"]
     assert api.delete(f"/api/workflows/{inner['id']}").status_code == 204
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
     assert api.get("/api/workflows").json() == []
@@ -399,7 +407,7 @@ def test_only_current_versions_block_deletion(api):
     )
     resp = api.delete(f"/api/agents/{researcher['id']}")
     assert resp.status_code == 409
-    assert resp.json()["detail"].endswith(": Outer, Research report.")
+    assert in_use_by(resp) == ["Outer", "Research report"]
 
     # Take the researcher out of both workflows' current versions, and the report out of
     # Outer's: only their history uses them now.
@@ -528,7 +536,10 @@ def test_delete_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
     deleter.join(timeout=10)
     # The delete saw the save once it got the lock, so the workflow never runs a deleted target.
     assert result["resp"].status_code == 409
-    assert result["resp"].json()["detail"].endswith(": Flow.")
+    if kind == "agent":
+        assert in_use_by(result["resp"]) == ["Flow"]
+    else:
+        assert result["resp"].json()["detail"].endswith(": Flow.")
     assert api.get(url).status_code == 200
 
 

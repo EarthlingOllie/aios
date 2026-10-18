@@ -20,6 +20,7 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -141,6 +142,7 @@ export function AgentDetail() {
   const catalog = useLoad(api.listTools);
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
   if (!agent.data) return null;
@@ -159,13 +161,9 @@ export function AgentDetail() {
     }
   }
 
-  const onDelete = () => {
-    if (!window.confirm(`Delete the agent “${a.name}”, its versions and all of its runs?`)) return;
-    act(async () => {
-      await api.deleteAgent(id);
-      await reloadList();
-      navigate("/agents");
-    });
+  const onDeleted = async () => {
+    await reloadList();
+    navigate("/agents");
   };
 
   const onNewRun = () =>
@@ -230,13 +228,21 @@ export function AgentDetail() {
               Edit
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={onDelete} aria-label="Delete agent">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDeleting(true)}
+            aria-label="Delete agent"
+          >
             <Trash2 />
           </Button>
         </>
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {deleting && (
+        <AgentDeleteDialog agent={a} onClose={() => setDeleting(false)} onDeleted={onDeleted} />
+      )}
 
       <Tabs
         label="Agent details"
@@ -666,7 +672,7 @@ export function AgentForm() {
                       <span className="text-muted-foreground block text-xs">{tool.description}</span>
                     </span>
                   </label>
-                  {attached && (
+                  {attached && Object.keys(tool.config_schema.properties ?? {}).length > 0 && (
                     <div className="px-3 pt-1 pb-3 pl-9">
                       <ToolSettingsFields
                         tool={tool}
