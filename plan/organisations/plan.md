@@ -1,8 +1,8 @@
 # Organisations
 
 Status: **decided** (2026-10-18). The open questions of the first draft were answered; the
-answers are under [Decisions](#decisions), and the design below is written to them. The spec and
-tickets are on GitHub (the spec issue links back here).
+answers are under [Decisions](#decisions), and the design below is written to them. The spec is GitHub issue
+#75, with the tickets (#76 to #83) as its sub-issues.
 
 ## Goal
 
