@@ -9,11 +9,20 @@ them is dropped afterwards.
 import io
 import time
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import psycopg
 import pytest
-from conftest import add_document, delete_user, join_organisation, provisioned_user, store_of
+from conftest import (
+    add_document,
+    delete_user,
+    join_organisation,
+    provisioned_user,
+    sign_up,
+    store_of,
+)
 from sqlalchemy import delete, select, update
 from test_agents import make_agent, make_skill
 from test_chats import make_chat, make_workflow, signed_in_as
@@ -42,9 +51,27 @@ def joiner(db):
     signed up without an invitation. Afterwards they, and whatever is left of their first
     organisation and its store, are deleted."""
     u = provisioned_user(db, -60, "joiner")
+    with deleted_after(db, u):
+        yield u
+
+
+@pytest.fixture
+def newcomer(db, provisioning):
+    """A user who has just signed up without an invitation: in a personal organisation of their
+    own, its store made but its provisioning only queued (`provisioning`), not run. Deleted
+    afterwards as `joiner` is."""
+    u = sign_up(db, -61, "newcomer")
+    with deleted_after(db, u):
+        yield u
+
+
+@contextmanager
+def deleted_after(db, u: User) -> Iterator[None]:
+    """Afterwards, delete the user, and whatever is left of their first organisation and its
+    store."""
     store_id = store_of(u)
     names = provision.StoreNames.of(store_row(db, store_id))
-    yield u
+    yield
     db.rollback()
     db.expire_all()
     org = organisations.membership_of(db, u.id)
@@ -233,6 +260,34 @@ def test_the_sweep_queued_for_a_store_waits_for_a_run_still_on_it(db, joiner):
         swept.result(timeout=30).get()
 
     assert store_row(db, store_id).status == DataStoreStatus.deleted
+
+
+def test_accepting_while_the_store_is_being_provisioned_leaves_it_to_the_sweep(
+    api, db, user, newcomer, store_deletions, monkeypatch
+):
+    # Signing up, then accepting an invitation straight away: the accept lands while the new
+    # store's provisioning is on its last step.
+    link = make_link(api)
+    store_id = store_of(newcomer)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    steps = list(provision.STEPS)
+
+    def accept_meanwhile(run):
+        with signed_in_as(newcomer):
+            resp = accept(api, link)
+        assert resp.status_code == 200, resp.text
+
+    monkeypatch.setattr(provision, "STEPS", [*steps[:-1], accept_meanwhile, steps[-1]])
+    assert provision.provision(store_id) is None
+
+    # Left for the sweep, not made ready with no organisation.
+    row = store_row(db, store_id)
+    assert (row.status, row.owner_organisation_id) == (DataStoreStatus.deleting, None)
+    assert store_deletions == [store_id]
+    assert sweep(store_id) == {store_id: True}
+    assert store_row(db, store_id).status == DataStoreStatus.deleted
+    assert not database_exists(names)
+    assert roles_left(names) == []
 
 
 def test_a_store_still_provisioning_is_deleted_without_ever_being_ready(db, new_user):
