@@ -1,17 +1,20 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { Loader2, Trash2 } from "lucide-react";
 
 import { ErrorBanner, formatDate, Section, useLoad, usePoll } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { api, describeError } from "@/lib/api";
+import { useCurrentUser } from "@/lib/current-user";
 import {
   historyEmbeddingStatus,
   historyExportPending,
   historyExportStatus,
 } from "@/lib/settings";
 
-/** The user's settings. So far, the run history export. */
+/** The user's own settings: the run history export, and where the organisation's are. */
 export function SettingsPage() {
+  const me = useCurrentUser();
   const { data: settings, error: loadError, reload } = useLoad(api.getSettings);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -64,6 +67,18 @@ export function SettingsPage() {
           <p className="text-muted-foreground mt-1 text-sm">Manage your account.</p>
         </header>
         <ErrorBanner message={loadError} />
+        {me && (
+          <Section title="Organisation">
+            <p className="text-muted-foreground text-sm">
+              You're in <span className="text-foreground font-medium">{me.organisation.name}</span>.
+              Its name and members are on the{" "}
+              <Link to="/organisation" className="text-foreground underline underline-offset-4">
+                Organisation
+              </Link>{" "}
+              page.
+            </p>
+          </Section>
+        )}
         <Section title="Run history export">
           <p className="text-muted-foreground text-sm">
             Copy your agent runs (each conversation, with its messages, tool calls and usage) and

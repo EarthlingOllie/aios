@@ -14,10 +14,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
+from aios import organisations
 from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
-from aios.models import User
+from aios.models import Organisation, User
 
 settings = get_settings()
 
@@ -61,6 +62,9 @@ async def auth_callback(request: Request, db: DB):
     user.name = profile.get("name")
     user.email = email
     user.avatar_url = profile.get("avatar_url")
+    db.flush()
+    # Their first sign-in makes their personal organisation; afterwards, it's found again.
+    organisations.ensure_membership(db, user)
     db.commit()
     await run_in_threadpool(data_store_for, user.id)
 
@@ -84,6 +88,23 @@ def current_user(request: Request, db: DB) -> User:
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
+
+
+def current_organisation(user: CurrentUser, db: DB) -> Organisation:
+    """The signed-in user's organisation: their one membership (`aios.organisations`). The one
+    place a request's organisation is resolved, so when a user can be in several, this is where
+    the request says which it means."""
+    org = organisations.membership_of(db, user.id)
+    if org is None:
+        # Sign-in, leaving and the upgrade each put a user in one; this is a bug, not a request
+        # that can be answered.
+        raise RuntimeError(f"user {user.id} is in no organisation")
+    return org
+
+
+# For endpoints that scope what they touch to the organisation (the user, `CurrentUser`, is for
+# provenance, notifications and chat membership).
+CurrentOrganisation = Annotated[Organisation, Depends(current_organisation)]
 
 
 def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:

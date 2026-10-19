@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useMatch } from "react-router";
 import {
   Bot,
+  Building2,
   CalendarClock,
   ChartLine,
   Database,
@@ -18,8 +19,8 @@ import { Documents, DocumentsProvider } from "@/components/Documents";
 import { Login } from "@/components/Login";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, type User } from "@/lib/api";
-import { CurrentUserContext } from "@/lib/current-user";
+import { api, ApiError, describeError, type Me } from "@/lib/api";
+import { CurrentUserContext, ReloadCurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
@@ -30,6 +31,7 @@ import {
   AgentVersionPage,
 } from "@/pages/Agents";
 import { DataPage } from "@/pages/Data";
+import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
@@ -55,7 +57,7 @@ type AuthState =
   | { status: "loading" }
   | { status: "anonymous" }
   | { status: "error"; message: string }
-  | { status: "signed-in"; user: User };
+  | { status: "signed-in"; user: Me };
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -103,7 +105,9 @@ export default function App() {
           <DocumentsProvider>
             <NotificationsProvider>
               <CurrentUserContext.Provider value={auth.user}>
-                <Shell user={auth.user} onSignOut={signOut} />
+                <ReloadCurrentUserContext.Provider value={loadMe}>
+                  <Shell user={auth.user} onSignOut={signOut} />
+                </ReloadCurrentUserContext.Provider>
               </CurrentUserContext.Provider>
             </NotificationsProvider>
           </DocumentsProvider>
@@ -138,6 +142,7 @@ export default function App() {
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="organisation" element={<OrganisationPage />} />
         <Route path="chats" element={<ChatsSection />}>
           <Route index element={<ChatsIndex />} />
           <Route path="new" element={<ChatForm />} />
@@ -182,7 +187,7 @@ const navItems: NavItem[] = [
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
-function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
   // `/` too, which lands in the Chats section: the panel stays mounted through the redirect.
   const onLanding = useMatch("/") !== null;
   const onChats = useMatch("/chats/*") !== null || onLanding;
@@ -204,6 +209,22 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         {label}
       </NavLink>
     ));
+  // Whose things every page shows: the user's organisation, which opens its page.
+  const organisation = (className: string) => (
+    <NavLink
+      to="/organisation"
+      className={({ isActive }) =>
+        cn(
+          "hover:bg-accent flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+          isActive ? "bg-accent font-medium" : "text-muted-foreground",
+          className,
+        )
+      }
+    >
+      <Building2 className="size-4 shrink-0" />
+      <span className="truncate">{user.organisation.name}</span>
+    </NavLink>
+  );
 
   return (
     <div className="grid h-svh grid-cols-1 grid-rows-[auto_1fr] md:grid-cols-[260px_1fr] md:grid-rows-1">
@@ -216,6 +237,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             <LogOut />
           </Button>
         </div>
+        {organisation("")}
         <nav className="flex flex-col gap-0.5">{nav("")}</nav>
         {/* Documents ground the chats' documents assistant, so they live alongside it. */}
         {onChats && (
@@ -226,7 +248,10 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       </aside>
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
         {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {nav("shrink-0")}
+          {organisation("shrink-0")}
+        </div>
         <NotificationsMenu className="shrink-0" />
         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />

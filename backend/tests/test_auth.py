@@ -66,5 +66,8 @@ def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
         user = db.query(User).filter_by(github_id=-42).one()
         assert db.query(DataStore).filter_by(owner_user_id=user.id).count() == 1
     finally:
-        db.query(User).filter_by(github_id=-42).delete()
-        db.commit()
+        from conftest import delete_user
+
+        user = db.query(User).filter_by(github_id=-42).one_or_none()
+        if user is not None:
+            delete_user(db, user)

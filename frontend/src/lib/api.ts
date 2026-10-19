@@ -7,6 +7,35 @@ export type User = {
   avatar_url: string | null;
 };
 
+/** The organisation the signed-in user is in, as `/api/me` says it: what the shell shows. */
+export type OrganisationSummary = {
+  id: number;
+  name: string;
+  /** Made for one user on sign-up (or on leaving another organisation). */
+  personal: boolean;
+  /** Whether the signed-in user created it; the creator alone can rename it. */
+  is_creator: boolean;
+};
+
+/** The signed-in user, with their organisation. */
+export type Me = User & { organisation: OrganisationSummary };
+
+export type OrganisationMember = {
+  user: User;
+  joined_at: string;
+  /** The invitation link they came in through, if any. */
+  invite_id: string | null;
+};
+
+/** The Organisation page. */
+export type Organisation = OrganisationSummary & {
+  /** Null once the creator's account is deleted. */
+  creator: User | null;
+  /** In the order they joined. */
+  members: OrganisationMember[];
+  created_at: string;
+};
+
 /** The user's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
@@ -813,8 +842,12 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
-  me: () => request<User>("/api/me"),
+  me: () => request<Me>("/api/me"),
   logout: () => request<void>("/logout", { method: "POST" }),
+  getOrganisation: () => request<Organisation>("/api/organisation"),
+  /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
+  renameOrganisation: (name: string) =>
+    request<Organisation>("/api/organisation", json("PUT", { name })),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),

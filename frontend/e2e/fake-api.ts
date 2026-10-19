@@ -272,6 +272,16 @@ type ChatMemberOut = {
   avatar_url: string | null;
   added_at: string;
 };
+export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
+export type OrganisationRow = {
+  id: number;
+  name: string;
+  personal: boolean;
+  creator: ChatUser | null;
+  members: OrganisationMemberRow[];
+  created_at: string;
+};
+
 export type ChatRow = {
   id: number;
   owner: ChatUser;
@@ -372,6 +382,20 @@ export class FakeApi {
   othersOwn = new Set<number>();
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
+  /**
+   * The organisation `me` is in, as `GET /api/organisation` answers: their personal one, which
+   * they created, with them as its first member. `me` is its creator while `creator` is them.
+   */
+  organisation: OrganisationRow = {
+    id: 1,
+    name: "tester",
+    personal: true,
+    creator: this.me,
+    members: [{ user: this.me, joined_at: "2026-10-14T08:00:00Z", invite_id: null }],
+    created_at: "2026-10-14T08:00:00Z",
+  };
+  /** Names other organisations have: renaming to one answers 409, as the API does. */
+  organisationNamesTaken = new Set<string>();
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
@@ -463,6 +487,12 @@ export class FakeApi {
 
   private id() {
     return this.nextId++;
+  }
+
+  /** The organisation as `/api/me` carries it. */
+  private organisationSummary() {
+    const { id, name, personal, creator } = this.organisation;
+    return { id, name, personal, is_creator: creator?.id === this.me.id };
   }
 
   /**
@@ -1493,7 +1523,21 @@ export class FakeApi {
       if (!readable) return fail(404, "Not Found");
     }
 
-    if (path === "/api/me") return reply(200, this.me);
+    if (path === "/api/me") return reply(200, { ...this.me, organisation: this.organisationSummary() });
+    if (path === "/api/organisation") {
+      if (method === "PUT") {
+        if (this.organisation.creator?.id !== this.me.id) {
+          return fail(403, "Only the organisation's creator can rename it.");
+        }
+        const name = String(body?.name ?? "").trim();
+        if (!name) return fail(422, "Invalid name");
+        if (this.organisationNamesTaken.has(name)) {
+          return fail(409, "An organisation with that name already exists.");
+        }
+        this.organisation.name = name;
+      }
+      return reply(200, { ...this.organisationSummary(), ...this.organisation });
+    }
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       if (this.dataStoreFails) return fail(500, "Internal Server Error");

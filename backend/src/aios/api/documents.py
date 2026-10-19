@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentDataStore, CurrentUser
+from aios.auth import CurrentDataStore
 from aios.config import get_settings
 from aios.datastores import files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus
@@ -49,13 +49,6 @@ class SearchHitOut(BaseModel):
     lexical_rank: int | None
 
 
-class UserOut(BaseModel):
-    id: int
-    login: str
-    name: str | None
-    avatar_url: str | None
-
-
 class UsageOut(BaseModel):
     """What the store uses, as last measured (null until it's first measured), and its caps."""
 
@@ -70,11 +63,6 @@ class DataStoreOut(BaseModel):
     # Only its status and usage: a store's name, roles and credentials never leave the platform.
     status: DataStoreStatus
     usage: UsageOut
-
-
-@router.get("/me", response_model=UserOut)
-def me(user: CurrentUser):
-    return user
 
 
 @router.get("/data-store", response_model=DataStoreOut)
