@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,8 @@ class SkillSummary(BaseModel):
     version: int
     version_id: int
     updated_at: datetime
+    # How many live agents use some version of it (see `skill_uses`).
+    agent_count: int
 
 
 class SkillVersionSummary(BaseModel):
@@ -157,13 +159,24 @@ def unique_name(db: Session, what: str, index: str, detail: str | None = None) -
         yield
 
 
-def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:
-    rows = db.execute(
-        select(Agent.id, Agent.name, AgentVersion.version, SkillVersion.version)
+def skill_uses(*columns) -> Select:
+    """`columns` over each use of a skill by a live agent's current version: one row per agent
+    and skill version it pins, joining `Agent`, its current `AgentVersion` and that
+    `SkillVersion`. A skill with such a use is in use, and can't be deleted."""
+    return (
+        select(*columns)
+        .select_from(Agent)
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
         .join(agent_version_skills, agent_version_skills.c.agent_version_id == AgentVersion.id)
         .join(SkillVersion, SkillVersion.id == agent_version_skills.c.skill_version_id)
-        .where(SkillVersion.skill_id == skill_id, Agent.deleted_at.is_(None))
+        .where(Agent.deleted_at.is_(None))
+    )
+
+
+def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:
+    rows = db.execute(
+        skill_uses(Agent.id, Agent.name, AgentVersion.version, SkillVersion.version)
+        .where(SkillVersion.skill_id == skill_id)
         .order_by(Agent.name)
     ).all()
     return [
@@ -185,9 +198,17 @@ def skill_out(db: Session, skill: Skill) -> SkillOut:
 
 @router.get("/skills", response_model=list[SkillSummary])
 def list_skills(user: CurrentUser, db: DB):
+    uses = (
+        skill_uses(SkillVersion.skill_id, func.count(Agent.id.distinct()).label("agents"))
+        # Agents pin only their owner's skills, so this keeps the count to the user's rows.
+        .where(Agent.owner_id == user.id)
+        .group_by(SkillVersion.skill_id)
+        .subquery()
+    )
     rows = db.execute(
-        select(Skill, SkillVersion)
+        select(Skill, SkillVersion, func.coalesce(uses.c.agents, 0))
         .join(SkillVersion, SkillVersion.id == Skill.current_version_id)
+        .outerjoin(uses, uses.c.skill_id == Skill.id)
         .where(Skill.owner_id == user.id, Skill.deleted_at.is_(None))
         .order_by(Skill.name)
     ).all()
@@ -199,8 +220,9 @@ def list_skills(user: CurrentUser, db: DB):
             version=v.version,
             version_id=v.id,
             updated_at=skill.updated_at,
+            agent_count=agents,
         )
-        for skill, v in rows
+        for skill, v, agents in rows
     ]
 
 
