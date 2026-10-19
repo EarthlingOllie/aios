@@ -13,7 +13,7 @@ and chat with them. The Agents and Skills lists each have a search box: every wo
 appear in an item's name or description, ignoring case and accents, and the list shows how many
 of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
 shared link or Back keeps it, and opening, creating or deleting an item leaves the list as it
-was. The **Search** page runs that hybrid search directly, with no agent in
+was. Pressing `/` jumps to the list's search box, except while typing in a field. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
