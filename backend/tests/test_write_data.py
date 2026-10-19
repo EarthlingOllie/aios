@@ -8,7 +8,7 @@ import math
 
 import psycopg
 import pytest
-from conftest import add_document
+from conftest import add_document, store_of
 from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
@@ -17,7 +17,7 @@ from test_provisioning import login_url
 
 from aios import worker
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for, store_not_ready
+from aios.datastores import store_not_ready
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
 from aios.tools import build_tool, write_data
@@ -32,7 +32,7 @@ TOOLS = [
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, with a hand-made `data.fish` table holding two fish."""
-    row = provisioned(db, data_store_for(user.id))
+    row = provisioned(db, store_of(user))
     with as_owner(row) as conn:
         conn.execute(
             "CREATE TABLE data.fish (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
@@ -388,7 +388,7 @@ def test_updates_and_deletes_over_the_row_cap_are_refused_before_they_run(
     "status", [DataStoreStatus.provisioning, DataStoreStatus.failed, DataStoreStatus.deleting]
 )
 def test_it_says_why_the_store_isnt_ready(api, db, user, agent, status):
-    db.execute(update(DataStore).where(DataStore.owner_user_id == user.id).values(status=status))
+    db.execute(update(DataStore).where(DataStore.id == store_of(user)).values(status=status))
     db.commit()
 
     result = write(api, agent, table="fish", operation="delete", where={"id": 1})

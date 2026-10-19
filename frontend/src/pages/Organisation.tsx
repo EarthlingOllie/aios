@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, Section, useLoad } from "@/components/crud";
+import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,8 @@ import { api, describeError } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation } from "@/lib/organisation";
 
-/** The user's organisation: its name (the creator renames it), creator and members. */
+/** The user's organisation: its name (the creator renames it), creator and members, and its
+ * settings (the run history export). */
 export function OrganisationPage() {
   const me = useCurrentUser();
   const reloadMe = useReloadCurrentUser();
@@ -77,6 +79,7 @@ export function OrganisationPage() {
             ))}
           </ul>
         </Section>
+        <RunHistoryExportSection />
       </div>
     </div>
   );

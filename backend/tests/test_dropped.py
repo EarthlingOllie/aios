@@ -5,6 +5,7 @@ tools' access to it, while its data stays; the owner can restore it until it's p
 from datetime import datetime, timedelta
 
 import pytest
+from conftest import store_of
 from fake_model import ToolCall, model, use_model
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
@@ -15,7 +16,7 @@ from test_schema_change_requests import Script, run_queued, start
 from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for, dropped, schema_changes
+from aios.datastores import dropped, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
@@ -32,7 +33,7 @@ TOOLS = [
 def store(db, user) -> DataStore:
     """The user's store, with `data.fish` (two fish) made by an applied request, as agents'
     tables are."""
-    row = provisioned(db, data_store_for(user.id))
+    row = provisioned(db, store_of(user))
     apply(
         db,
         row,

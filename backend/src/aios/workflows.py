@@ -55,7 +55,7 @@ from aios import checkpoints, invocations, tracing
 from aios.agent import ChatDeps
 from aios.api.skills import lock_live
 from aios.config import get_settings
-from aios.datastores import data_store_for, history, schema_changes
+from aios.datastores import data_store_of, history, schema_changes
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -422,7 +422,7 @@ def _claim(run_id: int) -> Claimed | None:
         }
         # In the claim's transaction: if the store can't be resolved, the run isn't claimed...
         try:
-            data_store_id = data_store_for(workflow.owner_id, db)
+            data_store_id = data_store_of(db, Workflow, workflow.id)
         except Exception as exc:
             db.rollback()
             error = exc

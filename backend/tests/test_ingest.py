@@ -5,13 +5,13 @@ import pytest
 
 pytest.importorskip("docling")
 
-from conftest import add_document  # noqa: E402
+from conftest import add_document, store_of  # noqa: E402
 from docling.chunking import HybridChunker  # noqa: E402
 from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
 
 from aios import ingest  # noqa: E402
-from aios.datastores import data_store_for, store_session  # noqa: E402
+from aios.datastores import store_session  # noqa: E402
 from aios.datastores.models import Document, DocumentStatus  # noqa: E402
 
 MARKDOWN = b"""# Field guide
@@ -65,8 +65,8 @@ def test_chunk_document_keeps_headings():
 @pytest.fixture
 def store(user, files_bucket):
     """A read-write session on `user`'s store."""
-    with store_session(data_store_for(user.id), "rw") as session:
-        session.info["store_id"] = data_store_for(user.id)
+    with store_session(store_of(user), "rw") as session:
+        session.info["store_id"] = store_of(user)
         yield session
 
 
@@ -127,7 +127,7 @@ def test_ingest_tolerates_document_deleted_mid_ingest(user, store, monkeypatch):
     real_chunk_document = ingest.chunk_document
 
     def delete_then_chunk(filename, data):
-        with store_session(data_store_for(user.id), "rw") as other:
+        with store_session(store_of(user), "rw") as other:
             other.execute(delete(Document).where(Document.id == doc_id))
             other.commit()
         return real_chunk_document(filename, data)

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from aios.api.skills import on_conflict
 from aios.auth import CurrentOrganisation, CurrentUser
-from aios.db import DB
+from aios.db import DB, SessionLocal
 from aios.models import Organisation, OrganisationMember, User
 
 router = APIRouter(prefix="/api")
@@ -118,3 +118,13 @@ def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrg
     with on_conflict(db, NAME_CONSTRAINT, NAME_TAKEN):
         db.commit()
     return organisation_out(db, org, user)
+
+
+def users_out(user_ids: set[int]) -> dict[int, UserOut]:
+    """The users with these ids whose accounts are still there, by id, on a session of its own:
+    for what records who did it where users can't be joined (a data store's documents)."""
+    if not user_ids:
+        return {}
+    with SessionLocal() as db:
+        users = db.scalars(select(User).where(User.id.in_(user_ids))).all()
+        return {u.id: UserOut.model_validate(u, from_attributes=True) for u in users}

@@ -64,9 +64,10 @@ async def auth_callback(request: Request, db: DB):
     user.avatar_url = profile.get("avatar_url")
     db.flush()
     # Their first sign-in makes their personal organisation; afterwards, it's found again.
-    organisations.ensure_membership(db, user)
+    organisation_id = organisations.ensure_membership(db, user).id
     db.commit()
-    await run_in_threadpool(data_store_for, user.id)
+    # And a new organisation's store, provisioned while they look around.
+    await run_in_threadpool(data_store_for, organisation_id)
 
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()
@@ -107,11 +108,12 @@ def current_organisation(user: CurrentUser, db: DB) -> Organisation:
 CurrentOrganisation = Annotated[Organisation, Depends(current_organisation)]
 
 
-def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
-    """The signed-in user's data store. The request's session is closed once it's resolved (see
-    `data_store_for_request`), so an endpoint that takes this mustn't use `DB` after it."""
-    return data_store_for_request(user.id, db)
+def current_data_store(org: CurrentOrganisation, db: DB) -> uuid.UUID:
+    """The signed-in user's organisation's data store, the one every member reaches. The
+    request's session is closed once it's resolved (see `data_store_for_request`), so an
+    endpoint that takes this mustn't use `DB` after it."""
+    return data_store_for_request(org.id, db)
 
 
-# For endpoints that reach the user's data only through their store.
+# For endpoints that reach the organisation's data only through its store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]

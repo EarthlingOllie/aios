@@ -7,14 +7,14 @@ full-text, fused with Reciprocal Rank Fusion). `/` opens the Chats section (see 
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
 reusable instructions, and **tools** from a built-in library: web search; document search,
-the same hybrid search as the documents assistant's, over the documents of the user running the agent;
-and run history search, the same over their exported past runs)
+the same hybrid search as the documents assistant's, over the documents of the agent's organisation;
+and run history search, the same over its exported past runs)
 and chat with them. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
-**Data** page shows the user's data store: its status (Overview), the schema changes its agents
+**Data** page shows the organisation's data store, the same for every member: its status (Overview), the schema changes its agents
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
-status, chunk count, size and upload time, upload, download and delete (the chat's documents
+status, chunk count, size, upload time and who uploaded it, upload, download and delete (the chat's documents
 panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
@@ -147,9 +147,9 @@ in a URL or header. `GET /api/me` says which organisation the user is in and the
 its name, which opens the **Organisation** page (`GET /api/organisation`): the name, the creator
 and the members with when each joined. Only the creator renames it (`PUT /api/organisation`; a
 403 for another member, a 409 for a name another organisation has): a stopgap role until roles
-exist. The **Settings** page is the user's own (the run history export) and links to it. Nothing
-is scoped to the organisation yet: agents, workflows, skills, schedules, chats and the data store
-still answer to their owner.
+exist. The **Settings** page is the user's own and links to it. The **data store** is the
+organisation's (see [Data stores](#data-stores)), and so is the run history export, on the
+Organisation page; agents, workflows, skills, schedules and chats still answer to their owner.
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
@@ -323,7 +323,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
     api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page)
-    api/settings.py GET/PUT /api/settings (the user's own: the run history export)
+    api/settings.py GET/PUT /api/organisation/settings (the organisation's: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
@@ -485,14 +485,19 @@ them without it is measured by its database's size until a superuser adds it.
 
 ### Data stores
 
-Each user has a data store: a Postgres database of their own on the same instance (see
-`plan/user-databases/plan.md` on the plan branch). Signing up creates the store's row
-(`data_stores`, status `provisioning`) and queues `aios.provision_data_store` on the
+Each organisation has a data store: a Postgres database of its own on the same instance (see
+`plan/user-databases/plan.md` on the plan branch), which every member reaches: the Data page,
+uploads and downloads, approvals and the run history export all resolve the signed-in user's
+organisation's store (`aios.datastores.resolve.data_store_for`, the `CurrentDataStore`
+dependency), and a run uses its agent's or workflow's organisation's. A user in another
+organisation finds none of it (404). Each document records who uploaded it (`uploaded_by`, a
+user id: a store has no users table). Signing up makes the new organisation's store's row
+(`data_stores`, `owner_organisation_id`, status `provisioning`) and queues `aios.provision_data_store` on the
 `provisioning` queue, which only the provisioning worker reads. That task, as
 `aios_provisioner`:
 
 - creates the roles `ds_<id>_owner` (no login), `ds_<id>_rw` and `ds_<id>_ro`, named after the
-  store's id (a UUID, never the user's), with a connection limit each
+  store's id (a UUID, never its organisation's), with a connection limit each
   (`DATA_STORE_CONNECTION_LIMIT`), and a default statement timeout and idle-in-transaction
   timeout (`DATA_STORE_STATEMENT_TIMEOUT`, `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in
   milliseconds): role defaults, which a session may `SET` otherwise, so code running queries it
@@ -534,8 +539,8 @@ back, until the provisioning worker's beat brings it to head with the retries ab
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
 on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
-and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store holds only its
-owner's documents, and its roles can't connect to any other database. A store is reached at
+and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store
+holds only its organisation's documents, and its roles can't connect to any other database. A store is reached at
 `DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
 database's instance, which the provisioner may know by another name (Compose's `db`, with the
 API on the host). A row's `host` and `port` are for a store moved to another instance later;
@@ -578,8 +583,9 @@ written or deleted from since.
 
 #### Run history export
 
-On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
-their runs into their store's `history` schema, keyed by the platform's ids and recording who
+On the Organisation page any member can switch on `export_run_history` (on `data_stores`): a
+one-way copy of the organisation's runs (every member's and every schedule's, matched to the
+store by their agent's or workflow's organisation) into its store's `history` schema, keyed by the platform's ids and recording who
 ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
 and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
 with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
@@ -588,12 +594,12 @@ key: the two are exported apart). Statuses are copied as text. The platform data
 source of truth (`aios.datastores.history`):
 
 - The `history` tables are the store tree's second line (branch label `history`, revisions
-  `h0001`, ...), which a store gets only once its owner first switches the export on:
+  `h0001`, ...), which a store gets only once the export is first switched on:
   `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
   migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
   same default privileges on it as on `aios`. A store behind the line's head isn't exported
   until it's brought there.
-- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+- Switching it on backfills: every run in the organisation, agent and workflow runs alike, goes in the
   outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
   `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
   every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
@@ -612,7 +618,7 @@ source of truth (`aios.datastores.history`):
 
 ##### Searchable history
 
-While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+While the export is on, a second setting, `embed_run_history` (on `data_stores`, off by default, and
 switched off with the export), embeds the exported messages so agents can search past runs:
 
 - `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
@@ -625,7 +631,7 @@ switched off with the export), embeds the exported messages so agents can search
   on queues the export, which embeds every message already there (a backfill);
   `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
   `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
-  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page) and
   is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
   new embeddings and keeps the existing ones, which are still searched.
 - The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
@@ -827,8 +833,8 @@ Known limits:
   store's schema, compiles it to SQL with every identifier quoted (descriptions become
   `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
   `interrupt()`: the turn ends with a card of the agent's reason and the exact SQL, and the run
-  takes no new messages until it's decided. The store's owner (`can_approve`) approves or
-  rejects it (with an optional note) there or in the Data page's Changes section. Each user who
+  takes no new messages until it's decided. Any member of the store's organisation
+  (`can_approve`, `resolve.approvers`) approves or rejects it (with an optional note) there or in the Data page's Changes section. Each user who
   can decide a new request gets a notification (`aios.notifications`, the `notifications`
   table: user, kind, a jsonb reference, created and read times), which the navigation's bell
   polls for (`GET /api/notifications`, unread first with an unread count, every 10s) and shows

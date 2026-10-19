@@ -22,7 +22,7 @@ from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
 from aios.auth import CurrentUser
-from aios.datastores import data_store_for, history, schema_changes
+from aios.datastores import data_store_of, history, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -742,7 +742,7 @@ class ChatContext:
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
     # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
-    # The data store the turn's tools use: the user's.
+    # The data store the turn's tools use: the agent's organisation's.
     data_store_id: uuid.UUID | None = None
 
 
@@ -764,8 +764,9 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
-    # On this session, rather than one of its own alongside it; committed in case it's created.
-    data_store_id = data_store_for(user_id, db)
+    # The agent's organisation's, on this session rather than one of its own alongside it;
+    # committed in case it's created.
+    data_store_id = data_store_of(db, Agent, agent_id)
     db.commit()
     return ChatContext(
         model=version.model,

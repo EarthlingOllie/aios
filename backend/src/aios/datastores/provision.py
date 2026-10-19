@@ -64,7 +64,7 @@ from sqlalchemy.engine import make_url
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, migrations
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, DataStoreStatus
 from alembic import command
 
 log = logging.getLogger(__name__)
@@ -340,11 +340,6 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
         return credentials.decrypt(store.rw_password), credentials.decrypt(store.ro_password)
 
 
-def _wants_history(db, store: DataStore) -> bool:
-    """Whether the store's owner has the run history export on."""
-    return bool(db.scalar(select(User.export_run_history).where(User.id == store.owner_user_id)))
-
-
 def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
     docstring); returns the revision it's at. Does nothing (returns None) for a store that's
@@ -360,7 +355,7 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
             ):
                 return None
             names = StoreNames.of(store)
-            history = _wants_history(db, store)
+            history = store.export_run_history
         passwords = _passwords(store_id)
         if passwords is None:
             return None
@@ -430,7 +425,7 @@ def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
-            history = _wants_history(db, store)
+            history = store.export_run_history
         _set_limits(server, names)
         revisions = upgrade_store(names, history=history)
         with SessionLocal() as db:
@@ -522,14 +517,14 @@ def _migrate_ready(
 
 def _behind_head() -> ColumnElement[bool]:
     """Stores at an earlier revision of the tree than its head, on either line, or without the
-    `history` line their owner wants (the export's set-up was lost, or failed). Not one it
+    `history` line the export wants (its set-up was lost, or failed). Not one it
     doesn't know: the release after this one has already migrated that store."""
     return or_(
         DataStore.schema_revision.in_(migrations.revisions_before_head()),
         DataStore.history_revision.in_(migrations.history_revisions_before_head()),
         and_(
             DataStore.history_revision.is_(None),
-            DataStore.owner_user_id.in_(select(User.id).where(User.export_run_history)),
+            DataStore.export_run_history,
         ),
     )
 

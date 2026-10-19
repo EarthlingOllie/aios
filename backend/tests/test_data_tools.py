@@ -17,6 +17,7 @@ from contextlib import contextmanager
 import psycopg
 import pytest
 from anyio import to_thread
+from conftest import store_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
@@ -25,11 +26,11 @@ from test_provisioning import login_url, store_row
 
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for, provision, store_session
+from aios.datastores import provision, store_session
 from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, DataStoreStatus, Organisation
 from aios.tools import build_tool
 
 DATA_TOOLS = [{"key": "describe_data", "config": {}}, {"key": "query_data", "config": {}}]
@@ -56,7 +57,7 @@ def provisioned(db, store_id: uuid.UUID) -> DataStore:
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, provisioned, with a hand-made `data.fish` table."""
-    row = provisioned(db, data_store_for(user.id))
+    row = provisioned(db, store_of(user))
     with as_owner(row) as conn:
         conn.execute(
             "CREATE TABLE data.fish (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
@@ -523,7 +524,7 @@ def test_a_query_with_no_rows_still_names_its_columns(api, store, data_agent):
 @pytest.fixture
 def other_store(db, new_user) -> DataStore:
     """Another user's provisioned store, with a `data.secrets` table."""
-    row = provisioned(db, data_store_for(new_user().id))
+    row = provisioned(db, store_of(new_user()))
     with as_owner(row) as conn:
         conn.execute("CREATE TABLE data.secrets (code text)")
         conn.execute("INSERT INTO data.secrets VALUES ('hunter2')")
@@ -572,10 +573,11 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
         assert refusal in result["error"], (sql, result)
 
 
-def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent):
-    """The store comes from the run (its user), never from anything the model says."""
+def test_each_run_reads_its_own_organisations_store(api, store, other_store, data_agent):
+    """The store comes from the run (its agent's organisation), never from anything the model
+    says."""
     with SessionLocal() as session:
-        other_user = session.get(User, other_store.owner_user_id)
+        other_user = session.get(Organisation, other_store.owner_organisation_id).creator
     app.dependency_overrides[current_user] = lambda: other_user
     their_agent = make_agent(api, "Theirs")
     their_agent = api.put(
@@ -608,7 +610,7 @@ def test_each_run_reads_its_own_users_store(api, store, other_store, data_agent)
     ],
 )
 def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, status, says):
-    db.execute(update(DataStore).where(DataStore.owner_user_id == user.id).values(status=status))
+    db.execute(update(DataStore).where(DataStore.id == store_of(user)).values(status=status))
     db.commit()
 
     described, queried = run_tools(
@@ -752,7 +754,7 @@ def test_one_users_slow_queries_dont_hold_up_another_users_tools(
             return conn.execute(query, (sql,)).fetchone()[0]
 
     with SessionLocal() as session:
-        other_user = session.get(User, other_store.owner_user_id)
+        other_user = session.get(Organisation, other_store.owner_organisation_id).creator
     with api, use_model(model(many_slow_queries)):
         run = api.post(f"/api/agents/{data_agent['id']}/runs").json()
         url = f"/api/agents/{data_agent['id']}/runs/{run['id']}/chat"

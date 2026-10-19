@@ -10,6 +10,7 @@ import contextlib
 from contextlib import asynccontextmanager
 
 import pytest
+from conftest import store_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from psycopg import OperationalError
 from sqlalchemy import event
@@ -20,7 +21,7 @@ from aios import checkpoints, ui_stream, worker
 from aios.api import agents as agents_api
 from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
-from aios.datastores import can_approve, data_store_for, schema_changes
+from aios.datastores import can_approve, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.db import SessionLocal, engine
 from aios.main import app
@@ -42,7 +43,7 @@ CONTACTS = {
 
 @pytest.fixture
 def store(db, user) -> DataStore:
-    return provisioned(db, data_store_for(user.id))
+    return provisioned(db, store_of(user))
 
 
 @pytest.fixture
@@ -318,7 +319,7 @@ def test_a_request_is_decided_once(api, agent, queued):
     assert [task for task, _ in queued] == [worker.apply_schema_change_task]
 
 
-def test_only_the_stores_owner_can_decide(api, agent, db, new_user, queued):
+def test_only_members_of_the_stores_organisation_can_decide(api, user, agent, db, new_user, queued):
     _, request = start(api, agent, Script(CONTACTS))
     other: User = new_user()
     app.dependency_overrides[current_user] = lambda: other
@@ -330,7 +331,7 @@ def test_only_the_stores_owner_can_decide(api, agent, db, new_user, queued):
     assert api.get("/api/schema-changes").json() == []
     assert queued == []
     store = db.get(DataStore, request["data_store_id"])
-    assert (can_approve(other.id, store), can_approve(store.owner_user_id, store)) == (False, True)
+    assert (can_approve(db, other.id, store), can_approve(db, user.id, store)) == (False, True)
 
 
 def run_of(api, agent: dict, run: dict) -> dict:

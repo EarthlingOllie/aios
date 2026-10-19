@@ -172,6 +172,23 @@ test("lists each document's status, error, chunk count, size and upload time", a
   await expect(row(page, "slides.pptx")).toContainText("Ready");
 });
 
+test("each document says which member uploaded it", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("old.pdf");
+  api.addDocument("plan.md", {
+    uploaded_by: { id: 2, login: "sam", name: "Sam Member", avatar_url: null },
+  });
+  await page.goto("/data?tab=documents");
+
+  await expect(row(page, "plan.md")).toContainText("by Sam Member");
+  // One from before uploads were recorded says only when.
+  await expect(row(page, "old.pdf")).not.toContainText(" by ");
+
+  // An upload is the signed-in member's.
+  await page.locator('input[type="file"]').setInputFiles([file("notes.md")]);
+  await expect(row(page, "notes.md")).toContainText("by Tester");
+});
+
 test("each document links to its download", async ({ page }) => {
   const api = await fakeApi(page);
   const doc = api.addDocument("Résumé (final), 2026.pdf");
