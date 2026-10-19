@@ -31,6 +31,21 @@ type AgentRow = {
   base_prompt: string;
   versions: number[];
 };
+type SkillVersionRow = {
+  id: number;
+  version: number;
+  note: string | null;
+  name: string;
+  description: string;
+  content: string;
+};
+type SkillRow = {
+  id: number;
+  name: string;
+  versions: SkillVersionRow[];
+  /** The agents whose current version uses the skill, and the version of it each pins. */
+  usedBy: { agent: AgentRow; version: number }[];
+};
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
   status: "running" | "succeeded" | "failed" | null;
@@ -354,6 +369,7 @@ export class FakeApi {
   agentVersions = new Map<number, [number, number]>();
   // Agent version id -> note, for the versions that have one.
   agentNotes = new Map<number, string>();
+  skills = new Map<number, SkillRow>();
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
@@ -632,6 +648,45 @@ export class FakeApi {
     }
     this.agents.set(agent.id, agent);
     return agent;
+  }
+
+  /** Adds a skill with `versions` versions, each with its own instructions ("<name> instructions, vN."). */
+  addSkill(name: string, versions = 1): SkillRow {
+    const skill: SkillRow = { id: this.id(), name, versions: [], usedBy: [] };
+    for (let n = 1; n <= versions; n++) {
+      skill.versions.push({
+        id: this.id(),
+        version: n,
+        note: null,
+        name,
+        description: `Use when writing ${name.toLowerCase()}.`,
+        content: `${name} instructions, v${n}.`,
+      });
+    }
+    this.skills.set(skill.id, skill);
+    return skill;
+  }
+
+  /** Has `agent`'s current version use `skill` at `version` (by default its latest). */
+  addSkillUse(skill: SkillRow, agent: AgentRow, version = skill.versions.length) {
+    skill.usedBy.push({ agent, version });
+  }
+
+  private skillOut(skill: SkillRow) {
+    const current = skill.versions.at(-1)!;
+    return {
+      id: skill.id,
+      name: skill.name,
+      created_at: NOW,
+      updated_at: NOW,
+      current_version: { ...current, created_at: NOW },
+      agents: skill.usedBy.map(({ agent, version }) => ({
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_version: agent.versions.length,
+        skill_version: version,
+      })),
+    };
   }
 
   /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
@@ -1680,6 +1735,50 @@ export class FakeApi {
       return reply(200, this.notificationOut(notification));
     }
     if (path === "/api/tools") return reply(200, []);
+    if (path === "/api/skills" && method === "GET") {
+      return reply(
+        200,
+        [...this.skills.values()].map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.versions.at(-1)!.description,
+          version: s.versions.length,
+          version_id: s.versions.at(-1)!.id,
+          updated_at: NOW,
+        })),
+      );
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
+      const skill = this.skills.get(Number(m[1]));
+      const from = skill?.versions[Number(m[2]) - 1];
+      if (!skill || !from) return fail(404, "Not Found");
+      skill.versions.push({
+        ...from,
+        id: this.id(),
+        version: skill.versions.length + 1,
+        note: `Restored from v${from.version}`,
+      });
+      return reply(200, this.skillOut(skill));
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)(\/.*)?$/)) && method === "GET") {
+      const skill = this.skills.get(Number(m[1]));
+      const rest = m[2] ?? "";
+      if (!skill) return fail(404, "Not Found");
+      if (rest === "") return reply(200, this.skillOut(skill));
+      if (rest === "/versions") {
+        return reply(
+          200,
+          skill.versions
+            .map(({ id, version, note }) => ({ id, version, note, created_at: NOW }))
+            .reverse(),
+        );
+      }
+      if ((m = rest.match(/^\/versions\/(\d+)$/))) {
+        const version = skill.versions[Number(m[1]) - 1];
+        if (!version) return fail(404, "Not Found");
+        return reply(200, { ...version, created_at: NOW });
+      }
+    }
     if (path === "/api/agents") {
       return reply(
         200,
