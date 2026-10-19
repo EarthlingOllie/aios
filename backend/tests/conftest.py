@@ -132,6 +132,17 @@ def sign_up(db, github_id: int, login: str, **fields) -> User:
     return u
 
 
+def join_organisation(db, of: User, github_id: int, login: str, **fields) -> User:
+    """A new user who is a member of `of`'s organisation (not its creator). Delete them with
+    `delete_user`, which deletes the shared organisation and what's in it."""
+    u = User(github_id=github_id, login=login, **fields)
+    db.add(u)
+    db.flush()
+    db.add(OrganisationMember(organisation_id=org_of(db, of).id, user_id=u.id))
+    db.commit()
+    return u
+
+
 def org_of(db, user: User) -> Organisation:
     """The user's organisation, for calling what takes one (as a request's would) directly."""
     return organisations.membership_of(db, user.id)

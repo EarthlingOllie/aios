@@ -998,6 +998,11 @@ class Chat(Base):
     """A group conversation. Its members are `ChatMember` rows, its messages `ChatMessage`s."""
 
     __tablename__ = "chats"
+    __table_args__ = (
+        # Unique within the organisation: a chat is named like a channel, not like one member's
+        # own thing, and two organisations can each have "general".
+        Index("uq_chats_organisation_id_name", "organisation_id", "name", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -1010,8 +1015,7 @@ class Chat(Base):
     # Which member made it and which last changed it; null once that user is deleted.
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    # Unique among all chats: a chat is named like a channel, not like a user's own thing.
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, server_default="")
     # A private chat doesn't exist for a user who isn't a member of it.
     visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
@@ -1030,7 +1034,7 @@ class Chat(Base):
 
 
 class ChatMember(Base):
-    """Who is in a chat: a user, an agent or a workflow (one the chat's owner owns)."""
+    """Who is in a chat: a user, an agent or a workflow (all of the chat's organisation)."""
 
     __tablename__ = "chat_members"
 

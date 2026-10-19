@@ -1,4 +1,9 @@
-"""A run started from a chat opens for any member of that chat, read-only; not for anyone else."""
+"""A run started from a chat opens for any member of that chat, read-only; not for anyone else.
+
+The chat's member here is a user of another organisation, whom the owner can no longer add
+(chats are the organisation's), so they're seated in the chat directly (`seat`), as a membership
+from before that would be: what's left of the rule is what these tests pin, until runs are read
+by organisation alone."""
 
 import asyncio
 
@@ -6,12 +11,13 @@ import pytest
 from conftest import delete_user, sign_up
 from fake_model import replies, use_model
 from test_chat_invocations import echo_agent, say
-from test_chats import add, add_user, make_chat, messages, signed_in_as
+from test_chats import add, make_chat, messages, signed_in_as
 from test_triggers import make_agent
 from test_workflow_runs import echo
 from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios.api import workflows as workflows_api
+from aios.models import ChatMember, ChatMemberKind, ChatMemberRole, User
 from aios.workflows import execute_run
 
 
@@ -42,12 +48,25 @@ def outsider(db):
     yield from signed_up(db, -4, "outsider")
 
 
-def run_workflow_from_chat(api, started, member) -> tuple[dict, dict, int]:
+def seat(db, chat: dict, member: User) -> None:
+    """Put `member`, a user of another organisation, in the chat."""
+    db.add(
+        ChatMember(
+            chat_id=chat["id"],
+            kind=ChatMemberKind.user,
+            user_id=member.id,
+            role=ChatMemberRole.member,
+        )
+    )
+    db.commit()
+
+
+def run_workflow_from_chat(api, db, started, member) -> tuple[dict, dict, int]:
     """The owner's workflow, run from a chat `member` is a member of: (workflow, chat, run id)."""
     wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", wf)
-    add_user(api, chat, member)
+    seat(db, chat, member)
     say(api, chat, "Go", wf)
     [run_id] = started
     with use_model(echo()):
@@ -56,9 +75,9 @@ def run_workflow_from_chat(api, started, member) -> tuple[dict, dict, int]:
 
 
 def test_a_member_reads_another_owners_workflow_run_and_its_nodes_conversation(
-    api, started, member, outsider
+    api, db, started, member, outsider
 ):
-    wf, chat, run_id = run_workflow_from_chat(api, started, member)
+    wf, chat, run_id = run_workflow_from_chat(api, db, started, member)
     url = f"/api/workflows/{wf['id']}/runs/{run_id}"
     owners = api.get(url).json()
     assert owners["is_owner"] is True
@@ -91,12 +110,12 @@ def test_a_member_reads_another_owners_workflow_run_and_its_nodes_conversation(
         )
 
 
-def run_agent_from_chat(api, member) -> tuple[dict, dict, int]:
+def run_agent_from_chat(api, db, member) -> tuple[dict, dict, int]:
     """The owner's agent, run from a chat `member` is a member of: (agent, chat, run id)."""
     agent = make_agent(api, "Bot")
     chat = make_chat(api, "Bot's chat")
     add(api, chat, "agent", agent)
-    add_user(api, chat, member)
+    seat(db, chat, member)
     with use_model(replies("Hi.")):
         resp = api.post(
             f"/api/chats/{chat['id']}/messages",
@@ -107,8 +126,8 @@ def run_agent_from_chat(api, member) -> tuple[dict, dict, int]:
     return agent, chat, invocation["agent_run_id"]
 
 
-def test_a_member_reads_another_owners_agent_run_but_no_other_run_of_it(api, member, outsider):
-    agent, chat, run_id = run_agent_from_chat(api, member)
+def test_a_member_reads_another_owners_agent_run_but_no_other_run_of_it(api, db, member, outsider):
+    agent, chat, run_id = run_agent_from_chat(api, db, member)
     url = f"/api/agents/{agent['id']}/runs/{run_id}"
     owners = api.get(url).json()
     assert owners["is_owner"] is True
@@ -136,9 +155,9 @@ def test_a_member_reads_another_owners_agent_run_but_no_other_run_of_it(api, mem
         assert api.get(url).status_code == 404
 
 
-def test_everything_but_reading_the_run_stays_the_owners(api, started, member):
-    wf, _, wf_run = run_workflow_from_chat(api, started, member)
-    agent, _, agent_run = run_agent_from_chat(api, member)
+def test_everything_but_reading_the_run_stays_the_owners(api, db, started, member):
+    wf, _, wf_run = run_workflow_from_chat(api, db, started, member)
+    agent, _, agent_run = run_agent_from_chat(api, db, member)
     a, w = f"/api/agents/{agent['id']}", f"/api/workflows/{wf['id']}"
 
     with signed_in_as(member):
@@ -176,9 +195,9 @@ def test_everything_but_reading_the_run_stays_the_owners(api, started, member):
     assert started == [wf_run]
 
 
-def test_the_rule_lapses_when_the_chat_is_deleted(api, started, member):
-    wf, wf_chat, wf_run = run_workflow_from_chat(api, started, member)
-    agent, agent_chat, agent_run = run_agent_from_chat(api, member)
+def test_the_rule_lapses_when_the_chat_is_deleted(api, db, started, member):
+    wf, wf_chat, wf_run = run_workflow_from_chat(api, db, started, member)
+    agent, agent_chat, agent_run = run_agent_from_chat(api, db, member)
     [step] = api.get(f"/api/workflows/{wf['id']}/runs/{wf_run}").json()["steps"]
     urls = [
         f"/api/workflows/{wf['id']}/runs/{wf_run}",
@@ -197,8 +216,8 @@ def test_the_rule_lapses_when_the_chat_is_deleted(api, started, member):
     assert [api.get(u).status_code for u in urls] == [200, 200, 200]
 
 
-def test_the_rule_lapses_for_a_member_removed_from_the_chat(api, member):
-    agent, chat, run_id = run_agent_from_chat(api, member)
+def test_the_rule_lapses_for_a_member_removed_from_the_chat(api, db, member):
+    agent, chat, run_id = run_agent_from_chat(api, db, member)
     url = f"/api/agents/{agent['id']}/runs/{run_id}"
     [row] = [
         m
@@ -210,9 +229,9 @@ def test_the_rule_lapses_for_a_member_removed_from_the_chat(api, member):
         assert api.get(url).status_code == 404
 
 
-def test_a_deleted_run_or_workflow_is_gone_for_members_too(api, started, member):
-    wf, _, wf_run = run_workflow_from_chat(api, started, member)
-    agent, _, agent_run = run_agent_from_chat(api, member)
+def test_a_deleted_run_or_workflow_is_gone_for_members_too(api, db, started, member):
+    wf, _, wf_run = run_workflow_from_chat(api, db, started, member)
+    agent, _, agent_run = run_agent_from_chat(api, db, member)
     [step] = api.get(f"/api/workflows/{wf['id']}/runs/{wf_run}").json()["steps"]
     conversation = f"/api/agents/{step['agent_id']}/runs/{step['agent_run_id']}"
 
@@ -226,7 +245,7 @@ def test_a_deleted_run_or_workflow_is_gone_for_members_too(api, started, member)
 
 
 def test_a_member_opens_a_subworkflow_of_the_run_and_its_nodes_conversations(
-    api, started, member, outsider
+    api, db, started, member, outsider
 ):
     a = echo_agent(api, "deep")
     inner = make_workflow(api, "Inner", [agent_node("leaf", a)])
@@ -234,7 +253,7 @@ def test_a_member_opens_a_subworkflow_of_the_run_and_its_nodes_conversations(
     outer = make_workflow(api, "Outer", [workflow_node("mid", middle)])
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", outer)
-    add_user(api, chat, member)
+    seat(db, chat, member)
     say(api, chat, "Go", outer)
     [run_id] = started
     with use_model(echo()):
