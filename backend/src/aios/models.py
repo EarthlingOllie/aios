@@ -136,8 +136,10 @@ class DataStoreStatus(enum.StrEnum):
     # Provisioning gave up; re-running it (`aios.datastores.provision.retry_unfinished` does, every
     # few minutes, as does the deploy's `migrate_all`) carries on.
     failed = "failed"
-    # For deleting the stores of deleted organisations (not yet used).
+    # Its organisation was deleted (an empty one, on accepting an invitation): the provisioning
+    # worker's sweep drops its database, roles and files (`provision.delete_deleting`) ...
     deleting = "deleting"
+    # ... and then it's this: the row is kept, as a record of the store.
     deleted = "deleted"
 
 

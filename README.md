@@ -172,9 +172,13 @@ names the organisation; an expired or revoked link is a 404 and says so. Signed 
 through `/login?invite=<token>`, which keeps the token in the session through GitHub's round
 trip; the callback joins a new user to the organisation (the membership records the link, shown
 beside the member) and makes no personal one, and sends a user it couldn't join back to the
-invite page. Signed in, Accept (`POST /api/invites/{token}/accept`) joins a user who's in no
-organisation and is a 409 with the reason for one who's in another, since a user is in one at a
-time. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
+invite page. Signed in, Accept (`POST /api/invites/{token}/accept`) joins, since a user is in
+one organisation at a time, a user who's in none or in an **empty** one: personal, theirs alone,
+and holding nothing but the defaults (no agents but the documents assistant, no workflows,
+skills, chats, schedules, documents or data tables). The empty one is deleted as they join, and
+its data store goes `deleting` for the provisioning worker to drop (see Data stores). Otherwise
+it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
+the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
 out of the organisation's chats, their unread notifications about its schema change requests go,
 and they land in a new personal organisation with a data store of its own; what they made stays.
 The last member can't leave, nor can the creator while others remain (each a 409, explained on
@@ -384,7 +388,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     store_session(id, role), the only way to open a session on user data,
                     models.py (the tables every store has: documents, chunks; and the
                     run history export's), history.py (the run history export),
-                    provision.py (creating and migrating each store's database),
+                    provision.py (creating, migrating and deleting each store's database),
                     files.py (uploaded files in S3, and download links), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
@@ -557,6 +561,13 @@ After six failed tries (the first and five retries, over about half an hour) the
 along with any still `provisioning` five minutes after they were made (their task was lost with a
 worker, say). Until a store is `ready`, uploads, the document list and search answer 409 ("being
 set up"), and the UI says so.
+
+A store whose organisation is deleted (an empty one, on accepting an invitation) goes `deleting`,
+with no organisation, in the same transaction. The provisioning worker's sweep
+(`aios.delete_data_stores`, queued then, and on the beat every ten minutes) disposes of its own
+engines on the store, drops its database and roles (ending any sessions still on it), deletes its
+files under `stores/<id>/` and marks it `deleted`, keeping the row. Each step can be run again,
+so a sweep cut short is finished by the next.
 
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs

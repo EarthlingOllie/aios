@@ -423,12 +423,6 @@ export class FakeApi {
    * them (the organisation's own open `invites` open too). Any other token is a 404.
    */
   invitations = new Map<string, InvitationRow>();
-  /**
-   * Whether accepting a link is refused, as the API refuses a user who's in an organisation
-   * already (which `me` always is here). When false, accepting moves `me` into the link's
-   * organisation.
-   */
-  acceptRefused = true;
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
@@ -523,6 +517,22 @@ export class FakeApi {
   }
 
   /** The organisation as `GET /api/organisation` answers. */
+  /** What's in `me`'s organisation by kind, as a refused accept counts it (the fake has no skills
+   * or schedules): agents but the documents assistant, live workflows, chats, documents and data
+   * tables. */
+  private organisationContents() {
+    const counts = {
+      agent: [...this.agents.keys()].filter((id) => id !== this.assistantId).length,
+      workflow: [...this.workflows.values()].filter((w) => !w.deleted).length,
+      chat: [...this.chats.values()].filter((c) => c.organisation_id === this.organisation.id).length,
+      document: this.documents.length,
+      table: this.dataTables.length,
+    };
+    return Object.entries(counts)
+      .filter(([, count]) => count > 0)
+      .map(([kind, count]) => ({ kind, count }));
+  }
+
   private organisationOut() {
     return { ...this.organisationSummary(), ...this.organisation };
   }
@@ -1609,11 +1619,22 @@ export class FakeApi {
       if (invitation.organisation.id === this.organisation.id) {
         return fail(409, `You're already a member of ${this.organisation.name}.`);
       }
-      if (this.acceptRefused) {
+      // As the API: only from an empty personal organisation of `me`'s own, which goes.
+      if (!this.organisation.personal || this.organisation.members.length > 1) {
         return fail(
           409,
           `You're a member of ${this.organisation.name}. You can be in only one organisation at a time.`,
         );
+      }
+      const contents = this.organisationContents();
+      if (contents.length) {
+        const name = this.organisation.name;
+        return reply(409, {
+          detail: {
+            message: `You're a member of ${name}, which has things in it. Accepting would delete ${name}, so delete them first.`,
+            contents,
+          },
+        });
       }
       this.organisation = {
         ...invitation.organisation,

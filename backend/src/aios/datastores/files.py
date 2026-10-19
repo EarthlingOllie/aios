@@ -27,8 +27,13 @@ from aios.config import get_settings
 _clients_lock = threading.Lock()
 
 
+def store_prefix(data_store_id: uuid.UUID) -> str:
+    """Where everything of the store's is: deleting the store deletes what's under it."""
+    return f"stores/{data_store_id}/"
+
+
 def document_key(data_store_id: uuid.UUID, document_id: int) -> str:
-    return f"stores/{data_store_id}/documents/{document_id}"
+    return f"{store_prefix(data_store_id)}documents/{document_id}"
 
 
 def _new_client(endpoint: str) -> BaseClient:
@@ -139,6 +144,28 @@ def delete(key: str) -> None:
     """Deletes the object; one already gone is no error. The bucket keeps no versions, so it's
     gone for good."""
     client().delete_object(Bucket=get_settings().data_store_files_bucket, Key=key)
+
+
+# The most objects S3 deletes in one request.
+DELETE_BATCH = 1000
+
+
+def delete_under(prefix: str) -> int:
+    """Deletes every object whose key starts with `prefix`, a page at a time; returns how many
+    it deleted. Run again after it's cut short, it deletes the rest."""
+    s3, bucket = client(), get_settings().data_store_files_bucket
+    deleted = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix=prefix, PaginationConfig={"PageSize": DELETE_BATCH}
+    ):
+        keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if not keys:
+            continue
+        result = s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+        if errors := result.get("Errors"):
+            raise RuntimeError(f"S3 didn't delete {len(errors)} under {prefix}: {errors[0]}")
+        deleted += len(keys)
+    return deleted
 
 
 def attachment(filename: str) -> str:
