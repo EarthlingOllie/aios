@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
 import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
@@ -12,7 +12,6 @@ import {
   MasterDetail,
   Placeholder,
   POLL_MS,
-  Section,
   selectClass,
   useListHref,
   useLoad,
@@ -20,6 +19,7 @@ import {
   useVisible,
   type ListContext,
 } from "@/components/crud";
+import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -127,6 +127,18 @@ export function ChatDetail() {
     [reloadChat, reloadMentionable],
   );
   const [actionError, setActionError] = useState<string>();
+  // The composer's unsent text, per chat. Held here because the room unmounts while the Members
+  // tab is open; keyed so one chat's draft never shows in another.
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const setDraft = useCallback(
+    (update: SetStateAction<string>) =>
+      setDrafts(({ [id]: current = "", ...others }) => {
+        const draft = typeof update === "function" ? update(current) : update;
+        // An empty draft is no draft: only chats with something typed keep an entry.
+        return draft ? { ...others, [id]: draft } : others;
+      }),
+    [id],
+  );
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
     (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
@@ -232,21 +244,39 @@ export function ChatDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
-      <ChatRoom
-        key={chat.id}
-        chatId={chat.id}
-        canPost={chat.is_member}
-        mentionable={mentionable}
-        onPosted={reloadList}
-        onRead={chat.is_member ? onRead : undefined}
+      <Tabs
+        label="Chat details"
+        tabs={[
+          {
+            id: "chat",
+            label: "Chat",
+            content: (
+              <ChatRoom
+                key={chat.id}
+                chatId={chat.id}
+                canPost={chat.is_member}
+                mentionable={mentionable}
+                onPosted={reloadList}
+                onRead={chat.is_member ? onRead : undefined}
+                draft={drafts[id] ?? ""}
+                onDraftChange={setDraft}
+              />
+            ),
+          },
+          {
+            id: "members",
+            label: "Members",
+            count: chat.member_count,
+            content: (
+              <MembersPanel
+                chat={chat}
+                onAdd={chat.is_owner ? onAdd : undefined}
+                onRemove={chat.is_owner ? onRemove : undefined}
+              />
+            ),
+          },
+        ]}
       />
-      <Section title="Members" label="Members">
-        <MembersPanel
-          chat={chat}
-          onAdd={chat.is_owner ? onAdd : undefined}
-          onRemove={chat.is_owner ? onRemove : undefined}
-        />
-      </Section>
     </DetailPage>
   );
 }
