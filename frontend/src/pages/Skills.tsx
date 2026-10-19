@@ -10,6 +10,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   type ListContext,
 } from "@/components/crud";
@@ -26,6 +27,7 @@ import {
   VersionHistory,
 } from "@/components/versions";
 import { api, describeError, type SkillInput, type SkillVersion } from "@/lib/api";
+import { nameAndDescription } from "@/lib/list-filter";
 
 export function SkillsSection() {
   const { data, error, reload } = useLoad(api.listSkills);
@@ -37,6 +39,7 @@ export function SkillsSection() {
       error={error}
       empty="No skills yet. Skills are reusable instructions you can give to agents."
       reloadList={reload}
+      search={nameAndDescription}
       renderItem={(skill) => (
         <>
           <div className="flex items-center gap-2">
@@ -78,6 +81,7 @@ function SkillContent({ version }: { version: SkillVersion }) {
 export function SkillDetail() {
   const id = Number(useParams().skillId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: skill, error } = useLoad(useCallback(() => api.getSkill(id), [id]));
   const versions = useLoad(useCallback(() => api.listSkillVersions(id), [id]));
@@ -92,7 +96,7 @@ export function SkillDetail() {
     try {
       await api.deleteSkill(id);
       await reloadList();
-      navigate("/skills");
+      navigate(listHref("/skills"));
     } catch (err) {
       setDeleteError(describeError(err));
     }
