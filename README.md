@@ -193,7 +193,7 @@ the invite page lists with links to where each can be deleted. A member **leaves
 out of the organisation's chats, their unread notifications about its schema change requests go,
 and they land in a new personal organisation with a data store of its own; what they made stays,
 and a chat they owned goes to its member added first (with nobody left in it, to whoever joins
-it next).
+it next, and a private one becomes public so that someone can).
 The last member can't leave, nor can the creator while others remain (each a 409, explained on
 the page).
 

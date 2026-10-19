@@ -11,9 +11,10 @@ member of the organisation: the list carries the public chats a member isn't in 
 for them to find, and they join it in one step and leave it as easily (the owner can't: a chat
 always has one). Only the owner can change a chat, add or remove its members or delete it: a 403
 for anyone else. An owner who leaves the organisation hands the chat to its member added first
-(`organisations.leave`); with nobody left in it, whoever joins it next owns it. Leaving or being
-removed deletes nothing, and whoever joins later reads the history from the start. A new chat's
-first agent is the organisation's documents assistant (`aios.assistant`).
+(`organisations.leave`); with nobody left in it, whoever joins it next owns it (a private one is
+made public, so that someone can). Leaving or being removed deletes nothing, and whoever joins
+later reads the history from the start. A new chat's first agent is the organisation's documents
+assistant (`aios.assistant`).
 
 Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
 to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
@@ -510,8 +511,8 @@ def newest_message_id(db: Session, chat_id: int) -> int | None:
 def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Join a public chat as a member (a private one exists only for its members), or as its
     owner if it has none (its owner left the organisation with nobody in it to hand it to:
-    `organisations.leave`). What was posted before they joined counts as seen: they could read
-    it, and it's all there to scroll."""
+    `organisations.leave`, which makes such a chat public if it was private). What was posted
+    before they joined counts as seen: they could read it, and it's all there to scroll."""
     chat = get_visible_chat(db, org, user.id, chat_id)
     if is_member(chat, user.id):
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
