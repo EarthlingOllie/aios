@@ -30,6 +30,8 @@ type AgentRow = {
   description: string;
   base_prompt: string;
   versions: number[];
+  /** The keys of the tools its current version has (`addToolUse`). */
+  tools: string[];
 };
 type SkillVersionRow = {
   id: number;
@@ -372,6 +374,8 @@ export class FakeApi {
   // Agent version id -> note, for the versions that have one.
   agentNotes = new Map<number, string>();
   skills = new Map<number, SkillRow>();
+  /** The tool library (`GET /api/tools`): empty unless a test adds to it (`addTool`). */
+  tools: { key: string; name: string; description: string; config_schema: object; default_config: object }[] = [];
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
@@ -642,6 +646,7 @@ export class FakeApi {
       description,
       base_prompt: `You are ${name}.`,
       versions: [],
+      tools: [],
     };
     for (let n = 1; n <= versions; n++) {
       const vid = this.id();
@@ -670,6 +675,16 @@ export class FakeApi {
     }
     this.skills.set(skill.id, skill);
     return skill;
+  }
+
+  /** Adds a tool, with no settings, to the library. */
+  addTool(key: string, name: string) {
+    this.tools.push({ key, name, description: `${name}.`, config_schema: {}, default_config: {} });
+  }
+
+  /** Gives `agent`'s current version the tool `key`. */
+  addToolUse(agent: AgentRow, key: string) {
+    agent.tools.push(key);
   }
 
   /** Has `agent`'s current version use `skill` at `version` (by default its latest). */
@@ -1254,6 +1269,19 @@ export class FakeApi {
     };
   }
 
+  /** What the list says `agent`'s current version has: its skills and tools. */
+  private agentUses(agent: AgentRow) {
+    const skillIds = [...this.skills.values()]
+      .filter((s) => s.usedBy.some((use) => use.agent === agent))
+      .map((s) => s.id);
+    return {
+      skill_count: skillIds.length,
+      tool_count: agent.tools.length,
+      skill_ids: skillIds,
+      tool_keys: agent.tools,
+    };
+  }
+
   private agentVersionOut(agent: AgentRow, version: number) {
     return {
       id: agent.versions[version - 1],
@@ -1739,7 +1767,7 @@ export class FakeApi {
       notification.read_at ??= NOW;
       return reply(200, this.notificationOut(notification));
     }
-    if (path === "/api/tools") return reply(200, []);
+    if (path === "/api/tools") return reply(200, this.tools);
     if (path === "/api/skills" && method === "GET") {
       return reply(
         200,
@@ -1793,8 +1821,7 @@ export class FakeApi {
           description: a.description,
           version: a.versions.length,
           version_id: a.versions.at(-1),
-          skill_count: 0,
-          tool_count: 0,
+          ...this.agentUses(a),
           run_count: this.agentRunsOf(a).length,
           updated_at: NOW,
         })),

@@ -101,7 +101,7 @@ export function narrowList<T>(
  * The URL parameters that belong to a list (its search, filters and sort), and so carry over
  * between its items. A list's own filter groups add theirs here.
  */
-export const LIST_PARAMS = ["q", "filter", "sort"];
+export const LIST_PARAMS = ["q", "filter", "sort", "skill", "tool"];
 
 /**
  * `path` with the list's own parameters from `params` added, so a filtered list stays filtered

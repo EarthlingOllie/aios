@@ -214,6 +214,9 @@ export type AgentSummary = {
   version_id: number;
   skill_count: number;
   tool_count: number;
+  /** The skills (any version of each) and tools its current version has, in order. */
+  skill_ids: number[];
+  tool_keys: string[];
   run_count: number;
   updated_at: string;
 };

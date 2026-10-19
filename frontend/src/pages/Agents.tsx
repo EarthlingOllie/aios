@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import {
   ArrowUpCircle,
   CalendarClock,
@@ -75,8 +75,63 @@ const AGENT_SORTS: ListSort<AgentSummary>[] = [
   { key: "runs", label: "Most runs", compare: byMostRuns },
 ];
 
+/**
+ * The Agents list's filters: Used or Unused, and the select of a skill and of a tool, filled
+ * from the user's skills and the tool library. Until those have loaded (or if they can't), the
+ * skill or tool already in the URL (`chosen`) is the only option, so a link opens filtered
+ * straight away; once they have, one that doesn't exist is as if none were chosen.
+ */
+function agentFilters(
+  skills: SkillSummary[] | undefined,
+  tools: ToolInfo[] | undefined,
+  chosen: { skill: string | null; tool: string | null },
+): ListFilterGroup<AgentSummary>[] {
+  const choices = (loaded: { key: string; label: string }[] | undefined, key: string | null) =>
+    loaded ?? (key ? [{ key, label: key }] : []);
+  const skillChoices = choices(
+    skills?.map((skill) => ({ key: String(skill.id), label: skill.name })),
+    chosen.skill,
+  );
+  const toolChoices = choices(
+    tools?.map((tool) => ({ key: tool.key, label: tool.name })),
+    chosen.tool,
+  );
+  return [
+    ...AGENT_FILTERS,
+    {
+      param: "skill",
+      label: "Skill",
+      all: "Any skill",
+      kind: "select",
+      options: skillChoices.map((choice) => ({
+        ...choice,
+        test: (agent) => agent.skill_ids.map(String).includes(choice.key),
+      })),
+    },
+    {
+      param: "tool",
+      label: "Tool",
+      all: "Any tool",
+      kind: "select",
+      options: toolChoices.map((choice) => ({
+        ...choice,
+        test: (agent) => agent.tool_keys.includes(choice.key),
+      })),
+    },
+  ];
+}
+
 export function AgentsSection() {
   const { data, error, reload } = useLoad(api.listAgents);
+  const { data: skills } = useLoad(api.listSkills);
+  const { data: tools } = useLoad(api.listTools);
+  const [params] = useSearchParams();
+  const skill = params.get("skill");
+  const tool = params.get("tool");
+  const filters = useMemo(
+    () => agentFilters(skills, tools, { skill, tool }),
+    [skills, tools, skill, tool],
+  );
   return (
     <MasterDetail
       title="Agents"
@@ -86,7 +141,7 @@ export function AgentsSection() {
       empty="No agents yet. An agent is a base prompt plus a set of skills and tools."
       reloadList={reload}
       search={nameAndDescription}
-      filters={AGENT_FILTERS}
+      filters={filters}
       sorts={AGENT_SORTS}
       renderItem={(agent) => (
         <>

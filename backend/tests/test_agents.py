@@ -165,6 +165,31 @@ def test_agent_versions_pin_skill_versions(api):
     assert api.put(url, json=agent_body(agent, skill_version_ids=twice)).status_code == 422
 
 
+def test_agent_list_names_the_current_versions_skills_and_tools(api):
+    terse = make_skill(api, "Terse", "Answer briefly.")
+    haiku = make_skill(api, "Haiku", "5-7-5")
+    poet = make_agent(api, "Poet", "Write.", [terse, haiku])
+    url = f"/api/agents/{poet['id']}"
+    web = {"key": "web_search", "config": {}}
+    search = {"key": "hybrid_search", "config": {}}
+    api.put(url, json=agent_body(poet, tools=[web, search]))
+    make_agent(api, "Plain")
+
+    # Updating a skill leaves the agent on its old version of it: still the same skill.
+    api.put(f"/api/skills/{terse['id']}", json={"name": "Terse", "content": "One line."})
+    listed = {a["name"]: (a["skill_ids"], a["tool_keys"]) for a in api.get("/api/agents").json()}
+    assert listed == {
+        "Poet": ([terse["id"], haiku["id"]], ["web_search", "hybrid_search"]),
+        "Plain": ([], []),
+    }
+
+    # Only the current version counts: what an older version had is gone from the list.
+    poet = api.get(url).json()
+    api.put(url, json=agent_body(poet, skill_version_ids=[haiku["current_version"]["id"]]))
+    listed = {a["name"]: (a["skill_ids"], a["tool_keys"]) for a in api.get("/api/agents").json()}
+    assert listed["Poet"] == ([haiku["id"]], [])
+
+
 def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     skill = make_skill(api, "Haiku", "5-7-5")
     agent = make_agent(api, "Poet", "Write.", [skill])

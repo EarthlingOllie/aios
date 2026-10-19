@@ -16,7 +16,9 @@ shared link or Back keeps it, and opening, creating or deleting an item leaves t
 was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused) and a sort
 menu (by name, the default, by most recently updated, and for agents by most runs) narrow and
 order the list, combined with the search and kept in the URL too (`?filter=used&sort=runs`);
-**Clear filters** resets all three. Pressing `/` jumps to the list's search box, except while
+**Clear filters** resets them all. The Agents list also has an **Any skill** and an **Any tool**
+select, for the agents whose current version uses that skill (any version of it) or has that
+tool (`?skill=12&tool=web_search`). Pressing `/` jumps to the list's search box, except while
 typing in a field. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
