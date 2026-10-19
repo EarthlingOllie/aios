@@ -11,7 +11,15 @@ from fake_model import (
     use_model,
 )
 from test_chat_agent_invocations import replies_from, say
-from test_chats import add, add_user, make_chat, messages, other, signed_in_as  # noqa: F401
+from test_chats import (  # noqa: F401
+    add,
+    add_user,
+    make_chat,
+    messages,
+    other,
+    outsider,
+    signed_in_as,
+)
 from test_organisation_scoping import member  # noqa: F401
 from test_triggers import make_agent
 
@@ -47,9 +55,9 @@ def test_a_new_chat_has_the_documents_assistant_as_a_member(api):
     assert [a["name"] for a in api.get("/api/agents").json()] == [NAME]
 
 
-def test_each_organisation_has_its_own_assistant(api, other):  # noqa: F811
+def test_each_organisation_has_its_own_assistant(api, outsider):  # noqa: F811
     mine = assistant_of(make_chat(api, "Mine"))
-    with signed_in_as(other):
+    with signed_in_as(outsider):
         theirs = assistant_of(make_chat(api, "Theirs"))
         assert [a["id"] for a in api.get("/api/agents").json()] == [theirs["target_id"]]
     assert theirs["target_id"] != mine["target_id"]

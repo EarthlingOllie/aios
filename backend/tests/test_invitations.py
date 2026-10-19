@@ -14,7 +14,6 @@ from aios import notifications, organisations
 from aios.auth import current_user
 from aios.main import app
 from aios.models import (
-    Chat,
     ChatMember,
     Notification,
     Organisation,
@@ -291,12 +290,11 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
     from test_chats import make_chat
 
     org = organisations.membership_of(db, user.id)
-    elsewhere = organisations.membership_of(db, sign_up(db, -50, "elsewhere").id)
+    elsewhere = sign_up(db, -50, "elsewhere")
     try:
-        ours, theirs = make_chat(api, "ours", visibility="public"), make_chat(api, "theirs")
-        # Which organisation each chat is in (saving a chat doesn't stamp it yet).
-        for chat_id, org_id in ((ours["id"], org.id), (theirs["id"], elsewhere.id)):
-            db.get(Chat, chat_id).organisation_id = org_id
+        ours = make_chat(api, "ours", visibility="public")
+        with signed_in_as(elsewhere):
+            theirs = make_chat(api, "theirs")
         store_id = organisations.data_store_of(db, org)
         about = notifications.SCHEMA_CHANGE_REQUEST
         notifications.notify(
@@ -337,7 +335,7 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == member.id))
         assert sorted(r["request_id"] for r in refs) == ["2", "3"]
     finally:
-        delete_user(db, db.get(User, elsewhere.created_by))
+        delete_user(db, elsewhere)
 
 
 def test_the_last_member_cant_leave(api, user):

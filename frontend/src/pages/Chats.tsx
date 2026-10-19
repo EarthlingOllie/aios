@@ -4,6 +4,7 @@ import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-rea
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
+import { ProvenanceLine } from "@/components/provenance";
 import {
   DetailPage,
   ErrorBanner,
@@ -30,7 +31,7 @@ import {
   type ChatInput,
   type ChatListed,
   type ChatMember,
-  type ChatTargetKind,
+  type ChatMemberKind,
   type ChatVisibility,
 } from "@/lib/api";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
@@ -38,7 +39,7 @@ import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
 const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
-  public: { label: "Public", hint: "Anyone signed in can see it." },
+  public: { label: "Public", hint: "Every member of the organisation can find and join it." },
   private: { label: "Private", hint: "Only its members can see it." },
 };
 
@@ -165,7 +166,7 @@ export function ChatDetail() {
     }
   }
 
-  async function onAdd(kind: ChatTargetKind, targetId: number) {
+  async function onAdd(kind: ChatMemberKind, targetId: number) {
     try {
       await api.addChatMember(id, { kind, id: targetId });
       await Promise.all([reload(), reloadList()]);
@@ -198,6 +199,7 @@ export function ChatDetail() {
           <p>
             {plural(chat.member_count, "member")} · Last active {formatDate(chat.updated_at)}
           </p>
+          <ProvenanceLine of={chat} />
         </>
       }
       actions={
@@ -253,13 +255,13 @@ function MembersPanel({
   onRemove,
 }: {
   chat: Chat;
-  /** Set for the owner, who can add their own agents and workflows. */
-  onAdd?: (kind: ChatTargetKind, id: number) => Promise<void>;
+  /** Set for the owner, who can add the organisation's members, agents and workflows. */
+  onAdd?: (kind: ChatMemberKind, id: number) => Promise<void>;
   /** Set for the owner, who can remove any member but themselves. */
   onRemove?: (member: ChatMember) => void;
 }) {
-  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatTargetKind }[] = [
-    { title: "Users", members: chat.members.users, empty: "No users." },
+  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatMemberKind }[] = [
+    { title: "Users", members: chat.members.users, empty: "No users.", add: "user" },
     { title: "Agents", members: chat.members.agents, empty: "No agents yet.", add: "agent" },
     { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet.", add: "workflow" },
   ];
@@ -311,18 +313,26 @@ function MembersPanel({
   );
 }
 
-const ADDABLE = {
+/** The organisation's members, as the picker offers them. */
+async function listPeople(): Promise<{ id: number; name: string }[]> {
+  const { members } = await api.getOrganisation();
+  return members.map(({ user }) => ({ id: user.id, name: user.name ?? user.login }));
+}
+
+const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
+  user: { list: listPeople, a: "a member" },
   agent: { list: api.listAgents, a: "an agent" },
   workflow: { list: api.listWorkflows, a: "a workflow" },
 };
 
-/** The owner's picker for adding one of their agents or workflows that isn't a member yet. */
+/** The owner's picker for adding one of the organisation's members, agents or workflows that
+ * isn't in the chat yet. */
 function AddMember({
   kind,
   members,
   onAdd,
 }: {
-  kind: ChatTargetKind;
+  kind: ChatMemberKind;
   members: ChatMember[];
   onAdd: (id: number) => Promise<void>;
 }) {
@@ -363,7 +373,7 @@ function AddMember({
       </select>
       <Button type="submit" variant="outline" size="sm" disabled={!chosen || adding}>
         <Plus />
-        Add {kind}
+        Add {kind === "user" ? "member" : kind}
       </Button>
     </form>
   );
@@ -412,7 +422,7 @@ export function ChatForm() {
     <DetailPage title={id === undefined ? "New chat" : "Edit chat"}>
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
-        <Field label="Name" htmlFor="chat-name" hint="Unique among chats.">
+        <Field label="Name" htmlFor="chat-name" hint="Unique among the organisation's chats.">
           <Input
             id="chat-name"
             required
