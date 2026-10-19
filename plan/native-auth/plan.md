@@ -1,7 +1,7 @@
 # Native email and password auth, profile editing, and a dev sign-in picker
 
-Status: **plan** (2026-10-19, revised with the second round of decisions). Nothing here is built
-yet. The remaining questions are at the end, in [Open questions](#open-questions).
+Status: **plan** (2026-10-19). Every decision is made. Nothing here is built yet. The spec is
+[EarthlingOllie/aios#95](https://github.com/EarthlingOllie/aios/issues/95).
 
 ## Goal
 
@@ -27,6 +27,8 @@ yet. The remaining questions are at the end, in [Open questions](#open-questions
 | 7 | `session_version` | **Add it now.** A password change bumps it, which signs out the user's other sessions. |
 | 8 | Profile editing | **In scope**: name, email and password. |
 | 9 | Forgotten passwords | **Out of scope for now.** No reset flow and no operator tool. |
+| 10 | Name order | **"First Last"** everywhere. The dev picker sorts by last name, then first name. |
+| 11 | Deleting your account | **Out of scope for now.** |
 
 ## What we have today
 
@@ -307,11 +309,8 @@ with no backend.
 
 ## Open questions
 
-All the architectural questions are decided. Two small product calls remain. The plan assumes the
-first option for each:
+None. The last two calls were settled: names show as "First Last" everywhere and the dev picker
+sorts by last name, then first name; deleting your own account is left for later.
 
-1. **Name order**: show names as "First Last" everywhere, and sort the dev picker by last name?
-   (The alternative is sorting by first name.)
-2. **Deleting your account** isn't in the request, and it isn't planned. It would also have to
-   delete the user's data store (`DataStoreStatus.deleting` exists, but nothing uses it yet).
-   Leave it for later?
+The spec for building this is
+[EarthlingOllie/aios#95](https://github.com/EarthlingOllie/aios/issues/95).
