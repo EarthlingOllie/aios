@@ -24,11 +24,42 @@ from aios.models import (
     ChatMember,
     ChatMemberKind,
     ChatMemberRole,
-    ChatVisibility,
+    ChatMessage,
     User,
 )
 
 NAME_TAKEN = "The organisation already has a chat with that name."
+
+
+def every_endpoint(api, chat: dict, user_id: int, member_id: int = 1) -> dict[str, int]:
+    """The status of each of the chat's endpoints for the signed-in user, adding the user
+    `user_id` and removing the member row `member_id`."""
+    url = f"/api/chats/{chat['id']}"
+    body = {"name": "Mine now", "description": "", "visibility": "public"}
+    responses = {
+        "read": api.get(url),
+        "messages": api.get(f"{url}/messages"),
+        "mentionable": api.get(f"{url}/mentionable"),
+        "join": api.post(f"{url}/join"),
+        "leave": api.post(f"{url}/leave"),
+        "post": api.post(f"{url}/messages", json={"body": "Hi"}),
+        "mark read": api.post(f"{url}/read", json={"message_id": 1}),
+        "change": api.put(url, json=body),
+        "add member": api.post(f"{url}/members", json={"kind": "user", "id": user_id}),
+        "remove member": api.delete(f"{url}/members/{member_id}"),
+        "delete": api.delete(url),
+    }
+    return {what: r.status_code for what, r in responses.items()}
+
+
+def is_gone(db, chat: dict) -> bool:
+    """Whether the chat is gone from the database, and its members, messages and invocations."""
+    db.expire_all()
+    left = [
+        db.scalar(select(func.count()).where(model.chat_id == chat["id"]))
+        for model in (ChatMember, ChatMessage, ChatInvocation)
+    ]
+    return db.get(Chat, chat["id"]) is None and left == [0, 0, 0]
 
 
 def test_another_organisation_cant_reach_a_chat_public_or_private(api, user, outsider):  # noqa: F811
@@ -40,23 +71,8 @@ def test_another_organisation_cant_reach_a_chat_public_or_private(api, user, out
     with signed_in_as(outsider):
         assert api.get("/api/chats").json() == []
         for chat in (public, private):
-            url = f"/api/chats/{chat['id']}"
-            body = {"name": "Mine now", "description": "", "visibility": "public"}
-            responses = {
-                "read": api.get(url),
-                "messages": api.get(f"{url}/messages"),
-                "mentionable": api.get(f"{url}/mentionable"),
-                "join": api.post(f"{url}/join"),
-                "leave": api.post(f"{url}/leave"),
-                "post": api.post(f"{url}/messages", json={"body": "Hi"}),
-                "mark read": api.post(f"{url}/read", json={"message_id": 1}),
-                "change": api.put(url, json=body),
-                "add member": api.post(f"{url}/members", json={"kind": "user", "id": outsider.id}),
-                "remove member": api.delete(f"{url}/members/{owner['id']}"),
-                "delete": api.delete(url),
-            }
-            got = {what: r.status_code for what, r in responses.items()}
-            assert got == {what: 404 for what in responses}, chat["name"]
+            got = every_endpoint(api, chat, outsider.id, owner["id"])
+            assert got == {what: 404 for what in got}, chat["name"]
     # Untouched.
     assert [c["name"] for c in api.get("/api/chats").json()] == ["Secret", "Open"]
 
@@ -245,28 +261,24 @@ def test_a_chat_its_owner_left_with_nobody_in_it_goes_to_whoever_joins_it(
     assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
 
 
-def test_a_private_chat_its_owner_left_with_nobody_in_it_goes_public_for_whoever_joins_it(
+def test_a_private_chat_its_owner_left_with_nobody_in_it_is_deleted(
     api,
+    db,
     user,
     member,  # noqa: F811
 ):
     """Private, with nobody in it, it would exist for nobody: nobody could join it, so nobody could
-    own, change or delete it, and its name would stay taken. Public, the organisation keeps it."""
+    own, change or delete it, and its name would stay taken. It goes, as its owner deleting it
+    would: its messages and members with it, and its name free."""
     with signed_in_as(member):
         chat = make_chat(api, "Secrets", visibility="private")
         post(api, chat, "Notes for the team")
         assert api.post("/api/organisation/leave").status_code == 200
 
-    [listed] = api.get("/api/chats").json()
-    assert (listed["name"], listed["visibility"], listed["is_member"]) == (
-        "Secrets",
-        "public",
-        False,
-    )
-    [message] = api.get(f"/api/chats/{chat['id']}/messages").json()["messages"]
-    assert message["body"] == "Notes for the team"
-    assert api.post(f"/api/chats/{chat['id']}/join").json()["is_owner"] is True
-    assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
+    assert api.get("/api/chats").json() == []
+    got = every_endpoint(api, chat, user.id)
+    assert got == {what: 404 for what in got}
+    assert is_gone(db, chat)
     assert api.post("/api/chats", json={"name": "Secrets"}).status_code == 201
 
 
@@ -307,32 +319,34 @@ def test_the_upgrade_hands_a_chat_whose_owner_left_to_the_member_added_first(
     assert owners(api, chat) == [user.id]
 
 
-def test_the_upgrade_makes_a_private_chat_with_nobody_to_own_it_public(
+def test_the_upgrade_deletes_a_private_chat_with_nobody_to_own_it(
     api,
     db,
     user,
     member,  # noqa: F811
 ):
-    """Revision 0049, on a private chat its owner left with nobody in it before leaving made it
-    public: 0048's hand-over found nobody to give it to."""
+    """Revision 0049, on chats their owner left before leaving handed them over or deleted them:
+    0048's hand-over found nobody to give them to. A private one with nobody in it existed for
+    nobody, and goes; a public one stays for whoever joins it, and a private one with someone in it
+    stays theirs."""
     with signed_in_as(member):
         abandoned = make_chat(api, "Abandoned", visibility="private")
+        post(api, abandoned, "Notes for the team")
+        open_ = make_chat(api, "Open", visibility="public")
         kept = make_chat(api, "Kept", visibility="private")
         add_user(api, kept, user)
-        assert api.post("/api/organisation/leave").status_code == 200
-    # As leaving left them before: the abandoned one private, with nobody to own it.
-    db.execute(
-        update(Chat).where(Chat.id == abandoned["id"]).values(visibility=ChatVisibility.private)
-    )
-    db.commit()
-    assert api.get(f"/api/chats/{abandoned['id']}").status_code == 404
-
-    revision("0049_ownerless_private_chats").publicise(db.connection())
+    # As leaving left them before: the leaver's member rows gone, and nothing handed over.
+    db.execute(delete(ChatMember).where(ChatMember.user_id == member.id))
     db.commit()
 
+    revision("0049_ownerless_private_chats").delete_abandoned(db.connection())
+    db.commit()
+
+    assert is_gone(db, abandoned)
     got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
-    assert got == {"Abandoned": "public", "Kept": "private"}
-    assert api.post(f"/api/chats/{abandoned['id']}/join").json()["is_owner"] is True
+    assert got == {"Open": "public", "Kept": "private"}
+    assert api.post(f"/api/chats/{open_['id']}/join").json()["is_owner"] is True
+    assert api.post("/api/chats", json={"name": "Abandoned"}).status_code == 201
 
 
 # Another backend waiting on a lock: a request waiting on the transaction a test holds open.
@@ -443,12 +457,14 @@ def test_leaving_as_someone_joins_hands_the_chat_to_the_joiner(
 
 def test_an_owner_who_has_left_the_organisation_cant_add_a_member_to_the_chat_as_they_go(
     api,
+    db,
     user,
     member,  # noqa: F811
 ):
     """The add read the leaver as the chat's owner before their leave deleted the row, and the
-    leave commits first, having found nobody in the chat to hand it to (and made it public). An
-    add that went in then would leave a member in a chat nobody owns."""
+    leave commits first, having found nobody in the chat to hand it to: a private chat, so it
+    deleted it. The add is a 404, as for a chat deleted any other way, not a member added to a
+    chat that's gone."""
     with signed_in_as(member):
         chat = make_chat(api, "Ours", visibility="private")
         with leaving(member):
@@ -461,8 +477,30 @@ def test_an_owner_who_has_left_the_organisation_cant_add_a_member_to_the_chat_as
     adding.join(timeout=10)
 
     assert "error" not in added, added
+    assert added["value"].status_code == 404, added["value"].text
+    assert is_gone(db, chat)
+
+
+def test_an_owner_who_has_left_the_organisation_cant_add_a_member_to_a_public_chat_as_they_go(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    """The same with a public chat: the leave keeps it, with nobody to own it, and the add, which
+    read the leaver as its owner, is refused. Whoever joins it owns it."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Ours", visibility="public")
+        with leaving(member):
+            adding, added = in_the_background(
+                lambda: api.post(
+                    f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": user.id}
+                )
+            )
+            waits_on_a_lock(adding)
+    adding.join(timeout=10)
+
+    assert "error" not in added, added
     assert added["value"].status_code == 403, added["value"].text
-    # Nobody's in it, so whoever joins it owns it.
     assert api.post(f"/api/chats/{chat['id']}/join").json()["is_owner"] is True
 
 
@@ -681,7 +719,7 @@ def test_the_upgrade_takes_members_who_left_out_of_chats_and_hands_theirs_over(
 ):
     """Revision 0051, on what adding, making or joining a chat as its user left the organisation
     left before: a chat with someone (`outsider`) who left in it, handed to them as its member
-    added first when its owner left, and a private one they made as they left."""
+    added first when its owner left, and a private one they made as they left, which goes."""
     with signed_in_as(member):
         plans = make_chat(api, "Plans", visibility="private")
         theirs = make_chat(api, "Theirs", visibility="private")
@@ -711,9 +749,10 @@ def test_the_upgrade_takes_members_who_left_out_of_chats_and_hands_theirs_over(
 
     assert users_in(db, plans) == [user.id]
     assert owners(api, plans) == [user.id]
+    # Theirs, private with nobody left in it, is gone, as leaving now deletes such a chat.
+    assert is_gone(db, theirs)
     got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
-    assert got == {"Plans": "private", "Theirs": "public"}
-    assert api.post(f"/api/chats/{theirs['id']}/join").json()["is_owner"] is True
+    assert got == {"Plans": "private"}
 
 
 def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
@@ -855,3 +894,48 @@ def test_a_chat_deleted_as_one_of_its_members_leaves_the_organisation_is_deleted
         assert api.get(f"/api/chats/{chat['id']}").status_code == 404
     finally:
         delete_user(db, carol)
+
+
+def test_a_post_to_a_chat_deleted_as_its_owner_leaves_the_organisation_is_a_404(
+    api,
+    db,
+    member,  # noqa: F811
+):
+    """Its owner posts in a private chat with nobody else in it (in another tab, say) as their
+    leave is under way: the post read them a member before the leave deleted their row, and the
+    leave, finding nobody to hand the chat to, deletes it. The post waits for the leave and finds
+    the chat gone: a 404, as for a chat deleted any other way, not a message in no chat."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Mine", visibility="private")
+        with leaving(member):
+            posting, posted = in_the_background(
+                lambda: api.post(f"/api/chats/{chat['id']}/messages", json={"body": "Bye"})
+            )
+            waits_on_a_lock(posting)
+        posting.join(timeout=10)
+
+    assert "error" not in posted, posted
+    assert posted["value"].status_code == 404, posted["value"].text
+    assert is_gone(db, chat)
+
+
+def test_a_change_to_a_chat_deleted_as_its_owner_leaves_the_organisation_is_a_404(
+    api,
+    db,
+    member,  # noqa: F811
+):
+    """The same with its owner renaming it: the change waits for the leave and finds the chat
+    gone, a 404, not an update of a row that's no longer there."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Mine", visibility="private")
+        body = {"name": "Renamed", "description": "", "visibility": "private"}
+        with leaving(member):
+            changing, changed = in_the_background(
+                lambda: api.put(f"/api/chats/{chat['id']}", json=body)
+            )
+            waits_on_a_lock(changing)
+        changing.join(timeout=10)
+
+    assert "error" not in changed, changed
+    assert changed["value"].status_code == 404, changed["value"].text
+    assert is_gone(db, chat)

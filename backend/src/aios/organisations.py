@@ -34,7 +34,8 @@ or their making or joining one, waits for a leave under way and is then refused:
 `holds_member`), their unread notifications about its schema change requests go, and they land
 in a new personal organisation, so they're never in none. What they made stays in the
 organisation, and a chat they owned goes to its member added first (`hand_over_chats`); one
-with nobody left in it is made public, if it was private, for whoever joins it next to own.
+with nobody left in it goes to whoever joins it next if it's public, and is deleted if it's
+private, as nobody could join it.
 """
 
 import hashlib
@@ -424,11 +425,13 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
 
 def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
     """Give each of these chats, the ones a leaver owned, to its user member added first, so a
-    chat is never left that nobody can change or delete. One with nobody left in it goes to
-    whoever joins it next (`api.chats.join_chat`), and is made public if it was private: a
-    private chat exists only for its members, so with none it would exist for nobody, nobody
-    could join it, and its name would stay taken. Public, the organisation keeps it and its
-    history, as it keeps what a leaver made.
+    chat is never left that nobody can change or delete. A public one with nobody left in it goes
+    to whoever joins it next (`api.chats.join_chat`): the organisation keeps it and its history,
+    as it keeps what a leaver made. A private one with nobody left in it is deleted: it exists
+    only for its members, so with none it would exist for nobody, nobody could join it, and its
+    name would stay taken. Deleted as its owner deleting it is (`api.chats.delete_chat`): a
+    statement, its members, messages and invocations going with it in the database, and a run one
+    of those started staying, to finish without it.
 
     Only these, found as the leave deleted the leaver's member rows: no other chat can have lost
     its owner by it (nothing else that changes a chat's members leaves it without one:
@@ -436,7 +439,7 @@ def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
     left without one before leaving handed them over were repaired by revisions 0048, 0049 and
     0051. These are locked before they're read, as every change to a chat's members locks it
     first, so one that read the leaver as its owner either went in before this and is seen by
-    it, or waits and sees the owner this gives it."""
+    it, or waits and sees the owner this gives it, or that the chat is gone."""
     if not chat_ids:
         return
     db.execute(select(Chat.id).where(Chat.id.in_(chat_ids)).with_for_update())
@@ -452,13 +455,11 @@ def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
     )
     db.execute(update(ChatMember).where(ChatMember.id.in_(first)).values(role=ChatMemberRole.owner))
     db.execute(
-        update(Chat)
-        .where(
+        delete(Chat).where(
             Chat.id.in_(chat_ids),
             Chat.id.not_in(owned),
             Chat.visibility == ChatVisibility.private,
         )
-        .values(visibility=ChatVisibility.public)
     )
 
 

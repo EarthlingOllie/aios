@@ -8,10 +8,11 @@ for a leave under way (`aios.organisations.holds_member`); this repairs what it 
 
 Each chat's user members who aren't members of its organisation go (0043's `drop_outsiders`),
 what they posted staying, as it does when anyone leaves. A chat that loses its owner that way
-goes to its user member added first (0048's `hand_over`), and one with nobody left in it is made
-public if it was private (0049's `publicise`), as leaving does.
+goes to its user member added first (0048's `hand_over`), and a private one with nobody left in
+it is deleted (0049's `delete_abandoned`), as leaving does; a public one goes to whoever joins it.
 
-Data only; the downgrade changes nothing, as there's no putting them back.
+Data only; the downgrade changes nothing, as there's no putting them back, and deleted chats
+can't be restored.
 
 Revision ID: 0051
 Revises: 0049
@@ -42,7 +43,7 @@ def upgrade() -> None:
     conn = op.get_bind()
     _revision("0043_chat_names_unique_per_organisation").drop_outsiders(conn)
     _revision("0048_organisations_contract").hand_over(conn)
-    _revision("0049_ownerless_private_chats").publicise(conn)
+    _revision("0049_ownerless_private_chats").delete_abandoned(conn)
 
 
 def downgrade() -> None:
