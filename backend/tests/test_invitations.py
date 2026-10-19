@@ -9,12 +9,14 @@ import pytest
 from conftest import delete_user, join_organisation, sign_up, store_of
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
+from test_organisations import in_the_background
 from test_schema_change_requests import CONTACTS
 
 from aios import notifications, organisations
 from aios.auth import current_user
 from aios.datastores import schema_changes
 from aios.datastores.schema_changes import SchemaChange
+from aios.db import SessionLocal
 from aios.main import app
 from aios.models import (
     ChatMember,
@@ -357,6 +359,38 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         assert [r["request_id"] for r in refs] == [str(request.id)]
     finally:
         delete_user(db, elsewhere)
+
+
+def test_leaving_while_a_sign_up_takes_the_login_lands_in_a_suffixed_one(api, db, user, member):
+    """Another GitHub account with the member's login signs up as they leave: the name looked
+    free to the leave, and is taken by the time it inserts."""
+    try:
+        with SessionLocal() as signing_up:
+            # The sign-up, flushed but not committed: the leave waits on its name.
+            twin = User(github_id=-47, login="member")
+            signing_up.add(twin)
+            signing_up.flush()
+            organisations.create_personal(signing_up, twin)
+            with signed_in_as(member):
+                leaving, result = in_the_background(lambda: api.post("/api/organisation/leave"))
+                leaving.join(timeout=0.5)
+                assert leaving.is_alive(), "the leave should wait on the sign-up's name"
+                signing_up.commit()
+                leaving.join(timeout=10)
+
+        assert "error" not in result, result
+        resp = result["value"]
+        assert resp.status_code == 200, resp.text
+        mine = resp.json()
+        assert (mine["name"], mine["personal"], mine["is_creator"]) == ("member-2", True, True)
+        assert [m["user"]["id"] for m in mine["members"]] == [member.id]
+        # The rest of the leave held: they're out of the organisation they left.
+        members = api.get("/api/organisation").json()["members"]
+        assert [m["user"]["id"] for m in members] == [user.id]
+    finally:
+        twin = db.scalar(select(User).where(User.github_id == -47))
+        if twin is not None:
+            delete_user(db, twin)
 
 
 def test_the_last_member_cant_leave(api, user):

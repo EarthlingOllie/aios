@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import notifications
@@ -90,12 +91,25 @@ def personal_name(db: Session, login: str) -> str:
 
 def create_personal(db: Session, user: User) -> Organisation:
     """A personal organisation for the user, with them as creator and member. Flushed, not
-    committed: the caller's transaction commits it with the user."""
-    org = Organisation(name=personal_name(db, user.login), personal=True, created_by=user.id)
-    org.members.append(OrganisationMember(user_id=user.id))
-    db.add(org)
+    committed: the caller's transaction commits it with the user.
+
+    The name `personal_name` found free can be taken before it's inserted, by a sign-up, a
+    leave or a rename at the same moment. So the insert does nothing on a clash (waiting for
+    the other's transaction if it's still open) and the name is picked again, which sees the
+    other's now it's committed. A unique violation would instead fail the caller's whole
+    transaction (signing in, leaving), where this carries on in it, with no savepoint."""
+    while True:
+        org_id = db.scalar(
+            insert(Organisation)
+            .values(name=personal_name(db, user.login), personal=True, created_by=user.id)
+            .on_conflict_do_nothing(index_elements=[Organisation.name])
+            .returning(Organisation.id)
+        )
+        if org_id is not None:
+            break
+    db.add(OrganisationMember(organisation_id=org_id, user_id=user.id))
     db.flush()
-    return org
+    return db.get_one(Organisation, org_id)
 
 
 def ensure_membership(
