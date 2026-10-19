@@ -43,11 +43,37 @@ import {
   type Agent,
   type AgentInput,
   type AgentSkill,
+  type AgentSummary,
   type AgentVersion,
   type SkillSummary,
   type ToolInfo,
 } from "@/lib/api";
-import { nameAndDescription } from "@/lib/list-filter";
+import {
+  byMostRuns,
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
+
+const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [
+      { key: "used", label: "Used", test: (agent) => agent.run_count > 0 },
+      { key: "unused", label: "Unused", test: (agent) => agent.run_count === 0 },
+    ],
+  },
+];
+
+const AGENT_SORTS: ListSort<AgentSummary>[] = [
+  NAME_SORT,
+  UPDATED_SORT,
+  { key: "runs", label: "Most runs", compare: byMostRuns },
+];
 
 export function AgentsSection() {
   const { data, error, reload } = useLoad(api.listAgents);
@@ -60,6 +86,8 @@ export function AgentsSection() {
       empty="No agents yet. An agent is a base prompt plus a set of skills and tools."
       reloadList={reload}
       search={nameAndDescription}
+      filters={AGENT_FILTERS}
+      sorts={AGENT_SORTS}
       renderItem={(agent) => (
         <>
           <div className="flex items-center gap-2">

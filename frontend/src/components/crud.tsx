@@ -12,7 +12,13 @@ import { Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { describeError } from "@/lib/api";
-import { listHref, matchesQuery } from "@/lib/list-filter";
+import {
+  chosenOption,
+  listHref,
+  narrowList,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 
 /**
@@ -128,13 +134,15 @@ function useListSearch() {
     setSeenKey(location.key);
     if (navigationType === "POP" || state?.[TYPED] !== true) setText(query);
   }
-  const change = (value: string) => {
+  /** Sets the search to `value`, and removes the parameters in `alsoClear` (other filters). */
+  const change = (value: string, alsoClear: string[] = []) => {
     setText(value);
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         if (value) next.set("q", value);
         else next.delete("q");
+        for (const key of alsoClear) next.delete(key);
         return next;
       },
       // Keeping whatever state the entry already had.
@@ -144,12 +152,61 @@ function useListSearch() {
   return { text, change };
 }
 
+/** One filter group: its buttons (one pressed at a time, the default first) or a select. */
+function FilterGroup<T>({
+  group,
+  value,
+  onChange,
+}: {
+  group: ListFilterGroup<T>;
+  value: string | undefined;
+  onChange: (key: string | undefined) => void;
+}) {
+  if (group.kind === "select") {
+    return (
+      <select
+        aria-label={group.label}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className={selectClass}
+      >
+        <option value="">{group.all}</option>
+        {group.options.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  const buttons = [{ key: undefined, label: group.all }, ...group.options];
+  return (
+    <div role="group" aria-label={group.label} className="flex flex-wrap gap-1">
+      {buttons.map((option) => (
+        <Button
+          key={option.key ?? ""}
+          type="button"
+          size="sm"
+          variant={value === option.key ? "secondary" : "ghost"}
+          aria-pressed={value === option.key}
+          onClick={() => onChange(option.key)}
+          className="h-7 px-2 text-xs"
+        >
+          {option.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 /**
  * A list of items on the left, and the selected item (or a form) on the right.
  *
  * Given `search` (the fields of an item to match, such as its name and description), the list
- * gets a search box, kept in the URL (`?q=`) and carried by its links and New button. The open
- * item stays open even when the search hides it from the list.
+ * gets a search box, kept in the URL (`?q=`). Each of `filters` is a group of buttons or a
+ * select, kept in its own parameter (each must be one of `LIST_PARAMS`), and `sorts` a sort
+ * menu (`?sort=`), the first being the default. They combine, and are carried by the list's
+ * links and New button. The open item stays open even when they hide it from the list.
  */
 export function MasterDetail<T extends { id: number }>({
   title,
@@ -160,6 +217,8 @@ export function MasterDetail<T extends { id: number }>({
   renderItem,
   reloadList,
   search,
+  filters = [],
+  sorts = [],
 }: {
   title: string;
   basePath: string;
@@ -169,19 +228,36 @@ export function MasterDetail<T extends { id: number }>({
   renderItem: (item: T) => ReactNode;
   reloadList: () => Promise<void>;
   search?: (item: T) => string[];
+  filters?: ListFilterGroup<T>[];
+  sorts?: ListSort<T>[];
 }) {
   // On small screens show either the list or the detail, not both.
   const atIndex = useMatch(basePath) !== null;
   const href = useListHref();
   const { text, change } = useListSearch();
+  const [params, setParams] = useSearchParams();
   const input = useRef<HTMLInputElement>(null);
   const query = search ? text.trim() : "";
-  const shown = items && query ? items.filter((item) => matchesQuery(search!(item), query)) : items;
+  const shown = items && narrowList(items, params, { query, search, filters, sorts });
+  const chosen = (options: { key: string }[], param: string) =>
+    chosenOption(options, params.get(param))?.key;
+  const filtered = filters.some((group) => chosen(group.options, group.param) !== undefined);
+  const sortKey = chosen(sorts, "sort") ?? sorts[0]?.key;
   const noun = title.toLowerCase();
-  const clear = () => {
-    change("");
+  // Choosing a filter or sort adds a history entry, so Back goes to the previous one.
+  const choose = (param: string, key: string | undefined) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (key === undefined) next.delete(param);
+      else next.set(param, key);
+      return next;
+    });
+  const clear = (alsoClear: string[] = []) => {
+    change("", alsoClear);
     input.current?.focus();
   };
+  // Clear filters resets the search, the filters and the sort.
+  const clearAll = () => clear([...filters.map((group) => group.param), "sort"]);
   return (
     <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[300px_1fr]">
       <section className={cn("min-h-0 flex-col border-r", atIndex ? "flex" : "hidden md:flex")}>
@@ -194,8 +270,9 @@ export function MasterDetail<T extends { id: number }>({
             </NavLink>
           </Button>
         </div>
-        {search && (
-          <div className="flex flex-col gap-1 border-b p-2">
+        {(search || filters.length > 0 || sorts.length > 0) && (
+          <div className="flex flex-col gap-1.5 border-b p-2">
+            {search && (
             <div className="relative">
               <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
               <Input
@@ -216,7 +293,7 @@ export function MasterDetail<T extends { id: number }>({
               {text && (
                 <button
                   type="button"
-                  onClick={clear}
+                  onClick={() => clear()}
                   aria-label="Clear search"
                   className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2.5 -translate-y-1/2"
                 >
@@ -224,10 +301,35 @@ export function MasterDetail<T extends { id: number }>({
                 </button>
               )}
             </div>
-            {items && shown!.length < items.length && (
-              <p className="text-muted-foreground px-1 text-xs">
-                {shown!.length} of {items.length}
-              </p>
+            )}
+            {filters.map((group) => (
+              <FilterGroup
+                key={group.param}
+                group={group}
+                value={chosen(group.options, group.param)}
+                onChange={(key) => choose(group.param, key)}
+              />
+            ))}
+            {(sorts.length > 0 || (items && shown!.length < items.length)) && (
+              <div className="flex min-h-7 items-center gap-2">
+                <p className="text-muted-foreground flex-1 px-1 text-xs">
+                  {items && shown!.length < items.length && `${shown!.length} of ${items.length}`}
+                </p>
+                {sorts.length > 0 && (
+                  <select
+                    aria-label={`Sort ${noun}`}
+                    value={sortKey}
+                    onChange={(e) => choose("sort", e.target.value === sorts[0].key ? undefined : e.target.value)}
+                    className={cn(selectClass, "h-7 w-auto text-xs")}
+                  >
+                    {sorts.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -236,8 +338,10 @@ export function MasterDetail<T extends { id: number }>({
           {items?.length === 0 && <li className="text-muted-foreground p-2 text-sm">{empty}</li>}
           {items?.length !== 0 && shown?.length === 0 && (
             <li className="text-muted-foreground flex flex-col items-start gap-2 p-2 text-sm">
-              No {noun} match “{query}”.
-              <Button type="button" variant="outline" size="sm" onClick={clear}>
+              {query
+                ? `No ${noun} match “${query}”${filtered ? " with these filters" : ""}.`
+                : `No ${noun} match these filters.`}
+              <Button type="button" variant="outline" size="sm" onClick={clearAll}>
                 Clear filters
               </Button>
             </li>

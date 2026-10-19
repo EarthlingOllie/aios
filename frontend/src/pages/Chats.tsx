@@ -35,7 +35,7 @@ import {
   type ChatVisibility,
 } from "@/lib/api";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
-import { nameAndDescription } from "@/lib/list-filter";
+import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -47,6 +47,21 @@ const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
 /** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
 export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
 const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
+
+// No sort menu: the list stays most recently active first.
+const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [
+      { key: "joined", label: "Joined", test: (chat) => chat.is_member },
+      { key: "not-joined", label: "Not joined", test: (chat) => !chat.is_member },
+      { key: "unread", label: "Unread", test: (chat) => (chat.unread_count ?? 0) > 0 },
+      { key: "private", label: "Private", test: (chat) => chat.visibility === "private" },
+    ],
+  },
+];
 
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
@@ -62,6 +77,7 @@ export function ChatsSection() {
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
       search={nameAndDescription}
+      filters={CHAT_FILTERS}
       renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
