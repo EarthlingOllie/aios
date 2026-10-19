@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, object_session
 
 from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
-from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
@@ -654,7 +654,7 @@ def run_summary_query():
             AgentRun.output_tokens,
             Chat.id.label("chat_id"),
             Chat.name.label("chat_name"),
-            # As the user, by `run_summaries`.
+            # As the user, by `run_summary` and `list_runs` (`provenance.started_by`).
             AgentRun.created_by.label("created_by_id"),
             AgentRun.created_at,
             AgentRun.updated_at,
@@ -665,18 +665,9 @@ def run_summary_query():
     )
 
 
-def run_summaries(db: Session, rows) -> list[RunSummary]:
-    """Rows of `run_summary_query` as summaries, with who started each read in one query."""
-    known = people(db, [row.created_by_id for row in rows])
-    return [
-        RunSummary.model_validate({**row._mapping, "created_by": known.get(row.created_by_id)})
-        for row in rows
-    ]
-
-
 def run_summary(db: Session, run_id: int) -> RunSummary:
     row = db.execute(run_summary_query().where(AgentRun.id == run_id)).one()
-    return run_summaries(db, [row])[0]
+    return started_by(db, [row], RunSummary)[0]
 
 
 def build_version_tools(
@@ -698,7 +689,7 @@ def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return run_summaries(db, rows)
+    return started_by(db, rows, RunSummary)
 
 
 def new_agent_run(
@@ -735,18 +726,13 @@ def create_run(agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: 
     agent = get_org_agent(db, org, agent_id)
     run = new_agent_run(db, agent, created_by=user.id)
     db.commit()
-    [summary] = run_summaries(
-        db, [db.execute(run_summary_query().where(AgentRun.id == run.id)).one()]
-    )
-    return summary
+    return run_summary(db, run.id)
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     run = get_org_run(db, org, agent_id, run_id)
-    [summary] = run_summaries(
-        db, [db.execute(run_summary_query().where(AgentRun.id == run.id)).one()]
-    )
+    summary = run_summary(db, run.id)
     messages = checkpoints.history(run.id)
     return RunOut(
         **summary.model_dump(),

@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
 from aios import checkpoints, invocations
-from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance, started_by
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentOrganisation, CurrentUser
@@ -835,7 +835,8 @@ def workflow_run_summary_query():
             WorkflowRun.waited_seconds,
             Chat.id.label("chat_id"),
             Chat.name.label("chat_name"),
-            # As the user, by `workflow_run_summaries`.
+            # As the user, by `workflow_run_summary` and `list_workflow_runs`
+            # (`provenance.started_by`).
             WorkflowRun.created_by.label("created_by_id"),
             WorkflowRun.trigger_id,
         )
@@ -845,21 +846,9 @@ def workflow_run_summary_query():
     )
 
 
-def workflow_run_summaries(db: Session, rows) -> list[WorkflowRunSummary]:
-    """Rows of `workflow_run_summary_query` as summaries, with who started each read in one
-    query."""
-    known = people(db, [row.created_by_id for row in rows])
-    return [
-        WorkflowRunSummary.model_validate(
-            {**row._mapping, "created_by": known.get(row.created_by_id)}
-        )
-        for row in rows
-    ]
-
-
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
     row = db.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
-    return workflow_run_summaries(db, [row])[0]
+    return started_by(db, [row], WorkflowRunSummary)[0]
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
@@ -872,7 +861,7 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
         .where(WorkflowRun.workflow_id == workflow.id)
         .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
     ).all()
-    return workflow_run_summaries(db, rows)
+    return started_by(db, rows, WorkflowRunSummary)
 
 
 @router.post(
