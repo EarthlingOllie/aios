@@ -10,8 +10,9 @@
   nested workflow (whose pinned version does, at any depth), with their schedules;
 - its own schedules, which go with it.
 
-Finished runs and older versions don't count: they keep pinning the agent's versions, which
-outlive it (it's soft-deleted).
+Workflows and their runs are looked for within the agent's organisation, whichever member made
+them: a workflow can only run its own organisation's agents. Finished runs and older versions
+don't count: they keep pinning the agent's versions, which outlive it (it's soft-deleted).
 """
 
 import uuid
@@ -175,7 +176,7 @@ def _running_the_agent(agent: Agent, roots) -> ColumnElement:
 
 
 def _workflow_runs(db: Session, agent: Agent) -> list[DependentWorkflowRun]:
-    owned = select(Workflow.id).where(Workflow.owner_id == agent.owner_id)
+    owned = select(Workflow.id).where(Workflow.organisation_id == agent.organisation_id)
     roots = select(
         WorkflowRun.id.label("root_id"),
         WorkflowRun.workflow_version_id.label("version_id"),
@@ -255,7 +256,7 @@ def _workflows_running(agent: Agent):
         Workflow.id.label("root_id"),
         Workflow.current_version_id.label("version_id"),
         literal(True).label("top"),
-    ).where(Workflow.owner_id == agent.owner_id, Workflow.deleted_at.is_(None))
+    ).where(Workflow.organisation_id == agent.organisation_id, Workflow.deleted_at.is_(None))
     return _running_the_agent(agent, roots).subquery()
 
 
@@ -265,12 +266,14 @@ def workflow_ids(db: Session, agent: Agent) -> set[int]:
 
 
 def fail_stopped_runs(db: Session, agent: Agent) -> None:
-    """Fail the owner's workflow runs whose worker died, as reading them would, so they're
+    """Fail the organisation's workflow runs whose worker died, as reading them would, so they're
     neither listed as going nor left to carry on if the worker was only slow (its next beat
     stops it). Commits."""
     workflows.fail_stopped_runs(
         db,
-        WorkflowRun.workflow_id.in_(select(Workflow.id).where(Workflow.owner_id == agent.owner_id)),
+        WorkflowRun.workflow_id.in_(
+            select(Workflow.id).where(Workflow.organisation_id == agent.organisation_id)
+        ),
     )
 
 

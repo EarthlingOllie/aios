@@ -7,6 +7,13 @@ export type User = {
   avatar_url: string | null;
 };
 
+/**
+ * Who made something of the organisation's (an agent, skill, workflow or schedule) and who last
+ * changed it. Null once that member's account is deleted, or for what was made before
+ * organisations, where it isn't known.
+ */
+export type Provenance = { created_by: User | null; updated_by: User | null };
+
 /** The organisation the signed-in user is in, as `/api/me` says it: what the shell shows. */
 export type OrganisationSummary = {
   id: number;
@@ -134,7 +141,7 @@ export type SearchHit = {
   lexical_rank: number | null;
 };
 
-export type SkillSummary = {
+export type SkillSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -148,6 +155,8 @@ export type SkillVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
 };
 
 export type SkillVersion = SkillVersionSummary & {
@@ -157,7 +166,7 @@ export type SkillVersion = SkillVersionSummary & {
   content: string;
 };
 
-export type Skill = {
+export type Skill = Provenance & {
   id: number;
   name: string;
   created_at: string;
@@ -216,6 +225,8 @@ export type AgentVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   skill_count: number;
   tool_count: number;
   run_count: number;
@@ -226,6 +237,8 @@ export type AgentVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   base_prompt: string;
   model: string | null;
   /** The exact instructions this version sends to the model. */
@@ -234,7 +247,7 @@ export type AgentVersion = {
   tools: AgentTool[];
 };
 
-export type AgentSummary = {
+export type AgentSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -247,7 +260,7 @@ export type AgentSummary = {
   updated_at: string;
 };
 
-export type Agent = {
+export type Agent = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -404,8 +417,8 @@ export type Run = RunSummary & {
   /** The agent's name: the reader may not own it, and so can't read the agent itself. */
   agent_name: string;
   /**
-   * Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't message the agent or delete the run.
+   * Whether the run's agent is in the reader's organisation. Anyone else reads it as a member of
+   * a chat that started it, and only reads it: they can't message the agent or delete the run.
    */
   is_owner: boolean;
   ui_messages: UIMessage[];
@@ -444,6 +457,8 @@ export type WorkflowVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   node_count: number;
 };
 
@@ -452,11 +467,13 @@ export type WorkflowVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 };
 
-export type WorkflowSummary = {
+export type WorkflowSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -468,7 +485,7 @@ export type WorkflowSummary = {
   contains: number[];
 };
 
-export type Workflow = {
+export type Workflow = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -561,8 +578,8 @@ export type WorkflowRunPage = WorkflowRun & {
   /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
   workflow_name: string;
   /**
-   * Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't delete it or decide what it waits on.
+   * Whether the run's workflow is in the reader's organisation. Anyone else reads it as a member
+   * of a chat that started it, and only reads it: they can't delete it or decide what it waits on.
    */
   is_owner: boolean;
 };
@@ -571,7 +588,7 @@ export type TriggerTargetKind = "agent" | "workflow";
 export type TriggerStatus = "running" | "succeeded" | "failed";
 
 /** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
-export type Trigger = {
+export type Trigger = Provenance & {
   id: number;
   kind: "schedule";
   target_kind: TriggerTargetKind;

@@ -6,12 +6,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session, aliased, selectinload
+from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
 from aios import checkpoints, invocations
+from aios.api.provenance import Provenance, UserOut, people, provenance
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import history
 from aios.db import DB, DbId
 from aios.models import (
@@ -20,6 +21,7 @@ from aios.models import (
     AgentVersion,
     Chat,
     ChatInvocation,
+    Organisation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Trigger,
@@ -48,7 +50,7 @@ from aios.workflows import (
 
 router = APIRouter(prefix="/api")
 
-WORKFLOW_NAME_INDEX = "uq_workflows_owner_id_name_live"
+WORKFLOW_NAME_INDEX = "uq_workflows_organisation_id_name_live"
 
 
 class WorkflowNodeIn(BaseModel):
@@ -106,6 +108,8 @@ class WorkflowVersionSummary(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     node_count: int
 
 
@@ -114,11 +118,13 @@ class WorkflowVersionOut(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     nodes: list[WorkflowNodeOut]
     edges: list[WorkflowEdgeOut]
 
 
-class WorkflowSummary(BaseModel):
+class WorkflowSummary(Provenance):
     id: int
     name: str
     description: str
@@ -131,7 +137,7 @@ class WorkflowSummary(BaseModel):
     contains: list[int]
 
 
-class WorkflowOut(BaseModel):
+class WorkflowOut(Provenance):
     id: int
     name: str
     description: str
@@ -143,13 +149,15 @@ class WorkflowOut(BaseModel):
     layout: dict[str, NodePosition]
 
 
-def get_owned_workflow(
-    db: Session, user_id: int, workflow_id: int, *, deleted_ok: bool = False
+def get_org_workflow(
+    db: Session, org: Organisation, workflow_id: int, *, deleted_ok: bool = False
 ) -> Workflow:
+    """The organisation's workflow (live, unless `deleted_ok`); a 404 otherwise, as if it didn't
+    exist."""
     workflow = db.get(Workflow, workflow_id)
     if (
         workflow is None
-        or workflow.owner_id != user_id
+        or workflow.organisation_id != org.id
         or (workflow.deleted_at is not None and not deleted_ok)
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -211,10 +219,10 @@ def refuse_self_containment(db: Session, workflow: Workflow, version_ids: set[in
 
 
 def resolve_graph(
-    db: Session, user_id: int, body: WorkflowIn, workflow: Workflow | None = None
+    db: Session, org: Organisation, body: WorkflowIn, workflow: Workflow | None = None
 ) -> tuple[list[NodeSpec], list[tuple[str, str]]]:
     """The requested graph, checked: its shape, and that each node pins a version of one of the
-    user's agents or of another of their workflows."""
+    organisation's agents or of another of its workflows."""
     edges = [(e.source, e.target) for e in body.edges]
     try:
         validate_graph([n.key for n in body.nodes], edges)
@@ -226,7 +234,7 @@ def resolve_graph(
         db.scalars(
             select(AgentVersion.id)
             .join(Agent, Agent.id == AgentVersion.agent_id)
-            .where(AgentVersion.id.in_(agent_ids), Agent.owner_id == user_id)
+            .where(AgentVersion.id.in_(agent_ids), Agent.organisation_id == org.id)
         )
     )
     if found_agents != agent_ids:
@@ -236,7 +244,7 @@ def resolve_graph(
         for version_id, workflow_id in db.execute(
             select(WorkflowVersion.id, WorkflowVersion.workflow_id)
             .join(Workflow, Workflow.id == WorkflowVersion.workflow_id)
-            .where(WorkflowVersion.id.in_(workflow_ids), Workflow.owner_id == user_id)
+            .where(WorkflowVersion.id.in_(workflow_ids), Workflow.organisation_id == org.id)
         )
     }
     if set(found_workflows) != workflow_ids:
@@ -341,11 +349,13 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
 
 
 def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
+    saved_by = people(object_session(version), [version.created_by]).get(version.created_by)
     return WorkflowVersionOut(
         id=version.id,
         version=version.version,
         note=version.note,
         created_at=version.created_at,
+        created_by=saved_by,
         nodes=[node_out(n) for n in version.nodes],
         edges=[WorkflowEdgeOut(source=e.source, target=e.target) for e in version.edges],
     )
@@ -360,6 +370,7 @@ def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
         updated_at=workflow.updated_at,
         current_version=version_out(load_version(db, workflow.current_version_id)),
         layout=workflow.layout,
+        **provenance(db, workflow),
     )
 
 
@@ -402,15 +413,15 @@ def workflows_using(db: Session, condition) -> list[str]:
     )
 
 
-def contained_workflows(db: Session, user_id: int) -> dict[int, set[int]]:
-    """For each of the user's live workflows, the workflows its current version runs, at any
+def contained_workflows(db: Session, org: Organisation) -> dict[int, set[int]]:
+    """For each of the organisation's live workflows, the workflows its current version runs, at any
     depth, in one recursive query (and so ending, as in `refuse_self_containment`)."""
     pinned = aliased(WorkflowVersion)
     reach = (
         select(Workflow.id.label("root_id"), pinned.id.label("version_id"), pinned.workflow_id)
         .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
         .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
-        .where(Workflow.owner_id == user_id, Workflow.deleted_at.is_(None))
+        .where(Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None))
         .cte("reach", recursive=True)
     )
     reach = reach.union(
@@ -425,16 +436,17 @@ def contained_workflows(db: Session, user_id: int) -> dict[int, set[int]]:
 
 
 @router.get("/workflows", response_model=list[WorkflowSummary])
-def list_workflows(user: CurrentUser, db: DB):
+def list_workflows(org: CurrentOrganisation, db: DB):
     rows = db.execute(
         select(
             Workflow, WorkflowVersion.version, WorkflowVersion.id, node_count(WorkflowVersion.id)
         )
         .join(WorkflowVersion, WorkflowVersion.id == Workflow.current_version_id)
-        .where(Workflow.owner_id == user.id, Workflow.deleted_at.is_(None))
+        .where(Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None))
         .order_by(Workflow.name)
     ).all()
-    contained = contained_workflows(db, user.id)
+    contained = contained_workflows(db, org)
+    known = people(db, [i for w, *_ in rows for i in (w.created_by, w.updated_by)])
     return [
         WorkflowSummary(
             id=w.id,
@@ -445,16 +457,26 @@ def list_workflows(user: CurrentUser, db: DB):
             node_count=nodes,
             updated_at=w.updated_at,
             contains=sorted(contained.get(w.id, ())),
+            **provenance(db, w, known),
         )
         for w, version, version_id, nodes in rows
     ]
 
 
 @router.post("/workflows", response_model=WorkflowOut, status_code=status.HTTP_201_CREATED)
-def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
-    nodes, edges = resolve_graph(db, user.id, body)
+def create_workflow(body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    nodes, edges = resolve_graph(db, org, body)
     lock_new_graph(db, nodes, None)
-    workflow = Workflow(owner_id=user.id, name=body.name, description=body.description, layout={})
+    # `owner_id` too, until the contract step drops it: the release before reads it.
+    workflow = Workflow(
+        owner_id=user.id,
+        organisation_id=org.id,
+        created_by=user.id,
+        updated_by=user.id,
+        name=body.name,
+        description=body.description,
+        layout={},
+    )
     apply_layout(workflow, body)
     db.add(workflow)
     with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
@@ -466,8 +488,8 @@ def create_workflow(body: WorkflowIn, user: CurrentUser, db: DB):
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowOut)
-def get_workflow(workflow_id: DbId, user: CurrentUser, db: DB):
-    return workflow_out(db, get_owned_workflow(db, user.id, workflow_id))
+def get_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB):
+    return workflow_out(db, get_org_workflow(db, org, workflow_id))
 
 
 def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None) -> None:
@@ -486,13 +508,15 @@ def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None)
 
 
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
-def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: DB):
+def update_workflow(
+    workflow_id: DbId, body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Rename/describe the workflow; a changed graph creates a new version."""
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+    workflow = get_org_workflow(db, org, workflow_id)
     # Before checking the graph: an edit of an older version may be invalid only because of what
     # has changed since, and reloading is what fixes it.
     refuse_stale_edit(db, workflow, body.base_version)
-    nodes, edges = resolve_graph(db, user.id, body, workflow)
+    nodes, edges = resolve_graph(db, org, body, workflow)
     lock_new_graph(db, nodes, workflow)
     # Another save may have changed the layout, or made a new version, while we waited for the
     # lock; prune that layout, and compare against that version.
@@ -500,6 +524,7 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
     refuse_stale_edit(db, workflow, body.base_version)
     workflow.name = body.name
     workflow.description = body.description
+    workflow.updated_by = user.id
     apply_layout(workflow, body)
     with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
@@ -510,8 +535,8 @@ def update_workflow(workflow_id: DbId, body: WorkflowIn, user: CurrentUser, db: 
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+def delete_workflow(workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
+    workflow = get_org_workflow(db, org, workflow_id)
     # Hold the row lock across the usage check and the delete; workflow saves take it too.
     if not lock_live(db, Workflow, [workflow.id]):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -529,37 +554,46 @@ def delete_workflow(workflow_id: DbId, user: CurrentUser, db: DB) -> None:
     # Soft delete: older versions of other workflows may still pin this one's versions.
     delete_triggers(db, Trigger.workflow_id == workflow.id)
     workflow.deleted_at = func.now()
+    workflow.deleted_by = user.id
     db.commit()
 
 
 @router.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionSummary])
-def list_workflow_versions(workflow_id: DbId, user: CurrentUser, db: DB):
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+def list_workflow_versions(workflow_id: DbId, org: CurrentOrganisation, db: DB):
+    workflow = get_org_workflow(db, org, workflow_id)
     rows = db.execute(
         select(WorkflowVersion, node_count(WorkflowVersion.id))
         .where(WorkflowVersion.workflow_id == workflow.id)
         .order_by(WorkflowVersion.version.desc())
     ).all()
+    known = people(db, [v.created_by for v, _ in rows])
     return [
         WorkflowVersionSummary(
-            id=v.id, version=v.version, note=v.note, created_at=v.created_at, node_count=nodes
+            id=v.id,
+            version=v.version,
+            note=v.note,
+            created_at=v.created_at,
+            created_by=known.get(v.created_by),
+            node_count=nodes,
         )
         for v, nodes in rows
     ]
 
 
 @router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
-def get_workflow_version_detail(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def get_workflow_version_detail(workflow_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
     # Also once the workflow is deleted: older versions of other workflows, and their past runs,
     # still pin its versions, and a run's subworkflow is shown from the one it pinned.
-    workflow = get_owned_workflow(db, user.id, workflow_id, deleted_ok=True)
+    workflow = get_org_workflow(db, org, workflow_id, deleted_ok=True)
     return version_out(load_version(db, get_workflow_version(db, workflow, number).id))
 
 
 @router.post("/workflows/{workflow_id}/versions/{number}/restore", response_model=WorkflowOut)
-def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def restore_workflow_version(
+    workflow_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Make an old version's graph current again, as a new version (numbers only go up)."""
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+    workflow = get_org_workflow(db, org, workflow_id)
     old = get_workflow_version(db, workflow, number)
     # The versions its nodes pin still exist (deletes are soft), but the agents and workflows
     # they belong to may not be live any more.
@@ -583,6 +617,7 @@ def restore_workflow_version(workflow_id: DbId, number: DbId, user: CurrentUser,
     # Keep the positions of the nodes it shares with the current graph, and drop the rest.
     keys = {n.key for n in old.nodes}
     workflow.layout = {key: p for key, p in workflow.layout.items() if key in keys}
+    workflow.updated_by = user.id
     save_workflow_version(
         db,
         workflow,
@@ -771,10 +806,11 @@ def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list
 
 
 def get_readable_workflow_run(
-    db: Session, user_id: int, workflow_id: int, run_id: int
+    db: Session, org: Organisation, user_id: int, workflow_id: int, run_id: int
 ) -> WorkflowRun:
-    """The run, for reading: its workflow's owner's, or one shared with them through a chat
-    (`invocations.shares_workflow_run`). Otherwise a 404, as if it didn't exist."""
+    """The run, for reading: one of the organisation's workflows', or one shared with the user
+    through a chat (`invocations.shares_workflow_run`). Otherwise a 404, as if it didn't
+    exist."""
     workflow = db.get(Workflow, workflow_id)
     run = db.get(WorkflowRun, run_id)
     if (
@@ -783,7 +819,7 @@ def get_readable_workflow_run(
         or run is None
         or run.workflow_id != workflow.id
         or (
-            workflow.owner_id != user_id
+            workflow.organisation_id != org.id
             and not invocations.shares_workflow_run(db, user_id, run.id)
         )
     ):
@@ -791,8 +827,10 @@ def get_readable_workflow_run(
     return run
 
 
-def get_owned_workflow_run(db: Session, user_id: int, workflow_id: int, run_id: int) -> WorkflowRun:
-    workflow = get_owned_workflow(db, user_id, workflow_id)
+def get_org_workflow_run(
+    db: Session, org: Organisation, workflow_id: int, run_id: int
+) -> WorkflowRun:
+    workflow = get_org_workflow(db, org, workflow_id)
     run = db.get(WorkflowRun, run_id)
     if run is None or run.workflow_id != workflow.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -830,8 +868,8 @@ def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
-def list_workflow_runs(workflow_id: DbId, user: CurrentUser, db: DB):
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
+    workflow = get_org_workflow(db, org, workflow_id)
     # Its worker died: shown failed rather than running for ever (see `get_workflow_run`).
     fail_stopped_runs(db, WorkflowRun.workflow_id == workflow.id)
     rows = db.execute(
@@ -847,9 +885,9 @@ def list_workflow_runs(workflow_id: DbId, user: CurrentUser, db: DB):
     response_model=WorkflowRunSummary,
     status_code=status.HTTP_201_CREATED,
 )
-def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, user: CurrentUser, db: DB):
+def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, org: CurrentOrganisation, db: DB):
     """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
-    workflow = get_owned_workflow(db, user.id, workflow_id)
+    workflow = get_org_workflow(db, org, workflow_id)
     run = new_workflow_run(db, workflow, body.input)
     queue_workflow_run(db, run)
     return workflow_run_summary(db, run.id)
@@ -904,18 +942,20 @@ class WorkflowRunPageOut(WorkflowRunOut):
 
     # The workflow's name: the reader may not own it, and so can't read the workflow itself.
     workflow_name: str
-    # Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat
-    # that started it (`invocations.shares_workflow_run`): only its owner deletes it, or decides
-    # what it waits on.
+    # Whether the run's workflow is in the reader's organisation. Anyone else reads it as a
+    # member of a chat that started it (`invocations.shares_workflow_run`): only the
+    # organisation's members delete it, or decide what it waits on.
     is_owner: bool
 
 
 @router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunPageOut)
-def get_workflow_run(workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
-    run = get_readable_workflow_run(db, user.id, workflow_id, run_id)
+def get_workflow_run(
+    workflow_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
+    run = get_readable_workflow_run(db, org, user.id, workflow_id, run_id)
     workflow = db.get(Workflow, run.workflow_id)
     # Read now: `workflow_run_out` expires the session's rows.
-    name, is_owner = workflow.name, workflow.owner_id == user.id
+    name, is_owner = workflow.name, workflow.organisation_id == org.id
     # A run whose worker died is failed when it's read: its task may never come round again to
     # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
     # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
@@ -971,12 +1011,13 @@ def get_run_subworkflow(
     run_id: DbId,
     path: Annotated[list[str], Query(min_length=1)],
     user: CurrentUser,
+    org: CurrentOrganisation,
     db: DB,
 ):
     """The version the run's graph pinned for the workflow node at `path` (node keys, outermost
     first): what its page draws on opening a subworkflow. Read through the run, so anyone who
     may read the run may read it, without being able to read the subworkflow itself."""
-    run = get_readable_workflow_run(db, user.id, workflow_id, run_id)
+    run = get_readable_workflow_run(db, org, user.id, workflow_id, run_id)
     version_id = run.workflow_version_id
     for key in path:
         node = db.get(WorkflowNode, (version_id, key))
@@ -988,10 +1029,14 @@ def get_run_subworkflow(
 
 @router.delete("/workflows/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workflow_run(
-    workflow_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
+    workflow_id: DbId,
+    run_id: DbId,
+    org: CurrentOrganisation,
+    db: DB,
+    background: BackgroundTasks,
 ) -> None:
     """Delete the run, and the agent runs its agent nodes held their conversations in."""
-    run = get_owned_workflow_run(db, user.id, workflow_id, run_id)
+    run = get_org_workflow_run(db, org, workflow_id, run_id)
     # Locked before its agent runs are read: a node starting meanwhile records its step and
     # agent run in one transaction, which waits for this lock, so it's either seen here or
     # fails once the run has gone (`aios.workflows._start_step`).

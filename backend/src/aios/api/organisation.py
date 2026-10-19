@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from aios.api.provenance import UserOut
 from aios.api.skills import on_conflict
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB
@@ -25,13 +26,6 @@ router = APIRouter(prefix="/api")
 NAME_CONSTRAINT = "organisations_name_key"
 NAME_TAKEN = "An organisation with that name already exists."
 NOT_THE_CREATOR = "Only the organisation's creator can rename it."
-
-
-class UserOut(BaseModel):
-    id: int
-    login: str
-    name: str | None
-    avatar_url: str | None
 
 
 class OrganisationSummaryOut(BaseModel):

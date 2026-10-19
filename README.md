@@ -70,8 +70,8 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   and stay readable (a node whose agent or workflow is gone shows no latest version). A workflow
   can't be deleted while a live workflow's current version runs it; older versions don't count,
   but restoring one that runs something since deleted is refused. Deleting an agent still
-  deletes its runs, their threads and sandboxes. Names are unique among live rows, so they can
-  be reused.
+  deletes its runs, their threads and sandboxes. Names are unique among the organisation's
+  live rows, so they can be reused.
 - An agent is deleted only once what depends on it is resolved (`aios.dependents`).
   `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
   have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
@@ -147,9 +147,19 @@ in a URL or header. `GET /api/me` says which organisation the user is in and the
 its name, which opens the **Organisation** page (`GET /api/organisation`): the name, the creator
 and the members with when each joined. Only the creator renames it (`PUT /api/organisation`; a
 403 for another member, a 409 for a name another organisation has): a stopgap role until roles
-exist. The **Settings** page is the user's own (the run history export) and links to it. Nothing
-is scoped to the organisation yet: agents, workflows, skills, schedules, chats and the data store
-still answer to their owner.
+exist. The **Settings** page is the user's own (the run history export) and links to it.
+
+**Agents, skills, workflows and schedules** belong to the organisation: every member lists,
+reads, edits, versions, restores, runs and deletes every one, whoever made it, and to a user in
+another organisation each is a 404 (each API module's `get_org_*` checks `organisation_id`
+against `CurrentOrganisation`, and lists filter by it). Names are unique within the organisation
+(a 409 names the clash), so two organisations can each have a "Reviewer". Each says which member
+made it and which last changed it (`created_by`, `updated_by`, reported as the user, shown on
+lists and pages: `aios.api.provenance`), each version which member saved it, and a deleted one
+records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
+agents and workflows, and deleting an agent finds what depends on it across the organisation.
+Saves still write `owner_id` (the creator) for the release before, until the contract step drops
+it. Chats and the data store still answer to their owner.
 
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
@@ -165,13 +175,14 @@ it. A public chat you aren't in can be read but not posted in until you **join**
 (`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
 /api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
 
-Each new chat has its owner's **documents assistant** as its first agent (`aios.assistant`): an
-agent of theirs, made the first time they create a chat (`agents.builtin = 'documents'`, one live
-one per user), with the document search tool and instructions to ground its answers in the
+Each new chat has the organisation's **documents assistant** as its first agent
+(`aios.assistant`): an agent of the organisation's, made for whichever member first creates a
+chat (`agents.builtin = 'documents'`, one live one per organisation), with the document search
+tool and instructions to ground its answers in the
 results, citing sources. It's mentioned and answers like any agent member (acknowledgement, brief,
 card and reply, below), and, running as its owner, searches the documents of the user who owns
-the chat. It's listed with their other agents, where it can be edited like one; deleted, a fresh
-one joins their next chat. Chats made before it existed don't get it, but their owner can add it
+the chat. It's listed with the organisation's other agents, where it can be edited like one;
+deleted, a fresh one joins the next chat. Chats made before it existed don't get it, but their owner can add it
 like any agent. `/` lands on the most recently active chat you're in, or the new-chat form.
 Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
 the start.
@@ -323,6 +334,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
     api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page)
+    api/provenance.py who made and last changed an organisation's things, as the API reports it
     api/settings.py GET/PUT /api/settings (the user's own: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep

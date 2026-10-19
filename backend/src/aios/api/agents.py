@@ -14,14 +14,15 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from aios import checkpoints, dependents, invocations, tracing, ui_stream
 from aios.agent import ChatDeps
+from aios.api.provenance import Provenance, UserOut, people, provenance
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import data_store_for, history, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
@@ -32,6 +33,7 @@ from aios.models import (
     AgentVersionTool,
     Chat,
     ChatInvocation,
+    Organisation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Skill,
@@ -64,7 +66,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-AGENT_NAME_INDEX = "uq_agents_owner_id_name_live"
+AGENT_NAME_INDEX = "uq_agents_organisation_id_name_live"
 
 
 class AgentToolIn(BaseModel):
@@ -111,6 +113,8 @@ class AgentVersionSummary(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     skill_count: int
     tool_count: int
     run_count: int
@@ -121,6 +125,8 @@ class AgentVersionOut(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     base_prompt: str
     model: str | None
     instructions: str
@@ -128,7 +134,7 @@ class AgentVersionOut(BaseModel):
     tools: list[AgentToolOut]
 
 
-class AgentSummary(BaseModel):
+class AgentSummary(Provenance):
     id: int
     name: str
     description: str
@@ -141,7 +147,7 @@ class AgentSummary(BaseModel):
     updated_at: datetime
 
 
-class AgentOut(BaseModel):
+class AgentOut(Provenance):
     id: int
     name: str
     description: str
@@ -177,8 +183,9 @@ class RunSummary(BaseModel):
 class RunOut(RunSummary):
     # The agent's name: the reader may not own it, and so can't read the agent itself.
     agent_name: str
-    # Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
-    # started it (`invocations.shares_agent_run`): only its owner sends it messages or deletes it.
+    # Whether the run's agent is in the reader's organisation. Anyone else reads it as a member
+    # of a chat that started it (`invocations.shares_agent_run`): only the organisation's
+    # members send it messages or delete it.
     is_owner: bool
     # AI SDK `UIMessage`s, for rendering the conversation with the same components as a live chat.
     ui_messages: list[dict[str, Any]]
@@ -192,11 +199,15 @@ class RunOut(RunSummary):
     waiting: bool
 
 
-def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
+def get_org_agent(
+    db: Session, org: Organisation, agent_id: int, *, deleted_ok: bool = False
+) -> Agent:
+    """The organisation's agent (live, unless `deleted_ok`); a 404 otherwise, as if it didn't
+    exist."""
     agent = db.get(Agent, agent_id)
     if (
         agent is None
-        or agent.owner_id != user_id
+        or agent.organisation_id != org.id
         or (agent.deleted_at is not None and not deleted_ok)
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -220,9 +231,11 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
     return version
 
 
-def get_readable_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
-    """The run, for reading: its agent's owner's, or one shared with them through a chat
-    (`invocations.shares_agent_run`). Otherwise a 404, as if it didn't exist."""
+def get_readable_run(
+    db: Session, org: Organisation, user_id: int, agent_id: int, run_id: int
+) -> AgentRun:
+    """The run, for reading: one of the organisation's agents', or one shared with the user
+    through a chat (`invocations.shares_agent_run`). Otherwise a 404, as if it didn't exist."""
     agent = db.get(Agent, agent_id)
     run = db.get(AgentRun, run_id)
     if (
@@ -230,28 +243,44 @@ def get_readable_run(db: Session, user_id: int, agent_id: int, run_id: int) -> A
         or agent.deleted_at is not None
         or run is None
         or run.agent_id != agent.id
-        or (agent.owner_id != user_id and not invocations.shares_agent_run(db, user_id, run.id))
+        or (
+            agent.organisation_id != org.id
+            and not invocations.shares_agent_run(db, user_id, run.id)
+        )
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
 
-def get_owned_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
-    agent = get_owned_agent(db, user_id, agent_id)
-    run = db.get(AgentRun, run_id)
-    if run is None or run.agent_id != agent.id:
+def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> AgentRun:
+    """A run of the organisation's live agent; a 404 otherwise."""
+    run = get_live_run(db, agent_id, run_id)
+    if run.agent.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
 
-def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[SkillVersion]:
-    """The requested versions of the user's live skills, in request order."""
+def get_live_run(db: Session, agent_id: int, run_id: int) -> AgentRun:
+    """A run of the live agent, whoever's it is; a 404 otherwise."""
+    agent = db.get(Agent, agent_id)
+    run = db.get(AgentRun, run_id)
+    if agent is None or agent.deleted_at is not None or run is None or run.agent_id != agent.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return run
+
+
+def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> list[SkillVersion]:
+    """The requested versions of the organisation's live skills, in request order."""
     found = {
         v.id: v
         for v in db.scalars(
             select(SkillVersion)
             .join(Skill, Skill.id == SkillVersion.skill_id)
-            .where(SkillVersion.id.in_(ids), Skill.owner_id == user_id, Skill.deleted_at.is_(None))
+            .where(
+                SkillVersion.id.in_(ids),
+                Skill.organisation_id == org.id,
+                Skill.deleted_at.is_(None),
+            )
         )
     }
     versions = [found[i] for i in ids if i in found]
@@ -308,7 +337,10 @@ def tool_out(tool: AgentVersionTool) -> AgentToolOut:
     )
 
 
-def version_out(version: AgentVersion) -> AgentVersionOut:
+def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) -> AgentVersionOut:
+    """The version, with who saved it from `known` (`provenance.people`), else read now."""
+    if known is None:
+        known = people(object_session(version), [version.created_by])
     skills = []
     for sv in version.skills:
         skill = sv.skill
@@ -329,6 +361,7 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
         version=version.version,
         note=version.note,
         created_at=version.created_at,
+        created_by=known.get(version.created_by),
         base_prompt=version.base_prompt,
         model=version.model,
         instructions=version.instructions,
@@ -337,14 +370,17 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
     )
 
 
-def agent_out(agent: Agent) -> AgentOut:
+def agent_out(db: Session, agent: Agent) -> AgentOut:
+    version = agent.current_version
+    known = people(db, [agent.created_by, agent.updated_by, version.created_by])
     return AgentOut(
         id=agent.id,
         name=agent.name,
         description=agent.description,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
-        current_version=version_out(agent.current_version),
+        current_version=version_out(version, known),
+        **provenance(db, agent, known),
     )
 
 
@@ -370,7 +406,7 @@ def tool_count(version_id) -> Any:
 
 
 @router.get("/agents", response_model=list[AgentSummary])
-def list_agents(user: CurrentUser, db: DB):
+def list_agents(org: CurrentOrganisation, db: DB):
     run_count = (
         select(func.count(AgentRun.id)).where(AgentRun.agent_id == Agent.id).scalar_subquery()
     )
@@ -384,9 +420,10 @@ def list_agents(user: CurrentUser, db: DB):
             run_count,
         )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
-        .where(Agent.owner_id == user.id, Agent.deleted_at.is_(None))
+        .where(Agent.organisation_id == org.id, Agent.deleted_at.is_(None))
         .order_by(Agent.name)
     ).all()
+    known = people(db, [i for a, *_ in rows for i in (a.created_by, a.updated_by)])
     return [
         AgentSummary(
             id=a.id,
@@ -398,16 +435,25 @@ def list_agents(user: CurrentUser, db: DB):
             tool_count=tools,
             run_count=runs,
             updated_at=a.updated_at,
+            **provenance(db, a, known),
         )
         for a, version, version_id, skills, tools, runs in rows
     ]
 
 
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
-def create_agent(body: AgentIn, user: CurrentUser, db: DB):
+def create_agent(body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     tools = resolve_tools(body.tools)
-    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
-    agent = Agent(owner_id=user.id, name=body.name, description=body.description)
+    skills = resolve_skill_versions(db, org, body.skill_version_ids)
+    # `owner_id` too, until the contract step drops it: the release before reads it.
+    agent = Agent(
+        owner_id=user.id,
+        organisation_id=org.id,
+        created_by=user.id,
+        updated_by=user.id,
+        name=body.name,
+        description=body.description,
+    )
     db.add(agent)
     with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
@@ -420,23 +466,26 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
             user_id=user.id,
         )
         db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentOut)
-def get_agent(agent_id: DbId, user: CurrentUser, db: DB):
-    return agent_out(get_owned_agent(db, user.id, agent_id))
+def get_agent(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    return agent_out(db, get_org_agent(db, org, agent_id))
 
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
-def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
+def update_agent(
+    agent_id: DbId, body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     tools = resolve_tools(body.tools, agent.current_version)
-    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
+    skills = resolve_skill_versions(db, org, body.skill_version_ids)
     lock_live_agent(db, agent)
     agent.name = body.name
     agent.description = body.description
+    agent.updated_by = user.id
     with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
@@ -449,14 +498,14 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
             model=agent.current_version.model,
         )
         db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 @router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
-def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
+def get_agent_dependents(agent_id: DbId, org: CurrentOrganisation, db: DB):
     """What depends on the agent: what deleting it would cut off, and so has to be resolved
     first (see `delete_agent`)."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     dependents.fail_stopped_runs(db, agent)
     return dependents.find(db, agent)
 
@@ -479,6 +528,7 @@ class AgentDeleteIn(BaseModel):
 def delete_agent(
     agent_id: DbId,
     user: CurrentUser,
+    org: CurrentOrganisation,
     db: DB,
     background: BackgroundTasks,
     body: AgentDeleteIn | None = None,
@@ -488,7 +538,7 @@ def delete_agent(
     409 whose detail has a `message` and the `dependents`. All in one transaction: refused,
     nothing changes."""
     body = body or AgentDeleteIn()
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
     # Hold the row lock across the check and the delete; workflow saves that run the agent take
     # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
@@ -529,6 +579,7 @@ def delete_agent(
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
+    agent.deleted_by = user.id
     db.commit()
     # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
     # rather than carrying on with tool calls for runs that are gone.
@@ -542,8 +593,8 @@ def delete_agent(
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
-def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
+def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
     run_count = (
         select(func.count(AgentRun.id))
         .where(AgentRun.agent_version_id == AgentVersion.id)
@@ -554,12 +605,14 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
+    known = people(db, [v.created_by for v, *_ in rows])
     return [
         AgentVersionSummary(
             id=v.id,
             version=v.version,
             note=v.note,
             created_at=v.created_at,
+            created_by=known.get(v.created_by),
             skill_count=skills,
             tool_count=tools,
             run_count=runs,
@@ -569,17 +622,19 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
-def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def get_agent_version_detail(agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
     # Also once the agent is deleted: workflow versions, and their past runs, still pin its
     # versions, as they do a deleted workflow's.
-    agent = get_owned_agent(db, user.id, agent_id, deleted_ok=True)
+    agent = get_org_agent(db, org, agent_id, deleted_ok=True)
     return version_out(get_agent_version(db, agent, number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
-def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def restore_agent_version(
+    agent_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Make an old version's config current again, as a new version (numbers only go up)."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     old = get_agent_version(db, agent, number)
     # Kept as stored, like an unchanged save, but only if a run could still load them.
     build_version_tools(old, "That version can't be restored")
@@ -590,6 +645,7 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
         )
     lock_live_agent(db, agent)
+    agent.updated_by = user.id
     save_agent_version(
         db,
         agent,
@@ -601,7 +657,7 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
         user_id=user.id,
     )
     db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 # --- Runs ---------------------------------------------------------------------------------------
@@ -646,8 +702,8 @@ def build_version_tools(
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
-def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
+def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
     rows = db.execute(
         run_summary_query()
         .where(AgentRun.agent_id == agent.id)
@@ -677,8 +733,8 @@ def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
+def create_run(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
     run = new_agent_run(db, agent)
     db.commit()
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
@@ -686,14 +742,14 @@ def create_run(agent_id: DbId, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
-def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
-    run = get_readable_run(db, user.id, agent_id, run_id)
+def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    run = get_readable_run(db, org, user.id, agent_id, run_id)
     row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
     messages = checkpoints.history(run.id)
     return RunOut(
         **RunSummary.model_validate(row, from_attributes=True).model_dump(),
         agent_name=run.agent.name,
-        is_owner=run.agent.owner_id == user.id,
+        is_owner=run.agent.organisation_id == org.id,
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
@@ -704,9 +760,9 @@ def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
 
 @router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_run(
-    agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
+    agent_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB, background: BackgroundTasks
 ) -> None:
-    run = get_owned_run(db, user.id, agent_id, run_id)
+    run = get_org_run(db, org, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
     cancel_chat_requests(db, [run.id])
     # Its exported copy goes too (found through the run, so before it's deleted).
@@ -746,8 +802,17 @@ class ChatContext:
     data_store_id: uuid.UUID | None = None
 
 
-def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
-    run = get_owned_run(db, user_id, agent_id, run_id)
+def load_chat_context(
+    db: Session, user_id: int, agent_id: int, run_id: int, *, org: Organisation | None = None
+) -> ChatContext:
+    """What a turn of the run needs. `org` is the organisation of the request asking for the
+    turn, which the run's agent must be in (a 404 otherwise); the scheduler, a chat's mention
+    and a resumed run are let in by what started them, and pass none."""
+    run = (
+        get_live_run(db, agent_id, run_id)
+        if org is None
+        else get_org_run(db, org, agent_id, run_id)
+    )
     version = run.agent_version
     tools = build_version_tools(version)
     # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token
@@ -1188,7 +1253,14 @@ async def resume_run(run_id: int) -> None:
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
-async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
+async def run_chat(
+    agent_id: DbId,
+    run_id: DbId,
+    body: dict,
+    user: CurrentUser,
+    db: DB,
+    org: CurrentOrganisation,
+):
     """Continue a run. The client sends only its new message; history comes from the run's
     LangGraph thread.
 
@@ -1201,7 +1273,7 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
     # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
     # session is function-scoped (see `aios.db.DB`), so it's closed and its connection returned
     # to the pool before the response streams; the saves use sessions of their own.
-    ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id)
+    ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id, org=org)
     message = request.messages[-1]
     if message.role != "user":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")

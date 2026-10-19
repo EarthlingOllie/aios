@@ -17,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ProvenanceLine, useSavedBy } from "@/components/provenance";
 import { TargetSchedules } from "@/components/schedules";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
@@ -50,6 +51,7 @@ export function WorkflowsSection() {
             {plural(workflow.node_count, "node")}
             {workflow.description && ` · ${workflow.description}`}
           </div>
+          <ProvenanceLine of={workflow} />
         </>
       )}
     />
@@ -171,7 +173,12 @@ function WorkflowDetailView({ id }: { id: number }) {
           {w.name} <VersionBadge version={current.version} />
         </span>
       }
-      subtitle={w.description || `Updated ${formatDate(w.updated_at)}`}
+      subtitle={
+        <>
+          {w.description || `Updated ${formatDate(w.updated_at)}`}
+          <ProvenanceLine of={w} className="mt-0.5" />
+        </>
+      }
       actions={
         <>
           <Button
@@ -292,6 +299,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
   const [error, setError] = useState<string>();
+  const savedBy = useSavedBy();
 
   const loadError = version.error ?? workflow.error;
   if (loadError) return <Placeholder>{loadError}</Placeholder>;
@@ -321,7 +329,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
           {isCurrent && <Badge variant="secondary">current</Badge>}
         </span>
       }
-      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
       actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />

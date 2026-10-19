@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ProvenanceLine, useSavedBy } from "@/components/provenance";
 import {
   CompareVersions,
   RestoreButton,
@@ -46,6 +47,7 @@ export function SkillsSection() {
           {skill.description && (
             <div className="text-muted-foreground truncate text-xs">{skill.description}</div>
           )}
+          <ProvenanceLine of={skill} />
         </>
       )}
     />
@@ -105,7 +107,12 @@ export function SkillDetail() {
           {skill.name} <VersionBadge version={current.version} />
         </span>
       }
-      subtitle={`Updated ${formatDate(skill.updated_at)}`}
+      subtitle={
+        <>
+          Updated {formatDate(skill.updated_at)}
+          <ProvenanceLine of={skill} className="mt-0.5" />
+        </>
+      }
       actions={
         <>
           <Button asChild variant="outline" size="sm">
@@ -185,6 +192,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     ),
   );
   const [error, setError] = useState<string>();
+  const savedBy = useSavedBy();
 
   if (version.error) return <Placeholder>{version.error}</Placeholder>;
   if (!version.data || !skill.data) return null;
@@ -213,7 +221,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
           {isCurrent && <Badge variant="secondary">current</Badge>}
         </span>
       }
-      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
       actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />

@@ -58,7 +58,7 @@ from aios import assistant, firing, handoff, invocations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.skills import lock_live, on_conflict, unique_name
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.config import get_settings
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
@@ -323,9 +323,9 @@ def list_chats(user: CurrentUser, db: DB):
 
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
-def create_chat(body: ChatIn, user: CurrentUser, db: DB):
-    """Make a chat, with the user as its owner and first member, and their documents assistant
-    (`aios.assistant`) as its first agent."""
+def create_chat(body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Make a chat, with the user as its owner and first member, and their organisation's
+    documents assistant (`aios.assistant`) as its first agent."""
     chat = Chat(
         owner_id=user.id,
         name=body.name,
@@ -343,7 +343,7 @@ def create_chat(body: ChatIn, user: CurrentUser, db: DB):
     chat.members.append(
         ChatMember(
             kind=ChatMemberKind.agent,
-            agent=assistant.documents_assistant(db, user.id),
+            agent=assistant.documents_assistant(db, org, user.id),
             added_by=user.id,
         )
     )

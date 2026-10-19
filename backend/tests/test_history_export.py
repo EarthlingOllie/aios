@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import delete_user
+from conftest import delete_user, org_of
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text, update
@@ -214,7 +214,9 @@ def test_a_turn_that_is_stopped_exports_what_the_user_saw(api, user, db, store_i
 
     async def stop_after_first_text():
         # Stop in the UI aborts the fetch: the server sees its response task cancelled.
-        response = await agents_api.run_chat(agent["id"], run["id"], chat_body("stop me"), user, db)
+        response = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("stop me"), user, db, org_of(db, user)
+        )
         got_text = asyncio.Event()
 
         async def consume():

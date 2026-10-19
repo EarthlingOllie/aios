@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from conftest import delete_user, sign_up
 from fake_model import replies, use_model
 from test_chat_invocations import echo_agent, say
 from test_chats import add, add_user, make_chat, messages, signed_in_as
@@ -11,7 +12,6 @@ from test_workflow_runs import echo
 from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios.api import workflows as workflows_api
-from aios.models import User
 from aios.workflows import execute_run
 
 
@@ -24,12 +24,10 @@ def started(monkeypatch) -> list[int]:
 
 
 def signed_up(db, github_id: int, login: str):
-    u = User(github_id=github_id, login=login)
-    db.add(u)
-    db.commit()
+    """A user in a personal organisation of their own, for as long as the fixture lasts."""
+    u = sign_up(db, github_id, login)
     yield u
-    db.delete(u)
-    db.commit()
+    delete_user(db, u)
 
 
 @pytest.fixture

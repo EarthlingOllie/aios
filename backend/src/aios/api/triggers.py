@@ -3,6 +3,9 @@
 Schedules are the only kind so far. Each targets one agent (a new run of its current version,
 starting with the trigger's `input` as the user's message) or one workflow (a new run of its
 current version, with `input` as the run's input). `aios.scheduler` fires them.
+
+A trigger is its organisation's, like its target: every member sees, changes and deletes every
+one, and each says which member made it and which last changed it.
 """
 
 from datetime import UTC, datetime
@@ -14,11 +17,13 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from aios import cron
+from aios.api.provenance import Provenance, UserOut, people, provenance
 from aios.api.skills import lock_live
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
+    Organisation,
     Trigger,
     TriggerKind,
     TriggerStatus,
@@ -45,7 +50,7 @@ class TriggerIn(BaseModel):
     timezone: str = Field("UTC", max_length=64)
 
 
-class TriggerOut(BaseModel):
+class TriggerOut(Provenance):
     id: int
     kind: TriggerKind
     target_kind: TriggerTargetKind
@@ -97,7 +102,11 @@ def last_outcome(trigger: Trigger) -> tuple[TriggerStatus | None, str | None]:
     return RUN_STATUS[run.status], run.error if run.status == WorkflowRunStatus.failed else None
 
 
-def trigger_out(trigger: Trigger) -> TriggerOut:
+def trigger_out(
+    db: Session, trigger: Trigger, known: dict[int, UserOut] | None = None
+) -> TriggerOut:
+    """The trigger, with who made and last changed it from `known` (`provenance.people`), else
+    read now."""
     target = trigger.agent if trigger.target_kind == TriggerTargetKind.agent else trigger.workflow
     last_status, last_error = last_outcome(trigger)
     return TriggerOut(
@@ -119,12 +128,14 @@ def trigger_out(trigger: Trigger) -> TriggerOut:
         last_workflow_run_id=trigger.last_workflow_run_id,
         created_at=trigger.created_at,
         updated_at=trigger.updated_at,
+        **provenance(db, trigger, known),
     )
 
 
-def get_owned_trigger(db: Session, user_id: int, trigger_id: int) -> Trigger:
+def get_org_trigger(db: Session, org: Organisation, trigger_id: int) -> Trigger:
+    """The organisation's trigger; a 404 otherwise, as if it didn't exist."""
     trigger = db.get(Trigger, trigger_id)
-    if trigger is None or trigger.owner_id != user_id:
+    if trigger is None or trigger.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return trigger
 
@@ -139,8 +150,9 @@ def checked_schedule(expr: str, tz: str) -> tuple[str, str]:
     return expr, tz
 
 
-def apply(db: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
-    """Set the trigger from the request, checked, and schedule its next run."""
+def apply(db: Session, org: Organisation, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
+    """Set the trigger from the request (made by `user_id`), checked, and schedule its next run.
+    Its target must be one of the organisation's."""
     expr, tz = checked_schedule(body.cron, body.timezone)
     if not body.input.strip():
         raise HTTPException(
@@ -156,7 +168,7 @@ def apply(db: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     # triggers) either waits and then sees this one, or wins and is seen here.
     if (
         target is None
-        or target.owner_id != user_id
+        or target.organisation_id != org.id
         or not lock_live(db, model, [target.id], read=True)
     ):
         raise HTTPException(
@@ -170,6 +182,7 @@ def apply(db: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     trigger.input = body.input
     trigger.cron = expr
     trigger.timezone = tz
+    trigger.updated_by = user_id
     trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
 
 
@@ -235,22 +248,22 @@ def delete_triggers(db: Session, condition) -> None:
 
 @router.get("/triggers", response_model=list[TriggerOut])
 def list_triggers(
-    user: CurrentUser,
+    org: CurrentOrganisation,
     db: DB,
     target_kind: TriggerTargetKind | None = None,
     target_id: DbId | None = None,
 ):
-    """The user's triggers, the next to fire first; disabled ones last. Optionally only one
+    """The organisation's triggers, the next to fire first; disabled ones last. Optionally only one
     target's: an agent's or workflow's, so both `target_kind` and `target_id` or neither."""
     if (target_kind is None) != (target_id is None):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Filter by both target_kind and target_id, or neither",
         )
-    fail_stopped_last_runs(db, Trigger.owner_id == user.id)
+    fail_stopped_last_runs(db, Trigger.organisation_id == org.id)
     query = (
         select(Trigger)
-        .where(Trigger.owner_id == user.id)
+        .where(Trigger.organisation_id == org.id)
         .options(*LOAD)
         .order_by(Trigger.next_run_at.asc().nulls_last(), Trigger.id)
     )
@@ -258,16 +271,19 @@ def list_triggers(
         query = query.where(Trigger.agent_id == target_id)
     elif target_kind == TriggerTargetKind.workflow:
         query = query.where(Trigger.workflow_id == target_id)
-    return [trigger_out(t) for t in db.scalars(query)]
+    triggers = db.scalars(query).all()
+    known = people(db, [i for t in triggers for i in (t.created_by, t.updated_by)])
+    return [trigger_out(db, t, known) for t in triggers]
 
 
 @router.post("/triggers", response_model=TriggerOut, status_code=status.HTTP_201_CREATED)
-def create_trigger(body: TriggerIn, user: CurrentUser, db: DB):
-    trigger = Trigger(owner_id=user.id)
-    apply(db, user.id, trigger, body)
+def create_trigger(body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    # `owner_id` too, until the contract step drops it: the release before reads it.
+    trigger = Trigger(owner_id=user.id, organisation_id=org.id, created_by=user.id)
+    apply(db, org, user.id, trigger, body)
     db.add(trigger)
     db.commit()
-    return trigger_out(load(db, trigger.id))
+    return trigger_out(db, load(db, trigger.id))
 
 
 @router.post("/triggers/preview", response_model=PreviewOut)
@@ -286,22 +302,24 @@ def list_timezones(user: CurrentUser):
 
 
 @router.get("/triggers/{trigger_id}", response_model=TriggerOut)
-def get_trigger(trigger_id: DbId, user: CurrentUser, db: DB):
-    return trigger_out(load(db, get_owned_trigger(db, user.id, trigger_id).id))
+def get_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB):
+    return trigger_out(db, load(db, get_org_trigger(db, org, trigger_id).id))
 
 
 @router.put("/triggers/{trigger_id}", response_model=TriggerOut)
-def update_trigger(trigger_id: DbId, body: TriggerIn, user: CurrentUser, db: DB):
+def update_trigger(
+    trigger_id: DbId, body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Replace the trigger's settings; its next run is worked out again from now. A firing that
     hasn't started its run yet is dropped (see `cancel_unstarted_firing`)."""
-    trigger = get_owned_trigger(db, user.id, trigger_id)
-    apply(db, user.id, trigger, body)
+    trigger = get_org_trigger(db, org, trigger_id)
+    apply(db, org, user.id, trigger, body)
     cancel_unstarted_firing(db, Trigger.id == trigger.id)
     db.commit()
-    return trigger_out(load(db, trigger.id))
+    return trigger_out(db, load(db, trigger.id))
 
 
 @router.delete("/triggers/{trigger_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_trigger(trigger_id: DbId, user: CurrentUser, db: DB) -> None:
-    db.delete(get_owned_trigger(db, user.id, trigger_id))
+def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB) -> None:
+    db.delete(get_org_trigger(db, org, trigger_id))
     db.commit()
