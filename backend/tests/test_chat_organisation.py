@@ -3,12 +3,12 @@ agents, workflows and members, names are unique within it, each new chat gets it
 assistant, and to anyone in another organisation its chats don't exist."""
 
 from conftest import delete_user, join_organisation
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import revision
 
-from aios.models import ChatMember, ChatMemberKind, ChatMemberRole
+from aios.models import Chat, ChatMember, ChatMemberKind, ChatMemberRole, ChatVisibility
 
 NAME_TAKEN = "The organisation already has a chat with that name."
 
@@ -227,6 +227,45 @@ def test_a_chat_its_owner_left_with_nobody_in_it_goes_to_whoever_joins_it(
     assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
 
 
+def test_a_private_chat_its_owner_left_with_nobody_in_it_goes_public_for_whoever_joins_it(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    """Private, with nobody in it, it would exist for nobody: nobody could join it, so nobody could
+    own, change or delete it, and its name would stay taken. Public, the organisation keeps it."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Secrets", visibility="private")
+        post(api, chat, "Notes for the team")
+        assert api.post("/api/organisation/leave").status_code == 200
+
+    [listed] = api.get("/api/chats").json()
+    assert (listed["name"], listed["visibility"], listed["is_member"]) == (
+        "Secrets",
+        "public",
+        False,
+    )
+    [message] = api.get(f"/api/chats/{chat['id']}/messages").json()["messages"]
+    assert message["body"] == "Notes for the team"
+    assert api.post(f"/api/chats/{chat['id']}/join").json()["is_owner"] is True
+    assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
+    assert api.post("/api/chats", json={"name": "Secrets"}).status_code == 201
+
+
+def test_a_private_chat_with_another_user_in_it_stays_private_when_its_owner_leaves(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    with signed_in_as(member):
+        chat = make_chat(api, "Two of us", visibility="private")
+        add_user(api, chat, user)
+        assert api.post("/api/organisation/leave").status_code == 200
+
+    got = api.get(f"/api/chats/{chat['id']}").json()
+    assert (got["visibility"], got["is_owner"]) == ("private", True)
+
+
 def test_the_upgrade_hands_a_chat_whose_owner_left_to_the_member_added_first(
     api,
     db,
@@ -248,3 +287,31 @@ def test_the_upgrade_hands_a_chat_whose_owner_left_to_the_member_added_first(
     db.commit()
 
     assert owners(api, chat) == [user.id]
+
+
+def test_the_upgrade_makes_a_private_chat_with_nobody_to_own_it_public(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+):
+    """Revision 0049, on a private chat its owner left with nobody in it before leaving made it
+    public: 0048's hand-over found nobody to give it to."""
+    with signed_in_as(member):
+        abandoned = make_chat(api, "Abandoned", visibility="private")
+        kept = make_chat(api, "Kept", visibility="private")
+        add_user(api, kept, user)
+        assert api.post("/api/organisation/leave").status_code == 200
+    # As leaving left them before: the abandoned one private, with nobody to own it.
+    db.execute(
+        update(Chat).where(Chat.id == abandoned["id"]).values(visibility=ChatVisibility.private)
+    )
+    db.commit()
+    assert api.get(f"/api/chats/{abandoned['id']}").status_code == 404
+
+    revision("0049_ownerless_private_chats").publicise(db.connection())
+    db.commit()
+
+    got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
+    assert got == {"Abandoned": "public", "Kept": "private"}
+    assert api.post(f"/api/chats/{abandoned['id']}/join").json()["is_owner"] is True

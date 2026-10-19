@@ -32,7 +32,8 @@ again, and for the creator while others remain, since nobody else could invite
 (`leave_refusal`). Otherwise the user drops out of the organisation's chats, their unread
 notifications about its schema change requests go, and they land in a new personal
 organisation, so they're never in none. What they made stays in the organisation, and a chat
-they owned goes to its member added first (`hand_over_chats`).
+they owned goes to its member added first (`hand_over_chats`); one with nobody left in it is
+made public, if it was private, for whoever joins it next to own.
 """
 
 import hashlib
@@ -54,6 +55,7 @@ from aios.models import (
     ChatMember,
     ChatMemberKind,
     ChatMemberRole,
+    ChatVisibility,
     DataStore,
     DataStoreStatus,
     Notification,
@@ -400,8 +402,11 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
 def hand_over_chats(db: Session, org: Organisation) -> None:
     """Give each of the organisation's chats that has no owner (its owner left) to its user
     member added first, so a chat is never left that nobody can change or delete. One with
-    nobody left in it goes to whoever joins it next (`api.chats.join_chat`). The chats are
-    locked first, as joining one with no owner locks it, so the two never both give it one."""
+    nobody left in it goes to whoever joins it next (`api.chats.join_chat`), and is made public
+    if it was private: a private chat exists only for its members, so with none it would exist
+    for nobody, nobody could join it, and its name would stay taken. Public, the organisation
+    keeps it and its history, as it keeps what a leaver made. The chats are locked first, as
+    joining one with no owner locks it, so the two never both give it one."""
     owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
     ownerless = list(
         db.scalars(
@@ -422,6 +427,15 @@ def hand_over_chats(db: Session, org: Organisation) -> None:
         .group_by(ChatMember.chat_id)
     )
     db.execute(update(ChatMember).where(ChatMember.id.in_(first)).values(role=ChatMemberRole.owner))
+    db.execute(
+        update(Chat)
+        .where(
+            Chat.id.in_(ownerless),
+            Chat.id.not_in(owned),
+            Chat.visibility == ChatVisibility.private,
+        )
+        .values(visibility=ChatVisibility.public)
+    )
 
 
 def _forget_requests(db: Session, user: User, store_id: uuid.UUID) -> None:
