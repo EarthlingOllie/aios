@@ -19,6 +19,7 @@ from aios.api import (
     documents,
     dropped,
     notifications,
+    organisation,
     schema_changes,
     skills,
     tools,
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(dropped.router)
     app.include_router(notifications.router)
     app.include_router(settings_api.router)
+    app.include_router(organisation.router)
     app.include_router(chats.router)
 
     @app.exception_handler(RequestValidationError)

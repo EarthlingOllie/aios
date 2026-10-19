@@ -14,7 +14,7 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import checkpoints
+from aios import checkpoints, organisations
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, history, provision, resolve, store_session
@@ -22,7 +22,7 @@ from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, User
+from aios.models import DataStore, Organisation, OrganisationMember, User
 from aios.sandbox import runner
 
 
@@ -90,11 +90,16 @@ def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
 
 
 def delete_user(db, user: User) -> None:
-    """Delete the user, and drop their store's database if it was provisioned."""
+    """Delete the user's organisation (cascading to what it owns), the user, and their store's
+    database if it was provisioned."""
     stores = [
         provision.StoreNames.of(s)
         for s in db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id))
     ]
+    for org in db.scalars(
+        select(Organisation).join(OrganisationMember).where(OrganisationMember.user_id == user.id)
+    ).all():
+        db.delete(org)
     db.delete(user)
     db.commit()
     if stores:
@@ -103,12 +108,21 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
+def sign_up(db, github_id: int, login: str, **fields) -> User:
+    """A new user in their personal organisation, as signing in leaves them, with no store yet.
+    Delete them with `delete_user`."""
+    u = User(github_id=github_id, login=login, **fields)
+    db.add(u)
+    db.flush()
+    organisations.create_personal(db, u)
+    db.commit()
+    return u
+
+
 def provisioned_user(db, github_id: int, login: str) -> User:
     """A new user, with their store provisioned: a database of its own, ready. Delete them with
     `delete_user`."""
-    u = User(github_id=github_id, login=login)
-    db.add(u)
-    db.commit()
+    u = sign_up(db, github_id, login)
     provision.provision(data_store_for(u.id))
     return u
 
@@ -155,9 +169,7 @@ def new_user(db) -> Iterator[Callable[[], User]]:
     made: list[User] = []
 
     def make() -> User:
-        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
-        db.add(u)
-        db.commit()
+        u = sign_up(db, -(1000 + len(made)), f"new-user-{len(made)}")
         made.append(u)
         return u
 

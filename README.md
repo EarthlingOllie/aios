@@ -135,6 +135,22 @@ first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
 does the same for its own (`/api/triggers`).
 
+Every user is in an **organisation** (`aios.organisations`), the group that will own what its
+members make. Signing in for the first time makes a **personal** one named after the user's
+login (suffixed, `sam-2`, when that name is taken), with them as its creator and only member;
+the upgrade did the same for every existing user and stamped everything they own (skills,
+agents, workflows, schedules, chats) with their organisation and with them as `created_by`
+(revisions 0029 and 0030). A user is in exactly one organisation at a time: memberships are a
+table, held to one per user by a unique index, and the request's organisation is resolved in
+one place (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency), never named
+in a URL or header. `GET /api/me` says which organisation the user is in and the shell shows
+its name, which opens the **Organisation** page (`GET /api/organisation`): the name, the creator
+and the members with when each joined. Only the creator renames it (`PUT /api/organisation`; a
+403 for another member, a 409 for a name another organisation has): a stopgap role until roles
+exist. The **Settings** page is the user's own (the run history export) and links to it. Nothing
+is scoped to the organisation yet: agents, workflows, skills, schedules, chats and the data store
+still answer to their owner.
+
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
 you can find them), most recently active first, and opens one to its header,
@@ -298,13 +314,16 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
-    auth.py         /login, /auth/callback, /logout, current_user
+    auth.py         /login, /auth/callback, /logout, current_user, current_organisation
+    organisations.py  organisations: a personal one per user on sign-up, the user's one membership
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
+    api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page)
+    api/settings.py GET/PUT /api/settings (the user's own: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
