@@ -92,6 +92,26 @@ test("filters, sort and search combine, and Clear filters resets them all", asyn
   await expect(filter(page, "All")).toHaveAttribute("aria-pressed", "true");
   await expect(sort(page, "agents")).toHaveValue("name");
   await expect(links(page, "Agents")).toHaveCount(4);
+
+  // Back undoes it.
+  await page.goBack();
+  await expect(page).toHaveURL("/agents?q=gamma&filter=used&sort=runs");
+  await expect(search(page, "agents")).toHaveValue("gamma");
+  await expect(filter(page, "Used")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("choosing a filter straight after typing keeps the search", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addAgentRun(api.addAgent("Web researcher"));
+  api.addAgent("Web writer");
+  api.addAgentRun(api.addAgent("Editor"));
+  await page.goto("/agents");
+
+  await search(page, "agents").fill("web");
+  await filter(page, "Used").click();
+  await expect(page).toHaveURL("/agents?q=web&filter=used");
+  await expect(search(page, "agents")).toHaveValue("web");
+  await expect(links(page, "Agents")).toHaveText([/Web researcher/]);
 });
 
 test("an unknown filter or sort in the URL shows the whole list, in the default order", async ({

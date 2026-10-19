@@ -55,7 +55,6 @@ const WORKFLOW_FILTERS: ListFilterGroup<WorkflowSummary>[] = [
 
 const WORKFLOW_SORTS: ListSort<WorkflowSummary>[] = [NAME_SORT, UPDATED_SORT];
 
-
 export function WorkflowsSection() {
   const { data, error, reload } = useLoad(api.listWorkflows);
   return (

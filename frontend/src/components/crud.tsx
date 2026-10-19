@@ -134,22 +134,37 @@ function useListSearch() {
     setSeenKey(location.key);
     if (navigationType === "POP" || state?.[TYPED] !== true) setText(query);
   }
-  /** Sets the search to `value`, and removes the parameters in `alsoClear` (other filters). */
-  const change = (value: string, alsoClear: string[] = []) => {
+  const change = (value: string) => {
     setText(value);
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         if (value) next.set("q", value);
         else next.delete("q");
-        for (const key of alsoClear) next.delete(key);
         return next;
       },
       // Keeping whatever state the entry already had.
       { replace: true, state: { ...state, [TYPED]: true } },
     );
   };
-  return { text, change };
+  /**
+   * Sets the list's other parameters (a filter, the sort; undefined removes one) as a new
+   * history entry, so Back goes to the previous choice. The search goes with it as typed, even
+   * if the URL hasn't caught up with the typing yet, or is cleared with `clearSearch`.
+   */
+  const choose = (changes: Record<string, string | undefined>, clearSearch = false) => {
+    const value = clearSearch ? "" : text;
+    setText(value);
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      for (const [key, choice] of Object.entries({ ...changes, q: value || undefined })) {
+        if (choice === undefined) next.delete(key);
+        else next.set(key, choice);
+      }
+      return next;
+    });
+  };
+  return { text, change, choose };
 }
 
 /** One filter group: its buttons (one pressed at a time, the default first) or a select. */
@@ -234,8 +249,8 @@ export function MasterDetail<T extends { id: number }>({
   // On small screens show either the list or the detail, not both.
   const atIndex = useMatch(basePath) !== null;
   const href = useListHref();
-  const { text, change } = useListSearch();
-  const [params, setParams] = useSearchParams();
+  const { text, change, choose } = useListSearch();
+  const [params] = useSearchParams();
   const input = useRef<HTMLInputElement>(null);
   const query = search ? text.trim() : "";
   const shown = items && narrowList(items, params, { query, search, filters, sorts });
@@ -244,20 +259,16 @@ export function MasterDetail<T extends { id: number }>({
   const filtered = filters.some((group) => chosen(group.options, group.param) !== undefined);
   const sortKey = chosen(sorts, "sort") ?? sorts[0]?.key;
   const noun = title.toLowerCase();
-  // Choosing a filter or sort adds a history entry, so Back goes to the previous one.
-  const choose = (param: string, key: string | undefined) =>
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (key === undefined) next.delete(param);
-      else next.set(param, key);
-      return next;
-    });
-  const clear = (alsoClear: string[] = []) => {
-    change("", alsoClear);
+  const clear = () => {
+    change("");
     input.current?.focus();
   };
-  // Clear filters resets the search, the filters and the sort.
-  const clearAll = () => clear([...filters.map((group) => group.param), "sort"]);
+  // Clear filters resets the search, the filters and the sort, as a step Back can undo.
+  const clearAll = () => {
+    const params = [...filters.map((group) => group.param), "sort"];
+    choose(Object.fromEntries(params.map((param) => [param, undefined])), true);
+    input.current?.focus();
+  };
   return (
     <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[300px_1fr]">
       <section className={cn("min-h-0 flex-col border-r", atIndex ? "flex" : "hidden md:flex")}>
@@ -273,41 +284,41 @@ export function MasterDetail<T extends { id: number }>({
         {(search || filters.length > 0 || sorts.length > 0) && (
           <div className="flex flex-col gap-1.5 border-b p-2">
             {search && (
-            <div className="relative">
-              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
-              <Input
-                ref={input}
-                type="search"
-                aria-label={`Search ${noun}`}
-                placeholder="Search"
-                value={text}
-                onChange={(e) => change(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape" && text) {
-                    e.preventDefault();
-                    change("");
-                  }
-                }}
-                className="px-8 [&::-webkit-search-cancel-button]:hidden"
-              />
-              {text && (
-                <button
-                  type="button"
-                  onClick={() => clear()}
-                  aria-label="Clear search"
-                  className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2.5 -translate-y-1/2"
-                >
-                  <X className="size-4" />
-                </button>
-              )}
-            </div>
+              <div className="relative">
+                <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+                <Input
+                  ref={input}
+                  type="search"
+                  aria-label={`Search ${noun}`}
+                  placeholder="Search"
+                  value={text}
+                  onChange={(e) => change(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && text) {
+                      e.preventDefault();
+                      change("");
+                    }
+                  }}
+                  className="px-8 [&::-webkit-search-cancel-button]:hidden"
+                />
+                {text && (
+                  <button
+                    type="button"
+                    onClick={clear}
+                    aria-label="Clear search"
+                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2.5 -translate-y-1/2"
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
+              </div>
             )}
             {filters.map((group) => (
               <FilterGroup
                 key={group.param}
                 group={group}
                 value={chosen(group.options, group.param)}
-                onChange={(key) => choose(group.param, key)}
+                onChange={(key) => choose({ [group.param]: key })}
               />
             ))}
             {(sorts.length > 0 || (items && shown!.length < items.length)) && (
@@ -319,7 +330,11 @@ export function MasterDetail<T extends { id: number }>({
                   <select
                     aria-label={`Sort ${noun}`}
                     value={sortKey}
-                    onChange={(e) => choose("sort", e.target.value === sorts[0].key ? undefined : e.target.value)}
+                    onChange={(e) => {
+                      const key = e.target.value;
+                      // The default is left out of the URL.
+                      choose({ sort: key === sorts[0].key ? undefined : key });
+                    }}
                     className={cn(selectClass, "h-7 w-auto text-xs")}
                   >
                     {sorts.map((option) => (

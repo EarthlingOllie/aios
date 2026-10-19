@@ -88,7 +88,9 @@ export function narrowList<T>(
     sorts?: ListSort<T>[];
   },
 ): T[] {
-  const tests = filters.flatMap((group) => chosenOption(group.options, params.get(group.param))?.test ?? []);
+  const tests = filters.flatMap(
+    (group) => chosenOption(group.options, params.get(group.param))?.test ?? [],
+  );
   if (search && query) tests.push((item) => matchesQuery(search(item), query));
   const shown = tests.length ? items.filter((item) => tests.every((test) => test(item))) : items;
   const compare = chosenOption(sorts, params.get("sort"))?.compare;
