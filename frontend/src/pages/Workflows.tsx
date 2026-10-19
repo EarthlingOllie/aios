@@ -26,12 +26,34 @@ import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
-import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type NodePosition,
+  type WorkflowSummary,
+  type WorkflowVersion,
+} from "@/lib/api";
 import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
-import { nameAndDescription } from "@/lib/list-filter";
+import {
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
+const WORKFLOW_FILTERS: ListFilterGroup<WorkflowSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [{ key: "empty", label: "Empty", test: (workflow) => workflow.node_count === 0 }],
+  },
+];
+
+const WORKFLOW_SORTS: ListSort<WorkflowSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function WorkflowsSection() {
   const { data, error, reload } = useLoad(api.listWorkflows);
@@ -44,6 +66,8 @@ export function WorkflowsSection() {
       empty="No workflows yet. A workflow chains agents, and other workflows, into a graph."
       reloadList={reload}
       search={nameAndDescription}
+      filters={WORKFLOW_FILTERS}
+      sorts={WORKFLOW_SORTS}
       renderItem={(workflow) => (
         <>
           <div className="flex items-center gap-2">

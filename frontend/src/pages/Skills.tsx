@@ -27,8 +27,16 @@ import {
   VersionBadge,
   VersionHistory,
 } from "@/components/versions";
-import { api, describeError, type SkillInput, type SkillVersion } from "@/lib/api";
-import { nameAndDescription } from "@/lib/list-filter";
+import {
+  api,
+  describeError,
+  type SkillInput,
+  type SkillSummary,
+  type SkillVersion,
+} from "@/lib/api";
+import { nameAndDescription, NAME_SORT, UPDATED_SORT, type ListSort } from "@/lib/list-filter";
+
+const SKILL_SORTS: ListSort<SkillSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function SkillsSection() {
   const { data, error, reload } = useLoad(api.listSkills);
@@ -41,6 +49,7 @@ export function SkillsSection() {
       empty="No skills yet. Skills are reusable instructions you can give to agents."
       reloadList={reload}
       search={nameAndDescription}
+      sorts={SKILL_SORTS}
       renderItem={(skill) => (
         <>
           <div className="flex items-center gap-2">

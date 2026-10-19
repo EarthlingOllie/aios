@@ -13,7 +13,11 @@ and chat with them. The Agents and Skills lists each have a search box: every wo
 appear in an item's name or description, ignoring case and accents, and the list shows how many
 of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
 shared link or Back keeps it, and opening, creating or deleting an item leaves the list as it
-was. Pressing `/` jumps to the list's search box, except while typing in a field. The **Search** page runs that hybrid search directly, with no agent in
+was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused) and a sort
+menu (by name, the default, by most recently updated, and for agents by most runs) narrow and
+order the list, combined with the search and kept in the URL too (`?filter=used&sort=runs`);
+**Clear filters** resets all three. Pressing `/` jumps to the list's search box, except while
+typing in a field. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the user's data store: its status (Overview), the schema changes its agents
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
@@ -57,7 +61,7 @@ the model's behaviour:
 **Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
 an edge shows its configuration. Its list can be searched by name and description, as the Agents
-list can. A workflow's page has tabs, as an agent's does: Graph, Runs and
+list can, filtered to the empty workflows (no nodes) and sorted by name or most recently updated. A workflow's page has tabs, as an agent's does: Graph, Runs and
 Versions (each with its count) and Schedule, the open one kept in the URL (`?tab=runs`); its
 title, actions and the form to start a run stay above them, and a run's or a version's page links
 back to its tab. Its editor adds nodes for your agents and workflows, connects
@@ -150,7 +154,8 @@ does the same for its own (`/api/triggers`).
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
 you can find them), most recently active first, with a search box over their names and
-descriptions (kept in the URL as on the Agents list, and as the list refreshes), and opens one to
+descriptions and filter buttons (All, Joined, Not joined, Unread, Private), kept in the URL as
+on the Agents list, and as the list refreshes (it has no sort menu), and opens one to
 its header (name, description, member count, and Edit, Delete, Join or Leave) above two tabs, as
 on the agent page: **Chat**, the messages and composer (the default), and **Members**
 (`?tab=members`, with the count). The room isn't kept while Members is open, so nothing is marked
