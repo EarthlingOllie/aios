@@ -40,7 +40,9 @@ stores, and migrating one can fail.
 worker's sweep (`delete_deleting`, queued then and run on its schedule too) disposes of this
 process's engines on it, drops its database and roles, deletes its files under its prefix and
 marks it `deleted`. As provisioning's, each step can be run again whatever the ones before left,
-so a sweep cut short is finished by the next.
+so a sweep cut short is finished by the next. It waits for a provisioning run still on the store
+(they share its lock), which runs its steps out but doesn't mark it ready: the store went
+`deleting` under it (its creator accepted an invitation straight after signing up).
 """
 
 import logging
@@ -95,6 +97,10 @@ class StoreNames:
         return cls(store.dbname, f"{p}_owner", f"{p}_rw", f"{p}_ro")
 
 
+# The statuses a provisioning run takes a store in, and marks it ready from.
+PROVISIONABLE = (DataStoreStatus.provisioning, DataStoreStatus.failed)
+
+
 @dataclass
 class _Run:
     """What the steps of one provisioning run share."""
@@ -106,6 +112,7 @@ class _Run:
     server: psycopg.Connection  # the provisioner, on the platform database
     history: bool = False  # bring the store's `history` line to its head too
     revisions: "Revisions | None" = None
+    ready: bool = False  # `_mark_ready` marked it
 
 
 def _ident(*names: str) -> sql.Composable:
@@ -275,10 +282,13 @@ def _migrate(run: _Run) -> None:
 def _mark_ready(run: _Run) -> None:
     # No host or port: it's on the platform database's instance, which the app reaches at its
     # own address (`connections.store_url`), not necessarily the provisioner's.
+    # Only if it's still the provisioner's: its organisation can be deleted while the steps
+    # run (its creator accepting an invitation straight after signing up), leaving it `deleting`
+    # with none, for the deletion sweep, which waits for this run's lock.
     with SessionLocal() as db:
-        db.execute(
+        marked = db.execute(
             update(DataStore)
-            .where(DataStore.id == run.store_id)
+            .where(DataStore.id == run.store_id, DataStore.status.in_(PROVISIONABLE))
             .values(
                 status=DataStoreStatus.ready,
                 schema_revision=run.revisions.aios,
@@ -287,6 +297,7 @@ def _mark_ready(run: _Run) -> None:
             )
         )
         db.commit()
+    run.ready = marked.rowcount == 1
 
 
 # In order. Each can be run again, whatever the ones before it left.
@@ -351,16 +362,14 @@ def _passwords(store_id: uuid.UUID) -> tuple[str, str] | None:
 def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
     """Create the store's database and roles, migrate it and mark it ready (see the module
     docstring); returns the revision it's at. Does nothing (returns None) for a store that's
-    gone, or that's past provisioning, or, unless `wait`, that another run is on."""
+    gone, or that's past provisioning (or goes `deleting` while it runs), or, unless `wait`,
+    that another run is on."""
     with provisioner_locked(store_id, wait) as server:
         if server is None:
             return None
         with SessionLocal() as db:
             store = db.get(DataStore, store_id)
-            if store is None or store.status not in (
-                DataStoreStatus.provisioning,
-                DataStoreStatus.failed,
-            ):
+            if store is None or store.status not in PROVISIONABLE:
                 return None
             names = StoreNames.of(store)
             history = store.export_run_history
@@ -371,6 +380,9 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
         for step in STEPS:
             step(run)
     if run.revisions is None:  # a test ran only some of the steps
+        return None
+    if not run.ready:
+        log.info("Data store %s is being deleted: provisioned, but not marked ready", store_id)
         return None
     log.info("Data store %s is ready at revisions %s", store_id, run.revisions)
     return run.revisions.aios

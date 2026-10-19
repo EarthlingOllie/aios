@@ -582,7 +582,9 @@ with no organisation, in the same transaction. The provisioning worker's sweep
 (`aios.delete_data_stores`, queued then, and on the beat every ten minutes) disposes of its own
 engines on the store, drops its database and roles (ending any sessions still on it), deletes its
 files under `stores/<id>/` and marks it `deleted`, keeping the row. Each step can be run again,
-so a sweep cut short is finished by the next.
+so a sweep cut short is finished by the next. A store still being provisioned (its creator
+accepted an invitation straight after signing up) is never marked ready: the sweep waits for the
+provisioning run, which leaves it `deleting`.
 
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
