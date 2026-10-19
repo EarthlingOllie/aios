@@ -401,14 +401,16 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
             OrganisationMember.user_id == user.id,
         )
     )
-    db.execute(
-        delete(ChatMember).where(
+    left = db.execute(
+        delete(ChatMember)
+        .where(
             ChatMember.kind == ChatMemberKind.user,
             ChatMember.user_id == user.id,
             ChatMember.chat_id.in_(select(Chat.id).where(Chat.organisation_id == org.id)),
         )
-    )
-    hand_over_chats(db, org)
+        .returning(ChatMember.chat_id, ChatMember.role)
+    ).all()
+    hand_over_chats(db, [chat_id for chat_id, role in left if role == ChatMemberRole.owner])
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
         _forget_requests(db, user, store_id)
@@ -420,28 +422,29 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
     return personal
 
 
-def hand_over_chats(db: Session, org: Organisation) -> None:
-    """Give each of the organisation's chats that has no owner (its owner left) to its user
-    member added first, so a chat is never left that nobody can change or delete. One with
-    nobody left in it goes to whoever joins it next (`api.chats.join_chat`), and is made public
-    if it was private: a private chat exists only for its members, so with none it would exist
-    for nobody, nobody could join it, and its name would stay taken. Public, the organisation
-    keeps it and its history, as it keeps what a leaver made. The chats are locked first, as
-    joining one with no owner locks it, so the two never both give it one."""
-    owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
-    ownerless = list(
-        db.scalars(
-            select(Chat.id)
-            .where(Chat.organisation_id == org.id, Chat.id.not_in(owned))
-            .with_for_update()
-        )
-    )
-    if not ownerless:
+def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
+    """Give each of these chats, the ones a leaver owned, to its user member added first, so a
+    chat is never left that nobody can change or delete. One with nobody left in it goes to
+    whoever joins it next (`api.chats.join_chat`), and is made public if it was private: a
+    private chat exists only for its members, so with none it would exist for nobody, nobody
+    could join it, and its name would stay taken. Public, the organisation keeps it and its
+    history, as it keeps what a leaver made.
+
+    Only these, found as the leave deleted the leaver's member rows: no other chat can have lost
+    its owner by it (nothing else that changes a chat's members leaves it without one:
+    `api.chats.lock_owner`), so a leave holds up nothing in the organisation's other chats. Those
+    left without one before leaving handed them over were repaired by revisions 0048, 0049 and
+    0051. These are locked before they're read, as every change to a chat's members locks it
+    first, so one that read the leaver as its owner either went in before this and is seen by
+    it, or waits and sees the owner this gives it."""
+    if not chat_ids:
         return
+    db.execute(select(Chat.id).where(Chat.id.in_(chat_ids)).with_for_update())
+    owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
     first = (
         select(func.min(ChatMember.id))
         .where(
-            ChatMember.chat_id.in_(ownerless),
+            ChatMember.chat_id.in_(chat_ids),
             ChatMember.chat_id.not_in(owned),
             ChatMember.kind == ChatMemberKind.user,
         )
@@ -451,7 +454,7 @@ def hand_over_chats(db: Session, org: Organisation) -> None:
     db.execute(
         update(Chat)
         .where(
-            Chat.id.in_(ownerless),
+            Chat.id.in_(chat_ids),
             Chat.id.not_in(owned),
             Chat.visibility == ChatVisibility.private,
         )
