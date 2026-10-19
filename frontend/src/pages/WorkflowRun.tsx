@@ -158,7 +158,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     if (!window.confirm("Delete this run, and the agent conversations it started?")) return;
     try {
       await api.deleteWorkflowRun(id, runId);
-      navigate(listHref(`/workflows/${id}?tab=runs`));
+      navigate(listHref(`/workflows/${id}/runs`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -175,7 +175,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       title={
         <span className="flex flex-wrap items-center gap-2">
           {r.is_owner ? (
-            <Link to={listHref(`/workflows/${id}?tab=runs`)} className="hover:underline">
+            <Link to={listHref(`/workflows/${id}/runs`)} className="hover:underline">
               {name}
             </Link>
           ) : (

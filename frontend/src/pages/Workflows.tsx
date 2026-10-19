@@ -184,7 +184,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     setActionError(undefined);
     try {
       const run = await api.createWorkflowRun(id, runInput!);
-      navigate(listHref(`runs/${run.id}`));
+      navigate(listHref(`/workflows/${id}/runs/${run.id}`));
     } catch (err) {
       setActionError(describeError(err));
     } finally {
@@ -212,7 +212,7 @@ function WorkflowDetailView({ id }: { id: number }) {
             Run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to={listHref("edit")}>
+            <Link to={listHref(`/workflows/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -283,7 +283,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                     {runs.data.map((run) => (
                       <li key={run.id}>
                         <Link
-                          to={listHref(`runs/${run.id}`)}
+                          to={listHref(`/workflows/${id}/runs/${run.id}`)}
                           className="hover:bg-accent flex items-center gap-3 px-3 py-2"
                         >
                           <span className="min-w-0 flex-1">
@@ -365,7 +365,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreWorkflowVersion(id, number);
       await reloadList();
-      navigate(listHref(`/workflows/${id}?tab=versions`));
+      navigate(listHref(`/workflows/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -376,7 +376,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
       wide
       title={
         <span className="flex items-center gap-2">
-          <Link to={listHref(`/workflows/${id}?tab=versions`)} className="hover:underline">
+          <Link to={listHref(`/workflows/${id}/versions`)} className="hover:underline">
             {workflow.data.name}
           </Link>
           <VersionBadge version={v.version} />

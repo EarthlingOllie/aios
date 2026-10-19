@@ -48,7 +48,7 @@ test("switches to Members, keeps the tab in the URL, and a deep link opens it", 
 
   await tab(page, /Members/).click();
   await expect(tab(page, /Members/)).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL(/\?tab=members$/);
+  await expect(page).toHaveURL(/\/members$/);
   await expect(panel(page).getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([
     /Tester.*owner/,
     /Sam/,
@@ -59,7 +59,7 @@ test("switches to Members, keeps the tab in the URL, and a deep link opens it", 
   // A reload, or a shared link, opens on the same tab.
   await page.reload();
   await expect(tab(page, /Members/)).toHaveAttribute("aria-selected", "true");
-  await page.goto(`/chats/${chat.id}?tab=members`);
+  await page.goto(`/chats/${chat.id}/members`);
   await expect(panel(page).getByRole("list", { name: "Users" })).toBeVisible();
 
   // Back to the first tab drops the parameter.
@@ -175,7 +175,7 @@ test("messages aren't marked read while Members is open; back on Chat they are",
   const chat = api.addChat("Design", { owner: sam });
   api.addChatMessage(chat, "Welcome, all", sam);
   api.addChatMember(chat, api.me).last_read = chat.messages.at(-1)!.id;
-  await page.goto(`/chats/${chat.id}?tab=members`);
+  await page.goto(`/chats/${chat.id}/members`);
   await expect(panel(page).getByRole("list", { name: "Users" })).toBeVisible();
 
   // Sam posts while Members is open: the list counts it, and nothing reads it.

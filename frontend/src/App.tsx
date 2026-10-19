@@ -114,7 +114,7 @@ export default function App() {
         <Route path="skills" element={<SkillsSection />}>
           <Route index element={<SkillsIndex />} />
           <Route path="new" element={<SkillForm />} />
-          <Route path=":skillId" element={<SkillDetail />} />
+          <Route path=":skillId/:tab?" element={<SkillDetail />} />
           <Route path=":skillId/edit" element={<SkillForm />} />
           <Route path=":skillId/versions/:version" element={<SkillVersionPage />} />
         </Route>
@@ -122,7 +122,7 @@ export default function App() {
         <Route path="agents" element={<AgentsSection />}>
           <Route index element={<AgentsIndex />} />
           <Route path="new" element={<AgentForm />} />
-          <Route path=":agentId" element={<AgentDetail />} />
+          <Route path=":agentId/:tab?" element={<AgentDetail />} />
           <Route path=":agentId/edit" element={<AgentForm />} />
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
@@ -130,18 +130,18 @@ export default function App() {
         <Route path="workflows" element={<WorkflowsSection />}>
           <Route index element={<WorkflowsIndex />} />
           <Route path="new" element={<WorkflowEditorPage />} />
-          <Route path=":workflowId" element={<WorkflowDetail />} />
+          <Route path=":workflowId/:tab?" element={<WorkflowDetail />} />
           <Route path=":workflowId/edit" element={<WorkflowEditorPage />} />
           <Route path=":workflowId/runs/:runId" element={<WorkflowRunPage />} />
           <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
-        <Route path="data" element={<DataPage />} />
+        <Route path="data/:tab?" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="chats" element={<ChatsSection />}>
           <Route index element={<ChatsIndex />} />
           <Route path="new" element={<ChatForm />} />
-          <Route path=":chatId" element={<ChatDetail />} />
+          <Route path=":chatId/:tab?" element={<ChatDetail />} />
           <Route path=":chatId/edit" element={<ChatForm />} />
         </Route>
         {navItems

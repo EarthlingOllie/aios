@@ -48,7 +48,7 @@ function Requests({ requests }: { requests: DependentRequest[] }) {
     <ul className="mt-1 flex flex-col gap-0.5 pl-3 text-xs">
       {requests.map((r) => (
         <li key={r.id}>
-          <Out to={`/data?tab=changes&request=${encodeURIComponent(r.id)}`}>
+          <Out to={`/data/changes?request=${encodeURIComponent(r.id)}`}>
             Schema change: {r.summary}
           </Out>
         </li>
@@ -267,7 +267,7 @@ export function AgentDeleteDialog({
                         {plural(scheduled, "schedule")}
                       </span>
                     </div>
-                    <Schedules triggers={w.triggers} to={`/workflows/${w.id}?tab=schedule`} />
+                    <Schedules triggers={w.triggers} to={`/workflows/${w.id}/schedule`} />
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button
                         size="sm"
@@ -316,7 +316,7 @@ export function AgentDeleteDialog({
                 Its {plural(own.length, "schedule")} {own.length === 1 ? "is" : "are"} deleted
                 with it.
               </p>
-              <Schedules triggers={own} to={`/agents/${agent.id}?tab=schedule`} />
+              <Schedules triggers={own} to={`/agents/${agent.id}/schedule`} />
             </section>
           )}
         </div>

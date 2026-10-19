@@ -395,6 +395,8 @@ export class FakeApi {
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
+  /** The schedules, as `GET /api/triggers` lists them. */
+  schedules: Record<string, unknown>[] = [];
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
   handoffs = new Map<number, Handoff>();
@@ -707,6 +709,30 @@ export class FakeApi {
         skill_version: version,
       })),
     };
+  }
+
+  /** Adds an enabled daily schedule of the agent or workflow. */
+  addSchedule(kind: "agent" | "workflow", target: AgentRow | WorkflowRow) {
+    this.schedules.push({
+      id: this.id(),
+      kind: "schedule",
+      target_kind: kind,
+      target_id: target.id,
+      target_name: target.name,
+      enabled: true,
+      input: "Go",
+      cron: "0 9 * * *",
+      description: "At 09:00",
+      timezone: "UTC",
+      next_run_at: NOW,
+      last_fired_at: null,
+      last_status: null,
+      last_error: null,
+      last_run_id: null,
+      last_workflow_run_id: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
   }
 
   /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
@@ -1922,7 +1948,14 @@ export class FakeApi {
         return reply(200, this.agentVersionOut(agent, version));
       }
     }
-    if (path === "/api/triggers" && method === "GET") return reply(200, []);
+    if (path === "/api/triggers" && method === "GET") {
+      const kind = url.searchParams.get("target_kind");
+      const target = Number(url.searchParams.get("target_id"));
+      return reply(
+        200,
+        this.schedules.filter((t) => kind === null || (t.target_kind === kind && t.target_id === target)),
+      );
+    }
     if (path === "/api/triggers/timezones") return reply(200, this.timezones);
     if (path === "/api/triggers/preview" && method === "POST") {
       // Any expression is fine here; the timezone is checked as the server checks it.

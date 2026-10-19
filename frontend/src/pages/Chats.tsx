@@ -240,7 +240,7 @@ export function ChatDetail() {
         chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
-              <Link to={listHref("edit")}>
+              <Link to={listHref(`/chats/${id}/edit`)}>
                 <Pencil />
                 Edit
               </Link>

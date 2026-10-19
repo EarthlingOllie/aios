@@ -141,7 +141,7 @@ function Results({ query, hits }: { query: string; hits: SearchHit[] | null | un
       <Placeholder>
         <span>
           No passages matched. Try different wording, or upload documents on the{" "}
-          <Link to="/data?tab=documents" className="underline underline-offset-2">
+          <Link to="/data/documents" className="underline underline-offset-2">
             Data page
           </Link>
           .

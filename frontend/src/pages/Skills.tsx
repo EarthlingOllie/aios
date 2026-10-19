@@ -148,7 +148,7 @@ export function SkillDetail() {
       actions={
         <>
           <Button asChild variant="outline" size="sm">
-            <Link to={listHref("edit")}>
+            <Link to={listHref(`/skills/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -249,7 +249,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreSkillVersion(id, number);
       await reloadList();
-      navigate(listHref(`/skills/${id}?tab=versions`));
+      navigate(listHref(`/skills/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -260,7 +260,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={listHref(`/skills/${id}?tab=versions`)} className="hover:underline">
+          <Link to={listHref(`/skills/${id}/versions`)} className="hover:underline">
             {skill.data.name}
           </Link>
           <VersionBadge version={v.version} />

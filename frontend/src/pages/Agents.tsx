@@ -258,7 +258,7 @@ export function AgentDetail() {
     act(async () => {
       const run = await api.createRun(id);
       reloadList();
-      navigate(listHref(`runs/${run.id}`));
+      navigate(listHref(`/agents/${id}/runs/${run.id}`));
     });
 
   const onUpdateSkill = (skill: AgentSkill) => {
@@ -311,7 +311,7 @@ export function AgentDetail() {
             New run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to={listHref("edit")}>
+            <Link to={listHref(`/agents/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -394,7 +394,7 @@ export function AgentDetail() {
                     {runs.data.map((run) => (
                       <li key={run.id} className="group flex items-center gap-2 pr-2">
                         <Link
-                          to={listHref(`runs/${run.id}`)}
+                          to={listHref(`/agents/${id}/runs/${run.id}`)}
                           className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
                         >
                           {run.trigger_id ? (
@@ -518,7 +518,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
       await api.restoreAgentVersion(id, number);
       await reloadList();
       // Back to where the version was opened from, which now lists the restored copy as current.
-      navigate(listHref(`/agents/${id}?tab=versions`));
+      navigate(listHref(`/agents/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -528,7 +528,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={listHref(`/agents/${id}?tab=versions`)} className="hover:underline">
+          <Link to={listHref(`/agents/${id}/versions`)} className="hover:underline">
             {agent.data.name}
           </Link>
           <VersionBadge version={v.version} />

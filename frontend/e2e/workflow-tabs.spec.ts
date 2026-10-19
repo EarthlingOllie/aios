@@ -57,18 +57,18 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 
   await tab(page, /Runs/).click();
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL(/\?tab=runs$/);
+  await expect(page).toHaveURL(/\/runs$/);
   await expect(panel(page).getByRole("link", { name: /weekly report/ })).toBeVisible();
   await expect(panel(page).getByRole("link", { name: /monthly report/ })).toBeVisible();
   await expect(node(page, "research")).toHaveCount(0);
 
   await tab(page, /Versions/).click();
-  await expect(page).toHaveURL(/\?tab=versions$/);
+  await expect(page).toHaveURL(/\/versions$/);
   await expect(panel(page).getByRole("link")).toHaveCount(2);
   await expect(panel(page).getByText("current")).toBeVisible();
 
   await tab(page, "Schedule").click();
-  await expect(page).toHaveURL(/\?tab=schedule$/);
+  await expect(page).toHaveURL(/\/schedule$/);
   await expect(
     panel(page).getByText("No schedules. Add one to run this workflow automatically."),
   ).toBeVisible();
@@ -86,11 +86,11 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 test("a deep link opens its tab; an unknown one falls back to Graph", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}?tab=runs`);
+  await page.goto(`/workflows/${report.id}/runs`);
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByText("No runs yet. Start one to watch it go.")).toBeVisible();
 
-  await page.goto(`/workflows/${report.id}?tab=nope`);
+  await page.goto(`/workflows/${report.id}/nope`);
   await expect(tab(page, /Graph/)).toHaveAttribute("aria-selected", "true");
 });
 
@@ -113,7 +113,7 @@ test("moves between tabs with the keyboard", async ({ page }) => {
 test("the start-a-run form stays above the tabs, whichever is open", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}?tab=versions`);
+  await page.goto(`/workflows/${report.id}/versions`);
 
   await page.getByRole("button", { name: "Run" }).click();
   const input = page.getByLabel("Input");
@@ -141,13 +141,13 @@ test("going back from a run returns to the Runs tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addRun(report, { input: "Write the weekly report", status: "succeeded" });
-  await page.goto(`/workflows/${report.id}?tab=runs`);
+  await page.goto(`/workflows/${report.id}/runs`);
 
   await panel(page)
     .getByRole("link", { name: /weekly report/ })
     .click();
   await page.getByRole("heading").getByRole("link", { name: "Report" }).click();
-  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}\\?tab=runs$`));
+  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}/runs$`));
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
 });
 
@@ -161,7 +161,7 @@ test("deleting a run from its page returns to the Runs tab, without it", async (
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete run" }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}\\?tab=runs$`));
+  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}/runs$`));
   await expect(tab(page, "Runs 1")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByRole("link", { name: /monthly report/ })).toBeVisible();
   await expect(panel(page).getByText("weekly report")).toHaveCount(0);
@@ -171,11 +171,11 @@ test("going back from a version returns to the Versions tab", async ({ page }) =
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflowVersion(report, (v) => v.edges.pop());
-  await page.goto(`/workflows/${report.id}?tab=versions`);
+  await page.goto(`/workflows/${report.id}/versions`);
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("heading").getByRole("link", { name: "Report" }).click();
-  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}\\?tab=versions$`));
+  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}/versions$`));
   await expect(tab(page, /Versions/)).toHaveAttribute("aria-selected", "true");
 });
 
@@ -185,12 +185,12 @@ test("restoring a version returns to the Versions tab, with the new current vers
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflowVersion(report, (v) => v.edges.pop());
-  await page.goto(`/workflows/${report.id}?tab=versions`);
+  await page.goto(`/workflows/${report.id}/versions`);
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("button", { name: "Restore this version" }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}\\?tab=versions$`));
+  await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}/versions$`));
   await expect(tab(page, "Versions 3")).toHaveAttribute("aria-selected", "true");
   const restored = panel(page).getByRole("link", { name: /v3/ });
   await expect(restored).toContainText("Restored from v1");

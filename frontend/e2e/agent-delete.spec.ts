@@ -107,20 +107,20 @@ test("each thing that depends on it links to where it's seen or managed, in a ne
     [runs.getByRole("link", { name: "Make a contacts table" }), `/agents/${agent.id}/runs/${run.id}`],
     [
       runs.getByRole("link", { name: "Schema change: Create table data.contacts" }),
-      "/data?tab=changes&request=req-chat",
+      "/data/changes?request=req-chat",
     ],
     // The workflow run's page, which shows its waiting node, and its request.
     [runs.getByRole("link", { name: "Nightly build · run 501" }), "/workflows/51/runs/501"],
     [
       runs.getByRole("link", { name: "Schema change: Create table data.places" }),
-      "/data?tab=changes&request=req-flow",
+      "/data/changes?request=req-flow",
     ],
     // Each workflow's editor, and its schedules where they're managed: on its Schedule tab.
     [d.getByRole("group", { name: "Nightly build" }).getByRole("link", { name: "Nightly build" }), "/workflows/51/edit"],
     [d.getByRole("group", { name: "Release" }).getByRole("link", { name: "Release" }), "/workflows/52/edit"],
-    [d.getByRole("link", { name: "Schedule: At 02:00 (UTC)" }), "/workflows/51?tab=schedule"],
+    [d.getByRole("link", { name: "Schedule: At 02:00 (UTC)" }), "/workflows/51/schedule"],
     // The agent's own schedules, on its Schedule tab.
-    [d.getByRole("link", { name: "Schedule: Every hour (UTC)" }), `/agents/${agent.id}?tab=schedule`],
+    [d.getByRole("link", { name: "Schedule: Every hour (UTC)" }), `/agents/${agent.id}/schedule`],
   ];
   for (const [link, href] of links) {
     await expect(link).toHaveAttribute("href", href);

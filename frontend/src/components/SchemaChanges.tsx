@@ -222,7 +222,7 @@ function SqlBlock({ sql }: { sql: string }) {
  * carrying on.
  */
 export function ChangesSection() {
-  // The request a link (a notification) opened, if any: `/data?tab=changes&request=<id>`.
+  // The request a link (a notification) opened, if any: `/data/changes?request=<id>`.
   const [params] = useSearchParams();
   const opened = params.get("request");
   const list = useLoad(useCallback(() => api.listSchemaChanges(), []));

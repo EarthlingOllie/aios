@@ -36,13 +36,13 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 
   await tab(page, /Runs/).click();
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL(/\?tab=runs$/);
+  await expect(page).toHaveURL(/\/runs$/);
   await expect(panel(page).getByRole("link", { name: /Find sources/ })).toBeVisible();
   await expect(panel(page).getByRole("link", { name: /Summarise/ })).toBeVisible();
   await expect(page.getByText("You are Researcher.")).toHaveCount(0);
 
   await tab(page, /Versions/).click();
-  await expect(page).toHaveURL(/\?tab=versions$/);
+  await expect(page).toHaveURL(/\/versions$/);
   await expect(panel(page).getByRole("link")).toHaveCount(3);
   await expect(panel(page).getByText("current")).toBeVisible();
 
@@ -58,8 +58,31 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 test("an unknown tab in the URL falls back to the first", async ({ page }) => {
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher");
-  await page.goto(`/agents/${agent.id}?tab=nope`);
+  await page.goto(`/agents/${agent.id}/nope`);
   await expect(tab(page, /Context/)).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(`/agents/${agent.id}`);
+});
+
+test("each tab is a route: the first is the agent's own path, the others a segment under it", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  await page.goto(`/agents/${agent.id}/runs?q=res`);
+  await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
+
+  // Switching keeps the list's search, and the first tab drops its segment.
+  await tab(page, "Schedule").click();
+  await expect(page).toHaveURL(`/agents/${agent.id}/schedule?q=res`);
+  await tab(page, "Context").click();
+  await expect(page).toHaveURL(`/agents/${agent.id}?q=res`);
+
+  // The first tab's own segment, and an old ?tab= link, land on the canonical path.
+  await page.goto(`/agents/${agent.id}/context`);
+  await expect(page).toHaveURL(`/agents/${agent.id}`);
+  await page.goto(`/agents/${agent.id}?tab=versions&q=res`);
+  await expect(page).toHaveURL(`/agents/${agent.id}/versions?q=res`);
+  await expect(tab(page, /Versions/)).toHaveAttribute("aria-selected", "true");
 });
 
 test("moves between tabs with the keyboard", async ({ page }) => {
@@ -91,7 +114,7 @@ test("going back from a run or a version returns to its tab", async ({ page }) =
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher", 2);
   api.addAgentRun(agent, "Find sources");
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
 
   await panel(page)
     .getByRole("link", { name: /Find sources/ })
@@ -108,7 +131,7 @@ test("going back from a run or a version returns to its tab", async ({ page }) =
 test("each tab's aria-controls names a panel that is on the page", async ({ page }) => {
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher");
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
 
   const dangling = await page
@@ -128,12 +151,12 @@ test("restoring a version returns to the Versions tab, with the new current vers
 }) => {
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher", 2);
-  await page.goto(`/agents/${agent.id}?tab=versions`);
+  await page.goto(`/agents/${agent.id}/versions`);
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("button", { name: "Restore this version" }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}\\?tab=versions$`));
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}/versions$`));
   await expect(tab(page, "Versions 3")).toHaveAttribute("aria-selected", "true");
   const restored = panel(page).getByRole("link", { name: /v3/ });
   await expect(restored).toContainText("Restored from v1");
@@ -145,7 +168,7 @@ test("Tab moves from the tab list into the panel, even one with nothing to focus
 }) => {
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher");
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
   await expect(panel(page).getByText("No runs yet")).toBeVisible();
 
   await tab(page, /Runs/).focus();
@@ -163,7 +186,7 @@ test("deleting a run from its page returns to the Runs tab, without it", async (
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete run" }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}\\?tab=runs$`));
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}/runs$`));
   await expect(tab(page, "Runs 1")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByRole("link", { name: /Summarise/ })).toBeVisible();
   await expect(panel(page).getByText("Find sources")).toHaveCount(0);
@@ -175,7 +198,7 @@ test("the Schedule tab shows the agent's schedules", async ({ page }) => {
   await page.goto(`/agents/${agent.id}`);
 
   await tab(page, "Schedule").click();
-  await expect(page).toHaveURL(/\?tab=schedule$/);
+  await expect(page).toHaveURL(/\/schedule$/);
   await expect(
     panel(page).getByText("No schedules. Add one to run this agent automatically."),
   ).toBeVisible();

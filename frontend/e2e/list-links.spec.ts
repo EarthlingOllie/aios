@@ -29,14 +29,14 @@ test("an agent's Edit, run and version pages keep the list's search and filter",
   await expect(page).toHaveURL(new RegExp(`/agents/${agent.id}/runs/\\d+\\?q=research&filter=used$`));
   await expect(links(page, "Agents")).toHaveText([/Researcher/]);
   await page.getByRole("link", { name: /Back/ }).click();
-  await expect(page).toHaveURL(`/agents/${agent.id}?tab=runs&q=research&filter=used`);
+  await expect(page).toHaveURL(`/agents/${agent.id}/runs?q=research&filter=used`);
 
   await page.getByRole("tab", { name: /Versions/ }).click();
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await expect(page).toHaveURL(`/agents/${agent.id}/versions/1?q=research&filter=used`);
   await expect(links(page, "Agents")).toHaveText([/Researcher/]);
   await backTo(page, "Researcher").click();
-  await expect(page).toHaveURL(`/agents/${agent.id}?tab=versions&q=research&filter=used`);
+  await expect(page).toHaveURL(`/agents/${agent.id}/versions?q=research&filter=used`);
 });
 
 test("restoring a version keeps the list's search", async ({ page }) => {
@@ -46,7 +46,7 @@ test("restoring a version keeps the list's search", async ({ page }) => {
   await page.goto(`/skills/${skill.id}/versions/1?q=release`);
 
   await page.getByRole("button", { name: "Restore this version" }).click();
-  await expect(page).toHaveURL(`/skills/${skill.id}?tab=versions&q=release`);
+  await expect(page).toHaveURL(`/skills/${skill.id}/versions?q=release`);
   await expect(links(page, "Skills")).toHaveText([/Release notes/]);
 });
 
@@ -57,20 +57,20 @@ test("a workflow's Edit, run and version pages keep the list's search", async ({
   api.addWorkflow("Onboarding");
   api.addWorkflowVersion(report, () => {});
   api.addRun(report, { input: "Write the weekly report", status: "succeeded" });
-  await page.goto(`/workflows/${report.id}?q=report&tab=runs`);
+  await page.goto(`/workflows/${report.id}/runs?q=report`);
   await expect(links(page, "Workflows")).toHaveText([/Report/]);
 
   await panel(page).getByRole("link", { name: /weekly report/ }).click();
   await expect(page).toHaveURL(new RegExp(`/workflows/${report.id}/runs/\\d+\\?q=report$`));
   await expect(links(page, "Workflows")).toHaveText([/Report/]);
   await backTo(page, "Report").click();
-  await expect(page).toHaveURL(`/workflows/${report.id}?tab=runs&q=report`);
+  await expect(page).toHaveURL(`/workflows/${report.id}/runs?q=report`);
 
   await page.getByRole("tab", { name: /Versions/ }).click();
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}/versions/1?q=report`);
   await backTo(page, "Report").click();
-  await expect(page).toHaveURL(`/workflows/${report.id}?tab=versions&q=report`);
+  await expect(page).toHaveURL(`/workflows/${report.id}/versions?q=report`);
 
   await page.getByRole("link", { name: "Edit" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}/edit?q=report`);

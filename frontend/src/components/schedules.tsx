@@ -327,7 +327,8 @@ export function ScheduleRow({
 }) {
   const t = trigger;
   const TargetIcon = t.target_kind === "agent" ? Bot : Workflow;
-  const targetHref = `/${t.target_kind === "agent" ? "agents" : "workflows"}/${t.target_id}`;
+  // The target's Schedule tab, where this schedule is.
+  const targetHref = `/${t.target_kind === "agent" ? "agents" : "workflows"}/${t.target_id}/schedule`;
   const lastRunHref = runHref(t);
   return (
     <li className={cn("flex items-start gap-3 px-3 py-2.5", !t.enabled && "opacity-60")} data-testid="schedule-row">

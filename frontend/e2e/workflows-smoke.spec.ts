@@ -150,7 +150,7 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
 
   // 6. Back on the workflow, the finished run is listed; open it again.
   await page.getByRole("heading").getByRole("link", { name: "Weekly report" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}?tab=runs`);
+  await expect(page).toHaveURL(`/workflows/${weekly.id}/runs`);
   const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
   await expect(latest).toContainText("Write this week's report");
   await expect(latest).toContainText("Succeeded");

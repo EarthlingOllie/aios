@@ -64,7 +64,7 @@ test("an item opens the request on the Data page, and deciding it clears the bad
   await expect(item).toContainText("A schema change is waiting for you");
   await item.click();
 
-  await expect(page).toHaveURL(`/data?tab=changes&request=${request.id}`);
+  await expect(page).toHaveURL(`/data/changes?request=${request.id}`);
   await expect(list(page)).toBeHidden();
   await expect(card(page)).toHaveAttribute("aria-current", "true");
   await expect(card(page, "Create table data.places")).not.toHaveAttribute("aria-current", "true");
@@ -79,7 +79,7 @@ test("an item opens the request on the Data page, and deciding it clears the bad
 test("rejecting clears the badge too", async ({ page }) => {
   const api = await fakeApi(page);
   const request = api.addSchemaChange();
-  await page.goto(`/data?tab=changes&request=${request.id}`);
+  await page.goto(`/data/changes?request=${request.id}`);
   await expect(bell(page)).toHaveAccessibleName("Notifications, 1 unread");
 
   await card(page).getByRole("button", { name: "Reject…" }).click();

@@ -105,8 +105,7 @@ export const LIST_PARAMS = ["q", "filter", "sort", "skill", "tool"];
 
 /**
  * `path` with the list's own parameters from `params` added, so a filtered list stays filtered
- * as you open its items. Others, such as the open `tab`, are left behind: another item opens
- * on its first tab. A query already on `path` (`?tab=runs`, to open a given tab) is kept.
+ * as you open its items. Others are left behind. A query already on `path` is kept.
  */
 export function listHref(path: string, params: URLSearchParams): string {
   const [base, own = ""] = path.split("?", 2);

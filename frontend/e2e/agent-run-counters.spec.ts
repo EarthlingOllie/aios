@@ -28,7 +28,7 @@ test("the run list shows each run's status, duration, tool calls and tokens", as
     output_tokens: 5,
   });
   api.addAgentRun(agent, "Still going", 1, { status: "running", started_at });
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
 
   const row = (title: string) => page.getByRole("link", { name: new RegExp(title) });
   await expect(row("Find sources")).toContainText("Succeeded");

@@ -116,7 +116,7 @@ test("New and deleting an agent keep the search; another agent opens on its firs
   const first = api.addAgent("Researcher one");
   const second = api.addAgent("Researcher two");
   api.addAgent("Writer");
-  await page.goto(`/agents/${first.id}?q=research&tab=runs`);
+  await page.goto(`/agents/${first.id}/runs?q=research`);
 
   // Another item's link carries the search, but not the open tab.
   await expect(list(page, "Agents").getByRole("link", { name: /Researcher two/ })).toHaveAttribute(

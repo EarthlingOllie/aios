@@ -25,8 +25,8 @@ const statusVariant = {
 
 /**
  * What's in the user's data store. Each section is a tab with its own URL (`/data` for the
- * Overview, `/data?tab=tables`, `/data?tab=changes`, `/data?tab=dropped`,
- * `/data?tab=documents`), so other pages and notifications can link straight to one.
+ * Overview, `/data/tables`, `/data/changes`, `/data/dropped`,
+ * `/data/documents`), so other pages and notifications can link straight to one.
  */
 export function DataPage() {
   // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.

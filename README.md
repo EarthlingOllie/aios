@@ -27,7 +27,7 @@ between, and shows each passage with how the semantic and keyword branches ranke
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
 status, chunk count, size and upload time, upload, download and delete (the chat's documents
-panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data/documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage. A run also records how it went and what it cost: a status
@@ -55,7 +55,7 @@ the model's behaviour:
   deleted while an agent's current version uses them.
 - A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
   by (the agents whose current version uses it, with a count) and Versions (with a count). The
-  open tab is in the URL (`/skills/12?tab=versions`); a version's page links back to Versions,
+  open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
   and restoring a version returns there.
 - Each run is traced to Langfuse when it's configured (see [Tracing](#tracing)), with
   `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
@@ -66,7 +66,7 @@ the model's behaviour:
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
 an edge shows its configuration. Its list can be searched by name and description, as the Agents
 list can, filtered to the empty workflows (no nodes) and sorted by name or most recently updated. A workflow's page has tabs, as an agent's does: Graph, Runs and
-Versions (each with its count) and Schedule, the open one kept in the URL (`?tab=runs`); its
+Versions (each with its count) and Schedule, the open one kept in the URL (`/workflows/7/runs`); its
 title, actions and the form to start a run stay above them, and a run's or a version's page links
 back to its tab. Its editor adds nodes for your agents and workflows, connects
 them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
@@ -162,7 +162,7 @@ descriptions and filter buttons (All, Joined, Not joined, Unread, Private), kept
 on the Agents list, and as the list refreshes (it has no sort menu), and opens one to
 its header (name, description, member count, and Edit, Delete, Join or Leave) above two tabs, as
 on the agent page: **Chat**, the messages and composer (the default), and **Members**
-(`?tab=members`, with the count). The room isn't kept while Members is open, so nothing is marked
+(`/chats/5/members`, with the count). The room isn't kept while Members is open, so nothing is marked
 read there and coming back reloads the messages, scrolled to the newest; a message typed but not
 sent is still there on coming back, from Members, the chat's Edit page, another section or a
 reload (kept in the tab's session storage, per user and chat). Members are

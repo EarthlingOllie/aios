@@ -1,4 +1,4 @@
-/** The tab to show: the one asked for (e.g. in the URL) if it exists, else the first. */
+/** The tab to show: the one asked for (in the URL) if it exists, else the first. */
 export function activeTab(ids: string[], requested: string | null): string | undefined {
   return requested !== null && ids.includes(requested) ? requested : ids[0];
 }
@@ -20,4 +20,33 @@ export function keyTarget(key: string, index: number, count: number): number | n
     default:
       return null;
   }
+}
+
+/**
+ * The URL of tab `id` on the page at `base`: `base` itself for the first tab, `base/<id>` for the
+ * others, with `search` (the list's search, say) kept.
+ */
+export function tabHref(base: string, ids: string[], id: string, search: string): string {
+  return (id === ids[0] ? base : `${base}/${id}`) + search;
+}
+
+/**
+ * Where to send a tab URL that isn't the canonical one, or null if it is: the first tab's own
+ * segment and an unknown one go to `base`, and an old `?tab=<id>` link to the tab's path.
+ */
+export function tabRedirect(
+  base: string,
+  ids: string[],
+  requested: string | undefined,
+  search: string,
+): string | null {
+  const query = new URLSearchParams(search);
+  const legacy = query.get("tab");
+  if (legacy !== null) {
+    query.delete("tab");
+    const rest = query.toString();
+    return tabHref(base, ids, activeTab(ids, legacy)!, rest ? `?${rest}` : "");
+  }
+  if (requested === undefined || (requested !== ids[0] && ids.includes(requested))) return null;
+  return tabHref(base, ids, ids[0], search);
 }
