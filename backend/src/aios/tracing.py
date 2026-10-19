@@ -34,10 +34,27 @@ def callbacks() -> list[BaseCallbackHandler]:
 
 
 def trace_metadata(
-    *, session_id: str | None, user_id: int, tags: list[str], **metadata: Any
+    *,
+    session_id: str | None,
+    organisation_id: int,
+    created_by: int | None,
+    tags: list[str],
+    **metadata: Any,
 ) -> dict[str, Any]:
-    """Run metadata, with the keys Langfuse reads its session, user and tags from."""
-    out = {**metadata, "langfuse_user_id": str(user_id), "langfuse_tags": tags}
+    """Run metadata, with the keys Langfuse reads its session, user and tags from.
+
+    A run executes for its organisation (`organisation_id`), started by the member `created_by`:
+    Langfuse's user is that member, so usage is attributed to who asked for it. A schedule's run
+    was started by no member, and has no Langfuse user; its organisation still says whose it is.
+    """
+    out = {
+        **metadata,
+        "organisation_id": organisation_id,
+        "created_by": created_by,
+        "langfuse_tags": tags,
+    }
+    if created_by is not None:
+        out["langfuse_user_id"] = str(created_by)
     if session_id:
         out["langfuse_session_id"] = session_id
     return out

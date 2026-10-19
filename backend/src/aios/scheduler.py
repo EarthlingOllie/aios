@@ -26,6 +26,9 @@ own is `ScheduleFiring`: what it claims, and where its heartbeat and outcome liv
   run (`last_workflow_run_id`) and, once it's queued, that it fired; from then on it shows how the
   run is going (`aios.api.triggers.last_outcome`). One that can't start (no nodes, an agent
   that can't run, the queue down) records that it failed, without a run.
+- A schedule's run is started by no member (its `created_by` is null): it executes for its
+  agent's or workflow's organisation, over the organisation's store, so it goes on working
+  whoever made the schedule or its target, and whether or not they're still a member.
 - Editing a schedule (pausing it, changing its target or message, ...) after it's claimed but
   before its run has started drops that firing: it was for the old settings
   (`aios.api.triggers.cancel_unstarted_firing`). Once the run has started, it finishes.
@@ -174,7 +177,7 @@ def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
     trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
     agent = trigger.agent
     try:
-        run = agents_api.new_agent_run(db, agent, trigger_id=trigger.id)
+        run = agents_api.new_agent_run(db, agent, created_by=None, trigger_id=trigger.id)
     except HTTPException as exc:
         if exc.status_code == 404:
             raise CantStart("The agent has been deleted.") from exc
@@ -183,7 +186,7 @@ def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
     # Committed with the run, under the agent's share lock (see `new_agent_run`).
     trigger.last_run_id = run.id
     db.commit()
-    return firing.Turn(agent.owner_id, agent.id, run.id, trigger.input)
+    return firing.Turn(agent.id, run.id, trigger.input)
 
 
 def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
@@ -191,7 +194,9 @@ def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
 
     Raises `HTTPException` as starting one by hand would, if it can't start or be queued."""
     trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
-    run = workflows_api.new_workflow_run(db, trigger.workflow, trigger.input)
+    run = workflows_api.new_workflow_run(
+        db, trigger.workflow, trigger.input, created_by=None, trigger_id=trigger.id
+    )
     trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
     trigger.last_workflow_run_id = run.id
     # Commits the link with the run; if queueing fails the run is deleted, and the link

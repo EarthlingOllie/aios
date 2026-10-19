@@ -8,14 +8,17 @@ Running one (`execute_run`, in the worker) walks its pinned version's graph. A n
 all its predecessors have succeeded, so independent branches run at the same time. Its input is
 their outputs, in edge order, joined with a blank line; start nodes get the run's input. An agent
 node runs its agent version as a new agent run (one turn, `aios.runner`) and outputs the agent's
-final reply. A workflow node runs its version's graph the same way, with the node's input, and
+final reply; that agent run is started by whoever started the workflow run. A run executes for
+the workflow's organisation, whoever started it (a member, a chat's mention, a schedule): its
+agents' tools use the organisation's store, and their traces carry the organisation and the
+starter. A workflow node runs its version's graph the same way, with the node's input, and
 outputs its sink nodes' outputs (those with no outgoing edge), in node order. Each node records a
 step (`workflow_run_steps`) when it starts and finishes, in its own transaction, so the run can be
 watched as it goes. Once a node fails, no more nodes start; those already running finish, and the
 run fails with the first error.
 
 An agent node whose agent asks for a schema change (`request_schema_change`, a LangGraph
-interrupt) waits for the owner's decision: its step becomes `waiting`, with the request, and the
+interrupt) waits for a member's decision: its step becomes `waiting`, with the request, and the
 nodes that don't depend on it carry on. Once nothing else can run, the run becomes `waiting` and
 its task returns (`_pause_run`), holding no worker. The decision queues it again
 (`aios.worker.enqueue_resume`): claimed from `waiting`, it rebuilds its state from the steps it
@@ -289,11 +292,15 @@ class RunState:
     """A run in progress."""
 
     id: int
-    user_id: int
+    # It executes for the workflow's organisation, over the organisation's store, whoever
+    # started it: the member who did (None for a schedule's run), which its agent nodes' runs
+    # record as theirs, and their tools and traces are told.
+    organisation_id: int
+    created_by: int | None
     workflow_id: int
     workflow_name: str
     workflow_version: int
-    # The data store its agents' tools use: the workflow owner's.
+    # The data store its agents' tools use: the organisation's.
     data_store_id: uuid.UUID
     # The steps it recorded before it last paused, by path: a run resuming carries on from
     # them (see `_run_node`). Empty for a run starting.
@@ -399,12 +406,14 @@ def _claim(run_id: int) -> Claimed | None:
                 waiting_since=None,
             )
             # After the update: `ran` is its running time so far.
-            .returning(WorkflowRun.workflow_version_id, WorkflowRun.input, ran)
+            .returning(
+                WorkflowRun.workflow_version_id, WorkflowRun.input, WorkflowRun.created_by, ran
+            )
         ).one_or_none()
         if row is None:
             fail_stopped_runs(db, WorkflowRun.id == run_id)
             return None
-        version_id, text, ran_seconds = row
+        version_id, text, created_by, ran_seconds = row
         workflow, version = db.execute(
             select(Workflow, WorkflowVersion.version)
             .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
@@ -444,7 +453,8 @@ def _claim(run_id: int) -> Claimed | None:
         return None
     state = RunState(
         id=run_id,
-        user_id=workflow.owner_id,
+        organisation_id=workflow.organisation_id,
+        created_by=created_by,
         workflow_id=workflow.id,
         workflow_name=workflow.name,
         workflow_version=version,
@@ -741,10 +751,11 @@ def fail_run(run_id: int, error: str) -> None:
 
 
 def _start_step(
-    run_id: int, path: tuple[str, ...], node: Node, text: str
+    run_id: int, created_by: int | None, path: tuple[str, ...], node: Node, text: str
 ) -> tuple[int, int | None]:
     """Record that a node has started; return its step's id and, for an agent node, the agent
-    run it's given (None if its agent has been deleted since the run started).
+    run it's given (None if its agent has been deleted since the run started), started by
+    whoever started the workflow run (`created_by`).
 
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
@@ -773,6 +784,7 @@ def _start_step(
                 agent_version_id=node.agent.agent_version_id,
                 # Titled after its message, like a run after its first turn.
                 title=run_title(text),
+                created_by=created_by,
             )
             db.add(agent_run)
             db.flush()
@@ -844,7 +856,8 @@ def trace_metadata(
     """Attached to an agent node's trace (Langfuse): an agent run's, plus the workflow's."""
     return tracing.trace_metadata(
         session_id=checkpoints.thread_id(agent_run_id),
-        user_id=run.user_id,
+        organisation_id=run.organisation_id,
+        created_by=run.created_by,
         tags=[
             f"agent:{agent.agent_name}",
             f"agent-version:{agent.agent_version}",
@@ -909,7 +922,7 @@ async def _run_agent(
                     graph_input,
                     config,
                     context=ChatDeps(
-                        user_id=run.user_id,
+                        user_id=run.created_by,
                         run_id=agent_run_id,
                         data_store_id=run.data_store_id,
                     ),
@@ -958,7 +971,9 @@ async def _run_node(run: RunState, node: Node, path: tuple[str, ...], text: str)
     step_id = None
     try:
         if recorded is None:
-            step_id, agent_run_id = await asyncio.to_thread(_start_step, run.id, path, node, text)
+            step_id, agent_run_id = await asyncio.to_thread(
+                _start_step, run.id, run.created_by, path, node, text
+            )
         else:
             step_id, agent_run_id, text = recorded.id, recorded.agent_run_id, recorded.input
             await asyncio.to_thread(_resume_step, step_id)

@@ -188,7 +188,9 @@ class HistoryAgentRun(StoreBase):
         Text, comment="The version's model; null means the deployment's default."
     )
     title: Mapped[str | None] = mapped_column(Text)
-    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The member who started it; null for a schedule's run."
+    )
     trigger_id: Mapped[int | None] = mapped_column(
         BigInteger, comment="The schedule that started it, if one did."
     )
@@ -274,7 +276,9 @@ class HistoryWorkflowRun(StoreBase):
     workflow_id: Mapped[int] = mapped_column(BigInteger)
     workflow_name: Mapped[str] = mapped_column(Text)
     workflow_version: Mapped[int] = mapped_column(Integer, comment="The workflow version it ran.")
-    user_id: Mapped[int] = mapped_column(BigInteger, comment="The user who ran it.")
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, comment="The member who started it; null for a schedule's run."
+    )
     # Text, not an enum: a status the platform adds later is copied as it is.
     status: Mapped[str] = mapped_column(
         Text, comment="queued, running, succeeded or failed, as on the platform when exported."

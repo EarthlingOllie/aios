@@ -22,7 +22,7 @@ import {
   type ListContext,
 } from "@/components/crud";
 import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
-import { ProvenanceLine, useSavedBy } from "@/components/provenance";
+import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -339,6 +339,7 @@ export function AgentDetail() {
                             <span className="text-muted-foreground block truncate text-xs">
                               {formatDate(run.updated_at)} ·{" "}
                               <RunCountersLine run={run} compact />
+                              <StartedBy run={run} before=" · " className="align-bottom" />
                               {run.chat_id !== null && (
                                 <span data-testid="started-from-chat">
                                   {" "}

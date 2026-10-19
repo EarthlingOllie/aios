@@ -5,13 +5,13 @@ says which member made it (`created_by`) and which last changed it (`updated_by`
 version which member saved it; a soft-deleted one keeps who deleted it (`deleted_by`, not
 reported: a deleted row isn't served). Each is a user id on the row, null once that user is
 deleted, and reported as the user (`UserOut`), read for a whole list in one query
-(`people`).
+(`people`). Each run says which member started it the same way (`started_by`).
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
 from aios.models import User
@@ -53,6 +53,16 @@ def people(db: Session, ids: Iterable[int | None]) -> dict[int, UserOut]:
         u.id: UserOut.model_validate(u, from_attributes=True)
         for u in db.scalars(select(User).where(User.id.in_(wanted)))
     }
+
+
+def started_by[M: BaseModel](db: Session, rows: Sequence[Row], model: type[M]) -> list[M]:
+    """Rows of a run summary query as `model`s, with who started each (the row's
+    `created_by_id`) as the user, read for them all in one query."""
+    known = people(db, [row.created_by_id for row in rows])
+    return [
+        model.model_validate({**row._mapping, "created_by": known.get(row.created_by_id)})
+        for row in rows
+    ]
 
 
 def provenance(db: Session, row, known: dict[int, UserOut] | None = None) -> dict:

@@ -857,9 +857,9 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     tried = []
     start_step = workflows._start_step
 
-    def trying(run_id, path, node, text):
+    def trying(run_id, created_by, path, node, text):
         tried.append("/".join(path))
-        return start_step(run_id, path, node, text)
+        return start_step(run_id, created_by, path, node, text)
 
     monkeypatch.setattr(workflows, "_start_step", trying)
 

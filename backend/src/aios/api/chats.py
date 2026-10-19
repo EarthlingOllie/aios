@@ -44,6 +44,10 @@ it's claimed when there's a free slot (`launch_turns`, just after the post or on
 tick), beaten while it runs, and failed if its heartbeat stops (`fail_stopped_turns`), so a turn
 lost with its process fails its card. A read's `invocations` carry an agent run's status, start
 and counters (`agent_run`), and the agent's final reply is posted back when the turn ends.
+
+Either run is started by the member who mentioned it (its `created_by`) and executes for the
+organisation, over its store, like any other run: it doesn't depend on whoever made the agent or
+workflow, and every member of the organisation reads it, in the chat or not.
 """
 
 import asyncio
@@ -890,7 +894,10 @@ class InvocationFiring:
         message = db.get(ChatMessage, invocation.message_id)
         try:
             run = workflows_api.new_workflow_run(
-                db, invocation.workflow, invocations.run_input(invocation.brief, message.body)
+                db,
+                invocation.workflow,
+                invocations.run_input(invocation.brief, message.body),
+                created_by=invocation.requested_by,
             )
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
@@ -925,10 +932,10 @@ class TurnFiring:
         await handoff.brief(self.invocation_id)
 
     def start(self, db: Session) -> firing.Turn | None:
-        """Start a run of the agent's current version, as its owner, with the brief and the
-        message as the user's; the invocation records it and goes running. None if it has
-        finished since it was claimed. Raises `HTTPException` as starting one by hand would, or
-        `CantStart`."""
+        """Start a run of the agent's current version, started by whoever mentioned it, with the
+        brief and the message as the user's; the invocation records it and goes running. None
+        if it has finished since it was claimed. Raises `HTTPException` as starting one by hand
+        would, or `CantStart`."""
         invocation = db.get(ChatInvocation, self.invocation_id)
         if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
@@ -937,7 +944,7 @@ class TurnFiring:
         prompt = invocations.run_input(invocation.brief, body)
         try:
             # The agent's lock first, then the invocation's, as deleting the agent takes them.
-            run = agents_api.new_agent_run(db, agent)
+            run = agents_api.new_agent_run(db, agent, created_by=invocation.requested_by)
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 raise firing.CantStart("The agent has been deleted.") from exc
@@ -950,9 +957,7 @@ class TurnFiring:
         invocations.mark_running(db, self.invocation_id)
         db.commit()
         # Titled after what was asked.
-        return firing.Turn(
-            agent.owner_id, agent.id, run.id, prompt, title=invocations.message_text(body)
-        )
+        return firing.Turn(agent.id, run.id, prompt, title=invocations.message_text(body))
 
     def beat(self, db: Session) -> None:
         invocations.beat(db, self.invocation_id)

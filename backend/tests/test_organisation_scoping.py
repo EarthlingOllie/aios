@@ -59,7 +59,7 @@ def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
         assert restored["current_version"]["version"] == 3
         run = ok(api.post(f"{url}/runs"), 201)
         assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
-        assert ok(api.get(f"{url}/runs/{run['id']}"))["is_owner"] is True
+        assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
         assert ok(api.get(f"{url}/dependents"))["workflows"] == []
         ok(api.delete(f"{url}/runs/{run['id']}"), 204)
         ok(api.delete(url), 204)
@@ -106,7 +106,7 @@ def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queue
         run = ok(api.post(f"{url}/runs", json={"input": "go"}), 201)
         assert queued == [run["id"]]
         assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
-        assert ok(api.get(f"{url}/runs/{run['id']}"))["is_owner"] is True
+        assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
         ok(api.delete(url), 204)
     db.expire_all()
     assert db.get(Workflow, workflow["id"]).deleted_by == member.id

@@ -327,6 +327,9 @@ export type RunSummary = {
   /** The chat a mention in it started it from, while that chat exists. */
   chat_id: number | null;
   chat_name: string | null;
+  /** The member who started it (by hand, by a mention, or by starting the workflow run it's a
+   * node's conversation in); null for a schedule's run, or once that user is deleted. */
+  created_by: User | null;
   created_at: string;
   updated_at: string;
 };
@@ -438,13 +441,8 @@ export type NotificationList = {
 };
 
 export type Run = RunSummary & {
-  /** The agent's name: the reader may not own it, and so can't read the agent itself. */
+  /** The agent's name, so the page needn't read the agent as well. */
   agent_name: string;
-  /**
-   * Whether the run's agent is in the reader's organisation. Anyone else reads it as a member of
-   * a chat that started it, and only reads it: they can't message the agent or delete the run.
-   */
-  is_owner: boolean;
   ui_messages: UIMessage[];
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
@@ -554,6 +552,11 @@ export type WorkflowRunSummary = {
   /** The chat a mention in it started it from, while that chat exists. */
   chat_id: number | null;
   chat_name: string | null;
+  /** The member who started it (by hand, or by a mention); null for a schedule's run, or once
+   * that user is deleted. */
+  created_by: User | null;
+  /** The trigger (a schedule) that started it, if one did and it still exists. */
+  trigger_id: number | null;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -599,13 +602,8 @@ export type WorkflowRun = WorkflowRunSummary & {
 
 /** A workflow run as its page reads it. */
 export type WorkflowRunPage = WorkflowRun & {
-  /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
+  /** The workflow's name, so the page needn't read the workflow as well. */
   workflow_name: string;
-  /**
-   * Whether the run's workflow is in the reader's organisation. Anyone else reads it as a member
-   * of a chat that started it, and only reads it: they can't delete it or decide what it waits on.
-   */
-  is_owner: boolean;
 };
 
 export type TriggerTargetKind = "agent" | "workflow";

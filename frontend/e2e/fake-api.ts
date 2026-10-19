@@ -59,6 +59,9 @@ type AgentRunRow = AgentRunCounters & {
   agent_version_id: number;
   title: string | null;
   message_count: number;
+  /** Who started it (null for a schedule's run), and the schedule that did. */
+  created_by: ChatUser | null;
+  trigger_id: number | null;
   /** Its conversation, as AI SDK UIMessages. */
   ui_messages: unknown[];
 };
@@ -252,6 +255,9 @@ export type RunRow = {
   finished_at: string | null;
   waiting_since: string | null;
   waited_seconds: number;
+  /** Who started it (null for a schedule's run), and the schedule that did. */
+  created_by: ChatUser | null;
+  trigger_id: number | null;
   steps: StepRow[];
   stale_pins: StalePinRow[];
 };
@@ -392,12 +398,6 @@ export class FakeApi {
    * "edits" a workflow by taking it off the list.
    */
   agentDependents = new Map<number, AgentDependentsRow>();
-  /**
-   * The agents and workflows (by id) that another user owns. As on the server, the signed-in
-   * user can't list or read them, or do anything to them: only read a run of one, as a member
-   * of a chat that started it (which the fake doesn't check), and that read only.
-   */
-  othersOwn = new Set<number>();
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   /**
@@ -836,12 +836,15 @@ export class FakeApi {
     };
   }
 
-  /** Adds a chat run of the agent, at its current version; not tracked unless `counters` say. */
+  /**
+   * Adds a chat run of the agent, at its current version, started by `me` unless `fields` say
+   * otherwise; not tracked unless they say.
+   */
   addAgentRun(
     agent: AgentRow,
     title: string | null = null,
     message_count = 0,
-    counters: Partial<AgentRunCounters> = {},
+    fields: Partial<AgentRunCounters & Pick<AgentRunRow, "created_by" | "trigger_id">> = {},
   ): AgentRunRow {
     const run: AgentRunRow = {
       id: this.id(),
@@ -849,9 +852,11 @@ export class FakeApi {
       agent_version_id: agent.versions.at(-1)!,
       title,
       message_count,
+      created_by: this.me,
+      trigger_id: null,
       ui_messages: [],
       ...NOT_TRACKED,
-      ...counters,
+      ...fields,
     };
     this.agentRuns.set(run.id, run);
     return run;
@@ -909,7 +914,8 @@ export class FakeApi {
     this.agentVersions.set(vid, [agent.id, agent.versions.length]);
   }
 
-  /** A run of the workflow's current version; steps take their kind from the graph. */
+  /** A run of the workflow's current version, started by `me` unless `run` says otherwise;
+   * steps take their kind from the graph. */
   addRun(
     workflow: WorkflowRow,
     run: Partial<Omit<RunRow, "steps">> & { steps?: (Partial<StepRow> & { path: string[] })[] },
@@ -927,6 +933,8 @@ export class FakeApi {
       finished_at: null,
       waiting_since: null,
       waited_seconds: 0,
+      created_by: this.me,
+      trigger_id: null,
       stale_pins: [],
       ...run,
       steps: [],
@@ -1598,12 +1606,6 @@ export class FakeApi {
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
-    // Another user's agent or workflow: only a run of it can be read (see `othersOwn`).
-    if ((m = path.match(/^\/api\/(?:agents|workflows)\/(\d+)(\/.*)?$/)) && this.othersOwn.has(Number(m[1]))) {
-      const readable = method === "GET" && /^\/runs\/\d+(\/subworkflow)?$/.test(m[2] ?? "");
-      if (!readable) return fail(404, "Not Found");
-    }
-
     if ((m = path.match(/^\/api\/invites\/([^/]+)(\/accept)?$/))) {
       const token = decodeURIComponent(m[1]);
       const own = this.invites.find((i) => i.token === token);
@@ -1896,7 +1898,7 @@ export class FakeApi {
     if (path === "/api/agents") {
       return reply(
         200,
-        [...this.agents.values()].filter((a) => !this.othersOwn.has(a.id)).map((a) => ({
+        [...this.agents.values()].map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -1970,7 +1972,6 @@ export class FakeApi {
         return reply(200, {
           ...this.agentRunOut(run),
           agent_name: agent.name,
-          is_owner: !this.othersOwn.has(agent.id),
           ui_messages: run.ui_messages,
           messages: [],
           instructions: agent.base_prompt,
@@ -2020,7 +2021,7 @@ export class FakeApi {
     if (path === "/api/workflows" && method === "GET") {
       return reply(
         200,
-        this.live().filter((w) => !this.othersOwn.has(w.id)).map((w) => ({
+        this.live().map((w) => ({
           id: w.id,
           name: w.name,
           description: w.description,
@@ -2134,7 +2135,6 @@ export class FakeApi {
         return reply(200, {
           ...this.runOut(run),
           workflow_name: workflow.name,
-          is_owner: !this.othersOwn.has(workflow.id),
         });
       }
       if ((m = rest.match(/^\/runs\/(\d+)\/subworkflow$/)) && method === "GET") {

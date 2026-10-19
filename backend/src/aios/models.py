@@ -745,6 +745,13 @@ class WorkflowRun(Base):
     )
     # The member who started it; null for a schedule's run, or once that user is deleted.
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # The trigger that started it (a schedule), if one did and it still exists.
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "triggers.id", ondelete="SET NULL", use_alter=True, name="workflow_runs_trigger_id_fkey"
+        ),
+        index=True,
+    )
     status: Mapped[WorkflowRunStatus] = mapped_column(
         Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
     )
@@ -884,7 +891,9 @@ class Trigger(Base):
 
     agent: Mapped[Agent | None] = relationship()
     workflow: Mapped[Workflow | None] = relationship()
-    last_workflow_run: Mapped[WorkflowRun | None] = relationship()
+    last_workflow_run: Mapped[WorkflowRun | None] = relationship(
+        foreign_keys=[last_workflow_run_id]
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1206,7 +1215,7 @@ class ChatInvocation(Base):
     message_id: Mapped[int] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True
     )
-    # Who mentioned it. The run executes as its agent's or workflow's owner, as runs do.
+    # Who mentioned it: the member who started its run (the run's `created_by`).
     requested_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )

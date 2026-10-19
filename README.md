@@ -162,6 +162,17 @@ Saves still write `owner_id` (the creator) for the release before, until the con
 it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
 run history export, on the Organisation page.
 
+**Runs** execute for the organisation, however they start: by hand, by a schedule, by a chat
+mention, or as a workflow's agent node. A run's tools use the organisation's store, its trace
+carries the organisation and who started it (see [Tracing](#tracing)), and nothing about it
+depends on whoever made the agent or workflow, so a schedule or a mention goes on working after
+they've left. Each agent run and workflow run records the member who started it (`created_by`:
+who started it by hand or mentioned it; a workflow's agent nodes' runs take the workflow run's),
+null for a schedule's run, which records its schedule (`trigger_id`) instead; run lists and run
+pages show the member, with their avatar, or "Scheduled". Every member reads, continues and
+deletes every run in the organisation, the ones chats and schedules started included, and to
+anyone else each is a 404.
+
 The creator brings people in with **invitation links**, made on the Organisation page
 (`POST /api/organisation/invites`, `expires_in_days` 1 to 30, a week by default): the response
 carries the link's random token once, and only its hash is stored, so the page shows the link to
@@ -208,8 +219,7 @@ Each new chat has the organisation's **documents assistant** as its first agent
 chat (`agents.builtin = 'documents'`, one live one per organisation), with the document search
 tool and instructions to ground its answers in the
 results, citing sources. It's mentioned and answers like any agent member (acknowledgement, brief,
-card and reply, below), and, running as its owner, searches the documents of the user who owns
-the chat. It's listed with the organisation's other agents, where it can be edited like one;
+card and reply, below), and searches the organisation's documents. It's listed with the organisation's other agents, where it can be edited like one;
 deleted, a fresh one joins the next chat. Chats made before it existed don't get it, but their owner can add it
 like any agent. `/` lands on the most recently active chat you're in, or the new-chat form.
 Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
@@ -243,7 +253,8 @@ workflow's acknowledgement with a **run card** under it, and returns them with t
 (`{messages, invocations}`), so the chat never shows a mention without its card. Just after the
 response, the run starts through the same helpers starting one by hand and schedules use (and the
 firing machinery, `aios.firing`), with the message as its input (each mention as `@name`),
-executing as the workflow's owner; the invocation records who asked, the run, and goes `running`.
+started by the member who asked (the run's `created_by`); the invocation records who asked, the
+run, and goes `running`.
 A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
 with the reason. When the run ends (in the worker, found stopped, or deleted before it finished),
 its output or error is posted back as a message from the workflow, belonging to the invocation,
@@ -259,7 +270,7 @@ workflow's others, marked with the chat (while it exists); deleting a chat delet
 and invocations, not the runs.
 
 Mentioning an **agent** runs one turn of a new run of its current version, with the message as
-the user's, executing as the agent's owner; its acknowledgement and card come with the post in the
+the user's, started by the member who asked; its acknowledgement and card come with the post in the
 same way. The turn runs in an API process through the firing machinery schedules use, under the
 same cap (`SCHEDULER_MAX_CONCURRENT_RUNS`): a process with a free slot claims it, just after the
 post or on a scheduler tick (until then it waits, queued, however long), and keeps its heartbeat
@@ -635,7 +646,7 @@ written or deleted from since.
 On the Organisation page any member can switch on `export_run_history` (on `data_stores`): a
 one-way copy of the organisation's runs (every member's and every schedule's, matched to the
 store by their agent's or workflow's organisation) into its store's `history` schema, keyed by the platform's ids and recording who
-ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
 and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
 with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
 input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
@@ -944,8 +955,11 @@ LANGFUSE_BASE_URL=https://langfuse.example.com   # your instance; default http:/
 LANGFUSE_ENVIRONMENT=production                  # optional
 ```
 
-Each trace carries the user id, the run's thread id as the Langfuse session, tags for the agent
-and version, and the run metadata above. A chat mention's handoff (see Chats) is traced too,
-tagged `handoff`, with `invocation_id`, the chat, the message, who asked and the member as
+Each trace carries the organisation (`organisation_id`) and the member who started the run
+(`created_by`, also the Langfuse user; a schedule's run has neither a member nor a Langfuse
+user), the run's thread id as the Langfuse session, tags for the agent and version, and the run
+metadata above; a workflow's agent node's carries its workflow run's starter. A chat mention's
+handoff (see Chats) is traced too, tagged `handoff`, with `invocation_id`, the chat, the message,
+who asked (as `created_by` and the Langfuse user, with the organisation) and the member as
 metadata, and `chat-<id>` as the session. With no keys, nothing is traced. Traces are sent in the
 background and flushed when the API shuts down.
