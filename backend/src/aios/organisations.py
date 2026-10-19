@@ -79,9 +79,21 @@ def membership_of(db: Session, user_id: int) -> Organisation | None:
 
 def personal_name(db: Session, login: str) -> str:
     """The name for a personal organisation: the login, or the login with the first free
-    `-2`, `-3`, ... suffix when that's taken (as the data migration named them)."""
+    `-2`, `-3`, ... suffix when that's taken (as the data migration named them).
+
+    It reads only the names it could pick: the login, and the login and `-` followed by
+    anything (which also has a few it never would, like `sam-team`). The login is escaped
+    (`autoescape`), so a `_`, `%` or `\\` in it is itself, not a wildcard or an escape; these
+    comparisons are exact and case-sensitive, as the unique constraint on the name is. Missing
+    a taken name would make `create_personal` pick it again for ever; reading every name a
+    short login's wildcards match would be slow."""
     taken = set(
-        db.scalars(select(Organisation.name).where(Organisation.name.like(f"{login}%"))).all()
+        db.scalars(
+            select(Organisation.name).where(
+                (Organisation.name == login)
+                | Organisation.name.startswith(f"{login}{SUFFIX}", autoescape=True)
+            )
+        ).all()
     )
     name, n = login, 2
     while name in taken:

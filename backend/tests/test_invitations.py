@@ -9,7 +9,7 @@ import pytest
 from conftest import delete_user, join_organisation, sign_up, store_of
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
-from test_organisations import in_the_background
+from test_organisations import in_the_background, picking_names_at_most
 from test_schema_change_requests import CONTACTS
 
 from aios import notifications, organisations
@@ -391,6 +391,28 @@ def test_leaving_while_a_sign_up_takes_the_login_lands_in_a_suffixed_one(api, db
         twin = db.scalar(select(User).where(User.github_id == -47))
         if twin is not None:
             delete_user(db, twin)
+
+
+def test_leaving_with_a_login_with_like_wildcards_or_a_backslash_lands_in_the_next_free_name(
+    api, db, member, monkeypatch
+):
+    """`_`, `%` and `\\` mean something to LIKE. A member whose login has them sees the names
+    they could take (their login, and it suffixed) as taken when they leave, and only those."""
+    login = "mem\\_%"
+    member.login = login
+    others = [login, f"{login}-2", "mem__x", "mem__x-3"]
+    try:
+        db.add_all(Organisation(name=n) for n in others)
+        db.commit()
+        # One pick: no clash to pick again after.
+        picking_names_at_most(monkeypatch, 1)
+        with signed_in_as(member):
+            resp = api.post("/api/organisation/leave")
+        assert resp.status_code == 200, resp.text
+        assert (resp.json()["name"], resp.json()["is_creator"]) == (f"{login}-3", True)
+    finally:
+        db.execute(delete(Organisation).where(Organisation.name.in_(others)))
+        db.commit()
 
 
 def test_the_last_member_cant_leave(api, user):

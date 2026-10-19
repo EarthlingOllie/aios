@@ -213,6 +213,52 @@ def test_signing_in_while_a_rename_takes_the_login_lands_in_a_suffixed_one(
             delete_user(db, dana)
 
 
+def picking_names_at_most(monkeypatch, times: int) -> None:
+    """Fail `personal_name` past its `times`th call: a name it keeps picking that's taken
+    would otherwise loop `create_personal` for ever, hanging the test instead of failing it."""
+    pick, calls = organisations.personal_name, []
+
+    def limited(db, login):
+        calls.append(login)
+        assert len(calls) <= times, f"picked a name for {login!r} {len(calls)} times"
+        return pick(db, login)
+
+    monkeypatch.setattr(organisations, "personal_name", limited)
+
+
+def test_a_login_with_like_wildcards_or_a_backslash_is_suffixed_on_its_own_names_only(
+    client, db, monkeypatch
+):
+    """`_`, `%` and `\\` mean something to LIKE. A login with them still sees the names it could
+    take (itself, and itself suffixed) as taken, and only those: another name its wildcards
+    would match takes no suffix from it."""
+    from conftest import delete_user
+
+    login = "w_d%c\\"
+    others = ["wxdyc\\", "wxdyc\\-3", f"{login}-2"]
+    try:
+        db.add_all(Organisation(name=n) for n in others)
+        db.commit()
+        # One pick for each sign-in: no clash to pick again after.
+        picking_names_at_most(monkeypatch, 2)
+        assert sign_in(client, monkeypatch, -48, login).status_code == 303
+        # Another GitHub account with the same login (the first renamed since, say).
+        assert sign_in(client, monkeypatch, -49, login).status_code == 303
+        names = db.scalars(
+            select(Organisation.name)
+            .join(OrganisationMember)
+            .join(User, User.id == OrganisationMember.user_id)
+            .where(User.github_id.in_([-48, -49]))
+            .order_by(User.github_id.desc())
+        ).all()
+        assert names == [login, f"{login}-3"]
+    finally:
+        for u in db.scalars(select(User).where(User.github_id.in_([-48, -49]))).all():
+            delete_user(db, u)
+        db.execute(delete(Organisation).where(Organisation.name.in_(others)))
+        db.commit()
+
+
 def test_me_says_which_organisation_the_user_is_in(api, user):
     me = api.get("/api/me").json()
     assert me["login"] == "test-user"
