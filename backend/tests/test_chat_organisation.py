@@ -4,6 +4,7 @@ assistant, and to anyone in another organisation its chats don't exist."""
 
 import threading
 import time
+import warnings
 from contextlib import contextmanager
 
 from alembic.migration import MigrationContext
@@ -760,5 +761,97 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
         assert read["value"].status_code == 200, read["value"].text
         [failed] = read["value"].json()["invocations"]
         assert (failed["status"], failed["error"]) == ("failed", invocations.NEVER_STARTED)
+    finally:
+        delete_user(db, carol)
+
+
+def test_a_member_removed_from_a_chat_as_they_leave_the_organisation_is_removed(
+    api,
+    db,
+    user,
+):
+    """The owner removes Carol as her leave is under way: the removal read her member row before
+    her leave deleted it, and waits for the leave, which commits first. She's out of the chat
+    either way, which is what the owner asked for: the removal is done, not an error, and
+    doesn't delete a row that's no longer there (the ORM's delete of it would match no row: a
+    warning, or `StaleDataError` were the rows versioned)."""
+    carol = join_organisation(db, user, -61, "carol")
+    try:
+        chat = make_chat(api, "Plans", visibility="private")
+        [theirs] = [
+            m for m in add_user(api, chat, carol)["members"]["users"] if m["target_id"] == carol.id
+        ]
+        with warnings.catch_warnings(record=True) as warned:
+            warnings.simplefilter("always")
+            with leaving(carol):
+                removing, removed = in_the_background(
+                    lambda: api.delete(f"/api/chats/{chat['id']}/members/{theirs['id']}")
+                )
+                waits_on_a_lock(removing)
+            removing.join(timeout=10)
+
+        assert "error" not in removed, removed
+        assert removed["value"].status_code == 204, removed["value"].text
+        assert [str(w.message) for w in warned] == []
+        assert users_in(db, chat) == [user.id]
+    finally:
+        delete_user(db, carol)
+
+
+def test_a_member_who_leaves_a_chat_as_they_leave_the_organisation_is_out_of_it(
+    api,
+    db,
+    user,
+):
+    """Carol leaves a chat (in another tab, say) as her leave of the organisation is under way:
+    leaving the chat read her member row before her leave deleted it, and waits for the leave.
+    She's out of it either way: done, and nothing deleted that's no longer there."""
+    carol = join_organisation(db, user, -61, "carol")
+    try:
+        chat = make_chat(api, "Plans", visibility="public")
+        add_user(api, chat, carol)
+        with signed_in_as(carol), warnings.catch_warnings(record=True) as warned:
+            warnings.simplefilter("always")
+            with leaving(carol):
+                quitting, quit = in_the_background(
+                    lambda: api.post(f"/api/chats/{chat['id']}/leave")
+                )
+                waits_on_a_lock(quitting)
+            quitting.join(timeout=10)
+
+        assert "error" not in quit, quit
+        assert quit["value"].status_code == 204, quit["value"].text
+        assert [str(w.message) for w in warned] == []
+        assert users_in(db, chat) == [user.id]
+    finally:
+        delete_user(db, carol)
+
+
+def test_a_chat_deleted_as_one_of_its_members_leaves_the_organisation_is_deleted(
+    api,
+    db,
+    user,
+):
+    """The owner deletes the chat as Carol's leave is under way: the deletion read the chat's
+    members, Carol among them, before her leave deleted her row, and waits for the leave. The chat
+    goes, with nothing deleted that's no longer there."""
+    carol = join_organisation(db, user, -61, "carol")
+    try:
+        chat = make_chat(api, "Plans", visibility="private")
+        add_user(api, chat, carol)
+        with warnings.catch_warnings(record=True) as warned:
+            warnings.simplefilter("always")
+            with leaving(carol):
+                deleting, deleted = in_the_background(
+                    lambda: api.delete(f"/api/chats/{chat['id']}")
+                )
+                waits_on_a_lock(deleting)
+            deleting.join(timeout=10)
+
+        assert "error" not in deleted, deleted
+        assert deleted["value"].status_code == 204, deleted["value"].text
+        assert [str(w.message) for w in warned] == []
+        assert users_in(db, chat) == []
+        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
     finally:
         delete_user(db, carol)

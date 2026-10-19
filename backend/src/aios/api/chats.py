@@ -60,7 +60,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import assistant, firing, handoff, invocations, organisations
@@ -566,6 +566,15 @@ def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
     return chat_out(db, load(db, chat.id), user.id)
 
 
+def take_out(db: Session, member: ChatMember) -> None:
+    """Delete the member's row, for their leaving the chat or being removed from it. A statement,
+    not the ORM's delete: their leaving the organisation deletes it too, and one that got in after
+    it was read is waited for here and leaves nothing to delete. They're out either way, which is
+    what was asked, where the ORM would warn that it found no row (or raise, were rows
+    versioned)."""
+    db.execute(delete(ChatMember).where(ChatMember.id == member.id))
+
+
 @router.post("/chats/{chat_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
 def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
     """Leave a chat the user is a member of but doesn't own (a chat always has its owner).
@@ -580,7 +589,7 @@ def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: D
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't leave the chat."
         )
-    chat.members.remove(member)
+    take_out(db, member)
     # As removing a member is.
     chat.updated_at = func.now()
     db.commit()
@@ -588,8 +597,11 @@ def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: D
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
-    """Delete the chat and its members (its owner only)."""
-    db.delete(get_chat_if_owner(db, org, user.id, chat_id))
+    """Delete the chat and its members (its owner only). A statement, its members, messages and
+    invocations going with it in the database, not the ORM's delete of each member it loaded: one
+    leaving the organisation meanwhile has deleted their row already (`take_out`)."""
+    chat = get_chat_if_owner(db, org, user.id, chat_id)
+    db.execute(delete(Chat).where(Chat.id == chat.id))
     db.commit()
 
 
@@ -607,7 +619,7 @@ def remove_member(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't be removed from the chat."
         )
-    chat.members.remove(member)
+    take_out(db, member)
     chat.updated_at = func.now()
     db.commit()
 
