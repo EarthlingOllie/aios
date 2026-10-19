@@ -2,14 +2,17 @@
 the user is in counts the messages they haven't seen."""
 
 import pytest
-from test_chat_run_access import signed_up
+from conftest import delete_user, join_organisation
 from test_chats import add_user, make_chat, messages, post, signed_in_as
 
 
 @pytest.fixture
-def other(db):
-    """A second user, who finds, joins and leaves the first's chats."""
-    yield from signed_up(db, -2, "other")
+def other(db, user):
+    """A second member of the first user's organisation, who finds, joins and leaves their
+    chats."""
+    u = join_organisation(db, user, -2, "other")
+    yield u
+    delete_user(db, u)
 
 
 def listed(api) -> dict[str, dict]:

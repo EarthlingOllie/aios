@@ -159,8 +159,8 @@ lists and pages: `aios.api.provenance`), each version which member saved it, and
 records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
 agents and workflows, and deleting an agent finds what depends on it across the organisation.
 Saves still write `owner_id` (the creator) for the release before, until the contract step drops
-it. Chats still answer to their owner. The **data store** is the organisation's (see
-[Data stores](#data-stores)), and so is the run history export, on the Organisation page.
+it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
+run history export, on the Organisation page.
 
 The creator brings people in with **invitation links**, made on the Organisation page
 (`POST /api/organisation/invites`, `expires_in_days` 1 to 30, a week by default): the response
@@ -180,17 +180,22 @@ and they land in a new personal organisation with a data store of its own; what 
 The last member can't leave, nor can the creator while others remain (each a 409, explained on
 the page).
 
-**Chats** are group conversations, named like channels (a name is unique among all chats). The
-**Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
-you can find them), most recently active first, and opens one to its header,
-messages and members, grouped by kind: users, and the owner's **agents and workflows**, with the
-icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
-user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat
-doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
-opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
-renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
-other members). "Public" means every signed-in user of this deployment; organisations will narrow
-it. A public chat you aren't in can be read but not posted in until you **join** it, in one click
+**Chats** are group conversations, and belong to the organisation: a chat of another
+organisation doesn't exist for you (a 404 on every endpoint), and names are unique within the
+organisation (a 409), like channels, so two organisations can each have "general". The
+**Chats** page lists the organisation's chats you're in, and its public ones you aren't (marked
+"Not joined", so you can find them), most recently active first, and opens one to its header
+(which says which member created it: `created_by`, `updated_by`, as `aios.api.provenance`
+reports them), messages and members, grouped by kind: users, **agents and workflows**, with the
+icons the navigation uses. The owner adds any member of the organisation, and any of its agents
+and workflows, whoever made them (`POST /api/chats/{id}/members` with `{kind, id}`; a user from
+outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow; an
+agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a
+private chat doesn't exist for anyone who isn't a member, while a public one can be opened by every
+member of the organisation. Whoever creates a chat owns it and is its first member (a role in the
+chat, not ownership of data); only the owner renames or describes it, changes its visibility, adds
+or removes members and deletes it (a 403 for other members). A public chat you aren't in can be
+read but not posted in until you **join** it, in one click
 (`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
 /api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
 

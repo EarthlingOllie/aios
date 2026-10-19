@@ -700,7 +700,7 @@ export type AgentDeleteResolutions = {
 };
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
-/** The kinds of member a chat's owner adds from what they own. */
+/** The kinds of member that aren't users: the organisation's agents and workflows. */
 export type ChatTargetKind = Exclude<ChatMemberKind, "user">;
 
 /** Someone in a chat: a user (with a role), an agent or a workflow. */
@@ -719,11 +719,13 @@ export type ChatMember = {
   added_at: string;
 };
 
-export type ChatSummary = {
+/** Who made it and last changed it: the chat's owner role is separate (`is_owner`). */
+export type ChatSummary = Provenance & {
   id: number;
   name: string;
   description: string;
-  /** A private chat doesn't exist for anyone who isn't a member. */
+  /** Public: every member of the organisation can find it. Private: it doesn't exist for anyone
+   * who isn't in it. */
   visibility: ChatVisibility;
   owner_id: number;
   /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */

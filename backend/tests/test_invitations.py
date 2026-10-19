@@ -17,7 +17,6 @@ from aios.datastores import schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import (
-    Chat,
     ChatMember,
     DataStore,
     Notification,
@@ -294,13 +293,11 @@ def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
 def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, user, member):
     from test_chats import make_chat
 
-    org = organisations.membership_of(db, user.id)
-    elsewhere = organisations.membership_of(db, sign_up(db, -50, "elsewhere").id)
+    elsewhere = sign_up(db, -50, "elsewhere")
     try:
-        ours, theirs = make_chat(api, "ours", visibility="public"), make_chat(api, "theirs")
-        # Which organisation each chat is in (saving a chat doesn't stamp it yet).
-        for chat_id, org_id in ((ours["id"], org.id), (theirs["id"], elsewhere.id)):
-            db.get(Chat, chat_id).organisation_id = org_id
+        ours = make_chat(api, "ours", visibility="public")
+        with signed_in_as(elsewhere):
+            theirs = make_chat(api, "theirs")
         store_id = store_of(user)
         # A request of the organisation's store, which notifies every member.
         request = schema_changes.propose(
@@ -352,7 +349,7 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == user.id))
         assert [r["request_id"] for r in refs] == [str(request.id)]
     finally:
-        delete_user(db, db.get(User, elsewhere.created_by))
+        delete_user(db, elsewhere)
 
 
 def test_the_last_member_cant_leave(api, user):

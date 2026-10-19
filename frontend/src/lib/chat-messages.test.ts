@@ -195,6 +195,8 @@ describe("landingPath", () => {
     created_at: "2026-10-18T09:00:00Z",
     updated_at: "2026-10-18T09:00:00Z",
     unread_count: is_member ? 0 : null,
+    created_by: null,
+    updated_by: null,
   });
 
   it("is the most recently active chat the user is in", () => {

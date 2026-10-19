@@ -5,9 +5,11 @@ import type { Page, Route } from "@playwright/test";
  * tests: it keeps state across requests, so a test can save and see the result, and follows
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
- * is refused), plus schedules' preview and timezones, and chats with their members (a private
- * chat is a 404 for a non-member; a public one is listed, readable and joined by anyone, and left
- * by any member but its owner; the owner's actions are a 403 for anyone else), each with an
+ * is refused), plus schedules' preview and timezones, and chats with their members (a chat of
+ * another organisation is a 404, as a private chat is for a non-member; a public one is listed,
+ * readable and joined by any member of the organisation, and left by any member but its owner;
+ * the owner's actions are a 403 for anyone else; names are unique within the organisation), each
+ * saying who made it and last changed it, and each with an
  * unread count of others' messages since the last one read (`chatReads`), and messages
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
  * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
@@ -295,7 +297,11 @@ export type OrganisationRow = {
 
 export type ChatRow = {
   id: number;
+  /** The organisation it belongs to: `organisation`'s unless a test says otherwise. */
+  organisation_id: number;
   owner: ChatUser;
+  created_by: ChatUser | null;
+  updated_by: ChatUser | null;
   name: string;
   description: string;
   visibility: ChatVisibility;
@@ -365,6 +371,7 @@ export type Handoff = { ack: string; brief: string } | { error: string };
 export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
 /** The acknowledgement's placeholder, until the handoff writes what was understood. */
 const ACKNOWLEDGEMENT = "Reading the chat…";
+const CHAT_NAME_TAKEN = "The organisation already has a chat with that name.";
 
 export class FakeApi {
   private nextId = 100;
@@ -986,14 +993,25 @@ export class FakeApi {
     return this.workflowVersions.get(workflow.versions.at(-1)!)!;
   }
 
-  /** Adds a chat, private and owned by `me` unless said otherwise; the owner is its first member. */
+  /**
+   * Adds a chat, private, of `organisation` and owned by `me` unless said otherwise; the owner is
+   * its first member, and made it.
+   */
   addChat(
     name: string,
-    { description = "", visibility = "private" as ChatVisibility, owner = this.me } = {},
+    {
+      description = "",
+      visibility = "private" as ChatVisibility,
+      owner = this.me,
+      organisation_id = this.organisation.id,
+    } = {},
   ): ChatRow {
     const chat: ChatRow = {
       id: this.id(),
+      organisation_id,
       owner,
+      created_by: owner,
+      updated_by: owner,
       name,
       description,
       visibility,
@@ -1353,6 +1371,8 @@ export class FakeApi {
       is_owner: chat.owner.id === this.me.id,
       is_member: this.inChat(chat),
       member_count: this.liveMembers(chat).length,
+      created_by: chat.created_by,
+      updated_by: chat.updated_by,
       created_at: chat.created_at,
       updated_at: chat.updated_at,
     };
@@ -1482,6 +1502,11 @@ export class FakeApi {
       page = older.slice(-MESSAGE_PAGE);
     }
     return this.messagesOut(chat, page);
+  }
+
+  /** The chats of the organisation `me` is in. */
+  private organisationChats() {
+    return [...this.chats.values()].filter((c) => c.organisation_id === this.organisation.id);
   }
 
   private inChat(chat: ChatRow) {
@@ -2133,7 +2158,7 @@ export class FakeApi {
       // Most recently active first; everything here happens at NOW, so the newest first.
       return reply(
         200,
-        [...this.chats.values()]
+        this.organisationChats()
           // Mine, and the public ones I'm not in, for me to find.
           .filter((c) => this.inChat(c) || c.visibility === "public")
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
@@ -2141,21 +2166,26 @@ export class FakeApi {
       );
     }
     if (path === "/api/chats" && method === "POST") {
-      if ([...this.chats.values()].some((c) => c.name === body.name)) {
-        return fail(409, "A chat with that name already exists.");
+      if (this.organisationChats().some((c) => c.name === body.name)) {
+        return fail(409, CHAT_NAME_TAKEN);
       }
       const chat = this.addChat(body.name, {
         description: body.description ?? "",
         visibility: body.visibility ?? "private",
       });
-      // A new chat's first agent is the owner's documents assistant.
+      // A new chat's first agent is the organisation's documents assistant.
       this.addChatTarget(chat, "agent", this.documentsAssistant());
       return reply(201, this.chatOut(chat));
     }
     if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {
       const chat = this.chats.get(Number(m[1]));
       const rest = m[2] ?? "";
-      if (!chat || (chat.visibility === "private" && !this.inChat(chat))) {
+      // Another organisation's chat doesn't exist here; nor a private one for a non-member.
+      if (
+        !chat ||
+        chat.organisation_id !== this.organisation.id ||
+        (chat.visibility === "private" && !this.inChat(chat))
+      ) {
         return fail(404, "Not Found");
       }
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
@@ -2211,10 +2241,11 @@ export class FakeApi {
       }
       if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
-        if ([...this.chats.values()].some((c) => c.name === body.name && c !== chat)) {
-          return fail(409, "A chat with that name already exists.");
+        if (this.organisationChats().some((c) => c.name === body.name && c !== chat)) {
+          return fail(409, CHAT_NAME_TAKEN);
         }
         Object.assign(chat, {
+          updated_by: this.me,
           name: body.name,
           description: body.description ?? "",
           visibility: body.visibility ?? "private",
@@ -2229,7 +2260,16 @@ export class FakeApi {
       }
       if (rest === "/members" && method === "POST") {
         const kind = body.kind as ChatMention["kind"];
-        if (kind === "user") return fail(422, "fake API: add users with addChatMember");
+        if (kind === "user") {
+          // Only a member of the organisation: anyone else doesn't exist here.
+          const found = this.organisation.members.find((x) => x.user.id === body.id);
+          if (!found) return fail(404, "Unknown user");
+          if (chat.members.some((x) => x.kind === "user" && x.user.id === body.id)) {
+            return fail(409, "Already a member of this chat.");
+          }
+          this.addChatMember(chat, found.user);
+          return reply(201, this.chatOut(chat));
+        }
         if (!this.chatTarget(kind, body.id)) return fail(422, `Unknown ${kind}`);
         if (chat.members.some((x) => x.kind === kind && x.target_id === body.id)) {
           return fail(409, "Already a member of this chat.");
