@@ -152,6 +152,9 @@ def open_invites(db: Session, org: Organisation) -> list[OrganisationInvite]:
     )
 
 
+ONE_AT_A_TIME = "You can be in only one organisation at a time."
+
+
 def accept_refusal(db: Session, user: User, invite: OrganisationInvite) -> str | None:
     """Why the user can't join through the link, or None if they can: they're in an
     organisation already, and a user is in one at a time."""
@@ -161,9 +164,6 @@ def accept_refusal(db: Session, user: User, invite: OrganisationInvite) -> str |
     if current.id == invite.organisation_id:
         return f"You're already a member of {current.name}."
     return f"You're a member of {current.name}. {ONE_AT_A_TIME}"
-
-
-ONE_AT_A_TIME = "You can be in only one organisation at a time."
 
 
 def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
@@ -226,6 +226,7 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
                 Notification.ref.contains({"data_store_id": str(store_id)}),
             )
         )
+    # The bulk deletes bypass the session: anything it loaded of them (`org.members`) is stale.
     db.expire_all()
     personal = create_personal(db, user)
     give_data_store(db, personal, user)

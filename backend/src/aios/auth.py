@@ -43,13 +43,15 @@ oauth.register(
 router = APIRouter()
 
 
-# Where the session keeps the invitation link's token through the OAuth round trip.
+# Where the session keeps the invitation link's token through the OAuth round trip, and the
+# longest it keeps (a real token is 43 characters; the session is a cookie).
 INVITE_TOKEN = "invite_token"
+INVITE_TOKEN_MAX = 256
 
 
 @router.get("/login")
 async def login(request: Request, invite: str | None = None):
-    if invite:
+    if invite and len(invite) <= INVITE_TOKEN_MAX:
         request.session[INVITE_TOKEN] = invite
     else:
         request.session.pop(INVITE_TOKEN, None)

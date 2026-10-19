@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from conftest import delete_user, sign_up
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
 
 from aios import notifications, organisations
@@ -303,6 +303,16 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
             db, [member.id], about, {"request_id": "1", "data_store_id": str(store_id)}
         )
         notifications.notify(db, [member.id], about, {"request_id": "2", "data_store_id": "other"})
+        # One they've read already no longer reaches them, and stays.
+        notifications.notify(
+            db, [member.id], about, {"request_id": "3", "data_store_id": str(store_id)}
+        )
+        db.flush()
+        db.execute(
+            update(Notification)
+            .where(Notification.user_id == member.id, Notification.ref["request_id"].astext == "3")
+            .values(read_at=func.now())
+        )
         db.commit()
         with signed_in_as(member):
             assert api.post(f"/api/chats/{ours['id']}/join").status_code == 200
@@ -325,7 +335,7 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         chats = db.scalars(select(ChatMember.chat_id).where(ChatMember.user_id == member.id))
         assert list(chats) == [theirs["id"]]
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == member.id))
-        assert [r["request_id"] for r in refs] == ["2"]
+        assert sorted(r["request_id"] for r in refs) == ["2", "3"]
     finally:
         delete_user(db, db.get(User, elsewhere.created_by))
 
