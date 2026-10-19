@@ -2,6 +2,7 @@
 Organisation endpoints."""
 
 import importlib.util
+import threading
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from sqlalchemy import delete, select, update
 from test_chats import signed_in_as
 
 from aios import organisations
+from aios.db import SessionLocal
 from aios.models import Agent, Chat, ChatVisibility, Organisation, OrganisationMember, User
 
 VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
@@ -165,6 +167,52 @@ def test_a_personal_organisation_named_after_a_taken_login_is_suffixed(client, d
             delete_user(db, u)
 
 
+def in_the_background(call) -> tuple[threading.Thread, dict]:
+    """Start `call` on a thread; the dict gets its result (or the exception it raised)."""
+    result: dict = {}
+
+    def run():
+        try:
+            result["value"] = call()
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, result
+
+
+def test_signing_in_while_a_rename_takes_the_login_lands_in_a_suffixed_one(
+    client, db, user, monkeypatch
+):
+    """The creator of another organisation renames it to the login as the user first signs in:
+    the name looked free to the sign-in, and is taken by the time it inserts."""
+    from conftest import delete_user
+
+    try:
+        with SessionLocal() as renaming:
+            # The rename, flushed but not committed: the sign-in waits on its name.
+            organisations.membership_of(renaming, user.id).name = "dana"
+            renaming.flush()
+            signing_in, result = in_the_background(
+                lambda: sign_in(client, monkeypatch, -46, "dana")
+            )
+            signing_in.join(timeout=0.5)
+            assert signing_in.is_alive(), "the sign-in should wait on the rename's name"
+            renaming.commit()
+        signing_in.join(timeout=10)
+
+        assert "error" not in result, result
+        assert result["value"].status_code == 303
+        dana = db.scalar(select(User).where(User.github_id == -46))
+        org = organisations.membership_of(db, dana.id)
+        assert (org.name, org.personal, org.created_by) == ("dana-2", True, dana.id)
+    finally:
+        dana = db.scalar(select(User).where(User.github_id == -46))
+        if dana is not None:
+            delete_user(db, dana)
+
+
 def test_me_says_which_organisation_the_user_is_in(api, user):
     me = api.get("/api/me").json()
     assert me["login"] == "test-user"
@@ -225,6 +273,36 @@ def test_the_creator_renames_the_organisation(api, user):
     assert resp.json()["personal"] is True
     assert api.get("/api/me").json()["organisation"]["name"] == "Acme"
     assert api.put("/api/organisation", json={"name": " "}).status_code == 422
+
+
+def test_renaming_to_a_name_a_sign_up_is_taking_is_refused(api, db, user):
+    """The creator renames to a name a new user's personal organisation is taking at the same
+    moment: the rename is the one refused, as for a name already taken."""
+    from conftest import delete_user
+
+    try:
+        with SessionLocal() as signing_up:
+            # The sign-up, flushed but not committed: the rename waits on its name.
+            newcomer = User(github_id=-48, login="acme")
+            signing_up.add(newcomer)
+            signing_up.flush()
+            organisations.create_personal(signing_up, newcomer)
+            renaming, result = in_the_background(
+                lambda: api.put("/api/organisation", json={"name": "acme"})
+            )
+            renaming.join(timeout=0.5)
+            assert renaming.is_alive(), "the rename should wait on the sign-up's name"
+            signing_up.commit()
+        renaming.join(timeout=10)
+
+        assert "error" not in result, result
+        assert result["value"].status_code == 409
+        assert result["value"].json()["detail"] == "An organisation with that name already exists."
+        assert api.get("/api/organisation").json()["name"] == "test-user"
+    finally:
+        newcomer = db.scalar(select(User).where(User.github_id == -48))
+        if newcomer is not None:
+            delete_user(db, newcomer)
 
 
 def test_another_member_cant_rename_it(api, member):
