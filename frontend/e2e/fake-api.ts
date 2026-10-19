@@ -246,6 +246,15 @@ export type RunRow = {
   stale_pins: StalePinRow[];
 };
 
+export type SkillSummaryRow = {
+  id: number;
+  name: string;
+  description: string;
+  version: number;
+  version_id: number;
+  updated_at: string;
+};
+
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
@@ -373,6 +382,8 @@ export class FakeApi {
   /** The signed-in user. */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
+  /** The skills, as `GET /api/skills` lists them; enough for the list, not the skill pages. */
+  skills = new Map<number, SkillSummaryRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
   handoffs = new Map<number, Handoff>();
@@ -615,6 +626,12 @@ export class FakeApi {
         ? { status: "ready", chunk_count: outcome.chunks, error: null }
         : { status: "failed", chunk_count: 0, error: outcome.error },
     );
+  }
+
+  addSkill(name: string, description = ""): SkillSummaryRow {
+    const skill = { id: this.id(), name, description, version: 1, version_id: this.id(), updated_at: NOW };
+    this.skills.set(skill.id, skill);
+    return skill;
   }
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
@@ -1680,6 +1697,7 @@ export class FakeApi {
       return reply(200, this.notificationOut(notification));
     }
     if (path === "/api/tools") return reply(200, []);
+    if (path === "/api/skills" && method === "GET") return reply(200, [...this.skills.values()]);
     if (path === "/api/agents") {
       return reply(
         200,

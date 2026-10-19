@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { NavLink, Outlet, useMatch } from "react-router";
-import { Plus, X } from "lucide-react";
+import {
+  NavLink,
+  Outlet,
+  useLocation,
+  useMatch,
+  useNavigationType,
+  useSearchParams,
+} from "react-router";
+import { Plus, Search, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { describeError } from "@/lib/api";
+import { listHref, matchesQuery } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 
 /**
@@ -89,7 +98,59 @@ export const selectClass =
 /** Passed to the detail routes so they can refresh the list after a change. */
 export type ListContext = { reloadList: () => Promise<void> };
 
-/** A list of items on the left, and the selected item (or a form) on the right. */
+/**
+ * `path` with the list's search (`?q=`) from the current URL, for a section's own navigation
+ * back to its list, e.g. after a delete, so the list stays filtered.
+ */
+export function useListHref(): (path: string) => string {
+  const [params] = useSearchParams();
+  return (path) => listHref(path, params);
+}
+
+/** Marks the history entries the search box writes as you type (see `useListSearch`). */
+const TYPED = "listSearchTyped";
+
+/**
+ * The list's search, kept in the URL's `q` (left out when empty). Typing replaces the history
+ * entry, so Back goes to the previous search rather than the previous key press. The box keeps
+ * its own text, since the router updates the URL in a transition, a moment later; it takes the
+ * URL's again on any other navigation (Back, a link), but not on the entries its typing wrote.
+ */
+function useListSearch() {
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const query = params.get("q") ?? "";
+  const [text, setText] = useState(query);
+  const [seenKey, setSeenKey] = useState(location.key);
+  const state = location.state as Record<string, unknown> | null;
+  if (location.key !== seenKey) {
+    setSeenKey(location.key);
+    if (navigationType === "POP" || state?.[TYPED] !== true) setText(query);
+  }
+  const change = (value: string) => {
+    setText(value);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set("q", value);
+        else next.delete("q");
+        return next;
+      },
+      // Keeping whatever state the entry already had.
+      { replace: true, state: { ...state, [TYPED]: true } },
+    );
+  };
+  return { text, change };
+}
+
+/**
+ * A list of items on the left, and the selected item (or a form) on the right.
+ *
+ * Given `search` (the fields of an item to match, such as its name and description), the list
+ * gets a search box, kept in the URL (`?q=`) and carried by its links and New button. The open
+ * item stays open even when the search hides it from the list.
+ */
 export function MasterDetail<T extends { id: number }>({
   title,
   basePath,
@@ -98,6 +159,7 @@ export function MasterDetail<T extends { id: number }>({
   empty,
   renderItem,
   reloadList,
+  search,
 }: {
   title: string;
   basePath: string;
@@ -106,28 +168,84 @@ export function MasterDetail<T extends { id: number }>({
   empty: string;
   renderItem: (item: T) => ReactNode;
   reloadList: () => Promise<void>;
+  search?: (item: T) => string[];
 }) {
   // On small screens show either the list or the detail, not both.
   const atIndex = useMatch(basePath) !== null;
+  const href = useListHref();
+  const { text, change } = useListSearch();
+  const input = useRef<HTMLInputElement>(null);
+  const query = search ? text.trim() : "";
+  const shown = items && query ? items.filter((item) => matchesQuery(search!(item), query)) : items;
+  const noun = title.toLowerCase();
+  const clear = () => {
+    change("");
+    input.current?.focus();
+  };
   return (
     <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[300px_1fr]">
       <section className={cn("min-h-0 flex-col border-r", atIndex ? "flex" : "hidden md:flex")}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h1 className="text-base font-semibold">{title}</h1>
           <Button asChild size="sm">
-            <NavLink to={`${basePath}/new`}>
+            <NavLink to={href(`${basePath}/new`)}>
               <Plus />
               New
             </NavLink>
           </Button>
         </div>
+        {search && (
+          <div className="flex flex-col gap-1 border-b p-2">
+            <div className="relative">
+              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+              <Input
+                ref={input}
+                type="search"
+                aria-label={`Search ${noun}`}
+                placeholder="Search"
+                value={text}
+                onChange={(e) => change(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && text) {
+                    e.preventDefault();
+                    change("");
+                  }
+                }}
+                className="px-8 [&::-webkit-search-cancel-button]:hidden"
+              />
+              {text && (
+                <button
+                  type="button"
+                  onClick={clear}
+                  aria-label="Clear search"
+                  className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2.5 -translate-y-1/2"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
+            </div>
+            {items && shown!.length < items.length && (
+              <p className="text-muted-foreground px-1 text-xs">
+                {shown!.length} of {items.length}
+              </p>
+            )}
+          </div>
+        )}
         {error && <p className="text-destructive px-4 py-2 text-sm">{error}</p>}
         <ul aria-label={title} className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {items?.length === 0 && <li className="text-muted-foreground p-2 text-sm">{empty}</li>}
-          {items?.map((item) => (
+          {items?.length !== 0 && shown?.length === 0 && (
+            <li className="text-muted-foreground flex flex-col items-start gap-2 p-2 text-sm">
+              No {noun} match “{query}”.
+              <Button type="button" variant="outline" size="sm" onClick={clear}>
+                Clear filters
+              </Button>
+            </li>
+          )}
+          {shown?.map((item) => (
             <li key={item.id}>
               <NavLink
-                to={`${basePath}/${item.id}`}
+                to={href(`${basePath}/${item.id}`)}
                 className={({ isActive }) =>
                   cn(
                     "hover:bg-accent block rounded-md px-3 py-2 text-sm",

@@ -14,6 +14,7 @@ import {
   POLL_MS,
   Section,
   selectClass,
+  useListHref,
   useLoad,
   usePoll,
   useVisible,
@@ -34,6 +35,7 @@ import {
   type ChatVisibility,
 } from "@/lib/api";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { nameAndDescription } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -59,6 +61,7 @@ export function ChatsSection() {
       error={error}
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
+      search={nameAndDescription}
       renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
@@ -112,6 +115,7 @@ export function ChatsIndex() {
 export function ChatDetail() {
   const id = Number(useParams().chatId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
   // Who the composer offers to mention: the members, again whenever they change.
@@ -137,7 +141,7 @@ export function ChatDetail() {
     try {
       await api.deleteChat(id);
       await reloadList();
-      navigate("/chats");
+      navigate(listHref("/chats"));
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -158,7 +162,7 @@ export function ChatDetail() {
       await api.leaveChat(id);
       await reloadList();
       // A private chat is gone for them once they've left; a public one is still there to read.
-      if (chat!.visibility === "private") navigate("/chats");
+      if (chat!.visibility === "private") navigate(listHref("/chats"));
       else await reload();
     } catch (err) {
       setActionError(describeError(err));
@@ -375,6 +379,7 @@ export function ChatForm() {
   const params = useParams();
   const id = params.chatId ? Number(params.chatId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<ChatInput>();
   const [error, setError] = useState<string>();
@@ -400,7 +405,7 @@ export function ChatForm() {
     try {
       const saved = id === undefined ? await api.createChat(form!) : await api.updateChat(id, form!);
       await reloadList();
-      navigate(`/chats/${saved.id}`);
+      navigate(listHref(`/chats/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

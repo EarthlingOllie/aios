@@ -18,6 +18,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   type ListContext,
 } from "@/components/crud";
@@ -46,6 +47,7 @@ import {
   type SkillSummary,
   type ToolInfo,
 } from "@/lib/api";
+import { nameAndDescription } from "@/lib/list-filter";
 
 export function AgentsSection() {
   const { data, error, reload } = useLoad(api.listAgents);
@@ -57,6 +59,7 @@ export function AgentsSection() {
       error={error}
       empty="No agents yet. An agent is a base prompt plus a set of skills and tools."
       reloadList={reload}
+      search={nameAndDescription}
       renderItem={(agent) => (
         <>
           <div className="flex items-center gap-2">
@@ -136,6 +139,7 @@ function VersionConfig({ version }: { version: AgentVersion }) {
 export function AgentDetail() {
   const id = Number(useParams().agentId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
@@ -164,7 +168,7 @@ export function AgentDetail() {
 
   const onDeleted = async () => {
     await reloadList();
-    navigate("/agents");
+    navigate(listHref("/agents"));
   };
 
   const onNewRun = () =>
@@ -499,6 +503,7 @@ export function AgentForm() {
   const params = useParams();
   const id = params.agentId ? Number(params.agentId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<FormState>();
   // The version being edited, if any.
@@ -572,7 +577,7 @@ export function AgentForm() {
     try {
       const saved = id === undefined ? await api.createAgent(body) : await api.updateAgent(id, body);
       await reloadList();
-      navigate(`/agents/${saved.id}`);
+      navigate(listHref(`/agents/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

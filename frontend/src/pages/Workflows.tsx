@@ -10,6 +10,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   usePoll,
   type ListContext,
@@ -28,6 +29,7 @@ import { RunStatusBadge } from "@/components/workflow/status";
 import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
 import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
+import { nameAndDescription } from "@/lib/list-filter";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
 
@@ -41,6 +43,7 @@ export function WorkflowsSection() {
       error={error}
       empty="No workflows yet. A workflow chains agents, and other workflows, into a graph."
       reloadList={reload}
+      search={nameAndDescription}
       renderItem={(workflow) => (
         <>
           <div className="flex items-center gap-2">
@@ -114,6 +117,7 @@ export function WorkflowDetail() {
 
 function WorkflowDetailView({ id }: { id: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const versions = useLoad(useCallback(() => api.listWorkflowVersions(id), [id]));
@@ -144,7 +148,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     try {
       await api.deleteWorkflow(id);
       await reloadList();
-      navigate("/workflows");
+      navigate(listHref("/workflows"));
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -376,6 +380,7 @@ export function WorkflowEditorPage() {
 
 function WorkflowEditorView({ id }: { id: number | undefined }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [meta, setMeta] = useState<{ name: string; description: string; note: string }>();
   const [draft, setDraft] = useState<Draft>();
@@ -453,7 +458,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const back = () => {
     if (dirty && !window.confirm("Discard your unsaved changes?")) return;
     done.current = true;
-    navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
+    navigate(listHref(id === undefined ? "/workflows" : `/workflows/${id}`));
   };
 
   async function onSubmit(e: React.FormEvent) {
@@ -467,7 +472,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
       await reloadList();
       done.current = true;
-      navigate(`/workflows/${saved.id}`);
+      navigate(listHref(`/workflows/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {
