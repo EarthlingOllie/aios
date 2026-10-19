@@ -117,6 +117,7 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}`);
   await expect(node(page, "draft")).toContainText("Critic");
+  await page.getByRole("tab", { name: /Versions/ }).click();
   await expect(page.getByText("Just the critic")).toBeVisible();
   expect(api.current(report)).toMatchObject({
     version: 2,

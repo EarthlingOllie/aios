@@ -340,7 +340,7 @@ test("lists a workflow's runs and deletes one", async ({ page }) => {
   const { report } = seed(api);
   api.addRun(report, { status: "succeeded", input: "First run", output: "ok" });
   const second = api.addRun(report, { status: "failed", input: "Second run", error: "x" });
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(`/workflows/${report.id}?tab=runs`);
   const runs = page.getByRole("list", { name: "Runs" });
   await expect(runs.getByRole("listitem")).toHaveCount(2);
   await expect(runs.getByRole("listitem").first()).toContainText("Second run");
@@ -355,7 +355,7 @@ test("lists a workflow's runs and deletes one", async ({ page }) => {
   });
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete run" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(`/workflows/${report.id}?tab=runs`);
   await expect(page.getByRole("list", { name: "Runs" }).getByRole("listitem")).toHaveCount(1);
   expect(listReads).toEqual([]);
 });
@@ -388,7 +388,7 @@ test("the runs list follows a live run until nothing is going", async ({ page })
   page.on("request", (r) => {
     if (r.method() === "GET" && r.url().endsWith(`/workflows/${report.id}/runs`)) reads++;
   });
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(`/workflows/${report.id}?tab=runs`);
   const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
   await expect(latest).toContainText("Running");
 

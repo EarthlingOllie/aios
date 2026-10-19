@@ -267,7 +267,7 @@ export function AgentDeleteDialog({
                         {plural(scheduled, "schedule")}
                       </span>
                     </div>
-                    <Schedules triggers={w.triggers} to={`/workflows/${w.id}`} />
+                    <Schedules triggers={w.triggers} to={`/workflows/${w.id}?tab=schedule`} />
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button
                         size="sm"

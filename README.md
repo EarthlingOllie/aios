@@ -48,7 +48,10 @@ the model's behaviour:
 
 **Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
-an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
+an edge shows its configuration. A workflow's page has tabs, as an agent's does: Graph, Runs and
+Versions (each with its count) and Schedule, the open one kept in the URL (`?tab=runs`); its
+title, actions and the form to start a run stay above them, and a run's or a version's page links
+back to its tab. Its editor adds nodes for your agents and workflows, connects
 them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
 make a cycle before you save. Runs are started from the workflow's page; a run's page draws the
 path it took on the graph (which nodes succeeded, failed or never ran, and the edges their
