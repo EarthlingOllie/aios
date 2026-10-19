@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, dependents, invocations, tracing, ui_stream
@@ -137,6 +138,9 @@ class AgentSummary(BaseModel):
     version_id: int
     skill_count: int
     tool_count: int
+    # What the current version has, in its order: its skills (any version of each) and tools.
+    skill_ids: list[int]
+    tool_keys: list[str]
     run_count: int
     updated_at: datetime
 
@@ -366,6 +370,28 @@ def tool_count(version_id) -> Any:
     )
 
 
+def skill_ids(version_id) -> Any:
+    """The ids of the skills a version has, in order (null if it has none)."""
+    return (
+        select(
+            array_agg(aggregate_order_by(SkillVersion.skill_id, agent_version_skills.c.position))
+        )
+        .select_from(agent_version_skills)
+        .join(SkillVersion, SkillVersion.id == agent_version_skills.c.skill_version_id)
+        .where(agent_version_skills.c.agent_version_id == version_id)
+        .scalar_subquery()
+    )
+
+
+def tool_keys(version_id) -> Any:
+    """The keys of the tools a version has, in order (null if it has none)."""
+    return (
+        select(array_agg(aggregate_order_by(AgentVersionTool.tool_key, AgentVersionTool.position)))
+        .where(AgentVersionTool.agent_version_id == version_id)
+        .scalar_subquery()
+    )
+
+
 # --- Agents -------------------------------------------------------------------------------------
 
 
@@ -379,8 +405,8 @@ def list_agents(user: CurrentUser, db: DB):
             Agent,
             AgentVersion.version,
             AgentVersion.id,
-            skill_count(AgentVersion.id),
-            tool_count(AgentVersion.id),
+            skill_ids(AgentVersion.id),
+            tool_keys(AgentVersion.id),
             run_count,
         )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
@@ -394,8 +420,10 @@ def list_agents(user: CurrentUser, db: DB):
             description=a.description,
             version=version,
             version_id=version_id,
-            skill_count=skills,
-            tool_count=tools,
+            skill_count=len(skills or []),
+            tool_count=len(tools or []),
+            skill_ids=skills or [],
+            tool_keys=tools or [],
             run_count=runs,
             updated_at=a.updated_at,
         )
