@@ -1,8 +1,9 @@
 """The Data page's Dropped section: the tables and columns approved drops took away, until
 they're purged, and restoring them (`aios.datastores.dropped`).
 
-Only users who pass `can_approve` for the store see or restore them. Restoring is queued to the
-provisioning worker (only it acts as the store's owner); one refused there says why on the item.
+Only users who pass `can_approve` for the store (every member of its organisation) see or
+restore them. Restoring is queued to the provisioning worker (only it acts as the store's
+owner role); one refused there says why on the item.
 """
 
 import logging
@@ -12,7 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import (
     DataStoreBehind,
     DataStoreBusy,
@@ -61,10 +62,11 @@ def _out(item: dropped.Dropped, blocked: str | None) -> DroppedOut:
     )
 
 
-def _store(user_id: int, db: DB):
-    store_id = data_store_for(user_id, db)
+def _store(user_id: int, organisation_id: int, db: DB):
+    """The organisation's store, if the user may restore what's dropped in it."""
+    store_id = data_store_for(organisation_id, db)
     db.commit()
-    if not can_approve(user_id, db.get(DataStore, store_id)):
+    if not can_approve(db, user_id, db.get_one(DataStore, store_id)):
         return None
     return store_id
 
@@ -84,9 +86,9 @@ def _read(store_id, fn, *args):
 
 
 @router.get("/dropped", response_model=list[DroppedOut])
-def list_dropped(user: CurrentUser, db: DB):
-    """What's dropped in the user's store, newest first."""
-    listed = _read(_store(user.id, db), dropped.listing) or []
+def list_dropped(user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """What's dropped in the organisation's store, newest first."""
+    listed = _read(_store(user.id, org.id, db), dropped.listing) or []
     return [_out(item, why) for item, why in listed]
 
 
@@ -95,11 +97,11 @@ def list_dropped(user: CurrentUser, db: DB):
     response_model=DroppedOut,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def restore(dropped_id: int, user: CurrentUser, db: DB):
+def restore(dropped_id: int, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Queue restoring it, unless it can't be restored now (409, saying why)."""
     from aios.worker import restore_dropped_task
 
-    store_id = _store(user.id, db)
+    store_id = _store(user.id, org.id, db)
     found = _read(store_id, dropped.find, dropped_id)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing dropped by that id")

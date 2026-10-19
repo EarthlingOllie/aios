@@ -1,5 +1,8 @@
-"""The user's settings (the Settings page). So far: the run history export
-(`aios.datastores.history`)."""
+"""The organisation's settings, on the Organisation page: so far, the run history export
+(`aios.datastores.history`), kept on its data store. Any member reads and changes them.
+
+The user's own Settings page has nothing of theirs to change yet, so nothing here is the
+user's."""
 
 import logging
 from datetime import datetime
@@ -9,10 +12,10 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation
 from aios.datastores import data_store_for, history
 from aios.db import DB
-from aios.models import DataStore, User
+from aios.models import DataStore
 
 log = logging.getLogger(__name__)
 
@@ -41,42 +44,41 @@ class SettingsOut(BaseModel):
     history_embed_error: str | None
 
 
-def settings_out(db: DB, user_id: int) -> SettingsOut:
-    row = db.execute(
-        select(
-            User.export_run_history,
-            User.embed_run_history,
-            DataStore.history_revision,
-            DataStore.history_exported_at,
-            DataStore.history_embedded_at,
-            DataStore.history_embed_error,
+def settings_out(db: DB, organisation_id: int) -> SettingsOut:
+    store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == organisation_id))
+    if store is None:
+        # Not made yet (signing up makes it): nothing switched on, nothing exported.
+        return SettingsOut(
+            export_run_history=False,
+            history_ready=False,
+            history_exported_at=None,
+            embed_run_history=False,
+            history_embedded_at=None,
+            history_embed_error=None,
         )
-        .outerjoin(DataStore, DataStore.owner_user_id == User.id)
-        .where(User.id == user_id)
-    ).one()
     return SettingsOut(
-        export_run_history=row.export_run_history,
-        history_ready=row.history_revision is not None,
-        history_exported_at=row.history_exported_at,
-        embed_run_history=row.embed_run_history,
-        history_embedded_at=row.history_embedded_at,
-        history_embed_error=row.history_embed_error,
+        export_run_history=store.export_run_history,
+        history_ready=store.history_revision is not None,
+        history_exported_at=store.history_exported_at,
+        embed_run_history=store.embed_run_history,
+        history_embedded_at=store.history_embedded_at,
+        history_embed_error=store.history_embed_error,
     )
 
 
-@router.get("/settings", response_model=SettingsOut)
-def get_settings(user: CurrentUser, db: DB):
-    return settings_out(db, user.id)
+@router.get("/organisation/settings", response_model=SettingsOut)
+def get_settings(org: CurrentOrganisation, db: DB):
+    return settings_out(db, org.id)
 
 
-@router.put("/settings", response_model=SettingsOut)
-def update_settings(body: SettingsIn, user: CurrentUser, db: DB):
+@router.put("/organisation/settings", response_model=SettingsOut)
+def update_settings(body: SettingsIn, org: CurrentOrganisation, db: DB):
     set_up = None
     if body.export_run_history is not None:
-        set_up = history.set_exporting(db, user.id, body.export_run_history)
+        set_up = history.set_exporting(db, org.id, body.export_run_history)
     if body.embed_run_history is not None:
         try:
-            history.set_embedding(db, user.id, body.embed_run_history)
+            history.set_embedding(db, org.id, body.embed_run_history)
         except history.ExportOff:
             db.rollback()
             raise HTTPException(
@@ -90,11 +92,11 @@ def update_settings(body: SettingsIn, user: CurrentUser, db: DB):
             # The setting is saved: the provisioning worker's retry sets the store up
             # (`provision.retry_unfinished`), and the export sweep then drains the backfill.
             log.exception("Couldn't queue setting up the history export of data store %s", set_up)
-    return settings_out(db, user.id)
+    return settings_out(db, org.id)
 
 
-@router.delete("/settings/exported-history", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_exported_history(user: CurrentUser) -> None:
+@router.delete("/organisation/settings/exported-history", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_exported_history(org: CurrentOrganisation) -> None:
     """Empty the data store's `history` tables. A 409 while the store isn't ready."""
-    store_id = await run_in_threadpool(data_store_for, user.id)
+    store_id = await run_in_threadpool(data_store_for, org.id)
     await run_in_threadpool(history.delete_exported, store_id)

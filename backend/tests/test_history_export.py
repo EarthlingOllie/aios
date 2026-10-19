@@ -8,21 +8,20 @@ import uuid
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import delete_user, org_of
+from conftest import delete_user, org_of, sign_up, store_of
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text, update
 from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow, workflow_node
 
-from aios import worker, workflows
+from aios import organisations, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.datastores import (
     DataStoreBehind,
     DataStoreBusy,
-    data_store_for,
     history,
     migrations,
     provision,
@@ -30,18 +29,18 @@ from aios.datastores import (
 )
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, DataStore, HistoryExport, User, WorkflowRun
+from aios.models import AgentRun, DataStore, HistoryExport, WorkflowRun
 from aios.workflows import execute_run
 
 
 def settings(api) -> dict:
-    response = api.get("/api/settings")
+    response = api.get("/api/organisation/settings")
     assert response.status_code == 200
     return response.json()
 
 
 def switch(api, on: bool) -> dict:
-    response = api.put("/api/settings", json={"export_run_history": on})
+    response = api.put("/api/organisation/settings", json={"export_run_history": on})
     assert response.status_code == 200
     return response.json()
 
@@ -75,10 +74,10 @@ def set_up_and_export(store_id: uuid.UUID, history_tasks) -> None:
 
 @pytest.fixture
 def store_id(user) -> uuid.UUID:
-    return data_store_for(user.id)
+    return store_of(user)
 
 
-def test_the_export_is_off_until_switched_on_and_the_setting_persists(api, user):
+def test_the_export_is_off_until_switched_on_and_the_setting_persists_on_the_store(api, store_id):
     assert settings(api) == {
         "export_run_history": False,
         "history_exported_at": None,
@@ -91,7 +90,7 @@ def test_the_export_is_off_until_switched_on_and_the_setting_persists(api, user)
     assert switch(api, True)["export_run_history"] is True
     assert settings(api)["export_run_history"] is True
     with SessionLocal() as db:
-        assert db.get(type(user), user.id).export_run_history is True
+        assert db.get(DataStore, store_id).export_run_history is True
 
     assert switch(api, False)["export_run_history"] is False
     assert settings(api)["export_run_history"] is False
@@ -341,12 +340,12 @@ def test_delete_exported_history_empties_it(api, user, store_id, history_tasks):
     set_up_and_export(store_id, history_tasks)
     switch(api, False)
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
     assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
     assert stored(store_id, "SELECT count(*) FROM history.messages") == [(0,)]
     # Nothing to delete is no error, before the history tables exist too.
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
 
 def test_delete_exported_history_while_exporting_starts_the_copy_over(
@@ -360,7 +359,7 @@ def test_delete_exported_history_while_exporting_starts_the_copy_over(
     set_up_and_export(store_id, history_tasks)
     history_tasks["export"].clear()
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
     # Emptied, and nothing is said to have been exported since.
     assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
@@ -382,7 +381,7 @@ def test_delete_exported_history_while_off_keeps_it_empty(api, user, store_id, h
     switch(api, False)
     history_tasks["export"].clear()
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
     history.export(store_id)
 
     assert history_tasks["export"] == []
@@ -391,7 +390,7 @@ def test_delete_exported_history_while_off_keeps_it_empty(api, user, store_id, h
 
 
 def test_delete_exported_history_before_the_export_ever_ran(api, user):
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
 
 @pytest.fixture
@@ -436,7 +435,7 @@ def test_delete_exported_history_while_an_export_is_running_is_busy(
     monkeypatch.setattr(history, "LOCK_WAIT", 0.2)
 
     started = time.monotonic()
-    response = api.delete("/api/settings/exported-history")
+    response = api.delete("/api/organisation/settings/exported-history")
 
     assert response.status_code == 503
     assert time.monotonic() - started < 2
@@ -584,25 +583,23 @@ def test_the_export_task_tries_a_busy_or_behind_store_again(user, store_id, monk
 def test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned(
     client, db, history_tasks
 ):
-    u = User(github_id=-77, login="unready")
-    db.add(u)
-    db.commit()
+    u = sign_up(db, -77, "unready")
     app.dependency_overrides[current_user] = lambda: u
     try:
-        out = client.put("/api/settings", json={"export_run_history": True})
+        out = client.put("/api/organisation/settings", json={"export_run_history": True})
         assert out.status_code == 200
         assert out.json()["history_ready"] is False
-        store_id = data_store_for(u.id)
+        store_id = store_of(u)
         assert history_tasks["set_up"] == [store_id]
 
         provision.provision(store_id)
 
-        assert client.get("/api/settings").json()["history_ready"] is True
+        assert client.get("/api/organisation/settings").json()["history_ready"] is True
         # With no runs to export, only the sweep exports it: then it has caught up.
         worker.export_pending_history_task.apply().get()
         assert history_tasks["export"] == [store_id]
         history.export(store_id)
-        assert client.get("/api/settings").json()["history_exported_at"] is not None
+        assert client.get("/api/organisation/settings").json()["history_exported_at"] is not None
     finally:
         app.dependency_overrides.clear()
         delete_user(db, u)
@@ -741,7 +738,7 @@ def test_the_export_delete_exported_history_queues_can_start_at_once(
     # A worker that picks the export up the moment it's queued.
     monkeypatch.setattr(history, "enqueue_export", history.export)
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
     assert stored(store_id, "SELECT id FROM history.agent_runs") == [(run["id"],)]
 
@@ -996,7 +993,7 @@ def test_exporting_workflow_runs_again_gives_no_duplicates(
 
     for _ in range(2):
         with SessionLocal() as db:
-            history.enqueue_everything(db, user.id)
+            history.enqueue_everything(db, organisations.membership_of(db, user.id).id)
             db.commit()
         assert history.export(store_id) == 6
 
@@ -1058,7 +1055,7 @@ def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
     def broker_down(run_id: int) -> None:
         # Committed, so a backfill (or delete exported history) meanwhile exports it.
         with SessionLocal() as db:
-            history.enqueue_everything(db, user.id)
+            history.enqueue_everything(db, organisations.membership_of(db, user.id).id)
             db.commit()
         history.export(store_id)
         assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(run_id,)]
@@ -1139,7 +1136,7 @@ def test_delete_exported_history_empties_the_workflow_runs_and_while_on_brings_t
     )
     assert stored(store_id, counts) == [(1, 3)]
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
     assert stored(store_id, counts) == [(0, 0)]
     history.export(store_id)

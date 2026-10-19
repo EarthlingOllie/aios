@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 import pytest
-from conftest import delete_user, made_by, provisioned_user
+from conftest import delete_user, made_by, provisioned_user, store_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
@@ -10,7 +10,7 @@ from test_search import add_chunks, unit
 from aios import llm, search
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import data_store_for, store_session
+from aios.datastores import store_session
 from aios.models import Agent
 from aios.runner import server_tools
 from aios.tools import TOOLS, ToolSpec, register
@@ -316,10 +316,10 @@ def documents(db, user):
     """Three chunks in `user`'s store, plus one in another user's that matches the same query."""
     other = provisioned_user(db, -2, "other-user")
     fish = ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."]
-    add_chunks(data_store_for(user.id), "fish.md", [(t, unit(0)) for t in fish], headings=["Fish"])
-    add_chunks(data_store_for(user.id), "cats.md", [("Cats purr.", unit(1))])
+    add_chunks(store_of(user), "fish.md", [(t, unit(0)) for t in fish], headings=["Fish"])
+    add_chunks(store_of(user), "cats.md", [("Cats purr.", unit(1))])
     add_chunks(
-        data_store_for(other.id),
+        store_of(other),
         "theirs.md",
         [("Their zebrafish notes.", unit(0))],
         headings=["Fish"],
@@ -363,9 +363,7 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         resp = api.post(url, json=chat_body("what about zebrafish?"))
     assert resp.status_code == 200
-    assert spy["deps"] == ChatDeps(
-        user_id=user.id, data_store_id=data_store_for(user.id), run_id=run["id"]
-    )
+    assert spy["deps"] == ChatDeps(user_id=user.id, data_store_id=store_of(user), run_id=run["id"])
     assert seen["tools"] == ["search_documents"]
     assert "hybrid (semantic + keyword)" in seen["description"]
     assert queries == ["zebrafish"]
@@ -401,7 +399,7 @@ def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
 def test_hybrid_search_fills_a_limit_above_its_candidates(user, documents, monkeypatch):
     # A query with no keyword matches, so every result comes from the semantic branch.
     monkeypatch.setattr(get_settings(), "search_candidates", 1)
-    with store_session(data_store_for(user.id), "ro") as store:
+    with store_session(store_of(user), "ro") as store:
         hits = search.hybrid_search_with_vector(
             store, query="xylophone", query_vector=unit(0), limit=3
         )

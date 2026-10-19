@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from conftest import delete_user, sign_up
+from conftest import delete_user, sign_up, store_of
 from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
@@ -22,7 +22,6 @@ from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
@@ -326,7 +325,7 @@ def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, q
     def broken(*args):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_for", broken)
+    monkeypatch.setattr(workflows, "data_store_of", broken)
     # Failed then and there, not left running without a worker until it's failed as stopped.
     asyncio.run(execute_run(started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
@@ -394,7 +393,7 @@ def test_an_agent_nodes_tools_search_the_owners_data_store(api, user, queued, mo
     with use_model(model(script)):
         asyncio.run(execute_run(started["id"]))
 
-    assert searched == [data_store_for(user.id)]
+    assert searched == [store_of(user)]
 
 
 def test_get_shows_the_pinned_version_and_runs_list_newest_first(api, queued):

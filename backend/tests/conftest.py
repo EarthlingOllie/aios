@@ -99,15 +99,18 @@ def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
 
 
 def delete_user(db, user: User) -> None:
-    """Delete the user's organisation (cascading to what it owns), the user, and their store's
-    database if it was provisioned."""
-    stores = [
-        provision.StoreNames.of(s)
-        for s in db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id))
-    ]
-    for org in db.scalars(
+    """Delete the user's organisation (cascading to what it owns) with its store, the user, and
+    the store's database if it was provisioned."""
+    orgs = db.scalars(
         select(Organisation).join(OrganisationMember).where(OrganisationMember.user_id == user.id)
-    ).all():
+    ).all()
+    owned = db.scalars(
+        select(DataStore).where(DataStore.owner_organisation_id.in_([o.id for o in orgs]))
+    ).all()
+    stores = [provision.StoreNames.of(s) for s in owned]
+    for store in owned:
+        db.delete(store)
+    for org in orgs:
         # What pins another's versions first (workflows pin agents', agents pin skills'): one
         # cascading delete of them all can check a pin before it has deleted the pinning row.
         for model in (Workflow, Agent, Skill):
@@ -130,6 +133,12 @@ def sign_up(db, github_id: int, login: str, **fields) -> User:
     organisations.create_personal(db, u)
     db.commit()
     return u
+
+
+def store_of(user: User) -> uuid.UUID:
+    """The id of the user's organisation's data store, made (not provisioned) if it has none."""
+    with SessionLocal() as db:
+        return data_store_for(organisations.membership_of(db, user.id).id)
 
 
 def join_organisation(db, of: User, github_id: int, login: str, **fields) -> User:
@@ -156,10 +165,10 @@ def made_by(db, user: User) -> dict:
 
 
 def provisioned_user(db, github_id: int, login: str) -> User:
-    """A new user, with their store provisioned: a database of its own, ready. Delete them with
-    `delete_user`."""
+    """A new user, with their organisation's store provisioned: a database of its own, ready.
+    Delete them with `delete_user`."""
     u = sign_up(db, github_id, login)
-    provision.provision(data_store_for(u.id))
+    provision.provision(store_of(u))
     return u
 
 
@@ -201,7 +210,8 @@ def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
 
 @pytest.fixture
 def new_user(db) -> Iterator[Callable[[], User]]:
-    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+    """Makes users (each in an organisation of their own) with no store yet; deletes them (and
+    drops their stores) afterwards."""
     made: list[User] = []
 
     def make() -> User:

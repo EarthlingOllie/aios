@@ -367,8 +367,9 @@ export function Documents() {
 }
 
 /**
- * The Data page's Documents: every document with its ingest status (and why one failed), chunk
- * count, size and upload time, to download or delete. Uploads from the Chats section's panel land
+ * The Data page's Documents: every document in the organisation's store with its ingest status
+ * (and why one failed), chunk count, size, and when and by whom it was uploaded, to download or
+ * delete. Uploads from the Chats section's panel land
  * in the same list.
  */
 export function DocumentsSection() {
@@ -409,6 +410,8 @@ export function DocumentsSection() {
                 <p className="truncate text-sm">{doc.filename}</p>
                 <p className="text-muted-foreground text-xs">
                   Uploaded {formatDate(doc.created_at)}
+                  {doc.uploaded_by &&
+                    ` by ${doc.uploaded_by.name ?? doc.uploaded_by.login}`}
                   {doc.status === "ready" &&
                     ` · ${doc.chunk_count} ${doc.chunk_count === 1 ? "chunk" : "chunks"}`}
                 </p>

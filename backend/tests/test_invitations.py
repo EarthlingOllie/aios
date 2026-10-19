@@ -6,15 +6,19 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import delete_user, sign_up
+from conftest import delete_user, sign_up, store_of
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
+from test_schema_change_requests import CONTACTS
 
 from aios import notifications, organisations
 from aios.auth import current_user
+from aios.datastores import schema_changes
+from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import (
     ChatMember,
+    DataStore,
     Notification,
     Organisation,
     OrganisationInvite,
@@ -289,17 +293,21 @@ def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
 def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, user, member):
     from test_chats import make_chat
 
-    org = organisations.membership_of(db, user.id)
     elsewhere = sign_up(db, -50, "elsewhere")
     try:
         ours = make_chat(api, "ours", visibility="public")
         with signed_in_as(elsewhere):
             theirs = make_chat(api, "theirs")
-        store_id = organisations.data_store_of(db, org)
-        about = notifications.SCHEMA_CHANGE_REQUEST
-        notifications.notify(
-            db, [member.id], about, {"request_id": "1", "data_store_id": str(store_id)}
+        store_id = store_of(user)
+        # A request of the organisation's store, which notifies every member.
+        request = schema_changes.propose(
+            store_id,
+            SchemaChange.model_validate({"ops": [CONTACTS]}),
+            "To keep track of people",
+            run_id=None,
+            tool_call_id=None,
         )
+        about = notifications.SCHEMA_CHANGE_REQUEST
         notifications.notify(db, [member.id], about, {"request_id": "2", "data_store_id": "other"})
         # One they've read already no longer reaches them, and stays.
         notifications.notify(
@@ -324,7 +332,10 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
             assert (mine["name"], mine["personal"], mine["is_creator"]) == ("member", True, True)
             assert [m["user"]["id"] for m in mine["members"]] == [member.id]
             assert api.get("/api/me").json()["organisation"]["id"] == mine["id"]
-            assert organisations.data_store_of(db, db.get(Organisation, mine["id"])) is not None
+            # With a store of its own, as signing up gives a new organisation.
+            assert db.scalar(
+                select(DataStore.id).where(DataStore.owner_organisation_id == mine["id"])
+            ) not in (None, store_id)
 
         # Gone from the organisation and its chats, and its requests no longer reach them.
         members = api.get("/api/organisation").json()["members"]
@@ -334,6 +345,9 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         assert list(chats) == [theirs["id"]]
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == member.id))
         assert sorted(r["request_id"] for r in refs) == ["2", "3"]
+        # The members who stay are still notified of it.
+        refs = db.scalars(select(Notification.ref).where(Notification.user_id == user.id))
+        assert [r["request_id"] for r in refs] == [str(request.id)]
     finally:
         delete_user(db, elsewhere)
 

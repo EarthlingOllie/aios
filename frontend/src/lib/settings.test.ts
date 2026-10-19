@@ -25,13 +25,13 @@ describe("historyExportStatus", () => {
 
   it("says the store is being set up until its tables are there", () => {
     const s = settings({ export_run_history: true });
-    expect(historyExportStatus(s, at)).toBe("Setting up the history tables in your data store…");
+    expect(historyExportStatus(s, at)).toBe("Setting up the history tables in the data store…");
     expect(historyExportPending(s)).toBe(true);
   });
 
   it("says it's exporting until it has (first, or after a delete), then when it last ran", () => {
     const waiting = settings({ export_run_history: true, history_ready: true });
-    expect(historyExportStatus(waiting, at)).toBe("Exporting your runs…");
+    expect(historyExportStatus(waiting, at)).toBe("Exporting the organisation's runs…");
     expect(historyExportPending(waiting)).toBe(true);
     const done = { ...waiting, history_exported_at: "2026-10-16T10:00:00Z" };
     expect(historyExportStatus(done, at)).toBe("Last exported <2026-10-16T10:00:00Z>.");
@@ -48,7 +48,7 @@ describe("historyExportStatus", () => {
 
   it("says the store has no exported history once it's deleted while off", () => {
     const s = settings({ history_ready: true });
-    expect(historyExportStatus(s, at)).toBe("Off. Your data store has no exported history.");
+    expect(historyExportStatus(s, at)).toBe("Off. The data store has no exported history.");
     expect(historyExportPending(s)).toBe(false);
   });
 });
@@ -67,7 +67,7 @@ describe("historyEmbeddingStatus", () => {
 
   it("says it's embedding until it has caught up, asking again meanwhile", () => {
     const s = settings({ ...exported, history_exported_at: done, embed_run_history: true });
-    expect(historyEmbeddingStatus(s, at)).toBe("Embedding your exported messages…");
+    expect(historyEmbeddingStatus(s, at)).toBe("Embedding the exported messages…");
     expect(historyExportPending(s)).toBe(true);
   });
 
@@ -79,7 +79,7 @@ describe("historyEmbeddingStatus", () => {
       history_embedded_at: "2026-10-16T11:00:00Z",
     });
     expect(historyEmbeddingStatus(s, at)).toBe(
-      "Agents can search your past runs by meaning and by keyword. Last embedded <2026-10-16T11:00:00Z>.",
+      "Agents can search past runs by meaning and by keyword. Last embedded <2026-10-16T11:00:00Z>.",
     );
     expect(historyExportPending(s)).toBe(false);
   });
@@ -92,7 +92,7 @@ describe("historyEmbeddingStatus", () => {
       history_embed_error: "RuntimeError: embedding API is down",
     });
     expect(historyEmbeddingStatus(s, at)).toBe(
-      "Couldn't embed your exported messages (RuntimeError: embedding API is down). " +
+      "Couldn't embed the exported messages (RuntimeError: embedding API is down). " +
         "It's tried again in a few minutes.",
     );
     expect(historyExportPending(s)).toBe(false);

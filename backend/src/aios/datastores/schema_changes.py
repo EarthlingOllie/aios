@@ -827,7 +827,7 @@ def propose(
         db.flush()
         notifications.notify(
             db,
-            approvers(db.get_one(DataStore, data_store_id)),
+            approvers(db, db.get_one(DataStore, data_store_id)),
             notifications.SCHEMA_CHANGE_REQUEST,
             _notification_ref(request),
         )

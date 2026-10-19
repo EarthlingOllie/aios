@@ -58,7 +58,7 @@ export type NewInvite = Invite & { token: string; url: string };
 /** What the invite page shows of an open link, to anyone holding it. */
 export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
 
-/** The user's data store: documents and search wait until it's "ready". */
+/** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
 /** What a data store uses, as last measured (null until it's first measured), and its caps. */
@@ -70,7 +70,7 @@ export type DataStoreUsage = {
   measured_at: string | null;
 };
 
-/** The user's settings (the Settings page). */
+/** The organisation's settings (the Organisation page), kept on its data store. */
 export type Settings = {
   /** Copy agent and workflow runs into the data store's `history` tables. */
   export_run_history: boolean;
@@ -96,6 +96,8 @@ export type DocumentInfo = {
   error: string | null;
   chunk_count: number;
   size_bytes: number;
+  /** The member who uploaded it; null for documents from before it was recorded. */
+  uploaded_by: User | null;
   created_at: string;
 };
 
@@ -899,11 +901,11 @@ export const api = {
   leaveOrganisation: () => request<Organisation>("/api/organisation/leave", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
-  getSettings: () => request<Settings>("/api/settings"),
+  getSettings: () => request<Settings>("/api/organisation/settings"),
   updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
-    request<Settings>("/api/settings", json("PUT", body)),
+    request<Settings>("/api/organisation/settings", json("PUT", body)),
   deleteExportedHistory: () =>
-    request<void>("/api/settings/exported-history", { method: "DELETE" }),
+    request<void>("/api/organisation/settings/exported-history", { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {

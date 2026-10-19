@@ -3,11 +3,11 @@ import math
 import uuid
 
 import pytest
-from conftest import delete_user, provisioned_user
+from conftest import delete_user, provisioned_user, store_of
 
 from aios import search
 from aios.auth import current_data_store, current_user
-from aios.datastores import data_store_for, store_engine, store_session
+from aios.datastores import store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.main import app
@@ -46,7 +46,7 @@ def add_chunks(
 
 
 def test_hybrid_search_fuses_semantic_and_lexical(user):
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     texts = {
         "semantic": ("Cats are small domesticated felines.", unit(0)),
         "lexical": ("The zebrafish genome was sequenced in 2013.", unit(1)),
@@ -73,15 +73,15 @@ def test_search_never_returns_another_users_documents(db, user, monkeypatch):
     (test_provisioning): a search runs in one store, so it can't see another's rows."""
     other = provisioned_user(db, -2, "other-user")
     try:
-        add_chunks(data_store_for(user.id), "mine.md", [("Zebrafish fins.", unit(0))])
-        add_chunks(data_store_for(other.id), "theirs.md", [("Zebrafish genome.", unit(0))])
+        add_chunks(store_of(user), "mine.md", [("Zebrafish fins.", unit(0))])
+        add_chunks(store_of(other), "theirs.md", [("Zebrafish genome.", unit(0))])
 
         async def embed_query(text):
             return unit(0)
 
         monkeypatch.setattr(search, "embed_query", embed_query)
         for owner, filename in ((user, "mine.md"), (other, "theirs.md")):
-            hits = asyncio.run(hybrid_search(data_store_id=data_store_for(owner.id), query="fish"))
+            hits = asyncio.run(hybrid_search(data_store_id=store_of(owner), query="fish"))
             assert [h.filename for h in hits] == [filename]
     finally:
         delete_user(db, other)
@@ -90,7 +90,7 @@ def test_search_never_returns_another_users_documents(db, user, monkeypatch):
 def test_search_opens_its_session_after_embedding(user, monkeypatch):
     """The store's engine can be evicted (and disposed of) while the query is embedded: the
     search mustn't then open connections on it, in a pool nothing tracks or disposes of."""
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     add_chunks(store_id, "notes.md", [("Zebrafish fins.", unit(0))])
     evicted = store_engine(store_id, "ro")
 

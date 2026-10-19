@@ -28,7 +28,6 @@ organisation, so they're never in none. What they made stays in the organisation
 
 import hashlib
 import secrets
-import uuid
 from datetime import timedelta
 
 from sqlalchemy import delete, func, select
@@ -216,7 +215,7 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
             ChatMember.chat_id.in_(select(Chat.id).where(Chat.organisation_id == org.id)),
         )
     )
-    store_id = data_store_of(db, org)
+    store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
         db.execute(
             delete(Notification).where(
@@ -229,20 +228,6 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
     # The bulk deletes bypass the session: anything it loaded of them (`org.members`) is stale.
     db.expire_all()
     personal = create_personal(db, user)
-    give_data_store(db, personal, user)
+    # Its store, as signing up makes a new organisation's: provisioned once this commits.
+    data_store_for(personal.id, db)
     return personal
-
-
-# Where an organisation's data store is found and made. Stores still hang off a user
-# (`DataStore.owner_user_id`), so these are the two places that say which.
-
-
-def data_store_of(db: Session, org: Organisation) -> uuid.UUID | None:
-    """The organisation's data store, if it has one: its creator's."""
-    return db.scalar(select(DataStore.id).where(DataStore.owner_user_id == org.created_by))
-
-
-def give_data_store(db: Session, org: Organisation, user: User) -> None:
-    """Give a new organisation, made for `user`, its data store, as signing up gives a new
-    user one: in the caller's transaction, provisioned once it commits."""
-    data_store_for(user.id, db)

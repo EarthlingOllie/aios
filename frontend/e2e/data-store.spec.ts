@@ -40,6 +40,7 @@ test("a ready store's documents are listed once", async ({ page }) => {
     error: null,
     chunk_count: 3,
     size_bytes: 7,
+    uploaded_by: null,
     created_at: "2026-10-14T09:00:00Z",
   });
   await page.goto("/");

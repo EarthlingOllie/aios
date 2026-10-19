@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, Section, useLoad } from "@/components/crud";
+import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,7 @@ import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
 
 /** The user's organisation: its name (the creator renames it), creator and members, its
- * invitation links (the creator's), and leaving it. */
+ * invitation links (the creator's), its settings (the run history export), and leaving it. */
 export function OrganisationPage() {
   const me = useCurrentUser();
   const reloadMe = useReloadCurrentUser();
@@ -82,6 +83,7 @@ export function OrganisationPage() {
           </ul>
         </Section>
         {org.is_creator && <InvitesSection key={org.id} />}
+        <RunHistoryExportSection key={`export-${org.id}`} />
         <LeaveSection
           org={org}
           onLeft={async () => {

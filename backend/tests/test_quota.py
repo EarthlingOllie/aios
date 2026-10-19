@@ -6,7 +6,7 @@ import os
 import psycopg
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
-from conftest import add_document
+from conftest import add_document, store_of
 from sqlalchemy import select
 from test_data_tools import as_owner
 from test_documents import PDF, stored_keys, upload
@@ -15,7 +15,7 @@ from test_provisioning import admin_connect
 from aios import db_roles, worker
 from aios.api import documents
 from aios.config import Settings, get_settings, libpq_conninfo
-from aios.datastores import data_store_for, provision, quota
+from aios.datastores import provision, quota
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore
 
@@ -50,7 +50,7 @@ def test_both_caps_are_settings_with_defaults(monkeypatch):
 
 
 def test_the_schedule_records_each_stores_data_and_file_bytes(db, user, files_bucket):
-    store = store_row(db, data_store_for(user.id))
+    store = store_row(db, store_of(user))
     add_document(store.id, b"x" * 1000)
     add_document(store.id, b"y" * 234)
     with as_owner(store) as conn:
@@ -85,7 +85,7 @@ _KB = "(SELECT string_agg(md5(g::text || '-' || h), '') FROM generate_series(1, 
 def test_deleting_rows_brings_the_measured_database_down_to_whats_left(db, user):
     """The cap is on the data the store holds: `pg_database_size` keeps the space deleted rows
     took until their table is rewritten, so a store at its cap would stay there."""
-    store = store_row(db, data_store_for(user.id))
+    store = store_row(db, store_of(user))
     with as_owner(store) as conn:
         conn.execute("CREATE TABLE data.notes (id int PRIMARY KEY, body text)")
     empty = measured(db, store.id)
@@ -108,7 +108,7 @@ def test_deleting_rows_brings_the_measured_database_down_to_whats_left(db, user)
 def test_large_values_kept_out_of_the_table_count_at_their_size(db, user):
     """Postgres keeps values over about 2 KB out of the table's own pages (TOAST), compressed
     if they compress: they count as what they take there."""
-    store = store_row(db, data_store_for(user.id))
+    store = store_row(db, store_of(user))
     with as_owner(store) as conn:
         conn.execute("CREATE TABLE data.letters (id int PRIMARY KEY, body text, meta jsonb)")
     empty = measured(db, store.id)
@@ -129,7 +129,7 @@ def test_the_roles_command_brings_measuring_to_stores_made_before_it(db, user):
     """Stores get pgstattuple from the template, which had none before. Only the master user
     may create it, so `python -m aios.db_roles`, run before every deploy's migrations, adds it
     to the stores that lack it."""
-    store = store_row(db, data_store_for(user.id))
+    store = store_row(db, store_of(user))
     with admin_connect(store.dbname) as admin:
         admin.execute("DROP EXTENSION pgstattuple")
     with as_owner(store) as conn:
@@ -158,7 +158,7 @@ def test_a_store_without_pgstattuple_is_measured_by_its_databases_size(
     api, db, user, queued, without
 ):
     """One the roles command couldn't reach (see `test_db_roles`): its cap still holds."""
-    store = store_row(db, data_store_for(user.id))
+    store = store_row(db, store_of(user))
     with admin_connect(store.dbname) as admin:
         admin.execute(without)
 
@@ -170,9 +170,9 @@ def test_the_schedule_measures_every_ready_store_and_skips_one_that_fails(
     db, user, new_user, files_bucket, monkeypatch
 ):
     """One store that can't be measured (unreachable, say) doesn't stop the rest."""
-    broken = data_store_for(new_user().id)
+    broken = store_of(new_user())
     provision.provision(broken)
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     with psycopg.connect(
         libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
     ) as conn:
@@ -199,7 +199,7 @@ def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
     """Checked as the upload comes in, not against the last measurement: a store not yet
     measured, or filled since, is held to its cap all the same."""
     monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", len(PDF))
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     first = upload(api).json()
 
     r = upload(api, name="more.pdf")
@@ -235,7 +235,7 @@ def test_an_upload_that_would_take_the_documents_past_their_cap_is_refused(
 def test_a_store_at_its_database_cap_refuses_uploads(api, db, user, queued, monkeypatch):
     """Ingesting a document writes its chunks to the store's database."""
     monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 1024)
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     with as_owner(store_row(db, store_id)) as conn:
         conn.execute("CREATE TABLE data.notes (id int PRIMARY KEY, body text)")
         conn.execute(f"INSERT INTO data.notes SELECT g, {_KB} FROM generate_series(1, 10) g")
@@ -289,7 +289,7 @@ def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
 ):
     monkeypatch.setattr(get_settings(), "data_store_db_quota_bytes", 100 * 1024**2)
     monkeypatch.setattr(get_settings(), "data_store_files_quota_bytes", 2000)
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     add_document(store_id, b"x" * 1500)
     assert api.get("/api/data-store").json() == {
         "status": "ready",
@@ -319,7 +319,7 @@ def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
 def test_measuring_leaves_no_connection_open_on_the_stores(db, user):
     """The provisioning worker measures every store, and would otherwise keep a connection to
     each (up to the engines it caches) between runs."""
-    row = store_row(db, data_store_for(user.id))
+    row = store_row(db, store_of(user))
 
     worker.measure_data_store_usage_task.apply().get()
 
@@ -334,7 +334,7 @@ def test_measuring_leaves_no_connection_open_on_the_stores(db, user):
 def test_a_run_past_its_time_limit_stops_rather_than_measure_on(db, user, new_user, monkeypatch):
     """The soft time limit raises in the task, which must not be taken for one store failing:
     the next run, due by then, carries on."""
-    provision.provision(data_store_for(new_user().id))
+    provision.provision(store_of(new_user()))
     measured = []
 
     def measure(store_id):

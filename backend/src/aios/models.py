@@ -38,10 +38,9 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(Text)
-    # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
+    # Moved to their organisation's store (`DataStore`, revision 0035): no longer read, and
+    # dropped by the contract step.
     export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
-    # Embed the exported messages too, so agents can search past runs by meaning. Only while
-    # the export is on: switching it off switches this off.
     embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -137,18 +136,18 @@ class DataStoreStatus(enum.StrEnum):
     # Provisioning gave up; re-running it (`aios.datastores.provision.retry_unfinished` does, every
     # few minutes, as does the deploy's `migrate_all`) carries on.
     failed = "failed"
-    # For deleting users' stores (not yet used).
+    # For deleting the stores of deleted organisations (not yet used).
     deleting = "deleting"
     deleted = "deleted"
 
 
 class DataStore(Base):
-    """Where a user's data lives: a database of its own (see `aios.datastores`).
+    """Where an organisation's data lives: a database of its own (see `aios.datastores`).
 
-    It has an id of its own, rather than being the user's, so a store can later change hands
-    (to a team) without renaming anything named after it: its database and roles are named
-    after this id, never a user's. Its documents and chunks are in its database
-    (`aios.datastores.models`), not here.
+    It has an id of its own, rather than being its owner's, so a store could change hands (it
+    did, from users to organisations) without renaming anything named after it: its database
+    and roles are named after this id, never its owner's. Its documents and chunks are in its
+    database (`aios.datastores.models`), not here.
     """
 
     __tablename__ = "data_stores"
@@ -156,9 +155,15 @@ class DataStore(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    # One store per user, for now. Teams will own stores too (an `owner_team_id`).
-    owner_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    # The organisation whose store it is: one each. Null only once it's `deleting` (its
+    # organisation was deleted) or `deleted`.
+    owner_organisation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organisations.id", ondelete="SET NULL"), unique=True
+    )
+    # Whose it was before stores were organisations' (revision 0035): no longer written, and
+    # dropped by the contract step.
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), unique=True
     )
     status: Mapped[DataStoreStatus] = mapped_column(
         Enum(DataStoreStatus, name="data_store_status"),
@@ -190,6 +195,12 @@ class DataStore(Base):
     # first, after a turn); both cleared once it catches up.
     history_embed_error: Mapped[str | None] = mapped_column(Text)
     history_embed_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Copy the organisation's agent runs and workflow runs into the store's `history` schema
+    # (`aios.datastores.history`, on the Organisation page).
+    export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Embed the exported messages too, so agents can search past runs by meaning. Only while
+    # the export is on: switching it off switches this off.
+    embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -199,6 +210,13 @@ class DataStore(Base):
     db_bytes: Mapped[int | None] = mapped_column(BigInteger)
     files_bytes: Mapped[int | None] = mapped_column(BigInteger)
     usage_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "owner_organisation_id IS NOT NULL OR status IN ('deleting', 'deleted')",
+            name="ck_data_stores_owner_organisation",
+        ),
+    )
 
 
 class HistoryExportKind(enum.StrEnum):

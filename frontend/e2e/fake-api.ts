@@ -151,6 +151,8 @@ export type DocumentRow = {
   error: string | null;
   chunk_count: number;
   size_bytes: number;
+  /** The member who uploaded it; null for one from before uploads were recorded. */
+  uploaded_by: ChatUser | null;
   created_at: string;
 };
 export type TableColumnRow = {
@@ -460,8 +462,8 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
   dataStoreFails = false;
-  /** The user's settings; switching the export on sets the store up (`history_ready`) only when
-   * a test says so, as the provisioning worker would. */
+  /** The organisation's settings (`/api/organisation/settings`); switching the export on sets
+   * the store up (`history_ready`) only when a test says so, as the provisioning worker would. */
   settings = {
     export_run_history: false,
     history_ready: false,
@@ -472,7 +474,7 @@ export class FakeApi {
   };
   /** Times "delete exported history" was asked for. */
   exportedHistoryDeletes = 0;
-  /** The user's documents, newest first. */
+  /** The organisation's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
   documentLists = 0;
@@ -642,6 +644,7 @@ export class FakeApi {
       error: null,
       chunk_count: 1,
       size_bytes: 2048,
+      uploaded_by: null,
       created_at: NOW,
       ...fields,
     };
@@ -1689,7 +1692,7 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
-    if (path === "/api/settings") {
+    if (path === "/api/organisation/settings") {
       if (method === "PUT") {
         // As the API: embedding only while the export is on, and off with it.
         if (body?.export_run_history !== undefined) {
@@ -1708,7 +1711,7 @@ export class FakeApi {
       }
       return reply(200, this.settings);
     }
-    if (path === "/api/settings/exported-history" && method === "DELETE") {
+    if (path === "/api/organisation/settings/exported-history" && method === "DELETE") {
       this.exportedHistoryDeletes++;
       // Emptied: nothing exported since (while it's on, the export starts over).
       this.settings.history_exported_at = null;
@@ -1781,10 +1784,10 @@ export class FakeApi {
               ` ${gb(files_quota_bytes)} allowed. Delete some to make room.`,
           );
         }
-        const doc = this.addDocument(
-          filename,
-          this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {},
-        );
+        const doc = this.addDocument(filename, {
+          uploaded_by: this.me,
+          ...(this.ingestAs === "pending" ? { status: "pending", chunk_count: 0 } : {}),
+        });
         this.recordFiles();
         return reply(201, doc);
       }

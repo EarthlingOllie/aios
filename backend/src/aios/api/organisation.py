@@ -23,11 +23,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from aios import organisations
-from aios.api.provenance import UserOut
+from aios.api.provenance import UserOut, people
 from aios.api.skills import on_conflict
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.config import get_settings
-from aios.db import DB
+from aios.db import DB, SessionLocal
 from aios.models import Organisation, OrganisationInvite, OrganisationMember, User
 
 router = APIRouter(prefix="/api")
@@ -242,3 +242,12 @@ def leave_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     personal = organisations.leave(db, org, user)
     db.commit()
     return organisation_out(db, personal, user)
+
+
+def users_out(user_ids: set[int]) -> dict[int, UserOut]:
+    """The users with these ids whose accounts are still there, by id, on a session of its own:
+    for what records who did it where users can't be joined (a data store's documents)."""
+    if not user_ids:
+        return {}
+    with SessionLocal() as db:
+        return people(db, user_ids)

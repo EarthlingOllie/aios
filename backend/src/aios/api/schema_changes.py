@@ -1,9 +1,10 @@
 """Schema change requests, for the people who decide them: the Data page's Changes section and
 the approval card in an agent's chat (`aios.datastores.schema_changes`).
 
-Only users who pass `can_approve` for a request's store see or decide it; to anyone else it
-doesn't exist (404). Approving queues the change to be applied on the provisioning worker,
-which then resumes the run that asked; rejecting resumes it straight away.
+Only users who pass `can_approve` for a request's store (every member of its organisation) see
+or decide it; to anyone else it doesn't exist (404). Approving queues the change to be applied
+on the provisioning worker, which then resumes the run that asked; rejecting resumes it
+straight away.
 """
 
 import logging
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import (
     DataStoreBehind,
     DataStoreBusy,
@@ -35,7 +36,7 @@ from aios.datastores.schema_changes import (
     restore_notifications,
 )
 from aios.db import DB
-from aios.models import AgentRun, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import AgentRun, DataStore, SchemaChangeRequest, SchemaChangeStatus
 
 log = logging.getLogger(__name__)
 
@@ -106,8 +107,10 @@ class Rejection(BaseModel):
 
 
 def request_out(
-    request: SchemaChangeRequest, run: AgentRun | None, user_id: int
+    request: SchemaChangeRequest, run: AgentRun | None, can_decide: bool
 ) -> SchemaChangeOut:
+    """The request; `can_decide` is whether the user may decide its store's requests
+    (`can_approve`), which it can be only while it's pending."""
     return SchemaChangeOut(
         id=request.id,
         data_store_id=request.data_store_id,
@@ -124,8 +127,7 @@ def request_out(
         decided_at=request.decided_at,
         applied_at=request.applied_at,
         resumed_at=request.resumed_at,
-        can_decide=request.status == SchemaChangeStatus.pending
-        and can_approve(user_id, request.data_store),
+        can_decide=request.status == SchemaChangeStatus.pending and can_decide,
         confirm_with=confirmation_for(request),
     )
 
@@ -147,7 +149,12 @@ def run_requests(db: Session, run_id: int, user_id: int) -> list[SchemaChangeOut
         .where(SchemaChangeRequest.requested_by_run == run_id)
         .order_by(SchemaChangeRequest.created_at)
     ).all()
-    return [request_out(request, run, user_id) for request, run in rows]
+    # One run's requests are all on its store: whether the user may decide them is asked once.
+    deciders = {}
+    for request, _ in rows:
+        if request.data_store_id not in deciders:
+            deciders[request.data_store_id] = can_approve(db, user_id, request.data_store)
+    return [request_out(request, run, deciders[request.data_store_id]) for request, run in rows]
 
 
 def waiting_on(db: Session, run_id: int) -> bool:
@@ -163,11 +170,14 @@ def waiting_on(db: Session, run_id: int) -> bool:
 
 
 @router.get("/schema-changes", response_model=list[SchemaChangeOut])
-def list_requests(user: CurrentUser, db: DB):
-    """The user's store's requests: pending first (oldest first), then the decided ones, most
-    recently decided first."""
-    store_id = data_store_for(user.id, db)
+def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """The organisation's store's requests: pending first (oldest first), then the decided ones,
+    most recently decided first."""
+    store_id = data_store_for(org.id, db)
     db.commit()
+    store = db.get_one(DataStore, store_id)
+    if not can_approve(db, user.id, store):
+        return []
     pending = SchemaChangeRequest.status == SchemaChangeStatus.pending
     rows = db.execute(
         _query()
@@ -178,29 +188,26 @@ def list_requests(user: CurrentUser, db: DB):
             func.coalesce(SchemaChangeRequest.decided_at, SchemaChangeRequest.created_at).desc(),
         )
     ).all()
-    return [
-        request_out(request, run, user.id)
-        for request, run in rows
-        if can_approve(user.id, request.data_store)
-    ]
+    return [request_out(request, run, True) for request, run in rows]
 
 
 def _get(db: Session, user_id: int, request_id: uuid.UUID, *, lock: bool = False):
     query = select(SchemaChangeRequest).where(SchemaChangeRequest.id == request_id)
     request = db.scalar(query.with_for_update() if lock else query)
-    if request is None or not can_approve(user_id, request.data_store):
+    if request is None or not can_approve(db, user_id, request.data_store):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Schema change request not found")
     return request
 
 
-def _out(db: Session, request: SchemaChangeRequest, user_id: int) -> SchemaChangeOut:
+def _out(db: Session, request: SchemaChangeRequest) -> SchemaChangeOut:
+    """A request `_get` found: the user may decide it."""
     run = db.get(AgentRun, request.requested_by_run) if request.requested_by_run else None
-    return request_out(request, run, user_id)
+    return request_out(request, run, True)
 
 
 @router.get("/schema-changes/{request_id}", response_model=SchemaChangeOut)
 def get_request(request_id: uuid.UUID, user: CurrentUser, db: DB):
-    return _out(db, _get(db, user.id, request_id), user.id)
+    return _out(db, _get(db, user.id, request_id))
 
 
 def _decide(db: Session, user_id: int, request_id: uuid.UUID, **values) -> SchemaChangeRequest:
@@ -278,7 +285,7 @@ def approve(request_id: uuid.UUID, user: CurrentUser, db: DB, body: Approval | N
         )
     request = _decide(db, user.id, request_id, status=SchemaChangeStatus.approved)
     _queue(db, request, lambda: apply_schema_change_task.delay(str(request.id)))
-    return _out(db, request, user.id)
+    return _out(db, request)
 
 
 @router.post("/schema-changes/{request_id}/reject", response_model=SchemaChangeOut)
@@ -288,4 +295,4 @@ def reject(request_id: uuid.UUID, body: Rejection, user: CurrentUser, db: DB):
     note = (body.note or "").strip() or None
     request = _decide(db, user.id, request_id, status=SchemaChangeStatus.rejected, note=note)
     _queue(db, request, lambda: enqueue_resume(request.id))
-    return _out(db, request, user.id)
+    return _out(db, request)

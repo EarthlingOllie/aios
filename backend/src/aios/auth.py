@@ -86,7 +86,8 @@ async def auth_callback(request: Request, db: DB):
     invite = organisations.open_invite(db, invite_token, lock=True) if invite_token else None
     org = organisations.ensure_membership(db, user, invite)
     db.commit()
-    await run_in_threadpool(data_store_for, user.id)
+    # And a new organisation's store, provisioned while they look around.
+    await run_in_threadpool(data_store_for, org.id)
 
     landing = settings.public_url
     if invite_token and (invite is None or org.id != invite.organisation_id):
@@ -130,11 +131,12 @@ def current_organisation(user: CurrentUser, db: DB) -> Organisation:
 CurrentOrganisation = Annotated[Organisation, Depends(current_organisation)]
 
 
-def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
-    """The signed-in user's data store. The request's session is closed once it's resolved (see
-    `data_store_for_request`), so an endpoint that takes this mustn't use `DB` after it."""
-    return data_store_for_request(user.id, db)
+def current_data_store(org: CurrentOrganisation, db: DB) -> uuid.UUID:
+    """The signed-in user's organisation's data store, the one every member reaches. The
+    request's session is closed once it's resolved (see `data_store_for_request`), so an
+    endpoint that takes this mustn't use `DB` after it."""
+    return data_store_for_request(org.id, db)
 
 
-# For endpoints that reach the user's data only through their store.
+# For endpoints that reach the organisation's data only through its store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]

@@ -1,15 +1,15 @@
-"""The one place a user becomes a data store."""
+"""The one place an organisation becomes a data store, and who may decide what it holds."""
 
 import logging
 import uuid
 
-from sqlalchemy import event, select
+from sqlalchemy import ColumnElement, event, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios.datastores import credentials
 from aios.db import SessionLocal
-from aios.models import DataStore
+from aios.models import Agent, DataStore, OrganisationMember, Workflow
 
 log = logging.getLogger(__name__)
 
@@ -46,36 +46,64 @@ def _forget_rolled_back(session: Session) -> None:
     session.info.pop(_NEW_STORES, None)
 
 
-def can_approve(user_id: int, store: DataStore) -> bool:
-    """Whether the user may decide the store's schema change requests: a permission, not who
-    the store is, so teams can give it to more than the owner. Those in `approvers`."""
-    return user_id in approvers(store)
+def can_approve(db: Session, user_id: int, store: DataStore) -> bool:
+    """Whether the user may decide the store's schema change requests (and restore what drops
+    took): a permission, not who the store is. Those in `approvers`."""
+    return user_id in approvers(db, store)
 
 
-def approvers(store: DataStore) -> list[int]:
+def approvers(db: Session, store: DataStore) -> list[int]:
     """The users who may decide the store's schema change requests (`can_approve`), whom a new
-    one notifies. Today, only the owner."""
-    return [store.owner_user_id]
+    one notifies: every member of its organisation, in the order they joined."""
+    return list(
+        db.scalars(
+            select(OrganisationMember.user_id)
+            .where(OrganisationMember.organisation_id == store.owner_organisation_id)
+            .order_by(OrganisationMember.joined_at, OrganisationMember.user_id)
+        )
+    )
 
 
-def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
-    """The id of the user's data store, creating it if they don't have one yet.
+def organisation_of(owned: type[Agent] | type[Workflow]) -> ColumnElement[int]:
+    """The organisation an agent or workflow belongs to, as SQL: its `organisation_id`, or, for
+    a row made before rows recorded theirs, its owner's organisation (which it was then)."""
+    return func.coalesce(
+        owned.organisation_id,
+        select(OrganisationMember.organisation_id)
+        .where(OrganisationMember.user_id == owned.owner_id)
+        .scalar_subquery(),
+    )
+
+
+def data_store_of(db: Session, owned: type[Agent] | type[Workflow], owned_id: int) -> uuid.UUID:
+    """The data store of the organisation the agent or workflow belongs to (`organisation_of`):
+    the store a run of it uses. In `db`'s transaction, as `data_store_for`."""
+    organisation_id = db.scalar(select(organisation_of(owned)).where(owned.id == owned_id))
+    if organisation_id is None:
+        raise LookupError(f"{owned.__name__} {owned_id} belongs to no organisation")
+    return data_store_for(organisation_id, db)
+
+
+def data_store_for(organisation_id: int, db: Session | None = None) -> uuid.UUID:
+    """The id of the organisation's data store, creating it if it doesn't have one yet.
 
     A new store's row is `provisioning`, with its login roles' passwords (encrypted), and its
-    provisioning is queued once the row is committed (`aios.datastores.provision`).
+    provisioning is queued once the row is committed (`aios.datastores.provision`). Signing up
+    makes the new organisation's (`aios.auth`); anything else that needs it makes it otherwise.
 
-    Everything below this takes a data store id, not a user: when teams own stores, only how a
-    caller picks its store changes.
+    Everything below this takes a data store id, not an organisation: every member's requests,
+    and runs, reach the one store.
 
     Given a session, it works in that session's transaction, and a row it creates is committed
     with the caller's work (so the caller must commit). Otherwise it uses and commits its own.
     """
     if db is None:
         with SessionLocal() as own:
-            store_id = data_store_for(user_id, own)
+            store_id = data_store_for(organisation_id, own)
             own.commit()
             return store_id
-    store_id = db.scalar(select(DataStore.id).where(DataStore.owner_user_id == user_id))
+    owned = DataStore.owner_organisation_id == organisation_id
+    store_id = db.scalar(select(DataStore.id).where(owned))
     if store_id is None:
         new_id = uuid.uuid4()
         dbname, role_prefix = names_for(new_id)
@@ -85,31 +113,32 @@ def data_store_for(user_id: int, db: Session | None = None) -> uuid.UUID:
             insert(DataStore)
             .values(
                 id=new_id,
-                owner_user_id=user_id,
+                owner_organisation_id=organisation_id,
                 dbname=dbname,
                 role_prefix=role_prefix,
                 rw_password=credentials.encrypt(credentials.new_password()),
                 ro_password=credentials.encrypt(credentials.new_password()),
             )
-            .on_conflict_do_nothing(index_elements=[DataStore.owner_user_id])
+            .on_conflict_do_nothing(index_elements=[DataStore.owner_organisation_id])
             .returning(DataStore.id)
         )
         if store_id is None:
-            store_id = db.scalar(select(DataStore.id).where(DataStore.owner_user_id == user_id))
+            store_id = db.scalar(select(DataStore.id).where(owned))
         else:
             db.info.setdefault(_NEW_STORES, []).append(store_id)
     return store_id
 
 
-def data_store_for_request(user_id: int, db: Session) -> uuid.UUID:
-    """The signed-in user's data store, for an endpoint that reaches data only through it.
+def data_store_for_request(organisation_id: int, db: Session) -> uuid.UUID:
+    """The signed-in user's organisation's data store, for an endpoint that reaches data only
+    through it.
 
-    Resolved on `db`, the request's session (which loaded the user), which is then committed
-    (queuing a new store's provisioning) and closed, returning its connection to the pool before
-    the store is opened. Held while a store session waits for a connection, enough requests at
-    once would exhaust the pool waiting on each other. Blocking: call it from the threadpool in
-    async code."""
-    store_id = data_store_for(user_id, db)
+    Resolved on `db`, the request's session (which loaded the organisation), which is then
+    committed (queuing a new store's provisioning) and closed, returning its connection to the
+    pool before the store is opened. Held while a store session waits for a connection, enough
+    requests at once would exhaust the pool waiting on each other. Blocking: call it from the
+    threadpool in async code."""
+    store_id = data_store_for(organisation_id, db)
     db.commit()
     db.close()
     return store_id
