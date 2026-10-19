@@ -31,6 +31,7 @@ import {
   AgentVersionPage,
 } from "@/pages/Agents";
 import { DataPage } from "@/pages/Data";
+import { InvitePage, InviteRoute } from "@/pages/Invite";
 import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
@@ -61,6 +62,8 @@ type AuthState =
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
+  // An invitation link opens signed out too: its page offers signing in through it.
+  const invite = useMatch("/invite/:token");
 
   const loadMe = useCallback(() => {
     api
@@ -76,7 +79,15 @@ export default function App() {
   useEffect(loadMe, [loadMe]);
 
   if (auth.status === "loading") return null;
-  if (auth.status === "anonymous") return <Login />;
+  if (auth.status === "anonymous") {
+    return invite ? (
+      <div className="h-svh">
+        <InvitePage token={invite.params.token!} me={null} />
+      </div>
+    ) : (
+      <Login />
+    );
+  }
   if (auth.status === "error") {
     return (
       <div className="flex min-h-svh flex-col items-center justify-center gap-3 p-4 text-center">
@@ -143,6 +154,7 @@ export default function App() {
         <Route path="data" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="organisation" element={<OrganisationPage />} />
+        <Route path="invite/:token" element={<InviteRoute />} />
         <Route path="chats" element={<ChatsSection />}>
           <Route index element={<ChatsIndex />} />
           <Route path="new" element={<ChatForm />} />

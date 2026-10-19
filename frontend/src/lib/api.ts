@@ -36,6 +36,21 @@ export type Organisation = OrganisationSummary & {
   created_at: string;
 };
 
+/** An open invitation link into the organisation, as its creator lists them. */
+export type Invite = {
+  id: string;
+  /** Null once their account is deleted. */
+  creator: User | null;
+  created_at: string;
+  expires_at: string;
+};
+
+/** A link just made: the only time its token (and so the link) is shown. */
+export type NewInvite = Invite & { token: string; url: string };
+
+/** What the invite page shows of an open link, to anyone holding it. */
+export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
+
 /** The user's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
@@ -848,6 +863,21 @@ export const api = {
   /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
   renameOrganisation: (name: string) =>
     request<Organisation>("/api/organisation", json("PUT", { name })),
+  /** Invitation links: the creator only (a 403 otherwise). */
+  listInvites: () => request<Invite[]>("/api/organisation/invites"),
+  makeInvite: (expiresInDays: number) =>
+    request<NewInvite>("/api/organisation/invites", json("POST", { expires_in_days: expiresInDays })),
+  revokeInvite: (id: string) =>
+    request<void>(`/api/organisation/invites/${id}`, { method: "DELETE" }),
+  /** No sign-in needed; an expired or revoked link is a 404. */
+  getInvitation: (token: string) =>
+    request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
+  /** A 409 says why the user can't join (they're in another organisation). */
+  acceptInvitation: (token: string) =>
+    request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
+  /** A 409 for the last member, and for the creator while others remain; otherwise the new
+   * personal organisation the user lands in. */
+  leaveOrganisation: () => request<Organisation>("/api/organisation/leave", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),
