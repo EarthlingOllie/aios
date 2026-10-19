@@ -258,7 +258,7 @@ export function AgentDetail() {
     act(async () => {
       const run = await api.createRun(id);
       reloadList();
-      navigate(`runs/${run.id}`);
+      navigate(listHref(`runs/${run.id}`));
     });
 
   const onUpdateSkill = (skill: AgentSkill) => {
@@ -311,7 +311,7 @@ export function AgentDetail() {
             New run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref("edit")}>
               <Pencil />
               Edit
             </Link>
@@ -394,7 +394,7 @@ export function AgentDetail() {
                     {runs.data.map((run) => (
                       <li key={run.id} className="group flex items-center gap-2 pr-2">
                         <Link
-                          to={`runs/${run.id}`}
+                          to={listHref(`runs/${run.id}`)}
                           className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
                         >
                           {run.trigger_id ? (
@@ -454,7 +454,7 @@ export function AgentDetail() {
                 versions={versions.data}
                 error={versions.error}
                 current={current.version}
-                href={(v) => `/agents/${id}/versions/${v}`}
+                href={(v) => listHref(`/agents/${id}/versions/${v}`)}
                 detail={(v) => {
                   const s = versions.data?.find((x) => x.version === v);
                   const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -488,6 +488,7 @@ export function AgentVersionPage() {
 
 function AgentVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const version = useLoad(useCallback(() => api.getAgentVersion(id, number), [id, number]));
@@ -517,7 +518,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
       await api.restoreAgentVersion(id, number);
       await reloadList();
       // Back to where the version was opened from, which now lists the restored copy as current.
-      navigate(`/agents/${id}?tab=versions`);
+      navigate(listHref(`/agents/${id}?tab=versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -527,7 +528,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/agents/${id}?tab=versions`} className="hover:underline">
+          <Link to={listHref(`/agents/${id}?tab=versions`)} className="hover:underline">
             {agent.data.name}
           </Link>
           <VersionBadge version={v.version} />

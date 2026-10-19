@@ -12,8 +12,8 @@ and run history search, the same over their exported past runs)
 and chat with them. The Agents and Skills lists each have a search box: every word typed must
 appear in an item's name or description, ignoring case and accents, and the list shows how many
 of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
-shared link or Back keeps it, and opening, creating or deleting an item leaves the list as it
-was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused; Skills:
+shared link or Back keeps it, and opening, editing, creating or deleting an item, or its versions
+and runs, leaves the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused; Skills:
 All, Used, i.e. by some live agent's current version, and Unused, each saying "Used by 3
 agents") and a sort menu (by name, the default, by most recently updated, and for agents by
 most runs) narrow and order the list, combined with the search and kept in the URL too
@@ -164,7 +164,8 @@ its header (name, description, member count, and Edit, Delete, Join or Leave) ab
 on the agent page: **Chat**, the messages and composer (the default), and **Members**
 (`?tab=members`, with the count). The room isn't kept while Members is open, so nothing is marked
 read there and coming back reloads the messages, scrolled to the newest; a message typed but not
-sent is still there on coming back (and only in that chat). Members are
+sent is still there on coming back, from Members, the chat's Edit page, another section or a
+reload (kept in the tab's session storage, per user and chat). Members are
 grouped by kind: users, and the owner's **agents and workflows**, with the
 icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
 user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat

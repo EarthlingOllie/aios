@@ -98,6 +98,32 @@ test("an unsent message survives switching to Members and back, but not to anoth
   await expect(composer(page)).toHaveValue("");
 });
 
+test("an unsent message survives the chat's Edit page, another section and a reload", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const design = api.addChat("Design");
+  await page.goto(`/chats/${design.id}`);
+  await composer(page).fill("Half a thought");
+
+  await page.getByRole("link", { name: "Edit" }).click();
+  await expect(page).toHaveURL(`/chats/${design.id}/edit`);
+  await page.goBack();
+  await expect(composer(page)).toHaveValue("Half a thought");
+
+  await page.goto("/agents");
+  await page.goto(`/chats/${design.id}`);
+  await expect(composer(page)).toHaveValue("Half a thought");
+
+  await page.reload();
+  await expect(composer(page)).toHaveValue("Half a thought");
+
+  await composer(page).press("Enter");
+  await expect(messageList(page)).toContainText("Half a thought");
+  await page.reload();
+  await expect(composer(page)).toHaveValue("");
+});
+
 test("a message still sending when switching to Members and back isn't offered to send again", async ({
   page,
 }) => {

@@ -66,6 +66,13 @@ describe("listHref", () => {
       "/agents?filter=used&sort=runs",
     );
   });
+
+  it("keeps the path's own query, such as the tab it opens, ahead of the list's", () => {
+    expect(listHref("/workflows/3?tab=runs", new URLSearchParams("q=web&tab=graph"))).toBe(
+      "/workflows/3?tab=runs&q=web",
+    );
+    expect(listHref("/workflows/3?tab=runs", new URLSearchParams())).toBe("/workflows/3?tab=runs");
+  });
 });
 
 type Row = { id: number; name: string; description: string; run_count: number; updated_at: string };

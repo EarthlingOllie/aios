@@ -34,7 +34,9 @@ import {
   type ChatTargetKind,
   type ChatVisibility,
 } from "@/lib/api";
+import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
@@ -143,17 +145,19 @@ export function ChatDetail() {
     [reloadChat, reloadMentionable],
   );
   const [actionError, setActionError] = useState<string>();
-  // The composer's unsent text, per chat. Held here because the room unmounts while the Members
-  // tab is open; keyed so one chat's draft never shows in another.
-  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  // The composer's unsent text, per chat. Held outside the room, which unmounts while the
+  // Members tab is open, and outside this page, so it survives the Edit page, another section
+  // and a reload; keyed so one chat's (or user's) draft never shows in another.
+  const userId = useCurrentUser()?.id ?? 0;
+  const [, rerender] = useState(0);
+  const draft = chatDrafts.get(userId, id);
   const setDraft = useCallback(
-    (update: SetStateAction<string>) =>
-      setDrafts(({ [id]: current = "", ...others }) => {
-        const draft = typeof update === "function" ? update(current) : update;
-        // An empty draft is no draft: only chats with something typed keep an entry.
-        return draft ? { ...others, [id]: draft } : others;
-      }),
-    [id],
+    (update: SetStateAction<string>) => {
+      const current = chatDrafts.get(userId, id);
+      chatDrafts.set(userId, id, typeof update === "function" ? update(current) : update);
+      rerender((n) => n + 1);
+    },
+    [userId, id],
   );
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
@@ -236,7 +240,7 @@ export function ChatDetail() {
         chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
-              <Link to="edit">
+              <Link to={listHref("edit")}>
                 <Pencil />
                 Edit
               </Link>
@@ -274,7 +278,7 @@ export function ChatDetail() {
                 mentionable={mentionable}
                 onPosted={reloadList}
                 onRead={chat.is_member ? onRead : undefined}
-                draft={drafts[id] ?? ""}
+                draft={draft}
                 onDraftChange={setDraft}
               />
             ),

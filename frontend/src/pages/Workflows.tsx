@@ -184,7 +184,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     setActionError(undefined);
     try {
       const run = await api.createWorkflowRun(id, runInput!);
-      navigate(`runs/${run.id}`);
+      navigate(listHref(`runs/${run.id}`));
     } catch (err) {
       setActionError(describeError(err));
     } finally {
@@ -212,7 +212,7 @@ function WorkflowDetailView({ id }: { id: number }) {
             Run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref("edit")}>
               <Pencil />
               Edit
             </Link>
@@ -262,7 +262,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                 key={current.id}
                 version={current}
                 layout={w.layout}
-                editHref={`/workflows/${id}/edit`}
+                editHref={listHref(`/workflows/${id}/edit`)}
               />
             ),
           },
@@ -283,7 +283,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                     {runs.data.map((run) => (
                       <li key={run.id}>
                         <Link
-                          to={`runs/${run.id}`}
+                          to={listHref(`runs/${run.id}`)}
                           className="hover:bg-accent flex items-center gap-3 px-3 py-2"
                         >
                           <span className="min-w-0 flex-1">
@@ -322,7 +322,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                 versions={versions.data}
                 error={versions.error}
                 current={current.version}
-                href={(v) => `/workflows/${id}/versions/${v}`}
+                href={(v) => listHref(`/workflows/${id}/versions/${v}`)}
                 detail={(v) => {
                   const s = versions.data?.find((x) => x.version === v);
                   return plural(s?.node_count ?? 0, "node");
@@ -349,6 +349,7 @@ export function WorkflowVersionPage() {
 
 function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
@@ -364,7 +365,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreWorkflowVersion(id, number);
       await reloadList();
-      navigate(`/workflows/${id}?tab=versions`);
+      navigate(listHref(`/workflows/${id}?tab=versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -375,7 +376,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
       wide
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/workflows/${id}?tab=versions`} className="hover:underline">
+          <Link to={listHref(`/workflows/${id}?tab=versions`)} className="hover:underline">
             {workflow.data.name}
           </Link>
           <VersionBadge version={v.version} />

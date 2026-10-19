@@ -5,7 +5,15 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
-import { ErrorBanner, formatDate, Placeholder, useLoad, usePoll, type ListContext } from "@/components/crud";
+import {
+  ErrorBanner,
+  formatDate,
+  Placeholder,
+  useListHref,
+  useLoad,
+  usePoll,
+  type ListContext,
+} from "@/components/crud";
 import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
 import { Notice } from "@/components/Notice";
@@ -28,6 +36,7 @@ export function RunPage() {
   const agentId = Number(useParams().agentId);
   const runId = Number(useParams().runId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const run = useLoad(useCallback(() => api.getRun(agentId, runId), [agentId, runId]));
   const [tab, setTab] = useState<Tab>("conversation");
@@ -44,7 +53,7 @@ export function RunPage() {
     try {
       await api.deleteRun(agentId, runId);
       reloadList();
-      navigate(`/agents/${agentId}?tab=runs`);
+      navigate(listHref(`/agents/${agentId}?tab=runs`));
     } catch (err) {
       setDeleteError(describeError(err));
     }
@@ -54,7 +63,7 @@ export function RunPage() {
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <Button asChild variant="ghost" size="icon" aria-label="Back to agent">
-          <Link to={`/agents/${agentId}?tab=runs`}>
+          <Link to={listHref(`/agents/${agentId}?tab=runs`)}>
             <ArrowLeft />
           </Link>
         </Button>
@@ -63,7 +72,7 @@ export function RunPage() {
             {run.data.agent_name} ·{" "}
             {/* The agent's versions are its owner's to read. */}
             {run.data.is_owner ? (
-              <Link to={`/agents/${agentId}/versions/${run.data.agent_version}`} className="hover:underline">
+              <Link to={listHref(`/agents/${agentId}/versions/${run.data.agent_version}`)} className="hover:underline">
                 v{run.data.agent_version}
               </Link>
             ) : (

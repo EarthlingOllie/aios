@@ -148,7 +148,7 @@ export function SkillDetail() {
       actions={
         <>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref("edit")}>
               <Pencil />
               Edit
             </Link>
@@ -201,7 +201,7 @@ export function SkillDetail() {
                 versions={versions.data}
                 error={versions.error}
                 current={current.version}
-                href={(v) => `/skills/${id}/versions/${v}`}
+                href={(v) => listHref(`/skills/${id}/versions/${v}`)}
               />
             ),
           },
@@ -221,6 +221,7 @@ export function SkillVersionPage() {
 
 function SkillVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const skill = useLoad(useCallback(() => api.getSkill(id), [id]));
   const version = useLoad(useCallback(() => api.getSkillVersion(id, number), [id, number]));
@@ -248,7 +249,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreSkillVersion(id, number);
       await reloadList();
-      navigate(`/skills/${id}?tab=versions`);
+      navigate(listHref(`/skills/${id}?tab=versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -259,7 +260,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/skills/${id}?tab=versions`} className="hover:underline">
+          <Link to={listHref(`/skills/${id}?tab=versions`)} className="hover:underline">
             {skill.data.name}
           </Link>
           <VersionBadge version={v.version} />
