@@ -208,7 +208,8 @@ def delete_data_stores_task(data_store_id: str | None = None) -> None:
     if data_store_id is None:
         provision.delete_deleting()
     else:
-        provision.delete_deleting([uuid.UUID(data_store_id)])
+        # Waiting for its provisioning, if that's still on it (it was deleted straight away).
+        provision.delete_deleting([uuid.UUID(data_store_id)], wait=True)
 
 
 @celery_app.task(

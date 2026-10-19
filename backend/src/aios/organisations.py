@@ -207,8 +207,8 @@ def contents(db: Session, org: Organisation) -> list[tuple[str, int]]:
 
 
 def _store_contents(db: Session, org: Organisation) -> tuple[int, int]:
-    """How many documents and data tables the organisation's store has. None, until it's ready:
-    nothing can be put in it before. Raises as `store_session` does when it can't be read just
+    """How many documents and data tables the organisation's store has: none until it's ready,
+    since nothing can be put in it before. Raises as `store_session` does when it can't be read just
     now (busy, or being upgraded), which the API answers with "try again"."""
     store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == org.id))
     if store is None or store.status != DataStoreStatus.ready:

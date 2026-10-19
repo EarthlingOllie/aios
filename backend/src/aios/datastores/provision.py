@@ -470,12 +470,13 @@ def delete_store(store_id: uuid.UUID, wait: bool = True) -> bool:
 
 
 def delete_deleting(
-    store_ids: Collection[uuid.UUID] | None = None,
+    store_ids: Collection[uuid.UUID] | None = None, wait: bool = False
 ) -> dict[uuid.UUID, bool | BaseException]:
     """Delete every store that's `deleting` (`delete_store`), one at a time; returns, for each
     it got to, True, or what stopped it (recorded on the store, which the next sweep tries
-    again). A store another run is on is left to the next sweep. The provisioning worker runs
-    it when an organisation is deleted, and every `aios.worker.DELETE_STORES_EVERY`.
+    again). Unless `wait`, a store another run is on is left to the next sweep. The
+    provisioning worker runs it when an organisation is deleted (for its store, waiting for a
+    provisioning run still on it), and every `aios.worker.DELETE_STORES_EVERY`.
 
     `store_ids` limits it to those stores (tests use it to leave other stores alone)."""
     outcome: dict[uuid.UUID, bool | BaseException] = {}
@@ -487,7 +488,7 @@ def delete_deleting(
         ).all()
     for store_id in deleting:
         try:
-            if delete_store(store_id, wait=False):
+            if delete_store(store_id, wait):
                 outcome[store_id] = True
         except SoftTimeLimitExceeded:
             raise

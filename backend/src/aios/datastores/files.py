@@ -150,11 +150,10 @@ def delete(key: str) -> None:
 DELETE_BATCH = 1000
 
 
-def delete_under(prefix: str) -> int:
-    """Deletes every object whose key starts with `prefix`, a page at a time; returns how many
-    it deleted. Run again after it's cut short, it deletes the rest."""
+def delete_under(prefix: str) -> None:
+    """Deletes every object whose key starts with `prefix`, a page at a time. Run again after
+    it's cut short, it deletes the rest."""
     s3, bucket = client(), get_settings().data_store_files_bucket
-    deleted = 0
     for page in s3.get_paginator("list_objects_v2").paginate(
         Bucket=bucket, Prefix=prefix, PaginationConfig={"PageSize": DELETE_BATCH}
     ):
@@ -164,8 +163,6 @@ def delete_under(prefix: str) -> int:
         result = s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
         if errors := result.get("Errors"):
             raise RuntimeError(f"S3 didn't delete {len(errors)} under {prefix}: {errors[0]}")
-        deleted += len(keys)
-    return deleted
 
 
 def attachment(filename: str) -> str:

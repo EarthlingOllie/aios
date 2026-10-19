@@ -7,7 +7,9 @@ them is dropped afterwards.
 """
 
 import io
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 import pytest
@@ -216,6 +218,21 @@ def test_the_sweep_runs_on_the_provisioning_workers_schedule(db, joiner, monkeyp
     assert worker.celery_app.conf.task_routes["aios.delete_data_stores"] == {
         "queue": "provisioning"
     }
+
+
+def test_the_sweep_queued_for_a_store_waits_for_a_run_still_on_it(db, joiner):
+    store_id = store_of(joiner)
+    delete_org(db, joiner)
+
+    # Its provisioning (say) is still on it: the queued sweep waits for it, then deletes it.
+    with ThreadPoolExecutor(1) as pool:
+        with provision.provisioner_locked(store_id):
+            swept = pool.submit(worker.delete_data_stores_task.apply, args=[str(store_id)])
+            time.sleep(0.5)
+            assert not swept.done()
+        swept.result(timeout=30).get()
+
+    assert store_row(db, store_id).status == DataStoreStatus.deleted
 
 
 def test_a_store_still_provisioning_is_deleted_without_ever_being_ready(db, new_user):
