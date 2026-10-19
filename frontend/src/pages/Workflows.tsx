@@ -17,7 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ProvenanceLine, useSavedBy } from "@/components/provenance";
+import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { TargetSchedules } from "@/components/schedules";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
@@ -255,6 +255,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                     <span className="block truncate text-sm">{run.input}</span>
                     <span className="text-muted-foreground flex items-center gap-1 text-xs">
                       {formatDate(run.created_at)}
+                      <StartedBy run={run} before="· " />
                       {run.chat_id !== null && (
                         <span className="flex min-w-0 items-center gap-1" data-testid="started-from-chat">
                           · <MessagesSquare className="size-3.5 shrink-0" aria-hidden />

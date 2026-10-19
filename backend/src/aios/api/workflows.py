@@ -653,6 +653,10 @@ class WorkflowRunSummary(BaseModel):
     # The chat a mention in it started it from, while the chat exists.
     chat_id: int | None
     chat_name: str | None
+    # The member who started it: by hand, or by mentioning the workflow in a chat. Null for a
+    # schedule's run (`trigger_id` says which, while it exists), and once that user is deleted.
+    created_by: UserOut | None
+    trigger_id: int | None
 
 
 class WorkflowRunStepOut(BaseModel):
@@ -801,31 +805,11 @@ def waits_on(step: WorkflowRunStep, requests: list[SchemaChangeRequest]) -> list
     ]
 
 
-def get_readable_workflow_run(
-    db: Session, org: Organisation, user_id: int, workflow_id: int, run_id: int
-) -> WorkflowRun:
-    """The run, for reading: one of the organisation's workflows', or one shared with the user
-    through a chat (`invocations.shares_workflow_run`). Otherwise a 404, as if it didn't
-    exist."""
-    workflow = db.get(Workflow, workflow_id)
-    run = db.get(WorkflowRun, run_id)
-    if (
-        workflow is None
-        or workflow.deleted_at is not None
-        or run is None
-        or run.workflow_id != workflow.id
-        or (
-            workflow.organisation_id != org.id
-            and not invocations.shares_workflow_run(db, user_id, run.id)
-        )
-    ):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return run
-
-
 def get_org_workflow_run(
     db: Session, org: Organisation, workflow_id: int, run_id: int
 ) -> WorkflowRun:
+    """A run of the organisation's live workflow; a 404 otherwise, as if it didn't exist. Every
+    member reads and deletes every run of the organisation's, whoever started it and however."""
     workflow = get_org_workflow(db, org, workflow_id)
     run = db.get(WorkflowRun, run_id)
     if run is None or run.workflow_id != workflow.id:
@@ -851,6 +835,9 @@ def workflow_run_summary_query():
             WorkflowRun.waited_seconds,
             Chat.id.label("chat_id"),
             Chat.name.label("chat_name"),
+            # As the user, by `workflow_run_summaries`.
+            WorkflowRun.created_by.label("created_by_id"),
+            WorkflowRun.trigger_id,
         )
         .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
         .outerjoin(ChatInvocation, ChatInvocation.workflow_run_id == WorkflowRun.id)
@@ -858,9 +845,21 @@ def workflow_run_summary_query():
     )
 
 
+def workflow_run_summaries(db: Session, rows) -> list[WorkflowRunSummary]:
+    """Rows of `workflow_run_summary_query` as summaries, with who started each read in one
+    query."""
+    known = people(db, [row.created_by_id for row in rows])
+    return [
+        WorkflowRunSummary.model_validate(
+            {**row._mapping, "created_by": known.get(row.created_by_id)}
+        )
+        for row in rows
+    ]
+
+
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
     row = db.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
-    return WorkflowRunSummary.model_validate(row, from_attributes=True)
+    return workflow_run_summaries(db, [row])[0]
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
@@ -873,7 +872,7 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
         .where(WorkflowRun.workflow_id == workflow.id)
         .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
     ).all()
-    return [WorkflowRunSummary.model_validate(row, from_attributes=True) for row in rows]
+    return workflow_run_summaries(db, rows)
 
 
 @router.post(
@@ -881,21 +880,32 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
     response_model=WorkflowRunSummary,
     status_code=status.HTTP_201_CREATED,
 )
-def create_workflow_run(workflow_id: DbId, body: WorkflowRunIn, org: CurrentOrganisation, db: DB):
+def create_workflow_run(
+    workflow_id: DbId, body: WorkflowRunIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
     workflow = get_org_workflow(db, org, workflow_id)
-    run = new_workflow_run(db, workflow, body.input)
+    run = new_workflow_run(db, workflow, body.input, created_by=user.id)
     queue_workflow_run(db, run)
     return workflow_run_summary(db, run.id)
 
 
-def new_workflow_run(db: Session, workflow: Workflow, input: str) -> WorkflowRun:
-    """Add (and flush, not commit) a run of the workflow's current version, given `input`.
+def new_workflow_run(
+    db: Session,
+    workflow: Workflow,
+    input: str,
+    *,
+    created_by: int | None,
+    trigger_id: int | None = None,
+) -> WorkflowRun:
+    """Add (and flush, not commit) a run of the workflow's current version, given `input`,
+    started by the member `created_by`; it runs for the workflow's organisation, not for them
+    (`aios.workflows`), as do its agent nodes' runs, which it passes `created_by` on to.
 
     Raises `HTTPException` if it can't run: 404 if it has been deleted, 422 if it has no nodes,
     409 if an agent version in its graph can't run. Commit with `queue_workflow_run`; the share
     lock taken here keeps a concurrent delete from leaving a run on a workflow that's gone.
-    Also how a schedule starts one (`aios.scheduler`).
+    Also how a schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
     """
     if not lock_live(db, Workflow, [workflow.id], read=True):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -908,7 +918,13 @@ def new_workflow_run(db: Session, workflow: Workflow, input: str) -> WorkflowRun
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # Pin the version: later edits to the workflow don't change this run.
-    run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, input=input)
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        input=input,
+        created_by=created_by,
+        trigger_id=trigger_id,
+    )
     db.add(run)
     db.flush()
     return run
@@ -936,30 +952,21 @@ def queue_workflow_run(db: Session, run: WorkflowRun) -> None:
 class WorkflowRunPageOut(WorkflowRunOut):
     """The run as its page reads it."""
 
-    # The workflow's name: the reader may not own it, and so can't read the workflow itself.
+    # The workflow's name, so the page needn't read the workflow as well.
     workflow_name: str
-    # Whether the run's workflow is in the reader's organisation. Anyone else reads it as a
-    # member of a chat that started it (`invocations.shares_workflow_run`): only the
-    # organisation's members delete it, or decide what it waits on.
-    is_owner: bool
 
 
 @router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunPageOut)
-def get_workflow_run(
-    workflow_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
-):
-    run = get_readable_workflow_run(db, org, user.id, workflow_id, run_id)
-    workflow = db.get(Workflow, run.workflow_id)
+def get_workflow_run(workflow_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB):
+    run = get_org_workflow_run(db, org, workflow_id, run_id)
     # Read now: `workflow_run_out` expires the session's rows.
-    name, is_owner = workflow.name, workflow.organisation_id == org.id
+    name = db.get(Workflow, run.workflow_id).name
     # A run whose worker died is failed when it's read: its task may never come round again to
     # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
     # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
     # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
     fail_stopped_runs(db, WorkflowRun.id == run.id)
-    return WorkflowRunPageOut(
-        **workflow_run_out(db, run.id).model_dump(), workflow_name=name, is_owner=is_owner
-    )
+    return WorkflowRunPageOut(**workflow_run_out(db, run.id).model_dump(), workflow_name=name)
 
 
 def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
@@ -1006,14 +1013,13 @@ def get_run_subworkflow(
     workflow_id: DbId,
     run_id: DbId,
     path: Annotated[list[str], Query(min_length=1)],
-    user: CurrentUser,
     org: CurrentOrganisation,
     db: DB,
 ):
     """The version the run's graph pinned for the workflow node at `path` (node keys, outermost
-    first): what its page draws on opening a subworkflow. Read through the run, so anyone who
-    may read the run may read it, without being able to read the subworkflow itself."""
-    run = get_readable_workflow_run(db, org, user.id, workflow_id, run_id)
+    first): what its page draws on opening a subworkflow, as the run pinned it (the subworkflow
+    may have changed since, or been deleted)."""
+    run = get_org_workflow_run(db, org, workflow_id, run_id)
     version_id = run.workflow_version_id
     for key in path:
         node = db.get(WorkflowNode, (version_id, key))

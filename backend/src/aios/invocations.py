@@ -10,9 +10,9 @@ For a workflow, after the response, a background step starts the run
 goes `briefing` (`begin_briefing`), and one model call writes the brief, kept on the invocation,
 and the ack, which replaces the acknowledgement's placeholder (`record_handoff`). Then the run
 starts through the helpers the UI and schedules use, with the brief and the message as its input
-(`run_input`), as the workflow's owner. The invocation records the run, and goes `running` once
-it's queued (`mark_running`). A start that's refused, or a handoff that fails, fails it with the
-reason (`fail_unstarted`).
+(`run_input`), started by the member who mentioned it (`requested_by`). The invocation records
+the run, and goes `running` once it's queued (`mark_running`). A start that's refused, or a
+handoff that fails, fails it with the reason (`fail_unstarted`).
 
 Every invocation ends the same way, in one transaction: it's marked succeeded or failed and its
 result is posted back as a message from the agent or workflow, belonging to the invocation
@@ -29,18 +29,15 @@ turn run (`beat`).
 When the turn ends its reply, or why it failed, is posted back (`finish_turn`); one whose
 heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`).
 
-A run an invocation started still executes as, and belongs to, its agent's or workflow's owner;
-but any member of the chat may read it, so its card's link opens for everyone in the chat
-(`shares_agent_run`, `shares_workflow_run`). Only reading: everything else about the run stays
-its owner's. The rule lapses with the invocation's link to the run: once the run or the chat is
-deleted, or the reader leaves the chat.
+A run an invocation started is the organisation's, like any other: started by the member who
+mentioned it, executed for the organisation, and read by every member (`aios.api.agents`).
 """
 
 import re
 from collections.abc import Sequence
 from datetime import timedelta
 
-from sqlalchemy import exists, func, or_, select, true, update
+from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
@@ -51,14 +48,11 @@ from aios.models import (
     ChatAuthorKind,
     ChatInvocation,
     ChatInvocationStatus,
-    ChatMember,
     ChatMessage,
     ChatMessageKind,
     TriggerTargetKind,
-    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
-    WorkflowRunStep,
 )
 
 # The acknowledgement a run card carries until the handoff replaces it with what the member
@@ -370,39 +364,3 @@ def fail_stopped_turns(
                 .values(status=AgentRunStatus.failed, finished_at=func.now())
             )
         failed(db, invocation, error)
-
-
-def _in_chats_of(user_id: int):
-    """An invocation in a chat the user is a member of."""
-    return ChatInvocation.chat_id.in_(
-        select(ChatMember.chat_id).where(ChatMember.user_id == user_id)
-    )
-
-
-def shares_workflow_run(db: Session, user_id: int, run_id: int) -> bool:
-    """Whether the user may read the workflow run as a member of a chat that started it."""
-    return db.scalar(
-        select(exists().where(ChatInvocation.workflow_run_id == run_id, _in_chats_of(user_id)))
-    )
-
-
-def shares_agent_run(db: Session, user_id: int, run_id: int) -> bool:
-    """Whether the user may read the agent run as a member of a chat that started it, or that
-    started a (live) workflow's run it's a node's conversation in, at any depth."""
-    in_workflow_runs = (
-        select(WorkflowRunStep.run_id)
-        .join(WorkflowRun, WorkflowRun.id == WorkflowRunStep.run_id)
-        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
-        .where(WorkflowRunStep.agent_run_id == run_id, Workflow.deleted_at.is_(None))
-    )
-    return db.scalar(
-        select(
-            exists().where(
-                or_(
-                    ChatInvocation.agent_run_id == run_id,
-                    ChatInvocation.workflow_run_id.in_(in_workflow_runs),
-                ),
-                _in_chats_of(user_id),
-            )
-        )
-    )

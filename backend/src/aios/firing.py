@@ -51,10 +51,10 @@ STOPPED = "The service stopped mid-run."
 
 
 class Turn(NamedTuple):
-    """What a cause's run starts with: whose it is, the user's message, and what to title the run
-    after if not that (a chat mention's request, rather than its brief)."""
+    """What a cause's run starts with: the run, the user's message, and what to title the run
+    after if not that (a chat mention's request, rather than its brief). Whoever started the
+    run, it executes for its agent's organisation (`aios.api.agents.load_chat_context`)."""
 
-    user_id: int
     agent_id: int
     run_id: int
     message: str
@@ -163,7 +163,7 @@ def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
         turn = flight.cause.start(db)
         if turn is None:
             return None
-        ctx = agents_api.load_chat_context(db, turn.user_id, turn.agent_id, turn.run_id)
+        ctx = agents_api.load_chat_context(db, turn.agent_id, turn.run_id)
     agents_api._start_turn(turn.run_id, turn.title or turn.message, heartbeat=True)
     flight.run_id = turn.run_id
     return turn, ctx
@@ -182,9 +182,7 @@ async def _fire(flight: Fire) -> None:
         started = await run_in_threadpool(_start, flight)
         if started is not None:
             turn, ctx = started
-            stream = agents_api.turn_stream(
-                ctx, turn.user_id, turn.run_id, HumanMessage(content=turn.message)
-            )
+            stream = agents_api.turn_stream(ctx, turn.run_id, HumanMessage(content=turn.message))
             async for chunk in stream:
                 if chunk["type"] == "error":
                     error = chunk["errorText"]

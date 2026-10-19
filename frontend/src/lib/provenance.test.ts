@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { User } from "@/lib/api";
-import { describeProvenance, personName } from "@/lib/provenance";
+import { describeProvenance, describeStarter, personName } from "@/lib/provenance";
 
 const me: User = { id: 1, login: "tester", name: "Tester", avatar_url: null };
 const sam: User = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
@@ -40,5 +40,21 @@ describe("describeProvenance", () => {
       "Created by Sam Jones",
     );
     expect(describeProvenance({ created_by: null, updated_by: null }, me)).toBeNull();
+  });
+});
+
+describe("describeStarter", () => {
+  it("says which member started the run", () => {
+    expect(describeStarter({ created_by: sam, trigger_id: null }, me)).toBe("Started by Sam Jones");
+    expect(describeStarter({ created_by: me, trigger_id: null }, me)).toBe("Started by you");
+  });
+
+  it("says a schedule's run was scheduled", () => {
+    expect(describeStarter({ created_by: null, trigger_id: 7 }, me)).toBe("Scheduled");
+  });
+
+  it("says nothing when who started it isn't known", () => {
+    // From before runs recorded it, a deleted account, or a schedule since deleted.
+    expect(describeStarter({ created_by: null, trigger_id: null }, me)).toBeNull();
   });
 });

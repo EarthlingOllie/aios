@@ -513,7 +513,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
         yield object()
         events.append("db closed")
 
-    def fake_load(db, user_id, agent_id, run_id, *, org=None):
+    def fake_load(db, agent_id, run_id, *, org=None):
         events.append(("load on loop", on_event_loop()))
         return agents_api.ChatContext(
             model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()

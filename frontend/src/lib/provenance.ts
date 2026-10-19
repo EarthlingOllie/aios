@@ -16,3 +16,16 @@ export function describeProvenance(p: Provenance, me?: User | null): string | nu
   const changer = personName(p.updated_by, me);
   return created ? `${created} · last changed by ${changer}` : `Last changed by ${changer}`;
 }
+
+/** What says who started a run: the member, or else the schedule that did. */
+export type Started = { created_by: User | null; trigger_id: number | null };
+
+/**
+ * Who started a run, in a line: "Started by Sam", or "Scheduled" for a schedule's run, which no
+ * member started. Null when neither is known (a run from before runs recorded it, or whose
+ * member's account or schedule has since been deleted).
+ */
+export function describeStarter(run: Started, me?: User | null): string | null {
+  if (run.created_by) return `Started by ${personName(run.created_by, me)}`;
+  return run.trigger_id !== null ? "Scheduled" : null;
+}

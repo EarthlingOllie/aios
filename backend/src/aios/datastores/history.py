@@ -389,8 +389,8 @@ def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 AgentVersion.version.label("agent_version"),
                 AgentVersion.model,
                 AgentRun.title,
-                # Who ran it: today, an agent's runs are its owner's.
-                Agent.owner_id.label("user_id"),
+                # The member who started it; none for a schedule's run.
+                AgentRun.created_by.label("user_id"),
                 AgentRun.trigger_id,
                 workflow_run.label("workflow_run_id"),
                 AgentRun.message_count,
@@ -465,8 +465,8 @@ def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 WorkflowRun.workflow_id,
                 Workflow.name.label("workflow_name"),
                 WorkflowVersion.version.label("workflow_version"),
-                # Who ran it: today, a workflow's runs are its owner's.
-                Workflow.owner_id.label("user_id"),
+                # The member who started it; none for a schedule's run.
+                WorkflowRun.created_by.label("user_id"),
                 cast(WorkflowRun.status, Text).label("status"),
                 WorkflowRun.input,
                 WorkflowRun.output,

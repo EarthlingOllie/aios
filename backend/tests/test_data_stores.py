@@ -366,7 +366,7 @@ def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user):
     agent = librarian(api)
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with connections() as used, SessionLocal() as session:
-        ctx = agents_api.load_chat_context(session, user.id, agent["id"], run["id"])
+        ctx = agents_api.load_chat_context(session, agent["id"], run["id"])
 
     assert ctx.data_store_id == store_of(user)
     assert used["most"] == 1

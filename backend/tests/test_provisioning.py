@@ -1072,7 +1072,7 @@ def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_
 
     assert provision.migrate_all([store_id]) == {store_id: head_revision()}
 
-    assert store_row(db, store_id).history_revision == history_head() == "h0003"
+    assert store_row(db, store_id).history_revision == history_head() == "h0004"
     assert store_tables(names.dbname, "history") == HISTORY_TABLES
     # And the messages' search columns (h0003).
     with admin_connect(names.dbname) as conn:

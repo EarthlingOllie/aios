@@ -15,7 +15,7 @@ tokens of them, whichever is less) and returns `{ack, brief}`:
 It runs for agents and workflows alike, and is never skipped. A handoff that fails (the model
 errs, times out or answers with no `{ack, brief}`) fails the invocation with why, as a refused
 start does (`aios.firing.CantStart`). Each call is traced to Langfuse (`aios.tracing`), tagged
-`handoff`, with the invocation it was for.
+`handoff`, with the invocation it was for, the organisation and the member who mentioned it.
 """
 
 import asyncio
@@ -158,8 +158,9 @@ def _begin(invocation_id: int) -> Request | None:
             metadata=tracing.trace_metadata(
                 # A chat's handoffs, together.
                 session_id=f"chat-{invocation.chat_id}",
-                # Whose run it starts, as the run's own trace says.
-                user_id=target.owner_id,
+                # As the run's own trace will say: the organisation it runs for, and who asked.
+                organisation_id=target.organisation_id,
+                created_by=invocation.requested_by,
                 tags=["handoff"],
                 invocation_id=invocation.id,
                 chat_id=invocation.chat_id,

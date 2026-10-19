@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.orm import Session, object_session
 
-from aios import checkpoints, dependents, invocations, tracing, ui_stream
+from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
 from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
@@ -176,17 +176,17 @@ class RunSummary(BaseModel):
     # The chat a mention in it started it from, while the chat exists.
     chat_id: int | None
     chat_name: str | None
+    # The member who started it: by hand, by mentioning the agent in a chat, or by starting the
+    # workflow run it's a node's conversation in. Null for a schedule's run (`trigger_id` says
+    # which, while it exists), and once that user is deleted.
+    created_by: UserOut | None
     created_at: datetime
     updated_at: datetime
 
 
 class RunOut(RunSummary):
-    # The agent's name: the reader may not own it, and so can't read the agent itself.
+    # The agent's name, so the page needn't read the agent as well.
     agent_name: str
-    # Whether the run's agent is in the reader's organisation. Anyone else reads it as a member
-    # of a chat that started it (`invocations.shares_agent_run`): only the organisation's
-    # members send it messages or delete it.
-    is_owner: bool
     # AI SDK `UIMessage`s, for rendering the conversation with the same components as a live chat.
     ui_messages: list[dict[str, Any]]
     # The raw LangChain history: messages with their tool calls, results and usage.
@@ -231,29 +231,10 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
     return version
 
 
-def get_readable_run(
-    db: Session, org: Organisation, user_id: int, agent_id: int, run_id: int
-) -> AgentRun:
-    """The run, for reading: one of the organisation's agents', or one shared with the user
-    through a chat (`invocations.shares_agent_run`). Otherwise a 404, as if it didn't exist."""
-    agent = db.get(Agent, agent_id)
-    run = db.get(AgentRun, run_id)
-    if (
-        agent is None
-        or agent.deleted_at is not None
-        or run is None
-        or run.agent_id != agent.id
-        or (
-            agent.organisation_id != org.id
-            and not invocations.shares_agent_run(db, user_id, run.id)
-        )
-    ):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return run
-
-
 def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> AgentRun:
-    """A run of the organisation's live agent; a 404 otherwise."""
+    """A run of the organisation's live agent; a 404 otherwise, as if it didn't exist. Every
+    member reads, continues and deletes every run of the organisation's, whoever started it
+    and however (by hand, from a chat, by a schedule)."""
     run = get_live_run(db, agent_id, run_id)
     if run.agent.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -673,6 +654,8 @@ def run_summary_query():
             AgentRun.output_tokens,
             Chat.id.label("chat_id"),
             Chat.name.label("chat_name"),
+            # As the user, by `run_summaries`.
+            AgentRun.created_by.label("created_by_id"),
             AgentRun.created_at,
             AgentRun.updated_at,
         )
@@ -680,6 +663,20 @@ def run_summary_query():
         .outerjoin(ChatInvocation, ChatInvocation.agent_run_id == AgentRun.id)
         .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
     )
+
+
+def run_summaries(db: Session, rows) -> list[RunSummary]:
+    """Rows of `run_summary_query` as summaries, with who started each read in one query."""
+    known = people(db, [row.created_by_id for row in rows])
+    return [
+        RunSummary.model_validate({**row._mapping, "created_by": known.get(row.created_by_id)})
+        for row in rows
+    ]
+
+
+def run_summary(db: Session, run_id: int) -> RunSummary:
+    row = db.execute(run_summary_query().where(AgentRun.id == run_id)).one()
+    return run_summaries(db, [row])[0]
 
 
 def build_version_tools(
@@ -701,22 +698,31 @@ def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return [RunSummary.model_validate(row, from_attributes=True) for row in rows]
+    return run_summaries(db, rows)
 
 
-def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -> AgentRun:
-    """Add (and flush, not commit) a run of the agent's current version.
+def new_agent_run(
+    db: Session, agent: Agent, *, created_by: int | None, trigger_id: int | None = None
+) -> AgentRun:
+    """Add (and flush, not commit) a run of the agent's current version, started by the member
+    `created_by`: who asked for it by hand or in a chat. It runs for the agent's organisation,
+    not for them (`load_chat_context`).
 
     Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
     version can't be built. The caller commits; the share lock taken here, held until then,
     keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
-    starts one (`aios.scheduler`), passing its `trigger_id`.
+    starts one (`aios.scheduler`), passing its `trigger_id` and no member.
     """
     lock_live_agent(db, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
-    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger_id)
+    run = AgentRun(
+        agent=agent,
+        agent_version_id=agent.current_version_id,
+        trigger_id=trigger_id,
+        created_by=created_by,
+    )
     db.add(run)
     db.flush()
     return run
@@ -725,23 +731,26 @@ def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: DbId, org: CurrentOrganisation, db: DB):
+def create_run(agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     agent = get_org_agent(db, org, agent_id)
-    run = new_agent_run(db, agent)
+    run = new_agent_run(db, agent, created_by=user.id)
     db.commit()
-    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
-    return RunSummary.model_validate(row, from_attributes=True)
+    [summary] = run_summaries(
+        db, [db.execute(run_summary_query().where(AgentRun.id == run.id)).one()]
+    )
+    return summary
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
 def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    run = get_readable_run(db, org, user.id, agent_id, run_id)
-    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
+    run = get_org_run(db, org, agent_id, run_id)
+    [summary] = run_summaries(
+        db, [db.execute(run_summary_query().where(AgentRun.id == run.id)).one()]
+    )
     messages = checkpoints.history(run.id)
     return RunOut(
-        **RunSummary.model_validate(row, from_attributes=True).model_dump(),
+        **summary.model_dump(),
         agent_name=run.agent.name,
-        is_owner=run.agent.organisation_id == org.id,
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
@@ -766,12 +775,14 @@ def delete_run(
         background.add_task(stop_sandboxes, sandboxes)
 
 
-def trace_metadata(run: AgentRun, user_id: int) -> dict[str, Any]:
-    """Attached to the run's trace (Langfuse), e.g. for filtering and experiments."""
+def trace_metadata(run: AgentRun) -> dict[str, Any]:
+    """Attached to the run's trace (Langfuse), e.g. for filtering and experiments: the agent's
+    organisation, which the run executes for, and the member who started it."""
     version = run.agent_version
     return tracing.trace_metadata(
         session_id=checkpoints.thread_id(run.id),
-        user_id=user_id,
+        organisation_id=run.agent.organisation_id,
+        created_by=run.created_by,
         tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
         agent_run_id=run.id,
         **tracing.agent_version_metadata(version),
@@ -792,14 +803,19 @@ class ChatContext:
     sandbox_domains: list[str] | None = None
     # The data store the turn's tools use: the agent's organisation's.
     data_store_id: uuid.UUID | None = None
+    # The member who started the run, which the turn's tools are told (`ChatDeps.user_id`);
+    # None for a schedule's.
+    created_by: int | None = None
 
 
 def load_chat_context(
-    db: Session, user_id: int, agent_id: int, run_id: int, *, org: Organisation | None = None
+    db: Session, agent_id: int, run_id: int, *, org: Organisation | None = None
 ) -> ChatContext:
-    """What a turn of the run needs. `org` is the organisation of the request asking for the
-    turn, which the run's agent must be in (a 404 otherwise); the scheduler, a chat's mention
-    and a resumed run are let in by what started them, and pass none."""
+    """What a turn of the run needs. The turn executes for the agent's organisation, whoever
+    asks for it: its store is the organisation's, and its trace and tools are told who started
+    the run. `org` is the organisation of the request asking for the turn, which the run's agent
+    must be in (a 404 otherwise); the scheduler, a chat's mention and a resumed run are let in
+    by what started them, and pass none."""
     run = (
         get_live_run(db, agent_id, run_id)
         if org is None
@@ -828,10 +844,11 @@ def load_chat_context(
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
-        metadata=trace_metadata(run, user_id),
+        metadata=trace_metadata(run),
         tools=tools,
         sandbox_domains=sandbox_domains,
         data_store_id=data_store_id,
+        created_by=run.created_by,
     )
 
 
@@ -1088,7 +1105,7 @@ def _check_not_waiting(run_id: int) -> None:
 
 
 async def turn_stream(
-    ctx: ChatContext, user_id: int, run_id: int, turn: HumanMessage | Resume
+    ctx: ChatContext, run_id: int, turn: HumanMessage | Resume
 ) -> AsyncIterator[ui_stream.Chunk]:
     """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
     the model is called, and whatever the reply got to is kept however the turn ends (it
@@ -1127,7 +1144,7 @@ async def turn_stream(
             if graph_input is not None:
                 # Closed here if the consumer stops the turn, so the turn is recorded while the
                 # checkpointer's connection is still open.
-                turn_chunks = _run_turn(agent, config, ctx, ui, user_id, run_id, graph_input)
+                turn_chunks = _run_turn(agent, config, ctx, ui, run_id, graph_input)
                 async with aclosing(turn_chunks):
                     async for chunk in turn_chunks:
                         yield chunk
@@ -1148,7 +1165,7 @@ async def turn_stream(
 
 
 async def _run_turn(
-    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, user_id: int, run_id: int, graph_input
+    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, run_id: int, graph_input
 ) -> AsyncIterator[ui_stream.Chunk]:
     finished = False
     # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool call)
@@ -1157,7 +1174,7 @@ async def _run_turn(
     events = agent.astream(
         graph_input,
         config,
-        context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
+        context=ChatDeps(user_id=ctx.created_by, run_id=run_id, data_store_id=ctx.data_store_id),
         stream_mode=["messages", "updates"],
         # Checkpoint each step before the next starts, so the user's message is saved before
         # the model is called.
@@ -1182,15 +1199,10 @@ async def _run_turn(
             await _record_turn(agent, config, run_id, finished=finished, partial=ui.partial_reply())
 
 
-def _run_owner(run_id: int) -> tuple[int, int] | None:
-    """The run's agent, and its owner (who it runs for); None if it's gone."""
+def _run_agent(run_id: int) -> int | None:
+    """The run's agent; None if the run is gone."""
     with SessionLocal() as db:
-        row = db.execute(
-            select(Agent.id, Agent.owner_id)
-            .join(AgentRun, AgentRun.agent_id == Agent.id)
-            .where(AgentRun.id == run_id)
-        ).first()
-        return (row.id, row.owner_id) if row else None
+        return db.scalar(select(AgentRun.agent_id).where(AgentRun.id == run_id))
 
 
 def _mark_resumed(run_id: int, request_ids: list[uuid.UUID] | None = None) -> None:
@@ -1219,17 +1231,16 @@ class ResumeFailed(RuntimeError):
 
 async def resume_run(run_id: int) -> None:
     """Carry on a run that waits on schema change requests, now some are decided: their tool
-    calls return the outcomes, and the turn goes on from there, as the run's owner. The rest
-    of the turn is in the run's history, for its chat to show.
+    calls return the outcomes, and the turn goes on from there, for the agent's organisation as
+    any turn of the run is. The rest of the turn is in the run's history, for its chat to show.
 
     Raises `ResumeFailed` if the turn couldn't start (the run stays waiting)."""
-    owner = await run_in_threadpool(_run_owner, run_id)
-    if owner is None:
+    agent_id = await run_in_threadpool(_run_agent, run_id)
+    if agent_id is None:
         return
-    agent_id, user_id = owner
     try:
         with SessionLocal() as db:
-            ctx = await run_in_threadpool(load_chat_context, db, user_id, agent_id, run_id)
+            ctx = await run_in_threadpool(load_chat_context, db, agent_id, run_id)
     except HTTPException as exc:
         # Its version can't run any more (a tool left the library, say): no turn of it can, so
         # it isn't left waiting on what can't come.
@@ -1237,7 +1248,7 @@ async def resume_run(run_id: int) -> None:
         await run_in_threadpool(_mark_resumed, run_id)
         return
     resume = Resume()
-    async for chunk in turn_stream(ctx, user_id, run_id, resume):
+    async for chunk in turn_stream(ctx, run_id, resume):
         if chunk["type"] == "error":
             log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
     if resume.dealt_with is None:
@@ -1266,7 +1277,7 @@ async def run_chat(
     # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
     # session is function-scoped (see `aios.db.DB`), so it's closed and its connection returned
     # to the pool before the response streams; the saves use sessions of their own.
-    ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id, org=org)
+    ctx = await run_in_threadpool(load_chat_context, db, agent_id, run_id, org=org)
     message = request.messages[-1]
     if message.role != "user":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")
@@ -1277,4 +1288,4 @@ async def run_chat(
         raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
     await run_in_threadpool(_start_turn, run_id, prompt.text)
 
-    return ui_stream.streaming_response(turn_stream(ctx, user.id, run_id, prompt))
+    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt))
