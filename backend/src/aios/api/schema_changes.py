@@ -149,10 +149,12 @@ def run_requests(db: Session, run_id: int, user_id: int) -> list[SchemaChangeOut
         .where(SchemaChangeRequest.requested_by_run == run_id)
         .order_by(SchemaChangeRequest.created_at)
     ).all()
-    return [
-        request_out(request, run, can_approve(db, user_id, request.data_store))
-        for request, run in rows
-    ]
+    # One run's requests are all on its store: whether the user may decide them is asked once.
+    deciders = {}
+    for request, _ in rows:
+        if request.data_store_id not in deciders:
+            deciders[request.data_store_id] = can_approve(db, user_id, request.data_store)
+    return [request_out(request, run, deciders[request.data_store_id]) for request, run in rows]
 
 
 def waiting_on(db: Session, run_id: int) -> bool:

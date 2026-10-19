@@ -84,8 +84,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Back to a store per user: a store made since (with no owner) goes to its organisation's
-    # first member who has none; any left over (and those of deleted organisations) is deleted,
-    # as the previous release has no way to reach it.
+    # first member who has none; any left over (and those of deleted organisations) loses its
+    # row, as the previous release has no way to reach it (its database and roles are left for
+    # an operator to drop: `provision.drop`).
     op.drop_constraint(CHECK, "data_stores", type_="check")
     op.execute(
         "UPDATE data_stores s SET owner_user_id = ("

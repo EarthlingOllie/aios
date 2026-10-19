@@ -47,8 +47,15 @@ class SettingsOut(BaseModel):
 def settings_out(db: DB, organisation_id: int) -> SettingsOut:
     store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == organisation_id))
     if store is None:
-        # Not made yet (it is on sign-up): nothing switched on, nothing exported.
-        store = DataStore(export_run_history=False, embed_run_history=False)
+        # Not made yet (signing up makes it): nothing switched on, nothing exported.
+        return SettingsOut(
+            export_run_history=False,
+            history_ready=False,
+            history_exported_at=None,
+            embed_run_history=False,
+            history_embedded_at=None,
+            history_embed_error=None,
+        )
     return SettingsOut(
         export_run_history=store.export_run_history,
         history_ready=store.history_revision is not None,
