@@ -32,11 +32,13 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
   await page.getByRole("button", { name: "Join" }).click();
   await expect(composer(page)).toBeVisible();
   await expect(listItem(page, "Design")).not.toContainText("Not joined");
-  await expect(page.getByRole("region", { name: "Members" }).getByRole("listitem")).toHaveText([
+  await page.getByRole("tab", { name: /Members/ }).click();
+  await expect(page.getByRole("tabpanel", { name: /Members/ }).getByRole("listitem")).toHaveText([
     /Sam.*owner/,
     /Tester/,
   ]);
   expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/join`, null]]);
+  await page.getByRole("tab", { name: "Chat" }).click();
 
   // And having joined, they can leave again; it's back to one to join.
   page.on("dialog", (dialog) => dialog.accept());
