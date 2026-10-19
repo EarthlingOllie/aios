@@ -13,6 +13,7 @@ Deleted, it's made afresh for the next chat.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from aios.api.provenance import made_by
 from aios.models import Agent, Organisation
 from aios.tools import validate_tool
 from aios.versioning import save_agent_version
@@ -58,12 +59,8 @@ def documents_assistant(db: Session, org: Organisation, user_id: int) -> Agent:
     ).one_or_none()
     if agent is not None:
         return agent
-    # `owner_id` too, until the contract step drops it: the release before reads it.
     agent = Agent(
-        owner_id=user_id,
-        organisation_id=org.id,
-        created_by=user_id,
-        updated_by=user_id,
+        **made_by(org.id, user_id),
         name=free_name(db, org),
         description=DESCRIPTION,
         builtin=BUILTIN,

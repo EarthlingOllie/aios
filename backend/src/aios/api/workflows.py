@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
 from aios import checkpoints, invocations
-from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import delete_triggers
 from aios.auth import CurrentOrganisation, CurrentUser
@@ -467,12 +467,8 @@ def list_workflows(org: CurrentOrganisation, db: DB):
 def create_workflow(body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     nodes, edges = resolve_graph(db, org, body)
     lock_new_graph(db, nodes, None)
-    # `owner_id` too, until the contract step drops it: the release before reads it.
     workflow = Workflow(
-        owner_id=user.id,
-        organisation_id=org.id,
-        created_by=user.id,
-        updated_by=user.id,
+        **made_by(org.id, user.id),
         name=body.name,
         description=body.description,
         layout={},

@@ -17,7 +17,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from aios import cron
-from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
@@ -227,14 +227,14 @@ def load(db: Session, trigger_id: int) -> Trigger:
     return db.scalars(select(Trigger).where(Trigger.id == trigger_id).options(*LOAD)).one()
 
 
-def disable_triggers(db: Session, condition) -> None:
-    """Turn off the triggers matching `condition`, as pausing each would: none fires again until
-    it's turned back on, and a firing claimed but not started is dropped. Lock their targets
-    first (see `aios.scheduler._claimed`)."""
+def disable_triggers(db: Session, condition, user_id: int) -> None:
+    """Turn off the triggers matching `condition`, as pausing each would (and as the member
+    `user_id` changing them): none fires again until it's turned back on, and a firing claimed
+    but not started is dropped. Lock their targets first (see `aios.scheduler._claimed`)."""
     db.execute(
         update(Trigger)
         .where(condition)
-        .values(enabled=False, next_run_at=None)
+        .values(enabled=False, next_run_at=None, updated_by=user_id)
         .execution_options(synchronize_session=False)
     )
     cancel_unstarted_firing(db, condition)
@@ -278,8 +278,7 @@ def list_triggers(
 
 @router.post("/triggers", response_model=TriggerOut, status_code=status.HTTP_201_CREATED)
 def create_trigger(body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    # `owner_id` too, until the contract step drops it: the release before reads it.
-    trigger = Trigger(owner_id=user.id, organisation_id=org.id, created_by=user.id)
+    trigger = Trigger(**made_by(org.id, user.id))
     apply(db, org, user.id, trigger, body)
     db.add(trigger)
     db.commit()

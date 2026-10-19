@@ -15,6 +15,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios import checkpoints, organisations
+from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, history, provision, resolve, store_session
@@ -140,7 +141,7 @@ def made_by(db, user: User) -> dict:
     """The columns that say whose a row (an agent, skill, workflow or trigger) is, for a test
     that makes one directly as `user` would: their organisation's, made by them, and (until the
     contract step drops it) theirs."""
-    return {"organisation_id": org_of(db, user).id, "created_by": user.id, "owner_id": user.id}
+    return provenance.made_by(org_of(db, user).id, user.id)
 
 
 def provisioned_user(db, github_id: int, login: str) -> User:

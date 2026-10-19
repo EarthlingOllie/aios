@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, object_session
 
 from aios import checkpoints, dependents, invocations, tracing, ui_stream
 from aios.agent import ChatDeps
-from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
@@ -445,15 +445,7 @@ def list_agents(org: CurrentOrganisation, db: DB):
 def create_agent(body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     tools = resolve_tools(body.tools)
     skills = resolve_skill_versions(db, org, body.skill_version_ids)
-    # `owner_id` too, until the contract step drops it: the release before reads it.
-    agent = Agent(
-        owner_id=user.id,
-        organisation_id=org.id,
-        created_by=user.id,
-        updated_by=user.id,
-        name=body.name,
-        description=body.description,
-    )
+    agent = Agent(**made_by(org.id, user.id), name=body.name, description=body.description)
     db.add(agent)
     with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
@@ -569,7 +561,7 @@ def delete_agent(
         [r.id for r in found.workflow_runs],
         f"Cancelled: the agent {agent.name} was deleted.",
     )
-    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]))
+    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]), user.id)
     # Soft delete: older workflow versions may still pin its versions, so the agent and its
     # versions stay. Its runs are the user's conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))

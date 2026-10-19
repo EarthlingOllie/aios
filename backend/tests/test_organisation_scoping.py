@@ -243,4 +243,6 @@ def test_deleting_an_agent_finds_the_workflows_and_schedules_any_member_made(api
     resolved = {"deactivate_workflows": [workflow["id"]]}
     ok(api.request("DELETE", f"/api/agents/{agent['id']}", json=resolved), 204)
     with signed_in_as(member):
-        assert ok(api.get(f"/api/triggers/{daily['id']}"))["enabled"] is False
+        paused = ok(api.get(f"/api/triggers/{daily['id']}"))
+    # Paused by whoever deleted the agent.
+    assert (paused["enabled"], paused["updated_by"]["login"]) == (False, "test-user")

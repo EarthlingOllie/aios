@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
@@ -226,14 +226,7 @@ def list_skills(org: CurrentOrganisation, db: DB):
 
 @router.post("/skills", response_model=SkillOut, status_code=status.HTTP_201_CREATED)
 def create_skill(body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    # `owner_id` too, until the contract step drops it: the release before reads it.
-    skill = Skill(
-        owner_id=user.id,
-        organisation_id=org.id,
-        created_by=user.id,
-        updated_by=user.id,
-        name=body.name,
-    )
+    skill = Skill(**made_by(org.id, user.id), name=body.name)
     db.add(skill)
     with unique_name(db, "a skill", SKILL_NAME_INDEX):
         save_skill_version(

@@ -32,6 +32,18 @@ class Provenance(BaseModel):
     updated_by: UserOut | None
 
 
+def made_by(org_id: int, user_id: int) -> dict:
+    """The columns a new row of the organisation's (an agent, skill, workflow or trigger) starts
+    with, made by the member `user_id`: whose it is, and who made and last changed it. And
+    `owner_id`, the maker, until the contract step drops it: the release before reads it."""
+    return {
+        "organisation_id": org_id,
+        "created_by": user_id,
+        "updated_by": user_id,
+        "owner_id": user_id,
+    }
+
+
 def people(db: Session, ids: Iterable[int | None]) -> dict[int, UserOut]:
     """The users with these ids (nulls skipped), by id, in one query."""
     wanted = {i for i in ids if i is not None}
