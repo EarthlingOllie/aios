@@ -141,7 +141,8 @@ you can find them), most recently active first, and opens one to its header (nam
 member count, and Edit, Delete, Join or Leave) above two tabs, as on the agent page: **Chat**, the
 messages and composer (the default), and **Members** (`?tab=members`, with the count). The room
 isn't kept while Members is open, so nothing is marked read there and coming back reloads the
-messages, scrolled to the newest; a message typed but not sent is kept for that chat. Members are
+messages, scrolled to the newest; a message typed but not sent is still there on coming back
+(and only in that chat). Members are
 grouped by kind: users, and the owner's **agents and workflows**, with the
 icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
 user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat

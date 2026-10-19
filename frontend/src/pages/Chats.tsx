@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
 import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
@@ -126,7 +126,15 @@ export function ChatDetail() {
   // The composer's unsent text, per chat. Held here because the room unmounts while the Members
   // tab is open; keyed so one chat's draft never shows in another.
   const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const setDraft = useCallback((draft: string) => setDrafts((all) => ({ ...all, [id]: draft })), [id]);
+  const setDraft = useCallback(
+    (update: SetStateAction<string>) =>
+      setDrafts(({ [id]: current = "", ...others }) => {
+        const draft = typeof update === "function" ? update(current) : update;
+        // An empty draft is no draft: only chats with something typed keep an entry.
+        return draft ? { ...others, [id]: draft } : others;
+      }),
+    [id],
+  );
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
     (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
@@ -246,7 +254,7 @@ export function ChatDetail() {
                 mentionable={mentionable}
                 onPosted={reloadList}
                 onRead={chat.is_member ? onRead : undefined}
-                draft={drafts[chat.id] ?? ""}
+                draft={drafts[id] ?? ""}
                 onDraftChange={setDraft}
               />
             ),

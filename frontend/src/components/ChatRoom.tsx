@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
@@ -108,7 +118,7 @@ export function ChatRoom({
   onRead?: (messageId: number) => Promise<unknown>;
   /** What's in the composer, not yet sent. */
   draft: string;
-  onDraftChange: (draft: string) => void;
+  onDraftChange: Dispatch<SetStateAction<string>>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
@@ -226,6 +236,9 @@ export function ChatRoom({
     if (!body.trim() || posting) return;
     setPosting(true);
     setError(undefined);
+    // What's being sent leaves the composer at once: the draft outlives this room (and `posting`),
+    // so left in place it could be sent again from the room shown on coming back to the chat.
+    onDraftChange("");
     try {
       // Only the members the composer offered are mentions; any other token is plain text.
       const mentions = mentionable ? mentionsIn(body, mentionable) : [];
@@ -233,10 +246,11 @@ export function ChatRoom({
       const posted = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
       show(posted, { to: "bottom" });
-      onDraftChange("");
       onPosted?.();
     } catch (err) {
       setError(describeError(err));
+      // Not sent: back in the composer to try again, unless something else was typed since.
+      onDraftChange((current) => current || body);
     } finally {
       setPosting(false);
     }

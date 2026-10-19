@@ -98,6 +98,52 @@ test("an unsent message survives switching to Members and back, but not to anoth
   await expect(composer(page)).toHaveValue("");
 });
 
+test("a message still sending when switching to Members and back isn't offered to send again", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  const chat = api.addChat("Design");
+  // The post waits until the test lets it through: a slow network.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(`**/api/chats/${chat.id}/messages`, async (route) => {
+    if (route.request().method() === "POST") await released;
+    await route.fallback();
+  });
+  await page.goto(`/chats/${chat.id}`);
+
+  await composer(page).fill("Hello");
+  await composer(page).press("Enter");
+  await tab(page, /Members/).click();
+  await tab(page, "Chat").click();
+  // What's being sent has left the composer, so it can't be sent twice; typing goes on.
+  await expect(composer(page)).toHaveValue("");
+  await composer(page).fill("And another");
+
+  release();
+  await expect(messageList(page)).toContainText("Hello");
+  // The first post finishing doesn't clear what was typed since.
+  await expect(composer(page)).toHaveValue("And another");
+  expect(api.writes.filter(([method]) => method === "POST")).toHaveLength(1);
+});
+
+test("a message that fails to send is back in the composer, with why", async ({ page }) => {
+  const api = await fakeApi(page);
+  const chat = api.addChat("Design");
+  await page.route(`**/api/chats/${chat.id}/messages`, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 503, json: { detail: "Try again later." } })
+      : route.fallback(),
+  );
+  await page.goto(`/chats/${chat.id}`);
+
+  await composer(page).fill("Hello");
+  await composer(page).press("Enter");
+  await expect(page.getByText("Try again later.")).toBeVisible();
+  await expect(composer(page)).toHaveValue("Hello");
+  await expect(messageList(page)).not.toContainText("Hello");
+});
+
 test("messages aren't marked read while Members is open; back on Chat they are", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design", { owner: sam });
