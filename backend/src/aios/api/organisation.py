@@ -13,7 +13,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from aios.api.skills import on_conflict
 from aios.auth import CurrentOrganisation, CurrentUser
@@ -72,7 +72,7 @@ def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
     )
 
 
-def organisation_out(db: DB, org: Organisation, user: User) -> OrganisationOut:
+def organisation_out(db: Session, org: Organisation, user: User) -> OrganisationOut:
     members = db.scalars(
         select(OrganisationMember)
         .options(selectinload(OrganisationMember.user))

@@ -124,8 +124,8 @@ class OrganisationMember(Base):
     user: Mapped["User"] = relationship()
 
     __table_args__ = (
-        # One organisation per user, for now (`aios.organisations.current_organisation` reads
-        # the one): drop this to allow several.
+        # One organisation per user, for now (`aios.auth.current_organisation` reads the one):
+        # drop this to allow several.
         Index("uq_organisation_members_user_id", "user_id", unique=True),
     )
 
@@ -259,8 +259,9 @@ class Skill(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`): null only for rows the data
-    # migration hasn't reached, until it's made NOT NULL and `owner_id` dropped.
+    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
+    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
+    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -339,8 +340,9 @@ class Agent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`): null only for rows the data
-    # migration hasn't reached, until it's made NOT NULL and `owner_id` dropped.
+    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
+    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
+    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -543,8 +545,9 @@ class Workflow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`): null only for rows the data
-    # migration hasn't reached, until it's made NOT NULL and `owner_id` dropped.
+    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
+    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
+    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -803,8 +806,9 @@ class Trigger(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`): null only for rows the data
-    # migration hasn't reached, until it's made NOT NULL and `owner_id` dropped.
+    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
+    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
+    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -994,8 +998,9 @@ class Chat(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`): null only for rows the data
-    # migration hasn't reached, until it's made NOT NULL and `owner_id` dropped.
+    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
+    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
+    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
