@@ -9,15 +9,23 @@ from contextlib import contextmanager
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from conftest import delete_user, join_organisation
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import in_the_background, revision
 
-from aios import organisations
+from aios import invocations, organisations
 from aios.api import chats
 from aios.db import SessionLocal, engine
-from aios.models import Chat, ChatMember, ChatMemberKind, ChatMemberRole, ChatVisibility, User
+from aios.models import (
+    Chat,
+    ChatInvocation,
+    ChatMember,
+    ChatMemberKind,
+    ChatMemberRole,
+    ChatVisibility,
+    User,
+)
 
 NAME_TAKEN = "The organisation already has a chat with that name."
 
@@ -347,11 +355,22 @@ def waits_on_a_lock(request: threading.Thread) -> None:
         time.sleep(0.02)
 
 
+def finishes_without_waiting(request: threading.Thread) -> None:
+    """Return once the request on the thread has finished, failing if it waits on a lock first:
+    it isn't held up by the transaction a test holds open."""
+    deadline = time.monotonic() + 10
+    while request.is_alive():
+        with engine.connect() as conn:
+            assert not conn.execute(WAITING_ON_A_LOCK).scalar(), "the request waited on a lock"
+        assert time.monotonic() < deadline, "the request never finished"
+        time.sleep(0.02)
+
+
 @contextmanager
 def leaving(leaver: User):
     """The user leaving the organisation (as `POST /api/organisation/leave` does), held open:
-    flushed within the block (their chat member rows deleted, `hand_over_chats` run, the chats it
-    found ownerless locked) and committed as it ends."""
+    flushed within the block (their chat member rows deleted, `hand_over_chats` run, the chats they
+    owned locked) and committed as it ends."""
     with SessionLocal() as session:
         user = session.get_one(User, leaver.id)
         org = organisations.membership_of(session, user.id)
@@ -694,3 +713,52 @@ def test_the_upgrade_takes_members_who_left_out_of_chats_and_hands_theirs_over(
     got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
     assert got == {"Plans": "private", "Theirs": "public"}
     assert api.post(f"/api/chats/{theirs['id']}/join").json()["is_owner"] is True
+
+
+def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+    monkeypatch,
+):
+    """A chat left with nobody to own it before (its owner left with nobody in it) has nothing to
+    do with Carol's leaving: reading it while her leave is under way, which fails the run its
+    last member's mention never got to start and posts that back into it, doesn't wait for her
+    leave to end. Only the chats she owned can have lost their owner by it."""
+
+    async def lost(invocation_ids):
+        """The process stops between posting the message and starting the run."""
+
+    monkeypatch.setattr(chats, "start_invocations", lost)
+    carol = join_organisation(db, user, -61, "carol")
+    try:
+        with signed_in_as(member):
+            chat = make_chat(api, "Old", visibility="public")
+            workflow = make_workflow(api, "Digest")
+            add(api, chat, "workflow", workflow)
+            resp = api.post(
+                f"/api/chats/{chat['id']}/messages",
+                json={"body": "Go", "mentions": [{"kind": "workflow", "id": workflow["id"]}]},
+            )
+            assert resp.status_code == 201, resp.text
+            [invocation] = resp.json()["invocations"]
+            assert api.post("/api/organisation/leave").status_code == 200
+        assert owners(api, chat) == []
+        db.execute(
+            update(ChatInvocation)
+            .where(ChatInvocation.id == invocation["id"])
+            .values(created_at=func.now() - invocations.START_WITHIN)
+        )
+        db.commit()
+
+        with leaving(carol):
+            reading, read = in_the_background(lambda: api.get(f"/api/chats/{chat['id']}/messages"))
+            finishes_without_waiting(reading)
+
+        assert "error" not in read, read
+        assert read["value"].status_code == 200, read["value"].text
+        [failed] = read["value"].json()["invocations"]
+        assert (failed["status"], failed["error"]) == ("failed", invocations.NEVER_STARTED)
+    finally:
+        delete_user(db, carol)
