@@ -80,6 +80,15 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
 
 
 @pytest.fixture(autouse=True)
+def store_deletions(monkeypatch) -> list[uuid.UUID]:
+    """Data stores whose deletion sweep was queued (an empty organisation deleted on accepting
+    an invitation), instead of sending it to the broker."""
+    queued: list[uuid.UUID] = []
+    monkeypatch.setattr(organisations, "enqueue_store_deletion", queued.append)
+    return queued
+
+
+@pytest.fixture(autouse=True)
 def handoff_model() -> Iterator[None]:
     """The handoff step's model (`aios.handoff`), scripted rather than the provider's: it
     acknowledges with "On it." and briefs nothing (`fake_model.use_handoff` scripts another).

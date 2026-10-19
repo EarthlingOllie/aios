@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import delete_user, sign_up, store_of
+from conftest import delete_user, join_organisation, sign_up, store_of
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
 from test_schema_change_requests import CONTACTS
@@ -250,16 +250,23 @@ def test_signing_in_through_a_link_while_in_an_organisation_stays_in_it(api, db,
         delete_user(db, existing)
 
 
-def test_accepting_while_in_another_organisation_is_refused(api, user, new_user):
+def test_accepting_while_in_another_organisation_is_refused(api, db, user, new_user):
     link = make_link(api)
     other = new_user()
-    with signed_in_as(other):
-        resp = api.post(f"/api/invites/{link['token']}/accept")
-        assert resp.status_code == 409
-        assert resp.json()["detail"] == (
-            f"You're a member of {other.login}. You can be in only one organisation at a time."
-        )
-        assert api.get("/api/me").json()["organisation"]["name"] == other.login
+    # Not theirs alone: an empty organisation of their own would be deleted as they join
+    # (`test_empty_organisation`).
+    friend = join_organisation(db, other, -51, "friend")
+    try:
+        with signed_in_as(other):
+            resp = api.post(f"/api/invites/{link['token']}/accept")
+            assert resp.status_code == 409
+            assert resp.json()["detail"] == (
+                f"You're a member of {other.login}. You can be in only one organisation at a time."
+            )
+            assert api.get("/api/me").json()["organisation"]["name"] == other.login
+    finally:
+        db.delete(friend)
+        db.commit()
     # And the creator, already in it.
     resp = api.post(f"/api/invites/{link['token']}/accept")
     assert resp.status_code == 409

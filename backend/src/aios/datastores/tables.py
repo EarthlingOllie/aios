@@ -296,6 +296,25 @@ def list_tables(data_store_id: uuid.UUID) -> tuple[list[Table], bool]:
     return shown, len(shown) < len(tables)
 
 
+# How many tables the list would show (before the byte cap), as `TABLES_SQL` finds them.
+COUNT_TABLES_SQL = f"""
+    SELECT count(*)
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = %(schema)s
+      AND c.relkind IN ('r', 'p')
+      AND NOT c.relispartition
+      AND has_any_column_privilege(c.oid, 'SELECT') AND {VISIBLE_TABLE}
+"""
+
+
+def count_tables(data_store_id: uuid.UUID) -> int:
+    """How many tables the store has, as the Data page lists them: not dropped ones, which
+    are on their way out."""
+    with _reading(data_store_id) as pg:
+        return pg.execute(COUNT_TABLES_SQL, {"schema": SCHEMA}).fetchone()[0]
+
+
 def _text(column: Column) -> sql.Composable:
     """The column's value as text, as the page shows it: an embedding as its type and dimension
     (e.g. `vector(1024)`), never its numbers, and an array of them as how many (`3 × vector`);

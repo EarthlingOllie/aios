@@ -5,8 +5,9 @@ import { Loader2 } from "lucide-react";
 import { useLoad } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { api, ApiError, describeError, type Me } from "@/lib/api";
+import { api, ApiError, describeError, type Me, type NotEmpty } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
+import { contentLink, notEmpty } from "@/lib/organisation";
 
 /** The invite page in the shell, for a signed-in user. */
 export function InviteRoute() {
@@ -17,8 +18,9 @@ export function InviteRoute() {
 /**
  * An invitation link's page (`/invite/:token`), signed in or out: which organisation it's for,
  * and Accept, or Sign in (which keeps the token through GitHub's sign-in, and joins a new user
- * on the way back). An expired or revoked link says so; accepting while in another organisation
- * shows the API's reason.
+ * on the way back). An expired or revoked link says so. Accepting from an empty personal
+ * organisation deletes it; while in another organisation, the page shows the API's reason, and
+ * when the user's organisation has things in it, links to where each kind can be deleted.
  */
 export function InvitePage({ token, me }: { token: string; me: Me | null }) {
   const reloadMe = useReloadCurrentUser();
@@ -27,7 +29,7 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
     useCallback(() => api.getInvitation(token).catch(gone), [token]),
   );
   const [accepting, setAccepting] = useState(false);
-  const [refusal, setRefusal] = useState<string>();
+  const [refusal, setRefusal] = useState<string | NotEmpty>();
 
   async function onAccept() {
     setAccepting(true);
@@ -37,7 +39,7 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
       reloadMe();
       navigate("/organisation");
     } catch (err) {
-      setRefusal(describeError(err));
+      setRefusal(notEmpty(err) ?? describeError(err));
       setAccepting(false);
     }
   }
@@ -89,7 +91,24 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
           <p className="text-muted-foreground text-sm">
             You've been invited to join {organisation.name}. Its members see everything in it.
           </p>
-          {refusal && (
+          {typeof refusal === "object" && (
+            <div role="alert" className="border-destructive/50 rounded-md border px-3 py-2 text-sm">
+              <p className="text-destructive">{refusal.message}</p>
+              <ul aria-label="What's in it" className="mt-1 list-disc pl-5">
+                {refusal.contents.map(({ kind, count }) => {
+                  const { text, to } = contentLink(kind, count);
+                  return (
+                    <li key={kind}>
+                      <Link to={to} className="text-foreground underline underline-offset-4">
+                        {text}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {typeof refusal === "string" && (
             <div role="alert" className="border-destructive/50 rounded-md border px-3 py-2 text-sm">
               <p className="text-destructive">{refusal}</p>
               <p className="text-muted-foreground mt-1">

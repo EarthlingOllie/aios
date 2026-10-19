@@ -9,11 +9,15 @@ no other organisation has (a 409 otherwise).
 Invitation links (`/api/organisation/invites`) are the creator's too: making one (its token
 shown in the response, once), listing the open ones and revoking one are a 403 for any other
 member. `/api/invites/{token}` is the invite page: what the link is for, with no sign-in
-needed, and accepting it (`/accept`, 409 with the reason when the user can't). An expired or
-revoked link is a 404. `POST /api/organisation/leave` leaves (409 with the reason when the user
-can't) and answers with the new personal organisation the user lands in.
+needed, and accepting it (`/accept`, 409 with the reason when the user can't). Accepting from
+an empty personal organisation deletes it, with its store; from one with things in it, the
+409's detail is a `message` and its `contents`, how many of each kind (`organisations.KINDS`),
+for the invite page to link to where they can be deleted. An expired or revoked link is a 404.
+`POST /api/organisation/leave` leaves (409 with the reason when the user can't) and answers
+with the new personal organisation the user lands in.
 """
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -29,6 +33,8 @@ from aios.auth import CurrentOrganisation, CurrentUser
 from aios.config import get_settings
 from aios.db import DB, SessionLocal
 from aios.models import Organisation, OrganisationInvite, OrganisationMember, User
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -227,11 +233,26 @@ def accept_invite(token: str, user: CurrentUser, db: DB):
     invite = organisations.open_invite(db, token, lock=True)
     if invite is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_SUCH_INVITE)
-    if (refusal := organisations.accept_refusal(db, user, invite)) is not None:
+    refusal = organisations.accept_refusal(db, user, invite)
+    if isinstance(refusal, organisations.NotEmpty):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "message": refusal.message,
+                "contents": [{"kind": kind, "count": n} for kind, n in refusal.contents],
+            },
+        )
+    if refusal is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     with on_conflict(db, MEMBERSHIP_CONSTRAINT, organisations.ONE_AT_A_TIME):
-        org = organisations.join(db, user, invite)
+        org, deleted_store = organisations.accept(db, user, invite)
         db.commit()
+    if deleted_store is not None:
+        try:
+            organisations.enqueue_store_deletion(deleted_store)
+        except Exception:
+            # Not the user's failure: the sweep's next scheduled pass drops it.
+            log.exception("Couldn't queue deleting data store %s", deleted_store)
     return organisation_out(db, org, user)
 
 

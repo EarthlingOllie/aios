@@ -16,8 +16,16 @@ Everything in an organisation is visible to every member.
 token's hash is stored, so the link is shown once, when it's made. It lasts a week unless the
 creator says otherwise (a month at most) and can be revoked; an expired or revoked link opens for
 no one (`open_invite`). Signing up through a link joins its organisation instead of making a
-personal one (`ensure_membership`); a signed-in user accepts it (`join`) only if they're in no
-organisation (`accept_refusal`), since a user is in one at a time.
+personal one (`ensure_membership`).
+
+**Accepting** a link while signed in (`accept`) moves the user, who is in one organisation at a
+time, out of the one they're in. So it's refused (`accept_refusal`) unless that one is **empty**:
+personal, with them as its only member, and nothing in it but the defaults (`contents`: no
+agents but built-in ones, no workflows, skills, chats, schedules, documents or data tables). A
+user who signed up without an invitation can then join a team straight away, and nobody loses
+work by joining one. The empty organisation is deleted as they join (`delete_empty`), cascading
+to what's left in it, and its store goes `deleting`, detached from any organisation, for the
+provisioner's sweep to drop (`aios.datastores.provision.delete_deleting`).
 
 **Leaving** (`leave`) is refused for the last member, whose organisation nobody could see
 again, and for the creator while others remain, since nobody else could invite
@@ -28,23 +36,31 @@ organisation, so they're never in none. What they made stays in the organisation
 
 import hashlib
 import secrets
+import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import notifications
-from aios.datastores import data_store_for
+from aios.datastores import data_store_for, store_session, tables
+from aios.datastores.models import Document
 from aios.models import (
+    Agent,
     Chat,
     ChatMember,
     ChatMemberKind,
     DataStore,
+    DataStoreStatus,
     Notification,
     Organisation,
     OrganisationInvite,
     OrganisationMember,
+    Skill,
+    Trigger,
     User,
+    Workflow,
 )
 
 # The suffix between a login and the number that makes its name unique: `sam`, `sam-2`, `sam-3`.
@@ -154,15 +170,141 @@ def open_invites(db: Session, org: Organisation) -> list[OrganisationInvite]:
 ONE_AT_A_TIME = "You can be in only one organisation at a time."
 
 
-def accept_refusal(db: Session, user: User, invite: OrganisationInvite) -> str | None:
-    """Why the user can't join through the link, or None if they can: they're in an
-    organisation already, and a user is in one at a time."""
+# What can be in an organisation, in the order a refusal lists it: each kind, and what one is
+# called.
+KINDS = {
+    "agent": "agent",
+    "workflow": "workflow",
+    "skill": "skill",
+    "chat": "chat",
+    "schedule": "schedule",
+    "document": "document",
+    "table": "data table",
+}
+
+
+def contents(db: Session, org: Organisation) -> list[tuple[str, int]]:
+    """What's in the organisation besides its members and the defaults, as (kind, how many) for
+    each kind in `KINDS` it has any of: agents but built-in ones (the documents assistant), and
+    workflows, skills, chats and schedules, and its store's documents and data tables. Deleted
+    agents, workflows and skills don't count: what a member deleted is no work to lose."""
+    live = {
+        "agent": select(func.count()).where(
+            Agent.organisation_id == org.id, Agent.deleted_at.is_(None), Agent.builtin.is_(None)
+        ),
+        "workflow": select(func.count()).where(
+            Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None)
+        ),
+        "skill": select(func.count()).where(
+            Skill.organisation_id == org.id, Skill.deleted_at.is_(None)
+        ),
+        "chat": select(func.count()).where(Chat.organisation_id == org.id),
+        "schedule": select(func.count()).where(Trigger.organisation_id == org.id),
+    }
+    counts = {kind: db.scalar(query) for kind, query in live.items()}
+    counts["document"], counts["table"] = _store_contents(db, org)
+    return [(kind, counts[kind]) for kind in KINDS if counts[kind]]
+
+
+def _store_contents(db: Session, org: Organisation) -> tuple[int, int]:
+    """How many documents and data tables the organisation's store has: none until it's ready,
+    since nothing can be put in it before. Raises as `store_session` does when it can't be read just
+    now (busy, or being upgraded), which the API answers with "try again"."""
+    store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == org.id))
+    if store is None or store.status != DataStoreStatus.ready:
+        return 0, 0
+    with store_session(store.id, "ro") as reading:
+        documents = reading.scalar(select(func.count()).select_from(Document))
+    return documents, tables.count_tables(store.id)
+
+
+def _counted(kind: str, n: int) -> str:
+    return f"{n} {KINDS[kind]}{'' if n == 1 else 's'}"
+
+
+@dataclass(frozen=True)
+class NotEmpty:
+    """Why accepting is refused when the user's organisation has things in it: the reason, and
+    what's in it (`contents`), for the invite page to link to where each can be deleted."""
+
+    message: str
+    contents: list[tuple[str, int]]
+
+
+def accept_refusal(db: Session, user: User, invite: OrganisationInvite) -> str | NotEmpty | None:
+    """Why the user can't join through the link, or None if they can: they're in no
+    organisation, or in an empty one (see the module docstring), which joining deletes.
+
+    Locks the organisation they're in until the caller's transaction ends, so nothing is made
+    in it (rows made in it reference it, which takes a lock this one waits for and then blocks)
+    and nobody joins it between this check and its deletion. Its store's documents and tables
+    are counted, but nothing holds them: one uploaded meanwhile goes with the store."""
     current = membership_of(db, user.id)
     if current is None:
         return None
     if current.id == invite.organisation_id:
         return f"You're already a member of {current.name}."
-    return f"You're a member of {current.name}. {ONE_AT_A_TIME}"
+    db.scalar(select(Organisation.id).where(Organisation.id == current.id).with_for_update())
+    members = db.scalar(
+        select(func.count()).where(OrganisationMember.organisation_id == current.id)
+    )
+    if not current.personal or members > 1:
+        return f"You're a member of {current.name}. {ONE_AT_A_TIME}"
+    if found := contents(db, current):
+        listed = [_counted(kind, n) for kind, n in found]
+        listing = listed[0] if len(listed) == 1 else f"{', '.join(listed[:-1])} and {listed[-1]}"
+        return NotEmpty(
+            f"You're a member of {current.name}, which has things in it: {listing}. Accepting "
+            f"would delete {current.name}, so delete them first.",
+            found,
+        )
+    return None
+
+
+def accept(
+    db: Session, user: User, invite: OrganisationInvite
+) -> tuple[Organisation, uuid.UUID | None]:
+    """Join through the link (`accept_refusal` said the user may), deleting the empty
+    organisation they leave (`delete_empty`). Returns the organisation joined, and the store
+    left to delete, if there is one: queue its deletion (`enqueue_store_deletion`) once this
+    commits. Flushed, not committed."""
+    current = membership_of(db, user.id)
+    store_id = delete_empty(db, current, user) if current is not None else None
+    return join(db, user, invite), store_id
+
+
+def delete_empty(db: Session, org: Organisation, user: User) -> uuid.UUID | None:
+    """Delete an empty organisation (`accept_refusal` said it is) as its one member leaves it,
+    cascading to its membership, links and the defaults and deleted rows left in it; returns
+    its store's id, if it has one. The store goes `deleting` with no organisation, in the same
+    transaction (a store with none must be on its way out), and the member's notifications of
+    its requests go. Flushed, not committed."""
+    store_id = db.scalar(
+        select(DataStore.id).where(DataStore.owner_organisation_id == org.id).with_for_update()
+    )
+    if store_id is not None:
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == store_id)
+            .values(status=DataStoreStatus.deleting, owner_organisation_id=None)
+        )
+        _forget_requests(db, user, store_id)
+    # What pins another's versions first (workflows pin agents', agents pin skills'): one
+    # cascading delete of them all can check a pin before it has deleted the pinning row.
+    for model in (Workflow, Agent, Skill):
+        db.execute(delete(model).where(model.organisation_id == org.id))
+    db.execute(delete(Organisation).where(Organisation.id == org.id))
+    # The bulk deletes bypass the session: anything it loaded of them is stale.
+    db.expire_all()
+    return store_id
+
+
+def enqueue_store_deletion(store_id: uuid.UUID) -> None:
+    """Queue the provisioner's sweep for a store just put into `deleting`, so it's dropped now
+    rather than at the sweep's next scheduled pass."""
+    from aios.worker import delete_data_stores_task
+
+    delete_data_stores_task.delay(str(store_id))
 
 
 def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
@@ -217,17 +359,23 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
     )
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
-        db.execute(
-            delete(Notification).where(
-                Notification.user_id == user.id,
-                Notification.read_at.is_(None),
-                Notification.kind == notifications.SCHEMA_CHANGE_REQUEST,
-                Notification.ref.contains({"data_store_id": str(store_id)}),
-            )
-        )
+        _forget_requests(db, user, store_id)
     # The bulk deletes bypass the session: anything it loaded of them (`org.members`) is stale.
     db.expire_all()
     personal = create_personal(db, user)
     # Its store, as signing up makes a new organisation's: provisioned once this commits.
     data_store_for(personal.id, db)
     return personal
+
+
+def _forget_requests(db: Session, user: User, store_id: uuid.UUID) -> None:
+    """Delete the user's unread notifications of the store's schema change requests: the store
+    is no longer theirs to decide for."""
+    db.execute(
+        delete(Notification).where(
+            Notification.user_id == user.id,
+            Notification.read_at.is_(None),
+            Notification.kind == notifications.SCHEMA_CHANGE_REQUEST,
+            Notification.ref.contains({"data_store_id": str(store_id)}),
+        )
+    )

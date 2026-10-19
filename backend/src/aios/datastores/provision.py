@@ -34,6 +34,13 @@ migrate-all` runs it (the deploy does, after the platform's migrations). Between
 gave up (the instance was down, say) gets there once it can. It also brings ready stores behind
 the tree's head to it: the release before a deploy can still make one after the deploy migrated
 stores, and migrating one can fail.
+
+**Deleting.** A store goes `deleting`, with no organisation, when its organisation is deleted
+(an empty one, on accepting an invitation: `aios.organisations.delete_empty`). The provisioning
+worker's sweep (`delete_deleting`, queued then and run on its schedule too) disposes of this
+process's engines on it, drops its database and roles, deletes its files under its prefix and
+marks it `deleted`. As provisioning's, each step can be run again whatever the ones before left,
+so a sweep cut short is finished by the next.
 """
 
 import logging
@@ -51,6 +58,7 @@ from sqlalchemy import (
     ColumnElement,
     and_,
     create_engine,
+    delete,
     func,
     or_,
     pool,
@@ -62,9 +70,9 @@ from sqlalchemy import (
 from sqlalchemy.engine import make_url
 
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import credentials, migrations
+from aios.datastores import connections, credentials, files, migrations
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus
+from aios.models import DataStore, DataStoreStatus, HistoryExport
 from alembic import command
 
 log = logging.getLogger(__name__)
@@ -369,8 +377,8 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
 
 
 def drop(names: StoreNames) -> None:
-    """Drop a store's database and roles, if they exist. Only tests use it for now: deleting
-    users' stores (after a retention period) is to come."""
+    """Drop a store's database and roles, if they exist: deleting a store (`delete_store`), and
+    tests."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
         if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)).fetchone():
@@ -396,6 +404,99 @@ def drop(names: StoreNames) -> None:
             conn.execute(sql.SQL("DROP DATABASE {}").format(db))
         for role in (names.rw, names.ro, names.owner):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+
+
+@dataclass
+class _Deletion:
+    """What the steps of deleting one store share."""
+
+    store_id: uuid.UUID
+    names: StoreNames
+
+
+def _dispose_engines(deletion: _Deletion) -> None:
+    # This process's: another's pool on it is cut off by the drop, and can't be reopened (the
+    # store isn't ready).
+    for role in ("rw", "ro"):
+        connections.dispose_engine(deletion.store_id, role)
+
+
+def _drop(deletion: _Deletion) -> None:
+    drop(deletion.names)
+
+
+def _delete_files(deletion: _Deletion) -> None:
+    files.delete_under(files.store_prefix(deletion.store_id))
+
+
+def _mark_deleted(deletion: _Deletion) -> None:
+    # Its run history outbox goes too: there's nowhere left to export to.
+    with SessionLocal() as db:
+        db.execute(delete(HistoryExport).where(HistoryExport.data_store_id == deletion.store_id))
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == deletion.store_id, DataStore.status == DataStoreStatus.deleting)
+            .values(status=DataStoreStatus.deleted, error=None)
+        )
+        db.commit()
+
+
+# In order. Each can be run again, whatever the ones before it left.
+DELETE_STEPS: list[Callable[[_Deletion], None]] = [
+    _dispose_engines,
+    _drop,
+    _delete_files,
+    _mark_deleted,
+]
+
+
+def delete_store(store_id: uuid.UUID, wait: bool = True) -> bool:
+    """Drop a `deleting` store's database, roles and files and mark it `deleted` (see the
+    module docstring); returns whether it did. Does nothing for a store that's gone or isn't
+    being deleted, or, unless `wait`, that another run is on. A provisioning run waits for
+    this, and then finds the store isn't for it."""
+    with provisioner_locked(store_id, wait) as server:
+        if server is None:
+            return False
+        with SessionLocal() as db:
+            store = db.get(DataStore, store_id)
+            if store is None or store.status != DataStoreStatus.deleting:
+                return False
+            deletion = _Deletion(store_id, StoreNames.of(store))
+        for step in DELETE_STEPS:
+            step(deletion)
+    log.info("Data store %s is deleted", store_id)
+    return True
+
+
+def delete_deleting(
+    store_ids: Collection[uuid.UUID] | None = None, wait: bool = False
+) -> dict[uuid.UUID, bool | BaseException]:
+    """Delete every store that's `deleting` (`delete_store`), one at a time; returns, for each
+    it got to, True, or what stopped it (recorded on the store, which the next sweep tries
+    again). Unless `wait`, a store another run is on is left to the next sweep. The
+    provisioning worker runs it when an organisation is deleted (for its store, waiting for a
+    provisioning run still on it), and every `aios.worker.DELETE_STORES_EVERY`.
+
+    `store_ids` limits it to those stores (tests use it to leave other stores alone)."""
+    outcome: dict[uuid.UUID, bool | BaseException] = {}
+    with SessionLocal() as db:
+        deleting = db.scalars(
+            select(DataStore.id).where(
+                _only(store_ids), DataStore.status == DataStoreStatus.deleting
+            )
+        ).all()
+    for store_id in deleting:
+        try:
+            if delete_store(store_id, wait):
+                outcome[store_id] = True
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one store's failure is reported, not raised
+            log.exception("Deleting data store %s failed", store_id)
+            _record_error(store_id, describe_error(exc))
+            outcome[store_id] = exc
+    return outcome
 
 
 def fail(store_id: uuid.UUID, error: str) -> None:

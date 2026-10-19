@@ -58,6 +58,13 @@ export type NewInvite = Invite & { token: string; url: string };
 /** What the invite page shows of an open link, to anyone holding it. */
 export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
 
+/** What can be in an organisation, as a refused accept counts it. */
+export type ContentKind = "agent" | "workflow" | "skill" | "chat" | "schedule" | "document" | "table";
+
+/** Accepting refused (a 409) because the user's organisation has things in it, which accepting
+ * would delete with it: the reason, and how many of each kind there are. */
+export type NotEmpty = { message: string; contents: { kind: ContentKind; count: number }[] };
+
 /** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
@@ -894,6 +901,8 @@ export const api = {
   getInvitation: (token: string) =>
     request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
   /** A 409 says why the user can't join (they're in another organisation). */
+  /** From an empty personal organisation, deletes it; a 409 (`NotEmpty`'s detail when it has
+   * things in it) when the user can't. */
   acceptInvitation: (token: string) =>
     request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
   /** A 409 for the last member, and for the creator while others remain; otherwise the new

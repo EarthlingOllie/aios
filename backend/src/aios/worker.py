@@ -41,6 +41,7 @@ celery_app.conf.update(
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
+        "aios.delete_data_stores": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
         "aios.measure_data_store_usage": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
@@ -60,6 +61,9 @@ celery_app.conf.update(
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# Stores being deleted (their organisations were) are swept this often (seconds), by the same
+# beat, in case the sweep queued on deleting one was lost or failed.
+DELETE_STORES_EVERY = RETRY_UNFINISHED_EVERY
 # What each store uses is measured this often (seconds), for its storage cap
 # (`aios.datastores.quota`): a store past it is refused writes from the next measurement.
 MEASURE_USAGE_EVERY = 300
@@ -74,6 +78,11 @@ celery_app.conf.beat_schedule = {
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "delete-data-stores": {
+        "task": "aios.delete_data_stores",
+        "schedule": DELETE_STORES_EVERY,
+        "options": {"expires": DELETE_STORES_EVERY},
     },
     "measure-data-store-usage": {
         "task": "aios.measure_data_store_usage",
@@ -183,6 +192,24 @@ def retry_unfinished_data_stores_task() -> None:
     from aios.datastores import provision
 
     provision.retry_unfinished()
+
+
+@celery_app.task(
+    name="aios.delete_data_stores",
+    # As the retry: one that runs over stops, and the next carries on where it left off.
+    soft_time_limit=DELETE_STORES_EVERY,
+    time_limit=DELETE_STORES_EVERY + 60,
+)
+def delete_data_stores_task(data_store_id: str | None = None) -> None:
+    """Drop the databases, roles and files of the stores being deleted, and mark them deleted
+    (`aios.datastores.provision`): the one given (just put into `deleting`), or every one."""
+    from aios.datastores import provision
+
+    if data_store_id is None:
+        provision.delete_deleting()
+    else:
+        # Waiting for its provisioning, if that's still on it (it was deleted straight away).
+        provision.delete_deleting([uuid.UUID(data_store_id)], wait=True)
 
 
 @celery_app.task(

@@ -124,9 +124,12 @@ test("a member leaves, and lands in a personal organisation of their own", async
   await expect(page.getByRole("link", { name: "tester" }).first()).toBeVisible();
 });
 
-test("signed in, the invite page names the organisation, and accepting joins it", async ({ page }) => {
+test("signed in, the invite page names the organisation, and accepting from an empty one joins it", async ({
+  page,
+}) => {
   const api = await fakeApi(page);
-  api.acceptRefused = false;
+  // `me`'s personal organisation holds nothing but the documents assistant: it goes.
+  api.assistantId = api.addAgent("Documents assistant").id;
   api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
   await page.goto("/invite/abc");
   await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
@@ -137,8 +140,9 @@ test("signed in, the invite page names the organisation, and accepting joins it"
   await expect(page.getByRole("link", { name: "Acme" }).first()).toBeVisible();
 });
 
-test("accepting while in another organisation says why it can't", async ({ page }) => {
+test("accepting while in an organisation with others in it says why it can't", async ({ page }) => {
   const api = await fakeApi(page);
+  api.organisation.members.push({ user: sam, joined_at: "2026-10-15T08:00:00Z", invite_id: null });
   api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
   await page.goto("/invite/abc");
   await page.getByRole("button", { name: "Accept" }).click();
@@ -147,6 +151,24 @@ test("accepting while in another organisation says why it can't", async ({ page 
   );
   await page.getByRole("alert").getByRole("link", { name: "Organisation" }).click();
   await expect(page).toHaveURL(/\/organisation$/);
+});
+
+test("accepting while the organisation has things in it lists them, linking to where each is deleted", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  api.addAgent("Helper");
+  api.addAgent("Other helper");
+  api.addDocument("notes.md");
+  api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
+  await page.goto("/invite/abc");
+  await page.getByRole("button", { name: "Accept" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("You're a member of tester, which has things in it.");
+  const contents = alert.getByRole("list", { name: "What's in it" });
+  await expect(contents.getByRole("listitem")).toHaveText(["2 agents", "1 document"]);
+  await contents.getByRole("link", { name: "2 agents" }).click();
+  await expect(page).toHaveURL(/\/agents$/);
 });
 
 test("a link into the user's own organisation says they're in it", async ({ page }) => {
