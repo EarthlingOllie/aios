@@ -242,6 +242,7 @@ export function SkillForm() {
   const params = useParams();
   const id = params.skillId ? Number(params.skillId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<SkillInput>();
   const [version, setVersion] = useState<number>();
@@ -272,7 +273,7 @@ export function SkillForm() {
     try {
       const saved = id === undefined ? await api.createSkill(body) : await api.updateSkill(id, body);
       await reloadList();
-      navigate(`/skills/${saved.id}`);
+      navigate(listHref(`/skills/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

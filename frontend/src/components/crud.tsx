@@ -123,10 +123,10 @@ function useListSearch() {
   const query = params.get("q") ?? "";
   const [text, setText] = useState(query);
   const [seenKey, setSeenKey] = useState(location.key);
+  const state = location.state as Record<string, unknown> | null;
   if (location.key !== seenKey) {
     setSeenKey(location.key);
-    const typed = (location.state as Record<string, unknown> | null)?.[TYPED] === true;
-    if (navigationType === "POP" || !typed) setText(query);
+    if (navigationType === "POP" || state?.[TYPED] !== true) setText(query);
   }
   const change = (value: string) => {
     setText(value);
@@ -137,7 +137,8 @@ function useListSearch() {
         else next.delete("q");
         return next;
       },
-      { replace: true, state: { [TYPED]: true } },
+      // Keeping whatever state the entry already had.
+      { replace: true, state: { ...state, [TYPED]: true } },
     );
   };
   return { text, change };

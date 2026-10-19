@@ -27,6 +27,11 @@ describe("matchesQuery", () => {
     expect(matchesQuery(["Cafe notes"], "café")).toBe(true);
   });
 
+  it("ignores a mark that lower-casing adds", () => {
+    // "İ" lower-cases to "i" plus a combining dot above.
+    expect(matchesQuery(["İstanbul office"], "istanbul")).toBe(true);
+  });
+
   it("doesn't match a word split across two fields", () => {
     expect(matchesQuery(["Re", "search"], "research")).toBe(false);
   });

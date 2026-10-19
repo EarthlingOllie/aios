@@ -379,6 +379,7 @@ export function ChatForm() {
   const params = useParams();
   const id = params.chatId ? Number(params.chatId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<ChatInput>();
   const [error, setError] = useState<string>();
@@ -404,7 +405,7 @@ export function ChatForm() {
     try {
       const saved = id === undefined ? await api.createChat(form!) : await api.updateChat(id, form!);
       await reloadList();
-      navigate(`/chats/${saved.id}`);
+      navigate(listHref(`/chats/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

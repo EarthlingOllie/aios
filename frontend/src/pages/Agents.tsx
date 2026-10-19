@@ -503,6 +503,7 @@ export function AgentForm() {
   const params = useParams();
   const id = params.agentId ? Number(params.agentId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<FormState>();
   // The version being edited, if any.
@@ -576,7 +577,7 @@ export function AgentForm() {
     try {
       const saved = id === undefined ? await api.createAgent(body) : await api.updateAgent(id, body);
       await reloadList();
-      navigate(`/agents/${saved.id}`);
+      navigate(listHref(`/agents/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

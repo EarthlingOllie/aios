@@ -347,6 +347,7 @@ export function WorkflowEditorPage() {
 
 function WorkflowEditorView({ id }: { id: number | undefined }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [meta, setMeta] = useState<{ name: string; description: string; note: string }>();
   const [draft, setDraft] = useState<Draft>();
@@ -424,7 +425,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const back = () => {
     if (dirty && !window.confirm("Discard your unsaved changes?")) return;
     done.current = true;
-    navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
+    navigate(listHref(id === undefined ? "/workflows" : `/workflows/${id}`));
   };
 
   async function onSubmit(e: React.FormEvent) {
@@ -438,7 +439,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
       await reloadList();
       done.current = true;
-      navigate(`/workflows/${saved.id}`);
+      navigate(listHref(`/workflows/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

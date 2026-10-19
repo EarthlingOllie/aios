@@ -159,6 +159,23 @@ test("the skills list can be searched", async ({ page }) => {
   await expect(page.getByText("1 of 2")).toBeVisible();
 });
 
+test("creating a chat from a searched list keeps the search", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addChat("Design review");
+  api.addChat("Support");
+  await page.goto("/chats?q=design");
+
+  await page.getByRole("link", { name: "New", exact: true }).click();
+  await page.getByLabel("Name").fill("Design system");
+  await page.getByRole("button", { name: "Create chat" }).click();
+
+  await expect(page).toHaveURL(/\/chats\/\d+\?q=design$/);
+  const created = [...api.chats.values()].find((c) => c.name === "Design system")!;
+  await expect(page).toHaveURL(`/chats/${created.id}?q=design`);
+  await expect(links(page, "Chats")).toHaveCount(2);
+  await expect(search(page, "chats")).toHaveValue("design");
+});
+
 test("the chats list keeps the search as it refreshes", async ({ page }) => {
   const api = await fakeApi(page);
   api.addChat("Design");
