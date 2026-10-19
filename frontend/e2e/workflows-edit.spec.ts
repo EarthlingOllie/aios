@@ -382,7 +382,7 @@ test("with no agents, says so and links to creating one", async ({ page }) => {
   api.addWorkflow("Review");
   await page.goto("/workflows/new");
   await page.getByLabel("Add node").click();
-  await expect(page.getByRole("option")).toHaveText(["Review"]);
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveText(["Review"]);
   await expect(page.getByText("You have no agents yet.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
     "href",
