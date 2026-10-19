@@ -13,3 +13,22 @@ export function describeOrganisation(org: Organisation, me: User | null): string
   }
   return creator ? `Created by ${creator}.` : "Its creator's account has been deleted.";
 }
+
+/** Why the signed-in user can't leave the organisation, as the API refuses it, or null if they
+ * can: the last member can't (nobody would see what's in it), nor can the creator while others
+ * remain (nobody else could invite). */
+export function leaveRefusal(org: Organisation): string | null {
+  if (org.members.length <= 1) {
+    return "You're its only member, so you can't leave: an organisation can't be left empty.";
+  }
+  if (org.is_creator) {
+    return "You created it, and only its creator can invite people, so you can't leave while others are still members.";
+  }
+  return null;
+}
+
+/** What an invitation link is called on the page: its token is never shown again, so it's named
+ * by the start of its id, in the list of links and beside each member who came through it. */
+export function linkName(id: string): string {
+  return `link ${id.slice(0, 8)}`;
+}

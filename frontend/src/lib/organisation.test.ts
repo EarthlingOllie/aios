@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Organisation, User } from "@/lib/api";
-import { describeOrganisation } from "@/lib/organisation";
+import { describeOrganisation, leaveRefusal, linkName } from "@/lib/organisation";
 
 const me: User = { id: 1, login: "tester", name: "Tester", avatar_url: null };
 const sam: User = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
@@ -37,5 +37,32 @@ describe("describeOrganisation", () => {
     expect(describeOrganisation({ ...base, creator: null }, me)).toBe(
       "Your personal organisation.",
     );
+  });
+});
+
+describe("leaveRefusal", () => {
+  const member = (user: User) => ({ user, joined_at: "2026-10-14T08:00:00Z", invite_id: null });
+
+  it("refuses the last member", () => {
+    expect(leaveRefusal({ ...base, members: [member(me)] })).toBe(
+      "You're its only member, so you can't leave: an organisation can't be left empty.",
+    );
+  });
+
+  it("refuses the creator while others remain", () => {
+    expect(leaveRefusal({ ...base, personal: false, members: [member(me), member(sam)] })).toBe(
+      "You created it, and only its creator can invite people, so you can't leave while others are still members.",
+    );
+  });
+
+  it("lets any other member leave", () => {
+    const org = { ...base, is_creator: false, creator: sam, members: [member(sam), member(me)] };
+    expect(leaveRefusal(org)).toBeNull();
+  });
+});
+
+describe("linkName", () => {
+  it("names a link by the start of its id, the same wherever it's shown", () => {
+    expect(linkName("3f2a9c1e-0000-4000-8000-000000000000")).toBe("link 3f2a9c1e");
   });
 });

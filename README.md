@@ -151,6 +151,24 @@ exist. The **Settings** page is the user's own (the run history export) and link
 is scoped to the organisation yet: agents, workflows, skills, schedules, chats and the data store
 still answer to their owner.
 
+The creator brings people in with **invitation links**, made on the Organisation page
+(`POST /api/organisation/invites`, `expires_in_days` 1 to 30, a week by default): the response
+carries the link's random token once, and only its hash is stored, so the page shows the link to
+copy and never again. `GET` lists the open links (who made each, when it expires) and `DELETE
+.../invites/{id}` revokes one; all three are the creator's (a 403 for another member). The link
+opens the **invite page** (`/invite/<token>`; `GET /api/invites/{token}`, no sign-in needed), which
+names the organisation; an expired or revoked link is a 404 and says so. Signed out, Sign in goes
+through `/login?invite=<token>`, which keeps the token in the session through GitHub's round
+trip; the callback joins a new user to the organisation (the membership records the link, shown
+beside the member) and makes no personal one, and sends a user it couldn't join back to the
+invite page. Signed in, Accept (`POST /api/invites/{token}/accept`) joins a user who's in no
+organisation and is a 409 with the reason for one who's in another, since a user is in one at a
+time. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
+out of the organisation's chats, their unread notifications about its schema change requests go,
+and they land in a new personal organisation with a data store of its own; what they made stays.
+The last member can't leave, nor can the creator while others remain (each a 409, explained on
+the page).
+
 **Chats** are group conversations, named like channels (a name is unique among all chats). The
 **Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
 you can find them), most recently active first, and opens one to its header,
@@ -315,14 +333,16 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user, current_organisation
-    organisations.py  organisations: a personal one per user on sign-up, the user's one membership
+    organisations.py  organisations: a personal one per user on sign-up, the user's one membership,
+                    invitation links, joining and leaving
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
-    api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page)
+    api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page), invitation
+                    links (/api/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/settings.py GET/PUT /api/settings (the user's own: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep

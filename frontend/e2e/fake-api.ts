@@ -273,6 +273,9 @@ type ChatMemberOut = {
   added_at: string;
 };
 export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
+/** An open invitation link, with the token the fake keeps (the API keeps only its hash). */
+export type InviteRow = { id: string; creator: ChatUser | null; created_at: string; expires_at: string; token: string };
+export type InvitationRow = { organisation: { id: number; name: string }; expires_at: string };
 export type OrganisationRow = {
   id: number;
   name: string;
@@ -396,6 +399,21 @@ export class FakeApi {
   };
   /** Names other organisations have: renaming to one answers 409, as the API does. */
   organisationNamesTaken = new Set<string>();
+  /** While false, nobody is signed in: every endpoint but opening an invitation link is a 401. */
+  signedIn = true;
+  /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
+  invites: InviteRow[] = [];
+  /**
+   * Invitation links into other organisations, by token, as `GET /api/invites/{token}` opens
+   * them (the organisation's own open `invites` open too). Any other token is a 404.
+   */
+  invitations = new Map<string, InvitationRow>();
+  /**
+   * Whether accepting a link is refused, as the API refuses a user who's in an organisation
+   * already (which `me` always is here). When false, accepting moves `me` into the link's
+   * organisation.
+   */
+  acceptRefused = true;
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
@@ -487,6 +505,15 @@ export class FakeApi {
 
   private id() {
     return this.nextId++;
+  }
+
+  /** The organisation as `GET /api/organisation` answers. */
+  private organisationOut() {
+    return { ...this.organisationSummary(), ...this.organisation };
+  }
+
+  private inviteOut({ token: _token, ...invite }: InviteRow) {
+    return invite;
   }
 
   /** The organisation as `/api/me` carries it. */
@@ -1523,7 +1550,84 @@ export class FakeApi {
       if (!readable) return fail(404, "Not Found");
     }
 
+    if ((m = path.match(/^\/api\/invites\/([^/]+)(\/accept)?$/))) {
+      const token = decodeURIComponent(m[1]);
+      const own = this.invites.find((i) => i.token === token);
+      const invitation =
+        this.invitations.get(token) ??
+        (own && {
+          organisation: { id: this.organisation.id, name: this.organisation.name },
+          expires_at: own.expires_at,
+        });
+      if (!invitation) return fail(404, "This invitation link has expired or been revoked, or never existed.");
+      if (!m[2] && method === "GET") return reply(200, invitation);
+      if (!this.signedIn) return fail(401, "Not signed in");
+      if (invitation.organisation.id === this.organisation.id) {
+        return fail(409, `You're already a member of ${this.organisation.name}.`);
+      }
+      if (this.acceptRefused) {
+        return fail(
+          409,
+          `You're a member of ${this.organisation.name}. You can be in only one organisation at a time.`,
+        );
+      }
+      this.organisation = {
+        ...invitation.organisation,
+        personal: false,
+        creator: null,
+        members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
+        created_at: "2026-10-01T08:00:00Z",
+      };
+      return reply(200, this.organisationOut());
+    }
+    if (!this.signedIn) return fail(401, "Not signed in");
     if (path === "/api/me") return reply(200, { ...this.me, organisation: this.organisationSummary() });
+    if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
+      if (this.organisation.creator?.id !== this.me.id) {
+        return fail(403, "Only the organisation's creator can invite people into it.");
+      }
+      if (m && method === "DELETE") {
+        const id = m[1];
+        if (!this.invites.some((i) => i.id === id)) return fail(404, "Not Found");
+        this.invites = this.invites.filter((i) => i.id !== id);
+        return reply(204);
+      }
+      if (method === "POST") {
+        const days = Number(body?.expires_in_days ?? 7);
+        if (!(days >= 1 && days <= 30)) return fail(422, "Invalid expiry");
+        const n = this.id();
+        const created = new Date();
+        const invite: InviteRow = {
+          id: `${n.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+          creator: this.me,
+          created_at: created.toISOString(),
+          expires_at: new Date(created.getTime() + days * 86_400_000).toISOString(),
+          token: `token-${n}`,
+        };
+        this.invites.push(invite);
+        return reply(201, { ...this.inviteOut(invite), token: invite.token, url: `http://localhost/invite/${invite.token}` });
+      }
+      return reply(200, this.invites.map((i) => this.inviteOut(i)));
+    }
+    if (path === "/api/organisation/leave" && method === "POST") {
+      if (this.organisation.members.length <= 1) {
+        return fail(409, "You're its only member, so nobody would be left to see what's in it: an organisation can't be left empty.");
+      }
+      if (this.organisation.creator?.id === this.me.id) {
+        return fail(409, "You created this organisation, and only its creator can invite people into it, so you can't leave while others are still members.");
+      }
+      const now = new Date().toISOString();
+      this.organisation = {
+        id: this.id(),
+        name: this.me.login,
+        personal: true,
+        creator: this.me,
+        members: [{ user: this.me, joined_at: now, invite_id: null }],
+        created_at: now,
+      };
+      this.invites = [];
+      return reply(200, this.organisationOut());
+    }
     if (path === "/api/organisation") {
       if (method === "PUT") {
         if (this.organisation.creator?.id !== this.me.id) {
@@ -1536,7 +1640,7 @@ export class FakeApi {
         }
         this.organisation.name = name;
       }
-      return reply(200, { ...this.organisationSummary(), ...this.organisation });
+      return reply(200, this.organisationOut());
     }
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
