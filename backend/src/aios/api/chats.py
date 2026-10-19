@@ -11,10 +11,10 @@ member of the organisation: the list carries the public chats a member isn't in 
 for them to find, and they join it in one step and leave it as easily (the owner can't: a chat
 always has one). Only the owner can change a chat, add or remove its members or delete it: a 403
 for anyone else. An owner who leaves the organisation hands the chat to its member added first
-(`organisations.leave`); with nobody left in it, whoever joins it next owns it (a private one is
-made public, so that someone can). Leaving or being removed deletes nothing, and whoever joins
-later reads the history from the start. A new chat's first agent is the organisation's documents
-assistant (`aios.assistant`).
+(`organisations.leave`); with nobody left in it, whoever joins a public one next owns it, and a
+private one, which nobody could join, is deleted, as its owner deleting it would be. Leaving the
+chat or being removed from it deletes nothing, and whoever joins later reads the history from the
+start. A new chat's first agent is the organisation's documents assistant (`aios.assistant`).
 
 Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
 to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
@@ -293,20 +293,29 @@ def is_owner(chat: Chat, user_id: int) -> bool:
     return member is not None and member.role == ChatMemberRole.owner
 
 
-def lock_owner(db: Session, chat: Chat) -> int | None:
-    """Lock the chat until commit, and read who holds its owner role now (None: nobody), for a
-    change to its members. The members `get_visible_chat` loaded can be out of date by then: the
-    owner leaving the organisation deletes their member row and hands the chat on
-    (`organisations.hand_over_chats`, which locks the chat first), and a join, add, removal or
-    leaving decided on the owner it loaded would go in after that, leaving a member in a chat
-    nobody owns.
-    Under the lock it waits for the hand-over, or the hand-over waits for it and sees what it did.
+def lock_chat(db: Session, chat: Chat) -> None:
+    """Lock the chat until commit, for a change to it or to what's in it; a 404 if it has been
+    deleted since `get_visible_chat` read it: by its owner, or by its owner leaving the
+    organisation with nobody else in it (`organisations.hand_over_chats`, which locks it first).
+    Under the lock that waits for the deletion and sees the chat gone, where adding a member or a
+    message to it would break their foreign key (a 500), and a deletion that comes after waits
+    and takes what the change added with the chat.
     `FOR NO KEY UPDATE`: the lock the change to `updated_at` each of them makes takes anyway, only
-    sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share).
-    A 404 if the chat has been deleted meanwhile."""
+    sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share)."""
     locked = select(Chat.id).where(Chat.id == chat.id).with_for_update(key_share=True)
     if db.scalar(locked) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+
+def lock_owner(db: Session, chat: Chat) -> int | None:
+    """Lock the chat (`lock_chat`), and read who holds its owner role now (None: nobody), for a
+    change to its members. The members `get_visible_chat` loaded can be out of date by then: the
+    owner leaving the organisation deletes their member row and hands the chat on, or deletes it
+    (`organisations.hand_over_chats`, which locks the chat first), and a join, add, removal or
+    leaving decided on the owner it loaded would go in after that, leaving a member in a chat
+    nobody owns. Under the lock it waits for the hand-over, or the hand-over waits for it and sees
+    what it did."""
+    lock_chat(db, chat)
     return db.scalar(
         select(ChatMember.user_id).where(
             ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
@@ -478,6 +487,8 @@ def list_mentionable(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation,
 def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Rename, describe or change the visibility of the chat (its owner only)."""
     chat = get_chat_if_owner(db, org, user.id, chat_id)
+    # Its owner leaving the organisation may be deleting it (`lock_chat`).
+    lock_chat(db, chat)
     chat.name = body.name
     chat.description = body.description
     chat.visibility = body.visibility
@@ -536,7 +547,7 @@ def newest_message_id(db: Session, chat_id: int) -> int | None:
 def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Join a public chat as a member (a private one exists only for its members), or as its
     owner if it has none (its owner left the organisation with nobody in it to hand it to:
-    `organisations.leave`, which makes such a chat public if it was private). What was posted
+    `organisations.leave`, which deletes such a chat if it was private). What was posted
     before they joined counts as seen: they could read it, and it's all there to scroll. A 404
     for a user who left the organisation as they joined (`organisations.holds_member`)."""
     chat = get_visible_chat(db, org, user.id, chat_id)
@@ -1096,6 +1107,8 @@ def post_message(
     chat = get_visible_chat(db, org, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
+    # Its owner leaving the organisation may be deleting it (`lock_chat`).
+    lock_chat(db, chat)
     mentions = resolve_mentions(chat, body.mentions)
     message = ChatMessage(
         chat_id=chat.id,
