@@ -1,4 +1,4 @@
-"""End-to-end ingestion, in the user's data store, with a whitespace tokenizer and fake
+"""End-to-end ingestion, in the organisation's data store, with a whitespace tokenizer and fake
 embeddings (no network)."""
 
 import pytest

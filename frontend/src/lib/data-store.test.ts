@@ -14,7 +14,7 @@ describe("dataStoreSummary", () => {
     expect(dataStoreSummary("ready")).toEqual({
       label: "Ready",
       message:
-        "Your data store is ready. Your agents can keep data in it, and you can upload documents.",
+        "The organisation's data store is ready. Its agents can keep data in it, and you can upload documents.",
     });
   });
 
@@ -22,21 +22,21 @@ describe("dataStoreSummary", () => {
     expect(dataStoreSummary("provisioning")).toEqual({
       label: "Being set up",
       message:
-        "We're setting up your data store. This usually takes a few seconds; you can upload documents once it's ready.",
+        "We're setting up the organisation's data store. This usually takes a few seconds; you can upload documents once it's ready.",
     });
   });
 
   it("says a store couldn't be set up and will be retried", () => {
     expect(dataStoreSummary("failed")).toEqual({
       label: "Failed",
-      message: "Your data store couldn't be set up. We'll try again; please check back later.",
+      message: "The organisation's data store couldn't be set up. We'll try again; please check back later.",
     });
   });
 
   it("says a store being deleted isn't available", () => {
     expect(dataStoreSummary("deleting")).toEqual({
       label: "Unavailable",
-      message: "Your data store isn't available.",
+      message: "The organisation's data store isn't available.",
     });
   });
 
@@ -54,15 +54,15 @@ describe("dataStoreNotice", () => {
 
   it("says a new store is being set up, and what can be done once it's ready", () => {
     expect(dataStoreNotice("provisioning", "upload documents")).toBe(
-      "Setting up your data store. You can upload documents once it's ready.",
+      "Setting up the organisation's data store. You can upload documents once it's ready.",
     );
     expect(dataStoreNotice("provisioning", "search")).toBe(
-      "Setting up your data store. You can search once it's ready.",
+      "Setting up the organisation's data store. You can search once it's ready.",
     );
   });
 
   it("says a store couldn't be set up", () => {
-    expect(dataStoreNotice("failed", "search")).toMatch(/^Your data store couldn't be set up/);
+    expect(dataStoreNotice("failed", "search")).toMatch(/^The organisation's data store couldn't be set up/);
   });
 });
 

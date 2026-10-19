@@ -5,7 +5,9 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import delete, select, update
 from test_chats import signed_in_as
 
 from aios import organisations
@@ -22,6 +24,13 @@ def revision(name: str):
     return module
 
 
+def before_the_contract(db) -> None:
+    """Put the schema back as it was before the contract step (revision 0048's downgrade), in
+    this test's transaction only: each row's owner is back, filled in from who made it."""
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0048_organisations_contract").downgrade()
+
+
 def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_they_own(db):
     """The data step (revision 0030), on users made before organisations existed: two whose
     logins would name the same organisation, and one whose login is the suffixed name."""
@@ -33,10 +42,26 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     )
     db.add_all([first, second, third])
     db.flush()
-    agent = Agent(owner_id=second.id, name="Reviewer")
-    chat = Chat(owner_id=first.id, name="design-0030", visibility=ChatVisibility.private)
+    # What they own, as it was before organisations: made in an organisation of theirs, which
+    # the contract's downgrade makes theirs to own, and the organisation then undone.
+    made = [organisations.create_personal(db, u) for u in (first, second)]
+    agent = Agent(organisation_id=made[1].id, created_by=second.id, name="Reviewer")
+    chat = Chat(
+        organisation_id=made[0].id,
+        created_by=first.id,
+        name="design-0030",
+        visibility=ChatVisibility.private,
+    )
     db.add_all([agent, chat])
     db.flush()
+    before_the_contract(db)
+    for row in (agent, chat):
+        db.execute(
+            update(type(row))
+            .where(type(row).id == row.id)
+            .values(organisation_id=None, created_by=None)
+        )
+    db.execute(delete(Organisation).where(Organisation.id.in_([o.id for o in made])))
 
     revision("0030_personal_organisations").backfill(db.connection())
 

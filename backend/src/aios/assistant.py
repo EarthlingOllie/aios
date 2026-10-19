@@ -20,9 +20,9 @@ from aios.versioning import save_agent_version
 
 BUILTIN = "documents"
 NAME = "Documents assistant"
-DESCRIPTION = "Answers from your documents. Built in: it joins each new chat you make."
+DESCRIPTION = "Answers from the organisation's documents. Built in: it joins each new chat."
 INSTRUCTIONS = (
-    "You are a helpful assistant with access to the user's uploaded documents. "
+    "You are a helpful assistant with access to the organisation's uploaded documents. "
     "When a question may be answered by those documents, call `search_documents` first "
     "and ground your answer in the results, citing sources as [filename]. "
     "If the documents don't contain the answer, say so plainly."

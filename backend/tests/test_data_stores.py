@@ -101,7 +101,7 @@ def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_u
     for r in responses:
         assert r.status_code == 409, r.text
         assert r.json() == {
-            "detail": "Your data store is being set up. Try again in a moment.",
+            "detail": "The organisation's data store is being set up. Try again in a moment.",
             "data_store_status": "provisioning",
         }
     assert queued == []
@@ -513,7 +513,7 @@ def test_a_busy_store_answers_503_to_try_again(api, busy_store, monkeypatch):
     r = api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")})
 
     assert r.status_code == 503, r.text
-    assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
+    assert r.json() == {"detail": "The organisation's data store is busy. Try again in a moment."}
     assert r.headers["Retry-After"] == "1"
     assert queued == []
     with pytest.raises(DataStoreBusy), store_session(busy_store, "rw") as store:
@@ -603,7 +603,7 @@ def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monke
         r = api.get("/api/documents")
 
     assert r.status_code == 503, r.text
-    assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
+    assert r.json() == {"detail": "The organisation's data store is busy. Try again in a moment."}
 
 
 @pytest.mark.parametrize(

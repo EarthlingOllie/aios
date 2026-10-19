@@ -18,7 +18,7 @@ from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
 
 @pytest.fixture
 def store(db, user) -> DataStore:
-    """The user's store, provisioned, with a hand-made `data.fish` table holding a fish."""
+    """The organisation's store, provisioned, with a hand-made `data.fish` table holding a fish."""
     row = provisioned(db, store_of(user))
     with as_owner(row) as conn:
         conn.execute("CREATE TABLE data.fish (id bigint PRIMARY KEY, name text)")

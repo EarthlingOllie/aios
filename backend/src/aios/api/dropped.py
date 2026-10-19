@@ -79,7 +79,8 @@ def _read(store_id, fn, *args):
         return fn(store_id, *args) if store_id else None
     except (DataStoreBehind, DataStoreBusy) as exc:  # Behind before NotReady: it's one
         raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Your data store can't be read just now."
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The organisation's data store can't be read just now.",
         ) from exc
     except (DataStoreNotFound, DataStoreNotReady):
         return None

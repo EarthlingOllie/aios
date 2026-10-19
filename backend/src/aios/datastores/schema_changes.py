@@ -4,13 +4,13 @@ The model never sends SQL. It sends a spec (`SchemaChange`): a list of operation
 (`create_table`, `add_column`, `create_index`, `drop_table`, `drop_column`), each naming
 tables, columns and types from an allowlist. The spec is checked against the store's current
 schema (`check`) and compiled to SQL (`compile_sql`) with every identifier quoted; that SQL is
-what the owner approves, and exactly what runs. Only the `data` schema is touched, apart from
+what a member approves, and exactly what runs. Only the `data` schema is touched, apart from
 the platform's own bookkeeping: `aios.embedding_columns`, which marks embedding columns for
 `write_data`, and `aios.dropped_objects`.
 
 Drops are reversible: they rename the table or column to `_dropped_<timestamp>_<name>` and
 record it in `aios.dropped_objects`, and applying one takes the store's login roles' access
-to it away (`aios.datastores.dropped`), so the data tools no longer see it. The owner can
+to it away (`aios.datastores.dropped`), so the data tools no longer see it. Any member can
 restore it until it's purged, `DATA_STORE_DROPPED_RETENTION_DAYS` later. Approving a request
 that drops anything takes the names of the tables it drops from, typed (`confirmation`).
 
@@ -20,7 +20,7 @@ The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
    it, and records a `SchemaChangeRequest` (platform database) at the store's current data
    schema revision (`read_revision`: the latest `aios.schema_history` entry), and notifies
    each user who can decide it (`aios.notifications`).
-2. The owner approves or rejects it (only users who pass `resolve.can_approve`), which clears
+2. A member approves or rejects it (only users who pass `resolve.can_approve`), which clears
    its notifications (`clear_notifications`).
 3. `apply`, on the provisioning worker (only it has the provisioner's credentials), runs an
    approved request's SQL as the store's owner, in one transaction under a `lock_timeout`
@@ -220,7 +220,7 @@ Found = SkipJsonSchema[bool]
 
 
 class DropTable(BaseModel):
-    """Renames the table out of the way (`dropped_as`) rather than dropping it: the owner can
+    """Renames the table out of the way (`dropped_as`) rather than dropping it: a member can
     restore it until it's purged (`aios.datastores.dropped`)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -455,7 +455,7 @@ def _drop_column_sql(op: DropColumn) -> list[str]:
 
 
 def compile_sql(change: SchemaChange) -> str:
-    """The SQL a checked spec (`check`) runs: what the owner approves."""
+    """The SQL a checked spec (`check`) runs: what a member approves."""
     statements: list[str] = []
     for op in change.ops:
         if isinstance(op, CreateTable):
@@ -472,7 +472,7 @@ def compile_sql(change: SchemaChange) -> str:
 
 
 def confirmation(change: SchemaChange) -> str | None:
-    """What the owner types to approve a request that drops anything: the names of the tables
+    """What a member types to approve a request that drops anything: the names of the tables
     it drops, or drops columns from, in order; None for one that drops nothing."""
     tables = [op.table for op in change.ops if isinstance(op, (DropTable, DropColumn))]
     return ", ".join(dict.fromkeys(tables)) or None
@@ -708,7 +708,7 @@ def _check_create_index(
 
 
 def summarize(change: SchemaChange) -> str:
-    """What a spec does, in a line: for the store's history and the owner's list."""
+    """What a spec does, in a line: for the store's history and the members' list."""
     parts = []
     for op in change.ops:
         if isinstance(op, CreateTable):
@@ -953,7 +953,7 @@ def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: dateti
 
 
 def _store_error(exc: psycopg.Error) -> str:
-    """Why applying failed, for the owner and the model: Postgres's own message, but not one
+    """Why applying failed, for the members and the model: Postgres's own message, but not one
     from connecting (which names the server)."""
     if exc.sqlstate and exc.diag.message_primary and not exc.sqlstate.startswith("08"):
         return exc.diag.message_primary

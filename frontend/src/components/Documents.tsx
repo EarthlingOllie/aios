@@ -76,7 +76,7 @@ function useDocuments(
         const retry = transient ? " Trying again…" : "";
         setListError(
           err instanceof ApiError && err.status === 503
-            ? "Your data store is busy. Trying again…"
+            ? "The organisation's data store is busy. Trying again…"
             : `Couldn't load your documents (${describeError(err)}).${retry}`,
         );
       },
@@ -176,7 +176,7 @@ function useShared() {
 }
 
 /**
- * The user's data store's status (and why it couldn't be read, while it keeps trying), from the
+ * The organisation's data store's status (and why it couldn't be read, while it keeps trying), from the
  * `DocumentsProvider` above. A store last seen ready is asked about again when the caller
  * mounts, as nothing polls it once it's ready.
  */

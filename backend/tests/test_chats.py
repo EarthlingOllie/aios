@@ -48,7 +48,6 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert chat["name"] == "Design"
     assert chat["description"] == "Where design happens"
     assert chat["visibility"] == "private"
-    assert chat["owner_id"] == user.id
     assert chat["is_owner"] is True
     assert chat["is_member"] is True
     # The owner, and their documents assistant (see test_chat_documents_assistant.py).

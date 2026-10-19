@@ -260,13 +260,14 @@ def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None])
 @router.get("/schema-changes/{request_id}/impact", response_model=ImpactOut)
 def get_impact(request_id: uuid.UUID, user: CurrentUser, db: DB):
     """What the request's drops would remove from the store as it is now (row counts, the
-    columns affected), for the owner deciding it; nothing for one that drops nothing."""
+    columns affected), for the member deciding it; nothing for one that drops nothing."""
     request = _get(db, user.id, request_id)
     try:
         removes = dropped.impact(request.data_store_id, request.ops)
     except (DataStoreBehind, DataStoreBusy, DataStoreNotFound, DataStoreNotReady) as exc:
         raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Your data store can't be read just now."
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The organisation's data store can't be read just now.",
         ) from exc
     return ImpactOut(removes=[RemovalOut(**vars(r)) for r in removes])
 
@@ -275,7 +276,8 @@ def get_impact(request_id: uuid.UUID, user: CurrentUser, db: DB):
 def approve(request_id: uuid.UUID, user: CurrentUser, db: DB, body: Approval | None = None):
     from aios.worker import apply_schema_change_task
 
-    # Typed by the owner, so a drop is never approved by a stray click (its ops never change).
+    # Typed by the member deciding it, so a drop is never approved by a stray click (its ops
+    # never change).
     required = confirmation_for(_get(db, user.id, request_id))
     typed = ((body.confirm if body else None) or "").strip()
     if required is not None and typed != required:

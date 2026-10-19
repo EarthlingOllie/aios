@@ -26,7 +26,7 @@ def build(config: HybridSearchConfig) -> list[AgentTool]:
     # Hybrid retrieval over the documents in the run's data store (the run's context).
     @tool(parse_docstring=True)
     async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
-        """Search the user's uploaded documents with hybrid (semantic + keyword) retrieval.
+        """Search the organisation's uploaded documents with hybrid (semantic + keyword) retrieval.
 
         Each result has the passage's text, its source filename (cite it as [filename]) and the
         headings it sits under.

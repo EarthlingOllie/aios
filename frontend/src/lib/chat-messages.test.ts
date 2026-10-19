@@ -188,7 +188,6 @@ describe("landingPath", () => {
     name: `chat ${id}`,
     description: "",
     visibility: "public",
-    owner_id: 1,
     is_owner: is_member,
     is_member,
     member_count: 2,
