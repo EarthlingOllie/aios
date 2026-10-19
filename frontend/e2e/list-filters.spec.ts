@@ -124,6 +124,7 @@ test("the skills can be sorted", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSkill("Citations").updated_at = "2026-01-01T00:00:00Z";
   api.addSkill("Tone").updated_at = "2026-02-01T00:00:00Z";
+  // Sorting by name is the server's order, so the default.
   await page.goto("/skills");
 
   await expect(links(page, "Skills")).toHaveText([/Citations/, /Tone/]);

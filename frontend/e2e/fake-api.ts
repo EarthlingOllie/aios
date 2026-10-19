@@ -45,6 +45,8 @@ type SkillRow = {
   versions: SkillVersionRow[];
   /** The agents whose current version uses the skill, and the version of it each pins. */
   usedBy: { agent: AgentRow; version: number }[];
+  /** When it was last changed, if a test sets it; NOW otherwise. */
+  updated_at?: string;
 };
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
@@ -1747,7 +1749,7 @@ export class FakeApi {
           description: s.versions.at(-1)!.description,
           version: s.versions.length,
           version_id: s.versions.at(-1)!.id,
-          updated_at: NOW,
+          updated_at: s.updated_at ?? NOW,
         })),
       );
     }
