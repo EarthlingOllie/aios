@@ -10,6 +10,10 @@ step stamps them (its `backfill` is re-run: it only touches what has no organisa
 none goes missing from the organisation's list and the index sees every row. Duplicates within
 an organisation can't exist yet: until now names were unique among all chats.
 
+"Public" meant every user of the deployment, so a user of another organisation may have joined
+(or been added to) a chat: a chat now has nobody from outside its organisation, so those
+memberships go (`drop_outsiders`). What they posted stays, as it does when anyone leaves.
+
 The downgrade puts the global constraint back, which fails if two organisations have since
 made chats of the same name.
 
@@ -21,6 +25,9 @@ Create Date: 2026-10-19 15:00:00
 import importlib.util
 from collections.abc import Sequence
 from pathlib import Path
+
+import sqlalchemy as sa
+from sqlalchemy.engine import Connection
 
 from alembic import op
 
@@ -38,8 +45,22 @@ def _backfill(conn) -> None:
     module.backfill(conn)
 
 
+def drop_outsiders(conn: Connection) -> None:
+    """Remove each chat's user members who aren't members of the chat's organisation."""
+    conn.execute(
+        sa.text(
+            "DELETE FROM chat_members m USING chats c"
+            " WHERE m.chat_id = c.id AND m.kind = 'user' AND NOT EXISTS ("
+            "  SELECT 1 FROM organisation_members o"
+            "  WHERE o.organisation_id = c.organisation_id AND o.user_id = m.user_id)"
+        )
+    )
+
+
 def upgrade() -> None:
-    _backfill(op.get_bind())
+    conn = op.get_bind()
+    _backfill(conn)
+    drop_outsiders(conn)
     op.drop_constraint("chats_name_key", "chats", type_="unique")
     op.create_index(
         "uq_chats_organisation_id_name", "chats", ["organisation_id", "name"], unique=True

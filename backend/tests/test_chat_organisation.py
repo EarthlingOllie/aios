@@ -4,6 +4,9 @@ assistant, and to anyone in another organisation its chats don't exist."""
 
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
+from test_organisations import revision
+
+from aios.models import ChatMember, ChatMemberKind, ChatMemberRole
 
 NAME_TAKEN = "The organisation already has a chat with that name."
 
@@ -140,3 +143,33 @@ def test_a_chat_says_who_made_it_and_who_last_changed_it(api, user, member):  # 
     changed = api.put(f"/api/chats/{chat['id']}", json=body).json()
     assert (changed["created_by"], changed["updated_by"]) == (person(user), person(user))
     assert api.get(f"/api/chats/{chat['id']}").json()["created_by"] == person(user)
+
+
+def test_the_upgrade_takes_users_of_other_organisations_out_of_chats(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+    outsider,  # noqa: F811
+):
+    """Revision 0043, on a chat joined while "public" meant every user of the deployment."""
+    chat = make_chat(api, "Open", visibility="public")
+    add_user(api, chat, member)
+    db.add(
+        ChatMember(
+            chat_id=chat["id"],
+            kind=ChatMemberKind.user,
+            user_id=outsider.id,
+            role=ChatMemberRole.member,
+        )
+    )
+    db.commit()
+    # Seated, but the chat doesn't exist for them: it's another organisation's.
+    with signed_in_as(outsider):
+        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
+
+    revision("0043_chat_names_unique_per_organisation").drop_outsiders(db.connection())
+    db.commit()
+
+    users = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
+    assert [m["target_id"] for m in users] == [user.id, member.id]
