@@ -55,13 +55,21 @@ it adds:
 - A small sort `<select>` (using `selectClass`) when `sorts` is given. The default is the
   server's order.
 - When something is filtered out, a "3 of 12" count, so it's clear the list is narrowed.
+- Pressing `/` anywhere in the section focuses the search box, unless you're already typing in
+  an input, textarea, select or contenteditable (so `/` still types in the chat composer and
+  the editors). A small `/` hint shows in the box.
 - When nothing matches: "No agents match “foo”." with a **Clear filters** button. This is
   separate from the existing empty message, which still shows when the list itself is empty.
 
-The state lives in `MasterDetail` (`useState`), not the URL. It stays set while you move
-between items, and resets when you leave the section. URL state (`?q=`) is the alternative
-(see Open questions). It would also mean carrying the query string on every item `NavLink` and
-on the `navigate("/agents")` calls after delete.
+The state lives in the URL, as `?q=&filter=&sort=` (`useSearchParams`, as the Data tabs and
+Search page already do), so a filtered list can be linked to, survives a reload, and works with
+Back. Defaults are left out of the URL, so `/agents` stays `/agents`. Typing replaces the
+history entry rather than pushing one per keystroke. To keep the filter while you move around
+the section:
+
+- Each item's `NavLink` (and the **New** button) carries the current query string.
+- The section's own `navigate("/agents")` calls (after a delete, for example) go through a
+  small `useListPath()` helper that adds the query string back on.
 
 The selected item stays open on the right even when the filter hides it in the list.
 
@@ -82,7 +90,9 @@ The selected item stays open on the right even when the filter hides it in the l
   matches everything, both sort orders.
 - **E2E** (Playwright, against `e2e/fake-api.ts`), as `e2e/list-search.spec.ts`:
   - Agents: typing narrows the list, the count shows, clearing restores it, a no-match query
-    shows the empty state, the filter is kept after opening an item.
+    shows the empty state, the filter is kept after opening an item, `?q=` in the URL is
+    applied on load and Back restores the previous filter.
+  - The `/` shortcut focuses the search box, and still types `/` inside the chat composer.
   - Chats: the Joined / Not joined / Unread chips, and the filter still applies after a poll.
   - Workflows and Skills: one search case each.
 - `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`.
@@ -94,13 +104,30 @@ The selected item stays open on the right even when the filter hides it in the l
    usable on its own, and could ship first.
 3. Filter chips and sort select; per-section configs.
 4. E2E spec; a short line in the README under each section's description.
+5. (Optional) the extra filters below.
 
-## Open questions
+## Optional: filters that need backend data
 
-1. **URL or component state?** The plan keeps the query in component state. If you'd like
-   filtered lists to be linkable or to survive a reload, it moves to `?q=&filter=&sort=`.
-2. **Which filters matter to you?** The ones above are a guess at what's useful from the fields
-   we already have. Filtering agents by a skill or tool, or skills by "used by an agent", needs
-   more data in the list endpoints, so it would need backend work.
-3. **Keyboard shortcut**: should `/` focus the list's search box? `/` isn't bound to anything
-   today, but the chat composer would need to be excluded.
+Both are small, because the queries they need mostly exist already:
+
+- **Agents by skill or tool.** `GET /api/agents` already joins each agent's current version to
+  count its skills and tools (`skill_count`, `tool_count` in `api/agents.py`). It would also
+  return the ids: `skill_ids: number[]` and `tool_keys: string[]`. The Agents list then gets two
+  selects, "Any skill" and "Any tool", filled from `listSkills` and `listTools`
+  (`?skill=12&tool=web_search`).
+- **Skills used or unused.** `api/skills.py` already has the query "a live agent whose current
+  version uses some version of this skill", which refuses a delete. Reused as a count, it gives
+  `SkillSummary.agent_count`, and the Skills list gets chips: All · Used · Unused.
+
+The work: two list endpoints and their response models, backend tests for the new fields, the
+same fields in `e2e/fake-api.ts` and the TypeScript types, and the chips and selects (which
+reuse step 3's machinery). Roughly 250–350 lines including tests, about half of it tests. That
+is about the size of steps 1–2. It's independent of the rest, so it can go in the same PR or
+just after.
+
+
+## Decisions
+
+- Filters, search and sort live in the URL query (answered 2026-10-19).
+- The filters in step 3 are agreed.
+- `/` focuses the list's search box.
