@@ -16,6 +16,7 @@ import {
 } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -135,38 +136,52 @@ export function SkillDetail() {
       }
     >
       <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(undefined)} />
-      <SkillContent version={current} />
-      <Section title="Used by">
-        {skill.agents.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No agents use this skill yet.</p>
-        ) : (
-          <ul className="divide-y rounded-md border">
-            {skill.agents.map((use) => (
-              <li key={use.agent_id}>
-                <Link
-                  to={`/agents/${use.agent_id}`}
-                  className="hover:bg-accent flex items-center gap-2 px-3 py-2 text-sm"
-                >
-                  <span className="flex-1">{use.agent_name}</span>
-                  <span className="text-muted-foreground text-xs">uses</span>
-                  <VersionBadge version={use.skill_version} />
-                  {use.skill_version < current.version && (
-                    <Badge variant="secondary">update available</Badge>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <Section title="Version history">
-        <VersionHistory
-          versions={versions.data}
-          error={versions.error}
-          current={current.version}
-          href={(v) => `/skills/${id}/versions/${v}`}
-        />
-      </Section>
+      <Tabs
+        label="Skill details"
+        tabs={[
+          { id: "content", label: "Content", content: <SkillContent version={current} /> },
+          {
+            id: "used-by",
+            label: "Used by",
+            count: skill.agents.length,
+            content:
+              skill.agents.length === 0 ? (
+                <p className="text-muted-foreground text-sm">No agents use this skill yet.</p>
+              ) : (
+                <ul className="divide-y rounded-md border">
+                  {skill.agents.map((use) => (
+                    <li key={use.agent_id}>
+                      <Link
+                        to={`/agents/${use.agent_id}`}
+                        className="hover:bg-accent flex items-center gap-2 px-3 py-2 text-sm"
+                      >
+                        <span className="flex-1">{use.agent_name}</span>
+                        <span className="text-muted-foreground text-xs">uses</span>
+                        <VersionBadge version={use.skill_version} />
+                        {use.skill_version < current.version && (
+                          <Badge variant="secondary">update available</Badge>
+                        )}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              ),
+          },
+          {
+            id: "versions",
+            label: "Versions",
+            count: versions.data?.length,
+            content: (
+              <VersionHistory
+                versions={versions.data}
+                error={versions.error}
+                current={current.version}
+                href={(v) => `/skills/${id}/versions/${v}`}
+              />
+            ),
+          },
+        ]}
+      />
     </DetailPage>
   );
 }
@@ -208,7 +223,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreSkillVersion(id, number);
       await reloadList();
-      navigate(`/skills/${id}`);
+      navigate(`/skills/${id}?tab=versions`);
     } catch (err) {
       setError(describeError(err));
     }
@@ -219,7 +234,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/skills/${id}`} className="hover:underline">
+          <Link to={`/skills/${id}?tab=versions`} className="hover:underline">
             {skill.data.name}
           </Link>
           <VersionBadge version={v.version} />
