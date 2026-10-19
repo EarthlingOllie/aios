@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import pytest
+from conftest import delete_user, sign_up
 
 from aios.api import chats
 from aios.auth import current_user
@@ -17,12 +18,9 @@ def make_chat(api, name: str, **extra) -> dict:
 @pytest.fixture
 def other(db):
     """A second signed-up user, to be another member (or not) of the first's chats."""
-    u = User(github_id=-2, login="other", name="Other Person")
-    db.add(u)
-    db.commit()
+    u = sign_up(db, -2, "other", name="Other Person")
     yield u
-    db.delete(u)
-    db.commit()
+    delete_user(db, u)
 
 
 @contextmanager

@@ -30,6 +30,9 @@ type AgentRow = {
   description: string;
   base_prompt: string;
   versions: number[];
+  /** The members who made it and last changed it (`me` unless a test says otherwise). */
+  created_by: ChatUser | null;
+  updated_by: ChatUser | null;
 };
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
@@ -134,6 +137,9 @@ type WorkflowRow = {
   deleted: boolean;
   created_at: string;
   updated_at: string;
+  /** The members who made it and last changed it (`me` unless a test says otherwise). */
+  created_by: ChatUser | null;
+  updated_by: ChatUser | null;
 };
 
 export type DocumentRow = {
@@ -681,6 +687,8 @@ export class FakeApi {
       description,
       base_prompt: `You are ${name}.`,
       versions: [],
+      created_by: this.me,
+      updated_by: this.me,
     };
     for (let n = 1; n <= versions; n++) {
       const vid = this.id();
@@ -845,6 +853,8 @@ export class FakeApi {
       deleted: false,
       created_at: NOW,
       updated_at: NOW,
+      created_by: this.me,
+      updated_by: this.me,
     };
     this.workflows.set(workflow.id, workflow);
     this.saveVersion(
@@ -1257,6 +1267,7 @@ export class FakeApi {
       version,
       note: this.agentNotes.get(agent.versions[version - 1]) ?? null,
       created_at: NOW,
+      created_by: this.me,
       base_prompt: agent.base_prompt,
       model: null,
       instructions: agent.base_prompt,
@@ -1272,6 +1283,8 @@ export class FakeApi {
       description: agent.description,
       created_at: NOW,
       updated_at: NOW,
+      created_by: agent.created_by,
+      updated_by: agent.updated_by,
       current_version: this.agentVersionOut(agent, agent.versions.length),
     };
   }
@@ -1307,6 +1320,7 @@ export class FakeApi {
       version: version.version,
       note: version.note,
       created_at: version.created_at,
+      created_by: this.me,
       nodes: version.nodes.map((n) => this.nodeOut(n)),
       edges: version.edges,
     };
@@ -1319,6 +1333,8 @@ export class FakeApi {
       description: workflow.description,
       created_at: workflow.created_at,
       updated_at: workflow.updated_at,
+      created_by: workflow.created_by,
+      updated_by: workflow.updated_by,
       current_version: this.versionOut(this.current(workflow)),
       layout: workflow.layout,
     };
@@ -1841,6 +1857,8 @@ export class FakeApi {
           tool_count: 0,
           run_count: this.agentRunsOf(a).length,
           updated_at: NOW,
+          created_by: a.created_by,
+          updated_by: a.updated_by,
         })),
       );
     }
@@ -1880,6 +1898,7 @@ export class FakeApi {
       const version = Number(m[2]);
       if (!agent || !agent.versions[version - 1]) return fail(404, "Not Found");
       this.bumpAgent(agent);
+      agent.updated_by = this.me;
       this.agentNotes.set(agent.versions.at(-1)!, `Restored from v${version}`);
       return reply(200, this.agentOut(agent));
     }
@@ -1923,6 +1942,7 @@ export class FakeApi {
               version: i + 1,
               note: this.agentNotes.get(vid) ?? null,
               created_at: NOW,
+              created_by: this.me,
               skill_count: 0,
               tool_count: 0,
               run_count: this.agentRunsOf(agent).filter((r) => r.agent_version_id === vid).length,
@@ -1959,6 +1979,8 @@ export class FakeApi {
           version_id: w.versions.at(-1),
           node_count: this.current(w).nodes.length,
           updated_at: w.updated_at,
+          created_by: w.created_by,
+          updated_by: w.updated_by,
           contains: [...this.contains(this.current(w))],
         })),
       );
@@ -1968,7 +1990,7 @@ export class FakeApi {
       const error = this.check(body);
       if (error) return fail(422, error);
       if (this.live().some((w) => w.name === body.name)) {
-        return fail(409, "You already have a workflow with that name");
+        return fail(409, "The organisation already has a workflow with that name");
       }
       const workflow: WorkflowRow = {
         id: this.id(),
@@ -1979,6 +2001,8 @@ export class FakeApi {
         deleted: false,
         created_at: NOW,
         updated_at: NOW,
+        created_by: this.me,
+        updated_by: this.me,
       };
       this.workflows.set(workflow.id, workflow);
       this.applyLayout(workflow, body);
@@ -2004,10 +2028,11 @@ export class FakeApi {
         const error = this.check(body, workflow);
         if (error) return fail(422, error);
         if (this.live().some((w) => w.name === body.name && w !== workflow)) {
-          return fail(409, "You already have a workflow with that name");
+          return fail(409, "The organisation already has a workflow with that name");
         }
         workflow.name = body.name;
         workflow.description = body.description ?? "";
+        workflow.updated_by = this.me;
         this.applyLayout(workflow, body);
         this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null);
         return reply(200, this.workflowOut(workflow));
@@ -2085,6 +2110,7 @@ export class FakeApi {
               version: v.version,
               note: v.note,
               created_at: v.created_at,
+              created_by: this.me,
               node_count: v.nodes.length,
             };
           }),
@@ -2095,6 +2121,7 @@ export class FakeApi {
         if (vid === undefined) return fail(404, "Not Found");
         const old = this.workflowVersions.get(vid)!;
         if (!m[2]) return reply(200, this.versionOut(old));
+        workflow.updated_by = this.me;
         this.saveVersion(workflow, old.nodes, old.edges, `Restored from v${old.version}`);
         return reply(200, this.workflowOut(workflow));
       }

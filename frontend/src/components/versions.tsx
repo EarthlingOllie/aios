@@ -3,8 +3,10 @@ import { Link } from "react-router";
 import { History } from "lucide-react";
 
 import { formatDate } from "@/components/crud";
+import { useSavedBy } from "@/components/provenance";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import type { User } from "@/lib/api";
 import { diffLines } from "@/lib/diff";
 import { cn } from "@/lib/utils";
 
@@ -47,13 +49,16 @@ export function VersionHistory({
   href,
   detail,
 }: {
-  versions: { version: number; note: string | null; created_at: string }[] | undefined;
+  versions:
+    | { version: number; note: string | null; created_at: string; created_by: User | null }[]
+    | undefined;
   /** Why the versions couldn't be loaded, if they couldn't. */
   error?: string;
   current: number;
   href: (version: number) => string;
   detail?: (version: number) => string | undefined;
 }) {
+  const savedBy = useSavedBy();
   if (error) return <p className="text-destructive text-sm">{error}</p>;
   if (!versions) return null;
   return (
@@ -68,6 +73,7 @@ export function VersionHistory({
               </span>
               <span className="text-muted-foreground block text-xs">
                 {formatDate(v.created_at)}
+                {savedBy(v.created_by)}
                 {detail?.(v.version) && ` · ${detail(v.version)}`}
               </span>
             </span>

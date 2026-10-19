@@ -11,10 +11,11 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from psycopg import errors
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios import checkpoints, organisations
+from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, history, provision, resolve, store_session
@@ -22,7 +23,15 @@ from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, Organisation, OrganisationMember, User
+from aios.models import (
+    Agent,
+    DataStore,
+    Organisation,
+    OrganisationMember,
+    Skill,
+    User,
+    Workflow,
+)
 from aios.sandbox import runner
 
 
@@ -99,6 +108,10 @@ def delete_user(db, user: User) -> None:
     for org in db.scalars(
         select(Organisation).join(OrganisationMember).where(OrganisationMember.user_id == user.id)
     ).all():
+        # What pins another's versions first (workflows pin agents', agents pin skills'): one
+        # cascading delete of them all can check a pin before it has deleted the pinning row.
+        for model in (Workflow, Agent, Skill):
+            db.execute(delete(model).where(model.organisation_id == org.id))
         db.delete(org)
     db.delete(user)
     db.commit()
@@ -117,6 +130,18 @@ def sign_up(db, github_id: int, login: str, **fields) -> User:
     organisations.create_personal(db, u)
     db.commit()
     return u
+
+
+def org_of(db, user: User) -> Organisation:
+    """The user's organisation, for calling what takes one (as a request's would) directly."""
+    return organisations.membership_of(db, user.id)
+
+
+def made_by(db, user: User) -> dict:
+    """The columns that say whose a row (an agent, skill, workflow or trigger) is, for a test
+    that makes one directly as `user` would: their organisation's, made by them, and (until the
+    contract step drops it) theirs."""
+    return provenance.made_by(org_of(db, user).id, user.id)
 
 
 def provisioned_user(db, github_id: int, login: str) -> User:

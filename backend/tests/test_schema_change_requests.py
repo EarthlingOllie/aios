@@ -10,6 +10,7 @@ import contextlib
 from contextlib import asynccontextmanager
 
 import pytest
+from conftest import org_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from psycopg import OperationalError
 from sqlalchemy import event
@@ -433,7 +434,9 @@ def test_a_turn_stopped_before_its_request_waits_cancels_the_request(
     monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
 
     async def stop_while_searching():
-        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("go"), user, db)
+        chunks = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("go"), user, db, org_of(db, user)
+        )
         # Until the stream goes quiet (the search is running, the request recorded), then
         # stopped as a client going away stops it.
         with contextlib.suppress(TimeoutError, StopAsyncIteration):

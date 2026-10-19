@@ -1,7 +1,7 @@
 from dataclasses import replace
 
 import pytest
-from conftest import delete_user, provisioned_user
+from conftest import delete_user, made_by, provisioned_user
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
@@ -218,7 +218,7 @@ def test_version_history_counts_tools(api):
 
 
 def test_versions_without_tools_keep_their_hash(db, user):
-    agent = Agent(owner_id=user.id, name="Old")
+    agent = Agent(**made_by(db, user), name="Old")
     db.add(agent)
     version = save_agent_version(
         db, agent, base_prompt="Hi.", skills=[], note=None, user_id=user.id

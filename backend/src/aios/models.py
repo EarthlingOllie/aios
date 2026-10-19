@@ -259,9 +259,9 @@ class Skill(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
-    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
-    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
+    # The organisation it belongs to (`aios.organisations`), and what it answers to. Nullable
+    # until the contract step makes it NOT NULL and drops `owner_id`, which saves still write
+    # (as the creator) so the release before keeps working meanwhile.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -286,10 +286,11 @@ class Skill(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live skills, so a deleted skill's name can be reused.
+        # Names are unique among the organisation's live skills, so a deleted skill's name
+        # can be reused.
         Index(
-            "uq_skills_owner_id_name_live",
-            "owner_id",
+            "uq_skills_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -340,9 +341,9 @@ class Agent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
-    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
-    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
+    # The organisation it belongs to (`aios.organisations`), and what it answers to. Nullable
+    # until the contract step makes it NOT NULL and drops `owner_id`, which saves still write
+    # (as the creator) so the release before keeps working meanwhile.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -374,18 +375,19 @@ class Agent(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live agents, so a deleted agent's name can be reused.
+        # Names are unique among the organisation's live agents, so a deleted agent's name
+        # can be reused.
         Index(
-            "uq_agents_owner_id_name_live",
-            "owner_id",
+            "uq_agents_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        # One live agent of each built-in kind per owner.
+        # One live agent of each built-in kind per organisation.
         Index(
-            "uq_agents_owner_id_builtin_live",
-            "owner_id",
+            "uq_agents_organisation_id_builtin_live",
+            "organisation_id",
             "builtin",
             unique=True,
             postgresql_where=text("builtin IS NOT NULL AND deleted_at IS NULL"),
@@ -545,9 +547,9 @@ class Workflow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
-    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
-    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
+    # The organisation it belongs to (`aios.organisations`), and what it answers to. Nullable
+    # until the contract step makes it NOT NULL and drops `owner_id`, which saves still write
+    # (as the creator) so the release before keeps working meanwhile.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
@@ -576,10 +578,11 @@ class Workflow(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live workflows, so a deleted workflow's name can be reused.
+        # Names are unique among the organisation's live workflows, so a deleted workflow's name
+        # can be reused.
         Index(
-            "uq_workflows_owner_id_name_live",
-            "owner_id",
+            "uq_workflows_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -806,9 +809,9 @@ class Trigger(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # The organisation it belongs to (`aios.organisations`). Nullable while `owner_id` is still
-    # what it answers to: the upgrade stamped the rows from before, saves stamp new ones once
-    # they're scoped, and the contract step makes it NOT NULL and drops `owner_id`.
+    # The organisation it belongs to (`aios.organisations`), and what it answers to. Nullable
+    # until the contract step makes it NOT NULL and drops `owner_id`, which saves still write
+    # (as the creator) so the release before keeps working meanwhile.
     organisation_id: Mapped[int | None] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )

@@ -1,3 +1,5 @@
+from conftest import made_by
+
 from aios.db import SessionLocal
 from aios.models import Skill
 from aios.versioning import render_skill_block, save_skill_version
@@ -5,7 +7,7 @@ from aios.versioning import render_skill_block, save_skill_version
 
 def test_identical_save_after_concurrent_save_does_not_duplicate(db, user):
     """A save that read a stale current version must not create a duplicate version."""
-    skill = Skill(owner_id=user.id, name="Race")
+    skill = Skill(**made_by(db, user), name="Race")
     db.add(skill)
     save_skill_version(db, skill, description="", content="v1", note=None, user_id=user.id)
     db.commit()

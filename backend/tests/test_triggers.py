@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import delete_user, sign_up
 
 from aios.auth import current_user
 from aios.cron import next_run
 from aios.main import app
-from aios.models import User
 
 
 def make_agent(api, name: str) -> dict:
@@ -123,16 +123,13 @@ def test_targets_must_be_the_users_live_agents_or_workflows(api, client, db):
     resp = api.post("/api/triggers", json=schedule("agent", agent["id"]))
     assert resp.status_code == 422
 
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = sign_up(db, -2, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         resp = client.post("/api/triggers", json=schedule("workflow", workflow["id"]))
         assert resp.status_code == 422
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_list_is_upcoming_first_and_filters_by_target(api):
@@ -218,9 +215,7 @@ def test_deleting_the_target_deletes_its_triggers(api):
 def test_other_users_cannot_see_or_change_triggers(api, client, db):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = sign_up(db, -2, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get("/api/triggers").json() == []
@@ -231,8 +226,7 @@ def test_other_users_cannot_see_or_change_triggers(api, client, db):
         )
         assert client.delete(f"/api/triggers/{t['id']}").status_code == 404
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_preview(api):

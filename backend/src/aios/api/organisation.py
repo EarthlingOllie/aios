@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from aios import organisations
+from aios.api.provenance import UserOut
 from aios.api.skills import on_conflict
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.config import get_settings
@@ -38,13 +39,6 @@ NOT_THE_INVITER = "Only the organisation's creator can invite people into it."
 NO_SUCH_INVITE = "This invitation link has expired or been revoked, or never existed."
 # The one-organisation-per-user index: two accepts at once by one user.
 MEMBERSHIP_CONSTRAINT = "uq_organisation_members_user_id"
-
-
-class UserOut(BaseModel):
-    id: int
-    login: str
-    name: str | None
-    avatar_url: str | None
 
 
 class OrganisationSummaryOut(BaseModel):
