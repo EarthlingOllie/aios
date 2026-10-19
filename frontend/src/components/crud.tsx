@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   NavLink,
   Outlet,
@@ -144,12 +144,38 @@ function useListSearch() {
   return { text, change };
 }
 
+/** Whether a key press is already going into something you type in, where `/` should type. */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+/**
+ * Pressing `/` anywhere outside a text field focuses `input` and selects its text, unless it's
+ * hidden (on a small screen showing only the detail).
+ */
+function useSlashToFocus(input: RefObject<HTMLInputElement | null>, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      const box = input.current;
+      if (!box || box.getClientRects().length === 0 || isTyping(e.target)) return;
+      e.preventDefault();
+      box.focus();
+      box.select();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [input, enabled]);
+}
+
 /**
  * A list of items on the left, and the selected item (or a form) on the right.
  *
  * Given `search` (the fields of an item to match, such as its name and description), the list
  * gets a search box, kept in the URL (`?q=`) and carried by its links and New button. The open
- * item stays open even when the search hides it from the list.
+ * item stays open even when the search hides it from the list. Pressing `/` jumps to the box.
  */
 export function MasterDetail<T extends { id: number }>({
   title,
@@ -175,6 +201,7 @@ export function MasterDetail<T extends { id: number }>({
   const href = useListHref();
   const { text, change } = useListSearch();
   const input = useRef<HTMLInputElement>(null);
+  useSlashToFocus(input, search !== undefined);
   const query = search ? text.trim() : "";
   const shown = items && query ? items.filter((item) => matchesQuery(search!(item), query)) : items;
   const noun = title.toLowerCase();
@@ -213,6 +240,15 @@ export function MasterDetail<T extends { id: number }>({
                 }}
                 className="px-8 [&::-webkit-search-cancel-button]:hidden"
               />
+              {!text && (
+                <kbd
+                  aria-hidden
+                  title="Press / to search"
+                  className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rounded border px-1.5 font-mono text-xs"
+                >
+                  /
+                </kbd>
+              )}
               {text && (
                 <button
                   type="button"
