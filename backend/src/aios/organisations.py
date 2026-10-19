@@ -29,11 +29,12 @@ provisioner's sweep to drop (`aios.datastores.provision.delete_deleting`).
 
 **Leaving** (`leave`) is refused for the last member, whose organisation nobody could see
 again, and for the creator while others remain, since nobody else could invite
-(`leave_refusal`). Otherwise the user drops out of the organisation's chats, their unread
-notifications about its schema change requests go, and they land in a new personal
-organisation, so they're never in none. What they made stays in the organisation, and a chat
-they owned goes to its member added first (`hand_over_chats`); one with nobody left in it is
-made public, if it was private, for whoever joins it next to own.
+(`leave_refusal`). Otherwise the user drops out of the organisation's chats (adding them to one,
+or their making or joining one, waits for a leave under way and is then refused:
+`holds_member`), their unread notifications about its schema change requests go, and they land
+in a new personal organisation, so they're never in none. What they made stays in the
+organisation, and a chat they owned goes to its member added first (`hand_over_chats`); one
+with nobody left in it is made public, if it was private, for whoever joins it next to own.
 """
 
 import hashlib
@@ -369,6 +370,26 @@ def leave_refusal(db: Session, org: Organisation, user: User) -> str | None:
     if org.created_by == user.id:
         return CREATOR_WITH_OTHERS
     return None
+
+
+def holds_member(db: Session, org: Organisation, user_id: int) -> bool:
+    """Whether the user is a member of the organisation, kept so until the caller's transaction
+    ends: for putting them in one of its chats, which a leave that has already taken them out of
+    its chats wouldn't then take them out of. `leave_refusal` locks the organisation before a
+    leave takes anyone out, so this locks it too, shared (`FOR KEY SHARE`, as a row referencing
+    it does: only leaving, accepting and deleting it wait for that). A leave under way commits
+    first and the user is seen gone, or it waits for the caller's commit and takes them out of
+    what that put them in. Take it before any other lock, as leaving does, so the two can't
+    deadlock, unless the caller has locked the organisation already."""
+    db.scalar(
+        select(Organisation.id)
+        .where(Organisation.id == org.id)
+        .with_for_update(read=True, key_share=True)
+    )
+    member = select(OrganisationMember.user_id).where(
+        OrganisationMember.organisation_id == org.id, OrganisationMember.user_id == user_id
+    )
+    return db.scalar(member) is not None
 
 
 def leave(db: Session, org: Organisation, user: User) -> Organisation:

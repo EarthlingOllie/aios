@@ -190,7 +190,8 @@ skills, chats, schedules, documents or data tables). The empty one is deleted as
 its data store goes `deleting` for the provisioning worker to drop (see Data stores). Otherwise
 it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
 the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
-out of the organisation's chats, their unread notifications about its schema change requests go,
+out of the organisation's chats (an add, a join or a new chat of theirs at the same moment is a
+404, not a way back into one), their unread notifications about its schema change requests go,
 and they land in a new personal organisation with a data store of its own; what they made stays,
 and a chat they owned goes to its member added first (with nobody left in it, to whoever joins
 it next, and a private one becomes public so that someone can).
