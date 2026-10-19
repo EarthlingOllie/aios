@@ -82,7 +82,8 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned agent's
  * or workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
  * which brings the state of every invocation still going. Whenever the reader is at the bottom of
- * the visible chat, `onRead` hears of the newest message, once each.
+ * the visible chat, `onRead` hears of the newest message, once each. The composer's unsent text is
+ * held by the caller (`draft`), so it outlives the room, e.g. while another tab is open.
  */
 export function ChatRoom({
   chatId,
@@ -90,6 +91,8 @@ export function ChatRoom({
   mentionable,
   onPosted,
   onRead,
+  draft,
+  onDraftChange,
 }: {
   chatId: number;
   /** Members post; anyone else may only read. */
@@ -103,6 +106,9 @@ export function ChatRoom({
    * fails, the same message is reported again the next time the reader is seen at the bottom.
    */
   onRead?: (messageId: number) => Promise<unknown>;
+  /** What's in the composer, not yet sent. */
+  draft: string;
+  onDraftChange: (draft: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
@@ -111,7 +117,6 @@ export function ChatRoom({
   // Set at once, unlike the state: scroll events come faster than renders.
   const loadingOlderNow = useRef(false);
   const [error, setError] = useState<string>();
-  const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   // What's shown, as of the last read: polls take their cursor from it.
@@ -228,7 +233,7 @@ export function ChatRoom({
       const posted = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
       show(posted, { to: "bottom" });
-      setDraft("");
+      onDraftChange("");
       onPosted?.();
     } catch (err) {
       setError(describeError(err));
@@ -272,7 +277,7 @@ export function ChatRoom({
           id={`chat-${chatId}-composer`}
           placeholder="Write a message"
           value={draft}
-          onChange={setDraft}
+          onChange={onDraftChange}
           busy={false}
           disabled={posting}
           onStop={() => undefined}

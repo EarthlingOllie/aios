@@ -14,11 +14,13 @@ test("a new chat has the documents assistant as a member, to mention like any ag
   await expect(page).toHaveURL(`/chats/${chat.id}`);
   const assistant = api.documentsAssistant();
   api.agentTurns.set(assistant.id, { steps: 1, tokensPerStep: 100, reply: "Your notes are about fish." });
-  const members = page.getByRole("region", { name: "Members" });
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByRole("list", { name: "Agents" }).getByRole("listitem")).toHaveText([
     "Documents assistant",
   ]);
   await expect(page.getByRole("heading", { name: "Design", level: 2 }).locator("..")).toContainText("2 members");
+  await page.getByRole("tab", { name: "Chat" }).click();
 
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await composer.pressSequentially("@doc");
