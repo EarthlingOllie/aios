@@ -3,18 +3,20 @@ agents, workflows and members, names are unique within it, each new chat gets it
 assistant, and to anyone in another organisation its chats don't exist."""
 
 import threading
+import time
 from contextlib import contextmanager
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from conftest import delete_user, join_organisation
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import in_the_background, revision
 
 from aios import organisations
-from aios.db import SessionLocal
+from aios.api import chats
+from aios.db import SessionLocal, engine
 from aios.models import Chat, ChatMember, ChatMemberKind, ChatMemberRole, ChatVisibility, User
 
 NAME_TAKEN = "The organisation already has a chat with that name."
@@ -324,19 +326,185 @@ def test_the_upgrade_makes_a_private_chat_with_nobody_to_own_it_public(
     assert api.post(f"/api/chats/{abandoned['id']}/join").json()["is_owner"] is True
 
 
+# Another backend waiting on a lock: a request waiting on the transaction a test holds open.
+WAITING_ON_A_LOCK = text(
+    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+    "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+)
+
+
+def waits_on_a_lock(request: threading.Thread) -> None:
+    """Return once the request on the thread is waiting on a lock, failing if it finishes
+    instead: what it does next can only happen after the transaction it waits on ends."""
+    deadline = time.monotonic() + 10
+    while True:
+        # A transaction of its own each time: one sees the activity as it was when it began.
+        with engine.connect() as conn:
+            if conn.execute(WAITING_ON_A_LOCK).scalar():
+                return
+        assert request.is_alive(), "the request should wait on the transaction held open"
+        assert time.monotonic() < deadline, "the request never waited on a lock"
+        time.sleep(0.02)
+
+
 @contextmanager
-def leaving(user: User):
-    """The user's leave of their organisation, as `POST /api/organisation/leave` makes it, held
-    uncommitted (flushed: their membership and chat rows gone, the organisation locked) for the
-    block, then committed: a leave under way while the block's requests run."""
-    with SessionLocal() as db:
-        org = organisations.membership_of(db, user.id)
-        leaver = db.get_one(User, user.id)
-        assert organisations.leave_refusal(db, org, leaver) is None
-        organisations.leave(db, org, leaver)
-        db.flush()
+def leaving(leaver: User):
+    """The user leaving the organisation (as `POST /api/organisation/leave` does), held open:
+    flushed within the block (their chat member rows deleted, `hand_over_chats` run, the chats it
+    found ownerless locked) and committed as it ends."""
+    with SessionLocal() as session:
+        user = session.get_one(User, leaver.id)
+        org = organisations.membership_of(session, user.id)
+        assert organisations.leave_refusal(session, org, user) is None
+        organisations.leave(session, org, user)
+        session.flush()
         yield
-        db.commit()
+        session.commit()
+
+
+def test_joining_as_the_owner_leaves_the_organisation_makes_the_joiner_its_owner(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    """The join reads the chat's members (the owner among them) before the leave deleted the
+    owner's row, and the leave commits first: it found nobody in the chat to hand it to, so the
+    joiner is the one to own it."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Busy", visibility="public")
+    with leaving(member):
+        joining, joined = in_the_background(lambda: api.post(f"/api/chats/{chat['id']}/join"))
+        waits_on_a_lock(joining)
+    joining.join(timeout=10)
+
+    assert "error" not in joined, joined
+    assert joined["value"].status_code == 200, joined["value"].text
+    assert joined["value"].json()["is_owner"] is True
+    assert owners(api, chat) == [user.id]
+
+
+def test_leaving_as_someone_joins_hands_the_chat_to_the_joiner(
+    api,
+    user,
+    member,  # noqa: F811
+    monkeypatch,
+):
+    """The other order: the join is in first, so it joins as a member of a chat that has its
+    owner, and the leave, waiting for it, finds the joiner in the chat to hand it to."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Busy", visibility="public")
+    # The join, held between deciding the role it joins with and adding its member row.
+    reached, release = threading.Event(), threading.Event()
+    newest = chats.newest_message_id
+
+    def held(db, chat_id):
+        reached.set()
+        assert release.wait(timeout=10)
+        return newest(db, chat_id)
+
+    monkeypatch.setattr(chats, "newest_message_id", held)
+    try:
+        joining, joined = in_the_background(lambda: api.post(f"/api/chats/{chat['id']}/join"))
+        assert reached.wait(timeout=10)
+        with signed_in_as(member):
+            leaving_it, left = in_the_background(lambda: api.post("/api/organisation/leave"))
+            waits_on_a_lock(leaving_it)
+    finally:
+        release.set()
+    joining.join(timeout=10)
+    leaving_it.join(timeout=10)
+
+    assert "error" not in joined, joined
+    assert (joined["value"].status_code, joined["value"].json()["is_owner"]) == (200, False)
+    assert "error" not in left, left
+    assert left["value"].status_code == 200, left["value"].text
+    assert owners(api, chat) == [user.id]
+
+
+def test_an_owner_who_has_left_the_organisation_cant_add_a_member_to_the_chat_as_they_go(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    """The add read the leaver as the chat's owner before their leave deleted the row, and the
+    leave commits first, having found nobody in the chat to hand it to (and made it public). An
+    add that went in then would leave a member in a chat nobody owns."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Ours", visibility="private")
+        with leaving(member):
+            adding, added = in_the_background(
+                lambda: api.post(
+                    f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": user.id}
+                )
+            )
+            waits_on_a_lock(adding)
+    adding.join(timeout=10)
+
+    assert "error" not in added, added
+    assert added["value"].status_code == 403, added["value"].text
+    # Nobody's in it, so whoever joins it owns it.
+    assert api.post(f"/api/chats/{chat['id']}/join").json()["is_owner"] is True
+
+
+def test_an_owner_who_has_left_the_organisation_cant_remove_the_member_it_was_handed_to(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+):
+    """The removal read the leaver as the chat's owner before their leave deleted the row, and the
+    leave commits first, having handed the chat to the member added first: removing that member
+    then would leave the others in a chat nobody owns."""
+    third = join_organisation(db, user, -61, "third")
+    try:
+        with signed_in_as(member):
+            chat = make_chat(api, "Ours", visibility="private")
+            first = next(
+                m
+                for m in add_user(api, chat, user)["members"]["users"]
+                if m["target_id"] == user.id
+            )
+            add_user(api, chat, third)
+            with leaving(member):
+                removing, removed = in_the_background(
+                    lambda: api.delete(f"/api/chats/{chat['id']}/members/{first['id']}")
+                )
+                waits_on_a_lock(removing)
+        removing.join(timeout=10)
+
+        assert "error" not in removed, removed
+        assert removed["value"].status_code == 403, removed["value"].text
+        assert owners(api, chat) == [user.id]
+    finally:
+        delete_user(db, third)
+
+
+def test_a_member_cant_leave_a_chat_just_handed_to_them(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+):
+    """Leaving the chat read the user as a member of it before the owner's leaving the
+    organisation handed it to them, and the hand-over commits first: their leaving it then would
+    leave the others in a chat nobody owns."""
+    third = join_organisation(db, user, -61, "third")
+    try:
+        with signed_in_as(member):
+            chat = make_chat(api, "Ours", visibility="private")
+            add_user(api, chat, user)
+            add_user(api, chat, third)
+        with leaving(member):
+            quitting, quit = in_the_background(lambda: api.post(f"/api/chats/{chat['id']}/leave"))
+            waits_on_a_lock(quitting)
+        quitting.join(timeout=10)
+
+        assert "error" not in quit, quit
+        assert quit["value"].status_code == 422, quit["value"].text
+        assert quit["value"].json()["detail"] == "The owner can't leave the chat."
+        assert owners(api, chat) == [user.id]
+    finally:
+        delete_user(db, third)
 
 
 def users_in(db, chat: dict) -> list[int]:
@@ -371,7 +539,7 @@ def test_a_member_added_to_a_chat_as_they_leave_the_organisation_isnt_added(
                         f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": carol.id}
                     )
                 )
-                adding.join(timeout=0.5)
+                waits_on_a_lock(adding)
             adding.join(timeout=10)
 
             assert "error" not in result, result
@@ -401,7 +569,7 @@ def test_a_chat_made_as_its_maker_leaves_the_organisation_isnt_made(
                 making, result = in_the_background(
                     lambda: api.post("/api/chats", json={"name": "Mine", "visibility": "private"})
                 )
-                making.join(timeout=0.5)
+                waits_on_a_lock(making)
             making.join(timeout=10)
 
         assert "error" not in result, result
@@ -429,7 +597,7 @@ def test_a_chat_joined_as_its_joiner_leaves_the_organisation_isnt_joined(
                 joining, result = in_the_background(
                     lambda: api.post(f"/api/chats/{chat['id']}/join")
                 )
-                joining.join(timeout=0.5)
+                waits_on_a_lock(joining)
             joining.join(timeout=10)
 
         assert "error" not in result, result
@@ -471,8 +639,7 @@ def test_a_member_who_leaves_as_theyre_added_to_a_chat_is_taken_out_of_it(
             assert checked.wait(10), added
         with signed_in_as(carol):
             leaving_it, left = in_the_background(lambda: api.post("/api/organisation/leave"))
-            leaving_it.join(timeout=0.5)
-            assert leaving_it.is_alive(), "the leave should wait for the add"
+            waits_on_a_lock(leaving_it)
             go_on.set()
             adding.join(timeout=10)
             leaving_it.join(timeout=10)

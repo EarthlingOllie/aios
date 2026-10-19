@@ -293,12 +293,44 @@ def is_owner(chat: Chat, user_id: int) -> bool:
     return member is not None and member.role == ChatMemberRole.owner
 
 
+def lock_owner(db: Session, chat: Chat) -> int | None:
+    """Lock the chat until commit, and read who holds its owner role now (None: nobody), for a
+    change to its members. The members `get_visible_chat` loaded can be out of date by then: the
+    owner leaving the organisation deletes their member row and hands the chat on
+    (`organisations.hand_over_chats`, which locks the chat first), and a join, add, removal or
+    leaving decided on the owner it loaded would go in after that, leaving a member in a chat
+    nobody owns.
+    Under the lock it waits for the hand-over, or the hand-over waits for it and sees what it did.
+    `FOR NO KEY UPDATE`: the lock the change to `updated_at` each of them makes takes anyway, only
+    sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share).
+    A 404 if the chat has been deleted meanwhile."""
+    locked = select(Chat.id).where(Chat.id == chat.id).with_for_update(key_share=True)
+    if db.scalar(locked) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return db.scalar(
+        select(ChatMember.user_id).where(
+            ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
+        )
+    )
+
+
+OWNER_ONLY = "Only the chat's owner can do that."
+
+
 def get_chat_if_owner(db: Session, org: Organisation, user_id: int, chat_id: int) -> Chat:
     """The chat, for one of the owner's actions: a 403 for anyone else it's visible to."""
     chat = get_visible_chat(db, org, user_id, chat_id)
     if not is_owner(chat, user_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the chat's owner can do that.")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)
     return chat
+
+
+def still_owner(db: Session, chat: Chat, user_id: int) -> None:
+    """A 403 unless the user still holds the chat's owner role, read under its lock
+    (`lock_owner`), for an owner's change to its members: their leaving the organisation may
+    have got in since `get_chat_if_owner`."""
+    if lock_owner(db, chat) != user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)
 
 
 class ChatListed(ChatSummary):
@@ -481,6 +513,9 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
         ):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.kind}")
         member = ChatMember(kind=body.kind, added_by=user.id, **{f"{body.kind}_id": target.id})
+    # After the agent or workflow is locked, as deleting one locks it before the chats it posts
+    # into (finishing their runs' invocations), so the two can't wait on each other.
+    still_owner(db, chat, user.id)
     if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
     chat.members.append(member)
@@ -490,22 +525,6 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
     with on_conflict(db, MEMBER_CONSTRAINTS[body.kind], ALREADY_A_MEMBER):
         db.commit()
     return chat_out(db, load(db, chat.id), user.id)
-
-
-def has_owner(db: Session, chat: Chat) -> bool:
-    """Whether someone holds the chat's owner role. Locks the chat when nobody does, so two
-    joining an ownerless chat at once don't both become its owner: the second sees the first."""
-    if any(m.role == ChatMemberRole.owner for m in chat.members):
-        return True
-    db.scalar(select(Chat.id).where(Chat.id == chat.id).with_for_update())
-    return (
-        db.scalar(
-            select(ChatMember.id).where(
-                ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
-            )
-        )
-        is not None
-    )
 
 
 def newest_message_id(db: Session, chat_id: int) -> int | None:
@@ -523,13 +542,18 @@ def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
     chat = get_visible_chat(db, org, user.id, chat_id)
     if is_member(chat, user.id):
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
+    # Before the chat's lock, as leaving takes the organisation's before the chats'.
     if not organisations.holds_member(db, org, user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # Under the chat's lock, so that two joining an ownerless chat at once don't both become its
+    # owner (the second sees the first), and one joining as its owner leaves the organisation
+    # doesn't join as a member of a chat that has just lost its owner (`lock_owner`).
+    owner = lock_owner(db, chat)
     chat.members.append(
         ChatMember(
             kind=ChatMemberKind.user,
             user_id=user.id,
-            role=ChatMemberRole.member if has_owner(db, chat) else ChatMemberRole.owner,
+            role=ChatMemberRole.member if owner is not None else ChatMemberRole.owner,
             added_by=user.id,
             last_read_message_id=newest_message_id(db, chat.id),
         )
@@ -550,7 +574,9 @@ def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: D
     member = user_member(chat, user.id)
     if member is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Not a member of this chat.")
-    if member.role == ChatMemberRole.owner:
+    # Their role read again under the chat's lock: the chat may have just been handed to them, its
+    # owner having left the organisation (`lock_owner`).
+    if lock_owner(db, chat) == user.id:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't leave the chat."
         )
@@ -573,6 +599,7 @@ def remove_member(
 ) -> None:
     """Remove a member from the chat (its owner only). The owner stays: a chat always has one."""
     chat = get_chat_if_owner(db, org, user.id, chat_id)
+    still_owner(db, chat, user.id)
     member = next((m for m in chat.members if m.id == member_id), None)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
