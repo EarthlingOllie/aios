@@ -45,6 +45,10 @@ the model's behaviour:
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are soft-deleted (old agent versions still reference their versions), and can't be
   deleted while an agent's current version uses them.
+- A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
+  by (the agents whose current version uses it, with a count) and Versions (with a count). The
+  open tab is in the URL (`/skills/12?tab=versions`); a version's page links back to Versions,
+  and restoring a version returns there.
 - Each run is traced to Langfuse when it's configured (see [Tracing](#tracing)), with
   `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse

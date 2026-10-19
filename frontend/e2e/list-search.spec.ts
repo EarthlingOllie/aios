@@ -150,8 +150,8 @@ test("the workflows list can be searched", async ({ page }) => {
 
 test("the skills list can be searched", async ({ page }) => {
   const api = await fakeApi(page);
-  api.addSkill("Citations", "Cite every source");
-  api.addSkill("Tone", "Write plainly");
+  api.addSkill("Citations", 1, "Cite every source");
+  api.addSkill("Tone", 1, "Write plainly");
   await page.goto("/skills");
 
   await search(page, "skills").fill("source");
