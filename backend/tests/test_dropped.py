@@ -31,7 +31,7 @@ TOOLS = [
 
 @pytest.fixture
 def store(db, user) -> DataStore:
-    """The user's store, with `data.fish` (two fish) made by an applied request, as agents'
+    """The organisation's store, with `data.fish` (two fish) made by an applied request, as agents'
     tables are."""
     row = provisioned(db, store_of(user))
     apply(

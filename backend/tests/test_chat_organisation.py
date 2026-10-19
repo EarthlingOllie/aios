@@ -2,6 +2,8 @@
 agents, workflows and members, names are unique within it, each new chat gets its documents
 assistant, and to anyone in another organisation its chats don't exist."""
 
+from conftest import delete_user, join_organisation
+from sqlalchemy import delete
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import revision
@@ -173,3 +175,76 @@ def test_the_upgrade_takes_users_of_other_organisations_out_of_chats(
 
     users = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
     assert [m["target_id"] for m in users] == [user.id, member.id]
+
+
+def owners(api, chat: dict) -> list[int]:
+    """The users who hold the chat's owner role, as its members list says."""
+    users = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
+    return [m["target_id"] for m in users if m["role"] == "owner"]
+
+
+def test_a_chat_owner_who_leaves_the_organisation_hands_it_to_the_member_added_first(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+):
+    third = join_organisation(db, user, -60, "third")
+    try:
+        with signed_in_as(member):
+            chat = make_chat(api, "Handover", visibility="private")
+            add_user(api, chat, user)
+            add_user(api, chat, third)
+            assert api.post("/api/organisation/leave").status_code == 200
+
+        # The chat stays the organisation's, with the member who was added first as its owner.
+        got = api.get(f"/api/chats/{chat['id']}").json()
+        assert got["is_owner"] is True
+        assert owners(api, chat) == [user.id]
+        body = {"name": "Ours now", "description": "", "visibility": "private"}
+        assert api.put(f"/api/chats/{chat['id']}", json=body).status_code == 200
+        with signed_in_as(third):
+            assert api.get(f"/api/chats/{chat['id']}").json()["is_owner"] is False
+            assert api.put(f"/api/chats/{chat['id']}", json=body).status_code == 403
+    finally:
+        delete_user(db, third)
+
+
+def test_a_chat_its_owner_left_with_nobody_in_it_goes_to_whoever_joins_it(
+    api,
+    user,
+    member,  # noqa: F811
+):
+    with signed_in_as(member):
+        chat = make_chat(api, "Abandoned", visibility="public")
+        assert api.post("/api/organisation/leave").status_code == 200
+
+    [listed] = api.get("/api/chats").json()
+    assert (listed["is_member"], listed["is_owner"]) == (False, False)
+    joined = api.post(f"/api/chats/{chat['id']}/join").json()
+    assert joined["is_owner"] is True
+    assert owners(api, chat) == [user.id]
+    assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
+
+
+def test_the_upgrade_hands_a_chat_whose_owner_left_to_the_member_added_first(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+):
+    """Revision 0048, on a chat whose owner left the organisation before leaving handed it over:
+    their member row went with their membership, and nobody held the owner role."""
+    with signed_in_as(member):
+        chat = make_chat(api, "Left behind", visibility="private")
+        add_user(api, chat, user)
+    db.execute(
+        delete(ChatMember).where(ChatMember.chat_id == chat["id"], ChatMember.user_id == member.id)
+    )
+    db.commit()
+    assert owners(api, chat) == []
+
+    revision("0048_organisations_contract").hand_over(db.connection())
+    db.commit()
+
+    assert owners(api, chat) == [user.id]

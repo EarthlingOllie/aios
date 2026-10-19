@@ -36,8 +36,8 @@ MIN_PREVIEW_CHARS = 16
 # A row's key: its table's (or partition's) oid, and its place in it (`ctid`).
 _ROW_KEY = re.compile(r"(?P<table>[0-9]{1,10}):\((?P<block>[0-9]{1,10}),(?P<place>[0-9]{1,5})\)")
 
-# The store's tables (or the one named), with their columns, in order: only the owner's
-# (`data`), and a partitioned table once, not each partition. Not what the owner dropped
+# The store's tables (or the one named), with their columns, in order: only the organisation's
+# (`data`), and a partitioned table once, not each partition. Not what a request dropped
 # (`aios.datastores.dropped`): a dropped table, which the read-only role has no privileges on,
 # nor a dropped column, which it can't read (it has `SELECT` on a table's other columns only).
 TABLES_SQL = f"""

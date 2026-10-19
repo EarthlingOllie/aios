@@ -135,12 +135,13 @@ first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
 does the same for its own (`/api/triggers`).
 
-Every user is in an **organisation** (`aios.organisations`), the group that will own what its
+Every user is in an **organisation** (`aios.organisations`), the group that owns what its
 members make. Signing in for the first time makes a **personal** one named after the user's
 login (suffixed, `sam-2`, when that name is taken), with them as its creator and only member;
 the upgrade did the same for every existing user and stamped everything they own (skills,
 agents, workflows, schedules, chats) with their organisation and with them as `created_by`
-(revisions 0029 and 0030). A user is in exactly one organisation at a time: memberships are a
+(revisions 0029 and 0030); the per-user ownership columns went in the same release (0048,
+which says why, as 0015 did). A user is in exactly one organisation at a time: memberships are a
 table, held to one per user by a unique index, and the request's organisation is resolved in
 one place (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency), never named
 in a URL or header. `GET /api/me` says which organisation the user is in and the shell shows
@@ -158,8 +159,7 @@ made it and which last changed it (`created_by`, `updated_by`, reported as the u
 lists and pages: `aios.api.provenance`), each version which member saved it, and a deleted one
 records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
 agents and workflows, and deleting an agent finds what depends on it across the organisation.
-Saves still write `owner_id` (the creator) for the release before, until the contract step drops
-it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
+Nothing answers to whoever made it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
 run history export, on the Organisation page.
 
 **Runs** execute for the organisation, however they start: by hand, by a schedule, by a chat
@@ -191,7 +191,9 @@ its data store goes `deleting` for the provisioning worker to drop (see Data sto
 it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
 the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
 out of the organisation's chats, their unread notifications about its schema change requests go,
-and they land in a new personal organisation with a data store of its own; what they made stays.
+and they land in a new personal organisation with a data store of its own; what they made stays,
+and a chat they owned goes to its member added first (with nobody left in it, to whoever joins
+it next).
 The last member can't leave, nor can the creator while others remain (each a 409, explained on
 the page).
 
@@ -207,8 +209,8 @@ and workflows, whoever made them (`POST /api/chats/{id}/members` with `{kind, id
 outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow; an
 agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a
 private chat doesn't exist for anyone who isn't a member, while a public one can be opened by every
-member of the organisation. Whoever creates a chat owns it and is its first member (a role in the
-chat, not ownership of data); only the owner renames or describes it, changes its visibility, adds
+member of the organisation. Whoever creates a chat owns it and is its first member (a role on their
+member row, not ownership of data; one owner per chat); only the owner renames or describes it, changes its visibility, adds
 or removes members and deletes it (a 403 for other members). A public chat you aren't in can be
 read but not posted in until you **join** it, in one click
 (`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
@@ -365,8 +367,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
     auth.py         /login, /auth/callback, /logout, current_user, current_organisation
-    organisations.py  organisations: a personal one per user on sign-up, the user's one membership,
-                    invitation links, joining and leaving
+    organisations.py  organisations, which own what their members make: a personal one per
+                    user on sign-up, the user's one membership, invitation links, joining and
+                    leaving (handing over the chats a leaver owned)
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
@@ -395,8 +398,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     runner and the egress proxy
     agent.py        the run context (`ChatDeps`) agents' tools read
     assistant.py    the documents assistant: the built-in agent each new chat gets
-    datastores/     data stores: data_store_for(user), the one place a user becomes a store,
-                    store_session(id, role), the only way to open a session on user data,
+    datastores/     data stores: data_store_for(organisation), the one place an organisation
+                    becomes a store, store_session(id, role), the only way to open a session on
+                    an organisation's data,
                     models.py (the tables every store has: documents, chunks; and the
                     run history export's), history.py (the run history export),
                     provision.py (creating, migrating and deleting each store's database),
@@ -559,12 +563,12 @@ user id: a store has no users table). Signing up makes the new organisation's st
   connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw` and
   `_ro`, and only then lets them connect;
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
-  the owner creates and `_ro` only read them; neither may create anything;
+  `_owner` creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
   `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
   (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
   at its head revision. The tree makes the `aios` schema (the platform's tables) and an empty
-  `data` schema (the owner's tables, which the tree otherwise leaves alone).
+  `data` schema (the organisation's tables, which the tree otherwise leaves alone).
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After six failed tries (the first and five retries, over about half an hour) the store is marked
@@ -599,7 +603,7 @@ back, until the provisioning worker's beat brings it to head with the retries ab
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
 on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
-and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store
+and the document search tools') and downloads as `_ro`. Searches have no organisation filter: a store
 holds only its organisation's documents, and its roles can't connect to any other database. A store is reached at
 `DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
 database's instance, which the provisioner may know by another name (Compose's `db`, with the
@@ -808,7 +812,7 @@ Known limits:
   waits, and the task tries again a minute later, up to ten times), and deleting a document
   deletes its object, then its row (so should S3 refuse, the document stays to be deleted
   again). Downloading
-  (`GET /api/documents/{id}/download`) looks the document up in the user's own store, so
+  (`GET /api/documents/{id}/download`) looks the document up in the organisation's store, so
   another's is a 404, and redirects to a presigned `GetObject` link that saves it under its
   original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding a link can use it
   until then, so one is minted per click and never shown on the page. Links are signed for
@@ -876,7 +880,7 @@ Known limits:
   available. See `plan/run-python/plan.md`.
 - **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's data
   store, as its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data`
-  (the owner's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+  (the organisation's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
   descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
   `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
   statement is sent with the extended protocol, which takes only one. Rows are streamed and cut

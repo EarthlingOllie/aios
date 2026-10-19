@@ -17,7 +17,7 @@ from aios.models import Agent, OrganisationMember, Skill, User, Workflow
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation. Gone first, with the organisation and what's in
-    it: deleting a user alone still cascades to what they made (`owner_id`)."""
+    it: deleting a user alone leaves what they made, which is the organisation's."""
     u = User(github_id=-2, login="member", name="Member Person", avatar_url="https://a/m.png")
     db.add(u)
     db.flush()

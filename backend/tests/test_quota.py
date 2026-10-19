@@ -206,7 +206,7 @@ def test_a_store_at_its_file_cap_refuses_uploads_until_its_owner_deletes_some(
 
     assert r.status_code == 507
     assert r.json()["detail"] == (
-        "Your data store is full: its documents use 47 B of the 47 B allowed. "
+        "The organisation's data store is full: its documents use 47 B of the 47 B allowed. "
         "Delete some to make room."
     )
     assert stored_keys(store_id) == [f"stores/{store_id}/documents/{first['id']}"]
@@ -226,8 +226,8 @@ def test_an_upload_that_would_take_the_documents_past_their_cap_is_refused(
 
     assert r.status_code == 507
     assert r.json()["detail"] == (
-        "There's no room for more.pdf: your documents use 47 B of the 70 B allowed, and it's"
-        " 47 B. Delete some to make room."
+        "There's no room for more.pdf: the organisation's documents use 47 B of the 70 B allowed,"
+        " and it's 47 B. Delete some to make room."
     )
     assert upload(api, name="small.txt", data=b"x" * 23).status_code == 201
 
@@ -243,7 +243,9 @@ def test_a_store_at_its_database_cap_refuses_uploads(api, db, user, queued, monk
     r = upload(api)
 
     assert r.status_code == 507
-    assert r.json()["detail"].startswith("Your data store is full: its data takes up ")
+    assert r.json()["detail"].startswith(
+        "The organisation's data store is full: its data takes up "
+    )
     assert r.json()["detail"].endswith(" of the 1.0 KB allowed, so documents can't be uploaded.")
     assert stored_keys(store_id) == []
     assert queued == []

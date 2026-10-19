@@ -1,5 +1,5 @@
 """Dropped tables and columns: what an approved `drop_table` or `drop_column` leaves
-(`aios.datastores.schema_changes`), until the owner restores it or it's purged.
+(`aios.datastores.schema_changes`), until a member restores it or it's purged.
 
 A drop renames the table or column to `_dropped_<timestamp>_<name>` and records it in
 `aios.dropped_objects`. Applying it then takes the store's login roles' access to it away
@@ -64,7 +64,7 @@ class Removal:
 
 
 # How long (ms) counting a table's rows for the card may take before it's estimated instead:
-# a huge table, or one locked by a change being applied, mustn't hold up the owner deciding.
+# a huge table, or one locked by a change being applied, mustn't hold up the member deciding.
 IMPACT_COUNT_TIMEOUT = 3000
 
 
@@ -88,7 +88,7 @@ def _count(pg: psycopg.Connection, relation: sql.Identifier, column: str | None)
 
 
 def impact(data_store_id: uuid.UUID, ops: list[dict[str, Any]]) -> list[Removal]:
-    """What a request's drops would remove, read as the store's read-only role, for the owner
+    """What a request's drops would remove, read as the store's read-only role, for the member
     deciding it."""
     drops = [op for op in ops if op["op"] in ("drop_table", "drop_column")]
     if not drops:

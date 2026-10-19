@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { fakeApi } from "./fake-api";
 
-/** The documents panel while the user's data store is being set up, and once it's ready. */
+/** The documents panel while the organisation's data store is being set up, and once it's ready. */
 
 test("documents wait for a store that's being set up, then can be uploaded", async ({ page }) => {
   const api = await fakeApi(page);
@@ -10,7 +10,7 @@ test("documents wait for a store that's being set up, then can be uploaded", asy
   await page.goto("/");
 
   const notice = page.getByRole("status", { name: "Data store" });
-  await expect(notice).toContainText("Setting up your data store");
+  await expect(notice).toContainText("Setting up the organisation's data store");
   const upload = page.getByRole("button", { name: "Upload" });
   await expect(upload).toBeDisabled();
   expect(api.writes).toEqual([]);
@@ -71,7 +71,7 @@ test("a store that couldn't be set up says so", async ({ page }) => {
 
   // An error, not news of progress.
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
   await expect(page.getByRole("status", { name: "Data store" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
@@ -84,7 +84,7 @@ test("a busy store doesn't tell the chat panel there are no documents", async ({
   await page.goto("/");
 
   await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
-    "Your data store is busy.",
+    "The organisation's data store is busy.",
   );
   await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
 
@@ -113,7 +113,7 @@ test("search waits for a store that's being set up, then searches", async ({ pag
 
   // News of progress, not a failed search.
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
-    "Setting up your data store",
+    "Setting up the organisation's data store",
   );
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Search" })).toBeDisabled();
@@ -130,7 +130,7 @@ test("search says when a store couldn't be set up", async ({ page }) => {
   await page.goto("/search?q=fish");
 
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
   await expect(page.getByText(/Search failed/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Search" })).toBeDisabled();

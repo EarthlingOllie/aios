@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     # How long (milliseconds) applying an approved schema change waits for each lock it needs,
     # e.g. on a table in use, before failing: so it can't stall the store's other queries.
     schema_change_lock_timeout: int = Field(default=5_000, ge=1)
-    # How long (days) a dropped table or column is kept, for the owner to restore, before it's
+    # How long (days) a dropped table or column is kept, for a member to restore, before it's
     # purged for good (`aios.datastores.dropped`).
     data_store_dropped_retention_days: float = Field(default=30, ge=0)
     # A schema change request nobody has decided after this many days expires, which counts as

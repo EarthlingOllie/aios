@@ -119,7 +119,7 @@ export type DataColumn = {
   embedding: boolean;
 };
 
-/** A table in the store's `data` schema: what the user's agents keep. */
+/** A table in the store's `data` schema: what the organisation's agents keep. */
 export type DataTable = {
   name: string;
   description: string | null;
@@ -362,7 +362,7 @@ export type SchemaChangeStatus =
   | "stale"
   | "cancelled";
 
-/** An agent's request to change the tables in the user's data store. */
+/** An agent's request to change the tables in the organisation's data store. */
 export type SchemaChangeRequest = {
   id: string;
   data_store_id: string;
@@ -732,8 +732,8 @@ export type ChatSummary = Provenance & {
   /** Public: every member of the organisation can find it. Private: it doesn't exist for anyone
    * who isn't in it. */
   visibility: ChatVisibility;
-  owner_id: number;
-  /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
+  /** Whether the signed-in user is its owner (the role on their member row): only the owner
+   * edits, deletes or removes members. */
   is_owner: boolean;
   /** Whether the signed-in user is in it, and so can post: anyone can read a public chat. */
   is_member: boolean;

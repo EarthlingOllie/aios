@@ -1,5 +1,5 @@
 """The tables every data store has, in its `aios` schema, and the run history export's, in its
-`history` schema once its owner first switches the export on (the store tree, `migrations/`,
+`history` schema once its organisation first switches the export on (the store tree, `migrations/`,
 makes them). Sessions on them come from `store_session`, on the store's own database: they're never
 in the platform database (`aios.models`), and a store's rows are all its own, so nothing here
 says whose they are.
@@ -63,7 +63,7 @@ class SchemaHistory(StoreBase):
 class EmbeddingColumn(StoreBase):
     """A `vector(EMBEDDING_DIM)` column of a table in `data`, and the text column in the same
     table it's the embedding of: `write_data` fills it. Schema changes add a row as they add
-    such a column; only the owner writes it (`provision.BOOKKEEPING`)."""
+    such a column; only the owner role writes it (`provision.BOOKKEEPING`)."""
 
     __tablename__ = "embedding_columns"
     __table_args__ = {
@@ -77,7 +77,7 @@ class EmbeddingColumn(StoreBase):
 
 class DroppedObject(StoreBase):
     """A table or column in `data` that an approved drop renamed out of the way, until it's
-    restored or purged (`aios.datastores.dropped`). Only the owner writes it
+    restored or purged (`aios.datastores.dropped`). Only the owner role writes it
     (`provision.BOOKKEEPING`)."""
 
     __tablename__ = "dropped_objects"
@@ -96,7 +96,7 @@ class DroppedObject(StoreBase):
     # A column that was NOT NULL (dropping it lifts that, so new rows can leave it out).
     not_null: Mapped[bool] = mapped_column(Boolean, server_default=false())
     dropped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # Why the last restore the owner asked for was refused, if it was.
+    # Why the last restore a member asked for was refused, if it was.
     restore_error: Mapped[str | None] = mapped_column(Text)
 
 
@@ -166,9 +166,9 @@ class Chunk(StoreBase):
     )
 
 
-# The run history export: a copy of the owner's agent and workflow runs, keyed by the platform's
-# ids. The platform database stays the source of truth; these are only ever written by the
-# export.
+# The run history export: a copy of the organisation's agent and workflow runs, keyed by the
+# platform's ids. The platform database stays the source of truth; these are only ever written by
+# the export.
 
 
 class HistoryAgentRun(StoreBase):
@@ -227,8 +227,8 @@ class HistoryMessage(StoreBase):
         JSONB, comment="An assistant message's token usage: {input_tokens, output_tokens, ...}."
     )
     model: Mapped[str | None] = mapped_column(Text, comment="The model that wrote it.")
-    # For searching past runs (`aios.search`): the text's embedding, while the owner has
-    # embedding on, and its full-text vector, always.
+    # For searching past runs (`aios.search`): the text's embedding, while the organisation
+    # has embedding on, and its full-text vector, always.
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIM),
         comment="Its text's embedding, for search: a user's or assistant's message with text, "

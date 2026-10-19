@@ -29,7 +29,7 @@ test("Data is in the navigation and opens on the Overview", async ({ page }) => 
     "true",
   );
   await expect(overview(page)).toContainText("Ready");
-  await expect(overview(page)).toContainText("Your data store is ready.");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.");
 });
 
 test("the Overview says a store is being set up, until it's ready", async ({ page }) => {
@@ -38,10 +38,10 @@ test("the Overview says a store is being set up, until it's ready", async ({ pag
   await page.goto("/data");
 
   await expect(overview(page)).toContainText("Being set up");
-  await expect(overview(page)).toContainText("We're setting up your data store.");
+  await expect(overview(page)).toContainText("We're setting up the organisation's data store.");
 
   api.dataStoreStatus = "ready";
-  await expect(overview(page)).toContainText("Your data store is ready.");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.");
 });
 
 test("the Overview says a store couldn't be set up", async ({ page }) => {
@@ -50,7 +50,7 @@ test("the Overview says a store couldn't be set up", async ({ page }) => {
   await page.goto("/data");
 
   await expect(overview(page)).toContainText("Failed");
-  await expect(overview(page)).toContainText("Your data store couldn't be set up.");
+  await expect(overview(page)).toContainText("The organisation's data store couldn't be set up.");
 });
 
 test("a store whose status can't be read says so, and recovers when it can", async ({ page }) => {
@@ -58,13 +58,13 @@ test("a store whose status can't be read says so, and recovers when it can", asy
   api.dataStoreFails = true;
   await page.goto("/data");
 
-  await expect(overview(page)).toContainText("Couldn't check your data store");
+  await expect(overview(page)).toContainText("Couldn't check the organisation's data store");
   await expect(overview(page)).toContainText("Trying again…");
 
   // It keeps asking, so the page catches up once the server answers again.
   api.dataStoreFails = false;
-  await expect(overview(page)).toContainText("Your data store is ready.", { timeout: 10_000 });
-  await expect(overview(page)).not.toContainText("Couldn't check your data store");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.", { timeout: 10_000 });
+  await expect(overview(page)).not.toContainText("Couldn't check the organisation's data store");
 });
 
 test("Documents and the chat's panel say when the store's status can't be read", async ({
@@ -75,11 +75,11 @@ test("Documents and the chat's panel say when the store's status can't be read",
   await page.goto("/data?tab=documents");
 
   const notice = page.getByRole("status", { name: "Data store" });
-  await expect(notice).toContainText("Couldn't check your data store");
+  await expect(notice).toContainText("Couldn't check the organisation's data store");
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 
   await page.getByRole("link", { name: "Chat" }).first().click();
-  await expect(notice).toContainText("Couldn't check your data store");
+  await expect(notice).toContainText("Couldn't check the organisation's data store");
 
   api.dataStoreFails = false;
   await expect(notice).toBeHidden({ timeout: 10_000 });
@@ -123,7 +123,7 @@ test("a store being set up can't take uploads until it's ready", async ({ page }
   await page.goto("/data?tab=documents");
 
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
-    "Setting up your data store",
+    "Setting up the organisation's data store",
   );
   const upload = page.getByRole("button", { name: "Upload" });
   await expect(upload).toBeDisabled();
@@ -142,7 +142,7 @@ test("a store that couldn't be set up can't take uploads", async ({ page }) => {
   await page.goto("/data?tab=documents");
 
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
@@ -359,11 +359,11 @@ test("a store that stops being ready is noticed on opening the Data or Search pa
   // Nothing polls a ready store, so only opening a page that shows it finds out.
   api.dataStoreStatus = "failed";
   await page.getByRole("link", { name: "Data" }).first().click();
-  await expect(overview(page)).toContainText("Your data store couldn't be set up.");
+  await expect(overview(page)).toContainText("The organisation's data store couldn't be set up.");
 
   await page.getByRole("link", { name: "Search" }).first().click();
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
 });
 
@@ -433,7 +433,7 @@ test("a busy store says so, and the list loads once it's free", async ({ page })
   await page.goto("/data?tab=documents");
 
   await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
-    "Your data store is busy.",
+    "The organisation's data store is busy.",
   );
   await expect(page.getByText("No documents yet.")).toBeHidden();
 
@@ -450,7 +450,7 @@ test("an upload refused by a busy store says so", async ({ page }) => {
   api.dataStoreBusy = true;
   await page.locator('input[type="file"]').setInputFiles(file("notes.md"));
   await expect(page.getByRole("alert")).toContainText(
-    "notes.md: Your data store is busy. Try again in a moment.",
+    "notes.md: The organisation's data store is busy. Try again in a moment.",
   );
 });
 

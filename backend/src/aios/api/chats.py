@@ -1,18 +1,19 @@
 """Chats: group conversations between users, agents and workflows.
 
-A chat belongs to an organisation (`aios.organisations`), and doesn't exist for anyone outside
-it: every endpoint is a 404 for them. Within it, a chat has an owner (the member who made it: a
-role in the chat, not ownership of data), a name unique among the organisation's chats, a
-description and a visibility, and says which member made it and last changed it
-(`aios.api.provenance`). Its members are users, agents and workflows of the organisation (an
-agent or workflow since deleted is no longer one; its row stays, and what it posted stays either
-way). A private chat doesn't exist for a member who isn't in it either. A public one exists for
-every member of the organisation: the list carries the public chats a member isn't in
-(`is_member` false) for them to find, and they join it in one step and leave it as easily (the
-owner can't: a chat always has one). Only the owner can change a chat, add or remove its members
-or delete it: a 403 for anyone else. Leaving or being removed deletes nothing, and whoever joins
-later reads the history from the start. A new chat's first agent is the organisation's documents
-assistant (`aios.assistant`).
+A chat belongs to an organisation (`aios.organisations`), and doesn't exist for anyone outside it:
+every endpoint is a 404 for them. Within it, a chat has an owner (the member who made it: a role in
+the chat, held on their member row, not ownership of data), a name unique among the organisation's
+chats, a description and a visibility, and says which member made it and last changed it
+(`aios.api.provenance`). Its members are users, agents and workflows of the organisation (an agent
+or workflow since deleted is no longer one; its row stays, and what it posted stays either way). A
+private chat doesn't exist for a member who isn't in it either. A public one exists for every
+member of the organisation: the list carries the public chats a member isn't in (`is_member` false)
+for them to find, and they join it in one step and leave it as easily (the owner can't: a chat
+always has one). Only the owner can change a chat, add or remove its members or delete it: a 403
+for anyone else. An owner who leaves the organisation hands the chat to its member added first
+(`organisations.leave`); with nobody left in it, whoever joins it next owns it. Leaving or being
+removed deletes nothing, and whoever joins later reads the history from the start. A new chat's
+first agent is the organisation's documents assistant (`aios.assistant`).
 
 Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
 to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
@@ -149,8 +150,8 @@ class ChatSummary(Provenance):
     name: str
     description: str
     visibility: ChatVisibility
-    owner_id: int
-    # Whether the signed-in user owns it, so the UI knows to offer the owner's actions.
+    # Whether the signed-in user is its owner (their member row's role), so the UI knows to offer
+    # the owner's actions.
     is_owner: bool
     # Whether the signed-in user is in it, and so can post (a public chat can be read by anyone).
     is_member: bool
@@ -216,22 +217,20 @@ def members_out(chat: Chat) -> ChatMembersOut:
 def chat_summary(
     db: Session,
     chat: Chat,
-    user_id: int,
     member_count: int,
-    member: bool,
+    role: ChatMemberRole | None,
     known: dict[int, UserOut] | None = None,
 ) -> ChatSummary:
-    """The chat as the list shows it; who made and changed it from `known` when given (see
-    `people`), else read now."""
+    """The chat as the list shows it, to a user with this `role` in it (None: not a member);
+    who made and changed it from `known` when given (see `people`), else read now."""
     return ChatSummary(
         **provenance(db, chat, known),
         id=chat.id,
         name=chat.name,
         description=chat.description,
         visibility=chat.visibility,
-        owner_id=chat.owner_id,
-        is_owner=chat.owner_id == user_id,
-        is_member=member,
+        is_owner=role == ChatMemberRole.owner,
+        is_member=role is not None,
         member_count=member_count,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
@@ -239,9 +238,10 @@ def chat_summary(
 
 
 def chat_out(db: Session, chat: Chat, user_id: int) -> ChatOut:
+    member = user_member(chat, user_id)
     return ChatOut(
         **chat_summary(
-            db, chat, user_id, len(live_members(chat)), member=is_member(chat, user_id)
+            db, chat, len(live_members(chat)), member.role if member else None
         ).model_dump(),
         members=members_out(chat),
     )
@@ -287,10 +287,16 @@ def get_visible_chat(db: Session, org: Organisation, user_id: int, chat_id: int)
     return chat
 
 
-def get_owned_chat(db: Session, org: Organisation, user_id: int, chat_id: int) -> Chat:
+def is_owner(chat: Chat, user_id: int) -> bool:
+    """Whether the user holds the chat's owner role."""
+    member = user_member(chat, user_id)
+    return member is not None and member.role == ChatMemberRole.owner
+
+
+def get_chat_if_owner(db: Session, org: Organisation, user_id: int, chat_id: int) -> Chat:
     """The chat, for one of the owner's actions: a 403 for anyone else it's visible to."""
     chat = get_visible_chat(db, org, user_id, chat_id)
-    if chat.owner_id != user_id:
+    if not is_owner(chat, user_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the chat's owner can do that.")
     return chat
 
@@ -330,7 +336,7 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
         .scalar_subquery(),
     )
     rows = db.execute(
-        select(Chat, member_count, mine.id, unread)
+        select(Chat, member_count, mine.role, unread)
         .outerjoin(mine, and_(mine.chat_id == Chat.id, mine.user_id == user.id))
         .where(
             Chat.organisation_id == org.id,
@@ -341,12 +347,10 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
     known = people(db, [i for row in rows for i in (row[0].created_by, row[0].updated_by)])
     return [
         ChatListed(
-            **chat_summary(
-                db, chat, user.id, count, member=member_id is not None, known=known
-            ).model_dump(),
+            **chat_summary(db, chat, count, role, known=known).model_dump(),
             unread_count=unread_count,
         )
-        for chat, count, member_id, unread_count in rows
+        for chat, count, role, unread_count in rows
     ]
 
 
@@ -435,7 +439,7 @@ def list_mentionable(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation,
 @router.put("/chats/{chat_id}", response_model=ChatOut)
 def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Rename, describe or change the visibility of the chat (its owner only)."""
-    chat = get_owned_chat(db, org, user.id, chat_id)
+    chat = get_chat_if_owner(db, org, user.id, chat_id)
     chat.name = body.name
     chat.description = body.description
     chat.visibility = body.visibility
@@ -452,7 +456,7 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
     """Add a member of the organisation, or one of its agents or workflows, to the chat (its
     owner only). A user outside the organisation doesn't exist here: a 404, as one who doesn't
     exist at all is."""
-    chat = get_owned_chat(db, org, user.id, chat_id)
+    chat = get_chat_if_owner(db, org, user.id, chat_id)
     if body.kind == ChatMemberKind.user:
         if db.get(OrganisationMember, (org.id, body.id)) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown user")
@@ -481,6 +485,22 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
     return chat_out(db, load(db, chat.id), user.id)
 
 
+def has_owner(db: Session, chat: Chat) -> bool:
+    """Whether someone holds the chat's owner role. Locks the chat when nobody does, so two
+    joining an ownerless chat at once don't both become its owner: the second sees the first."""
+    if any(m.role == ChatMemberRole.owner for m in chat.members):
+        return True
+    db.scalar(select(Chat.id).where(Chat.id == chat.id).with_for_update())
+    return (
+        db.scalar(
+            select(ChatMember.id).where(
+                ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
+            )
+        )
+        is not None
+    )
+
+
 def newest_message_id(db: Session, chat_id: int) -> int | None:
     """The id of the chat's newest message; None while it has none."""
     return db.scalar(select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat_id))
@@ -488,8 +508,10 @@ def newest_message_id(db: Session, chat_id: int) -> int | None:
 
 @router.post("/chats/{chat_id}/join", response_model=ChatOut)
 def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    """Join a public chat as a member (a private one exists only for its members). What was
-    posted before they joined counts as seen: they could read it, and it's all there to scroll."""
+    """Join a public chat as a member (a private one exists only for its members), or as its
+    owner if it has none (its owner left the organisation with nobody in it to hand it to:
+    `organisations.leave`). What was posted before they joined counts as seen: they could read
+    it, and it's all there to scroll."""
     chat = get_visible_chat(db, org, user.id, chat_id)
     if is_member(chat, user.id):
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
@@ -497,7 +519,7 @@ def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
         ChatMember(
             kind=ChatMemberKind.user,
             user_id=user.id,
-            role=ChatMemberRole.member,
+            role=ChatMemberRole.member if has_owner(db, chat) else ChatMemberRole.owner,
             added_by=user.id,
             last_read_message_id=newest_message_id(db, chat.id),
         )
@@ -531,7 +553,7 @@ def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: D
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
     """Delete the chat and its members (its owner only)."""
-    db.delete(get_owned_chat(db, org, user.id, chat_id))
+    db.delete(get_chat_if_owner(db, org, user.id, chat_id))
     db.commit()
 
 
@@ -540,7 +562,7 @@ def remove_member(
     chat_id: DbId, member_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
 ) -> None:
     """Remove a member from the chat (its owner only). The owner stays: a chat always has one."""
-    chat = get_owned_chat(db, org, user.id, chat_id)
+    chat = get_chat_if_owner(db, org, user.id, chat_id)
     member = next((m for m in chat.members if m.id == member_id), None)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

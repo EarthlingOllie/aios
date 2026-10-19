@@ -7,8 +7,8 @@ import type { Page, Route } from "@playwright/test";
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a chat of
  * another organisation is a 404, as a private chat is for a non-member; a public one is listed,
- * readable and joined by any member of the organisation, and left by any member but its owner;
- * the owner's actions are a 403 for anyone else; names are unique within the organisation), each
+ * readable and joined by any member of the organisation, and left by any member but its owner
+ * (the role on their member row); the owner's actions are a 403 for anyone else; names are unique within the organisation), each
  * saying who made it and last changed it, and each with an
  * unread count of others' messages since the last one read (`chatReads`), and messages
  * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
@@ -82,7 +82,8 @@ export type SchemaChangeRow = {
   decided_at: string | null;
   applied_at: string | null;
   resumed_at: string | null;
-  /** Whether the signed-in user may decide it (the store's owner), while it's pending. */
+  /** Whether the signed-in user may decide it (any member of the store's organisation), while
+   * it's pending. */
   decider: boolean;
   /** What approving it takes typed, if it drops anything. */
   confirm_with: string | null;
@@ -305,7 +306,6 @@ export type ChatRow = {
   id: number;
   /** The organisation it belongs to: `organisation`'s unless a test says otherwise. */
   organisation_id: number;
-  owner: ChatUser;
   created_by: ChatUser | null;
   updated_by: ChatUser | null;
   name: string;
@@ -433,7 +433,7 @@ export class FakeApi {
   agentTurns = new Map<number, AgentTurn>();
   /** The timezones the server knows; it may list ones a browser's Intl doesn't (e.g. "localtime"). */
   timezones = ["America/New_York", "Europe/London", "UTC", "localtime"];
-  /** The user's data store's status: documents and search answer 409 until it's "ready". */
+  /** The organisation's data store's status: documents and search answer 409 until it's "ready". */
   dataStoreStatus: "provisioning" | "ready" | "failed" = "ready";
   /**
    * What the store uses, as last recorded, and its caps. Uploads answer 507 at either cap; as
@@ -488,9 +488,9 @@ export class FakeApi {
   /** Reads of the list being held back by `holdDocumentLists`, oldest first. */
   heldDocumentLists: (() => void)[] = [];
   private holdingLists = false;
-  /** Schema change requests in the user's store, oldest first. */
+  /** Schema change requests in the organisation's store, oldest first. */
   schemaChanges: SchemaChangeRow[] = [];
-  /** Dropped tables and columns in the user's store, newest first. */
+  /** Dropped tables and columns in the organisation's store, newest first. */
   dropped: DroppedRow[] = [];
   /**
    * Notifications, oldest first. As on the server, a pending request the user may decide
@@ -726,7 +726,7 @@ export class FakeApi {
     const agent = this.addAgent(
       "Documents assistant",
       1,
-      "Answers from your documents. Built in: it joins each new chat you make.",
+      "Answers from the organisation's documents. Built in: it joins each new chat.",
     );
     this.assistantId = agent.id;
     return agent;
@@ -1027,7 +1027,6 @@ export class FakeApi {
     const chat: ChatRow = {
       id: this.id(),
       organisation_id,
-      owner,
       created_by: owner,
       updated_by: owner,
       name,
@@ -1385,8 +1384,7 @@ export class FakeApi {
       name: chat.name,
       description: chat.description,
       visibility: chat.visibility,
-      owner_id: chat.owner.id,
-      is_owner: chat.owner.id === this.me.id,
+      is_owner: this.ownsChat(chat),
       is_member: this.inChat(chat),
       member_count: this.liveMembers(chat).length,
       created_by: chat.created_by,
@@ -1401,6 +1399,11 @@ export class FakeApi {
     if (kind === "agent") return this.agents.get(id);
     const workflow = this.workflows.get(id);
     return workflow && !workflow.deleted ? workflow : undefined;
+  }
+
+  /** Whether `me` holds the chat's owner role, on their member row. */
+  private ownsChat(chat: ChatRow): boolean {
+    return chat.members.some((m) => m.kind === "user" && m.role === "owner" && m.user.id === this.me.id);
   }
 
   /** The chat's members as the API shows them, less deleted agents and workflows: owner first. */
@@ -1750,12 +1753,12 @@ export class FakeApi {
         return reply(409, {
           detail:
             this.dataStoreStatus === "failed"
-              ? "Your data store couldn't be set up. We'll try again; please check back later."
-              : "Your data store is being set up. Try again in a moment.",
+              ? "The organisation's data store couldn't be set up. We'll try again; please check back later."
+              : "The organisation's data store is being set up. Try again in a moment.",
           data_store_status: this.dataStoreStatus,
         });
       }
-      if (this.dataStoreBusy) return fail(503, "Your data store is busy. Try again in a moment.");
+      if (this.dataStoreBusy) return fail(503, "The organisation's data store is busy. Try again in a moment.");
       if (path.startsWith("/api/data/")) {
         if (this.tablesFail) return fail(500, "Internal Server Error");
         const [status, json] = this.tablesResponse(path, new URL(request.url()).searchParams);
@@ -1796,14 +1799,14 @@ export class FakeApi {
         if (db_bytes !== null && db_bytes >= db_quota_bytes) {
           return fail(
             507,
-            `Your data store is full: its data takes up ${gb(db_bytes)} of the` +
+            `The organisation's data store is full: its data takes up ${gb(db_bytes)} of the` +
               ` ${gb(db_quota_bytes)} allowed, so documents can't be uploaded.`,
           );
         }
         if (files_bytes !== null && files_bytes >= files_quota_bytes) {
           return fail(
             507,
-            `Your data store is full: its documents use ${gb(files_bytes)} of the` +
+            `The organisation's data store is full: its documents use ${gb(files_bytes)} of the` +
               ` ${gb(files_quota_bytes)} allowed. Delete some to make room.`,
           );
         }
@@ -2260,7 +2263,7 @@ export class FakeApi {
           ),
         );
       }
-      if (chat.owner.id !== this.me.id) return fail(403, "Only the chat's owner can do that.");
+      if (!this.ownsChat(chat)) return fail(403, "Only the chat's owner can do that.");
       if (rest === "" && method === "PUT") {
         if (this.organisationChats().some((c) => c.name === body.name && c !== chat)) {
           return fail(409, CHAT_NAME_TAKEN);

@@ -167,9 +167,8 @@ def org_of(db, user: User) -> Organisation:
 
 
 def made_by(db, user: User) -> dict:
-    """The columns that say whose a row (an agent, skill, workflow or trigger) is, for a test
-    that makes one directly as `user` would: their organisation's, made by them, and (until the
-    contract step drops it) theirs."""
+    """The columns that say whose a row (an agent, skill, workflow, trigger or chat) is, for a
+    test that makes one directly as `user` would: their organisation's, made by them."""
     return provenance.made_by(org_of(db, user).id, user.id)
 
 

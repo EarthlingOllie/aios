@@ -544,7 +544,7 @@ def delete_agent(
     )
     disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]), user.id)
     # Soft delete: older workflow versions may still pin its versions, so the agent and its
-    # versions stay. Its runs are the user's conversations with it, and go now.
+    # versions stay. Its runs are the members' conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     cancel_chat_requests(db, run_ids)

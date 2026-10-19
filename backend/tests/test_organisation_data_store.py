@@ -12,13 +12,13 @@ import contextlib
 import pytest
 from conftest import provisioned_user, store_of
 from fake_model import replies, use_model
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from test_agents import chat_body, make_agent
 from test_data_tools import as_owner
 from test_dropped import apply, listed, propose, restores, run_restores, store
 from test_history_export import set_up_and_export, stored
-from test_organisations import revision
+from test_organisations import before_the_contract, revision
 from test_schema_change_requests import queued
 from test_workflows import agent_node, make_workflow
 
@@ -104,19 +104,31 @@ def test_the_upgrade_points_each_store_at_its_owners_organisation_with_their_exp
     owned by a user in their personal organisation (revision 0030), one with the export and
     embedding on."""
     step = revision("0035_organisation_data_stores")
-    # As before the upgrade, a store has no organisation (which the contract below forbids), in
-    # this test's transaction only.
-    db.execute(text(f"ALTER TABLE data_stores DROP CONSTRAINT {step.CHECK}"))
-    exporting = User(github_id=-911, login="exporting", export_run_history=True)
-    exporting.embed_run_history = True
+    exporting = User(github_id=-911, login="exporting")
     quiet = User(github_id=-912, login="quiet")
     db.add_all([exporting, quiet])
     db.flush()
     for u in (exporting, quiet):
         organisations.create_personal(db, u)
-    stores = {u.id: DataStore(owner_user_id=u.id) for u in (exporting, quiet)}
+    on = DataStore(
+        owner_organisation_id=organisations.membership_of(db, exporting.id).id,
+        export_run_history=True,
+        embed_run_history=True,
+    )
+    off = DataStore(owner_organisation_id=organisations.membership_of(db, quiet.id).id)
+    stores = {exporting.id: on, quiet.id: off}
     db.add_all(stores.values())
     db.flush()
+    # As before the upgrade, a store is its user's, with their flags, and has no organisation
+    # (which the check below forbids), in this test's transaction only: the contract's
+    # downgrade gives it back its user and their flags, and the store is then undone.
+    before_the_contract(db)
+    db.execute(text(f"ALTER TABLE data_stores DROP CONSTRAINT {step.CHECK}"))
+    db.execute(
+        update(DataStore)
+        .where(DataStore.id.in_([s.id for s in stores.values()]))
+        .values(owner_organisation_id=None, export_run_history=False, embed_run_history=False)
+    )
 
     step.backfill(db.connection())
 

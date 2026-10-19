@@ -831,7 +831,9 @@ def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and
 
     for refused in (inserted, upserted, updated):
         assert set(refused) == {"error"}
-        assert refused["error"].startswith("The user's data store is full: its data takes up ")
+        assert refused["error"].startswith(
+            "The organisation's data store is full: its data takes up "
+        )
         assert "of the 1.0 KB allowed" in refused["error"]
         assert "Reading still works, and deleting rows makes room" in refused["error"]
     assert deleted["row_count"] == 1
@@ -864,7 +866,7 @@ def test_deleting_rows_at_the_database_cap_lets_writes_in_again(api, db, store, 
     )
     worker.measure_data_store_usage_task.apply().get()
 
-    assert refused["error"].startswith("The user's data store is full")
+    assert refused["error"].startswith("The organisation's data store is full")
     assert deleted["row_count"] == 7000
     assert inserted["row_count"] == 1
     assert [f[0] for f in fish(store)] == ["pike", "perch", "carp"]
@@ -886,8 +888,8 @@ def test_a_store_at_its_file_cap_refuses_inserts_and_updates_too(
     )
 
     assert inserted == {
-        "error": "The user's data store is full: its documents use 100 B of the 100 B allowed,"
-        " so rows can't be inserted or updated. Reading and deleting rows still work. Tell the"
-        " user: deleting documents on the Data page makes room."
+        "error": "The organisation's data store is full: its documents use 100 B of the 100 B"
+        " allowed, so rows can't be inserted or updated. Reading and deleting rows still work."
+        " Tell the user: deleting documents on the Data page makes room."
     }
     assert deleted["row_count"] == 1

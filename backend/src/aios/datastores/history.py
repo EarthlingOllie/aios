@@ -3,8 +3,7 @@ member's, and its schedules') in its data store's `history` schema.
 
 The platform database stays the source of truth; the copy is one-way, and only while the
 store has it switched on (`DataStore.export_run_history`, on the Organisation page, by any
-member). Runs are matched to stores by the organisation their agent or workflow belongs to
-(`resolve.organisation_of`):
+member). Runs are matched to stores by the organisation their agent or workflow belongs to:
 
 - **Switching it on** queues the store's set-up on the provisioning worker
   (`enqueue_set_up`), which brings the store tree's `history` line to its head
@@ -84,7 +83,6 @@ from aios.datastores.models import (
     HistoryWorkflowRun,
     HistoryWorkflowRunStep,
 )
-from aios.datastores.resolve import organisation_of
 from aios.db import SessionLocal, engine
 from aios.embeddings import embed_documents
 from aios.models import (
@@ -217,7 +215,7 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
     then too, if the store has its `history` tables, and are deleted once it's back on. The
     workflow runs whose steps held them go in too: the steps stay, without them."""
     runs = (
-        select(AgentRun.id, organisation_of(Agent).label("organisation_id"))
+        select(AgentRun.id, Agent.organisation_id)
         .join(Agent, Agent.id == AgentRun.agent_id)
         .where(*where)
     )
@@ -236,7 +234,7 @@ def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bo
     can pause. A writer of both kinds writes its agent runs' rows first, as the export marks
     them."""
     runs = (
-        select(WorkflowRun.id, organisation_of(Workflow).label("organisation_id"))
+        select(WorkflowRun.id, Workflow.organisation_id)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(*where)
     )
@@ -245,8 +243,8 @@ def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bo
 
 def enqueue_everything(db: Session, organisation_id: int) -> None:
     """Put every run in the organisation, of each kind, in its store's outbox (a backfill)."""
-    enqueue_runs(db, organisation_of(Agent) == organisation_id)
-    enqueue_workflow_runs(db, organisation_of(Workflow) == organisation_id)
+    enqueue_runs(db, Agent.organisation_id == organisation_id)
+    enqueue_workflow_runs(db, Workflow.organisation_id == organisation_id)
 
 
 @contextmanager
@@ -297,7 +295,7 @@ def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
 
 
 class NoHistory(Exception):
-    """The store has no `history` tables: its owner has never switched the export on."""
+    """The store has no `history` tables: nobody in its organisation has switched the export on."""
 
 
 def check_searchable(data_store_id: uuid.UUID) -> None:
@@ -709,8 +707,8 @@ def _embed_batch(data_store_id: uuid.UUID) -> int:
 
 
 def _embed(data_store_id: uuid.UUID) -> None:
-    """Embed the store's exported messages still waiting for it (`EMBEDDABLE`), while its owner
-    has embedding on: those just exported, or every one there once it's switched on (a
+    """Embed the store's exported messages still waiting for it (`EMBEDDABLE`), while its
+    organisation has embedding on: those just exported, or every one there once it's switched on (a
     backfill). For up to `EMBED_BUDGET`; it has caught up (`history_embedded_at`) once none are
     left. What it doesn't finish (out of time, or the embedding API failed) waits for the
     periodic sweep. Switched off, it stops after the batch under way, keeping what's embedded.

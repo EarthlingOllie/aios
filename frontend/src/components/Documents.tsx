@@ -34,7 +34,7 @@ const statusVariant = {
 } as const;
 
 /**
- * The user's documents, read by the views that show them (`useDocumentsList`) and again while
+ * The organisation's documents, read by the views that show them (`useDocumentsList`) and again while
  * any is still being ingested, plus upload and delete. Held once, by `DocumentsProvider`.
  */
 function useDocuments(
@@ -76,7 +76,7 @@ function useDocuments(
         const retry = transient ? " Trying again…" : "";
         setListError(
           err instanceof ApiError && err.status === 503
-            ? "Your data store is busy. Trying again…"
+            ? "The organisation's data store is busy. Trying again…"
             : `Couldn't load your documents (${describeError(err)}).${retry}`,
         );
       },
@@ -159,7 +159,7 @@ type SharedDocuments = {
 const DocumentsContext = createContext<SharedDocuments | null>(null);
 
 /**
- * The store's status and the user's documents, held above the pages: the Chats section's panel,
+ * The store's status and the organisation's documents, held above the pages: the Chats section's panel,
  * the Data page and the Search page share one status, the panel and the Data page read one list, and an
  * upload still in flight keeps its progress and errors when you switch tabs or pages.
  */
@@ -176,7 +176,7 @@ function useShared() {
 }
 
 /**
- * The user's data store's status (and why it couldn't be read, while it keeps trying), from the
+ * The organisation's data store's status (and why it couldn't be read, while it keeps trying), from the
  * `DocumentsProvider` above. A store last seen ready is asked about again when the caller
  * mounts, as nothing polls it once it's ready.
  */

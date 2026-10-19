@@ -905,7 +905,7 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
         r = api.get("/api/documents")
         assert (r.status_code, r.json()["detail"]) == (
             409,
-            "Your data store is being upgraded. Try again in a moment.",
+            "The organisation's data store is being upgraded. Try again in a moment.",
         )
         retried = []
         monkeypatch.setattr(

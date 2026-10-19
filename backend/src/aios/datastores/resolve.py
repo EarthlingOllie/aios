@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from sqlalchemy import ColumnElement, event, func, select
+from sqlalchemy import event, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ _NEW_STORES = "aios.new_data_stores"
 
 
 def names_for(store_id: uuid.UUID) -> tuple[str, str]:
-    """A new store's database name and role prefix: from its id, never its owner's."""
+    """A new store's database name and role prefix: from its id, never its organisation's."""
     name = f"ds_{store_id.hex}"
     return name, name
 
@@ -64,23 +64,12 @@ def approvers(db: Session, store: DataStore) -> list[int]:
     )
 
 
-def organisation_of(owned: type[Agent] | type[Workflow]) -> ColumnElement[int]:
-    """The organisation an agent or workflow belongs to, as SQL: its `organisation_id`, or, for
-    a row made before rows recorded theirs, its owner's organisation (which it was then)."""
-    return func.coalesce(
-        owned.organisation_id,
-        select(OrganisationMember.organisation_id)
-        .where(OrganisationMember.user_id == owned.owner_id)
-        .scalar_subquery(),
-    )
-
-
 def data_store_of(db: Session, owned: type[Agent] | type[Workflow], owned_id: int) -> uuid.UUID:
-    """The data store of the organisation the agent or workflow belongs to (`organisation_of`):
-    the store a run of it uses. In `db`'s transaction, as `data_store_for`."""
-    organisation_id = db.scalar(select(organisation_of(owned)).where(owned.id == owned_id))
+    """The data store of the organisation the agent or workflow belongs to: the store a run of
+    it uses. In `db`'s transaction, as `data_store_for`."""
+    organisation_id = db.scalar(select(owned.organisation_id).where(owned.id == owned_id))
     if organisation_id is None:
-        raise LookupError(f"{owned.__name__} {owned_id} belongs to no organisation")
+        raise LookupError(f"{owned.__name__} {owned_id} doesn't exist")
     return data_store_for(organisation_id, db)
 
 

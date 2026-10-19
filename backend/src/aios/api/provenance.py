@@ -33,15 +33,9 @@ class Provenance(BaseModel):
 
 
 def made_by(org_id: int, user_id: int) -> dict:
-    """The columns a new row of the organisation's (an agent, skill, workflow or trigger) starts
-    with, made by the member `user_id`: whose it is, and who made and last changed it. And
-    `owner_id`, the maker, until the contract step drops it: the release before reads it."""
-    return {
-        "organisation_id": org_id,
-        "created_by": user_id,
-        "updated_by": user_id,
-        "owner_id": user_id,
-    }
+    """The columns a new row of the organisation's (an agent, skill, workflow, trigger or chat)
+    starts with, made by the member `user_id`: whose it is, and who made and last changed it."""
+    return {"organisation_id": org_id, "created_by": user_id, "updated_by": user_id}
 
 
 def people(db: Session, ids: Iterable[int | None]) -> dict[int, UserOut]:
