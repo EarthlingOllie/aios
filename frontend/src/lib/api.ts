@@ -7,6 +7,13 @@ export type User = {
   avatar_url: string | null;
 };
 
+/**
+ * Who made something of the organisation's (an agent, skill, workflow or schedule) and who last
+ * changed it. Null once that member's account is deleted, or for what was made before
+ * organisations, where it isn't known.
+ */
+export type Provenance = { created_by: User | null; updated_by: User | null };
+
 /** The organisation the signed-in user is in, as `/api/me` says it: what the shell shows. */
 export type OrganisationSummary = {
   id: number;
@@ -35,6 +42,21 @@ export type Organisation = OrganisationSummary & {
   members: OrganisationMember[];
   created_at: string;
 };
+
+/** An open invitation link into the organisation, as its creator lists them. */
+export type Invite = {
+  id: string;
+  /** Null once their account is deleted. */
+  creator: User | null;
+  created_at: string;
+  expires_at: string;
+};
+
+/** A link just made: the only time its token (and so the link) is shown. */
+export type NewInvite = Invite & { token: string; url: string };
+
+/** What the invite page shows of an open link, to anyone holding it. */
+export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
 
 /** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
@@ -136,7 +158,7 @@ export type SearchHit = {
   lexical_rank: number | null;
 };
 
-export type SkillSummary = {
+export type SkillSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -150,6 +172,8 @@ export type SkillVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
 };
 
 export type SkillVersion = SkillVersionSummary & {
@@ -159,7 +183,7 @@ export type SkillVersion = SkillVersionSummary & {
   content: string;
 };
 
-export type Skill = {
+export type Skill = Provenance & {
   id: number;
   name: string;
   created_at: string;
@@ -218,6 +242,8 @@ export type AgentVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   skill_count: number;
   tool_count: number;
   run_count: number;
@@ -228,6 +254,8 @@ export type AgentVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   base_prompt: string;
   model: string | null;
   /** The exact instructions this version sends to the model. */
@@ -236,7 +264,7 @@ export type AgentVersion = {
   tools: AgentTool[];
 };
 
-export type AgentSummary = {
+export type AgentSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -249,7 +277,7 @@ export type AgentSummary = {
   updated_at: string;
 };
 
-export type Agent = {
+export type Agent = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -406,8 +434,8 @@ export type Run = RunSummary & {
   /** The agent's name: the reader may not own it, and so can't read the agent itself. */
   agent_name: string;
   /**
-   * Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't message the agent or delete the run.
+   * Whether the run's agent is in the reader's organisation. Anyone else reads it as a member of
+   * a chat that started it, and only reads it: they can't message the agent or delete the run.
    */
   is_owner: boolean;
   ui_messages: UIMessage[];
@@ -446,6 +474,8 @@ export type WorkflowVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   node_count: number;
 };
 
@@ -454,11 +484,13 @@ export type WorkflowVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 };
 
-export type WorkflowSummary = {
+export type WorkflowSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -470,7 +502,7 @@ export type WorkflowSummary = {
   contains: number[];
 };
 
-export type Workflow = {
+export type Workflow = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -563,8 +595,8 @@ export type WorkflowRunPage = WorkflowRun & {
   /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
   workflow_name: string;
   /**
-   * Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't delete it or decide what it waits on.
+   * Whether the run's workflow is in the reader's organisation. Anyone else reads it as a member
+   * of a chat that started it, and only reads it: they can't delete it or decide what it waits on.
    */
   is_owner: boolean;
 };
@@ -573,7 +605,7 @@ export type TriggerTargetKind = "agent" | "workflow";
 export type TriggerStatus = "running" | "succeeded" | "failed";
 
 /** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
-export type Trigger = {
+export type Trigger = Provenance & {
   id: number;
   kind: "schedule";
   target_kind: TriggerTargetKind;
@@ -850,6 +882,21 @@ export const api = {
   /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
   renameOrganisation: (name: string) =>
     request<Organisation>("/api/organisation", json("PUT", { name })),
+  /** Invitation links: the creator only (a 403 otherwise). */
+  listInvites: () => request<Invite[]>("/api/organisation/invites"),
+  makeInvite: (expiresInDays: number) =>
+    request<NewInvite>("/api/organisation/invites", json("POST", { expires_in_days: expiresInDays })),
+  revokeInvite: (id: string) =>
+    request<void>(`/api/organisation/invites/${id}`, { method: "DELETE" }),
+  /** No sign-in needed; an expired or revoked link is a 404. */
+  getInvitation: (token: string) =>
+    request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
+  /** A 409 says why the user can't join (they're in another organisation). */
+  acceptInvitation: (token: string) =>
+    request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
+  /** A 409 for the last member, and for the creator while others remain; otherwise the new
+   * personal organisation the user lands in. */
+  leaveOrganisation: () => request<Organisation>("/api/organisation/leave", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/organisation/settings"),

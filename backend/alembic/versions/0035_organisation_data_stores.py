@@ -15,7 +15,7 @@ any more, so it's nullable now, and a user's deletion no longer takes a store wi
 own; it only touches stores with no organisation yet, so running it again changes nothing.
 
 Revision ID: 0035
-Revises: 0030
+Revises: 0031
 Create Date: 2026-10-19 12:00:00
 """
 
@@ -27,7 +27,7 @@ from sqlalchemy.engine import Connection
 from alembic import op
 
 revision: str = "0035"
-down_revision: str | None = "0030"
+down_revision: str | None = "0031"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

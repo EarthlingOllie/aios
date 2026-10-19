@@ -3,10 +3,17 @@
 Authlib keeps the OAuth `state` in `request.session`, and after the callback we store
 only the user's id there. The session is a signed (itsdangerous) cookie, so the SPA
 never handles tokens; it just sends the cookie.
+
+Signing in from an invitation link's page (`/login?invite=<token>`) keeps the token in the
+session through the round trip, and the callback joins a new user to the link's organisation
+instead of making them a personal one (`aios.organisations.ensure_membership`). A user it
+couldn't join (the link no longer opens, or they're in an organisation already) is sent back
+to the link's page, which says why.
 """
 
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -36,8 +43,18 @@ oauth.register(
 router = APIRouter()
 
 
+# Where the session keeps the invitation link's token through the OAuth round trip, and the
+# longest it keeps (a real token is 43 characters; the session is a cookie).
+INVITE_TOKEN = "invite_token"
+INVITE_TOKEN_MAX = 256
+
+
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, invite: str | None = None):
+    if invite and len(invite) <= INVITE_TOKEN_MAX:
+        request.session[INVITE_TOKEN] = invite
+    else:
+        request.session.pop(INVITE_TOKEN, None)
     return await oauth.github.authorize_redirect(request, settings.oauth_redirect_uri)
 
 
@@ -63,16 +80,22 @@ async def auth_callback(request: Request, db: DB):
     user.email = email
     user.avatar_url = profile.get("avatar_url")
     db.flush()
-    # Their first sign-in makes their personal organisation; afterwards, it's found again.
-    organisation_id = organisations.ensure_membership(db, user).id
+    # Their first sign-in makes their personal organisation, or joins the one they were invited
+    # to; afterwards, it's found again.
+    invite_token = request.session.get(INVITE_TOKEN)
+    invite = organisations.open_invite(db, invite_token, lock=True) if invite_token else None
+    org = organisations.ensure_membership(db, user, invite)
     db.commit()
     # And a new organisation's store, provisioned while they look around.
-    await run_in_threadpool(data_store_for, organisation_id)
+    await run_in_threadpool(data_store_for, org.id)
 
+    landing = settings.public_url
+    if invite_token and (invite is None or org.id != invite.organisation_id):
+        landing = f"{settings.public_url.rstrip('/')}/invite/{quote(invite_token, safe='')}"
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()
     request.session["user_id"] = user.id
-    return RedirectResponse(settings.public_url, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

@@ -396,7 +396,7 @@ test("shows the server's reason when a save is refused", async ({ page }) => {
   await page.goto(`/workflows/${report.id}/edit`);
   await page.getByLabel("Name").fill("Taken");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByRole("alert")).toContainText("already have a workflow with that name");
+  await expect(page.getByRole("alert")).toContainText("organisation already has a workflow with that name");
   await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
 });
 

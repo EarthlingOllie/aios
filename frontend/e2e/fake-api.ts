@@ -30,6 +30,9 @@ type AgentRow = {
   description: string;
   base_prompt: string;
   versions: number[];
+  /** The members who made it and last changed it (`me` unless a test says otherwise). */
+  created_by: ChatUser | null;
+  updated_by: ChatUser | null;
 };
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
@@ -134,6 +137,9 @@ type WorkflowRow = {
   deleted: boolean;
   created_at: string;
   updated_at: string;
+  /** The members who made it and last changed it (`me` unless a test says otherwise). */
+  created_by: ChatUser | null;
+  updated_by: ChatUser | null;
 };
 
 export type DocumentRow = {
@@ -275,6 +281,9 @@ type ChatMemberOut = {
   added_at: string;
 };
 export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
+/** An open invitation link, with the token the fake keeps (the API keeps only its hash). */
+export type InviteRow = { id: string; creator: ChatUser | null; created_at: string; expires_at: string; token: string };
+export type InvitationRow = { organisation: { id: number; name: string }; expires_at: string };
 export type OrganisationRow = {
   id: number;
   name: string;
@@ -398,6 +407,21 @@ export class FakeApi {
   };
   /** Names other organisations have: renaming to one answers 409, as the API does. */
   organisationNamesTaken = new Set<string>();
+  /** While false, nobody is signed in: every endpoint but opening an invitation link is a 401. */
+  signedIn = true;
+  /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
+  invites: InviteRow[] = [];
+  /**
+   * Invitation links into other organisations, by token, as `GET /api/invites/{token}` opens
+   * them (the organisation's own open `invites` open too). Any other token is a 404.
+   */
+  invitations = new Map<string, InvitationRow>();
+  /**
+   * Whether accepting a link is refused, as the API refuses a user who's in an organisation
+   * already (which `me` always is here). When false, accepting moves `me` into the link's
+   * organisation.
+   */
+  acceptRefused = true;
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
@@ -489,6 +513,15 @@ export class FakeApi {
 
   private id() {
     return this.nextId++;
+  }
+
+  /** The organisation as `GET /api/organisation` answers. */
+  private organisationOut() {
+    return { ...this.organisationSummary(), ...this.organisation };
+  }
+
+  private inviteOut({ token: _token, ...invite }: InviteRow) {
+    return invite;
   }
 
   /** The organisation as `/api/me` carries it. */
@@ -657,6 +690,8 @@ export class FakeApi {
       description,
       base_prompt: `You are ${name}.`,
       versions: [],
+      created_by: this.me,
+      updated_by: this.me,
     };
     for (let n = 1; n <= versions; n++) {
       const vid = this.id();
@@ -821,6 +856,8 @@ export class FakeApi {
       deleted: false,
       created_at: NOW,
       updated_at: NOW,
+      created_by: this.me,
+      updated_by: this.me,
     };
     this.workflows.set(workflow.id, workflow);
     this.saveVersion(
@@ -1233,6 +1270,7 @@ export class FakeApi {
       version,
       note: this.agentNotes.get(agent.versions[version - 1]) ?? null,
       created_at: NOW,
+      created_by: this.me,
       base_prompt: agent.base_prompt,
       model: null,
       instructions: agent.base_prompt,
@@ -1248,6 +1286,8 @@ export class FakeApi {
       description: agent.description,
       created_at: NOW,
       updated_at: NOW,
+      created_by: agent.created_by,
+      updated_by: agent.updated_by,
       current_version: this.agentVersionOut(agent, agent.versions.length),
     };
   }
@@ -1283,6 +1323,7 @@ export class FakeApi {
       version: version.version,
       note: version.note,
       created_at: version.created_at,
+      created_by: this.me,
       nodes: version.nodes.map((n) => this.nodeOut(n)),
       edges: version.edges,
     };
@@ -1295,6 +1336,8 @@ export class FakeApi {
       description: workflow.description,
       created_at: workflow.created_at,
       updated_at: workflow.updated_at,
+      created_by: workflow.created_by,
+      updated_by: workflow.updated_by,
       current_version: this.versionOut(this.current(workflow)),
       layout: workflow.layout,
     };
@@ -1526,7 +1569,84 @@ export class FakeApi {
       if (!readable) return fail(404, "Not Found");
     }
 
+    if ((m = path.match(/^\/api\/invites\/([^/]+)(\/accept)?$/))) {
+      const token = decodeURIComponent(m[1]);
+      const own = this.invites.find((i) => i.token === token);
+      const invitation =
+        this.invitations.get(token) ??
+        (own && {
+          organisation: { id: this.organisation.id, name: this.organisation.name },
+          expires_at: own.expires_at,
+        });
+      if (!invitation) return fail(404, "This invitation link has expired or been revoked, or never existed.");
+      if (!m[2] && method === "GET") return reply(200, invitation);
+      if (!this.signedIn) return fail(401, "Not signed in");
+      if (invitation.organisation.id === this.organisation.id) {
+        return fail(409, `You're already a member of ${this.organisation.name}.`);
+      }
+      if (this.acceptRefused) {
+        return fail(
+          409,
+          `You're a member of ${this.organisation.name}. You can be in only one organisation at a time.`,
+        );
+      }
+      this.organisation = {
+        ...invitation.organisation,
+        personal: false,
+        creator: null,
+        members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
+        created_at: "2026-10-01T08:00:00Z",
+      };
+      return reply(200, this.organisationOut());
+    }
+    if (!this.signedIn) return fail(401, "Not signed in");
     if (path === "/api/me") return reply(200, { ...this.me, organisation: this.organisationSummary() });
+    if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
+      if (this.organisation.creator?.id !== this.me.id) {
+        return fail(403, "Only the organisation's creator can invite people into it.");
+      }
+      if (m && method === "DELETE") {
+        const id = m[1];
+        if (!this.invites.some((i) => i.id === id)) return fail(404, "Not Found");
+        this.invites = this.invites.filter((i) => i.id !== id);
+        return reply(204);
+      }
+      if (method === "POST") {
+        const days = Number(body?.expires_in_days ?? 7);
+        if (!(days >= 1 && days <= 30)) return fail(422, "Invalid expiry");
+        const n = this.id();
+        const created = new Date();
+        const invite: InviteRow = {
+          id: `${n.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+          creator: this.me,
+          created_at: created.toISOString(),
+          expires_at: new Date(created.getTime() + days * 86_400_000).toISOString(),
+          token: `token-${n}`,
+        };
+        this.invites.push(invite);
+        return reply(201, { ...this.inviteOut(invite), token: invite.token, url: `http://localhost/invite/${invite.token}` });
+      }
+      return reply(200, this.invites.map((i) => this.inviteOut(i)));
+    }
+    if (path === "/api/organisation/leave" && method === "POST") {
+      if (this.organisation.members.length <= 1) {
+        return fail(409, "You're its only member, so nobody would be left to see what's in it: an organisation can't be left empty.");
+      }
+      if (this.organisation.creator?.id === this.me.id) {
+        return fail(409, "You created this organisation, and only its creator can invite people into it, so you can't leave while others are still members.");
+      }
+      const now = new Date().toISOString();
+      this.organisation = {
+        id: this.id(),
+        name: this.me.login,
+        personal: true,
+        creator: this.me,
+        members: [{ user: this.me, joined_at: now, invite_id: null }],
+        created_at: now,
+      };
+      this.invites = [];
+      return reply(200, this.organisationOut());
+    }
     if (path === "/api/organisation") {
       if (method === "PUT") {
         if (this.organisation.creator?.id !== this.me.id) {
@@ -1539,7 +1659,7 @@ export class FakeApi {
         }
         this.organisation.name = name;
       }
-      return reply(200, { ...this.organisationSummary(), ...this.organisation });
+      return reply(200, this.organisationOut());
     }
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
@@ -1740,6 +1860,8 @@ export class FakeApi {
           tool_count: 0,
           run_count: this.agentRunsOf(a).length,
           updated_at: NOW,
+          created_by: a.created_by,
+          updated_by: a.updated_by,
         })),
       );
     }
@@ -1779,6 +1901,7 @@ export class FakeApi {
       const version = Number(m[2]);
       if (!agent || !agent.versions[version - 1]) return fail(404, "Not Found");
       this.bumpAgent(agent);
+      agent.updated_by = this.me;
       this.agentNotes.set(agent.versions.at(-1)!, `Restored from v${version}`);
       return reply(200, this.agentOut(agent));
     }
@@ -1822,6 +1945,7 @@ export class FakeApi {
               version: i + 1,
               note: this.agentNotes.get(vid) ?? null,
               created_at: NOW,
+              created_by: this.me,
               skill_count: 0,
               tool_count: 0,
               run_count: this.agentRunsOf(agent).filter((r) => r.agent_version_id === vid).length,
@@ -1858,6 +1982,8 @@ export class FakeApi {
           version_id: w.versions.at(-1),
           node_count: this.current(w).nodes.length,
           updated_at: w.updated_at,
+          created_by: w.created_by,
+          updated_by: w.updated_by,
           contains: [...this.contains(this.current(w))],
         })),
       );
@@ -1867,7 +1993,7 @@ export class FakeApi {
       const error = this.check(body);
       if (error) return fail(422, error);
       if (this.live().some((w) => w.name === body.name)) {
-        return fail(409, "You already have a workflow with that name");
+        return fail(409, "The organisation already has a workflow with that name");
       }
       const workflow: WorkflowRow = {
         id: this.id(),
@@ -1878,6 +2004,8 @@ export class FakeApi {
         deleted: false,
         created_at: NOW,
         updated_at: NOW,
+        created_by: this.me,
+        updated_by: this.me,
       };
       this.workflows.set(workflow.id, workflow);
       this.applyLayout(workflow, body);
@@ -1903,10 +2031,11 @@ export class FakeApi {
         const error = this.check(body, workflow);
         if (error) return fail(422, error);
         if (this.live().some((w) => w.name === body.name && w !== workflow)) {
-          return fail(409, "You already have a workflow with that name");
+          return fail(409, "The organisation already has a workflow with that name");
         }
         workflow.name = body.name;
         workflow.description = body.description ?? "";
+        workflow.updated_by = this.me;
         this.applyLayout(workflow, body);
         this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null);
         return reply(200, this.workflowOut(workflow));
@@ -1984,6 +2113,7 @@ export class FakeApi {
               version: v.version,
               note: v.note,
               created_at: v.created_at,
+              created_by: this.me,
               node_count: v.nodes.length,
             };
           }),
@@ -1994,6 +2124,7 @@ export class FakeApi {
         if (vid === undefined) return fail(404, "Not Found");
         const old = this.workflowVersions.get(vid)!;
         if (!m[2]) return reply(200, this.versionOut(old));
+        workflow.updated_by = this.me;
         this.saveVersion(workflow, old.nodes, old.edges, `Restored from v${old.version}`);
         return reply(200, this.workflowOut(workflow));
       }

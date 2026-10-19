@@ -6,12 +6,14 @@ import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { LeaveSection } from "@/components/LeaveOrganisation";
+import { InvitesSection } from "@/components/OrganisationInvites";
 import { api, describeError } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
-import { describeOrganisation } from "@/lib/organisation";
+import { describeOrganisation, linkName } from "@/lib/organisation";
 
-/** The user's organisation: its name (the creator renames it), creator and members, and its
- * settings (the run history export). */
+/** The user's organisation: its name (the creator renames it), creator and members, its
+ * invitation links (the creator's), its settings (the run history export), and leaving it. */
 export function OrganisationPage() {
   const me = useCurrentUser();
   const reloadMe = useReloadCurrentUser();
@@ -73,13 +75,23 @@ export function OrganisationPage() {
                   </div>
                   <div className="text-muted-foreground truncate text-xs">
                     {m.user.login} · Joined {formatDate(m.joined_at)}
+                    {m.invite_id && ` through ${linkName(m.invite_id)}`}
                   </div>
                 </div>
               </li>
             ))}
           </ul>
         </Section>
-        <RunHistoryExportSection />
+        {org.is_creator && <InvitesSection key={org.id} />}
+        <RunHistoryExportSection key={`export-${org.id}`} />
+        <LeaveSection
+          org={org}
+          onLeft={async () => {
+            // Into a new personal organisation, which the shell names.
+            reloadMe();
+            await reload();
+          }}
+        />
       </div>
     </div>
   );

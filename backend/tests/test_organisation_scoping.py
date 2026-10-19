@@ -1,0 +1,248 @@
+"""Agents, skills, workflows and schedules belong to the organisation: every member sees, edits,
+runs and deletes every one, names are unique within it, each says who made and last changed it,
+and to anyone in another organisation they don't exist."""
+
+import pytest
+from conftest import delete_user, sign_up
+from test_agents import agent_body, make_agent, make_skill
+from test_chats import signed_in_as
+from test_triggers import schedule
+from test_workflow_runs import queued  # noqa: F401
+from test_workflows import agent_node, make_workflow, workflow_body
+
+from aios import organisations
+from aios.models import Agent, OrganisationMember, Skill, User, Workflow
+
+
+@pytest.fixture
+def member(db, user):
+    """A second member of `user`'s organisation. Gone first, with the organisation and what's in
+    it: deleting a user alone still cascades to what they made (`owner_id`)."""
+    u = User(github_id=-2, login="member", name="Member Person", avatar_url="https://a/m.png")
+    db.add(u)
+    db.flush()
+    org = organisations.membership_of(db, user.id)
+    db.add(OrganisationMember(organisation_id=org.id, user_id=u.id))
+    db.commit()
+    yield u
+    delete_user(db, u)
+
+
+@pytest.fixture
+def outsider(db):
+    """A user in an organisation of their own."""
+    u = sign_up(db, -3, "outsider")
+    yield u
+    delete_user(db, u)
+
+
+def person(u: User) -> dict:
+    return {"id": u.id, "login": u.login, "name": u.name, "avatar_url": u.avatar_url}
+
+
+def ok(resp, code: int = 200) -> dict:
+    assert resp.status_code == code, resp.text
+    return resp.json() if code != 204 else {}
+
+
+def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
+    agent = make_agent(api, "Reviewer", base_prompt="Review it.")
+    url = f"/api/agents/{agent['id']}"
+    with signed_in_as(member):
+        assert [a["id"] for a in ok(api.get("/api/agents"))] == [agent["id"]]
+        assert ok(api.get(url))["name"] == "Reviewer"
+        changed = ok(api.put(url, json=agent_body(agent, base_prompt="Review it twice.")))
+        assert changed["current_version"]["version"] == 2
+        assert [v["version"] for v in ok(api.get(f"{url}/versions"))] == [2, 1]
+        assert ok(api.get(f"{url}/versions/1"))["base_prompt"] == "Review it."
+        restored = ok(api.post(f"{url}/versions/1/restore"))
+        assert restored["current_version"]["version"] == 3
+        run = ok(api.post(f"{url}/runs"), 201)
+        assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
+        assert ok(api.get(f"{url}/runs/{run['id']}"))["is_owner"] is True
+        assert ok(api.get(f"{url}/dependents"))["workflows"] == []
+        ok(api.delete(f"{url}/runs/{run['id']}"), 204)
+        ok(api.delete(url), 204)
+    db.expire_all()
+    deleted = db.get(Agent, agent["id"])
+    assert deleted.deleted_at is not None and deleted.deleted_by == member.id
+
+
+def test_a_member_works_on_a_skill_another_member_made(api, member, db):
+    skill = make_skill(api, "Tone", content="Be kind.")
+    url = f"/api/skills/{skill['id']}"
+    with signed_in_as(member):
+        assert [s["id"] for s in ok(api.get("/api/skills"))] == [skill["id"]]
+        assert ok(api.get(url))["name"] == "Tone"
+        body = {"name": "Tone", "content": "Be kinder."}
+        assert ok(api.put(url, json=body))["current_version"]["version"] == 2
+        assert [v["version"] for v in ok(api.get(f"{url}/versions"))] == [2, 1]
+        assert ok(api.get(f"{url}/versions/1"))["content"] == "Be kind."
+        assert ok(api.post(f"{url}/versions/1/restore"))["current_version"]["version"] == 3
+        # An agent of the member's can use it.
+        make_agent(api, "Kind", skills=[ok(api.get(url))])
+    agent = ok(api.get("/api/agents"))[0]
+    ok(api.delete(f"/api/agents/{agent['id']}"), 204)
+    with signed_in_as(member):
+        ok(api.delete(url), 204)
+    db.expire_all()
+    assert db.get(Skill, skill["id"]).deleted_by == member.id
+
+
+def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queued):  # noqa: F811
+    agent = make_agent(api, "Step")
+    workflow = make_workflow(api, "Pipeline", [agent_node("step", agent)])
+    url = f"/api/workflows/{workflow['id']}"
+    with signed_in_as(member):
+        assert [w["id"] for w in ok(api.get("/api/workflows"))] == [workflow["id"]]
+        assert ok(api.get(url))["name"] == "Pipeline"
+        # Another member's agent in it, alongside the first's.
+        theirs = make_agent(api, "Their step")
+        body = workflow_body("Pipeline", [agent_node("step", agent), agent_node("two", theirs)])
+        assert ok(api.put(url, json=body))["current_version"]["version"] == 2
+        assert [v["version"] for v in ok(api.get(f"{url}/versions"))] == [2, 1]
+        assert len(ok(api.get(f"{url}/versions/1"))["nodes"]) == 1
+        assert ok(api.post(f"{url}/versions/1/restore"))["current_version"]["version"] == 3
+        run = ok(api.post(f"{url}/runs", json={"input": "go"}), 201)
+        assert queued == [run["id"]]
+        assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
+        assert ok(api.get(f"{url}/runs/{run['id']}"))["is_owner"] is True
+        ok(api.delete(url), 204)
+    db.expire_all()
+    assert db.get(Workflow, workflow["id"]).deleted_by == member.id
+
+
+def test_a_member_works_on_a_schedule_another_member_made(api, user, member):
+    agent = make_agent(api, "Daily")
+    made = ok(api.post("/api/triggers", json=schedule("agent", agent["id"])), 201)
+    url = f"/api/triggers/{made['id']}"
+    with signed_in_as(member):
+        assert [t["id"] for t in ok(api.get("/api/triggers"))] == [made["id"]]
+        assert ok(api.get(url))["target_name"] == "Daily"
+        changed = ok(api.put(url, json=schedule("agent", agent["id"], cron="0 10 * * *")))
+        assert changed["cron"] == "0 10 * * *"
+        assert (changed["created_by"], changed["updated_by"]) == (person(user), person(member))
+        # One for a workflow of the first member's.
+        workflow = make_workflow(api, "Flow")
+        ok(api.post("/api/triggers", json=schedule("workflow", workflow["id"])), 201)
+        ok(api.delete(url), 204)
+
+
+def test_another_organisation_cant_reach_any_of_it(api, outsider, queued):  # noqa: F811
+    skill = make_skill(api, "Tone")
+    agent = make_agent(api, "Reviewer", skills=[skill])
+    workflow = make_workflow(api, "Pipeline", [agent_node("step", agent)])
+    trigger = ok(api.post("/api/triggers", json=schedule("agent", agent["id"])), 201)
+    agent_run = ok(api.post(f"/api/agents/{agent['id']}/runs"), 201)
+    workflow_run = ok(api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "x"}), 201)
+    a, s, w, t = (
+        f"/api/agents/{agent['id']}",
+        f"/api/skills/{skill['id']}",
+        f"/api/workflows/{workflow['id']}",
+        f"/api/triggers/{trigger['id']}",
+    )
+    with signed_in_as(outsider):
+        for path in ("/api/agents", "/api/skills", "/api/workflows", "/api/triggers"):
+            assert ok(api.get(path)) == []
+        reads = [
+            *(a, f"{a}/versions", f"{a}/versions/1", f"{a}/runs", f"{a}/dependents"),
+            f"{a}/runs/{agent_run['id']}",
+            *(s, f"{s}/versions", f"{s}/versions/1"),
+            *(w, f"{w}/versions", f"{w}/versions/1", f"{w}/runs"),
+            f"{w}/runs/{workflow_run['id']}",
+            t,
+        ]
+        for path in reads:
+            assert api.get(path).status_code == 404, path
+        writes = [
+            api.put(a, json=agent_body(agent, name="Mine now")),
+            api.put(s, json={"name": "Mine now"}),
+            api.put(w, json=workflow_body("Mine now")),
+            api.put(t, json=schedule("agent", agent["id"])),
+            api.post(f"{a}/versions/1/restore"),
+            api.post(f"{s}/versions/1/restore"),
+            api.post(f"{w}/versions/1/restore"),
+            api.post(f"{a}/runs"),
+            api.post(f"{w}/runs", json={"input": "x"}),
+            api.delete(f"{a}/runs/{agent_run['id']}"),
+            api.delete(t),
+            api.delete(w),
+            api.delete(a),
+            api.delete(s),
+        ]
+        assert [r.status_code for r in writes] == [404] * len(writes)
+        # Nor can they build on it: the targets are unknown to them.
+        unknown = [
+            api.post(
+                "/api/agents",
+                json={"name": "x", "skill_version_ids": [skill["current_version"]["id"]]},
+            ),
+            api.post("/api/workflows", json=workflow_body("x", [agent_node("a", agent)])),
+            api.post("/api/triggers", json=schedule("agent", agent["id"])),
+            api.post("/api/triggers", json=schedule("workflow", workflow["id"])),
+        ]
+        assert [r.status_code for r in unknown] == [422] * len(unknown)
+    assert queued == [workflow_run["id"]]
+
+
+def test_names_are_unique_within_the_organisation(api, member, outsider):
+    make_agent(api, "Reviewer")
+    make_skill(api, "Tone")
+    make_workflow(api, "Pipeline")
+    clashes = {
+        "/api/agents": {"name": "Reviewer"},
+        "/api/skills": {"name": "Tone"},
+        "/api/workflows": workflow_body("Pipeline"),
+    }
+    with signed_in_as(member):
+        for path, body in clashes.items():
+            resp = api.post(path, json=body)
+            assert resp.status_code == 409, path
+            assert "organisation already has" in resp.json()["detail"]
+    with signed_in_as(outsider):
+        for path, body in clashes.items():
+            assert api.post(path, json=body).status_code == 201, path
+
+
+def test_each_says_who_made_and_last_changed_it(api, user, member):
+    agent = make_agent(api, "Reviewer")
+    skill = make_skill(api, "Tone")
+    workflow = make_workflow(api, "Pipeline")
+    trigger = ok(api.post("/api/triggers", json=schedule("agent", agent["id"])), 201)
+    me = person(user)
+    for made in (agent, skill, workflow, trigger):
+        assert (made["created_by"], made["updated_by"]) == (me, me)
+    with signed_in_as(member):
+        ok(api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, base_prompt="Changed")))
+        ok(api.put(f"/api/skills/{skill['id']}", json={"name": "Tone", "content": "Changed"}))
+        ok(api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Pipeline")))
+    them = person(member)
+    for path in ("agents", "skills", "workflows"):
+        [listed] = ok(api.get(f"/api/{path}"))
+        assert (listed["created_by"], listed["updated_by"]) == (me, them), path
+    [first, second] = reversed(ok(api.get(f"/api/agents/{agent['id']}/versions")))
+    assert (first["created_by"], second["created_by"]) == (me, them)
+    assert ok(api.get(f"/api/agents/{agent['id']}/versions/2"))["created_by"] == them
+    assert ok(api.get(f"/api/skills/{skill['id']}/versions"))[0]["created_by"] == them
+    assert ok(api.get(f"/api/workflows/{workflow['id']}/versions"))[0]["created_by"] == me
+    [listed] = ok(api.get("/api/triggers"))
+    assert (listed["created_by"], listed["updated_by"]) == (me, me)
+
+
+def test_deleting_an_agent_finds_the_workflows_and_schedules_any_member_made(api, member):
+    agent = make_agent(api, "Builder")
+    with signed_in_as(member):
+        workflow = make_workflow(api, "Builds", [agent_node("build", agent)])
+        daily = ok(api.post("/api/triggers", json=schedule("workflow", workflow["id"])), 201)
+    found = ok(api.get(f"/api/agents/{agent['id']}/dependents"))
+    [listed] = found["workflows"]
+    assert listed["id"] == workflow["id"]
+    assert [t["id"] for t in listed["triggers"]] == [daily["id"]]
+    refused = api.delete(f"/api/agents/{agent['id']}")
+    assert refused.status_code == 409
+    resolved = {"deactivate_workflows": [workflow["id"]]}
+    ok(api.request("DELETE", f"/api/agents/{agent['id']}", json=resolved), 204)
+    with signed_in_as(member):
+        paused = ok(api.get(f"/api/triggers/{daily['id']}"))
+    # Paused by whoever deleted the agent.
+    assert (paused["enabled"], paused["updated_by"]["login"]) == (False, "test-user")

@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from conftest import store_of
+from conftest import delete_user, sign_up, store_of
 from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
@@ -24,7 +24,7 @@ from aios.auth import current_user
 from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, User, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
+from aios.models import AgentRun, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
 from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 
@@ -432,9 +432,7 @@ def test_runs_belong_to_the_workflows_owner(api, client, db, queued):
     assert api.delete(f"/api/workflows/{other_wf['id']}/runs/{started['id']}").status_code == 404
     assert api.get(f"{url}/{2**31}").status_code == 422
 
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = sign_up(db, -2, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(url).status_code == 404
@@ -442,8 +440,7 @@ def test_runs_belong_to_the_workflows_owner(api, client, db, queued):
         assert client.get(f"{url}/{started['id']}").status_code == 404
         assert client.delete(f"{url}/{started['id']}").status_code == 404
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
     assert queued == [started["id"]]
 
 
