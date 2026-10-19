@@ -63,7 +63,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import assistant, firing, handoff, invocations
+from aios import assistant, firing, handoff, invocations, organisations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
@@ -86,7 +86,6 @@ from aios.models import (
     ChatMessageKind,
     ChatVisibility,
     Organisation,
-    OrganisationMember,
     TriggerTargetKind,
     Workflow,
     WorkflowRun,
@@ -390,7 +389,13 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
 def create_chat(body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Make a chat of the organisation's, with the user as its owner and first member, and the
-    organisation's documents assistant (`aios.assistant`) as its first agent."""
+    organisation's documents assistant (`aios.assistant`) as its first agent. A 404 for a user
+    who left the organisation as they made it (`organisations.holds_member`): it would be owned by
+    someone it doesn't exist for."""
+    # It locks the organisation, which `holds_member` would otherwise lock first.
+    agent = assistant.documents_assistant(db, org, user.id)
+    if not organisations.holds_member(db, org, user.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     chat = Chat(
         **made_by(org.id, user.id),
         name=body.name,
@@ -408,7 +413,7 @@ def create_chat(body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: D
     chat.members.append(
         ChatMember(
             kind=ChatMemberKind.agent,
-            agent=assistant.documents_assistant(db, org, user.id),
+            agent=agent,
             added_by=user.id,
         )
     )
@@ -488,10 +493,11 @@ def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, org: CurrentOrga
 def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Add a member of the organisation, or one of its agents or workflows, to the chat (its
     owner only). A user outside the organisation doesn't exist here: a 404, as one who doesn't
-    exist at all is."""
+    exist at all is, and as one who leaves it as they're added is (`organisations.holds_member`:
+    they'd be left in a chat of an organisation they're not in)."""
     chat = get_chat_if_owner(db, org, user.id, chat_id)
     if body.kind == ChatMemberKind.user:
-        if db.get(OrganisationMember, (org.id, body.id)) is None:
+        if not organisations.holds_member(db, org, body.id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown user")
         member = ChatMember(
             kind=body.kind, user_id=body.id, role=ChatMemberRole.member, added_by=user.id
@@ -531,10 +537,14 @@ def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
     """Join a public chat as a member (a private one exists only for its members), or as its
     owner if it has none (its owner left the organisation with nobody in it to hand it to:
     `organisations.leave`, which makes such a chat public if it was private). What was posted
-    before they joined counts as seen: they could read it, and it's all there to scroll."""
+    before they joined counts as seen: they could read it, and it's all there to scroll. A 404
+    for a user who left the organisation as they joined (`organisations.holds_member`)."""
     chat = get_visible_chat(db, org, user.id, chat_id)
     if is_member(chat, user.id):
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
+    # Before the chat's lock, as leaving takes the organisation's before the chats'.
+    if not organisations.holds_member(db, org, user.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     # Under the chat's lock, so that two joining an ownerless chat at once don't both become its
     # owner (the second sees the first), and one joining as its owner leaves the organisation
     # doesn't join as a member of a chat that has just lost its owner (`lock_owner`).
