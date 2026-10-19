@@ -374,15 +374,24 @@ def leave(db: Session, org: Organisation, user: User) -> Organisation:
 def hand_over_chats(db: Session, org: Organisation) -> None:
     """Give each of the organisation's chats that has no owner (its owner left) to its user
     member added first, so a chat is never left that nobody can change or delete. One with
-    nobody left in it goes to whoever joins it next (`api.chats.join_chat`)."""
+    nobody left in it goes to whoever joins it next (`api.chats.join_chat`). The chats are
+    locked first, as joining one with no owner locks it, so the two never both give it one."""
     owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
+    ownerless = list(
+        db.scalars(
+            select(Chat.id)
+            .where(Chat.organisation_id == org.id, Chat.id.not_in(owned))
+            .with_for_update()
+        )
+    )
+    if not ownerless:
+        return
     first = (
         select(func.min(ChatMember.id))
-        .join(Chat, Chat.id == ChatMember.chat_id)
         .where(
-            Chat.organisation_id == org.id,
-            ChatMember.kind == ChatMemberKind.user,
+            ChatMember.chat_id.in_(ownerless),
             ChatMember.chat_id.not_in(owned),
+            ChatMember.kind == ChatMemberKind.user,
         )
         .group_by(ChatMember.chat_id)
     )

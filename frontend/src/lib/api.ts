@@ -119,7 +119,7 @@ export type DataColumn = {
   embedding: boolean;
 };
 
-/** A table in the store's `data` schema: what the user's agents keep. */
+/** A table in the store's `data` schema: what the organisation's agents keep. */
 export type DataTable = {
   name: string;
   description: string | null;
