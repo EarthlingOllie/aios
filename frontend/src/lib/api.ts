@@ -112,6 +112,8 @@ export type SkillSummary = {
   version: number;
   version_id: number;
   updated_at: string;
+  /** How many live agents' current versions use some version of it. */
+  agent_count: number;
 };
 
 export type SkillVersionSummary = {

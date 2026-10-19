@@ -34,7 +34,27 @@ import {
   type SkillSummary,
   type SkillVersion,
 } from "@/lib/api";
-import { nameAndDescription, NAME_SORT, UPDATED_SORT, type ListSort } from "@/lib/list-filter";
+import {
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
+import { plural } from "@/lib/utils";
+
+const SKILL_FILTERS: ListFilterGroup<SkillSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    // Used: an agent's current version uses some version of it, so it can't be deleted.
+    options: [
+      { key: "used", label: "Used", test: (skill) => skill.agent_count > 0 },
+      { key: "unused", label: "Unused", test: (skill) => skill.agent_count === 0 },
+    ],
+  },
+];
 
 const SKILL_SORTS: ListSort<SkillSummary>[] = [NAME_SORT, UPDATED_SORT];
 
@@ -49,18 +69,23 @@ export function SkillsSection() {
       empty="No skills yet. Skills are reusable instructions you can give to agents."
       reloadList={reload}
       search={nameAndDescription}
+      filters={SKILL_FILTERS}
       sorts={SKILL_SORTS}
-      renderItem={(skill) => (
-        <>
-          <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
-            <VersionBadge version={skill.version} />
-          </div>
-          {skill.description && (
-            <div className="text-muted-foreground truncate text-xs">{skill.description}</div>
-          )}
-        </>
-      )}
+      renderItem={(skill) => {
+        const about = [skill.agent_count > 0 && `Used by ${plural(skill.agent_count, "agent")}`]
+          .concat(skill.description)
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+              <VersionBadge version={skill.version} />
+            </div>
+            {about && <div className="text-muted-foreground truncate text-xs">{about}</div>}
+          </>
+        );
+      }}
     />
   );
 }

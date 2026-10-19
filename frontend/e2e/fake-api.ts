@@ -1778,6 +1778,9 @@ export class FakeApi {
           version: s.versions.length,
           version_id: s.versions.at(-1)!.id,
           updated_at: s.updated_at ?? NOW,
+          agent_count: new Set(
+            s.usedBy.filter(({ agent }) => this.agents.has(agent.id)).map(({ agent }) => agent.id),
+          ).size,
         })),
       );
     }

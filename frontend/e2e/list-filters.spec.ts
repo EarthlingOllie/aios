@@ -153,6 +153,43 @@ test("the skills can be sorted", async ({ page }) => {
   await expect(links(page, "Skills")).toHaveText([/Tone/, /Citations/]);
 });
 
+test("the skills can be shown by whether an agent uses them, with search and sort", async ({ page }) => {
+  const api = await fakeApi(page);
+  const citations = api.addSkill("Citations");
+  citations.updated_at = "2026-01-01T00:00:00Z";
+  const tone = api.addSkill("Tone of voice");
+  tone.updated_at = "2026-02-01T00:00:00Z";
+  api.addSkill("Tables");
+  api.addSkillUse(citations, api.addAgent("Researcher"));
+  api.addSkillUse(citations, api.addAgent("Editor"));
+  api.addSkillUse(tone, api.addAgent("Writer"));
+  await page.goto("/skills");
+
+  // Each item says how many agents use it.
+  await expect(links(page, "Skills")).toHaveText([
+    /Citations.*Used by 2 agents/,
+    /Tone.*Used by 1 agent\b/,
+    /Tables/,
+  ]);
+  await expect(links(page, "Skills").nth(2)).not.toContainText("Used by");
+
+  await filter(page, "Used").click();
+  await expect(page).toHaveURL("/skills?filter=used");
+  await expect(links(page, "Skills")).toHaveText([/Citations/, /Tone/]);
+  await expect(page.getByText("2 of 3")).toBeVisible();
+
+  await filter(page, "Unused").click();
+  await expect(page).toHaveURL("/skills?filter=unused");
+  await expect(links(page, "Skills")).toHaveText([/Tables/]);
+
+  // With the search and the sort.
+  await page.goto("/skills?filter=used&sort=updated");
+  await expect(links(page, "Skills")).toHaveText([/Tone/, /Citations/]);
+  await search(page, "skills").fill("tone");
+  await expect(links(page, "Skills")).toHaveText([/Tone/]);
+  await expect(page).toHaveURL("/skills?filter=used&sort=updated&q=tone");
+});
+
 test("the chats can be shown by joined, not joined, unread and private, as the list refreshes", async ({
   page,
 }) => {

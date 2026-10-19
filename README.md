@@ -13,9 +13,11 @@ and chat with them. The Agents and Skills lists each have a search box: every wo
 appear in an item's name or description, ignoring case and accents, and the list shows how many
 of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
 shared link or Back keeps it, and opening, creating or deleting an item leaves the list as it
-was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused) and a sort
-menu (by name, the default, by most recently updated, and for agents by most runs) narrow and
-order the list, combined with the search and kept in the URL too (`?filter=used&sort=runs`);
+was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused; Skills:
+All, Used, i.e. by some live agent's current version, and Unused, each saying "Used by 3
+agents") and a sort menu (by name, the default, by most recently updated, and for agents by
+most runs) narrow and order the list, combined with the search and kept in the URL too
+(`?filter=used&sort=runs`);
 **Clear filters** resets them all. The Agents list also has an **Any skill** and an **Any tool**
 select, for the agents whose current version uses that skill (any version of it) or has that
 tool (`?skill=12&tool=web_search`). Pressing `/` jumps to the list's search box, except while
