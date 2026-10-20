@@ -19,7 +19,7 @@ import { NotificationsMenu, NotificationsProvider } from "@/components/Notificat
 import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, fullName, type User } from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
-import { CurrentUserContext } from "@/lib/current-user";
+import { CurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
@@ -73,6 +73,8 @@ export default function App() {
   }, []);
 
   useEffect(loadMe, [loadMe]);
+  // After a profile edit: the user as the API now has them.
+  const setUser = useCallback((user: User) => setAuth({ status: "signed-in", user }), []);
   const location = useLocation();
   const onSignedOutPage = SIGNED_OUT_PATHS.includes(location.pathname);
 
@@ -124,7 +126,9 @@ export default function App() {
           <DocumentsProvider>
             <NotificationsProvider>
               <CurrentUserContext.Provider value={auth.user}>
-                <Shell user={auth.user} onSignOut={signOut} />
+                <SetCurrentUserContext.Provider value={setUser}>
+                  <Shell user={auth.user} onSignOut={signOut} />
+                </SetCurrentUserContext.Provider>
               </CurrentUserContext.Provider>
             </NotificationsProvider>
           </DocumentsProvider>

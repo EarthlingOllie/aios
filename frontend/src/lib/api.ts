@@ -841,6 +841,9 @@ export const api = {
   authOptions: () => request<AuthOptions>("/api/auth/options"),
   devUsers: () => request<User[]>("/api/dev/users"),
   devSignIn: (userId: number) => request<User>("/api/dev/session", json("POST", { user_id: userId })),
+  /** Change the signed-in user's name; a name left out is kept. */
+  updateMe: (body: { first_name?: string; last_name?: string }) =>
+    request<User>("/api/me", json("PATCH", body)),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),
