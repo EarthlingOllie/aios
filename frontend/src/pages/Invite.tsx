@@ -19,8 +19,9 @@ export function InviteRoute() {
  * An invitation link's page (`/invite/:token`), signed in or out: which organisation it's for,
  * and Accept, or Sign in (which keeps the token through GitHub's sign-in, and joins a new user
  * on the way back). An expired or revoked link says so. Accepting from an empty personal
- * organisation deletes it; while in another organisation, the page shows the API's reason, and
- * when the user's organisation has things in it, links to where each kind can be deleted.
+ * organisation deletes it; otherwise the page shows the API's reason: when the user's organisation
+ * has things in it, linking to where each kind can be deleted, and when it's one they must leave
+ * first, to where it's left (the Organisation page's Settings tab).
  */
 export function InvitePage({ token, me }: { token: string; me: Me | null }) {
   const reloadMe = useReloadCurrentUser();
@@ -30,16 +31,21 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
   );
   const [accepting, setAccepting] = useState(false);
   const [refusal, setRefusal] = useState<string | NotEmpty>();
+  // A 409 with a plain reason: they're in an organisation they'd have to leave to join this one.
+  const [mustLeave, setMustLeave] = useState(false);
 
   async function onAccept() {
     setAccepting(true);
     setRefusal(undefined);
+    setMustLeave(false);
     try {
       await api.acceptInvitation(token);
       reloadMe();
       navigate("/organisation");
     } catch (err) {
-      setRefusal(notEmpty(err) ?? describeError(err));
+      const contents = notEmpty(err);
+      setRefusal(contents ?? describeError(err));
+      setMustLeave(!contents && err instanceof ApiError && err.status === 409);
       setAccepting(false);
     }
   }
@@ -111,13 +117,18 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
           {typeof refusal === "string" && (
             <div role="alert" className="border-destructive/50 rounded-md border px-3 py-2 text-sm">
               <p className="text-destructive">{refusal}</p>
-              <p className="text-muted-foreground mt-1">
-                You're in {me.organisation.name}: see who else is in it on the{" "}
-                <Link to="/organisation" className="text-foreground underline underline-offset-4">
-                  Organisation
-                </Link>{" "}
-                page.
-              </p>
+              {mustLeave && (
+                <p className="text-muted-foreground mt-1">
+                  To join {organisation.name}, leave {me.organisation.name} first, in its{" "}
+                  <Link
+                    to="/organisation/settings"
+                    className="text-foreground underline underline-offset-4"
+                  >
+                    organisation settings
+                  </Link>
+                  .
+                </p>
+              )}
             </div>
           )}
           <Button className="w-full" disabled={accepting} onClick={onAccept}>

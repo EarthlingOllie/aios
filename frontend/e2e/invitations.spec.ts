@@ -155,8 +155,23 @@ test("accepting while in an organisation with others in it says why it can't", a
   await expect(page.getByRole("alert")).toContainText(
     "You're a member of tester. You can be in only one organisation at a time.",
   );
-  await page.getByRole("alert").getByRole("link", { name: "Organisation" }).click();
-  await expect(page).toHaveURL(/\/organisation$/);
+  // Leaving is the way in: the link goes to where it's done.
+  await expect(page.getByRole("alert")).toContainText("To join Acme, leave tester first");
+  await page.getByRole("alert").getByRole("link", { name: "organisation settings" }).click();
+  await expect(page).toHaveURL(/\/organisation\/settings$/);
+  await expect(page.getByRole("region", { name: "Leave" })).toBeVisible();
+});
+
+test("accepting a link revoked since it was opened says so, without saying to leave", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
+  await page.goto("/invite/abc");
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  api.invitations.delete("abc");
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "This invitation link has expired or been revoked, or never existed.",
+  );
 });
 
 test("accepting while the organisation has things in it lists them, linking to where each is deleted", async ({
