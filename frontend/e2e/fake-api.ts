@@ -315,12 +315,12 @@ export type InvocationRow = {
   finished_at: string | null;
 };
 
-/** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
 /** How the API names a user (the backend's `User.full_name`): their name, else their login. */
 function fullName(user: ChatUser): string {
   return user.name ?? user.login;
 }
 
+/** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
 function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
   const of = (kind: ChatMention["kind"]) => members.filter((m) => m.kind === kind);
   return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
