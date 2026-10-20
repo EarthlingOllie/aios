@@ -52,7 +52,7 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert member["role"] == "owner"
     assert member["target_id"] == user.id
     assert member["name"] == "Test User"
-    assert (member["login"], member["avatar_url"]) == (None, None)
+    assert "login" not in member and "avatar_url" not in member
     assert chat["created_at"] == chat["updated_at"]
 
 
@@ -236,13 +236,7 @@ def test_a_member_posts_a_markdown_message(api, user):
     assert message["body"] == "Hello, **world**"
     assert message["mentions"] == []
     assert message["invocation_id"] is None
-    assert message["author"] == {
-        "kind": "user",
-        "id": user.id,
-        "name": "Test User",
-        "login": None,
-        "avatar_url": None,
-    }
+    assert message["author"] == {"kind": "user", "id": user.id, "name": "Test User"}
     assert messages(api, chat) == {"messages": [message], "invocations": []}
 
 
@@ -398,15 +392,15 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
                 "kind": "user",
                 "id": user.id,
                 "name": "Test User",
-                "login": None,
-                "avatar_url": None,
+                "first_name": "Test",
+                "last_name": "User",
             },
             {
                 "kind": "user",
                 "id": other.id,
                 "name": "Other Person",
-                "login": None,
-                "avatar_url": None,
+                "first_name": "Other",
+                "last_name": "Person",
             },
         ],
         "agents": [
@@ -414,15 +408,15 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
                 "kind": "agent",
                 "id": assistant["target_id"],
                 "name": "Documents assistant",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             },
             {
                 "kind": "agent",
                 "id": agent["id"],
                 "name": "Review",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             },
         ],
         "workflows": [
@@ -430,8 +424,8 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
                 "kind": "workflow",
                 "id": workflow["id"],
                 "name": "Review",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             }
         ],
     }
@@ -533,6 +527,44 @@ def test_mentions_are_stored_structurally(api, user, other):
     resp = api.put(f"/api/agents/{agent['id']}", json={"name": "Critique"})
     assert resp.status_code == 200, resp.text
     assert messages(api, chat)["messages"][0] == message
+
+
+def test_a_mention_of_a_user_still_points_at_them_once_theyre_renamed(api, db, other):
+    chat = make_chat(api, "Design")
+    add_user(api, chat, other)
+    token = f"@[Other Person](user:{other.id})"
+    mention = {"kind": "user", "id": other.id}
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages", json={"body": f"Hi {token}", "mentions": [mention]}
+    )
+    assert resp.status_code == 201, resp.text
+    before = resp.json()["messages"][0]
+
+    other.first_name, other.last_name = "Otto", "Persson"
+    db.commit()
+
+    # The old message still names them as they were, and still points at them by id.
+    assert messages(api, chat)["messages"][0] == before
+    assert before["mentions"] == [{"kind": "user", "id": other.id, "name": "Other Person"}]
+    # A token with their old name resolves to them by its id, under their new name.
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages", json={"body": f"Again {token}", "mentions": [mention]}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["messages"][0]["mentions"] == [
+        {"kind": "user", "id": other.id, "name": "Otto Persson"}
+    ]
+    # Everywhere else shows their new name.
+    [_, member] = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
+    assert member["name"] == "Otto Persson"
+    [_, mentionable] = api.get(f"/api/chats/{chat['id']}/mentionable").json()["users"]
+    assert mentionable == {
+        "kind": "user",
+        "id": other.id,
+        "name": "Otto Persson",
+        "first_name": "Otto",
+        "last_name": "Persson",
+    }
 
 
 def test_a_mention_of_a_non_member_is_refused(api, other):

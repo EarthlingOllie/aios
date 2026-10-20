@@ -120,10 +120,8 @@ class ChatMemberOut(BaseModel):
     role: ChatMemberRole | None
     # The user's, agent's or workflow's id.
     target_id: int
+    # A user's full name ("First Last").
     name: str
-    # Always null: users had them from GitHub. To be removed.
-    login: str | None
-    avatar_url: str | None
     added_at: datetime
 
 
@@ -164,8 +162,6 @@ def member_out(member: ChatMember) -> ChatMemberOut:
             role=member.role,
             target_id=user.id,
             name=user.full_name,
-            login=None,
-            avatar_url=None,
             added_at=member.added_at,
         )
     target = member.agent if member.kind == ChatMemberKind.agent else member.workflow
@@ -175,8 +171,6 @@ def member_out(member: ChatMember) -> ChatMemberOut:
         role=None,
         target_id=target.id,
         name=target.name,
-        login=None,
-        avatar_url=None,
         added_at=member.added_at,
     )
 
@@ -364,10 +358,12 @@ class MentionableOut(BaseModel):
     kind: ChatMemberKind
     # The user's, agent's or workflow's id.
     id: int
+    # A user's full name ("First Last").
     name: str
-    # Always null: users had them from GitHub. To be removed.
-    login: str | None
-    avatar_url: str | None
+    # A user's names, which the composer matches what's typed after "@" against; null for an
+    # agent or a workflow (matched on `name`).
+    first_name: str | None
+    last_name: str | None
 
 
 class MentionablesOut(BaseModel):
@@ -379,22 +375,26 @@ class MentionablesOut(BaseModel):
     workflows: list[MentionableOut]
 
 
-def mentionable_out(member: ChatMemberOut) -> MentionableOut:
+def mentionable_out(member: ChatMember) -> MentionableOut:
+    out = member_out(member)
+    user = member.user if member.kind == ChatMemberKind.user else None
     return MentionableOut(
-        kind=member.kind,
-        id=member.target_id,
-        name=member.name,
-        login=member.login,
-        avatar_url=member.avatar_url,
+        kind=out.kind,
+        id=out.target_id,
+        name=out.name,
+        first_name=user.first_name if user else None,
+        last_name=user.last_name if user else None,
     )
 
 
 def mentionables(chat: Chat) -> MentionablesOut:
-    members = members_out(chat)
+    by_kind: dict[ChatMemberKind, list[MentionableOut]] = {kind: [] for kind in ChatMemberKind}
+    for member in live_members(chat):
+        by_kind[member.kind].append(mentionable_out(member))
     return MentionablesOut(
-        users=[mentionable_out(m) for m in members.users],
-        agents=[mentionable_out(m) for m in members.agents],
-        workflows=[mentionable_out(m) for m in members.workflows],
+        users=by_kind[ChatMemberKind.user],
+        agents=by_kind[ChatMemberKind.agent],
+        workflows=by_kind[ChatMemberKind.workflow],
     )
 
 
@@ -550,10 +550,8 @@ class MessageAuthorOut(BaseModel):
     kind: ChatAuthorKind
     # The user's, agent's or workflow's id.
     id: int
+    # A user's full name ("First Last").
     name: str
-    # Always null: users had them from GitHub. To be removed.
-    login: str | None
-    avatar_url: str | None
 
 
 class MessageOut(BaseModel):
@@ -626,19 +624,11 @@ class MessagesOut(BaseModel):
 def author_out(message: ChatMessage) -> MessageAuthorOut | None:
     if message.author_user is not None:
         user = message.author_user
-        return MessageAuthorOut(
-            kind=ChatAuthorKind.user,
-            id=user.id,
-            name=user.full_name,
-            login=None,
-            avatar_url=None,
-        )
+        return MessageAuthorOut(kind=ChatAuthorKind.user, id=user.id, name=user.full_name)
     target = message.author_agent or message.author_workflow
     if target is None:
         return None
-    return MessageAuthorOut(
-        kind=message.author_kind, id=target.id, name=target.name, login=None, avatar_url=None
-    )
+    return MessageAuthorOut(kind=message.author_kind, id=target.id, name=target.name)
 
 
 def message_out(message: ChatMessage) -> MessageOut:

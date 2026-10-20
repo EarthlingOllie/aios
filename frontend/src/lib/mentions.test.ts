@@ -16,12 +16,26 @@ import {
   type Mentionables,
 } from "./mentions";
 
-const tester: Mentionable = { kind: "user", id: 1, name: "Tester", login: "tester", avatar_url: null };
-const sam: Mentionable = { kind: "user", id: 2, name: "Sam Jones", login: "sam", avatar_url: null };
-const reviewAgent: Mentionable = { kind: "agent", id: 7, name: "Review", login: null, avatar_url: null };
-const reviewWorkflow: Mentionable = { kind: "workflow", id: 7, name: "Review", login: null, avatar_url: null };
-const digest: Mentionable = { kind: "workflow", id: 9, name: "Digest", login: null, avatar_url: null };
-const members: Mentionables = { users: [tester, sam], agents: [reviewAgent], workflows: [reviewWorkflow, digest] };
+const user = (id: number, first_name: string, last_name: string): Mentionable => ({
+  kind: "user",
+  id,
+  name: `${first_name} ${last_name}`,
+  first_name,
+  last_name,
+});
+const target = (kind: "agent" | "workflow", id: number, name: string): Mentionable => ({
+  kind,
+  id,
+  name,
+  first_name: null,
+  last_name: null,
+});
+const alice = user(1, "Alice", "Smith");
+const sam = user(2, "Sam", "Jones");
+const reviewAgent = target("agent", 7, "Review");
+const reviewWorkflow = target("workflow", 7, "Review");
+const digest = target("workflow", 9, "Digest");
+const members: Mentionables = { users: [alice, sam], agents: [reviewAgent], workflows: [reviewWorkflow, digest] };
 
 describe("mentionToken", () => {
   it("writes the member's name, kind and id", () => {
@@ -93,10 +107,30 @@ describe("insertMention", () => {
 });
 
 describe("filterMentionable", () => {
-  it("keeps members whose name or login has the query, ignoring case, grouped by kind", () => {
+  const onlyUsers = (...users: Mentionable[]) => ({ users, agents: [], workflows: [] });
+
+  it("keeps users whose first name has the query", () => {
+    expect(filterMentionable(members, "ali")).toEqual(onlyUsers(alice));
+    expect(filterMentionable(members, "ice")).toEqual(onlyUsers(alice));
+  });
+
+  it("keeps users whose last name has the query", () => {
+    expect(filterMentionable(members, "smi")).toEqual(onlyUsers(alice));
+    expect(filterMentionable(members, "ones")).toEqual(onlyUsers(sam));
+  });
+
+  it("ignores case", () => {
+    expect(filterMentionable(members, "ALI")).toEqual(onlyUsers(alice));
+    expect(filterMentionable(members, "sMiTh")).toEqual(onlyUsers(alice));
+  });
+
+  it("doesn't match a user across their first and last names", () => {
+    expect(filterMentionable(members, "cesmi")).toEqual(onlyUsers());
+  });
+
+  it("keeps agents and workflows whose name has the query, ignoring case, grouped by kind", () => {
     expect(filterMentionable(members, "rev")).toEqual({ users: [], agents: [reviewAgent], workflows: [reviewWorkflow] });
-    expect(filterMentionable(members, "SAM")).toEqual({ users: [sam], agents: [], workflows: [] });
-    expect(filterMentionable(members, "jones")).toEqual({ users: [sam], agents: [], workflows: [] });
+    expect(filterMentionable(members, "GES")).toEqual({ users: [], agents: [], workflows: [digest] });
   });
 
   it("keeps everyone for an empty query", () => {
@@ -121,7 +155,7 @@ describe("remarkMentions", () => {
 
   it("reads escaped names", () => {
     const odd = { kind: "workflow", id: 9, name: "a]b" } as const;
-    expect(render(`hi ${mentionToken({ ...odd, login: null, avatar_url: null })}`, [odd])).toBe(
+    expect(render(`hi ${mentionToken({ ...odd, first_name: null, last_name: null })}`, [odd])).toBe(
       '<p>hi <span data-mention="workflow:9">a]b</span></p>',
     );
   });

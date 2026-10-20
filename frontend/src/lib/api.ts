@@ -669,10 +669,8 @@ export type ChatMember = {
   role: "owner" | "member" | null;
   /** The user's, agent's or workflow's id. */
   target_id: number;
+  /** A user's full name ("First Last"). */
   name: string;
-  /** Users only. */
-  login: string | null;
-  avatar_url: string | null;
   added_at: string;
 };
 
@@ -710,8 +708,11 @@ export type ChatInput = { name: string; description: string; visibility: ChatVis
 export type ChatMentionRef = { kind: ChatMemberKind; id: number };
 export type ChatMention = ChatMentionRef & { name: string };
 
-/** A member the composer offers to mention. */
-export type ChatMentionable = ChatMention & { login: string | null; avatar_url: string | null };
+/**
+ * A member the composer offers to mention: a user's `name` is their full name, and their first
+ * and last names (null for an agent or a workflow) are what's typed after `@` matches.
+ */
+export type ChatMentionable = ChatMention & { first_name: string | null; last_name: string | null };
 /** Who can be mentioned in a chat (its members), grouped by kind. */
 export type ChatMentionables = {
   users: ChatMentionable[];
@@ -719,13 +720,11 @@ export type ChatMentionables = {
   workflows: ChatMentionable[];
 };
 
-/** Who posted a chat message: a user (with a login and maybe an avatar), an agent or a workflow. */
+/** Who posted a chat message: a user (by full name), an agent or a workflow. */
 export type ChatMessageAuthor = {
   kind: "user" | "agent" | "workflow" | "system";
   id: number;
   name: string;
-  login: string | null;
-  avatar_url: string | null;
 };
 
 export type ChatMessage = {

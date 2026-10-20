@@ -250,7 +250,8 @@ export type RunRow = {
 export type Account = { id: number; first_name: string; last_name: string; email: string; password: string };
 const accountOut = ({ password: _password, ...user }: Account) => user;
 
-export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
+/** A user as chats show them (an `Account` is one). */
+export type ChatUser = Pick<Account, "id" | "first_name" | "last_name">;
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
   | {
@@ -272,8 +273,6 @@ type ChatMemberOut = {
   role: "owner" | "member" | null;
   target_id: number;
   name: string;
-  login: string | null;
-  avatar_url: string | null;
   added_at: string;
 };
 export type ChatRow = {
@@ -319,10 +318,13 @@ export type InvocationRow = {
   finished_at: string | null;
 };
 
-/** How the API names a user (the backend's `User.full_name`): their name, else their login. */
+/** How the API names a user (the backend's `User.full_name`): "First Last". */
 function fullName(user: ChatUser): string {
-  return user.name ?? user.login;
+  return `${user.first_name} ${user.last_name}`;
 }
+
+/** Whether a message's author is a user (rather than an agent or a workflow). */
+const isUser = (author: ChatAuthor): author is ChatUser => "first_name" in author;
 
 /** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
 function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
@@ -392,8 +394,10 @@ export class FakeApi {
   authDelay = 0;
   /** Whether the dev "sign in as" picker is on (DEV_LOGIN_ENABLED): off, /api/dev/* is a 404. */
   devUsers = false;
-  /** The signed-in user as chats show them (whoever signed in: chats don't name users by account yet). */
-  me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
+  /** The signed-in account (the first while no one is): who a chat's owner, member or author is by default. */
+  get me(): Account {
+    return this.accounts.find((a) => a.id === this.signedInAs) ?? this.accounts[0];
+  }
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
@@ -941,7 +945,11 @@ export class FakeApi {
   /** Adds a chat, private and owned by `me` unless said otherwise; the owner is its first member. */
   addChat(
     name: string,
-    { description = "", visibility = "private" as ChatVisibility, owner = this.me } = {},
+    {
+      description = "",
+      visibility = "private" as ChatVisibility,
+      owner = this.me,
+    }: { description?: string; visibility?: ChatVisibility; owner?: ChatUser } = {},
   ): ChatRow {
     const chat: ChatRow = {
       id: this.id(),
@@ -1318,13 +1326,11 @@ export class FakeApi {
         const { id, kind, added_at } = m;
         if (kind === "user") {
           const { user, role } = m;
-          const [login, avatar_url] = [user.login, user.avatar_url ?? null];
-          return [{ id, kind, role, target_id: user.id, name: fullName(user), login, avatar_url, added_at }];
+          return [{ id, kind, role, target_id: user.id, name: fullName(user), added_at }];
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
-        const name = target.name;
-        return [{ id, kind, role: null, target_id: target.id, name, login: null, avatar_url: null, added_at }];
+        return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at }];
       })
       .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
   }
@@ -1335,14 +1341,12 @@ export class FakeApi {
 
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
   private mentionable(chat: ChatRow) {
+    const users = new Map(chat.members.flatMap((m) => (m.kind === "user" ? [[m.user.id, m.user]] : [])));
     return byKind(
-      this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
-        kind,
-        id: target_id,
-        name,
-        login,
-        avatar_url,
-      })),
+      this.liveMembers(chat).map(({ kind, target_id, name }) => {
+        const user = kind === "user" ? users.get(target_id) : undefined;
+        return { kind, id: target_id, name, first_name: user?.first_name ?? null, last_name: user?.last_name ?? null };
+      }),
     );
   }
 
@@ -1351,16 +1355,7 @@ export class FakeApi {
     return {
       id: m.id,
       chat_id: chat.id,
-      author:
-        "login" in author
-          ? {
-              kind: "user",
-              id: author.id,
-              name: fullName(author),
-              login: author.login,
-              avatar_url: author.avatar_url ?? null,
-            }
-          : { ...author, login: null, avatar_url: null },
+      author: isUser(author) ? { kind: "user", id: author.id, name: fullName(author) } : author,
       kind: m.kind,
       body: m.body,
       mentions: m.mentions,
@@ -1445,7 +1440,7 @@ export class FakeApi {
     const mine = this.myMembership(chat);
     if (!mine) return null;
     return chat.messages.filter(
-      (m) => m.id > (mine.last_read ?? 0) && !("login" in m.author && m.author.id === this.me.id),
+      (m) => m.id > (mine.last_read ?? 0) && !(isUser(m.author) && m.author.id === this.me.id),
     ).length;
   }
 

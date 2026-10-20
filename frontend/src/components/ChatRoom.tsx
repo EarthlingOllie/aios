@@ -37,16 +37,14 @@ export const CHAT_HIDDEN_POLL_MS = 30_000;
 /** Within this many pixels of the top, scrolling up loads the page of history before. */
 const LOAD_OLDER_WITHIN = 48;
 
-/** A chat member's or a message author's picture: a user's avatar (or initial), or an icon. */
+/** A chat member's or a message author's picture: a user's initial, or an icon. */
 export function ChatAvatar({
   kind,
   name,
-  avatarUrl,
   alt = "",
 }: {
   kind: ChatMemberKind | ChatMessageAuthor["kind"];
   name: string;
-  avatarUrl: string | null;
   /** What it says to a screen reader; nothing when the name is shown beside it. */
   alt?: string;
 }) {
@@ -55,7 +53,6 @@ export function ChatAvatar({
     const Icon = MEMBER_KIND[kind].icon;
     return <Icon className="text-muted-foreground size-5 shrink-0" {...label} />;
   }
-  if (avatarUrl) return <img src={avatarUrl} alt={alt} className="size-5 shrink-0 rounded-full" />;
   return (
     <span
       className="bg-muted flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium uppercase"
@@ -301,9 +298,9 @@ function MessageItem({ message, invocation }: { message: ChatMessage; invocation
     >
       <div className="pt-0.5">
         {author ? (
-          <ChatAvatar kind={author.kind} name={author.name} avatarUrl={author.avatar_url} alt={author.name} />
+          <ChatAvatar kind={author.kind} name={author.name} alt={author.name} />
         ) : (
-          <ChatAvatar kind="user" name="?" avatarUrl={null} />
+          <ChatAvatar kind="user" name="?" />
         )}
       </div>
       <div className="min-w-0 flex-1">

@@ -55,11 +55,15 @@ export function insertMention(text: string, at: MentionQuery, member: Mentionabl
   return { text: text.slice(0, at.start) + inserted + text.slice(end), caret: at.start + inserted.length };
 }
 
-/** The members whose name or login contains the query, ignoring case, still grouped by kind. */
+/**
+ * The members the query finds, ignoring case, still grouped by kind: users whose first or last
+ * name contains it, and agents and workflows whose name does.
+ */
 export function filterMentionable(mentionable: Mentionables, query: string): Mentionables {
   const q = query.toLowerCase();
+  const names = (m: Mentionable) => (m.kind === "user" ? [m.first_name ?? "", m.last_name ?? ""] : [m.name]);
   const keep = (members: Mentionable[]) =>
-    members.filter((m) => m.name.toLowerCase().includes(q) || (m.login ?? "").toLowerCase().includes(q));
+    members.filter((m) => names(m).some((name) => name.toLowerCase().includes(q)));
   return { users: keep(mentionable.users), agents: keep(mentionable.agents), workflows: keep(mentionable.workflows) };
 }
 
