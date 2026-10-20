@@ -196,8 +196,9 @@ pages show the member, with their avatar, or "Scheduled". Every member reads, co
 deletes every run in the organisation, the ones chats and schedules started included, and to
 anyone else each is a 404.
 
-The creator brings people in with **invitation links**, made on the Organisation page
-(`POST /api/organisation/invites`, `expires_in_days` 1 to 30, a week by default): the response
+The creator brings people in with **invitation links**, made on the Organisation page's
+Invitations tab (`/organisation/invitations`; `POST /api/organisation/invites`, `expires_in_days`
+1 to 30, a week by default): the response
 carries the link's random token once, and only its hash is stored, so the page shows the link to
 copy and never again. `GET` lists the open links (who made each, when it expires) and `DELETE
 .../invites/{id}` revokes one; all three are the creator's (a 403 for another member). The link
@@ -212,7 +213,8 @@ and holding nothing but the defaults (no agents but the documents assistant, no 
 skills, chats, schedules, documents or data tables). The empty one is deleted as they join, and
 its data store goes `deleting` for the provisioning worker to drop (see Data stores). Otherwise
 it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
-the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
+the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page's Settings tab
+(`/organisation/settings`; `POST /api/organisation/leave`): they drop
 out of the organisation's chats (an add, a join or a new chat of theirs at the same moment is a
 404, not a way back into one), their unread notifications about its schema change requests go,
 and they land in a new personal organisation with a data store of its own; what they made stays,
@@ -681,7 +683,8 @@ written or deleted from since.
 
 #### Run history export
 
-On the Organisation page any member can switch on `export_run_history` (on `data_stores`): a
+On the Organisation page's Settings tab (`/organisation/settings`) any member can switch on
+`export_run_history` (on `data_stores`): a
 one-way copy of the organisation's runs (every member's and every schedule's, matched to the
 store by their agent's or workflow's organisation) into its store's `history` schema, keyed by the platform's ids and recording who
 started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
@@ -729,7 +732,7 @@ switched off with the export), embeds the exported messages so agents can search
   on queues the export, which embeds every message already there (a backfill);
   `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
   `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
-  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page) and
+  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page's Settings tab) and
   is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
   new embeddings and keeps the existing ones, which are still searched.
 - The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
