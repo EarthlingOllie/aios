@@ -1,5 +1,5 @@
 # Full stack locally: http://localhost:8080
-#   cp .env.example .env   # fill in GitHub OAuth + API keys
+#   cp .env.example .env   # fill in the API keys
 #   docker compose up --build
 name: aios
 

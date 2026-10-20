@@ -14,7 +14,7 @@ def libpq_conninfo(url: str, **parts: str) -> str:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Public origin the browser uses (SPA and API share it; the SPA calls /api/* and /login).
+    # Public origin the browser uses (SPA and API share it; the SPA calls the API at /api/*).
     public_url: str = "http://localhost:5173"
 
     # The platform database, as the app's role (`aios_app`, created by `aios.db_roles`): the API,
@@ -98,9 +98,6 @@ class Settings(BaseSettings):
     session_max_age: int = 60 * 60 * 24 * 14
     cookie_secure: bool = False
 
-    github_client_id: str = ""
-    github_client_secret: SecretStr = SecretStr("")
-
     # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
     llm_model: str = "anthropic:claude-sonnet-5-5"
@@ -180,10 +177,6 @@ class Settings(BaseSettings):
     # process with no free slot claims nothing, which leaves what's due for another replica or a
     # later tick.
     scheduler_max_concurrent_runs: int = Field(default=5, ge=1)
-
-    @property
-    def oauth_redirect_uri(self) -> str:
-        return f"{self.public_url.rstrip('/')}/auth/callback"
 
 
 @lru_cache

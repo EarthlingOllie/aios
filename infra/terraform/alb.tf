@@ -1,8 +1,9 @@
 locals {
   https      = var.certificate_arn != ""
   public_url = var.domain_name != "" ? "${local.https ? "https" : "http"}://${var.domain_name}" : "http://${aws_lb.main.dns_name}"
-  # Requests the ALB sends to the API; everything else is the SPA.
-  api_paths = ["/api/*", "/login", "/logout", "/auth/*"]
+  # Requests the ALB sends to the API; everything else is the SPA (its /login and /register
+  # included). The target groups' health checks reach each service directly.
+  api_paths = ["/api/*"]
 }
 
 resource "aws_lb" "main" {

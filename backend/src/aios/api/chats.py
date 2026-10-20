@@ -121,7 +121,7 @@ class ChatMemberOut(BaseModel):
     # The user's, agent's or workflow's id.
     target_id: int
     name: str
-    # Users only.
+    # Always null: users had them from GitHub. To be removed.
     login: str | None
     avatar_url: str | None
     added_at: datetime
@@ -164,8 +164,8 @@ def member_out(member: ChatMember) -> ChatMemberOut:
             role=member.role,
             target_id=user.id,
             name=user.full_name,
-            login=user.login,
-            avatar_url=user.avatar_url,
+            login=None,
+            avatar_url=None,
             added_at=member.added_at,
         )
     target = member.agent if member.kind == ChatMemberKind.agent else member.workflow
@@ -365,7 +365,7 @@ class MentionableOut(BaseModel):
     # The user's, agent's or workflow's id.
     id: int
     name: str
-    # Users only.
+    # Always null: users had them from GitHub. To be removed.
     login: str | None
     avatar_url: str | None
 
@@ -551,7 +551,7 @@ class MessageAuthorOut(BaseModel):
     # The user's, agent's or workflow's id.
     id: int
     name: str
-    # Users only.
+    # Always null: users had them from GitHub. To be removed.
     login: str | None
     avatar_url: str | None
 
@@ -630,8 +630,8 @@ def author_out(message: ChatMessage) -> MessageAuthorOut | None:
             kind=ChatAuthorKind.user,
             id=user.id,
             name=user.full_name,
-            login=user.login,
-            avatar_url=user.avatar_url,
+            login=None,
+            avatar_url=None,
         )
     target = message.author_agent or message.author_workflow
     if target is None:

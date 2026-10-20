@@ -18,6 +18,7 @@ from aios.api import (
     data,
     documents,
     dropped,
+    me,
     notifications,
     schema_changes,
     skills,
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
         https_only=settings.cookie_secure,
     )
     app.include_router(auth.router)
+    app.include_router(me.router)
     app.include_router(documents.router)
     app.include_router(data.router)
     app.include_router(skills.router)

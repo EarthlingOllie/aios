@@ -27,6 +27,7 @@ from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
+from aios.passwords import hash_password
 from aios.sandbox import runner
 
 
@@ -107,12 +108,27 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
+# Every test user's password, unless a test sets another. Its hash is made once, here, so making
+# users doesn't pay Argon2's cost each time.
+TEST_PASSWORD = "correct horse battery staple"
+TEST_PASSWORD_HASH = hash_password(TEST_PASSWORD)
+
+
 def build_user(handle: str | None = None, **values) -> User:
     """A user, not saved: every test's users are made here (or by `make_user`), so only this
-    knows the user's columns. `handle` is a word that tells them apart in a test (their login);
-    `values` sets other columns. Their GitHub id is a fresh negative one, so it can't clash."""
-    github_id = -1 - secrets.randbelow(2**62)
-    return User(github_id=github_id, login=handle or f"user{-github_id}", **values)
+    knows the user's columns. `handle` is a word that tells them apart in a test: their first
+    name, and the start of their email (which a random part keeps unique). Their last name is
+    "Tester", and their password `TEST_PASSWORD`. `values` sets other columns."""
+    handle = handle or f"user{secrets.token_hex(4)}"
+    return User(
+        **{
+            "first_name": handle,
+            "last_name": "Tester",
+            "email": f"{handle}-{secrets.token_hex(4)}@example.com",
+            "password_hash": TEST_PASSWORD_HASH,
+            **values,
+        }
+    )
 
 
 def make_user(db, handle: str | None = None, **values) -> User:
@@ -135,7 +151,8 @@ def signed_in_client(user: User) -> TestClient:
     """A client signed in as `user` through a real session cookie, as `auth.start_session`
     leaves it, so `CurrentUser` loads the user with the request's own session."""
     settings = get_settings()
-    session = base64.b64encode(json.dumps({"user_id": user.id}).encode())
+    data = {"user_id": user.id, "session_version": user.session_version}
+    session = base64.b64encode(json.dumps(data).encode())
     cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(session)
     return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
 
@@ -143,7 +160,7 @@ def signed_in_client(user: User) -> TestClient:
 @pytest.fixture
 def user(db):
     """A user whose store is provisioned and ready."""
-    u = provisioned_user(db, "test-user")
+    u = provisioned_user(db, "test-user", first_name="Test", last_name="User")
     yield u
     delete_user(db, u)
 

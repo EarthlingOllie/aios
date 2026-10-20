@@ -1,89 +1,106 @@
-"""GitHub OAuth (Authlib) and cookie sessions (Starlette SessionMiddleware).
+"""Accounts and cookie sessions: register and sign in with an email and password.
 
-Authlib keeps the OAuth `state` in `request.session`, and after the callback we store
-only the user's id there. The session is a signed (itsdangerous) cookie, so the SPA
-never handles tokens; it just sends the cookie.
+The session is Starlette's SessionMiddleware: a signed (itsdangerous) cookie holding the user's
+id and their `session_version` as it was when it started, so the SPA never handles tokens; it
+just sends the cookie. Bumping a user's `session_version` signs out every session they have.
+
+Hashing a password takes tens of milliseconds of CPU, so the endpoints that do are sync: FastAPI
+runs them in the threadpool.
 """
 
 import uuid
 from typing import Annotated
 
-from authlib.integrations.starlette_client import OAuth, OAuthError
+from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse
+from pydantic import AfterValidator, BaseModel, StringConstraints, ValidationInfo, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
 from aios.models import User
+from aios.passwords import hash_password, verify_password
 
-settings = get_settings()
+router = APIRouter(prefix="/api/auth")
 
-oauth = OAuth()
-oauth.register(
-    name="github",
-    client_id=settings.github_client_id,
-    client_secret=settings.github_client_secret.get_secret_value(),
-    access_token_url="https://github.com/login/oauth/access_token",
-    authorize_url="https://github.com/login/oauth/authorize",
-    api_base_url="https://api.github.com/",
-    client_kwargs={"scope": "read:user user:email"},
-)
-
-router = APIRouter()
+PASSWORD_MIN_LENGTH = 12
+# Hashing a very long password is costly, so a longer one is refused rather than hashed.
+PASSWORD_MAX_LENGTH = 256
 
 
-async def start_session(request: Request, user: User) -> None:
+def normalise_email(email: str) -> str:
+    """`email` as it's stored and looked up: trimmed, email-validator's normalised form (no DNS
+    check, so it works offline), then lower-cased, so one address in any case is one account.
+    Raises a validation error (422) when it isn't an email address."""
+    try:
+        normalised = validate_email(email.strip(), check_deliverability=False).normalized
+    except EmailNotValidError as exc:
+        raise PydanticCustomError("email", "{reason}", {"reason": str(exc)}) from exc
+    return normalised.lower()
+
+
+def check_new_password(password: str) -> str:
+    """A password someone is choosing: 12 to 256 characters, with no rules about what's in it."""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise PydanticCustomError(
+            "password_too_short",
+            "Password must be at least {min} characters",
+            {"min": PASSWORD_MIN_LENGTH},
+        )
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise PydanticCustomError(
+            "password_too_long",
+            "Password must be at most {max} characters",
+            {"max": PASSWORD_MAX_LENGTH},
+        )
+    return password
+
+
+def check_confirmation(confirmation: str, info: ValidationInfo, of: str) -> str:
+    """For a model's confirmation field: that it repeats the field `of` (unless that was refused
+    already, which says why)."""
+    if of in info.data and confirmation != info.data[of]:
+        raise PydanticCustomError("password_mismatch", "Passwords don't match")
+    return confirmation
+
+
+# Request fields shared by everything that takes a name, an email or a new password.
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+Email = Annotated[str, AfterValidator(normalise_email)]
+NewPassword = Annotated[str, AfterValidator(check_new_password)]
+
+
+class MeOut(BaseModel):
+    """The signed-in user, as `GET /api/me` and signing in answer."""
+
+    id: int
+    first_name: str
+    last_name: str
+    email: str
+
+
+def me_out(user: User) -> MeOut:
+    return MeOut(id=user.id, first_name=user.first_name, last_name=user.last_name, email=user.email)
+
+
+def start_session(request: Request, user: User) -> None:
     """Sign `user` in on this request: the one way a session starts. Their data store is made
-    (and queued to be provisioned) if it's missing, anything left in the session (e.g. OAuth
-    state) is dropped, and the fresh session holds only their id."""
-    await run_in_threadpool(data_store_for, user.id)
+    (and queued to be provisioned) if it's missing, anything left in the session is dropped, and
+    the fresh one holds their id and current `session_version`. It blocks (on the database), so
+    call it from a sync endpoint."""
+    data_store_for(user.id)
     request.session.clear()
     request.session["user_id"] = user.id
-
-
-@router.get("/login")
-async def login(request: Request):
-    return await oauth.github.authorize_redirect(request, settings.oauth_redirect_uri)
-
-
-@router.get("/auth/callback")
-async def auth_callback(request: Request, db: DB):
-    try:
-        token = await oauth.github.authorize_access_token(request)
-    except OAuthError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, exc.description or exc.error) from exc
-
-    profile = (await oauth.github.get("user", token=token)).json()
-    email = profile.get("email")
-    if not email:
-        emails = (await oauth.github.get("user/emails", token=token)).json()
-        email = next((e["email"] for e in emails if e.get("primary") and e.get("verified")), None)
-
-    user = db.scalar(select(User).where(User.github_id == profile["id"]))
-    if user is None:
-        user = User(github_id=profile["id"])
-        db.add(user)
-    user.login = profile["login"]
-    user.name = profile.get("name")
-    user.email = email
-    user.avatar_url = profile.get("avatar_url")
-    db.commit()
-    await start_session(request, user)
-    return RedirectResponse(settings.public_url, status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(request: Request) -> None:
-    request.session.clear()
+    request.session["session_version"] = user.session_version
 
 
 def current_user(request: Request, db: DB) -> User:
     user_id = request.session.get("user_id")
     user = db.get(User, user_id) if user_id is not None else None
-    if user is None:
+    # A session from before the user's `session_version` was bumped is signed out.
+    if user is None or request.session.get("session_version") != user.session_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not signed in")
     return user
 
@@ -99,3 +116,85 @@ def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
 
 # For endpoints that reach the user's data only through their store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]
+
+
+class OptionsOut(BaseModel):
+    # Whether the sign-in page offers the development "sign in as" picker.
+    dev_users: bool
+
+
+@router.get("/options", response_model=OptionsOut)
+def options():
+    return OptionsOut(dev_users=False)
+
+
+class RegisterIn(BaseModel):
+    first_name: Name
+    last_name: Name
+    email: Email
+    password: NewPassword
+    password_confirm: str
+
+    @field_validator("password_confirm")
+    @classmethod
+    def _confirms(cls, value: str, info: ValidationInfo) -> str:
+        return check_confirmation(value, info, of="password")
+
+
+EMAIL_TAKEN = "An account with this email already exists"
+
+
+@router.post("/register", response_model=MeOut, status_code=status.HTTP_201_CREATED)
+def register(body: RegisterIn, request: Request, db: DB):
+    """A new account, signed in, with its data store queued to be provisioned."""
+    if db.scalar(select(User.id).where(User.email == body.email)) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN)
+    user = User(
+        first_name=body.first_name,
+        last_name=body.last_name,
+        email=body.email,
+        password_hash=hash_password(body.password),
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Registered by another request since the check.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from exc
+    start_session(request, user)
+    return me_out(user)
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+BAD_CREDENTIALS = "Email or password is incorrect"
+
+
+@router.post("/login", response_model=MeOut)
+def login(body: LoginIn, request: Request, db: DB):
+    """Sign in. An unknown email and a wrong password get the same answer, in the same time."""
+    if len(body.password) > PASSWORD_MAX_LENGTH:
+        # No account has one this long, and hashing it would be costly.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, BAD_CREDENTIALS)
+    try:
+        email = normalise_email(body.email)
+    except PydanticCustomError:
+        email = None
+    user = db.scalar(select(User).where(User.email == email)) if email else None
+    ok, new_hash = verify_password(body.password, user.password_hash if user else None)
+    if user is None or not ok:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, BAD_CREDENTIALS)
+    if new_hash is not None:
+        user.password_hash = new_hash
+        db.commit()
+    start_session(request, user)
+    return me_out(user)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(request: Request) -> None:
+    request.session.clear()

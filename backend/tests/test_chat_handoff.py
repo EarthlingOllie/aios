@@ -149,7 +149,7 @@ def test_the_handoff_sees_the_last_messages_of_the_chat(api, monkeypatch):
     # Three messages: two before the mention, then the mention itself.
     sent = sent_chat(seen)
     assert [n for n in range(1, 6) if f"note-{n}" in sent] == [4, 5]
-    assert sent.index("note-4") < sent.index("note-5") < sent.index("[test-user (user)]: Go")
+    assert sent.index("note-4") < sent.index("note-5") < sent.index("[Test User (user)]: Go")
 
 
 def test_the_handoff_sees_about_as_many_tokens_of_the_chat_as_the_window_allows(api, monkeypatch):

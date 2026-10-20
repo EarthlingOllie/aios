@@ -18,7 +18,7 @@ from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
-from aios import auth, ingest, search, worker, workflows
+from aios import ingest, search, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
@@ -433,42 +433,6 @@ def test_the_platform_database_has_no_documents_or_chunks(db):
     ).all()
     assert "data_stores" in platform
     assert not {"documents", "chunks"} & set(platform)
-
-
-class FakeResponse:
-    def __init__(self, body):
-        self.body = body
-
-    def json(self):
-        return self.body
-
-
-def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
-    client, db, monkeypatch, provisioning
-):
-    github = auth.oauth.github
-
-    async def authorize_access_token(request):
-        return {"access_token": "t"}
-
-    async def get(path, token):
-        assert path == "user"
-        return FakeResponse({"id": -3, "login": "new-user", "email": "new@example.com"})
-
-    monkeypatch.setattr(github, "authorize_access_token", authorize_access_token)
-    monkeypatch.setattr(github, "get", get)
-
-    resp = client.get("/auth/callback?code=x&state=y", follow_redirects=False)
-
-    assert resp.status_code == 303
-    user = db.scalar(select(User).where(User.github_id == -3))
-    try:
-        stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id)).all()
-        assert [s.status for s in stores] == [DataStoreStatus.provisioning]
-        assert provisioning == [stores[0].id]
-    finally:
-        db.delete(user)
-        db.commit()
 
 
 def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, provisioning):

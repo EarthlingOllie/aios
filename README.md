@@ -272,8 +272,8 @@ the invocation's id and its chat as the session (see [Tracing](#tracing)).
   `aios.cron`.
 
 ```
-browser ──▶ ALB / nginx ──┬─ /api/*, /login, /logout, /auth/* ──▶ api (FastAPI + Uvicorn)
-                          └─ everything else ─────────────────▶ web (React SPA, static)
+browser ──▶ ALB / nginx ──┬─ /api/* ──────────▶ api (FastAPI + Uvicorn)
+                          └─ everything else ─▶ web (React SPA, static: /login and /register too)
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
 api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
@@ -285,7 +285,7 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 | Layer | Stack |
 | --- | --- |
 | Backend | Python 3.13, uv (exact pins, `exclude-newer = "7 days"`), hatchling, FastAPI + Uvicorn, Celery, pydantic-settings, SQLAlchemy + Alembic, psycopg 3 |
-| Auth | Authlib GitHub OAuth; Starlette `SessionMiddleware` (itsdangerous-signed cookie) holds the OAuth state, then the user id |
+| Auth | Our own accounts: email and password (Argon2id via `pwdlib`, emails checked and normalised by `email-validator`); Starlette `SessionMiddleware` (itsdangerous-signed cookie) holds the user id and their session version. See [Accounts](#accounts) |
 | Frontend | React + TypeScript, Vite, pnpm (`minimumReleaseAge: 10080` = 7 days), Tailwind v4 + shadcn/ui, Vercel AI SDK `useChat`, react-markdown + remark-gfm; markdown editing via `@github/markdown-toolbar-element` on plain textareas |
 | Retrieval | pgvector HNSW (cosine) + Postgres FTS (`tsvector`, GIN), RRF (k=60) |
 | Inference | LangGraph agents (LangChain `create_agent`, `anthropic:claude-sonnet-5-5` via `langchain-anthropic`), streamed to the UI by our own Vercel AI SDK adapter (`ui_stream.py`); LangGraph Postgres checkpointer for run history; `langchain-voyageai` embeddings (`voyageai:voyage-4`, 1024-d); Docling `HybridChunker` |
@@ -298,7 +298,9 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
-    auth.py         /login, /auth/callback, /logout, current_user
+    auth.py         /api/auth/{options,register,login,logout}, start_session, current_user
+    passwords.py    Argon2id hashing and checking
+    api/me.py       GET /api/me
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
@@ -347,17 +349,15 @@ docker-compose.yml  db, redis, rustfs, files-bucket, db-roles, migrate, migrate-
 
 ## Prerequisites
 
-1. A **GitHub OAuth app** (Settings → Developer settings → OAuth Apps). Callback URL:
-   `<PUBLIC_URL>/auth/callback`, e.g. `http://localhost:8080/auth/callback` for Compose,
-   `http://localhost:5173/auth/callback` for `pnpm dev`.
-2. An **Anthropic** API key and a **Voyage AI** API key.
+An **Anthropic** API key and a **Voyage AI** API key. Nothing else: aios has its own accounts
+(see [Accounts](#accounts)).
 
 ## Run everything in Docker
 
 ```sh
-cp .env.example .env     # fill in GitHub + API keys and a SESSION_SECRET
+cp .env.example .env     # fill in the API keys and a SESSION_SECRET
 docker compose up --build
-open http://localhost:8080
+open http://localhost:8080    # create an account at /register
 ```
 
 `db-roles` creates the database roles as the master user (see [Database roles](#database-roles)),
@@ -413,7 +413,7 @@ uv run celery -A aios.worker worker -Q provisioning -B --loglevel=INFO   # and d
 
 cd frontend
 pnpm install
-pnpm dev                 # http://localhost:5173, proxies /api, /login, /auth to :8000
+pnpm dev                 # http://localhost:5173, proxies /api to :8000
 ```
 
 Checks: `uv run ruff check . && uv run ruff format --check . && uv run pytest` (backend; DB tests
@@ -427,6 +427,35 @@ mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
 (frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
 need no backend. Run `pnpm exec playwright install chromium` once first, or point
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
+
+### Accounts
+
+People register at `/register` (first name, last name, email, and a password typed twice) and
+sign in at `/login` with their email and password. Both pages are the SPA's; they call the API
+under `/api/auth` (`register`, `login`, `logout`, and `options`, which says whether the sign-in
+page offers anything more), and `GET /api/me` answers who's signed in. There's no third-party
+sign-in, and no emails are sent (no verification, no password reset).
+
+- **Passwords** are 12 to 256 characters, with no rules about what's in them, and stored as
+  Argon2id hashes (`aios.passwords`). A wrong password and an unknown email get the same answer
+  ("Email or password is incorrect"), and take as long: an unknown email is checked against a
+  dummy hash.
+- **Emails** are trimmed, normalised and lower-cased before they're stored or looked up, so one
+  address in any case is one account. Registering a taken one answers 409.
+- **Names** are trimmed and must not be empty; the app shows a user as "First Last".
+- **Sessions** are the signed cookie (`aios_session`, 14 days). Registering signs the new user
+  in and queues their data store, as signing in does if they have none (`aios.auth.start_session`
+  starts every session). Each session holds the user's `session_version` from when it started;
+  one that no longer matches the user's is signed out (401).
+- A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
+  (only ever to a page on aios itself).
+
+**Upgrading a database from GitHub sign-in.** Migration `0029` deletes the users who signed in
+with GitHub (they have no password), and everything they owned. Their data stores' rows go, but
+not the stores' databases and roles, which the app's role can't drop. On a development
+database it's simplest to start again: `docker compose down -v` (which also empties RustFS), or
+drop and recreate the `aios` database, then run the steps above (`aios.db_roles`, `alembic
+upgrade head`) again.
 
 ### Database roles
 
@@ -645,7 +674,6 @@ terraform apply                                 # VPC, RDS, Valkey, ALB, ECS, EC
 
 # Credentials stay out of Terraform state. Set them once:
 aws secretsmanager put-secret-value --secret-id aios/external --secret-string '{
-  "GITHUB_CLIENT_ID": "...", "GITHUB_CLIENT_SECRET": "...",
   "ANTHROPIC_API_KEY": "...", "VOYAGE_API_KEY": "..."}'
 
 cd ../..
@@ -733,8 +761,8 @@ Known limits:
   and the ingest worker's task roles may get, put and delete objects, under `stores/*`, and the
   app subnets reach it through an S3 gateway endpoint.
 - **User data goes through a data store** (`aios.datastores`, the `data_stores` table): one per
-  user, with an id of its own, created when they sign in. Document upload, listing, deletion,
-  search, ingest and the document search tools open their sessions with
+  user, with an id of its own, created when they register (or sign in without one). Document
+  upload, listing, deletion, search, ingest and the document search tools open their sessions with
   `store_session(data_store_id, role)`; the run context (`ChatDeps`) and the ingest task carry
   the `data_store_id`, not the user. Each store is a database of its own, so isolating users'
   documents is the database's job, not a filter in every query.

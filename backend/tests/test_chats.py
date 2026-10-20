@@ -18,7 +18,7 @@ def make_chat(api, name: str, **extra) -> dict:
 @pytest.fixture
 def other(db):
     """A second signed-up user, to be another member (or not) of the first's chats."""
-    u = make_user(db, "other", name="Other Person")
+    u = make_user(db, "other", first_name="Other", last_name="Person")
     yield u
     db.delete(u)
     db.commit()
@@ -51,8 +51,8 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert member["kind"] == "user"
     assert member["role"] == "owner"
     assert member["target_id"] == user.id
-    assert member["name"] == "test-user"
-    assert member["login"] == "test-user"
+    assert member["name"] == "Test User"
+    assert (member["login"], member["avatar_url"]) == (None, None)
     assert chat["created_at"] == chat["updated_at"]
 
 
@@ -87,7 +87,7 @@ def test_the_owner_adds_a_user_as_a_member(api, user, other):
     owner, member = updated["members"]["users"]
     assert owner["target_id"] == user.id and owner["role"] == "owner"
     assert member["target_id"] == other.id and member["role"] == "member"
-    assert member["name"] == "Other Person" and member["login"] == "other"
+    assert member["name"] == "Other Person"
 
     # Once only.
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
@@ -239,8 +239,8 @@ def test_a_member_posts_a_markdown_message(api, user):
     assert message["author"] == {
         "kind": "user",
         "id": user.id,
-        "name": "test-user",
-        "login": "test-user",
+        "name": "Test User",
+        "login": None,
         "avatar_url": None,
     }
     assert messages(api, chat) == {"messages": [message], "invocations": []}
@@ -397,15 +397,15 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
             {
                 "kind": "user",
                 "id": user.id,
-                "name": "test-user",
-                "login": "test-user",
+                "name": "Test User",
+                "login": None,
                 "avatar_url": None,
             },
             {
                 "kind": "user",
                 "id": other.id,
                 "name": "Other Person",
-                "login": "other",
+                "login": None,
                 "avatar_url": None,
             },
         ],

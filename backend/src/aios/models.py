@@ -33,11 +33,16 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    github_id: Mapped[int] = mapped_column(BigInteger, unique=True)
-    login: Mapped[str] = mapped_column(String(255))
-    name: Mapped[str | None] = mapped_column(String(255))
-    email: Mapped[str | None] = mapped_column(String(320))
-    avatar_url: Mapped[str | None] = mapped_column(Text)
+    # Trimmed and non-empty (`aios.auth.Name`). The app shows them by both (`full_name`).
+    first_name: Mapped[str] = mapped_column(String(100))
+    last_name: Mapped[str] = mapped_column(String(100))
+    # What they sign in with: stored normalised (`aios.auth.Email`), so it's unique in any case.
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    # An Argon2id PHC string (`aios.passwords`).
+    password_hash: Mapped[str] = mapped_column(Text)
+    # Copied into each session at sign-in (`aios.auth.start_session`): a session holding another
+    # value is signed out, so bumping it signs out every session the user has.
+    session_version: Mapped[int] = mapped_column(server_default=text("0"))
     # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
     export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     # Embed the exported messages too, so agents can search past runs by meaning. Only while
@@ -47,8 +52,8 @@ class User(Base):
 
     @property
     def full_name(self) -> str:
-        """How the app shows the user, wherever it names them: their name, else their login."""
-        return self.name or self.login
+        """How the app shows the user, wherever it names them: "First Last"."""
+        return f"{self.first_name} {self.last_name}"
 
 
 class DataStoreStatus(enum.StrEnum):

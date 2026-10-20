@@ -1,11 +1,24 @@
 import type { UIMessage } from "ai";
 
+/** The signed-in user (`GET /api/me`). */
 export type User = {
   id: number;
-  login: string;
-  /** The name the app shows them by. */
-  name: string;
-  avatar_url: string | null;
+  first_name: string;
+  last_name: string;
+  email: string;
+};
+
+/** The name the app shows a user by, as the API does: "First Last". */
+export function fullName(user: Pick<User, "first_name" | "last_name">): string {
+  return `${user.first_name} ${user.last_name}`;
+}
+
+export type Registration = {
+  first_name: string;
+  last_name: string;
+  email: string;
+  password: string;
+  password_confirm: string;
 };
 
 /** The user's data store: documents and search wait until it's "ready". */
@@ -815,7 +828,10 @@ const json = (method: string, body: unknown): RequestInit => ({
 
 export const api = {
   me: () => request<User>("/api/me"),
-  logout: () => request<void>("/logout", { method: "POST" }),
+  register: (body: Registration) => request<User>("/api/auth/register", json("POST", body)),
+  login: (body: { email: string; password: string }) =>
+    request<User>("/api/auth/login", json("POST", body)),
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),

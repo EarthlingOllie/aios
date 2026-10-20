@@ -1,5 +1,5 @@
 output "url" {
-  description = "Public URL. Register <url>/auth/callback as the GitHub OAuth app's callback."
+  description = "Public URL."
   value       = local.public_url
 }
 
@@ -17,7 +17,7 @@ output "ecs_cluster" {
 }
 
 output "external_secret_id" {
-  description = "Put GitHub OAuth + Anthropic + Voyage credentials here."
+  description = "Put the Anthropic and Voyage API keys here."
   value       = aws_secretsmanager_secret.external.name
 }
 

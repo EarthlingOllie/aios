@@ -246,6 +246,10 @@ export type RunRow = {
   stale_pins: StalePinRow[];
 };
 
+/** Someone who can sign in, as the API keeps them (the password in the clear: it's a fake). */
+export type Account = { id: number; first_name: string; last_name: string; email: string; password: string };
+const accountOut = ({ password: _password, ...user }: Account) => user;
+
 export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
@@ -375,7 +379,18 @@ export class FakeApi {
    * of a chat that started it (which the fake doesn't check), and that read only.
    */
   othersOwn = new Set<number>();
-  /** The signed-in user. */
+  /**
+   * Who can sign in. The first is signed in from the start, so a test needn't sign in unless it's
+   * about signing in.
+   */
+  accounts: Account[] = [
+    { id: 1, first_name: "Terry", last_name: "Tester", email: "tester@example.com", password: "correct horse battery" },
+  ];
+  /** The signed-in account's id; null once signed out. Signed out, only /api/auth/* answers. */
+  signedInAs: number | null = 1;
+  /** How long signing in or registering takes to answer (ms). */
+  authDelay = 0;
+  /** The signed-in user as chats show them (whoever signed in: chats don't name users by account yet). */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
   invocations = new Map<number, InvocationRow>();
@@ -1462,6 +1477,39 @@ export class FakeApi {
     );
   }
 
+  /** `/api/auth/*`, as the API checks what it's sent: [status, body]. */
+  private auth(method: string, path: string, body: Record<string, string> | null): [number, unknown] {
+    const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
+    const findByEmail = (email: string) =>
+      this.accounts.find((a) => a.email === email.trim().toLowerCase());
+    if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: false }];
+    if (path === "/api/auth/logout" && method === "POST") {
+      this.signedInAs = null;
+      return [204, undefined];
+    }
+    if (path === "/api/auth/login" && method === "POST") {
+      const account = findByEmail(body?.email ?? "");
+      if (!account || account.password !== body?.password) return [401, { detail: "Email or password is incorrect" }];
+      this.signedInAs = account.id;
+      return [200, accountOut(account)];
+    }
+    if (path === "/api/auth/register" && method === "POST" && body) {
+      const [first_name, last_name, email] = [body.first_name.trim(), body.last_name.trim(), body.email.trim()];
+      if (!first_name) return invalid("first_name", "String should have at least 1 character");
+      if (!last_name) return invalid("last_name", "String should have at least 1 character");
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return invalid("email", "The email address is not valid.");
+      if (body.password.length < 12) return invalid("password", "Password must be at least 12 characters");
+      if (body.password.length > 256) return invalid("password", "Password must be at most 256 characters");
+      if (body.password_confirm !== body.password) return invalid("password_confirm", "Passwords don't match");
+      if (findByEmail(email)) return [409, { detail: "An account with this email already exists" }];
+      const account = { id: this.id(), first_name, last_name, email: email.toLowerCase(), password: body.password };
+      this.accounts.push(account);
+      this.signedInAs = account.id;
+      return [201, accountOut(account)];
+    }
+    return [404, { detail: "Not Found" }];
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -1492,13 +1540,21 @@ export class FakeApi {
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
+    if (path.startsWith("/api/auth/")) {
+      await new Promise((resolve) => setTimeout(resolve, this.authDelay));
+      const [status, json] = this.auth(method, path, body);
+      return reply(status, json);
+    }
+    const account = this.accounts.find((a) => a.id === this.signedInAs);
+    if (!account) return fail(401, "Not signed in");
+
     // Another user's agent or workflow: only a run of it can be read (see `othersOwn`).
     if ((m = path.match(/^\/api\/(?:agents|workflows)\/(\d+)(\/.*)?$/)) && this.othersOwn.has(Number(m[1]))) {
       const readable = method === "GET" && /^\/runs\/\d+(\/subworkflow)?$/.test(m[2] ?? "");
       if (!readable) return fail(404, "Not Found");
     }
 
-    if (path === "/api/me") return reply(200, { ...this.me, name: fullName(this.me) });
+    if (path === "/api/me") return reply(200, accountOut(account));
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       if (this.dataStoreFails) return fail(500, "Internal Server Error");
