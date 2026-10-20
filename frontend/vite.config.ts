@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// In dev, proxy the backend routes so the SPA and API share an origin (and the session cookie).
+// In dev, proxy the API so the SPA and API share an origin (and the session cookie).
 const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 export default defineConfig({
@@ -18,9 +18,6 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": backend,
-      "/login": backend,
-      "/logout": backend,
-      "/auth": backend,
     },
   },
 });

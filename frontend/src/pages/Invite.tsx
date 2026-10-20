@@ -17,8 +17,8 @@ export function InviteRoute() {
 
 /**
  * An invitation link's page (`/invite/:token`), signed in or out: which organisation it's for,
- * and Accept, or Sign in (which keeps the token through GitHub's sign-in, and joins a new user
- * on the way back). An expired or revoked link says so. Accepting from an empty personal
+ * and Accept, or, signed out, Register (which sends the token with the registration, joining the
+ * new user) and Sign in, each coming back here. An expired or revoked link says so. Accepting from an empty personal
  * organisation deletes it; otherwise the page shows the API's reason: when the user's organisation
  * has things in it, linking to where each kind can be deleted, and when it's one they must leave
  * first, to where it's left (the Organisation page's Settings tab).
@@ -73,15 +73,27 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
     const { organisation } = invitation;
     title = `Join ${organisation.name}`;
     if (!me) {
+      // Where registering or signing in comes back to: this page.
+      const here = `/invite/${encodeURIComponent(token)}`;
       body = (
         <>
           <p className="text-muted-foreground text-sm">
-            You've been invited to join {organisation.name} on aios. Sign in to accept.
+            You've been invited to join {organisation.name} on aios. Create an account to accept.
           </p>
           <Button asChild className="w-full">
-            {/* A plain link: the backend keeps the token through the OAuth round trip. */}
-            <a href={`/login?invite=${encodeURIComponent(token)}`}>Sign in with GitHub to accept</a>
+            <Link to={`/register?${new URLSearchParams({ invite: token, next: here })}`}>
+              Create an account to accept
+            </Link>
           </Button>
+          <p className="text-muted-foreground text-center text-sm">
+            Already have an account?{" "}
+            <Link
+              to={`/login?${new URLSearchParams({ next: here })}`}
+              className="text-foreground underline underline-offset-4"
+            >
+              Sign in
+            </Link>
+          </p>
         </>
       );
     } else if (me.organisation.id === organisation.id) {

@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 
 import pytest
-from conftest import delete_user, join_organisation, sign_up
+from conftest import delete_user, join_organisation, make_user
 
 from aios.api import chats
 from aios.auth import current_user
@@ -19,7 +19,7 @@ def make_chat(api, name: str, **extra) -> dict:
 def other(db, user):
     """A second member of the first user's organisation, to be another member (or not) of their
     chats. Gone first, with the organisation and what's in it."""
-    u = join_organisation(db, user, -2, "other", name="Other Person")
+    u = join_organisation(db, user, "other", first_name="Other", last_name="Person")
     yield u
     delete_user(db, u)
 
@@ -27,7 +27,7 @@ def other(db, user):
 @pytest.fixture
 def outsider(db):
     """A user in an organisation of their own."""
-    u = sign_up(db, -3, "outsider")
+    u = make_user(db, "outsider")
     yield u
     delete_user(db, u)
 
@@ -58,8 +58,8 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert member["kind"] == "user"
     assert member["role"] == "owner"
     assert member["target_id"] == user.id
-    assert member["name"] == "test-user"
-    assert member["login"] == "test-user"
+    assert member["name"] == "Test User"
+    assert "login" not in member and "avatar_url" not in member
     assert chat["created_at"] == chat["updated_at"]
 
 
@@ -93,7 +93,7 @@ def test_the_owner_adds_a_user_as_a_member(api, user, other):
     owner, member = updated["members"]["users"]
     assert owner["target_id"] == user.id and owner["role"] == "owner"
     assert member["target_id"] == other.id and member["role"] == "member"
-    assert member["name"] == "Other Person" and member["login"] == "other"
+    assert member["name"] == "Other Person"
 
     # Once only.
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
@@ -242,13 +242,7 @@ def test_a_member_posts_a_markdown_message(api, user):
     assert message["body"] == "Hello, **world**"
     assert message["mentions"] == []
     assert message["invocation_id"] is None
-    assert message["author"] == {
-        "kind": "user",
-        "id": user.id,
-        "name": "test-user",
-        "login": "test-user",
-        "avatar_url": None,
-    }
+    assert message["author"] == {"kind": "user", "id": user.id, "name": "Test User"}
     assert messages(api, chat) == {"messages": [message], "invocations": []}
 
 
@@ -321,7 +315,7 @@ def test_the_before_cursor_pages_back_through_history(api, monkeypatch):
 
 
 def test_a_message_outlives_its_author(api, db, user):
-    leaver = join_organisation(db, user, -3, "leaver")
+    leaver = join_organisation(db, user, "leaver")
     chat = make_chat(api, "Design", visibility="public")
     add_user(api, chat, leaver)
     with signed_in_as(leaver):
@@ -404,16 +398,16 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
             {
                 "kind": "user",
                 "id": user.id,
-                "name": "test-user",
-                "login": "test-user",
-                "avatar_url": None,
+                "name": "Test User",
+                "first_name": "Test",
+                "last_name": "User",
             },
             {
                 "kind": "user",
                 "id": other.id,
                 "name": "Other Person",
-                "login": "other",
-                "avatar_url": None,
+                "first_name": "Other",
+                "last_name": "Person",
             },
         ],
         "agents": [
@@ -421,15 +415,15 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
                 "kind": "agent",
                 "id": assistant["target_id"],
                 "name": "Documents assistant",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             },
             {
                 "kind": "agent",
                 "id": agent["id"],
                 "name": "Review",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             },
         ],
         "workflows": [
@@ -437,8 +431,8 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
                 "kind": "workflow",
                 "id": workflow["id"],
                 "name": "Review",
-                "login": None,
-                "avatar_url": None,
+                "first_name": None,
+                "last_name": None,
             }
         ],
     }
@@ -540,6 +534,44 @@ def test_mentions_are_stored_structurally(api, user, other):
     resp = api.put(f"/api/agents/{agent['id']}", json={"name": "Critique"})
     assert resp.status_code == 200, resp.text
     assert messages(api, chat)["messages"][0] == message
+
+
+def test_a_mention_of_a_user_still_points_at_them_once_theyre_renamed(api, db, other):
+    chat = make_chat(api, "Design")
+    add_user(api, chat, other)
+    token = f"@[Other Person](user:{other.id})"
+    mention = {"kind": "user", "id": other.id}
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages", json={"body": f"Hi {token}", "mentions": [mention]}
+    )
+    assert resp.status_code == 201, resp.text
+    before = resp.json()["messages"][0]
+
+    other.first_name, other.last_name = "Otto", "Persson"
+    db.commit()
+
+    # The old message still names them as they were, and still points at them by id.
+    assert messages(api, chat)["messages"][0] == before
+    assert before["mentions"] == [{"kind": "user", "id": other.id, "name": "Other Person"}]
+    # A token with their old name resolves to them by its id, under their new name.
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages", json={"body": f"Again {token}", "mentions": [mention]}
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["messages"][0]["mentions"] == [
+        {"kind": "user", "id": other.id, "name": "Otto Persson"}
+    ]
+    # Everywhere else shows their new name.
+    [_, member] = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
+    assert member["name"] == "Otto Persson"
+    [_, mentionable] = api.get(f"/api/chats/{chat['id']}/mentionable").json()["users"]
+    assert mentionable == {
+        "kind": "user",
+        "id": other.id,
+        "name": "Otto Persson",
+        "first_name": "Otto",
+        "last_name": "Persson",
+    }
 
 
 def test_a_mention_of_a_non_member_is_refused(api, other):

@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { ApiError, type Organisation, type User } from "@/lib/api";
 import { contentLink, describeOrganisation, leaveRefusal, linkName, notEmpty } from "@/lib/organisation";
 
-const me: User = { id: 1, login: "tester", name: "Tester", avatar_url: null };
-const sam: User = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+const me: User = { id: 1, name: "Terry Tester" };
+const sam: User = { id: 2, name: "Sam Jones" };
 const base: Organisation = {
   id: 1,
-  name: "tester",
+  name: "Terry Tester",
   personal: true,
   is_creator: true,
   creator: me,
@@ -25,9 +25,9 @@ describe("describeOrganisation", () => {
     expect(describeOrganisation(org, me)).toBe("A personal organisation, created by Sam Jones.");
   });
 
-  it("falls back to the creator's login when they have no name", () => {
-    const org = { ...base, personal: false, is_creator: false, creator: { ...sam, name: null } };
-    expect(describeOrganisation(org, me)).toBe("Created by sam.");
+  it("names the creator of an organisation that isn't personal", () => {
+    const org = { ...base, personal: false, is_creator: false, creator: sam };
+    expect(describeOrganisation(org, me)).toBe("Created by Sam Jones.");
   });
 
   it("says when the creator's account is gone", () => {

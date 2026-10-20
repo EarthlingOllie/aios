@@ -1,6 +1,9 @@
 import asyncio
+import base64
 import io
+import json
 import os
+import secrets
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
@@ -10,11 +13,12 @@ import fake_model
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
+from itsdangerous import TimestampSigner
 from psycopg import errors
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import checkpoints, organisations
+from aios import checkpoints, organisations, ratelimits
 from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
@@ -32,6 +36,7 @@ from aios.models import (
     User,
     Workflow,
 )
+from aios.passwords import hash_password
 from aios.sandbox import runner
 
 
@@ -77,6 +82,12 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
     return queued
+
+
+@pytest.fixture(autouse=True)
+def rate_limits() -> None:
+    """Every test starts with no attempts counted against the rate limits (in Redis)."""
+    ratelimits.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -133,10 +144,33 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
-def sign_up(db, github_id: int, login: str, **fields) -> User:
-    """A new user in their personal organisation, as signing in leaves them, with no store yet.
-    Delete them with `delete_user`."""
-    u = User(github_id=github_id, login=login, **fields)
+# Every test user's password, unless a test sets another. Its hash is made once, here, so making
+# users doesn't pay Argon2's cost each time.
+TEST_PASSWORD = "correct horse battery staple"
+TEST_PASSWORD_HASH = hash_password(TEST_PASSWORD)
+
+
+def build_user(handle: str | None = None, **values) -> User:
+    """A user, not saved: every test's users are made here (or by `make_user`), so only this
+    knows the user's columns. `handle` is a word that tells them apart in a test: their first
+    name, and the start of their email (which a random part keeps unique). Their last name is
+    "Tester", and their password `TEST_PASSWORD`. `values` sets other columns."""
+    handle = handle or f"user{secrets.token_hex(4)}"
+    return User(
+        **{
+            "first_name": handle,
+            "last_name": "Tester",
+            "email": f"{handle}-{secrets.token_hex(4)}@example.com",
+            "password_hash": TEST_PASSWORD_HASH,
+            **values,
+        }
+    )
+
+
+def make_user(db, handle: str | None = None, **values) -> User:
+    """A new user (as `build_user`) in their personal organisation, as registering leaves them,
+    with no store yet. Delete them with `delete_user`."""
+    u = build_user(handle, **values)
     db.add(u)
     db.flush()
     organisations.create_personal(db, u)
@@ -150,10 +184,10 @@ def store_of(user: User) -> uuid.UUID:
         return data_store_for(organisations.membership_of(db, user.id).id)
 
 
-def join_organisation(db, of: User, github_id: int, login: str, **fields) -> User:
-    """A new user who is a member of `of`'s organisation (not its creator). Delete them with
-    `delete_user`, which deletes the shared organisation and what's in it."""
-    u = User(github_id=github_id, login=login, **fields)
+def join_organisation(db, of: User, handle: str | None = None, **values) -> User:
+    """A new user (as `build_user`) who is a member of `of`'s organisation (not its creator).
+    Delete them with `delete_user`, which deletes the shared organisation and what's in it."""
+    u = build_user(handle, **values)
     db.add(u)
     db.flush()
     db.add(OrganisationMember(organisation_id=org_of(db, of).id, user_id=u.id))
@@ -172,18 +206,43 @@ def made_by(db, user: User) -> dict:
     return provenance.made_by(org_of(db, user).id, user.id)
 
 
-def provisioned_user(db, github_id: int, login: str) -> User:
-    """A new user, with their organisation's store provisioned: a database of its own, ready.
-    Delete them with `delete_user`."""
-    u = sign_up(db, github_id, login)
+def provisioned_user(db, handle: str | None = None, **values) -> User:
+    """A new user (as `make_user`), with their organisation's store provisioned: a database of
+    its own, ready. Delete them with `delete_user`."""
+    u = make_user(db, handle, **values)
     provision.provision(store_of(u))
     return u
+
+
+def signed_in_client(user: User) -> TestClient:
+    """A client signed in as `user` through a real session cookie, as `auth.start_session`
+    leaves it, so `CurrentUser` loads the user with the request's own session."""
+    settings = get_settings()
+    data = {"user_id": user.id, "session_version": user.session_version}
+    session = base64.b64encode(json.dumps(data).encode())
+    cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(session)
+    return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
+
+
+def register(client: TestClient, first_name: str, last_name: str = "Tester", **values):
+    """Register a new account through the API, as the sign-up page does: a fresh email and the
+    password `TEST_PASSWORD`; `values` adds to the body (an invitation link's `invite`). Answers
+    the response. Delete the user it made with `delete_user`."""
+    body = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": f"registered-{secrets.token_hex(4)}@example.com",
+        "password": TEST_PASSWORD,
+        "password_confirm": TEST_PASSWORD,
+        **values,
+    }
+    return client.post("/api/auth/register", json=body)
 
 
 @pytest.fixture
 def user(db):
     """A user whose store is provisioned and ready."""
-    u = provisioned_user(db, -1, "test-user")
+    u = provisioned_user(db, "test-user", first_name="Test", last_name="User")
     yield u
     delete_user(db, u)
 
@@ -223,7 +282,7 @@ def new_user(db) -> Iterator[Callable[[], User]]:
     made: list[User] = []
 
     def make() -> User:
-        u = sign_up(db, -(1000 + len(made)), f"new-user-{len(made)}")
+        u = make_user(db, f"new-user-{len(made)}")
         made.append(u)
         return u
 

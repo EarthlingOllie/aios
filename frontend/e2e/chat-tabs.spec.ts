@@ -4,7 +4,7 @@ import { fakeApi, type ChatUser } from "./fake-api";
 
 /** The chat page splits into tabs: Chat (the room) and Members. */
 
-const sam: ChatUser = { id: 2, login: "sam", name: "Sam" };
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 // How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
 const LIST_POLL_MS = 5000;
 

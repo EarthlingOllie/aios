@@ -6,7 +6,15 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import delete_user, join_organisation, sign_up, store_of
+from conftest import (
+    TEST_PASSWORD,
+    build_user,
+    delete_user,
+    join_organisation,
+    make_user,
+    register,
+    store_of,
+)
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
 from test_organisations import in_the_background, picking_names_at_most
@@ -54,15 +62,7 @@ def leave_behind(db, u: User) -> None:
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation, who isn't its creator."""
-    u = User(github_id=-2, login="member", name="Member Person")
-    db.add(u)
-    db.flush()
-    db.add(
-        OrganisationMember(
-            organisation_id=organisations.membership_of(db, user.id).id, user_id=u.id
-        )
-    )
-    db.commit()
+    u = join_organisation(db, user, "member", first_name="Member", last_name="Person")
     yield u
     leave_behind(db, u)
 
@@ -167,87 +167,78 @@ def test_a_link_of_another_organisation_cant_be_revoked(api, new_user):
         assert len(api.get("/api/organisation/invites").json()) == 1
 
 
-def by_github_id(db, github_id: int) -> User | None:
+def registered(db, resp) -> User:
+    """The user a registration (`conftest.register`) made."""
+    assert resp.status_code == 201, resp.text
     db.expire_all()
-    return db.scalar(select(User).where(User.github_id == github_id))
+    return db.get(User, resp.json()["id"])
 
 
-def test_signing_up_through_a_link_joins_the_organisation_and_makes_no_personal_one(
-    api, db, user, monkeypatch
-):
-    from test_organisations import sign_in
-
+def test_registering_through_a_link_joins_the_organisation_and_makes_no_personal_one(api, db, user):
     link = make_link(api)
+    joiner = None
     with signed_out():
         try:
-            # Opening the invite page signed out, they sign in from it.
-            opened = api.get(f"/login?invite={link['token']}", follow_redirects=False)
-            assert opened.status_code == 302
-            resp = sign_in(api, monkeypatch, -46, "joiner")
-            assert resp.status_code == 303
-            assert resp.headers["location"] == "http://localhost:5173"
-            joiner = by_github_id(db, -46)
+            # Opening the invite page signed out, they register from it.
+            assert api.get(f"/api/invites/{link['token']}").status_code == 200
+            resp = register(api, "Joiner", invite=link["token"])
+            joiner = registered(db, resp)
             org = organisations.membership_of(db, joiner.id)
             assert org.id == organisations.membership_of(db, user.id).id
-            assert db.scalar(select(Organisation).where(Organisation.name == "joiner")) is None
+            assert resp.json()["organisation"]["id"] == org.id
+            assert (
+                db.scalar(select(Organisation).where(Organisation.name == "Joiner Tester")) is None
+            )
         finally:
-            if (joiner := by_github_id(db, -46)) is not None:
+            if joiner is not None:
                 leave_behind(db, joiner)
             api.cookies.clear()
 
 
-def test_the_member_list_says_which_link_each_member_came_through(api, db, user, monkeypatch):
-    from test_organisations import sign_in
-
+def test_the_member_list_says_which_link_each_member_came_through(api, db, user):
     link = make_link(api)
     with signed_out():
-        api.get(f"/login?invite={link['token']}", follow_redirects=False)
-        sign_in(api, monkeypatch, -47, "joiner")
+        joiner = registered(db, register(api, "Joiner", invite=link["token"]))
         api.cookies.clear()
     try:
         members = api.get("/api/organisation").json()["members"]
-        assert [(m["user"]["login"], m["invite_id"]) for m in members] == [
-            ("test-user", None),
-            ("joiner", link["id"]),
+        assert [(m["user"]["name"], m["invite_id"]) for m in members] == [
+            ("Test User", None),
+            ("Joiner Tester", link["id"]),
         ]
     finally:
-        leave_behind(db, by_github_id(db, -47))
+        leave_behind(db, joiner)
 
 
-def test_signing_up_through_an_expired_link_makes_a_personal_organisation_and_says_why(
-    api, db, monkeypatch
-):
-    from test_organisations import sign_in
-
+def test_registering_through_a_revoked_link_makes_a_personal_organisation(api, db):
     link = make_link(api)
     api.delete(f"/api/organisation/invites/{link['id']}")
+    latecomer = None
     with signed_out():
         try:
-            api.get(f"/login?invite={link['token']}", follow_redirects=False)
-            resp = sign_in(api, monkeypatch, -48, "latecomer")
-            # Back to the invite page, which says the link no longer opens.
-            assert resp.headers["location"] == f"http://localhost:5173/invite/{link['token']}"
-            org = organisations.membership_of(db, by_github_id(db, -48).id)
-            assert (org.name, org.personal) == ("latecomer", True)
+            latecomer = registered(db, register(api, "Latecomer", invite=link["token"]))
+            org = organisations.membership_of(db, latecomer.id)
+            assert (org.name, org.personal) == ("Latecomer Tester", True)
         finally:
-            if (u := by_github_id(db, -48)) is not None:
-                delete_user(db, u)
+            if latecomer is not None:
+                delete_user(db, latecomer)
             api.cookies.clear()
 
 
-def test_signing_in_through_a_link_while_in_an_organisation_stays_in_it(api, db, monkeypatch):
-    from test_organisations import sign_in
-
+def test_signing_in_from_a_links_page_while_in_an_organisation_stays_in_it(api, db):
+    """Signing in never moves anyone: the invite page they're sent back to is where they accept
+    the link, or are told why they can't."""
     link = make_link(api)
-    existing = sign_up(db, -49, "existing")
+    existing = make_user(db, "existing")
     try:
         with signed_out():
-            api.get(f"/login?invite={link['token']}", follow_redirects=False)
-            resp = sign_in(api, monkeypatch, -49, "existing")
-            # The invite page, where accepting says why they can't.
-            assert resp.headers["location"] == f"http://localhost:5173/invite/{link['token']}"
+            resp = api.post(
+                "/api/auth/login",
+                json={"email": existing.email, "password": TEST_PASSWORD, "invite": link["token"]},
+            )
+            assert resp.status_code == 200, resp.text
             api.cookies.clear()
-        assert organisations.membership_of(db, existing.id).name == "existing"
+        assert organisations.membership_of(db, existing.id).name == "existing Tester"
     finally:
         delete_user(db, existing)
 
@@ -257,22 +248,23 @@ def test_accepting_while_in_another_organisation_is_refused(api, db, user, new_u
     other = new_user()
     # Not theirs alone: an empty organisation of their own would be deleted as they join
     # (`test_empty_organisation`).
-    friend = join_organisation(db, other, -51, "friend")
+    friend = join_organisation(db, other, "friend")
     try:
         with signed_in_as(other):
             resp = api.post(f"/api/invites/{link['token']}/accept")
             assert resp.status_code == 409
             assert resp.json()["detail"] == (
-                f"You're a member of {other.login}. You can be in only one organisation at a time."
+                f"You're a member of {other.full_name}. You can be in only one organisation at a "
+                "time."
             )
-            assert api.get("/api/me").json()["organisation"]["name"] == other.login
+            assert api.get("/api/me").json()["organisation"]["name"] == other.full_name
     finally:
         db.delete(friend)
         db.commit()
     # And the creator, already in it.
     resp = api.post(f"/api/invites/{link['token']}/accept")
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "You're already a member of test-user."
+    assert resp.json()["detail"] == "You're already a member of Test User."
 
 
 def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
@@ -286,8 +278,8 @@ def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
         with signed_in_as(stray):
             resp = api.post(f"/api/invites/{link['token']}/accept")
             assert resp.status_code == 200, resp.text
-            assert resp.json()["name"] == "test-user"
-            assert api.get("/api/me").json()["organisation"]["name"] == "test-user"
+            assert resp.json()["name"] == "Test User"
+            assert api.get("/api/me").json()["organisation"]["name"] == "Test User"
         members = api.get("/api/organisation").json()["members"]
         assert [(m["user"]["id"], m["invite_id"]) for m in members] == [
             (user.id, None),
@@ -302,7 +294,7 @@ def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
 def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, user, member):
     from test_chats import make_chat
 
-    elsewhere = sign_up(db, -50, "elsewhere")
+    elsewhere = make_user(db, "elsewhere")
     try:
         ours = make_chat(api, "ours", visibility="public")
         with signed_in_as(elsewhere):
@@ -338,7 +330,11 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
             resp = api.post("/api/organisation/leave")
             assert resp.status_code == 200, resp.text
             mine = resp.json()
-            assert (mine["name"], mine["personal"], mine["is_creator"]) == ("member", True, True)
+            assert (mine["name"], mine["personal"], mine["is_creator"]) == (
+                "Member Person",
+                True,
+                True,
+            )
             assert [m["user"]["id"] for m in mine["members"]] == [member.id]
             assert api.get("/api/me").json()["organisation"]["id"] == mine["id"]
             # With a store of its own, as signing up gives a new organisation.
@@ -361,13 +357,13 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         delete_user(db, elsewhere)
 
 
-def test_leaving_while_a_sign_up_takes_the_login_lands_in_a_suffixed_one(api, db, user, member):
-    """Another GitHub account with the member's login signs up as they leave: the name looked
-    free to the leave, and is taken by the time it inserts."""
+def test_leaving_while_a_sign_up_takes_the_name_lands_in_a_suffixed_one(api, db, user, member):
+    """Someone else with the member's name signs up as they leave: the name looked free to the
+    leave, and is taken by the time it inserts."""
+    twin = build_user("twin", first_name="Member", last_name="Person")
     try:
         with SessionLocal() as signing_up:
             # The sign-up, flushed but not committed: the leave waits on its name.
-            twin = User(github_id=-47, login="member")
             signing_up.add(twin)
             signing_up.flush()
             organisations.create_personal(signing_up, twin)
@@ -382,25 +378,28 @@ def test_leaving_while_a_sign_up_takes_the_login_lands_in_a_suffixed_one(api, db
         resp = result["value"]
         assert resp.status_code == 200, resp.text
         mine = resp.json()
-        assert (mine["name"], mine["personal"], mine["is_creator"]) == ("member-2", True, True)
+        assert (mine["name"], mine["personal"], mine["is_creator"]) == (
+            "Member Person-2",
+            True,
+            True,
+        )
         assert [m["user"]["id"] for m in mine["members"]] == [member.id]
         # The rest of the leave held: they're out of the organisation they left.
         members = api.get("/api/organisation").json()["members"]
         assert [m["user"]["id"] for m in members] == [user.id]
     finally:
-        twin = db.scalar(select(User).where(User.github_id == -47))
-        if twin is not None:
+        if twin.id is not None and (twin := db.get(User, twin.id)) is not None:
             delete_user(db, twin)
 
 
-def test_leaving_with_a_login_with_like_wildcards_or_a_backslash_lands_in_the_next_free_name(
+def test_leaving_with_a_name_with_like_wildcards_or_a_backslash_lands_in_the_next_free_name(
     api, db, member, monkeypatch
 ):
-    """`_`, `%` and `\\` mean something to LIKE. A member whose login has them sees the names
-    they could take (their login, and it suffixed) as taken when they leave, and only those."""
-    login = "mem\\_%"
-    member.login = login
-    others = [login, f"{login}-2", "mem__x", "mem__x-3"]
+    """`_`, `%` and `\\` mean something to LIKE. A member whose name has them sees the names
+    they could take (their name, and it suffixed) as taken when they leave, and only those."""
+    member.first_name = "mem\\_%"
+    name = member.full_name
+    others = [name, f"{name}-2", "mem__x Person", "mem__x Person-3"]
     try:
         db.add_all(Organisation(name=n) for n in others)
         db.commit()
@@ -409,7 +408,7 @@ def test_leaving_with_a_login_with_like_wildcards_or_a_backslash_lands_in_the_ne
         with signed_in_as(member):
             resp = api.post("/api/organisation/leave")
         assert resp.status_code == 200, resp.text
-        assert (resp.json()["name"], resp.json()["is_creator"]) == (f"{login}-3", True)
+        assert (resp.json()["name"], resp.json()["is_creator"]) == (f"{name}-3", True)
     finally:
         db.execute(delete(Organisation).where(Organisation.name.in_(others)))
         db.commit()
@@ -422,7 +421,7 @@ def test_the_last_member_cant_leave(api, user):
         "You're its only member, so nobody would be left to see what's in it: an organisation "
         "can't be left empty."
     )
-    assert api.get("/api/me").json()["organisation"]["name"] == "test-user"
+    assert api.get("/api/me").json()["organisation"]["name"] == "Test User"
 
 
 def test_the_creator_cant_leave_while_others_remain(api, user, member):

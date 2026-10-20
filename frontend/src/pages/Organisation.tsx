@@ -104,19 +104,15 @@ function MembersList({ org, me }: { org: Organisation; me: Me | null }) {
     <ul aria-label="Members" className="divide-y rounded-md border">
       {org.members.map((m) => (
         <li key={m.user.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-          {m.user.avatar_url ? (
-            <img src={m.user.avatar_url} alt="" className="size-7 rounded-full" />
-          ) : (
-            <span className="bg-muted size-7 shrink-0 rounded-full" />
-          )}
+          <span className="bg-muted size-7 shrink-0 rounded-full" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate font-medium">{m.user.name ?? m.user.login}</span>
+              <span className="truncate font-medium">{m.user.name}</span>
               {m.user.id === me?.id && <Badge variant="secondary">You</Badge>}
               {m.user.id === org.creator?.id && <Badge variant="outline">Creator</Badge>}
             </div>
             <div className="text-muted-foreground truncate text-xs">
-              {m.user.login} · Joined {formatDate(m.joined_at)}
+              Joined {formatDate(m.joined_at)}
               {m.invite_id && ` through ${linkName(m.invite_id)}`}
             </div>
           </div>

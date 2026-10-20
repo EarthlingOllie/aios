@@ -1,7 +1,6 @@
-"""The signed-in user (`GET /api/me`) and their organisation (`/api/organisation`, see
-`aios.organisations`).
+"""The signed-in user's organisation (`/api/organisation`, see `aios.organisations`); which one
+they're in is on `GET /api/me` (`aios.api.me`), which the shell shows.
 
-`/api/me` says who the user is and which organisation they're in, which the shell shows.
 `GET /api/organisation` is the Organisation page: the name, the creator and the members with
 when each joined; `PUT` renames it, for the creator only (a 403 for another member), to a name
 no other organisation has (a 409 otherwise).
@@ -29,7 +28,7 @@ from sqlalchemy.orm import Session, selectinload
 from aios import organisations
 from aios.api.provenance import UserOut, people
 from aios.api.skills import on_conflict
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentUser, OrganisationSummaryOut, summary_out
 from aios.config import get_settings
 from aios.db import DB, SessionLocal
 from aios.models import Organisation, OrganisationInvite, OrganisationMember, User
@@ -45,19 +44,6 @@ NOT_THE_INVITER = "Only the organisation's creator can invite people into it."
 NO_SUCH_INVITE = "This invitation link has expired or been revoked, or never existed."
 # The one-organisation-per-user index: two accepts at once by one user.
 MEMBERSHIP_CONSTRAINT = "uq_organisation_members_user_id"
-
-
-class OrganisationSummaryOut(BaseModel):
-    id: int
-    name: str
-    # Made for one user on sign-up (or on leaving another organisation).
-    personal: bool
-    # Whether the signed-in user is its creator, who alone may rename it.
-    is_creator: bool
-
-
-class MeOut(UserOut):
-    organisation: OrganisationSummaryOut
 
 
 class MemberOut(BaseModel):
@@ -79,12 +65,6 @@ class OrganisationIn(BaseModel):
     name: str = Field(min_length=1, max_length=255, pattern=r"\S")
 
 
-def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
-    return OrganisationSummaryOut(
-        id=org.id, name=org.name, personal=org.personal, is_creator=org.created_by == user.id
-    )
-
-
 def organisation_out(db: Session, org: Organisation, user: User) -> OrganisationOut:
     members = db.scalars(
         select(OrganisationMember)
@@ -104,17 +84,6 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
             for m in members
         ],
         created_at=org.created_at,
-    )
-
-
-@router.get("/me", response_model=MeOut)
-def me(user: CurrentUser, org: CurrentOrganisation):
-    return MeOut(
-        id=user.id,
-        login=user.login,
-        name=user.name,
-        avatar_url=user.avatar_url,
-        organisation=summary_out(org, user),
     )
 
 

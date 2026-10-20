@@ -16,7 +16,7 @@ const sort = (page: Page, name: string) => page.getByRole("combobox", { name: `S
 
 // How often the chat list asks again (CHAT_LIST_POLL_MS).
 const CHAT_LIST_POLL_MS = 5000;
-const sam: ChatUser = { id: 2, login: "sam", name: "Sam" };
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("the agents can be shown by whether they've been run, and sorted by most runs", async ({ page }) => {
   const api = await fakeApi(page);

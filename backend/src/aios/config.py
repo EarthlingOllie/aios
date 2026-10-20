@@ -14,7 +14,7 @@ def libpq_conninfo(url: str, **parts: str) -> str:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Public origin the browser uses (SPA and API share it; the SPA calls /api/* and /login).
+    # Public origin the browser uses (SPA and API share it; the SPA calls the API at /api/*).
     public_url: str = "http://localhost:5173"
 
     # The platform database, as the app's role (`aios_app`, created by `aios.db_roles`): the API,
@@ -97,9 +97,21 @@ class Settings(BaseSettings):
     session_cookie: str = "aios_session"
     session_max_age: int = 60 * 60 * 24 * 14
     cookie_secure: bool = False
+    # The sign-in page's "sign in as" picker (`aios.dev_auth`): any user, with no password. For
+    # development only: Compose turns it on; production never does.
+    dev_login_enabled: bool = False
 
-    github_client_id: str = ""
-    github_client_secret: SecretStr = SecretStr("")
+    # Rate limits on signing in, registering and checking a signed-in user's current password
+    # (`aios.ratelimits`), as `limits` strings ("<count>/<period>", e.g. "10/15 minutes"),
+    # counted in Redis. Past one: 429, no lockout.
+    login_rate_limit_per_email: str = "10/15 minutes"
+    login_rate_limit_per_ip: str = "50/15 minutes"
+    register_rate_limit_per_ip: str = "5/hour"
+    current_password_rate_limit_per_user: str = "10/15 minutes"
+    # How many proxies in front of the API append the address they saw to X-Forwarded-For: 1
+    # behind the load balancer (or Compose's nginx), 0 when the API is reached directly. The
+    # client's address, which the per-IP limits count, is the one the outermost proxy appended.
+    trusted_proxy_count: int = Field(default=0, ge=0)
 
     # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
@@ -180,10 +192,6 @@ class Settings(BaseSettings):
     # process with no free slot claims nothing, which leaves what's due for another replica or a
     # later tick.
     scheduler_max_concurrent_runs: int = Field(default=5, ge=1)
-
-    @property
-    def oauth_redirect_uri(self) -> str:
-        return f"{self.public_url.rstrip('/')}/auth/callback"
 
 
 @lru_cache

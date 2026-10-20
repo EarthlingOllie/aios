@@ -282,7 +282,24 @@ export type RunRow = {
   stale_pins: StalePinRow[];
 };
 
-export type ChatUser = { id: number; login: string; name: string | null; avatar_url?: string | null };
+/** Someone who can sign in, as the API keeps them (the password in the clear: it's a fake). */
+export type Account = { id: number; first_name: string; last_name: string; email: string; password: string };
+const accountOut = ({ password: _password, ...user }: Account) => user;
+
+/** A 422 for one field, as the API answers it: [status, body]. */
+const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
+const isEmail = (email: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+
+/** Why a new password (in `field`) is refused, as the API says it, or undefined when it isn't. */
+function newPasswordInvalid(field: string, password: string, confirmation: unknown, confirmField: string) {
+  if (password.length < 12) return invalid(field, "Password must be at least 12 characters");
+  if (password.length > 256) return invalid(field, "Password must be at most 256 characters");
+  if (confirmation !== password) return invalid(confirmField, "Passwords don't match");
+  return undefined;
+}
+
+/** A user as chats show them (an `Account` is one). */
+export type ChatUser = Pick<Account, "id" | "first_name" | "last_name">;
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
   | {
@@ -304,8 +321,6 @@ type ChatMemberOut = {
   role: "owner" | "member" | null;
   target_id: number;
   name: string;
-  login: string | null;
-  avatar_url: string | null;
   added_at: string;
 };
 export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
@@ -367,6 +382,26 @@ export type InvocationRow = {
   finished_at: string | null;
 };
 
+/** How the API names a user (the backend's `User.full_name`): "First Last". */
+function fullName(user: ChatUser): string {
+  return `${user.first_name} ${user.last_name}`;
+}
+
+/**
+ * A user anywhere in a response, as the API names them: by their full name, as `name` (who made
+ * or changed something, a member, an invitation's creator), and never with their password.
+ */
+function asTheApiNamesThem(_key: string, value: unknown) {
+  if (value && typeof value === "object" && "first_name" in value && "last_name" in value && !("name" in value)) {
+    const { password: _password, ...user } = value as Account;
+    return { ...user, name: fullName(user) };
+  }
+  return value;
+}
+
+/** Whether a message's author is a user (rather than an agent or a workflow). */
+const isUser = (author: ChatAuthor): author is ChatUser => "first_name" in author;
+
 /** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
 function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
   const of = (kind: ChatMention["kind"]) => members.filter((m) => m.kind === kind);
@@ -420,8 +455,31 @@ export class FakeApi {
    * "edits" a workflow by taking it off the list.
    */
   agentDependents = new Map<number, AgentDependentsRow>();
-  /** The signed-in user. */
-  me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
+  /**
+   * Who can sign in. The first is signed in from the start, so a test needn't sign in unless it's
+   * about signing in.
+   */
+  accounts: Account[] = [
+    { id: 1, first_name: "Terry", last_name: "Tester", email: "tester@example.com", password: "correct horse battery" },
+  ];
+  /**
+   * The signed-in account's id; null once signed out. Signed out, only /api/auth/*, /api/dev/*
+   * and opening an invitation link answer: everything else is a 401.
+   */
+  signedInAs: number | null = 1;
+  /** How long signing in or registering takes to answer (ms). */
+  authDelay = 0;
+  /** Whether the dev "sign in as" picker is on (DEV_LOGIN_ENABLED): off, /api/dev/* is a 404. */
+  devUsers = false;
+  /**
+   * While true, signing in, registering, and the profile's current-password checks (changing the
+   * email or password) answer 429, as the API's rate limits do.
+   */
+  authThrottled = false;
+  /** The signed-in account (the first while no one is): who a chat's owner, member or author is by default. */
+  get me(): Account {
+    return this.accounts.find((a) => a.id === this.signedInAs) ?? this.accounts[0];
+  }
   /**
    * The organisation `me` is in, as `GET /api/organisation` answers: their personal one, which
    * they created, with them as its first member. `me` is its creator while `creator` is them.
@@ -436,8 +494,6 @@ export class FakeApi {
   };
   /** Names other organisations have: renaming to one answers 409, as the API does. */
   organisationNamesTaken = new Set<string>();
-  /** While false, nobody is signed in: every endpoint but opening an invitation link is a 401. */
-  signedIn = true;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
   invites: InviteRow[] = [];
   /**
@@ -563,6 +619,43 @@ export class FakeApi {
 
   private inviteOut({ token: _token, ...invite }: InviteRow) {
     return invite;
+  }
+
+  /** The signed-in user as `/api/me` (and signing in) answers. */
+  private meOut(account: Account) {
+    return { ...accountOut(account), organisation: this.organisationSummary() };
+  }
+
+  /**
+   * As registering does: the new account joins the organisation the invitation link `token` is
+   * for, if it opens (`invites` or `invitations`), else gets a personal one. Either becomes the
+   * fake's one `organisation`.
+   */
+  private joinOnRegistering(account: Account, token: string | undefined) {
+    const now = new Date().toISOString();
+    const own = token ? this.invites.find((i) => i.token === token) : undefined;
+    const other = token ? this.invitations.get(token) : undefined;
+    if (own) {
+      this.organisation.members.push({ user: account, joined_at: now, invite_id: own.id });
+    } else if (other) {
+      this.organisation = {
+        ...other.organisation,
+        personal: false,
+        creator: null,
+        members: [{ user: account, joined_at: now, invite_id: null }],
+        created_at: now,
+      };
+    } else {
+      this.organisation = {
+        id: this.id(),
+        name: fullName(account),
+        personal: true,
+        creator: account,
+        members: [{ user: account, joined_at: now, invite_id: null }],
+        created_at: now,
+      };
+      this.invites = [];
+    }
   }
 
   /** The organisation as `/api/me` carries it. */
@@ -1123,7 +1216,7 @@ export class FakeApi {
       visibility = "private" as ChatVisibility,
       owner = this.me,
       organisation_id = this.organisation.id,
-    } = {},
+    }: { description?: string; visibility?: ChatVisibility; owner?: ChatUser; organisation_id?: number } = {},
   ): ChatRow {
     const chat: ChatRow = {
       id: this.id(),
@@ -1527,13 +1620,11 @@ export class FakeApi {
         const { id, kind, added_at } = m;
         if (kind === "user") {
           const { user, role } = m;
-          const [login, avatar_url] = [user.login, user.avatar_url ?? null];
-          return [{ id, kind, role, target_id: user.id, name: user.name ?? login, login, avatar_url, added_at }];
+          return [{ id, kind, role, target_id: user.id, name: fullName(user), added_at }];
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
-        const name = target.name;
-        return [{ id, kind, role: null, target_id: target.id, name, login: null, avatar_url: null, added_at }];
+        return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at }];
       })
       .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
   }
@@ -1544,14 +1635,12 @@ export class FakeApi {
 
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
   private mentionable(chat: ChatRow) {
+    const users = new Map(chat.members.flatMap((m) => (m.kind === "user" ? [[m.user.id, m.user]] : [])));
     return byKind(
-      this.liveMembers(chat).map(({ kind, target_id, name, login, avatar_url }) => ({
-        kind,
-        id: target_id,
-        name,
-        login,
-        avatar_url,
-      })),
+      this.liveMembers(chat).map(({ kind, target_id, name }) => {
+        const user = kind === "user" ? users.get(target_id) : undefined;
+        return { kind, id: target_id, name, first_name: user?.first_name ?? null, last_name: user?.last_name ?? null };
+      }),
     );
   }
 
@@ -1560,16 +1649,7 @@ export class FakeApi {
     return {
       id: m.id,
       chat_id: chat.id,
-      author:
-        "login" in author
-          ? {
-              kind: "user",
-              id: author.id,
-              name: author.name ?? author.login,
-              login: author.login,
-              avatar_url: author.avatar_url ?? null,
-            }
-          : { ...author, login: null, avatar_url: null },
+      author: isUser(author) ? { kind: "user", id: author.id, name: fullName(author) } : author,
       kind: m.kind,
       body: m.body,
       mentions: m.mentions,
@@ -1659,7 +1739,7 @@ export class FakeApi {
     const mine = this.myMembership(chat);
     if (!mine) return null;
     return chat.messages.filter(
-      (m) => m.id > (mine.last_read ?? 0) && !("login" in m.author && m.author.id === this.me.id),
+      (m) => m.id > (mine.last_read ?? 0) && !(isUser(m.author) && m.author.id === this.me.id),
     ).length;
   }
 
@@ -1693,6 +1773,80 @@ export class FakeApi {
     );
   }
 
+  /** `/api/auth/*` and `/api/dev/*`, as the API checks what it's sent: [status, body]. */
+  private auth(method: string, path: string, body: Record<string, string> | null): [number, unknown] {
+    const findByEmail = (email: string) =>
+      this.accounts.find((a) => a.email === email.trim().toLowerCase());
+    if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: this.devUsers }];
+    if (path.startsWith("/api/dev/") && !this.devUsers) return [404, { detail: "Not Found" }];
+    if (path === "/api/dev/users" && method === "GET") {
+      const sorted = [...this.accounts].sort(
+        (a, b) => a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name),
+      );
+      return [200, sorted.map(accountOut)];
+    }
+    if (path === "/api/dev/session" && method === "POST") {
+      const account = this.accounts.find((a) => a.id === Number(body?.user_id));
+      if (!account) return [404, { detail: "No such user" }];
+      this.signedInAs = account.id;
+      return [200, this.meOut(account)];
+    }
+    if (this.authThrottled && (path === "/api/auth/login" || path === "/api/auth/register")) {
+      return [429, { detail: "Too many attempts. Try again later." }];
+    }
+    if (path === "/api/auth/logout" && method === "POST") {
+      this.signedInAs = null;
+      return [204, undefined];
+    }
+    if (path === "/api/auth/login" && method === "POST") {
+      const account = findByEmail(body?.email ?? "");
+      if (!account || account.password !== body?.password) return [401, { detail: "Email or password is incorrect" }];
+      this.signedInAs = account.id;
+      return [200, this.meOut(account)];
+    }
+    if (path === "/api/auth/register" && method === "POST" && body) {
+      const [first_name, last_name, email] = [body.first_name.trim(), body.last_name.trim(), body.email.trim()];
+      if (!first_name) return invalid("first_name", "String should have at least 1 character");
+      if (!last_name) return invalid("last_name", "String should have at least 1 character");
+      if (!isEmail(email)) return invalid("email", "The email address is not valid.");
+      const refused = newPasswordInvalid("password", body.password, body.password_confirm, "password_confirm");
+      if (refused) return refused;
+      if (findByEmail(email)) return [409, { detail: "An account with this email already exists" }];
+      const account = { id: this.id(), first_name, last_name, email: email.toLowerCase(), password: body.password };
+      this.accounts.push(account);
+      this.signedInAs = account.id;
+      this.joinOnRegistering(account, body.invite);
+      return [201, this.meOut(account)];
+    }
+    return [404, { detail: "Not Found" }];
+  }
+
+  /**
+   * `PUT /api/me/email` and `/api/me/password`, as the API checks them: [status, body]. Changing
+   * the password signs out the API's other sessions, but this one stays signed in (and the fake
+   * keeps only one).
+   */
+  private changeCredentials(account: Account, path: string, body: Record<string, string> | null): [number, unknown] {
+    if (path === "/api/me/email") {
+      const email = String(body?.email ?? "").trim().toLowerCase();
+      if (!isEmail(email)) return invalid("email", "The email address is not valid.");
+      if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
+      if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
+      if (this.accounts.some((a) => a.email === email && a.id !== account.id)) {
+        return [409, { detail: "An account with this email already exists" }];
+      }
+      account.email = email;
+      return [200, this.meOut(account)];
+    }
+    const password = String(body?.new_password ?? "");
+    const refused = newPasswordInvalid("new_password", password, body?.new_password_confirm, "new_password_confirm");
+    if (refused) return refused;
+    if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
+    if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
+    account.password = password;
+    return [204, undefined];
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -1718,11 +1872,16 @@ export class FakeApi {
       route.fulfill({
         status,
         contentType: "application/json",
-        body: json === undefined ? "" : JSON.stringify(json),
+        body: json === undefined ? "" : JSON.stringify(json, asTheApiNamesThem),
       });
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
+    if (path.startsWith("/api/auth/") || path.startsWith("/api/dev/")) {
+      await new Promise((resolve) => setTimeout(resolve, this.authDelay));
+      const [status, json] = this.auth(method, path, body);
+      return reply(status, json);
+    }
     if ((m = path.match(/^\/api\/invites\/([^/]+)(\/accept)?$/))) {
       const token = decodeURIComponent(m[1]);
       const own = this.invites.find((i) => i.token === token);
@@ -1734,7 +1893,7 @@ export class FakeApi {
         });
       if (!invitation) return fail(404, "This invitation link has expired or been revoked, or never existed.");
       if (!m[2] && method === "GET") return reply(200, invitation);
-      if (!this.signedIn) return fail(401, "Not signed in");
+      if (this.signedInAs === null) return fail(401, "Not signed in");
       if (invitation.organisation.id === this.organisation.id) {
         return fail(409, `You're already a member of ${this.organisation.name}.`);
       }
@@ -1764,8 +1923,27 @@ export class FakeApi {
       };
       return reply(200, this.organisationOut());
     }
-    if (!this.signedIn) return fail(401, "Not signed in");
-    if (path === "/api/me") return reply(200, { ...this.me, organisation: this.organisationSummary() });
+    const account = this.accounts.find((a) => a.id === this.signedInAs);
+    if (!account) return fail(401, "Not signed in");
+    if (path === "/api/me" && method === "PATCH") {
+      // As the API: each name sent is trimmed and must be 1 to 100 characters; one left out is kept.
+      const names: Partial<Record<"first_name" | "last_name", string>> = {};
+      for (const field of ["first_name", "last_name"] as const) {
+        if (body?.[field] === undefined) continue;
+        const value = String(body[field] ?? "").trim();
+        if (!value) return reply(422, { detail: [{ loc: ["body", field], msg: "String should have at least 1 character" }] });
+        if (value.length > 100) return reply(422, { detail: [{ loc: ["body", field], msg: "String should have at most 100 characters" }] });
+        names[field] = value;
+      }
+      Object.assign(account, names);
+      return reply(200, this.meOut(account));
+    }
+    if ((path === "/api/me/email" || path === "/api/me/password") && method === "PUT") {
+      const [status, json] = this.changeCredentials(account, path, body);
+      return reply(status, json);
+    }
+
+    if (path === "/api/me") return reply(200, this.meOut(account));
     if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
       if (this.organisation.creator?.id !== this.me.id) {
         return fail(403, "Only the organisation's creator can invite people into it.");
@@ -1803,7 +1981,7 @@ export class FakeApi {
       const now = new Date().toISOString();
       this.organisation = {
         id: this.id(),
-        name: this.me.login,
+        name: fullName(this.me),
         personal: true,
         creator: this.me,
         members: [{ user: this.me, joined_at: now, invite_id: null }],

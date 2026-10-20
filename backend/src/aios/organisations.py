@@ -1,7 +1,8 @@
 """Organisations: the groups users are in, which own what their members make.
 
 Every user is in exactly one organisation at a time. Signing up without an invitation makes a
-**personal** one, named after the login (`personal_name`: suffixed when that name is taken),
+**personal** one, named after the user's full name (`personal_name`: suffixed when that name is
+taken),
 with the user as its creator and only member; the upgrade did the same for every user from
 before (revision 0030). Membership is a table all the same (`OrganisationMember`), held to one
 per user by a unique index, so several can come later without a schema change; the request's
@@ -70,7 +71,7 @@ from aios.models import (
     Workflow,
 )
 
-# The suffix between a login and the number that makes its name unique: `sam`, `sam-2`, `sam-3`.
+# The suffix between a name and the number that makes it unique: `Sam Jones`, `Sam Jones-2`, ...
 SUFFIX = "-"
 
 
@@ -81,27 +82,27 @@ def membership_of(db: Session, user_id: int) -> Organisation | None:
     )
 
 
-def personal_name(db: Session, login: str) -> str:
-    """The name for a personal organisation: the login, or the login with the first free
-    `-2`, `-3`, ... suffix when that's taken (as the data migration named them).
+def personal_name(db: Session, base: str) -> str:
+    """The name for a personal organisation: `base` (the user's full name), or `base` with the
+    first free `-2`, `-3`, ... suffix when that's taken (as the data migration named them).
 
-    It reads only the names it could pick: the login, and the login and `-` followed by
-    anything (which also has a few it never would, like `sam-team`). The login is escaped
+    It reads only the names it could pick: `base`, and `base` and `-` followed by anything
+    (which also has a few it never would, like `Sam Jones-team`). `base` is escaped
     (`autoescape`), so a `_`, `%` or `\\` in it is itself, not a wildcard or an escape; these
     comparisons are exact and case-sensitive, as the unique constraint on the name is. Missing
     a taken name would make `create_personal` pick it again for ever; reading every name a
-    short login's wildcards match would be slow."""
+    short name's wildcards match would be slow."""
     taken = set(
         db.scalars(
             select(Organisation.name).where(
-                (Organisation.name == login)
-                | Organisation.name.startswith(f"{login}{SUFFIX}", autoescape=True)
+                (Organisation.name == base)
+                | Organisation.name.startswith(f"{base}{SUFFIX}", autoescape=True)
             )
         ).all()
     )
-    name, n = login, 2
+    name, n = base, 2
     while name in taken:
-        name, n = f"{login}{SUFFIX}{n}", n + 1
+        name, n = f"{base}{SUFFIX}{n}", n + 1
     return name
 
 
@@ -117,7 +118,7 @@ def create_personal(db: Session, user: User) -> Organisation:
     while True:
         org_id = db.scalar(
             insert(Organisation)
-            .values(name=personal_name(db, user.login), personal=True, created_by=user.id)
+            .values(name=personal_name(db, user.full_name), personal=True, created_by=user.id)
             .on_conflict_do_nothing(index_elements=[Organisation.name])
             .returning(Organisation.id)
         )

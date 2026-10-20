@@ -1,9 +1,10 @@
 import { Link } from "react-router";
 
 import { Section } from "@/components/crud";
+import { ProfileSection } from "@/components/Profile";
 import { useCurrentUser } from "@/lib/current-user";
 
-/** The user's own settings: so far, only where the organisation's are. */
+/** The user's own settings: their profile, and where the organisation's are. */
 export function SettingsPage() {
   const me = useCurrentUser();
 
@@ -14,6 +15,7 @@ export function SettingsPage() {
           <h1 className="text-xl font-semibold">Settings</h1>
           <p className="text-muted-foreground mt-1 text-sm">Manage your account.</p>
         </header>
+        <ProfileSection />
         {me && (
           <Section title="Organisation">
             <p className="text-muted-foreground text-sm">

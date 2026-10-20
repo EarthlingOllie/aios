@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 
 import pytest
-from conftest import provisioned_user, store_of
+from conftest import build_user, join_organisation, provisioned_user, store_of
 from fake_model import replies, use_model
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -40,15 +40,7 @@ from aios.workflows import execute_run
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation, who isn't its creator."""
-    u = User(github_id=-2, login="member", name="Member Person", avatar_url="https://a/m.png")
-    db.add(u)
-    db.flush()
-    db.add(
-        OrganisationMember(
-            organisation_id=organisations.membership_of(db, user.id).id, user_id=u.id
-        )
-    )
-    db.commit()
+    u = join_organisation(db, user, "member", first_name="Member", last_name="Person")
     yield u
     db.delete(u)
     db.commit()
@@ -59,7 +51,7 @@ def outsider(db):
     """A user in another organisation, with its own store provisioned."""
     from conftest import delete_user
 
-    u = provisioned_user(db, -3, "outsider")
+    u = provisioned_user(db, "outsider")
     yield u
     delete_user(db, u)
 
@@ -90,10 +82,10 @@ def upload(api, name: str) -> dict:
 
 
 def uploaders(api) -> list[tuple[str, str | None]]:
-    """Each listed document's filename and its uploader's login, newest first."""
+    """Each listed document's filename and its uploader's name, newest first."""
     r = api.get("/api/documents")
     assert r.status_code == 200, r.text
-    return [(d["filename"], (d["uploaded_by"] or {}).get("login")) for d in r.json()]
+    return [(d["filename"], (d["uploaded_by"] or {}).get("name")) for d in r.json()]
 
 
 # --- The upgrade ---------------------------------------------------------------------------------
@@ -104,8 +96,8 @@ def test_the_upgrade_points_each_store_at_its_owners_organisation_with_their_exp
     owned by a user in their personal organisation (revision 0030), one with the export and
     embedding on."""
     step = revision("0035_organisation_data_stores")
-    exporting = User(github_id=-911, login="exporting")
-    quiet = User(github_id=-912, login="quiet")
+    exporting = build_user("exporting")
+    quiet = build_user("quiet")
     db.add_all([exporting, quiet])
     db.flush()
     for u in (exporting, quiet):
@@ -161,27 +153,22 @@ def test_members_share_the_organisations_store_and_see_who_uploaded_each_documen
 ):
     assert store_of(member) == store_of(user)
     mine = upload(api, "mine.md")
-    assert mine["uploaded_by"] == {
-        "id": user.id,
-        "login": "test-user",
-        "name": None,
-        "avatar_url": None,
-    }
+    assert mine["uploaded_by"] == {"id": user.id, "name": "Test User"}
 
     with signed_in_as(member):
         theirs = upload(api, "theirs.md")
-        assert theirs["uploaded_by"]["login"] == "member"
-        assert uploaders(api) == [("theirs.md", "member"), ("mine.md", "test-user")]
+        assert theirs["uploaded_by"]["name"] == "Member Person"
+        assert uploaders(api) == [("theirs.md", "Member Person"), ("mine.md", "Test User")]
         # Another member's document is theirs to download and delete too.
         download = api.get(f"/api/documents/{mine['id']}/download", follow_redirects=False)
         assert download.status_code == 302
         member_view = (api.get("/api/data-store").json(), api.get("/api/data/tables").json())
 
-    assert uploaders(api) == [("theirs.md", "member"), ("mine.md", "test-user")]
+    assert uploaders(api) == [("theirs.md", "Member Person"), ("mine.md", "Test User")]
     assert (api.get("/api/data-store").json(), api.get("/api/data/tables").json()) == member_view
     assert api.delete(f"/api/documents/{theirs['id']}").status_code == 204
     with signed_in_as(member):
-        assert uploaders(api) == [("mine.md", "test-user")]
+        assert uploaders(api) == [("mine.md", "Test User")]
 
 
 def test_a_document_from_before_uploads_were_recorded_shows_no_uploader(api, user):
@@ -205,7 +192,7 @@ def test_another_organisation_sees_none_of_the_stores_documents_or_tables(
         assert api.get(f"/api/documents/{mine['id']}/download").status_code == 404
         assert api.delete(f"/api/documents/{mine['id']}").status_code == 404
 
-    assert uploaders(api) == [("mine.md", "test-user")]
+    assert uploaders(api) == [("mine.md", "Test User")]
 
 
 # --- Schema change requests and dropped objects -------------------------------------------------

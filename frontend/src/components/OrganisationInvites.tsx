@@ -123,7 +123,7 @@ export function InvitesSection() {
                     {invite.creator
                       ? invite.creator.id === me?.id
                         ? "you"
-                        : (invite.creator.name ?? invite.creator.login)
+                        : invite.creator.name
                       : "a deleted account"}{" "}
                     on {formatDate(invite.created_at)} · Expires {formatDate(invite.expires_at)}
                   </div>

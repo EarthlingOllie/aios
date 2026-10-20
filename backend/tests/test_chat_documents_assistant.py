@@ -70,7 +70,7 @@ def test_the_members_of_an_organisation_share_one_assistant(api, user, member): 
     mine = assistant_of(make_chat(api, "Mine"))
     assert mine["target_id"] == theirs["target_id"]
     agent = api.get(f"/api/agents/{mine['target_id']}").json()
-    assert agent["created_by"]["login"] == "member"
+    assert agent["created_by"]["id"] == member.id
     assert [a["id"] for a in api.get("/api/agents").json()] == [mine["target_id"]]
 
 

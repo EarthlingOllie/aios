@@ -176,7 +176,7 @@ test("each document says which member uploaded it", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("old.pdf");
   api.addDocument("plan.md", {
-    uploaded_by: { id: 2, login: "sam", name: "Sam Member", avatar_url: null },
+    uploaded_by: { id: 2, first_name: "Sam", last_name: "Member" },
   });
   await page.goto("/data/documents");
 
@@ -186,7 +186,7 @@ test("each document says which member uploaded it", async ({ page }) => {
 
   // An upload is the signed-in member's.
   await page.locator('input[type="file"]').setInputFiles([file("notes.md")]);
-  await expect(row(page, "notes.md")).toContainText("by Tester");
+  await expect(row(page, "notes.md")).toContainText("by Terry Tester");
 });
 
 test("each document links to its download", async ({ page }) => {

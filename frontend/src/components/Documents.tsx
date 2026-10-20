@@ -411,7 +411,7 @@ export function DocumentsSection() {
                 <p className="text-muted-foreground text-xs">
                   Uploaded {formatDate(doc.created_at)}
                   {doc.uploaded_by &&
-                    ` by ${doc.uploaded_by.name ?? doc.uploaded_by.login}`}
+                    ` by ${doc.uploaded_by.name}`}
                   {doc.status === "ready" &&
                     ` · ${doc.chunk_count} ${doc.chunk_count === 1 ? "chunk" : "chunks"}`}
                 </p>

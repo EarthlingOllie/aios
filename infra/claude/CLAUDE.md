@@ -36,7 +36,8 @@ role. You don't have the provisioner's credentials (`DATA_STORE_PROVISIONER_URL`
   the platform schema). The master user (`aios:aios`) is for break-glass only; use it just to
   read what the app's role can't, such as a user's data store database, and never to change
   roles or ownership. Redis: `redis-cli -h redis`.
-- HTTP: `curl -s http://api:8000/...`. Most endpoints need a session cookie from GitHub login.
+- HTTP: `curl -s http://api:8000/...`. Most endpoints need a session cookie: sign in with
+  `POST /api/auth/login` (`{"email": ..., "password": ...}`) and keep its cookie.
 
 ## Running code and checks
 

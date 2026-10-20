@@ -2,19 +2,14 @@
 them at once every connection in the pool is held by one that's waiting, and they all time out.
 On a pool of one connection, anything that needs two at a time fails."""
 
-import base64
-import json
-
 import pytest
-from fastapi.testclient import TestClient
-from itsdangerous import TimestampSigner
+from conftest import signed_in_client
 from sqlalchemy import create_engine
 
 from aios import db as platform_db
 from aios import search
 from aios.api import documents
 from aios.config import get_settings
-from aios.main import app
 
 
 @pytest.fixture
@@ -34,11 +29,7 @@ def one_connection(db, user):
 def signed_in(user):
     """A client signed in through the real session cookie, so `CurrentUser` loads the user with
     the request's own session."""
-    settings = get_settings()
-    cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(
-        base64.b64encode(json.dumps({"user_id": user.id}).encode())
-    )
-    return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
+    return signed_in_client(user)
 
 
 def test_document_endpoints_need_one_connection_at_a_time(one_connection, signed_in, monkeypatch):

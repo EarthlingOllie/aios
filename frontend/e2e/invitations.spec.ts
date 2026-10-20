@@ -4,7 +4,7 @@ import { fakeApi } from "./fake-api";
 
 /** Invitation links on the Organisation page, the invite page, and leaving the organisation. */
 
-const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("the creator makes a link, copies it once, and revokes it", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -213,16 +213,44 @@ test("a link into the user's own organisation says they're in it", async ({ page
   await expect(page.getByRole("button", { name: "Accept" })).toBeHidden();
 });
 
-test("signed out, the invite page names the organisation and signs in through it", async ({ page }) => {
+test("signed out, the invite page names the organisation and registers through it", async ({ page }) => {
   const api = await fakeApi(page);
-  api.signedIn = false;
+  api.signedInAs = null;
   api.invitations.set("abc/def", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
   await page.goto("/invite/abc%2Fdef");
   await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Sign in with GitHub to accept" })).toHaveAttribute(
+  // Signing in comes back here, to accept.
+  await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
     "href",
-    "/login?invite=abc%2Fdef",
+    "/login?next=%2Finvite%2Fabc%252Fdef",
   );
+
+  await page.getByRole("link", { name: "Create an account to accept" }).click();
+  await expect(page).toHaveURL(/\/register\?/);
+  await page.getByLabel("First name").fill("Nadia");
+  await page.getByLabel("Last name").fill("New");
+  await page.getByLabel("Email").fill("nadia@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("a long passphrase");
+  await page.getByLabel("Confirm password").fill("a long passphrase");
+  await page.getByRole("button", { name: "Create account" }).click();
+
+  // The registration carries the link, joining its organisation; then back to the link's page.
+  await expect(page.getByText("You're already a member of Acme.")).toBeVisible();
+  await expect(page).toHaveURL(/\/invite\/abc%2Fdef$/);
+  expect(api.writes).toEqual([
+    [
+      "POST",
+      "/api/auth/register",
+      {
+        first_name: "Nadia",
+        last_name: "New",
+        email: "nadia@example.com",
+        password: "a long passphrase",
+        password_confirm: "a long passphrase",
+        invite: "abc/def",
+      },
+    ],
+  ]);
 });
 
 test("an expired or revoked link says so plainly", async ({ page }) => {
@@ -232,8 +260,8 @@ test("an expired or revoked link says so plainly", async ({ page }) => {
   await expect(page.getByText("Ask whoever sent it for a new one.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Accept" })).toBeHidden();
 
-  api.signedIn = false;
+  api.signedInAs = null;
   await page.reload();
   await expect(page.getByRole("heading", { name: "This invitation link no longer works" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Sign in/ })).toBeHidden();
+  await expect(page.getByRole("link", { name: /Sign in|Create an account/ })).toBeHidden();
 });

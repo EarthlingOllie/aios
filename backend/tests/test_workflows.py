@@ -3,7 +3,7 @@ import threading
 from contextlib import contextmanager
 
 import pytest
-from conftest import delete_user, made_by, org_of, sign_up
+from conftest import delete_user, made_by, make_user, org_of
 from fastapi import HTTPException
 from sqlalchemy import event, func
 from sqlalchemy.exc import IntegrityError
@@ -320,7 +320,7 @@ def test_invalid_workflows_are_rejected(api, db):
     from aios.versioning import save_agent_version
 
     agent = make_agent(api, "mine")
-    other = sign_up(db, -2, "someone-else")
+    other = make_user(db, "someone-else")
     theirs = Agent(**made_by(db, other), name="theirs")
     db.add(theirs)
     their_version = save_agent_version(

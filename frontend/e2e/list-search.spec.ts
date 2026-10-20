@@ -13,7 +13,7 @@ const search = (page: Page, name: string) => page.getByRole("searchbox", { name:
 
 // How often the chat list asks again (CHAT_LIST_POLL_MS).
 const CHAT_LIST_POLL_MS = 5000;
-const sam: ChatUser = { id: 2, login: "sam", name: "Sam" };
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("typing narrows the agents by name or description, and shows how many are left", async ({
   page,
