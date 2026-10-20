@@ -174,9 +174,10 @@ def test_anthropic_stream_round_trip(api, monkeypatch):
     assert by_type["tool-output-available"]["output"] == SEARCH_RESULT
     assert by_type["tool-output-available"]["providerExecuted"] is True
 
-    # The web search tool is sent in the version the model supports, and the second request
-    # replays the first response's blocks (thinking, server tool use and its results) unchanged.
-    assert {"type": "web_search_20260209", "name": "web_search", "max_uses": 5} in requests[0][
+    # The web search tool is sent in its basic version beside one of our tools, and the second
+    # request replays the first response's blocks (thinking, server tool use and its results)
+    # unchanged.
+    assert {"type": "web_search_20250305", "name": "web_search", "max_uses": 5} in requests[0][
         "tools"
     ]
     replayed = [b["type"] for b in requests[1]["messages"][1]["content"]]
