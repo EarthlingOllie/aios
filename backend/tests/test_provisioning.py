@@ -893,7 +893,7 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
     db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
     db.commit()
     # A store already past this release's head (the next release has migrated it) is left alone.
-    ahead_user = provisioned_user(db, -2, "ahead-user")
+    ahead_user = provisioned_user(db, "ahead-user")
     ahead = data_store_for(ahead_user.id)
     try:
         db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))

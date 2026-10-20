@@ -210,7 +210,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       <aside className="hidden min-h-0 flex-col gap-4 border-r p-4 md:flex">
         <div className="flex items-center gap-2">
           {user.avatar_url && <img src={user.avatar_url} alt="" className="size-7 rounded-full" />}
-          <span className="flex-1 truncate text-sm font-medium">{user.name ?? user.login}</span>
+          <span className="flex-1 truncate text-sm font-medium">{user.name}</span>
           <NotificationsMenu />
           <Button variant="ghost" size="icon" aria-label="Sign out" onClick={onSignOut}>
             <LogOut />

@@ -84,7 +84,7 @@ def author_name(message: ChatMessage) -> str:
     if message.author_kind == ChatAuthorKind.system:
         return "system"
     if message.author_user is not None:
-        name = message.author_user.name or message.author_user.login
+        name = message.author_user.full_name
     elif author := message.author_agent or message.author_workflow:
         name = author.name
     else:

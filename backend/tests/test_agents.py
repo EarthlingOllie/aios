@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
+from conftest import build_user, make_user
 from fake_model import ToolCall, model, replies, use_model
 from sqlalchemy import func
 
@@ -16,7 +17,7 @@ from aios.api.skills import lock_live
 from aios.auth import current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Agent, AgentRun, User
+from aios.models import Agent, AgentRun
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
@@ -307,9 +308,7 @@ def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
 
 def test_other_users_cannot_see_agents(api, client, db):
     agent = make_agent(api, "Mine")
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = make_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(f"/api/agents/{agent['id']}").status_code == 404
@@ -326,9 +325,7 @@ def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
     url = f"/api/agents/{agent['id']}"
     assert api.delete(url).status_code == 204
     assert api.get(f"{url}/versions/1").status_code == 200
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = make_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         for gone in (url, f"{url}/versions", f"{url}/versions/1"):
@@ -542,7 +539,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     monkeypatch.setattr(agents_api, "_end_turn", fake_end)
     # Run 1 is made up, like the rest of what the turn loads.
     monkeypatch.setattr(checkpoints, "_run_gone", run_there)
-    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):

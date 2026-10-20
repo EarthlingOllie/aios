@@ -3,7 +3,8 @@ import type { UIMessage } from "ai";
 export type User = {
   id: number;
   login: string;
-  name: string | null;
+  /** The name the app shows them by. */
+  name: string;
   avatar_url: string | null;
 };
 

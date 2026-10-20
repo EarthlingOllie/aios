@@ -35,6 +35,15 @@ oauth.register(
 router = APIRouter()
 
 
+async def start_session(request: Request, user: User) -> None:
+    """Sign `user` in on this request: the one way a session starts. Their data store is made
+    (and queued to be provisioned) if it's missing, anything left in the session (e.g. OAuth
+    state) is dropped, and the fresh session holds only their id."""
+    await run_in_threadpool(data_store_for, user.id)
+    request.session.clear()
+    request.session["user_id"] = user.id
+
+
 @router.get("/login")
 async def login(request: Request):
     return await oauth.github.authorize_redirect(request, settings.oauth_redirect_uri)
@@ -62,11 +71,7 @@ async def auth_callback(request: Request, db: DB):
     user.email = email
     user.avatar_url = profile.get("avatar_url")
     db.commit()
-    await run_in_threadpool(data_store_for, user.id)
-
-    # Drop anything left over (e.g. OAuth state) and start a fresh session.
-    request.session.clear()
-    request.session["user_id"] = user.id
+    await start_session(request, user)
     return RedirectResponse(settings.public_url, status_code=status.HTTP_303_SEE_OTHER)
 
 

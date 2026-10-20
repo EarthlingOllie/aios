@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from conftest import make_user
 from fake_model import replies, use_model
 from test_chat_invocations import echo_agent, say
 from test_chats import add, add_user, make_chat, messages, signed_in_as
@@ -11,7 +12,6 @@ from test_workflow_runs import echo
 from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios.api import workflows as workflows_api
-from aios.models import User
 from aios.workflows import execute_run
 
 
@@ -23,10 +23,8 @@ def started(monkeypatch) -> list[int]:
     return ids
 
 
-def signed_up(db, github_id: int, login: str):
-    u = User(github_id=github_id, login=login)
-    db.add(u)
-    db.commit()
+def signed_up(db, login: str):
+    u = make_user(db, login)
     yield u
     db.delete(u)
     db.commit()
@@ -35,13 +33,13 @@ def signed_up(db, github_id: int, login: str):
 @pytest.fixture
 def member(db):
     """A second user, whom the first adds to their chats."""
-    yield from signed_up(db, -2, "member")
+    yield from signed_up(db, "member")
 
 
 @pytest.fixture
 def outsider(db):
     """A third user, in none of the chats."""
-    yield from signed_up(db, -4, "outsider")
+    yield from signed_up(db, "outsider")
 
 
 def run_workflow_from_chat(api, started, member) -> tuple[dict, dict, int]:

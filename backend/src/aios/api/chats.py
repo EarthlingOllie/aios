@@ -163,7 +163,7 @@ def member_out(member: ChatMember) -> ChatMemberOut:
             kind=member.kind,
             role=member.role,
             target_id=user.id,
-            name=user.name or user.login,
+            name=user.full_name,
             login=user.login,
             avatar_url=user.avatar_url,
             added_at=member.added_at,
@@ -629,7 +629,7 @@ def author_out(message: ChatMessage) -> MessageAuthorOut | None:
         return MessageAuthorOut(
             kind=ChatAuthorKind.user,
             id=user.id,
-            name=user.name or user.login,
+            name=user.full_name,
             login=user.login,
             avatar_url=user.avatar_url,
         )

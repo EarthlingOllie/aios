@@ -3,6 +3,7 @@ import threading
 from contextlib import contextmanager
 
 import pytest
+from conftest import make_user
 from fastapi import HTTPException
 from sqlalchemy import event, func
 from sqlalchemy.exc import IntegrityError
@@ -315,13 +316,11 @@ def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
 
 
 def test_invalid_workflows_are_rejected(api, db):
-    from aios.models import Agent, User
+    from aios.models import Agent
     from aios.versioning import save_agent_version
 
     agent = make_agent(api, "mine")
-    other = User(github_id=-2, login="someone-else")
-    db.add(other)
-    db.flush()
+    other = make_user(db, "someone-else")
     theirs = Agent(owner_id=other.id, name="theirs")
     db.add(theirs)
     their_version = save_agent_version(

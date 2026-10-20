@@ -45,6 +45,11 @@ class User(Base):
     embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    @property
+    def full_name(self) -> str:
+        """How the app shows the user, wherever it names them: their name, else their login."""
+        return self.name or self.login
+
 
 class DataStoreStatus(enum.StrEnum):
     # Its database is being created (`aios.datastores.provision`); nothing can use it yet.

@@ -1,6 +1,9 @@
 import asyncio
+import base64
 import io
+import json
 import os
+import secrets
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
@@ -10,6 +13,7 @@ import fake_model
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
+from itsdangerous import TimestampSigner
 from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -103,20 +107,43 @@ def delete_user(db, user: User) -> None:
             provision.drop(names)
 
 
-def provisioned_user(db, github_id: int, login: str) -> User:
-    """A new user, with their store provisioned: a database of its own, ready. Delete them with
-    `delete_user`."""
-    u = User(github_id=github_id, login=login)
+def build_user(handle: str | None = None, **values) -> User:
+    """A user, not saved: every test's users are made here (or by `make_user`), so only this
+    knows the user's columns. `handle` is a word that tells them apart in a test (their login);
+    `values` sets other columns. Their GitHub id is a fresh negative one, so it can't clash."""
+    github_id = -1 - secrets.randbelow(2**62)
+    return User(github_id=github_id, login=handle or f"user{-github_id}", **values)
+
+
+def make_user(db, handle: str | None = None, **values) -> User:
+    """A new user (as `build_user`), saved, with no store yet. Delete them with `delete_user`."""
+    u = build_user(handle, **values)
     db.add(u)
     db.commit()
+    return u
+
+
+def provisioned_user(db, handle: str | None = None, **values) -> User:
+    """A new user (as `build_user`), with their store provisioned: a database of its own, ready.
+    Delete them with `delete_user`."""
+    u = make_user(db, handle, **values)
     provision.provision(data_store_for(u.id))
     return u
+
+
+def signed_in_client(user: User) -> TestClient:
+    """A client signed in as `user` through a real session cookie, as `auth.start_session`
+    leaves it, so `CurrentUser` loads the user with the request's own session."""
+    settings = get_settings()
+    session = base64.b64encode(json.dumps({"user_id": user.id}).encode())
+    cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(session)
+    return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
 
 
 @pytest.fixture
 def user(db):
     """A user whose store is provisioned and ready."""
-    u = provisioned_user(db, -1, "test-user")
+    u = provisioned_user(db, "test-user")
     yield u
     delete_user(db, u)
 
@@ -155,9 +182,7 @@ def new_user(db) -> Iterator[Callable[[], User]]:
     made: list[User] = []
 
     def make() -> User:
-        u = User(github_id=-(1000 + len(made)), login=f"new-user-{len(made)}")
-        db.add(u)
-        db.commit()
+        u = make_user(db, f"new-user-{len(made)}")
         made.append(u)
         return u
 

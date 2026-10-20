@@ -314,7 +314,7 @@ def test_no_new_run_while_the_current_version_uses_a_removed_tool(api, monkeypat
 @pytest.fixture
 def documents(db, user):
     """Three chunks in `user`'s store, plus one in another user's that matches the same query."""
-    other = provisioned_user(db, -2, "other-user")
+    other = provisioned_user(db, "other-user")
     fish = ["Zebrafish are popular in genetics labs.", "The zebrafish genome was sequenced."]
     add_chunks(data_store_for(user.id), "fish.md", [(t, unit(0)) for t in fish], headings=["Fish"])
     add_chunks(data_store_for(user.id), "cats.md", [("Cats purr.", unit(1))])

@@ -9,7 +9,7 @@ from test_chats import add_user, make_chat, messages, post, signed_in_as
 @pytest.fixture
 def other(db):
     """A second user, who finds, joins and leaves the first's chats."""
-    yield from signed_up(db, -2, "other")
+    yield from signed_up(db, "other")
 
 
 def listed(api) -> dict[str, dict]:

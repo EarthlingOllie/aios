@@ -316,6 +316,11 @@ export type InvocationRow = {
 };
 
 /** A chat's members (or what can be mentioned in it) grouped by kind, as the API groups them. */
+/** How the API names a user (the backend's `User.full_name`): their name, else their login. */
+function fullName(user: ChatUser): string {
+  return user.name ?? user.login;
+}
+
 function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
   const of = (kind: ChatMention["kind"]) => members.filter((m) => m.kind === kind);
   return { users: of("user"), agents: of("agent"), workflows: of("workflow") };
@@ -1297,7 +1302,7 @@ export class FakeApi {
         if (kind === "user") {
           const { user, role } = m;
           const [login, avatar_url] = [user.login, user.avatar_url ?? null];
-          return [{ id, kind, role, target_id: user.id, name: user.name ?? login, login, avatar_url, added_at }];
+          return [{ id, kind, role, target_id: user.id, name: fullName(user), login, avatar_url, added_at }];
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
@@ -1334,7 +1339,7 @@ export class FakeApi {
           ? {
               kind: "user",
               id: author.id,
-              name: author.name ?? author.login,
+              name: fullName(author),
               login: author.login,
               avatar_url: author.avatar_url ?? null,
             }
@@ -1493,7 +1498,7 @@ export class FakeApi {
       if (!readable) return fail(404, "Not Found");
     }
 
-    if (path === "/api/me") return reply(200, this.me);
+    if (path === "/api/me") return reply(200, { ...this.me, name: fullName(this.me) });
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
       if (this.dataStoreFails) return fail(500, "Internal Server Error");

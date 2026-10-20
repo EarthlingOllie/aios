@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from celery.exceptions import Retry
-from conftest import add_document, delete_user, provisioned_user
+from conftest import add_document, delete_user, make_user, provisioned_user
 from fake_model import ToolCall, last_tool_results, model, use_model
 from psycopg import sql
 from sqlalchemy import event, select, text, update
@@ -55,9 +55,7 @@ def test_a_user_becomes_a_store_of_its_own(db, user):
     # The same store every time.
     assert data_store_for(user.id) == store_id
 
-    other = User(github_id=-2, login="other-user")
-    db.add(other)
-    db.commit()
+    other = make_user(db, "other-user")
     try:
         assert data_store_for(other.id) != store_id
     finally:
@@ -259,7 +257,7 @@ def test_the_ingest_task_ingests_in_the_store_it_is_given(user, offline_ingest):
 
 def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
     """As for a document deleted before its ingest: there's nothing left to ingest."""
-    owner = provisioned_user(db, -4, "gone")
+    owner = provisioned_user(db, "gone")
     store_id = data_store_for(owner.id)
     doc_id = add_document(store_id)
     delete_user(db, owner)  # and, with them, their store
@@ -474,9 +472,7 @@ def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
 
 
 def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, provisioning):
-    owner = User(github_id=-5, login="later")
-    db.add(owner)
-    db.commit()
+    owner = make_user(db, "later")
     try:
         store_id = data_store_for(owner.id, db)
         assert provisioning == []
@@ -492,9 +488,7 @@ def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, p
 
 
 def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(db, provisioning):
-    owner = User(github_id=-6, login="undone")
-    db.add(owner)
-    db.commit()
+    owner = make_user(db, "undone")
     try:
         data_store_for(owner.id, db)
         db.rollback()

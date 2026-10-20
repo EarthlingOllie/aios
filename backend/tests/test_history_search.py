@@ -382,7 +382,7 @@ def test_searching_history_leaves_out_the_run_searching(api, store_id, past_runs
 def test_searching_history_never_returns_another_stores_runs(
     db, api, user, past_runs, query_meaning, history_tasks
 ):
-    other = provisioned_user(db, -2, "other-user")
+    other = provisioned_user(db, "other-user")
     try:
         app.dependency_overrides[current_user] = lambda: other
         other_store = data_store_for(other.id)

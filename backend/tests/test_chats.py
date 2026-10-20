@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import pytest
+from conftest import make_user
 
 from aios.api import chats
 from aios.auth import current_user
@@ -17,9 +18,7 @@ def make_chat(api, name: str, **extra) -> dict:
 @pytest.fixture
 def other(db):
     """A second signed-up user, to be another member (or not) of the first's chats."""
-    u = User(github_id=-2, login="other", name="Other Person")
-    db.add(u)
-    db.commit()
+    u = make_user(db, "other", name="Other Person")
     yield u
     db.delete(u)
     db.commit()
@@ -316,9 +315,7 @@ def test_the_before_cursor_pages_back_through_history(api, monkeypatch):
 
 
 def test_a_message_outlives_its_author(api, db):
-    leaver = User(github_id=-3, login="leaver")
-    db.add(leaver)
-    db.commit()
+    leaver = make_user(db, "leaver")
     chat = make_chat(api, "Design", visibility="public")
     add_user(api, chat, leaver)
     with signed_in_as(leaver):

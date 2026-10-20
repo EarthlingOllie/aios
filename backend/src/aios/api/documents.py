@@ -52,7 +52,8 @@ class SearchHitOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     login: str
-    name: str | None
+    # The name the app shows them by (`User.full_name`).
+    name: str
     avatar_url: str | None
 
 
@@ -74,7 +75,7 @@ class DataStoreOut(BaseModel):
 
 @router.get("/me", response_model=UserOut)
 def me(user: CurrentUser):
-    return user
+    return UserOut(id=user.id, login=user.login, name=user.full_name, avatar_url=user.avatar_url)
 
 
 @router.get("/data-store", response_model=DataStoreOut)

@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import make_user
 
 from aios.auth import current_user
 from aios.cron import next_run
 from aios.main import app
-from aios.models import User
 
 
 def make_agent(api, name: str) -> dict:
@@ -123,9 +123,7 @@ def test_targets_must_be_the_users_live_agents_or_workflows(api, client, db):
     resp = api.post("/api/triggers", json=schedule("agent", agent["id"]))
     assert resp.status_code == 422
 
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = make_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         resp = client.post("/api/triggers", json=schedule("workflow", workflow["id"]))
@@ -218,9 +216,7 @@ def test_deleting_the_target_deletes_its_triggers(api):
 def test_other_users_cannot_see_or_change_triggers(api, client, db):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = make_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get("/api/triggers").json() == []
