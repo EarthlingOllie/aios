@@ -43,6 +43,9 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
       reloadMe();
       navigate("/organisation");
     } catch (err) {
+      // The session may be behind (joined meanwhile, in another tab): once it catches up, a
+      // refusal for being in the invited organisation already shows as that, not as one to leave.
+      reloadMe();
       const contents = notEmpty(err);
       setRefusal(contents ?? describeError(err));
       setMustLeave(!contents && err instanceof ApiError && err.status === 409);

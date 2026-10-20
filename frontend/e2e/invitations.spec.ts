@@ -162,6 +162,19 @@ test("accepting while in an organisation with others in it says why it can't", a
   await expect(page.getByRole("region", { name: "Leave" })).toBeVisible();
 });
 
+test("accepting after joining elsewhere meanwhile says they're in it, without saying to leave", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
+  await page.goto("/invite/abc");
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  // Joined Acme in another tab: the accept is refused as already a member, and `me` says so.
+  api.organisation = { ...api.organisation, id: 7, name: "Acme" };
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByText("You're already a member of Acme.")).toBeVisible();
+  await expect(page.getByText(/leave .* first/)).toBeHidden();
+  await expect(page.getByRole("button", { name: "Accept" })).toBeHidden();
+});
+
 test("accepting a link revoked since it was opened says so, without saying to leave", async ({ page }) => {
   const api = await fakeApi(page);
   api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
