@@ -33,9 +33,9 @@ def chat_model(name: str | None = None) -> BaseChatModel:
     return init_chat_model(model_name(name))
 
 
-def web_search_type(name: str | None = None) -> str:
-    """The Anthropic web search tool version `name` supports."""
+def web_search_type(name: str | None = None, *, dynamic: bool = True) -> str:
+    """The Anthropic web search tool version `name` supports; the basic one if not `dynamic`."""
     model = model_name(name).removeprefix("anthropic:")
-    if model.startswith(_DYNAMIC_WEB_SEARCH):
+    if dynamic and model.startswith(_DYNAMIC_WEB_SEARCH):
         return "web_search_20260209"
     return "web_search_20250305"

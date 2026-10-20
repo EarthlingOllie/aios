@@ -281,6 +281,17 @@ def test_web_search_version_follows_the_model():
     ]
 
 
+def test_web_search_beside_our_tools_is_basic():
+    # The dynamic version's code execution can be left unfinished when a response stops for
+    # one of our tools, and the API then refuses the history.
+    search = TOOLS["web_search"].build(WebSearchConfig())
+    python = TOOLS["run_python"].build(TOOLS["run_python"].config_model())
+    model = "anthropic:claude-sonnet-5-5"
+    assert server_tools(search, model)[0]["type"] == "web_search_20260209"
+    assert server_tools(search + python, model)[0]["type"] == "web_search_20250305"
+    assert server_tools(search + python, model)[1:] == python
+
+
 def test_tool_removed_from_the_library(api, monkeypatch):
     agent = make_agent(api, "Searcher")
     url = f"/api/agents/{agent['id']}"
