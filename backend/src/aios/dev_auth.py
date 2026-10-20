@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/dev")
 
 
 @router.get("/users", response_model=list[MeOut])
-def users(db: DB):
+def list_users(db: DB):
     """Every user, by last name, then first name."""
     rows = db.scalars(select(User).order_by(User.last_name, User.first_name, User.id))
     return [me_out(u) for u in rows]
@@ -29,7 +29,7 @@ class DevSessionIn(BaseModel):
 
 
 @router.post("/session", response_model=MeOut)
-def session(body: DevSessionIn, request: Request, db: DB):
+def sign_in_as(body: DevSessionIn, request: Request, db: DB):
     """Sign in as the user, as a password sign-in would (their data store queued if missing)."""
     user = db.get(User, body.user_id)
     if user is None:
