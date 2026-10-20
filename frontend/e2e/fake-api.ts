@@ -394,6 +394,8 @@ export class FakeApi {
   authDelay = 0;
   /** Whether the dev "sign in as" picker is on (DEV_LOGIN_ENABLED): off, /api/dev/* is a 404. */
   devUsers = false;
+  /** While true, signing in and registering answer 429, as the API's rate limits do. */
+  authThrottled = false;
   /** The signed-in account (the first while no one is): who a chat's owner, member or author is by default. */
   get me(): Account {
     return this.accounts.find((a) => a.id === this.signedInAs) ?? this.accounts[0];
@@ -1492,6 +1494,9 @@ export class FakeApi {
       if (!account) return [404, { detail: "No such user" }];
       this.signedInAs = account.id;
       return [200, accountOut(account)];
+    }
+    if (this.authThrottled && (path === "/api/auth/login" || path === "/api/auth/register")) {
+      return [429, { detail: "Too many attempts. Try again later." }];
     }
     if (path === "/api/auth/logout" && method === "POST") {
       this.signedInAs = null;

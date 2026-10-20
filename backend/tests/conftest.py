@@ -18,7 +18,7 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import checkpoints
+from aios import checkpoints, ratelimits
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, history, provision, resolve, store_session
@@ -73,6 +73,12 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
     queued: list[uuid.UUID] = []
     monkeypatch.setattr(resolve, "enqueue_provisioning", queued.append)
     return queued
+
+
+@pytest.fixture(autouse=True)
+def rate_limits() -> None:
+    """Every test starts with no attempts counted against the rate limits (in Redis)."""
+    ratelimits.reset()
 
 
 @pytest.fixture(autouse=True)

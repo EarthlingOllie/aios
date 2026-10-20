@@ -101,6 +101,16 @@ class Settings(BaseSettings):
     # development only: Compose turns it on; production never does.
     dev_login_enabled: bool = False
 
+    # Rate limits on signing in and registering (`aios.ratelimits`), as `limits` strings
+    # ("<count>/<period>", e.g. "10/15 minutes"), counted in Redis. Past one: 429, no lockout.
+    login_rate_limit_per_email: str = "10/15 minutes"
+    login_rate_limit_per_ip: str = "50/15 minutes"
+    register_rate_limit_per_ip: str = "5/hour"
+    # How many proxies in front of the API append the address they saw to X-Forwarded-For: 1
+    # behind the load balancer (or Compose's nginx), 0 when the API is reached directly. The
+    # client's address, which the per-IP limits count, is the one the outermost proxy appended.
+    trusted_proxy_count: int = Field(default=0, ge=0)
+
     # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.
     llm_model: str = "anthropic:claude-sonnet-5-5"

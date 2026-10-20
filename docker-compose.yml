@@ -142,6 +142,8 @@ services:
     # The merge above is shallow, so the shared environment is merged in again here.
     environment:
       <<: *backend-env
+      # Behind `web`'s nginx, which appends the client's address to X-Forwarded-For.
+      TRUSTED_PROXY_COUNT: 1
       SANDBOX_BACKEND: dev
       SANDBOX_DEV_URL: http://sandbox:8080
       SANDBOX_DEV_TOKEN: dev-sandbox-token

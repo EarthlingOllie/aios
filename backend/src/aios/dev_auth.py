@@ -4,17 +4,18 @@ routes don't exist."""
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from aios.auth import MeOut, me_out, start_session
+from aios.auth import MeOut, me_out, same_origin, start_session
 from aios.db import DB
 from aios.models import User
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/dev")
+# Its sign-in refuses cross-site requests, as the auth endpoints do.
+router = APIRouter(prefix="/api/dev", dependencies=[Depends(same_origin)])
 
 
 @router.get("/users", response_model=list[MeOut])

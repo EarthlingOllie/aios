@@ -21,6 +21,12 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U aios" --health-interval 2s --health-retries 30
+      # The auth endpoints' rate limits (aios.ratelimits), which every test resets.
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
       # Stands in for S3, as in Compose: uploaded files (aios.datastores.files).
       rustfs:
         image: rustfs/rustfs:1.0.1
