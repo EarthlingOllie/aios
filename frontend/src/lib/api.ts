@@ -13,6 +13,12 @@ export function fullName(user: Pick<User, "first_name" | "last_name">): string {
   return `${user.first_name} ${user.last_name}`;
 }
 
+/** What the sign-in page offers besides email and password (`GET /api/auth/options`). */
+export type AuthOptions = {
+  /** The development "sign in as" picker (`DEV_LOGIN_ENABLED`): `devUsers()` and `devSignIn()`. */
+  dev_users: boolean;
+};
+
 export type Registration = {
   first_name: string;
   last_name: string;
@@ -832,6 +838,9 @@ export const api = {
   login: (body: { email: string; password: string }) =>
     request<User>("/api/auth/login", json("POST", body)),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+  authOptions: () => request<AuthOptions>("/api/auth/options"),
+  devUsers: () => request<User[]>("/api/dev/users"),
+  devSignIn: (userId: number) => request<User>("/api/dev/session", json("POST", { user_id: userId })),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),

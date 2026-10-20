@@ -386,10 +386,12 @@ export class FakeApi {
   accounts: Account[] = [
     { id: 1, first_name: "Terry", last_name: "Tester", email: "tester@example.com", password: "correct horse battery" },
   ];
-  /** The signed-in account's id; null once signed out. Signed out, only /api/auth/* answers. */
+  /** The signed-in account's id; null once signed out. Signed out, only /api/auth/* and /api/dev/* answer. */
   signedInAs: number | null = 1;
   /** How long signing in or registering takes to answer (ms). */
   authDelay = 0;
+  /** Whether the dev "sign in as" picker is on (DEV_LOGIN_ENABLED): off, /api/dev/* is a 404. */
+  devUsers = false;
   /** The signed-in user as chats show them (whoever signed in: chats don't name users by account yet). */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
@@ -1477,12 +1479,25 @@ export class FakeApi {
     );
   }
 
-  /** `/api/auth/*`, as the API checks what it's sent: [status, body]. */
+  /** `/api/auth/*` and `/api/dev/*`, as the API checks what it's sent: [status, body]. */
   private auth(method: string, path: string, body: Record<string, string> | null): [number, unknown] {
     const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
     const findByEmail = (email: string) =>
       this.accounts.find((a) => a.email === email.trim().toLowerCase());
-    if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: false }];
+    if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: this.devUsers }];
+    if (path.startsWith("/api/dev/") && !this.devUsers) return [404, { detail: "Not Found" }];
+    if (path === "/api/dev/users" && method === "GET") {
+      const sorted = [...this.accounts].sort(
+        (a, b) => a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name),
+      );
+      return [200, sorted.map(accountOut)];
+    }
+    if (path === "/api/dev/session" && method === "POST") {
+      const account = this.accounts.find((a) => a.id === Number(body?.user_id));
+      if (!account) return [404, { detail: "No such user" }];
+      this.signedInAs = account.id;
+      return [200, accountOut(account)];
+    }
     if (path === "/api/auth/logout" && method === "POST") {
       this.signedInAs = null;
       return [204, undefined];
@@ -1540,7 +1555,7 @@ export class FakeApi {
     const fail = (status: number, detail: string) => reply(status, { detail });
     let m: RegExpMatchArray | null;
 
-    if (path.startsWith("/api/auth/")) {
+    if (path.startsWith("/api/auth/") || path.startsWith("/api/dev/")) {
       await new Promise((resolve) => setTimeout(resolve, this.authDelay));
       const [status, json] = this.auth(method, path, body);
       return reply(status, json);

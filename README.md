@@ -449,6 +449,12 @@ sign-in, and no emails are sent (no verification, no password reset).
   one that no longer matches the user's is signed out (401).
 - A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
   (only ever to a page on aios itself).
+- **Dev sign-in picker**: with `DEV_LOGIN_ENABLED=true`, `/login` also offers a "sign in as"
+  dropdown of every user, which signs in as them with no password (`aios.dev_auth`, under
+  `/api/dev`). Docker Compose turns it on for its `api`, and `backend/.env.example` does for
+  `pnpm dev` against a local API; it's off by default, and Terraform never sets it. When it's
+  off, `/api/dev/*` doesn't exist (404). The API logs a warning at start-up when it's on, and
+  names the user at each dev sign-in.
 
 **Upgrading a database from GitHub sign-in.** Migration `0029` deletes the users who signed in
 with GitHub (they have no password), and everything they owned. Their data stores' rows go, but

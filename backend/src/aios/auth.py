@@ -18,6 +18,7 @@ from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
 from aios.models import User
@@ -125,7 +126,7 @@ class OptionsOut(BaseModel):
 
 @router.get("/options", response_model=OptionsOut)
 def options():
-    return OptionsOut(dev_users=False)
+    return OptionsOut(dev_users=get_settings().dev_login_enabled)
 
 
 class RegisterIn(BaseModel):

@@ -1,10 +1,11 @@
-import { useId, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { api, type User } from "@/lib/api";
+import { api, fullName, type User } from "@/lib/api";
 import { formErrors } from "@/lib/auth";
 
 type Props = {
@@ -59,7 +60,82 @@ export function LoginPage({ onSignedIn }: Props) {
           Sign in
         </Button>
       </form>
+      <DevSignIn onSignedIn={onSignedIn} />
     </AuthCard>
+  );
+}
+
+/**
+ * The development "sign in as" picker: every user, any of whom it signs in as with no password.
+ * Shown only when the API offers it (`DEV_LOGIN_ENABLED`); there's no build-time flag, since
+ * Compose serves a production build.
+ */
+function DevSignIn({ onSignedIn }: Props) {
+  const id = useId();
+  const [users, setUsers] = useState<User[]>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let current = true;
+    api
+      .authOptions()
+      .then((options) => (options.dev_users ? api.devUsers() : undefined))
+      .then((list) => {
+        if (current) setUsers(list);
+      })
+      // Without the picker the page still signs in; nothing to say.
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  if (!users) return null;
+
+  async function choose(e: ChangeEvent<HTMLSelectElement>) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      onSignedIn(await api.devSignIn(Number(e.target.value)));
+    } catch (err) {
+      setError(formErrors(err).form ?? "Couldn't sign in");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t pt-4">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor={id} className="text-sm font-medium">
+          Development: sign in as...
+        </label>
+        <Badge variant="outline">dev only</Badge>
+      </div>
+      <select
+        id={id}
+        className="border-input h-9 rounded-md border bg-transparent px-2 text-sm"
+        value=""
+        disabled={busy}
+        onChange={choose}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
+      >
+        <option value="" disabled>
+          Choose a user
+        </option>
+        {users.map((user) => (
+          <option key={user.id} value={user.id}>
+            {fullName(user)} ({user.email})
+          </option>
+        ))}
+      </select>
+      {error && (
+        <p id={`${id}-error`} className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
-from aios import auth, scheduler, tracing
+from aios import auth, dev_auth, scheduler, tracing
 from aios.api import (
     agents,
     chats,
@@ -31,6 +32,8 @@ from aios.config import get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
 from aios.models import DataStoreStatus
+
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -71,6 +74,9 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(settings_api.router)
     app.include_router(chats.router)
+    if settings.dev_login_enabled:
+        log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
+        app.include_router(dev_auth.router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
