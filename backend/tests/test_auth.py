@@ -27,8 +27,8 @@ def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
-def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
-    from aios import auth
+def test_signing_in_gives_the_new_organisation_a_data_store(client, db, monkeypatch):
+    from aios import auth, organisations
     from aios.models import DataStore, User
 
     class Response:
@@ -46,14 +46,14 @@ def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
 
     on_loop = []
 
-    def data_store_for(user_id, *args):
+    def data_store_for(organisation_id, *args):
         # Blocking: must run in the threadpool, not on the event loop.
         try:
             asyncio.get_running_loop()
             on_loop.append(True)
         except RuntimeError:
             on_loop.append(False)
-        return real_data_store_for(user_id, *args)
+        return real_data_store_for(organisation_id, *args)
 
     real_data_store_for = auth.data_store_for
     monkeypatch.setattr(auth.oauth.github, "authorize_access_token", authorize_access_token)
@@ -64,7 +64,11 @@ def test_signing_in_gives_the_user_a_data_store(client, db, monkeypatch):
         assert resp.status_code == 303
         assert on_loop == [False]
         user = db.query(User).filter_by(github_id=-42).one()
-        assert db.query(DataStore).filter_by(owner_user_id=user.id).count() == 1
+        org = organisations.membership_of(db, user.id)
+        assert db.query(DataStore).filter_by(owner_organisation_id=org.id).count() == 1
     finally:
-        db.query(User).filter_by(github_id=-42).delete()
-        db.commit()
+        from conftest import delete_user
+
+        user = db.query(User).filter_by(github_id=-42).one_or_none()
+        if user is not None:
+            delete_user(db, user)

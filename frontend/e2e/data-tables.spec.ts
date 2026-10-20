@@ -228,7 +228,7 @@ test("a store being set up shows its tables once it's ready", async ({ page }) =
   await page.goto("/data/tables");
 
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
-    "Setting up your data store.",
+    "Setting up the organisation's data store.",
   );
   await expect(tableList(page)).toBeHidden();
 

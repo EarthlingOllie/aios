@@ -1,12 +1,12 @@
 """The agent tool that asks for a change to the run's data store's tables:
 `request_schema_change`.
 
-The model sends a spec, never SQL (`aios.datastores.schema_changes`). The tool checks it against
-the store's current schema, records a pending request, and pauses the run (LangGraph's
-`interrupt()`): the turn ends with the request waiting for the owner. Once it's decided (and, if
+The model sends a spec, never SQL (`aios.datastores.schema_changes`). The tool checks it against the
+store's current schema, records a pending request, and pauses the run (LangGraph's `interrupt()`):
+the turn ends with the request waiting for a member to decide it. Once it's decided (and, if
 approved, applied), the run is resumed with the outcome (`aios.api.agents.resume_run`), which is
-what the tool call returns to the model. In a workflow run, the agent node's step waits, and
-the workflow run pauses once nothing else can run (`aios.workflows`).
+what the tool call returns to the model. In a workflow run, the agent node's step waits, and the
+workflow run pauses once nothing else can run (`aios.workflows`).
 
 Resuming runs the tool call again from the start, so it looks for the request its call already
 made before making one, and `interrupt()` then returns the outcome.
@@ -57,9 +57,9 @@ async def _request(
 
 
 def _description() -> str:
-    return f"""Ask the user to change the tables in their data store: create a table, add a
-column, create an index, or drop a table or column. Tables in the `data` schema are changed
-only this way, once the user approves.
+    return f"""Ask the organisation's members to change the tables in its data store: create a
+table, add a column, create an index, or drop a table or column. Tables in the `data` schema
+are changed only this way, once a member approves.
 
 - `ops`: the changes, applied in order, all together or not at all:
   - `create_table`: `name`, `description`, `columns`, and `primary_key` (column names; left
@@ -126,7 +126,8 @@ register(
     ToolSpec(
         key="request_schema_change",
         name="Request schema changes",
-        description="Ask you to approve new tables, columns and indexes in your data store, or"
+        description="Ask a member to approve new tables, columns and indexes in the organisation's"
+        " data store, or"
         " dropping tables and columns (which you can restore until they're purged).",
         config_model=RequestSchemaChangeConfig,
         build=build,

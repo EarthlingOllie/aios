@@ -25,7 +25,7 @@ test("creates a chat and opens it", async ({ page }) => {
   await expect(heading).toContainText("Public");
   await expect(heading.locator("..")).toContainText("Where design happens");
   await expect(heading.locator("..")).toContainText("2 members");
-  // The creator is the owner and only user; their documents assistant is its first agent.
+  // The creator is the owner and only user; the organisation's documents assistant is its first agent.
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("Tester", { exact: true })).toBeVisible();

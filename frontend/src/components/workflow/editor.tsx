@@ -47,7 +47,7 @@ export function GraphEditor({
 }: {
   draft: Draft;
   onChange: (draft: Draft) => void;
-  /** What nodes can run: the user's agents and workflows, with why some workflows can't. */
+  /** What nodes can run: the organisation's agents and workflows, with why some workflows can't. */
   targets: Target[] | undefined;
 }) {
   const [selection, setSelection] = useState<Selection | null>(null);

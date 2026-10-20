@@ -24,7 +24,7 @@ const statusVariant = {
 } as const;
 
 /**
- * What's in the user's data store. Each section is a tab with its own URL (`/data` for the
+ * What's in the organisation's data store. Each section is a tab with its own URL (`/data` for the
  * Overview, `/data/tables`, `/data/changes`, `/data/dropped`,
  * `/data/documents`), so other pages and notifications can link straight to one.
  */
@@ -37,7 +37,7 @@ export function DataPage() {
         <header>
           <h1 className="text-xl font-semibold">Data</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            What your agents keep in your data store, and the documents they search.
+            What the organisation's agents keep in its data store, and the documents they search.
           </p>
         </header>
         <Tabs

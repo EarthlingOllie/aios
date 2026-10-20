@@ -766,7 +766,7 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db):
         with SessionLocal() as s:
             # Mid-start, as the scheduler starts a run: the agent share-locked, then the
             # trigger row locked, until the run and the link to it are committed together.
-            run = new_agent_run(s, s.get(Agent, agent["id"]), trigger_id=t["id"])
+            run = new_agent_run(s, s.get(Agent, agent["id"]), created_by=None, trigger_id=t["id"])
             trigger = s.scalars(
                 select(Trigger).where(Trigger.id == t["id"]).with_for_update()
             ).one()
@@ -849,12 +849,13 @@ def test_a_workflow_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
     claim(db, t["id"], now)
     new_workflow_run = scheduler.workflows_api.new_workflow_run
 
-    def create_then_reclaim(db, workflow, input):
-        run = new_workflow_run(db, workflow, input)
+    def reclaim_then_create(db, workflow, input, **kwargs):
+        # Not after the run is inserted: its foreign key share-locks the trigger, as an agent
+        # run's does (see above).
         assert reclaim(t["id"], later) == [t["id"]]
-        return run
+        return new_workflow_run(db, workflow, input, **kwargs)
 
-    monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", create_then_reclaim)
+    monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", reclaim_then_create)
     asyncio.run(scheduler.fire(t["id"], now))
     monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", new_workflow_run)
 

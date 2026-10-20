@@ -12,7 +12,7 @@ import {
   useLoad,
   usePoll,
 } from "@/components/crud";
-import { Notice } from "@/components/Notice";
+import { StartedBy } from "@/components/provenance";
 import { Button } from "@/components/ui/button";
 import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -105,8 +105,8 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     run.reload,
     waitingRun ? WAITING_POLL_MS : undefined,
   );
-  // What it waits on is its owner's to decide, and to read: from the owner's store.
-  const waiting = useWaitingRequests(run.data?.is_owner ? run.data.steps : noSteps);
+  // What it waits on, which any member decides.
+  const waiting = useWaitingRequests(run.data?.steps ?? noSteps);
   // Read its requests again with each read of the run: one may be decided elsewhere (the Data
   // page, the conversation) while the run still waits.
   const reloadRequests = waiting.reload;
@@ -117,8 +117,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   // Only a run that never loaded is replaced by the error; a failed re-read keeps what's shown.
   if (run.error && !run.data) return <Placeholder>{run.error}</Placeholder>;
   // The run carries its own graph and name; the workflow only gives its layout, so the run is
-  // still shown, laid out afresh, if it fails to load, or isn't the reader's to load: one read
-  // as a member of a chat that started it.
+  // still shown, laid out afresh, if it fails to load.
   if (!run.data || (!workflow.data && !workflow.error) || !version) return null;
   const r = run.data;
   const name = r.workflow_name;
@@ -143,7 +142,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         // Through the run, so whoever may read it may open it.
         api.getRunSubworkflow(id, runId, [...prefix, node.key]),
         // Only for where its nodes are drawn; they're laid out afresh without it.
-        r.is_owner ? api.getWorkflow(node.target_id).catch(() => undefined) : undefined,
+        api.getWorkflow(node.target_id).catch(() => undefined),
       ]);
       setOpened([
         ...opened,
@@ -174,52 +173,44 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       wide
       title={
         <span className="flex flex-wrap items-center gap-2">
-          {r.is_owner ? (
-            <Link to={listHref(`/workflows/${id}/runs`)} className="hover:underline">
-              {name}
-            </Link>
-          ) : (
-            name
-          )}
+          <Link to={listHref(`/workflows/${id}/runs`)} className="hover:underline">
+            {name}
+          </Link>
           <span className="text-muted-foreground font-normal">run #{r.id}</span>
           <VersionBadge version={r.workflow_version} />
           <RunStatusBadge status={r.status} data-testid="run-status" />
         </span>
       }
       subtitle={
-        r.status === "waiting" && r.waiting_since
-          ? `Started ${formatDate(r.started_at!)} · waiting since ${formatDate(r.waiting_since)}`
-          : r.started_at
-            ? `Started ${formatDate(r.started_at)} · ${ranFor(r.started_at, r.finished_at, r.waited_seconds)}`
-          : r.finished_at
-            ? // E.g. its worker died while it was still queued.
-              `${statusLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
-            : `Queued ${formatDate(r.created_at)}`
+        <>
+          <StartedBy run={r} after=" · " />
+          <span>
+            {r.status === "waiting" && r.waiting_since
+              ? `Started ${formatDate(r.started_at!)} · waiting since ${formatDate(r.waiting_since)}`
+              : r.started_at
+                ? `Started ${formatDate(r.started_at)} · ${ranFor(r.started_at, r.finished_at, r.waited_seconds)}`
+                : r.finished_at
+                  ? // E.g. its worker died while it was still queued.
+                    `${statusLabel[r.status]} before it started · ${formatDate(r.finished_at)}`
+                  : `Queued ${formatDate(r.created_at)}`}
+          </span>
+        </>
       }
       actions={
-        r.is_owner && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onDelete}
-            disabled={r.status === "running"}
-            title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
-            aria-label="Delete run"
-          >
-            <Trash2 />
-          </Button>
-        )
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onDelete}
+          disabled={r.status === "running"}
+          title={r.status === "running" ? "A run can be deleted once it has finished" : undefined}
+          aria-label="Delete run"
+        >
+          <Trash2 />
+        </Button>
       }
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
-      {r.is_owner ? (
-        <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
-      ) : (
-        <Notice label="Read only" className="px-3 py-2">
-          {r.chat_name ? `Started from ${r.chat_name}. ` : ""}You can read this run as a member of
-          the chat; only its owner can delete it or decide what it waits on.
-        </Notice>
-      )}
+      <ErrorBanner message={workflow.error && `Couldn't load the workflow: ${workflow.error}`} />
       {run.error && (
         <p role="status" className="text-muted-foreground text-sm">
           Couldn't refresh this run ({run.error}). Trying again…
@@ -233,7 +224,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
           {r.error}
         </div>
       )}
-      {r.is_owner && r.status === "waiting" && (
+      {r.status === "waiting" && (
         <>
           <WaitingSection
             steps={r.steps}
@@ -302,7 +293,6 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
                   step={stepAt(r.steps, [...prefix, selected.key])}
                   state={states[selected.key]}
                   requests={waiting.requests}
-                  isOwner={r.is_owner}
                   onOpen={() => open(selected)}
                 />
               )}
@@ -336,15 +326,12 @@ function StepDetails({
   step,
   state,
   requests,
-  isOwner,
   onOpen,
 }: {
   node: WorkflowNode;
   step: WorkflowRunStep | undefined;
   state: NodeState;
   requests: Record<string, SchemaChangeRequest>;
-  /** Whether the reader owns the run, and so decides what it waits on. */
-  isOwner: boolean;
   onOpen: () => void;
 }) {
   const asks = (step?.waiting_on_request_ids ?? []).map((id) => requests[id]).filter(Boolean);
@@ -364,9 +351,7 @@ function StepDetails({
           {step.error && <p className="text-destructive text-sm break-words">{step.error}</p>}
           {step.status === "waiting" && (
             <p className="text-sm">
-              {!isOwner
-                ? "Waiting for its owner's decision on a schema change request."
-                : asks.length > 0
+              {asks.length > 0
                   ? `Waiting for your decision on: ${asks.map((r) => r.summary).join("; ")}`
                   : step.kind === "workflow"
                     ? "Waiting: a node inside it waits for your decision."

@@ -1,13 +1,14 @@
-"""The run history export: a copy of a user's agent runs and workflow runs in their data
-store's `history` schema.
+"""The run history export: a copy of an organisation's agent runs and workflow runs (every
+member's, and its schedules') in its data store's `history` schema.
 
 The platform database stays the source of truth; the copy is one-way, and only while the
-store's owner has it switched on (`User.export_run_history`, on the Settings page):
+store has it switched on (`DataStore.export_run_history`, on the Organisation page, by any
+member). Runs are matched to stores by the organisation their agent or workflow belongs to:
 
 - **Switching it on** queues the store's set-up on the provisioning worker
   (`enqueue_set_up`), which brings the store tree's `history` line to its head
-  (`aios.datastores.provision`), and backfills: every run of the owner's, of each kind, goes in
-  the outbox (`enqueue_everything`).
+  (`aios.datastores.provision`), and backfills: every run in the organisation, of each kind,
+  goes in the outbox (`enqueue_everything`).
 - **The outbox** is `history_exports`, a row per run (by kind) and store. Whatever changes a
   run writes its row, in the same transaction as its own change, and the store's export is
   queued once that commits:
@@ -26,10 +27,10 @@ store's owner has it switched on (`User.export_run_history`, on the Settings pag
   waits for its next change, or `RETRY_AFTER`, so it doesn't hold up the rest. A periodic
   sweep (`stores_to_export`) queues stores whose rows are still pending, should a queued export
   be lost.
-- **Embedding** (`User.embed_run_history`, offered only while the export is on: `set_embedding`)
-  makes the copy searchable by meaning (`aios.search.history_search`): once the export has
-  caught up, it embeds the messages waiting (`_embed`), those just exported or, once switched
-  on, every one there. Switched off, nothing new is embedded and what was is kept.
+- **Embedding** (`DataStore.embed_run_history`, offered only while the export is on:
+  `set_embedding`) makes the copy searchable by meaning (`aios.search.history_search`): once
+  the export has caught up, it embeds the messages waiting (`_embed`), those just exported or,
+  once switched on, every one there. Switched off, nothing new is embedded and what was is kept.
 - **Switching it off** stops the export, keeping what was copied; `delete_exported` empties it
   (and, while the export is on, starts it over). Runs deleted meanwhile still go in the
   outbox, so their copies go once it's back on.
@@ -92,7 +93,6 @@ from aios.models import (
     DataStoreStatus,
     HistoryExport,
     HistoryExportKind,
-    User,
     Workflow,
     WorkflowRun,
     WorkflowRunStep,
@@ -164,16 +164,15 @@ def _forget_rolled_back(session: Session) -> None:
 
 
 def _enqueue(db: Session, kind: HistoryExportKind, runs: Select, deleting: bool) -> None:
-    """Put `runs` (selecting each one's id and its owner's, `owner_id`) in their stores'
-    outbox, if their owner has the export on; see `enqueue_runs`."""
+    """Put `runs` (selecting each one's id and its organisation's, `organisation_id`) in their
+    stores' outbox, if the store has the export on; see `enqueue_runs`."""
     runs = runs.subquery()
-    exporting: ColumnElement[bool] = User.export_run_history
+    exporting: ColumnElement[bool] = DataStore.export_run_history
     if deleting:
         exporting = or_(exporting, DataStore.history_revision.is_not(None))
     rows = (
         select(DataStore.id, literal(kind, HistoryExport.kind.type), runs.c.id)
-        .join(User, User.id == DataStore.owner_user_id)
-        .join(runs, runs.c.owner_id == User.id)
+        .join(runs, runs.c.organisation_id == DataStore.owner_organisation_id)
         .where(exporting)
         # Rows are locked in run order, as the export marks them, so two writers of several
         # don't each hold one the other wants.
@@ -200,16 +199,14 @@ def _enqueue(db: Session, kind: HistoryExportKind, runs: Select, deleting: bool)
     if stores and deleting:
         # Only the exporting ones are queued: the others' rows wait for it to be back on.
         stores = db.scalars(
-            select(DataStore.id)
-            .join(User, User.id == DataStore.owner_user_id)
-            .where(DataStore.id.in_(stores), User.export_run_history)
+            select(DataStore.id).where(DataStore.id.in_(stores), DataStore.export_run_history)
         ).all()
     if stores:
         db.info.setdefault(_TO_EXPORT, set()).update(stores)
 
 
 def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = False) -> None:
-    """Put the agent runs matching `where` in their stores' outbox, if their owner has the
+    """Put the agent runs matching `where` in their stores' outbox, if the store has the
     export on; in `db`'s transaction, which the caller commits (the stores' exports are queued
     then). A run already there is pending again.
 
@@ -218,7 +215,9 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
     then too, if the store has its `history` tables, and are deleted once it's back on. The
     workflow runs whose steps held them go in too: the steps stay, without them."""
     runs = (
-        select(AgentRun.id, Agent.owner_id).join(Agent, Agent.id == AgentRun.agent_id).where(*where)
+        select(AgentRun.id, Agent.organisation_id)
+        .join(Agent, Agent.id == AgentRun.agent_id)
+        .where(*where)
     )
     _enqueue(db, HistoryExportKind.agent_run, runs, deleting)
     if deleting:
@@ -235,17 +234,17 @@ def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bo
     can pause. A writer of both kinds writes its agent runs' rows first, as the export marks
     them."""
     runs = (
-        select(WorkflowRun.id, Workflow.owner_id)
+        select(WorkflowRun.id, Workflow.organisation_id)
         .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .where(*where)
     )
     _enqueue(db, HistoryExportKind.workflow_run, runs, deleting)
 
 
-def enqueue_everything(db: Session, user_id: int) -> None:
-    """Put every run of the user's, of each kind, in their store's outbox (a backfill)."""
-    enqueue_runs(db, Agent.owner_id == user_id)
-    enqueue_workflow_runs(db, Workflow.owner_id == user_id)
+def enqueue_everything(db: Session, organisation_id: int) -> None:
+    """Put every run in the organisation, of each kind, in its store's outbox (a backfill)."""
+    enqueue_runs(db, Agent.organisation_id == organisation_id)
+    enqueue_workflow_runs(db, Workflow.organisation_id == organisation_id)
 
 
 @contextmanager
@@ -278,14 +277,12 @@ def _locked(
 
 
 def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
-    """The store is ready, has its `history` tables, and its owner has the export on.
+    """The store is ready, has its `history` tables, and has the export on.
 
     Raises `DataStoreBehind` if its `history` tables are behind the line's head (their
     migration failed, say): they may not all be there yet."""
     row = db.execute(
-        select(User.export_run_history, DataStore.history_revision)
-        .join(DataStore, DataStore.owner_user_id == User.id)
-        .where(
+        select(DataStore.export_run_history, DataStore.history_revision).where(
             DataStore.id == data_store_id,
             DataStore.status == DataStoreStatus.ready,
             DataStore.history_revision.is_not(None),
@@ -298,7 +295,7 @@ def _exporting(db: Session, data_store_id: uuid.UUID) -> bool:
 
 
 class NoHistory(Exception):
-    """The store has no `history` tables: its owner has never switched the export on."""
+    """The store has no `history` tables: nobody in its organisation has switched the export on."""
 
 
 def check_searchable(data_store_id: uuid.UUID) -> None:
@@ -390,8 +387,8 @@ def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 AgentVersion.version.label("agent_version"),
                 AgentVersion.model,
                 AgentRun.title,
-                # Who ran it: today, an agent's runs are its owner's.
-                Agent.owner_id.label("user_id"),
+                # The member who started it; none for a schedule's run.
+                AgentRun.created_by.label("user_id"),
                 AgentRun.trigger_id,
                 workflow_run.label("workflow_run_id"),
                 AgentRun.message_count,
@@ -466,8 +463,8 @@ def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 WorkflowRun.workflow_id,
                 Workflow.name.label("workflow_name"),
                 WorkflowVersion.version.label("workflow_version"),
-                # Who ran it: today, a workflow's runs are its owner's.
-                Workflow.owner_id.label("user_id"),
+                # The member who started it; none for a schedule's run.
+                WorkflowRun.created_by.label("user_id"),
                 cast(WorkflowRun.status, Text).label("status"),
                 WorkflowRun.input,
                 WorkflowRun.output,
@@ -653,7 +650,7 @@ def export(data_store_id: uuid.UUID) -> int:
             exported += count
             if count < BATCH:
                 break
-        # Caught up, even with nothing to export: the Settings page waits for this.
+        # Caught up, even with nothing to export: the Organisation page waits for this.
         _set_store(data_store_id, history_exported_at=func.now())
     # Once the lock is let go: embedding can take minutes (a backfill), and exports and deletes
     # needn't wait for it.
@@ -669,14 +666,10 @@ def _set_store(data_store_id: uuid.UUID, **values: Any) -> None:
 
 
 def _embedding(data_store_id: uuid.UUID) -> bool:
-    """The store's owner has embedding on (which they can only while the export is on)."""
+    """The store has embedding on (which it can only while the export is on)."""
     with SessionLocal() as db:
         return bool(
-            db.scalar(
-                select(User.embed_run_history)
-                .join(DataStore, DataStore.owner_user_id == User.id)
-                .where(DataStore.id == data_store_id)
-            )
+            db.scalar(select(DataStore.embed_run_history).where(DataStore.id == data_store_id))
         )
 
 
@@ -714,8 +707,8 @@ def _embed_batch(data_store_id: uuid.UUID) -> int:
 
 
 def _embed(data_store_id: uuid.UUID) -> None:
-    """Embed the store's exported messages still waiting for it (`EMBEDDABLE`), while its owner
-    has embedding on: those just exported, or every one there once it's switched on (a
+    """Embed the store's exported messages still waiting for it (`EMBEDDABLE`), while its
+    organisation has embedding on: those just exported, or every one there once it's switched on (a
     backfill). For up to `EMBED_BUDGET`; it has caught up (`history_embedded_at`) once none are
     left. What it doesn't finish (out of time, or the embedding API failed) waits for the
     periodic sweep. Switched off, it stops after the batch under way, keeping what's embedded.
@@ -766,10 +759,8 @@ def stores_to_export() -> list[uuid.UUID]:
     with SessionLocal() as db:
         return list(
             db.scalars(
-                select(DataStore.id)
-                .join(User, User.id == DataStore.owner_user_id)
-                .where(
-                    User.export_run_history,
+                select(DataStore.id).where(
+                    DataStore.export_run_history,
                     DataStore.status == DataStoreStatus.ready,
                     DataStore.history_revision.is_not(None),
                     or_(
@@ -782,7 +773,7 @@ def stores_to_export() -> list[uuid.UUID]:
                         DataStore.history_exported_at.is_(None),
                         # Messages still to embed (a backfill unfinished, or that failed).
                         and_(
-                            User.embed_run_history,
+                            DataStore.embed_run_history,
                             DataStore.history_embedded_at.is_(None),
                             or_(
                                 DataStore.history_embed_retry_at.is_(None),
@@ -797,7 +788,7 @@ def stores_to_export() -> list[uuid.UUID]:
 
 def delete_exported(data_store_id: uuid.UUID) -> None:
     """Empty the store's `history` tables (if it has them). If the export is on, it starts
-    over: every run of the owner's goes in the outbox again, so the whole copy comes back
+    over: every run in the organisation goes in the outbox again, so the whole copy comes back
     rather than only runs that change. To keep it empty, switch the export off first.
 
     Raises as `store_session` does, and `DataStoreBusy` if an export of the store is still
@@ -807,8 +798,10 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             raise DataStoreBusy(data_store_id)
         with SessionLocal() as db:
             store = db.get(DataStore, data_store_id)
-            owner_id = store.owner_user_id if store and store.history_revision else None
-        if owner_id is None:
+            organisation_id = (
+                store.owner_organisation_id if store and store.history_revision else None
+            )
+        if organisation_id is None:
             return
         _check_head(data_store_id, store.history_revision)
         with store_session(data_store_id, "rw") as store:
@@ -827,63 +820,63 @@ def delete_exported(data_store_id: uuid.UUID) -> None:
             .where(DataStore.id == data_store_id)
             .values(history_exported_at=None, history_embedded_at=None)
         )
-        enqueue_everything(db, owner_id)
+        enqueue_everything(db, organisation_id)
         db.commit()
 
 
-def set_exporting(db: Session, user_id: int, on: bool) -> uuid.UUID | None:
-    """Switch the user's export on or off, in `db`'s transaction, which the caller commits.
-
-    Switching it on (from off) backfills: every run of theirs goes in the outbox, and the store
-    hasn't caught up until they're exported. It returns their store, to queue its set-up once
-    committed (`enqueue_set_up`)."""
-    # Locked, so two switches at once don't both backfill, or both miss it.
-    was_on = db.scalar(select(User.export_run_history).where(User.id == user_id).with_for_update())
-    if not on:
-        # Embedding is only offered while the export is on.
-        db.execute(
-            update(User)
-            .where(User.id == user_id)
-            .values(export_run_history=False, embed_run_history=False)
-        )
-        return None
-    db.execute(update(User).where(User.id == user_id).values(export_run_history=True))
-    if was_on:
-        return None
+def _locked_store(db: Session, organisation_id: int) -> DataStore:
+    """The organisation's store (made, if it has none yet), its row locked, so two switches at
+    once don't both backfill, or both miss it."""
     from aios.datastores.resolve import data_store_for
 
-    store_id = data_store_for(user_id, db)
-    enqueue_everything(db, user_id)
-    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_exported_at=None))
-    return store_id
+    store_id = data_store_for(organisation_id, db)
+    return db.scalars(
+        select(DataStore)
+        .where(DataStore.id == store_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+
+
+def set_exporting(db: Session, organisation_id: int, on: bool) -> uuid.UUID | None:
+    """Switch the organisation's export on or off, in `db`'s transaction, which the caller
+    commits.
+
+    Switching it on (from off) backfills: every run in the organisation goes in the outbox, and
+    the store hasn't caught up until they're exported. It returns the store, to queue its set-up
+    once committed (`enqueue_set_up`)."""
+    store = _locked_store(db, organisation_id)
+    was_on = store.export_run_history
+    if not on:
+        # Embedding is only offered while the export is on.
+        store.export_run_history = store.embed_run_history = False
+        return None
+    store.export_run_history = True
+    if was_on:
+        return None
+    store.history_exported_at = None
+    db.flush()
+    enqueue_everything(db, organisation_id)
+    return store.id
 
 
 class ExportOff(Exception):
-    """Embedding was asked for while the user's run history export is off."""
+    """Embedding was asked for while the organisation's run history export is off."""
 
 
-def set_embedding(db: Session, user_id: int, on: bool) -> None:
-    """Switch embedding the user's exported messages on or off, in `db`'s transaction, which
-    the caller commits. Raises `ExportOff` to switch it on while the export is off.
+def set_embedding(db: Session, organisation_id: int, on: bool) -> None:
+    """Switch embedding the organisation's exported messages on or off, in `db`'s transaction,
+    which the caller commits. Raises `ExportOff` to switch it on while the export is off.
 
     Switching it on (from off) backfills: the store's export is queued once committed, and
     embeds every exported message waiting (`_embed`); it hasn't caught up until then."""
-    row = db.execute(
-        select(User.export_run_history, User.embed_run_history)
-        .where(User.id == user_id)
-        .with_for_update()
-    ).one()
-    if on and not row.export_run_history:
+    store = _locked_store(db, organisation_id)
+    if on and not store.export_run_history:
         raise ExportOff
-    db.execute(update(User).where(User.id == user_id).values(embed_run_history=on))
-    if not on or row.embed_run_history:
+    was_on = store.embed_run_history
+    store.embed_run_history = on
+    if not on or was_on:
         return
-    from aios.datastores.resolve import data_store_for
-
-    store_id = data_store_for(user_id, db)
-    db.execute(
-        update(DataStore)
-        .where(DataStore.id == store_id)
-        .values(history_embedded_at=None, history_embed_error=None, history_embed_retry_at=None)
-    )
+    store.history_embedded_at = store.history_embed_error = store.history_embed_retry_at = None
+    store_id = store.id
     db.info.setdefault(_TO_EXPORT, set()).add(store_id)

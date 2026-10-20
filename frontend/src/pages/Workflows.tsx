@@ -18,6 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { TargetSchedules } from "@/components/schedules";
 import { Tabs } from "@/components/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -78,6 +79,7 @@ export function WorkflowsSection() {
             {plural(workflow.node_count, "node")}
             {workflow.description && ` · ${workflow.description}`}
           </div>
+          <ProvenanceLine of={workflow} />
         </>
       )}
     />
@@ -200,7 +202,12 @@ function WorkflowDetailView({ id }: { id: number }) {
           {w.name} <VersionBadge version={current.version} />
         </span>
       }
-      subtitle={w.description || `Updated ${formatDate(w.updated_at)}`}
+      subtitle={
+        <>
+          {w.description || `Updated ${formatDate(w.updated_at)}`}
+          <ProvenanceLine of={w} className="mt-0.5" />
+        </>
+      }
       actions={
         <>
           <Button
@@ -290,6 +297,7 @@ function WorkflowDetailView({ id }: { id: number }) {
                             <span className="block truncate text-sm">{run.input}</span>
                             <span className="text-muted-foreground flex items-center gap-1 text-xs">
                               {formatDate(run.created_at)}
+                              <StartedBy run={run} before="· " />
                               {run.chat_id !== null && (
                                 <span
                                   className="flex min-w-0 items-center gap-1"
@@ -354,6 +362,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
   const [error, setError] = useState<string>();
+  const savedBy = useSavedBy();
 
   const loadError = version.error ?? workflow.error;
   if (loadError) return <Placeholder>{loadError}</Placeholder>;
@@ -383,7 +392,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
           {isCurrent && <Badge variant="secondary">current</Badge>}
         </span>
       }
-      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
       actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />

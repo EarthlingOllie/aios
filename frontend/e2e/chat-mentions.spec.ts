@@ -10,7 +10,7 @@ const message = (page: Page, text: string | RegExp) =>
 const composer = (page: Page) => page.getByRole("textbox", { name: "Message", exact: true });
 const suggestions = (page: Page) => page.getByRole("listbox", { name: "Mention" });
 
-test("the owner adds their agents and workflows, grouped by kind", async ({ page }) => {
+test("the owner adds the organisation's agents and workflows, grouped by kind", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   const agent = api.addAgent("Review");

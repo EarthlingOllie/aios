@@ -118,8 +118,8 @@ test("uploads refused for the cap say why, each of them, and uploads stop", asyn
 
   const errors = page.getByRole("alert").filter({ hasText: "big.md" });
   await expect(errors).toContainText(
-    "big.md: Your data store is full: its documents use 5.0 GB of the 5.0 GB allowed. Delete some to make room.",
+    "big.md: The organisation's data store is full: its documents use 5.0 GB of the 5.0 GB allowed. Delete some to make room.",
   );
-  await expect(errors).toContainText("more.md: Your data store is full");
+  await expect(errors).toContainText("more.md: The organisation's data store is full");
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });

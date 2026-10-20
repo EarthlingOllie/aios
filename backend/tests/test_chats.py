@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import pytest
+from conftest import delete_user, join_organisation, sign_up
 
 from aios.api import chats
 from aios.auth import current_user
@@ -15,14 +16,20 @@ def make_chat(api, name: str, **extra) -> dict:
 
 
 @pytest.fixture
-def other(db):
-    """A second signed-up user, to be another member (or not) of the first's chats."""
-    u = User(github_id=-2, login="other", name="Other Person")
-    db.add(u)
-    db.commit()
+def other(db, user):
+    """A second member of the first user's organisation, to be another member (or not) of their
+    chats. Gone first, with the organisation and what's in it."""
+    u = join_organisation(db, user, -2, "other", name="Other Person")
     yield u
-    db.delete(u)
-    db.commit()
+    delete_user(db, u)
+
+
+@pytest.fixture
+def outsider(db):
+    """A user in an organisation of their own."""
+    u = sign_up(db, -3, "outsider")
+    yield u
+    delete_user(db, u)
 
 
 @contextmanager
@@ -41,7 +48,6 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert chat["name"] == "Design"
     assert chat["description"] == "Where design happens"
     assert chat["visibility"] == "private"
-    assert chat["owner_id"] == user.id
     assert chat["is_owner"] is True
     assert chat["is_member"] is True
     # The owner, and their documents assistant (see test_chat_documents_assistant.py).
@@ -57,16 +63,15 @@ def test_create_makes_the_creator_the_owner_and_first_member(api, user):
     assert chat["created_at"] == chat["updated_at"]
 
 
-def test_names_are_unique_among_chats(api, other):
+def test_names_are_unique_among_the_organisations_chats(api, other):
     make_chat(api, "General")
     resp = api.post("/api/chats", json={"name": "General"})
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "A chat with that name already exists."
-    # Even another user's: a chat is named like a channel, not like something of one's own.
+    assert resp.json()["detail"] == "The organisation already has a chat with that name."
+    # Even another member's: a chat is named like a channel, not like something of one's own.
     with signed_in_as(other):
         resp = api.post("/api/chats", json={"name": "General"})
         assert resp.status_code == 409
-        assert resp.json()["detail"] == "A chat with that name already exists."
 
 
 def test_read(api):
@@ -93,9 +98,9 @@ def test_the_owner_adds_a_user_as_a_member(api, user, other):
     # Once only.
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
     assert resp.status_code == 409
-    # A user who doesn't exist, and kinds that can't be added yet.
+    # A user who doesn't exist, and agents and workflows that don't.
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": -1})
-    assert resp.status_code == 422
+    assert resp.status_code == 404
     for kind in ("agent", "workflow"):
         resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": 1})
         assert resp.status_code == 422, kind
@@ -315,10 +320,8 @@ def test_the_before_cursor_pages_back_through_history(api, monkeypatch):
     assert resp.status_code == 422
 
 
-def test_a_message_outlives_its_author(api, db):
-    leaver = User(github_id=-3, login="leaver")
-    db.add(leaver)
-    db.commit()
+def test_a_message_outlives_its_author(api, db, user):
+    leaver = join_organisation(db, user, -3, "leaver")
     chat = make_chat(api, "Design", visibility="public")
     add_user(api, chat, leaver)
     with signed_in_as(leaver):
@@ -347,7 +350,7 @@ def add(api, chat: dict, kind: str, target: dict) -> dict:
     return resp.json()
 
 
-def test_the_owner_adds_their_agents_and_workflows(api, other):
+def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsider):
     chat = make_chat(api, "Design", visibility="public")
     # An agent and a workflow may share a name; they're members of different kinds.
     agent = make_agent(api, "Review")
@@ -373,11 +376,12 @@ def test_the_owner_adds_their_agents_and_workflows(api, other):
         assert resp.json()["detail"] == "Already a member of this chat."
     # Only the owner adds members.
     with signed_in_as(other):
-        theirs = make_agent(api, "Theirs")
         member = {"kind": "agent", "id": agent["id"]}
         resp = api.post(f"/api/chats/{chat['id']}/members", json=member)
         assert resp.status_code == 403
-    # And only agents and workflows they own, that haven't been deleted.
+    # And only the organisation's agents and workflows, that haven't been deleted.
+    with signed_in_as(outsider):
+        theirs = make_agent(api, "Theirs")
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": theirs["id"]})
     assert resp.status_code == 422 and resp.json()["detail"] == "Unknown agent"
     gone = make_workflow(api, "Gone")

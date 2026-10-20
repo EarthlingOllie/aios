@@ -15,15 +15,16 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from aios import checkpoints, dependents, invocations, tracing, ui_stream
+from aios import checkpoints, dependents, tracing, ui_stream
 from aios.agent import ChatDeps
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.api.skills import lock_live, lock_live_skills, unique_name
 from aios.api.triggers import delete_triggers, disable_triggers
-from aios.auth import CurrentUser
-from aios.datastores import data_store_for, history, schema_changes
+from aios.auth import CurrentOrganisation, CurrentUser
+from aios.datastores import data_store_of, history, schema_changes
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     Agent,
@@ -33,6 +34,7 @@ from aios.models import (
     AgentVersionTool,
     Chat,
     ChatInvocation,
+    Organisation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Skill,
@@ -65,7 +67,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-AGENT_NAME_INDEX = "uq_agents_owner_id_name_live"
+AGENT_NAME_INDEX = "uq_agents_organisation_id_name_live"
 
 
 class AgentToolIn(BaseModel):
@@ -112,6 +114,8 @@ class AgentVersionSummary(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     skill_count: int
     tool_count: int
     run_count: int
@@ -122,6 +126,8 @@ class AgentVersionOut(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
     base_prompt: str
     model: str | None
     instructions: str
@@ -129,7 +135,7 @@ class AgentVersionOut(BaseModel):
     tools: list[AgentToolOut]
 
 
-class AgentSummary(BaseModel):
+class AgentSummary(Provenance):
     id: int
     name: str
     description: str
@@ -145,7 +151,7 @@ class AgentSummary(BaseModel):
     updated_at: datetime
 
 
-class AgentOut(BaseModel):
+class AgentOut(Provenance):
     id: int
     name: str
     description: str
@@ -174,16 +180,17 @@ class RunSummary(BaseModel):
     # The chat a mention in it started it from, while the chat exists.
     chat_id: int | None
     chat_name: str | None
+    # The member who started it: by hand, by mentioning the agent in a chat, or by starting the
+    # workflow run it's a node's conversation in. Null for a schedule's run (`trigger_id` says
+    # which, while it exists), and once that user is deleted.
+    created_by: UserOut | None
     created_at: datetime
     updated_at: datetime
 
 
 class RunOut(RunSummary):
-    # The agent's name: the reader may not own it, and so can't read the agent itself.
+    # The agent's name, so the page needn't read the agent as well.
     agent_name: str
-    # Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
-    # started it (`invocations.shares_agent_run`): only its owner sends it messages or deletes it.
-    is_owner: bool
     # AI SDK `UIMessage`s, for rendering the conversation with the same components as a live chat.
     ui_messages: list[dict[str, Any]]
     # The raw LangChain history: messages with their tool calls, results and usage.
@@ -196,11 +203,15 @@ class RunOut(RunSummary):
     waiting: bool
 
 
-def get_owned_agent(db: Session, user_id: int, agent_id: int, *, deleted_ok: bool = False) -> Agent:
+def get_org_agent(
+    db: Session, org: Organisation, agent_id: int, *, deleted_ok: bool = False
+) -> Agent:
+    """The organisation's agent (live, unless `deleted_ok`); a 404 otherwise, as if it didn't
+    exist."""
     agent = db.get(Agent, agent_id)
     if (
         agent is None
-        or agent.owner_id != user_id
+        or agent.organisation_id != org.id
         or (agent.deleted_at is not None and not deleted_ok)
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -224,38 +235,37 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
     return version
 
 
-def get_readable_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
-    """The run, for reading: its agent's owner's, or one shared with them through a chat
-    (`invocations.shares_agent_run`). Otherwise a 404, as if it didn't exist."""
+def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> AgentRun:
+    """A run of the organisation's live agent; a 404 otherwise, as if it didn't exist. Every
+    member reads, continues and deletes every run of the organisation's, whoever started it
+    and however (by hand, from a chat, by a schedule)."""
+    run = get_live_run(db, agent_id, run_id)
+    if run.agent.organisation_id != org.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return run
+
+
+def get_live_run(db: Session, agent_id: int, run_id: int) -> AgentRun:
+    """A run of the live agent, whoever's it is; a 404 otherwise."""
     agent = db.get(Agent, agent_id)
     run = db.get(AgentRun, run_id)
-    if (
-        agent is None
-        or agent.deleted_at is not None
-        or run is None
-        or run.agent_id != agent.id
-        or (agent.owner_id != user_id and not invocations.shares_agent_run(db, user_id, run.id))
-    ):
+    if agent is None or agent.deleted_at is not None or run is None or run.agent_id != agent.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
 
-def get_owned_run(db: Session, user_id: int, agent_id: int, run_id: int) -> AgentRun:
-    agent = get_owned_agent(db, user_id, agent_id)
-    run = db.get(AgentRun, run_id)
-    if run is None or run.agent_id != agent.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return run
-
-
-def resolve_skill_versions(db: Session, user_id: int, ids: list[int]) -> list[SkillVersion]:
-    """The requested versions of the user's live skills, in request order."""
+def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> list[SkillVersion]:
+    """The requested versions of the organisation's live skills, in request order."""
     found = {
         v.id: v
         for v in db.scalars(
             select(SkillVersion)
             .join(Skill, Skill.id == SkillVersion.skill_id)
-            .where(SkillVersion.id.in_(ids), Skill.owner_id == user_id, Skill.deleted_at.is_(None))
+            .where(
+                SkillVersion.id.in_(ids),
+                Skill.organisation_id == org.id,
+                Skill.deleted_at.is_(None),
+            )
         )
     }
     versions = [found[i] for i in ids if i in found]
@@ -312,7 +322,10 @@ def tool_out(tool: AgentVersionTool) -> AgentToolOut:
     )
 
 
-def version_out(version: AgentVersion) -> AgentVersionOut:
+def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) -> AgentVersionOut:
+    """The version, with who saved it from `known` (`provenance.people`), else read now."""
+    if known is None:
+        known = people(object_session(version), [version.created_by])
     skills = []
     for sv in version.skills:
         skill = sv.skill
@@ -333,6 +346,7 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
         version=version.version,
         note=version.note,
         created_at=version.created_at,
+        created_by=known.get(version.created_by),
         base_prompt=version.base_prompt,
         model=version.model,
         instructions=version.instructions,
@@ -341,14 +355,17 @@ def version_out(version: AgentVersion) -> AgentVersionOut:
     )
 
 
-def agent_out(agent: Agent) -> AgentOut:
+def agent_out(db: Session, agent: Agent) -> AgentOut:
+    version = agent.current_version
+    known = people(db, [agent.created_by, agent.updated_by, version.created_by])
     return AgentOut(
         id=agent.id,
         name=agent.name,
         description=agent.description,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
-        current_version=version_out(agent.current_version),
+        current_version=version_out(version, known),
+        **provenance(db, agent, known),
     )
 
 
@@ -396,7 +413,7 @@ def tool_keys(version_id) -> Any:
 
 
 @router.get("/agents", response_model=list[AgentSummary])
-def list_agents(user: CurrentUser, db: DB):
+def list_agents(org: CurrentOrganisation, db: DB):
     run_count = (
         select(func.count(AgentRun.id)).where(AgentRun.agent_id == Agent.id).scalar_subquery()
     )
@@ -410,9 +427,10 @@ def list_agents(user: CurrentUser, db: DB):
             run_count,
         )
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
-        .where(Agent.owner_id == user.id, Agent.deleted_at.is_(None))
+        .where(Agent.organisation_id == org.id, Agent.deleted_at.is_(None))
         .order_by(Agent.name)
     ).all()
+    known = people(db, [i for a, *_ in rows for i in (a.created_by, a.updated_by)])
     return [
         AgentSummary(
             id=a.id,
@@ -426,16 +444,17 @@ def list_agents(user: CurrentUser, db: DB):
             tool_keys=tools or [],
             run_count=runs,
             updated_at=a.updated_at,
+            **provenance(db, a, known),
         )
         for a, version, version_id, skills, tools, runs in rows
     ]
 
 
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
-def create_agent(body: AgentIn, user: CurrentUser, db: DB):
+def create_agent(body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     tools = resolve_tools(body.tools)
-    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
-    agent = Agent(owner_id=user.id, name=body.name, description=body.description)
+    skills = resolve_skill_versions(db, org, body.skill_version_ids)
+    agent = Agent(**made_by(org.id, user.id), name=body.name, description=body.description)
     db.add(agent)
     with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
@@ -448,23 +467,26 @@ def create_agent(body: AgentIn, user: CurrentUser, db: DB):
             user_id=user.id,
         )
         db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentOut)
-def get_agent(agent_id: DbId, user: CurrentUser, db: DB):
-    return agent_out(get_owned_agent(db, user.id, agent_id))
+def get_agent(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    return agent_out(db, get_org_agent(db, org, agent_id))
 
 
 @router.put("/agents/{agent_id}", response_model=AgentOut)
-def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
+def update_agent(
+    agent_id: DbId, body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     tools = resolve_tools(body.tools, agent.current_version)
-    skills = resolve_skill_versions(db, user.id, body.skill_version_ids)
+    skills = resolve_skill_versions(db, org, body.skill_version_ids)
     lock_live_agent(db, agent)
     agent.name = body.name
     agent.description = body.description
+    agent.updated_by = user.id
     with unique_name(db, "an agent", AGENT_NAME_INDEX):
         save_agent_version(
             db,
@@ -477,14 +499,14 @@ def update_agent(agent_id: DbId, body: AgentIn, user: CurrentUser, db: DB):
             model=agent.current_version.model,
         )
         db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 @router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
-def get_agent_dependents(agent_id: DbId, user: CurrentUser, db: DB):
+def get_agent_dependents(agent_id: DbId, org: CurrentOrganisation, db: DB):
     """What depends on the agent: what deleting it would cut off, and so has to be resolved
     first (see `delete_agent`)."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     dependents.fail_stopped_runs(db, agent)
     return dependents.find(db, agent)
 
@@ -507,6 +529,7 @@ class AgentDeleteIn(BaseModel):
 def delete_agent(
     agent_id: DbId,
     user: CurrentUser,
+    org: CurrentOrganisation,
     db: DB,
     background: BackgroundTasks,
     body: AgentDeleteIn | None = None,
@@ -516,7 +539,7 @@ def delete_agent(
     409 whose detail has a `message` and the `dependents`. All in one transaction: refused,
     nothing changes."""
     body = body or AgentDeleteIn()
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
     # Hold the row lock across the check and the delete; workflow saves that run the agent take
     # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
@@ -547,9 +570,9 @@ def delete_agent(
         [r.id for r in found.workflow_runs],
         f"Cancelled: the agent {agent.name} was deleted.",
     )
-    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]))
+    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]), user.id)
     # Soft delete: older workflow versions may still pin its versions, so the agent and its
-    # versions stay. Its runs are the user's conversations with it, and go now.
+    # versions stay. Its runs are the members' conversations with it, and go now.
     run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
     sandboxes = run_sandboxes(db, run_ids)
     cancel_chat_requests(db, run_ids)
@@ -557,6 +580,7 @@ def delete_agent(
     db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
     delete_triggers(db, Trigger.agent_id == agent.id)
     agent.deleted_at = func.now()
+    agent.deleted_by = user.id
     db.commit()
     # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
     # rather than carrying on with tool calls for runs that are gone.
@@ -570,8 +594,8 @@ def delete_agent(
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
-def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
+def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
     run_count = (
         select(func.count(AgentRun.id))
         .where(AgentRun.agent_version_id == AgentVersion.id)
@@ -582,12 +606,14 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
+    known = people(db, [v.created_by for v, *_ in rows])
     return [
         AgentVersionSummary(
             id=v.id,
             version=v.version,
             note=v.note,
             created_at=v.created_at,
+            created_by=known.get(v.created_by),
             skill_count=skills,
             tool_count=tools,
             run_count=runs,
@@ -597,17 +623,19 @@ def list_agent_versions(agent_id: DbId, user: CurrentUser, db: DB):
 
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
-def get_agent_version_detail(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def get_agent_version_detail(agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
     # Also once the agent is deleted: workflow versions, and their past runs, still pin its
     # versions, as they do a deleted workflow's.
-    agent = get_owned_agent(db, user.id, agent_id, deleted_ok=True)
+    agent = get_org_agent(db, org, agent_id, deleted_ok=True)
     return version_out(get_agent_version(db, agent, number))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
-def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def restore_agent_version(
+    agent_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Make an old version's config current again, as a new version (numbers only go up)."""
-    agent = get_owned_agent(db, user.id, agent_id)
+    agent = get_org_agent(db, org, agent_id)
     old = get_agent_version(db, agent, number)
     # Kept as stored, like an unchanged save, but only if a run could still load them.
     build_version_tools(old, "That version can't be restored")
@@ -618,6 +646,7 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
         )
     lock_live_agent(db, agent)
+    agent.updated_by = user.id
     save_agent_version(
         db,
         agent,
@@ -629,7 +658,7 @@ def restore_agent_version(agent_id: DbId, number: DbId, user: CurrentUser, db: D
         user_id=user.id,
     )
     db.commit()
-    return agent_out(agent)
+    return agent_out(db, agent)
 
 
 # --- Runs ---------------------------------------------------------------------------------------
@@ -653,6 +682,8 @@ def run_summary_query():
             AgentRun.output_tokens,
             Chat.id.label("chat_id"),
             Chat.name.label("chat_name"),
+            # As the user, by `run_summary` and `list_runs` (`provenance.started_by`).
+            AgentRun.created_by.label("created_by_id"),
             AgentRun.created_at,
             AgentRun.updated_at,
         )
@@ -660,6 +691,11 @@ def run_summary_query():
         .outerjoin(ChatInvocation, ChatInvocation.agent_run_id == AgentRun.id)
         .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
     )
+
+
+def run_summary(db: Session, run_id: int) -> RunSummary:
+    row = db.execute(run_summary_query().where(AgentRun.id == run_id)).one()
+    return started_by(db, [row], RunSummary)[0]
 
 
 def build_version_tools(
@@ -674,29 +710,38 @@ def build_version_tools(
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
-def list_runs(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
+def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
     rows = db.execute(
         run_summary_query()
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return [RunSummary.model_validate(row, from_attributes=True) for row in rows]
+    return started_by(db, rows, RunSummary)
 
 
-def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -> AgentRun:
-    """Add (and flush, not commit) a run of the agent's current version.
+def new_agent_run(
+    db: Session, agent: Agent, *, created_by: int | None, trigger_id: int | None = None
+) -> AgentRun:
+    """Add (and flush, not commit) a run of the agent's current version, started by the member
+    `created_by`: who asked for it by hand or in a chat. It runs for the agent's organisation,
+    not for them (`load_chat_context`).
 
     Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
     version can't be built. The caller commits; the share lock taken here, held until then,
     keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
-    starts one (`aios.scheduler`), passing its `trigger_id`.
+    starts one (`aios.scheduler`), passing its `trigger_id` and no member.
     """
     lock_live_agent(db, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
-    run = AgentRun(agent=agent, agent_version_id=agent.current_version_id, trigger_id=trigger_id)
+    run = AgentRun(
+        agent=agent,
+        agent_version_id=agent.current_version_id,
+        trigger_id=trigger_id,
+        created_by=created_by,
+    )
     db.add(run)
     db.flush()
     return run
@@ -705,23 +750,21 @@ def new_agent_run(db: Session, agent: Agent, *, trigger_id: int | None = None) -
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: DbId, user: CurrentUser, db: DB):
-    agent = get_owned_agent(db, user.id, agent_id)
-    run = new_agent_run(db, agent)
+def create_run(agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    agent = get_org_agent(db, org, agent_id)
+    run = new_agent_run(db, agent, created_by=user.id)
     db.commit()
-    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
-    return RunSummary.model_validate(row, from_attributes=True)
+    return run_summary(db, run.id)
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
-def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
-    run = get_readable_run(db, user.id, agent_id, run_id)
-    row = db.execute(run_summary_query().where(AgentRun.id == run.id)).one()
+def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    run = get_org_run(db, org, agent_id, run_id)
+    summary = run_summary(db, run.id)
     messages = checkpoints.history(run.id)
     return RunOut(
-        **RunSummary.model_validate(row, from_attributes=True).model_dump(),
+        **summary.model_dump(),
         agent_name=run.agent.name,
-        is_owner=run.agent.owner_id == user.id,
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
         instructions=run.agent_version.instructions,
@@ -732,9 +775,9 @@ def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB):
 
 @router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_run(
-    agent_id: DbId, run_id: DbId, user: CurrentUser, db: DB, background: BackgroundTasks
+    agent_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB, background: BackgroundTasks
 ) -> None:
-    run = get_owned_run(db, user.id, agent_id, run_id)
+    run = get_org_run(db, org, agent_id, run_id)
     sandboxes = run_sandboxes(db, [run.id])
     cancel_chat_requests(db, [run.id])
     # Its exported copy goes too (found through the run, so before it's deleted).
@@ -746,12 +789,14 @@ def delete_run(
         background.add_task(stop_sandboxes, sandboxes)
 
 
-def trace_metadata(run: AgentRun, user_id: int) -> dict[str, Any]:
-    """Attached to the run's trace (Langfuse), e.g. for filtering and experiments."""
+def trace_metadata(run: AgentRun) -> dict[str, Any]:
+    """Attached to the run's trace (Langfuse), e.g. for filtering and experiments: the agent's
+    organisation, which the run executes for, and the member who started it."""
     version = run.agent_version
     return tracing.trace_metadata(
         session_id=checkpoints.thread_id(run.id),
-        user_id=user_id,
+        organisation_id=run.agent.organisation_id,
+        created_by=run.created_by,
         tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
         agent_run_id=run.id,
         **tracing.agent_version_metadata(version),
@@ -770,12 +815,26 @@ class ChatContext:
     # The `run_python` tool's allowed domains, if the version has the tool and the run's
     # sandbox is worth pre-warming for this turn (see `worth_prewarming`).
     sandbox_domains: list[str] | None = None
-    # The data store the turn's tools use: the user's.
+    # The data store the turn's tools use: the agent's organisation's.
     data_store_id: uuid.UUID | None = None
+    # The member who started the run, which the turn's tools are told (`ChatDeps.user_id`);
+    # None for a schedule's.
+    created_by: int | None = None
 
 
-def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> ChatContext:
-    run = get_owned_run(db, user_id, agent_id, run_id)
+def load_chat_context(
+    db: Session, agent_id: int, run_id: int, *, org: Organisation | None = None
+) -> ChatContext:
+    """What a turn of the run needs. The turn executes for the agent's organisation, whoever
+    asks for it: its store is the organisation's, and its trace and tools are told who started
+    the run. `org` is the organisation of the request asking for the turn, which the run's agent
+    must be in (a 404 otherwise); the scheduler, a chat's mention and a resumed run are let in
+    by what started them, and pass none."""
+    run = (
+        get_live_run(db, agent_id, run_id)
+        if org is None
+        else get_org_run(db, org, agent_id, run_id)
+    )
     version = run.agent_version
     tools = build_version_tools(version)
     # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token
@@ -792,16 +851,18 @@ def load_chat_context(db: Session, user_id: int, agent_id: int, run_id: int) -> 
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
-    # On this session, rather than one of its own alongside it; committed in case it's created.
-    data_store_id = data_store_for(user_id, db)
+    # The agent's organisation's, on this session rather than one of its own alongside it;
+    # committed in case it's created.
+    data_store_id = data_store_of(db, Agent, agent_id)
     db.commit()
     return ChatContext(
         model=version.model,
         instructions=version.instructions,
-        metadata=trace_metadata(run, user_id),
+        metadata=trace_metadata(run),
         tools=tools,
         sandbox_domains=sandbox_domains,
         data_store_id=data_store_id,
+        created_by=run.created_by,
     )
 
 
@@ -1058,7 +1119,7 @@ def _check_not_waiting(run_id: int) -> None:
 
 
 async def turn_stream(
-    ctx: ChatContext, user_id: int, run_id: int, turn: HumanMessage | Resume
+    ctx: ChatContext, run_id: int, turn: HumanMessage | Resume
 ) -> AsyncIterator[ui_stream.Chunk]:
     """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
     the model is called, and whatever the reply got to is kept however the turn ends (it
@@ -1097,7 +1158,7 @@ async def turn_stream(
             if graph_input is not None:
                 # Closed here if the consumer stops the turn, so the turn is recorded while the
                 # checkpointer's connection is still open.
-                turn_chunks = _run_turn(agent, config, ctx, ui, user_id, run_id, graph_input)
+                turn_chunks = _run_turn(agent, config, ctx, ui, run_id, graph_input)
                 async with aclosing(turn_chunks):
                     async for chunk in turn_chunks:
                         yield chunk
@@ -1118,7 +1179,7 @@ async def turn_stream(
 
 
 async def _run_turn(
-    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, user_id: int, run_id: int, graph_input
+    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, run_id: int, graph_input
 ) -> AsyncIterator[ui_stream.Chunk]:
     finished = False
     # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool call)
@@ -1127,7 +1188,7 @@ async def _run_turn(
     events = agent.astream(
         graph_input,
         config,
-        context=ChatDeps(user_id=user_id, run_id=run_id, data_store_id=ctx.data_store_id),
+        context=ChatDeps(user_id=ctx.created_by, run_id=run_id, data_store_id=ctx.data_store_id),
         stream_mode=["messages", "updates"],
         # Checkpoint each step before the next starts, so the user's message is saved before
         # the model is called.
@@ -1152,15 +1213,10 @@ async def _run_turn(
             await _record_turn(agent, config, run_id, finished=finished, partial=ui.partial_reply())
 
 
-def _run_owner(run_id: int) -> tuple[int, int] | None:
-    """The run's agent, and its owner (who it runs for); None if it's gone."""
+def _run_agent(run_id: int) -> int | None:
+    """The run's agent; None if the run is gone."""
     with SessionLocal() as db:
-        row = db.execute(
-            select(Agent.id, Agent.owner_id)
-            .join(AgentRun, AgentRun.agent_id == Agent.id)
-            .where(AgentRun.id == run_id)
-        ).first()
-        return (row.id, row.owner_id) if row else None
+        return db.scalar(select(AgentRun.agent_id).where(AgentRun.id == run_id))
 
 
 def _mark_resumed(run_id: int, request_ids: list[uuid.UUID] | None = None) -> None:
@@ -1189,17 +1245,16 @@ class ResumeFailed(RuntimeError):
 
 async def resume_run(run_id: int) -> None:
     """Carry on a run that waits on schema change requests, now some are decided: their tool
-    calls return the outcomes, and the turn goes on from there, as the run's owner. The rest
-    of the turn is in the run's history, for its chat to show.
+    calls return the outcomes, and the turn goes on from there, for the agent's organisation as
+    any turn of the run is. The rest of the turn is in the run's history, for its chat to show.
 
     Raises `ResumeFailed` if the turn couldn't start (the run stays waiting)."""
-    owner = await run_in_threadpool(_run_owner, run_id)
-    if owner is None:
+    agent_id = await run_in_threadpool(_run_agent, run_id)
+    if agent_id is None:
         return
-    agent_id, user_id = owner
     try:
         with SessionLocal() as db:
-            ctx = await run_in_threadpool(load_chat_context, db, user_id, agent_id, run_id)
+            ctx = await run_in_threadpool(load_chat_context, db, agent_id, run_id)
     except HTTPException as exc:
         # Its version can't run any more (a tool left the library, say): no turn of it can, so
         # it isn't left waiting on what can't come.
@@ -1207,7 +1262,7 @@ async def resume_run(run_id: int) -> None:
         await run_in_threadpool(_mark_resumed, run_id)
         return
     resume = Resume()
-    async for chunk in turn_stream(ctx, user_id, run_id, resume):
+    async for chunk in turn_stream(ctx, run_id, resume):
         if chunk["type"] == "error":
             log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
     if resume.dealt_with is None:
@@ -1216,7 +1271,14 @@ async def resume_run(run_id: int) -> None:
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")
-async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, db: DB):
+async def run_chat(
+    agent_id: DbId,
+    run_id: DbId,
+    body: dict,
+    user: CurrentUser,
+    db: DB,
+    org: CurrentOrganisation,
+):
     """Continue a run. The client sends only its new message; history comes from the run's
     LangGraph thread.
 
@@ -1229,7 +1291,7 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
     # Sync SQLAlchemy calls go to a worker thread so they don't block the event loop. The `db`
     # session is function-scoped (see `aios.db.DB`), so it's closed and its connection returned
     # to the pool before the response streams; the saves use sessions of their own.
-    ctx = await run_in_threadpool(load_chat_context, db, user.id, agent_id, run_id)
+    ctx = await run_in_threadpool(load_chat_context, db, agent_id, run_id, org=org)
     message = request.messages[-1]
     if message.role != "user":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Expected a user message")
@@ -1240,4 +1302,4 @@ async def run_chat(agent_id: DbId, run_id: DbId, body: dict, user: CurrentUser, 
         raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
     await run_in_threadpool(_start_turn, run_id, prompt.text)
 
-    return ui_stream.streaming_response(turn_stream(ctx, user.id, run_id, prompt))
+    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt))

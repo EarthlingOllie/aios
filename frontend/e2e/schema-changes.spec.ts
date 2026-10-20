@@ -81,7 +81,7 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
   api.finishSchemaChange(request.id, { status: "applied", messages: carriedOn });
 
   await expect(page.getByText("The contacts table is ready.")).toBeVisible();
-  await expect(card(page)).toContainText("Applied to your data store.");
+  await expect(card(page)).toContainText("Applied to the organisation's data store.");
   await expect(page.getByRole("status", { name: "Waiting" })).toHaveCount(0);
   await page.locator("#run-input").fill("thanks");
   await expect(page.locator("form:has(#run-input) button[type=submit]")).toBeEnabled();
@@ -123,7 +123,7 @@ test("a run that carries on into another request shows that request's card", asy
   const index = card(page, "Create index contacts_name_idx on data.contacts");
   await expect(index).toContainText("Waiting for you");
   await expect(index.getByRole("button", { name: "Approve" })).toBeVisible();
-  await expect(card(page)).toContainText("Applied to your data store.");
+  await expect(card(page)).toContainText("Applied to the organisation's data store.");
 });
 
 test("rejecting with a note sends the note, and the run carries on", async ({ page }) => {
@@ -203,7 +203,7 @@ test("deciding from the Changes section moves the request to the history", async
     "No changes are waiting.",
   );
   api.finishSchemaChange(request.id, { status: "applied" });
-  await expect(history).toContainText("Applied to your data store.");
+  await expect(history).toContainText("Applied to the organisation's data store.");
 });
 
 test("the history shows expired and cancelled requests, with no controls", async ({ page }) => {
