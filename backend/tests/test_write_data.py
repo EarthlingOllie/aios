@@ -8,7 +8,7 @@ import math
 
 import psycopg
 import pytest
-from conftest import add_document
+from conftest import add_document, store_of
 from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
@@ -17,7 +17,7 @@ from test_provisioning import login_url
 
 from aios import worker
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for, store_not_ready
+from aios.datastores import store_not_ready
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
 from aios.tools import build_tool, write_data
@@ -32,7 +32,7 @@ TOOLS = [
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, with a hand-made `data.fish` table holding two fish."""
-    row = provisioned(db, data_store_for(user.id))
+    row = provisioned(db, store_of(user))
     with as_owner(row) as conn:
         conn.execute(
             "CREATE TABLE data.fish (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
@@ -388,7 +388,7 @@ def test_updates_and_deletes_over_the_row_cap_are_refused_before_they_run(
     "status", [DataStoreStatus.provisioning, DataStoreStatus.failed, DataStoreStatus.deleting]
 )
 def test_it_says_why_the_store_isnt_ready(api, db, user, agent, status):
-    db.execute(update(DataStore).where(DataStore.owner_user_id == user.id).values(status=status))
+    db.execute(update(DataStore).where(DataStore.id == store_of(user)).values(status=status))
     db.commit()
 
     result = write(api, agent, table="fish", operation="delete", where={"id": 1})
@@ -831,7 +831,9 @@ def test_a_store_at_its_database_cap_refuses_inserts_and_updates_but_deletes_and
 
     for refused in (inserted, upserted, updated):
         assert set(refused) == {"error"}
-        assert refused["error"].startswith("The user's data store is full: its data takes up ")
+        assert refused["error"].startswith(
+            "The organisation's data store is full: its data takes up "
+        )
         assert "of the 1.0 KB allowed" in refused["error"]
         assert "Reading still works, and deleting rows makes room" in refused["error"]
     assert deleted["row_count"] == 1
@@ -864,7 +866,7 @@ def test_deleting_rows_at_the_database_cap_lets_writes_in_again(api, db, store, 
     )
     worker.measure_data_store_usage_task.apply().get()
 
-    assert refused["error"].startswith("The user's data store is full")
+    assert refused["error"].startswith("The organisation's data store is full")
     assert deleted["row_count"] == 7000
     assert inserted["row_count"] == 1
     assert [f[0] for f in fish(store)] == ["pike", "perch", "carp"]
@@ -886,8 +888,8 @@ def test_a_store_at_its_file_cap_refuses_inserts_and_updates_too(
     )
 
     assert inserted == {
-        "error": "The user's data store is full: its documents use 100 B of the 100 B allowed,"
-        " so rows can't be inserted or updated. Reading and deleting rows still work. Tell the"
-        " user: deleting documents on the Data page makes room."
+        "error": "The organisation's data store is full: its documents use 100 B of the 100 B"
+        " allowed, so rows can't be inserted or updated. Reading and deleting rows still work."
+        " Tell the user: deleting documents on the Data page makes room."
     }
     assert deleted["row_count"] == 1

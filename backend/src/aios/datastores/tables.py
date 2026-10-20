@@ -36,8 +36,8 @@ MIN_PREVIEW_CHARS = 16
 # A row's key: its table's (or partition's) oid, and its place in it (`ctid`).
 _ROW_KEY = re.compile(r"(?P<table>[0-9]{1,10}):\((?P<block>[0-9]{1,10}),(?P<place>[0-9]{1,5})\)")
 
-# The store's tables (or the one named), with their columns, in order: only the owner's
-# (`data`), and a partitioned table once, not each partition. Not what the owner dropped
+# The store's tables (or the one named), with their columns, in order: only the organisation's
+# (`data`), and a partitioned table once, not each partition. Not what a request dropped
 # (`aios.datastores.dropped`): a dropped table, which the read-only role has no privileges on,
 # nor a dropped column, which it can't read (it has `SELECT` on a table's other columns only).
 TABLES_SQL = f"""
@@ -294,6 +294,25 @@ def list_tables(data_store_id: uuid.UUID) -> tuple[list[Table], bool]:
             shown.append(table)
         _count(pg, shown)
     return shown, len(shown) < len(tables)
+
+
+# How many tables the list would show (before the byte cap), as `TABLES_SQL` finds them.
+COUNT_TABLES_SQL = f"""
+    SELECT count(*)
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = %(schema)s
+      AND c.relkind IN ('r', 'p')
+      AND NOT c.relispartition
+      AND has_any_column_privilege(c.oid, 'SELECT') AND {VISIBLE_TABLE}
+"""
+
+
+def count_tables(data_store_id: uuid.UUID) -> int:
+    """How many tables the store has, as the Data page lists them: not dropped ones, which
+    are on their way out."""
+    with _reading(data_store_id) as pg:
+        return pg.execute(COUNT_TABLES_SQL, {"schema": SCHEMA}).fetchone()[0]
 
 
 def _text(column: Column) -> sql.Composable:

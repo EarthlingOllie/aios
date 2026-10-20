@@ -41,6 +41,7 @@ celery_app.conf.update(
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
+        "aios.delete_data_stores": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
         "aios.measure_data_store_usage": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
@@ -60,6 +61,9 @@ celery_app.conf.update(
 # Stores whose provisioning gave up are tried again this often (seconds), by the provisioning
 # worker's beat (`celery worker -B`): there's one of it, and a second would only do it twice.
 RETRY_UNFINISHED_EVERY = 600
+# Stores being deleted (their organisations were) are swept this often (seconds), by the same
+# beat, in case the sweep queued on deleting one was lost or failed.
+DELETE_STORES_EVERY = RETRY_UNFINISHED_EVERY
 # What each store uses is measured this often (seconds), for its storage cap
 # (`aios.datastores.quota`): a store past it is refused writes from the next measurement.
 MEASURE_USAGE_EVERY = 300
@@ -74,6 +78,11 @@ celery_app.conf.beat_schedule = {
         "schedule": RETRY_UNFINISHED_EVERY,
         # One that waited longer than this is stale: the next is due.
         "options": {"expires": RETRY_UNFINISHED_EVERY},
+    },
+    "delete-data-stores": {
+        "task": "aios.delete_data_stores",
+        "schedule": DELETE_STORES_EVERY,
+        "options": {"expires": DELETE_STORES_EVERY},
     },
     "measure-data-store-usage": {
         "task": "aios.measure_data_store_usage",
@@ -127,10 +136,10 @@ def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
         # there in minutes (`provision.retry_unfinished`).
         raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
     except (DataStoreNotFound, DataStoreNotReady):
-        # Deleted since the upload (with its owner), or being deleted: a store is ready by the
-        # time anything is uploaded to it, and stops being ready only when it's deleted. Its
-        # documents go with it, so, as for a document deleted before its ingest, there's
-        # nothing left to do.
+        # Deleted since the upload (with its organisation), or being deleted: a store is ready by
+        # the time anything is uploaded to it, and stops being ready only when it's deleted. Its
+        # documents go with it, so, as for a document deleted before its ingest, there's nothing
+        # left to do.
         return
     except DataStoreBusy as exc:
         # Its role's connections are all in use; the document is still pending (or, claimed,
@@ -186,6 +195,24 @@ def retry_unfinished_data_stores_task() -> None:
 
 
 @celery_app.task(
+    name="aios.delete_data_stores",
+    # As the retry: one that runs over stops, and the next carries on where it left off.
+    soft_time_limit=DELETE_STORES_EVERY,
+    time_limit=DELETE_STORES_EVERY + 60,
+)
+def delete_data_stores_task(data_store_id: str | None = None) -> None:
+    """Drop the databases, roles and files of the stores being deleted, and mark them deleted
+    (`aios.datastores.provision`): the one given (just put into `deleting`), or every one."""
+    from aios.datastores import provision
+
+    if data_store_id is None:
+        provision.delete_deleting()
+    else:
+        # Waiting for its provisioning, if that's still on it (it was deleted straight away).
+        provision.delete_deleting([uuid.UUID(data_store_id)], wait=True)
+
+
+@celery_app.task(
     name="aios.measure_data_store_usage",
     # As the retry: one that runs over stops, and the next carries on.
     soft_time_limit=MEASURE_USAGE_EVERY,
@@ -204,7 +231,7 @@ def measure_data_store_usage_task() -> None:
     time_limit=PROVISION_TIME_LIMIT + 60,
 )
 def set_up_history_export_task(data_store_id: str) -> None:
-    """Give the store its `history` tables, now its owner has switched the run history export
+    """Give the store its `history` tables, now a member has switched the run history export
     on, then queue the export of what's waiting (`aios.datastores.history`). Safe to run again.
 
     A store that isn't ready yet gets them as it's provisioned, and its runs are exported by
@@ -307,7 +334,7 @@ def apply_schema_change_task(request_id: str) -> None:
     retry_backoff=True,
 )
 def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
-    """Restore a dropped table or column the owner asked for (`aios.datastores.dropped`). Run
+    """Restore a dropped table or column a member asked for (`aios.datastores.dropped`). Run
     again (redelivered), it finds nothing left to restore."""
     from aios.datastores import dropped
 

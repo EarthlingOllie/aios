@@ -8,11 +8,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentUser
+from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Agent,
     AgentVersion,
+    Organisation,
     Skill,
     SkillVersion,
     Workflow,
@@ -21,6 +23,8 @@ from aios.models import (
 from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
+
+SKILL_NAME_INDEX = "uq_skills_organisation_id_name_live"
 
 
 class SkillIn(BaseModel):
@@ -31,7 +35,7 @@ class SkillIn(BaseModel):
     note: str | None = None
 
 
-class SkillSummary(BaseModel):
+class SkillSummary(Provenance):
     id: int
     name: str
     description: str
@@ -45,6 +49,8 @@ class SkillVersionSummary(BaseModel):
     version: int
     note: str | None
     created_at: datetime
+    # The member who saved it.
+    created_by: UserOut | None
 
 
 class SkillVersionOut(SkillVersionSummary):
@@ -62,7 +68,7 @@ class SkillUsage(BaseModel):
     skill_version: int
 
 
-class SkillOut(BaseModel):
+class SkillOut(Provenance):
     id: int
     name: str
     created_at: datetime
@@ -71,9 +77,10 @@ class SkillOut(BaseModel):
     agents: list[SkillUsage]
 
 
-def get_owned_skill(db: Session, user_id: int, skill_id: int) -> Skill:
+def get_org_skill(db: Session, org: Organisation, skill_id: int) -> Skill:
+    """The organisation's live skill; a 404 otherwise, as if it didn't exist."""
     skill = db.get(Skill, skill_id)
-    if skill is None or skill.owner_id != user_id or skill.deleted_at is not None:
+    if skill is None or skill.organisation_id != org.id or skill.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return skill
 
@@ -150,10 +157,10 @@ def on_conflict(db: Session, constraint: str, detail: str) -> Iterator[None]:
 def unique_name(db: Session, what: str, index: str, detail: str | None = None) -> Iterator[None]:
     """Turn a violation of the live-name unique index `index` inside the block into a 409.
 
-    The 409 says the user already has `what` with that name, unless `detail` says otherwise
-    (names unique among everyone's, say).
+    The 409 says the organisation already has `what` with that name, unless `detail` says
+    otherwise (names unique among everyone's, say).
     """
-    with on_conflict(db, index, detail or f"You already have {what} with that name."):
+    with on_conflict(db, index, detail or f"The organisation already has {what} with that name."):
         yield
 
 
@@ -172,25 +179,37 @@ def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:
     ]
 
 
+def version_summary(
+    version: SkillVersion, known: dict[int, UserOut], model: type[SkillVersionSummary]
+) -> SkillVersionSummary:
+    """The version as `model`, with who saved it from `known` (see `provenance.people`)."""
+    fields = {name: getattr(version, name) for name in model.model_fields if name != "created_by"}
+    return model(**fields, created_by=known.get(version.created_by))
+
+
 def skill_out(db: Session, skill: Skill) -> SkillOut:
+    version = skill.current_version
+    known = people(db, [skill.created_by, skill.updated_by, version.created_by])
     return SkillOut(
         id=skill.id,
         name=skill.name,
         created_at=skill.created_at,
         updated_at=skill.updated_at,
-        current_version=SkillVersionOut.model_validate(skill.current_version, from_attributes=True),
+        current_version=version_summary(version, known, SkillVersionOut),
         agents=skill_usage(db, skill.id),
+        **provenance(db, skill, known),
     )
 
 
 @router.get("/skills", response_model=list[SkillSummary])
-def list_skills(user: CurrentUser, db: DB):
+def list_skills(org: CurrentOrganisation, db: DB):
     rows = db.execute(
         select(Skill, SkillVersion)
         .join(SkillVersion, SkillVersion.id == Skill.current_version_id)
-        .where(Skill.owner_id == user.id, Skill.deleted_at.is_(None))
+        .where(Skill.organisation_id == org.id, Skill.deleted_at.is_(None))
         .order_by(Skill.name)
     ).all()
+    known = people(db, [i for skill, _ in rows for i in (skill.created_by, skill.updated_by)])
     return [
         SkillSummary(
             id=skill.id,
@@ -199,16 +218,17 @@ def list_skills(user: CurrentUser, db: DB):
             version=v.version,
             version_id=v.id,
             updated_at=skill.updated_at,
+            **provenance(db, skill, known),
         )
         for skill, v in rows
     ]
 
 
 @router.post("/skills", response_model=SkillOut, status_code=status.HTTP_201_CREATED)
-def create_skill(body: SkillIn, user: CurrentUser, db: DB):
-    skill = Skill(owner_id=user.id, name=body.name)
+def create_skill(body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    skill = Skill(**made_by(org.id, user.id), name=body.name)
     db.add(skill)
-    with unique_name(db, "a skill", "uq_skills_owner_id_name_live"):
+    with unique_name(db, "a skill", SKILL_NAME_INDEX):
         save_skill_version(
             db,
             skill,
@@ -222,15 +242,18 @@ def create_skill(body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.get("/skills/{skill_id}", response_model=SkillOut)
-def get_skill(skill_id: DbId, user: CurrentUser, db: DB):
-    return skill_out(db, get_owned_skill(db, user.id, skill_id))
+def get_skill(skill_id: DbId, org: CurrentOrganisation, db: DB):
+    return skill_out(db, get_org_skill(db, org, skill_id))
 
 
 @router.put("/skills/{skill_id}", response_model=SkillOut)
-def update_skill(skill_id: DbId, body: SkillIn, user: CurrentUser, db: DB):
-    skill = get_owned_skill(db, user.id, skill_id)
+def update_skill(
+    skill_id: DbId, body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
+    skill = get_org_skill(db, org, skill_id)
     skill.name = body.name
-    with unique_name(db, "a skill", "uq_skills_owner_id_name_live"):
+    skill.updated_by = user.id
+    with unique_name(db, "a skill", SKILL_NAME_INDEX):
         save_skill_version(
             db,
             skill,
@@ -244,8 +267,8 @@ def update_skill(skill_id: DbId, body: SkillIn, user: CurrentUser, db: DB):
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_skill(skill_id: DbId, user: CurrentUser, db: DB) -> None:
-    skill = get_owned_skill(db, user.id, skill_id)
+def delete_skill(skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
+    skill = get_org_skill(db, org, skill_id)
     # Hold the row lock across the usage check and the delete; agent saves take it too.
     if not lock_live_skills(db, [skill.id]):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -257,29 +280,36 @@ def delete_skill(skill_id: DbId, user: CurrentUser, db: DB) -> None:
         )
     # Soft delete: older agent versions may still pin this skill's versions.
     skill.deleted_at = func.now()
+    skill.deleted_by = user.id
     db.commit()
 
 
 @router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])
-def list_skill_versions(skill_id: DbId, user: CurrentUser, db: DB):
-    skill = get_owned_skill(db, user.id, skill_id)
-    return db.scalars(
+def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB):
+    skill = get_org_skill(db, org, skill_id)
+    versions = db.scalars(
         select(SkillVersion)
         .where(SkillVersion.skill_id == skill.id)
         .order_by(SkillVersion.version.desc())
     ).all()
+    known = people(db, [v.created_by for v in versions])
+    return [version_summary(v, known, SkillVersionSummary) for v in versions]
 
 
 @router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
-def get_skill_version_detail(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
-    return get_skill_version(db, get_owned_skill(db, user.id, skill_id), number)
+def get_skill_version_detail(skill_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
+    version = get_skill_version(db, get_org_skill(db, org, skill_id), number)
+    return version_summary(version, people(db, [version.created_by]), SkillVersionOut)
 
 
 @router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)
-def restore_skill_version(skill_id: DbId, number: DbId, user: CurrentUser, db: DB):
+def restore_skill_version(
+    skill_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     """Make an old version's content current again, as a new version."""
-    skill = get_owned_skill(db, user.id, skill_id)
+    skill = get_org_skill(db, org, skill_id)
     old = get_skill_version(db, skill, number)
+    skill.updated_by = user.id
     save_skill_version(
         db,
         skill,

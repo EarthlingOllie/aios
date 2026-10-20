@@ -5,13 +5,13 @@ It has two lines, each with its own head:
 
 - `aios` (revisions `0001`, `0002`, ...), which every store is at the head of.
 - `history` (the branch labelled `history`, revisions `h0001`, ...): the run history export's
-  tables, which a store gets only once its owner switches the export on, and is then kept at
+  tables, which a store gets only once its organisation switches the export on, and is then kept at
   the head of too (`aios.datastores.history`).
 
-Its version table is `aios.alembic_version`, in each store: a row per line the store has.
-`data`, the owner's own tables, is never touched by it. `aios.datastores.provision` runs it, as
-the store's owner role; there's no alembic.ini for it. To add a revision, copy the latest file
-of its line in versions/ and set its `down_revision` to that file's `revision`.
+Its version table is `aios.alembic_version`, in each store: a row per line the store has. `data`,
+the organisation's own tables, is never touched by it. `aios.datastores.provision` runs it, as the
+store's owner role; there's no alembic.ini for it. To add a revision, copy the latest file of its
+line in versions/ and set its `down_revision` to that file's `revision`.
 
 A table it makes is readable by `_ro` and writable by `_rw`, but for its own bookkeeping
 (`provision.BOOKKEEPING`), which only it writes: add any new such table there.
@@ -44,7 +44,7 @@ def config(connection: Connection | None = None) -> Config:
 
 
 def include_name(name, type_, parent_names) -> bool:
-    # The owner's tables (`data`) are changed only by approved schema change requests.
+    # The organisation's tables (`data`) are changed only by approved schema change requests.
     return not (type_ == "schema" and name == "data")
 
 

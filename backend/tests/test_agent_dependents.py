@@ -503,7 +503,7 @@ def test_a_node_starting_as_its_agent_is_deleted_waits_rather_than_deadlocking(
 
     def start_node():
         try:
-            result["step"] = workflows._start_step(run_id, ("build",), node, "go")
+            result["step"] = workflows._start_step(run_id, None, ("build",), node, "go")
         except Exception as exc:
             result["error"] = exc
 
@@ -550,12 +550,12 @@ def test_a_turn_starting_on_a_run_deleted_meanwhile_writes_nothing(
 ):
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with SessionLocal() as db:
-        ctx = agents_api.load_chat_context(db, user.id, agent["id"], run["id"])
+        ctx = agents_api.load_chat_context(db, agent["id"], run["id"])
     # Deleted after the turn loaded the run, before it took the run's turn lock.
     assert delete(api, agent).status_code == 204
 
     async def turn() -> list[dict]:
-        stream = agents_api.turn_stream(ctx, user.id, run["id"], HumanMessage("hi"))
+        stream = agents_api.turn_stream(ctx, run["id"], HumanMessage("hi"))
         return [chunk async for chunk in stream]
 
     with use_model(model(Script(CONTACTS))):

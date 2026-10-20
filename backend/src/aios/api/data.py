@@ -1,5 +1,5 @@
-"""The Data page's Tables: the user's store's own tables, and their rows. Read-only, and no SQL
-is accepted: tables and columns are named, and checked against the store's catalog."""
+"""The Data page's Tables: the organisation's store's own tables, and their rows. Read-only, and
+no SQL is accepted: tables and columns are named, and checked against the store's catalog."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager

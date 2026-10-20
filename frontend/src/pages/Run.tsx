@@ -9,6 +9,7 @@ import { ErrorBanner, formatDate, Placeholder, useLoad, usePoll, type ListContex
 import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
 import { Notice } from "@/components/Notice";
+import { StartedBy } from "@/components/provenance";
 import { SchemaChangeCard } from "@/components/SchemaChanges";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,15 +62,11 @@ export function RunPage() {
         <div className="min-w-0 flex-1">
           <div className="text-muted-foreground truncate text-xs">
             {run.data.agent_name} ·{" "}
-            {/* The agent's versions are its owner's to read. */}
-            {run.data.is_owner ? (
-              <Link to={`/agents/${agentId}/versions/${run.data.agent_version}`} className="hover:underline">
-                v{run.data.agent_version}
-              </Link>
-            ) : (
-              `v${run.data.agent_version}`
-            )}{" "}
+            <Link to={`/agents/${agentId}/versions/${run.data.agent_version}`} className="hover:underline">
+              v{run.data.agent_version}
+            </Link>{" "}
             · run #{runId} · started {formatDate(run.data.created_at)}
+            <StartedBy run={run.data} before=" · " className="align-bottom" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{run.data.title ?? "New run"}</span>
@@ -97,11 +94,9 @@ export function RunPage() {
             </button>
           ))}
         </div>
-        {run.data.is_owner && (
-          <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
-            <Trash2 />
-          </Button>
-        )}
+        <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
+          <Trash2 />
+        </Button>
       </header>
       {deleteError && (
         <div className="px-4 pt-2">
@@ -202,7 +197,7 @@ function RunChat({
           <div ref={bottomRef} />
         </div>
       </div>
-      {run.is_owner && run.waiting && !busy && (
+      {run.waiting && !busy && (
         <div className="mx-auto w-full max-w-3xl px-4 pb-2">
           <Notice label="Waiting" busy className="px-3 py-2">
             {run.schema_change_requests.some((r) => r.status === "pending")
@@ -211,25 +206,16 @@ function RunChat({
           </Notice>
         </div>
       )}
-      {run.is_owner ? (
-        <ChatComposer
-          id="run-input"
-          disabled={run.waiting}
-          placeholder="Message this agent…"
-          value={input}
-          onChange={setInput}
-          busy={busy}
-          onStop={stop}
-          onSubmit={submit}
-        />
-      ) : (
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-          <Notice label="Read only" className="px-3 py-2">
-            {run.chat_name ? `Started from ${run.chat_name}. ` : ""}You can read this run as a member of
-            the chat; only its owner can message the agent.
-          </Notice>
-        </div>
-      )}
+      <ChatComposer
+        id="run-input"
+        disabled={run.waiting}
+        placeholder="Message this agent…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }

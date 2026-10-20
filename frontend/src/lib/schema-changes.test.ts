@@ -37,7 +37,7 @@ describe("requestSummary", () => {
     expect(applied).toMatchObject({ label: "Applied", inFlight: true });
     expect(applied.message).toContain("carrying on");
     const resumed = requestSummary(request({ status: "applied", resumed_at: "2026-10-17T09:01:00Z" }));
-    expect(resumed).toMatchObject({ message: "Applied to your data store.", inFlight: false });
+    expect(resumed).toMatchObject({ message: "Applied to the organisation's data store.", inFlight: false });
   });
 
   it("isn't in flight once decided when no run waits on it", () => {

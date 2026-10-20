@@ -22,22 +22,22 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from celery.exceptions import Retry, SoftTimeLimitExceeded
-from conftest import delete_user, provisioned_user
+from conftest import delete_user, provisioned_user, store_of
 from psycopg import errors, sql
 from sqlalchemy import create_engine, insert, pool, select, text, update
 from sqlalchemy.engine import make_url
 
-from aios import worker
+from aios import organisations, worker
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import credentials, data_store_for, migrations, provision, store_session
+from aios.datastores import credentials, migrations, provision, store_session
 from aios.datastores.connections import store_url
 from aios.datastores.migrations import head_revision, history_head
 from aios.datastores.models import StoreBase
 from aios.datastores.resolve import names_for
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, DataStoreStatus
 from alembic import command
 
 
@@ -47,7 +47,7 @@ def store_row(db, store_id: uuid.UUID) -> DataStore:
 
 
 def test_a_new_users_store_is_provisioned_ready_at_the_store_trees_head(db, new_user, provisioning):
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
 
     assert store_row(db, store_id).status == DataStoreStatus.provisioning
     assert provisioning == [store_id]
@@ -74,7 +74,7 @@ def test_a_store_is_reached_at_the_platform_databases_address_not_the_provisione
     monkeypatch.setattr(
         settings, "data_store_provisioner_url", as_db.render_as_string(hide_password=False)
     )
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
 
     provision.provision(store_id)
 
@@ -114,7 +114,7 @@ def two_stores(db, new_user) -> tuple[DataStore, DataStore]:
     """Two provisioned stores, A and B."""
     rows = []
     for _ in range(2):
-        store_id = data_store_for(new_user().id)
+        store_id = store_of(new_user())
         provision.provision(store_id)
         rows.append(store_row(db, store_id))
     return rows[0], rows[1]
@@ -147,7 +147,7 @@ def test_no_other_role_can_connect_to_a_new_store_before_its_access_is_set(
     """A new database lets every role connect, until `_restrict_connect` says who may: one let
     in before then would stay connected."""
     other, _ = two_stores
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     steps = list(provision.STEPS)
     monkeypatch.setattr(provision, "STEPS", steps[: steps.index(provision._create_database) + 1])
     provision.provision(store_id)
@@ -185,7 +185,7 @@ def store_with_a_table(db, new_user, next_revision) -> DataStore:
     """A store provisioned at `next_revision`, whose `aios.marker` is a table like any a store
     revision makes."""
     next_revision()
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     return store_row(db, store_id)
 
@@ -243,7 +243,7 @@ def test_a_stores_roles_cant_change_its_migration_version_or_schema_history(two_
 
 def test_migrate_all_takes_writes_on_the_bookkeeping_back_from_existing_stores(db, new_user):
     """Stores provisioned before `_rw` was kept off the bookkeeping."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     row = store_row(db, store_id)
     with admin_connect(row.dbname) as conn:
@@ -350,7 +350,7 @@ def test_migrate_all_gives_a_stores_roles_the_limits_configured_now(db, new_user
     monkeypatch.setattr(settings, "data_store_connection_limit", 10)
     monkeypatch.setattr(settings, "data_store_statement_timeout", 5_000)
     monkeypatch.setattr(settings, "data_store_idle_in_transaction_timeout", 7_000)
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
 
     monkeypatch.setattr(settings, "data_store_connection_limit", 20)
@@ -382,7 +382,7 @@ def test_a_run_that_crashes_partway_is_finished_by_running_it_again(
     db, new_user, monkeypatch, next_revision, crash_after
 ):
     next_revision()  # a table for the read-write role to write
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     steps = list(provision.STEPS)
 
     def crash(run):
@@ -413,7 +413,7 @@ def admin_connect(database: str | None = None) -> psycopg.Connection:
 
 
 def test_killing_the_provisioning_process_then_running_it_again_gives_a_ready_store(db, new_user):
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     dbname = store_row(db, store_id).dbname
     # Hold the store's row, so the run stops at its very last step (marking the store ready),
     # with everything else done; then kill it there.
@@ -471,8 +471,8 @@ def test_database_and_role_names_never_contain_a_user_id(two_stores):
             roles = {r for (r,) in conn.execute("SELECT rolname FROM pg_roles")}
             assert conn.execute("SELECT current_database()").fetchone() == (names.dbname,)
         assert {names.owner, names.rw, names.ro} <= roles
-        assert store.owner_user_id != 0 and not re.search(
-            rf"(^|_){store.owner_user_id}(_|$)", " ".join(roles)
+        assert store.owner_organisation_id != 0 and not re.search(
+            rf"(^|_){store.owner_organisation_id}(_|$)", " ".join(roles)
         )
 
 
@@ -513,7 +513,7 @@ def next_revision(tmp_path, monkeypatch) -> Callable[[], str]:
 def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fails(
     db, new_user, next_revision
 ):
-    ids = [data_store_for(new_user().id) for _ in range(3)]
+    ids = [store_of(new_user()) for _ in range(3)]
     for store_id in ids:
         provision.provision(store_id)
     broken, behind, ahead = ids
@@ -541,7 +541,7 @@ def test_migrate_all_brings_stores_at_mixed_revisions_to_head_past_one_that_fail
 def test_migrate_all_reports_failures_and_exits_non_zero(
     db, new_user, next_revision, capsys, monkeypatch
 ):
-    ok, broken = [data_store_for(new_user().id) for _ in range(2)]
+    ok, broken = [store_of(new_user()) for _ in range(2)]
     for store_id in (ok, broken):
         provision.provision(store_id)
     next_revision()
@@ -559,7 +559,7 @@ def test_migrate_all_reports_failures_and_exits_non_zero(
 
 
 def test_migrate_all_finishes_provisioning_stores_that_never_got_there(db, new_user):
-    store_id = data_store_for(new_user().id)  # queued, but never run
+    store_id = store_of(new_user())  # queued, but never run
 
     outcome = provision.migrate_all([store_id])
 
@@ -569,8 +569,8 @@ def test_migrate_all_finishes_provisioning_stores_that_never_got_there(db, new_u
 
 def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
     """A store it has just provisioned is already at head: it isn't migrated again."""
-    unfinished = data_store_for(new_user().id)
-    ready = data_store_for(new_user().id)
+    unfinished = store_of(new_user())
+    ready = store_of(new_user())
     provision.provision(ready)
     upgrades = []
     upgrade_store = provision.upgrade_store
@@ -589,7 +589,7 @@ def test_migrate_all_runs_each_store_to_head_once(db, new_user, monkeypatch):
 
 def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, new_user):
     """Stores made before migration 0014 have no passwords yet."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     db.execute(
         update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
     )
@@ -605,9 +605,11 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
 
 def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provisioned(db, new_user):
     """While a deploy migrates, the release before migration 0014 still serves, and makes a
-    new user's store with only its owner: the row gets its names from its id."""
-    user = new_user()
-    store_id = db.scalar(insert(DataStore).values(owner_user_id=user.id).returning(DataStore.id))
+    new store with only its owner: the row gets its names from its id."""
+    org = organisations.membership_of(db, new_user().id)
+    store_id = db.scalar(
+        insert(DataStore).values(owner_organisation_id=org.id).returning(DataStore.id)
+    )
     db.commit()
 
     row = store_row(db, store_id)
@@ -625,7 +627,7 @@ def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provis
 def test_passwords_another_run_gave_a_store_meanwhile_are_kept(db, new_user, monkeypatch):
     """Another run (or a deploy's migrate-all) may give the store its passwords between our
     first look and taking the row's lock: those win, not new ones."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     db.execute(
         update(DataStore).where(DataStore.id == store_id).values(rw_password=None, ro_password=None)
     )
@@ -655,7 +657,7 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
 ):
     caplog.set_level(logging.DEBUG)
     user = new_user()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     provision.provision(store_id)
     provision.migrate_all([store_id])
     row = store_row(db, store_id)
@@ -679,7 +681,7 @@ def test_store_passwords_are_kept_encrypted_and_never_logged_or_returned(
 
 
 def test_the_provisioning_task_provisions_the_store_it_is_given(db, new_user):
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
 
     worker.provision_data_store_task.apply(args=[str(store_id)]).get()
 
@@ -687,7 +689,7 @@ def test_the_provisioning_task_provisions_the_store_it_is_given(db, new_user):
 
 
 def test_the_provisioning_task_retries_then_marks_the_store_failed(db, new_user, monkeypatch):
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     tries = []
 
     def broken(store_id):
@@ -711,7 +713,7 @@ def test_the_provisioning_task_retries_then_marks_the_store_failed(db, new_user,
 
 
 def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user, monkeypatch):
-    gave_up, lost, just_signed_up = [data_store_for(new_user().id) for _ in range(3)]
+    gave_up, lost, just_signed_up = [store_of(new_user()) for _ in range(3)]
     provision.fail(gave_up, "OperationalError: the instance is down")
     # Its task was never queued, or was lost with a worker that was killed (the broker only
     # redelivers that after its visibility timeout, over an hour): it needn't wait for that.
@@ -744,7 +746,7 @@ def test_stores_that_never_got_there_are_tried_again_on_a_schedule(db, new_user,
 
 def test_runs_of_a_store_at_once_wait_for_each_other(db, new_user):
     """So the sweep can provision a store whose own task is running, or about to."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
 
     with ThreadPoolExecutor(2) as pool:
         revisions = list(pool.map(provision.provision, [store_id, store_id]))
@@ -758,7 +760,7 @@ def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short
     db, new_user, monkeypatch
 ):
     """The provisioning worker's time limits stop the whole run, not just one store's."""
-    stores = [data_store_for(new_user().id) for _ in range(2)]
+    stores = [store_of(new_user()) for _ in range(2)]
     for store_id in stores:
         provision.fail(store_id, "OperationalError: the instance is down")
     tries = []
@@ -782,7 +784,7 @@ def test_a_time_limit_stops_retrying_stores_without_failing_the_one_it_cut_short
 
 
 def test_a_time_limit_stops_migrating_stores_without_recording_an_error(db, new_user, monkeypatch):
-    stores = [data_store_for(new_user().id) for _ in range(2)]
+    stores = [store_of(new_user()) for _ in range(2)]
     for store_id in stores:
         provision.provision(store_id)
     tries = []
@@ -823,7 +825,7 @@ def test_running_migrate_all_as_a_module_gives_no_import_warning():
 def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user):
     """New stores' provisioning queues behind it on the one provisioning worker: it mustn't
     wait for a deploy's migrate-all, say, to finish a store."""
-    busy, other = [data_store_for(new_user().id) for _ in range(2)]
+    busy, other = [store_of(new_user()) for _ in range(2)]
     for store_id in (busy, other):
         provision.fail(store_id, "OperationalError: the instance is down")
 
@@ -839,7 +841,7 @@ def test_the_retry_skips_a_store_another_run_is_on_rather_than_wait(db, new_user
 def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_user):
     """Like provisioning, bringing a store to head on the schedule mustn't wait for another
     run on it (a deploy's migrate-all, say)."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
     db.commit()
@@ -854,7 +856,7 @@ def test_the_retry_skips_a_ready_store_behind_head_another_run_is_on(db, new_use
 
 
 def test_provisioning_gives_up_on_an_instance_that_never_answers(db, new_user, monkeypatch):
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     # Takes the connection (the kernel does), then says nothing.
     silent = socket.create_server(("127.0.0.1", 0))
     url = make_url(get_settings().data_store_provisioner_url).set(
@@ -877,7 +879,7 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
     """The release before a deploy keeps provisioning stores, at its own head, after the
     deploy's migrate-stores has run (or migrate-stores failed for one): they're ready, but
     behind the tree's head, which the new release's code needs."""
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     names = provision.StoreNames.of(store_row(db, store_id))
     # The store as the release before this one left it: at 0001, with no documents tables.
     engine = create_engine(
@@ -894,7 +896,7 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
     db.commit()
     # A store already past this release's head (the next release has migrated it) is left alone.
     ahead_user = provisioned_user(db, -2, "ahead-user")
-    ahead = data_store_for(ahead_user.id)
+    ahead = store_of(ahead_user)
     try:
         db.execute(update(DataStore).where(DataStore.id == ahead).values(schema_revision="tnext"))
         db.commit()
@@ -903,7 +905,7 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
         r = api.get("/api/documents")
         assert (r.status_code, r.json()["detail"]) == (
             409,
-            "Your data store is being upgraded. Try again in a moment.",
+            "The organisation's data store is being upgraded. Try again in a moment.",
         )
         retried = []
         monkeypatch.setattr(
@@ -930,12 +932,19 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
         delete_user(db, ahead_user)
 
 
-def exporting_user(db, new_user) -> User:
-    """A new user (no store yet) with the run history export switched on."""
-    u = new_user()
-    u.export_run_history = True
+def export(db, store_id: uuid.UUID, on: bool) -> None:
+    """Switch the store's run history export on or off, as the Organisation page does, without
+    what the switch queues."""
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(export_run_history=on))
     db.commit()
-    return u
+
+
+def exporting_store(db, new_user) -> uuid.UUID:
+    """A new user's organisation's store (not provisioned yet), with the run history export
+    switched on."""
+    store_id = store_of(new_user())
+    export(db, store_id, True)
+    return store_id
 
 
 # The run history export's tables, at the `history` line's head.
@@ -952,7 +961,7 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
     """Like `alembic check` for the platform: a provisioned store's tables are what
     `aios.datastores.models` says, so the models and the tree can't drift apart. On both of
     the tree's lines: its owner has the run history export on."""
-    store_id = data_store_for(exporting_user(db, new_user).id)
+    store_id = exporting_store(db, new_user)
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
@@ -972,8 +981,7 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
 
 
 def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export_on(db, new_user):
-    owner = new_user()
-    store_id = data_store_for(owner.id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     row = store_row(db, store_id)
     assert (row.schema_revision, row.history_revision) == (head_revision(), None)
@@ -982,22 +990,20 @@ def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export
     provision.migrate_all([store_id])
     assert store_row(db, store_id).history_revision is None
 
-    owner.export_run_history = True
-    db.commit()
+    export(db, store_id, True)
     provision.migrate_store(store_id)
 
     row = store_row(db, store_id)
     assert (row.schema_revision, row.history_revision) == (head_revision(), history_head())
     assert store_tables(row.dbname, "history") == HISTORY_TABLES
     # Switched off again, the store keeps them, and they're kept at their head.
-    owner.export_run_history = False
-    db.commit()
+    export(db, store_id, False)
     assert provision.migrate_all([store_id]) == {store_id: head_revision()}
     assert store_row(db, store_id).history_revision == history_head()
 
 
 def test_a_store_provisioned_for_an_owner_exporting_history_gets_its_tables(db, new_user):
-    store_id = data_store_for(exporting_user(db, new_user).id)
+    store_id = exporting_store(db, new_user)
 
     worker.provision_data_store_task.apply(args=[str(store_id)]).get()
 
@@ -1006,12 +1012,10 @@ def test_a_store_provisioned_for_an_owner_exporting_history_gets_its_tables(db, 
 
 
 def test_a_store_whose_history_set_up_was_lost_gets_it_on_the_schedule(db, new_user, monkeypatch):
-    owner = new_user()
-    store_id = data_store_for(owner.id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     # Switched on, but its set-up task never ran.
-    owner.export_run_history = True
-    db.commit()
+    export(db, store_id, True)
     retry = provision.retry_unfinished
     monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id]))
 
@@ -1023,11 +1027,9 @@ def test_a_store_whose_history_set_up_was_lost_gets_it_on_the_schedule(db, new_u
 def test_the_history_set_up_task_migrates_the_store_then_queues_its_export(
     db, new_user, history_tasks
 ):
-    owner = new_user()
-    store_id = data_store_for(owner.id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
-    owner.export_run_history = True
-    db.commit()
+    export(db, store_id, True)
 
     worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
 
@@ -1041,7 +1043,7 @@ def test_the_history_set_up_task_migrates_the_store_then_queues_its_export(
 def test_the_history_set_up_task_leaves_a_store_not_ready_yet_to_its_provisioning(
     db, new_user, history_tasks
 ):
-    store_id = data_store_for(exporting_user(db, new_user).id)
+    store_id = exporting_store(db, new_user)
 
     worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
 
@@ -1052,7 +1054,7 @@ def test_the_history_set_up_task_leaves_a_store_not_ready_yet_to_its_provisionin
 def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_user):
     """A store set up for the export before workflow runs were exported (at h0001) gets their
     tables as it's migrated."""
-    store_id = data_store_for(new_user().id)
+    store_id = store_of(new_user())
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
@@ -1070,7 +1072,7 @@ def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_
 
     assert provision.migrate_all([store_id]) == {store_id: head_revision()}
 
-    assert store_row(db, store_id).history_revision == history_head() == "h0003"
+    assert store_row(db, store_id).history_revision == history_head() == "h0004"
     assert store_tables(names.dbname, "history") == HISTORY_TABLES
     # And the messages' search columns (h0003).
     with admin_connect(names.dbname) as conn:

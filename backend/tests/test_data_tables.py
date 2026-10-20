@@ -8,11 +8,11 @@ import json
 
 import psycopg
 import pytest
+from conftest import store_of
 from sqlalchemy import update
 from test_data_tools import as_owner, provisioned
 
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import data_store_for
 from aios.datastores import tables as data_tables
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
@@ -21,7 +21,7 @@ from aios.models import DataStore, DataStoreStatus
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, provisioned, with a hand-made `data.fish` table."""
-    row = provisioned(db, data_store_for(user.id))
+    row = provisioned(db, store_of(user))
     with as_owner(row) as conn:
         conn.execute(
             "CREATE TABLE data.fish (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
@@ -83,7 +83,7 @@ def tables(api) -> dict:
 
 
 def test_another_stores_tables_are_never_listed(api, store, db, new_user):
-    other = provisioned(db, data_store_for(new_user().id))
+    other = provisioned(db, store_of(new_user()))
     with as_owner(other) as conn:
         conn.execute("CREATE TABLE data.secrets (code text)")
 
@@ -123,7 +123,7 @@ def test_tables_past_the_byte_cap_are_left_out_and_it_says_so(api, store, monkey
 def test_the_tables_wait_for_the_store_to_be_ready(api, db, user):
     db.execute(
         update(DataStore)
-        .where(DataStore.owner_user_id == user.id)
+        .where(DataStore.id == store_of(user))
         .values(status=DataStoreStatus.provisioning)
     )
     db.commit()
@@ -179,7 +179,7 @@ def test_an_unknown_table_is_not_found(api, store, table):
 
 
 def test_another_stores_table_is_not_found(api, store, db, new_user):
-    other = provisioned(db, data_store_for(new_user().id))
+    other = provisioned(db, store_of(new_user()))
     with as_owner(other) as conn:
         conn.execute("CREATE TABLE data.secrets (code text)")
 

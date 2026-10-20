@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
+from conftest import delete_user, org_of, sign_up
 from fake_model import ToolCall, model, replies, use_model
 from sqlalchemy import func
 
@@ -13,10 +14,10 @@ from aios import checkpoints, ui_stream
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
-from aios.auth import current_user
+from aios.auth import current_organisation, current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Agent, AgentRun, User
+from aios.models import Agent, AgentRun, Organisation, User
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
@@ -34,8 +35,8 @@ def spy_run(monkeypatch) -> dict:
     seen = {}
     load = agents_api.load_chat_context
 
-    def spy_load(*args):
-        ctx = load(*args)
+    def spy_load(*args, **kwargs):
+        ctx = load(*args, **kwargs)
         seen["metadata"] = ctx.metadata
         return ctx
 
@@ -226,7 +227,7 @@ def test_skill_delete_waits_for_in_flight_attach(api, user):
     with SessionLocal() as session:
         # An agent save that has resolved (and locked) the skill but not yet committed.
         skills = agents_api.resolve_skill_versions(
-            session, user.id, [skill["current_version"]["id"]]
+            session, org_of(session, user), [skill["current_version"]["id"]]
         )
         deleter = threading.Thread(
             target=lambda: result.update(resp=api.delete(f"/api/skills/{skill['id']}"))
@@ -281,7 +282,7 @@ def test_agent_delete_is_soft_and_takes_its_runs(api, db):
     assert make_agent(api, "Bot")["name"] == "Bot"
     resp = api.post("/api/agents", json={"name": "Bot"})
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "You already have an agent with that name."
+    assert resp.json()["detail"] == "The organisation already has an agent with that name."
 
 
 def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
@@ -307,9 +308,7 @@ def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
 
 def test_other_users_cannot_see_agents(api, client, db):
     agent = make_agent(api, "Mine")
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = sign_up(db, -2, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(f"/api/agents/{agent['id']}").status_code == 404
@@ -317,8 +316,7 @@ def test_other_users_cannot_see_agents(api, client, db):
         assert client.post(f"/api/agents/{agent['id']}/runs").status_code == 404
         assert client.get("/api/agents").json() == []
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
@@ -326,16 +324,13 @@ def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
     url = f"/api/agents/{agent['id']}"
     assert api.delete(url).status_code == 204
     assert api.get(f"{url}/versions/1").status_code == 200
-    other = User(github_id=-2, login="other")
-    db.add(other)
-    db.commit()
+    other = sign_up(db, -2, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         for gone in (url, f"{url}/versions", f"{url}/versions/1"):
             assert client.get(gone).status_code == 404
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
@@ -448,7 +443,7 @@ def test_concurrent_turns_on_a_run_take_turns(api, user):
             await asyncio.sleep(delay)
             with SessionLocal() as db:
                 response = await agents_api.run_chat(
-                    agent["id"], run["id"], chat_body(text), user, db
+                    agent["id"], run["id"], chat_body(text), user, db, org_of(db, user)
                 )
             return await consume(response)
 
@@ -486,7 +481,7 @@ def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
     async def delete_mid_turn():
         with SessionLocal() as db:
             response = await agents_api.run_chat(
-                agent["id"], run["id"], chat_body("hello"), user, db
+                agent["id"], run["id"], chat_body("hello"), user, db, org_of(db, user)
             )
         turn = asyncio.create_task(consume(response))
         await started.wait()
@@ -518,7 +513,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
         yield object()
         events.append("db closed")
 
-    def fake_load(db, user_id, agent_id, run_id):
+    def fake_load(db, agent_id, run_id, *, org=None):
         events.append(("load on loop", on_event_loop()))
         return agents_api.ChatContext(
             model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()
@@ -543,6 +538,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     # Run 1 is made up, like the rest of what the turn loads.
     monkeypatch.setattr(checkpoints, "_run_gone", run_there)
     app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_organisation] = lambda: Organisation(id=1, name="t")
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):
@@ -633,7 +629,9 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
         yield "never sent"
 
     async def stop_after_first_text():
-        response = await agents_api.run_chat(agent["id"], run["id"], chat_body("stop me"), user, db)
+        response = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("stop me"), user, db, org_of(db, user)
+        )
         got_text = asyncio.Event()
 
         async def consume():
@@ -683,7 +681,9 @@ def stop_during_searches(
     monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
 
     async def drop_while_searching():
-        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("find"), user, db)
+        chunks = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("find"), user, db, org_of(db, user)
+        )
         async for chunk in chunks:
             if chunk["type"] == "tool-output-available":
                 break

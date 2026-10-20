@@ -58,7 +58,7 @@ SCHEMA = "data"
 Operation = Literal["insert", "upsert", "update", "delete"]
 
 # A table's columns as the catalog has them, in order, with which are its primary key.
-# Not what the owner dropped (`aios.datastores.dropped`): the role may not write it anyway.
+# Not what a request dropped (`aios.datastores.dropped`): the role may not write it anyway.
 COLUMNS_SQL = f"""
     SELECT a.attname, format_type(a.atttypid, a.atttypmod), t.typname, t.typcategory,
            a.attidentity, a.attgenerated,
@@ -604,7 +604,7 @@ async def _write(data_store_id: uuid.UUID, call: Call) -> dict:
 
 def _description() -> str:
     max_rows = get_settings().write_data_max_rows
-    return f"""Write rows to a table in the user's data store: insert, upsert, update or
+    return f"""Write rows to a table in the organisation's data store: insert, upsert, update or
 delete. This is the only way to change the data in it; `query_data` reads it.
 
 - `table`: a table in the `{SCHEMA}` schema (e.g. `contacts` or `{SCHEMA}.contacts`). Call
@@ -661,7 +661,7 @@ register(
     ToolSpec(
         key="write_data",
         name="Write data",
-        description="Insert, update and delete rows in your data store's tables.",
+        description="Insert, update and delete rows in the organisation's data store's tables.",
         config_model=WriteDataConfig,
         build=build,
     )

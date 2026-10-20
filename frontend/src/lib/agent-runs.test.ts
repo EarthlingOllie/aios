@@ -20,6 +20,7 @@ function run(changes: Partial<RunSummary> = {}): RunSummary {
     output_tokens: null,
     chat_id: null,
     chat_name: null,
+    created_by: null,
     created_at: "2026-10-14T09:00:00Z",
     updated_at: "2026-10-14T09:00:05Z",
     ...changes,

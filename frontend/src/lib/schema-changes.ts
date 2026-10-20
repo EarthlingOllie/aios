@@ -32,7 +32,7 @@ function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLa
       return {
         label: "Applying",
         variant: "secondary",
-        message: "Approved. The change is being applied to your data store.",
+        message: "Approved. The change is being applied to the organisation's data store.",
         inFlight: true,
       };
     case "applied":
@@ -41,7 +41,7 @@ function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLa
         variant: "outline",
         message: resuming
           ? "Applied. The agent is carrying on."
-          : "Applied to your data store.",
+          : "Applied to the organisation's data store.",
         inFlight: resuming,
       };
     case "rejected":
@@ -64,7 +64,7 @@ function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLa
       return {
         label: "No longer applies",
         variant: "destructive",
-        message: `Your data store changed after the agent asked, so this no longer applies: ${
+        message: `The organisation's data store changed after the agent asked, so this no longer applies: ${
           request.error ?? ""
         }`.trim(),
         inFlight: resuming,

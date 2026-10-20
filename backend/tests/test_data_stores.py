@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from celery.exceptions import Retry
-from conftest import add_document, delete_user, provisioned_user
+from conftest import add_document, delete_user, provisioned_user, store_of
 from fake_model import ToolCall, last_tool_results, model, use_model
 from psycopg import sql
 from sqlalchemy import event, select, text, update
@@ -18,7 +18,7 @@ from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
-from aios import auth, ingest, search, worker, workflows
+from aios import auth, ingest, organisations, search, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
@@ -48,26 +48,19 @@ from aios.ui_stream import error_text
 from aios.workflows import execute_run
 
 
-def test_a_user_becomes_a_store_of_its_own(db, user):
-    store_id = data_store_for(user.id)
+def test_an_organisation_becomes_a_store_of_its_own(user, new_user):
+    store_id = store_of(user)
 
     assert isinstance(store_id, uuid.UUID)
     # The same store every time.
-    assert data_store_for(user.id) == store_id
-
-    other = User(github_id=-2, login="other-user")
-    db.add(other)
-    db.commit()
-    try:
-        assert data_store_for(other.id) != store_id
-    finally:
-        db.delete(other)
-        db.commit()
+    assert store_of(user) == store_id
+    # Another organisation's is another.
+    assert store_of(new_user()) != store_id
 
 
 def test_a_session_is_opened_only_on_a_store_that_exists_and_is_ready(db, user):
     """(Sessions on a provisioned store's own database: see test_provisioning.)"""
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     with store_session(store_id, "ro") as store:
         assert store.scalar(text("SELECT 1")) == 1
 
@@ -88,7 +81,7 @@ def unready_user(db, user) -> User:
     """`user`, with a store that's still being provisioned."""
     db.execute(
         update(DataStore)
-        .where(DataStore.owner_user_id == user.id)
+        .where(DataStore.id == store_of(user))
         .values(status=DataStoreStatus.provisioning)
     )
     db.commit()
@@ -108,7 +101,7 @@ def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_u
     for r in responses:
         assert r.status_code == 409, r.text
         assert r.json() == {
-            "detail": "Your data store is being set up. Try again in a moment.",
+            "detail": "The organisation's data store is being set up. Try again in a moment.",
             "data_store_status": "provisioning",
         }
     assert queued == []
@@ -118,7 +111,7 @@ def test_documents_and_search_answer_409_until_the_store_is_ready(api, unready_u
 def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
     db.execute(
         update(DataStore)
-        .where(DataStore.owner_user_id == unready_user.id)
+        .where(DataStore.id == store_of(unready_user))
         .values(status=DataStoreStatus.failed, error="boom")
     )
     db.commit()
@@ -160,7 +153,7 @@ def test_the_search_tools_tell_the_model_the_store_couldnt_be_set_up(api, db, un
     """Not "being set up", which would have the user wait for what may never come."""
     db.execute(
         update(DataStore)
-        .where(DataStore.owner_user_id == unready_user.id)
+        .where(DataStore.id == store_of(unready_user))
         .values(status=DataStoreStatus.failed)
     )
     db.commit()
@@ -173,7 +166,7 @@ def test_the_search_tools_tell_the_model_the_store_couldnt_be_set_up(api, db, un
 def test_the_search_tools_tell_the_model_a_store_behind_the_trees_head_is_being_upgraded(
     db, user, monkeypatch
 ):
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     db.execute(update(DataStore).where(DataStore.id == store_id).values(schema_revision="0001"))
     db.commit()
 
@@ -193,7 +186,7 @@ def test_an_upload_is_ingested_in_the_users_store(api, db, user, monkeypatch):
 
     doc = api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")}).json()
 
-    assert queued == [(str(data_store_for(user.id)), doc["id"])]
+    assert queued == [(str(store_of(user)), doc["id"])]
 
 
 @pytest.fixture
@@ -238,7 +231,7 @@ def test_an_upload_is_ingested_and_found_by_search_in_the_users_store(
     hits = api.get("/api/search", params={"q": "hi"}).json()
     assert [(h["filename"], h["text"]) for h in hits] == [("a.md", "Hi")]
     # In the store's own database.
-    stored = stored_document(data_store_for(user.id), upload.json()["id"])
+    stored = stored_document(store_of(user), upload.json()["id"])
     assert [c.text for c in stored.chunks] == ["Hi"]
 
     assert api.delete(f"/api/documents/{listed['id']}").status_code == 204
@@ -247,7 +240,7 @@ def test_an_upload_is_ingested_and_found_by_search_in_the_users_store(
 
 
 def test_the_ingest_task_ingests_in_the_store_it_is_given(user, offline_ingest):
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     doc_id = add_document(store_id)
 
     worker.ingest_document_task.run(str(store_id), doc_id)
@@ -260,7 +253,7 @@ def test_the_ingest_task_ingests_in_the_store_it_is_given(user, offline_ingest):
 def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
     """As for a document deleted before its ingest: there's nothing left to ingest."""
     owner = provisioned_user(db, -4, "gone")
-    store_id = data_store_for(owner.id)
+    store_id = store_of(owner)
     doc_id = add_document(store_id)
     delete_user(db, owner)  # and, with them, their store
 
@@ -270,7 +263,7 @@ def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
 def test_the_ingest_task_skips_a_store_being_deleted(db, user, offline_ingest):
     """A store stops being ready only once it's being deleted (uploads wait until it's ready),
     and its documents go with it."""
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     doc_id = add_document(store_id)
     db.execute(
         update(DataStore).where(DataStore.id == store_id).values(status=DataStoreStatus.deleting)
@@ -313,7 +306,7 @@ def test_an_agent_run_searches_the_users_store(api, user, searches):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("fish?")).status_code == 200
 
-    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
+    assert searches == [{"data_store_id": store_of(user), "query": "fish", "limit": 3}]
 
 
 def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypatch):
@@ -324,7 +317,7 @@ def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypat
     with use_model(model(search_then_answer)):
         asyncio.run(execute_run(started["id"]))
 
-    assert searches == [{"data_store_id": data_store_for(user.id), "query": "fish", "limit": 3}]
+    assert searches == [{"data_store_id": store_of(user), "query": "fish", "limit": 3}]
 
 
 def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db, monkeypatch):
@@ -338,7 +331,7 @@ def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db
     def unavailable(*args, **kwargs):
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
-    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    monkeypatch.setattr(workflows, "data_store_of", unavailable)
     asyncio.run(execute_run(started["id"]))
 
     run = db.get(WorkflowRun, started["id"])
@@ -373,9 +366,9 @@ def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user):
     agent = librarian(api)
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with connections() as used, SessionLocal() as session:
-        ctx = agents_api.load_chat_context(session, user.id, agent["id"], run["id"])
+        ctx = agents_api.load_chat_context(session, agent["id"], run["id"])
 
-    assert ctx.data_store_id == data_store_for(user.id)
+    assert ctx.data_store_id == store_of(user)
     assert used["most"] == 1
 
 
@@ -465,50 +458,43 @@ def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
     assert resp.status_code == 303
     user = db.scalar(select(User).where(User.github_id == -3))
     try:
-        stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id)).all()
+        # The new organisation's store.
+        org = organisations.membership_of(db, user.id)
+        stores = db.scalars(select(DataStore).where(DataStore.owner_organisation_id == org.id))
+        stores = stores.all()
         assert [s.status for s in stores] == [DataStoreStatus.provisioning]
         assert provisioning == [stores[0].id]
     finally:
-        db.delete(user)
-        db.commit()
+        delete_user(db, user)
 
 
-def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(db, provisioning):
-    owner = User(github_id=-5, login="later")
-    db.add(owner)
+def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(
+    db, new_user, provisioning
+):
+    org = organisations.membership_of(db, new_user().id)
+    store_id = data_store_for(org.id, db)
+    assert provisioning == []
     db.commit()
-    try:
-        store_id = data_store_for(owner.id, db)
-        assert provisioning == []
-        db.commit()
-        assert provisioning == [store_id]
-        # Not again for a store that exists.
-        assert data_store_for(owner.id, db) == store_id
-        db.commit()
-        assert provisioning == [store_id]
-    finally:
-        db.delete(owner)
-        db.commit()
-
-
-def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(db, provisioning):
-    owner = User(github_id=-6, login="undone")
-    db.add(owner)
+    assert provisioning == [store_id]
+    # Not again for a store that exists.
+    assert data_store_for(org.id, db) == store_id
     db.commit()
-    try:
-        data_store_for(owner.id, db)
-        db.rollback()
-        db.commit()
-        assert provisioning == []
-    finally:
-        db.delete(owner)
-        db.commit()
+    assert provisioning == [store_id]
+
+
+def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(
+    db, new_user, provisioning
+):
+    data_store_for(organisations.membership_of(db, new_user().id).id, db)
+    db.rollback()
+    db.commit()
+    assert provisioning == []
 
 
 @pytest.fixture
 def busy_store(db, user) -> Iterator[uuid.UUID]:
     """`user`'s store, with its roles holding every connection they may."""
-    store = db.scalar(select(DataStore).where(DataStore.owner_user_id == user.id))
+    store = db.scalar(select(DataStore).where(DataStore.id == store_of(user)))
     names = provision.StoreNames.of(store)
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
@@ -527,7 +513,7 @@ def test_a_busy_store_answers_503_to_try_again(api, busy_store, monkeypatch):
     r = api.post("/api/documents", files={"file": ("a.md", b"# Hi", "text/markdown")})
 
     assert r.status_code == 503, r.text
-    assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
+    assert r.json() == {"detail": "The organisation's data store is busy. Try again in a moment."}
     assert r.headers["Retry-After"] == "1"
     assert queued == []
     with pytest.raises(DataStoreBusy), store_session(busy_store, "rw") as store:
@@ -572,7 +558,7 @@ def test_a_store_busy_mid_ingest_leaves_the_document_for_the_retry(
     """Busy once the document is claimed (its connection went back to the pool through the
     conversion, and the store's are all in use by the time it's wanted again): the retry, not
     the failure, is what's recorded."""
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     doc_id = add_document(store_id)
     monkeypatch.setattr(worker.ingest_document_task, "retry", lambda **kwargs: Retry())
 
@@ -612,12 +598,12 @@ def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monke
     # is in use (polling, an upload and searches at once, say).
     monkeypatch.setattr(store_connections, "POOL_TIMEOUT", 0.1)
     store_connections.dispose_engines()
-    ro = store_engine(data_store_for(user.id), "ro")
+    ro = store_engine(store_of(user), "ro")
     with ro.connect(), ro.connect(), ro.connect():
         r = api.get("/api/documents")
 
     assert r.status_code == 503, r.text
-    assert r.json() == {"detail": "Your data store is busy. Try again in a moment."}
+    assert r.json() == {"detail": "The organisation's data store is busy. Try again in a moment."}
 
 
 @pytest.mark.parametrize(
@@ -631,7 +617,7 @@ def test_a_store_on_an_instance_at_its_connection_limit_is_busy(user, refusal, m
     """The instance's `max_connections` taken, rather than the store role's limit: as
     transient, and as worth retrying. (Postgres's own words, from a server at its limit.)"""
     store_connections.dispose_engines()
-    ro = store_engine(data_store_for(user.id), "ro")
+    ro = store_engine(store_of(user), "ro")
 
     def refuse(*args, **kwargs):
         raise psycopg.OperationalError(

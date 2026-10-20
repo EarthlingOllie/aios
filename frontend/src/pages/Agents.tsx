@@ -22,6 +22,7 @@ import {
   type ListContext,
 } from "@/components/crud";
 import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
+import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,6 +69,7 @@ export function AgentsSection() {
             {agent.tool_count === 1 ? "" : "s"} · {agent.run_count} run
             {agent.run_count === 1 ? "" : "s"}
           </div>
+          <ProvenanceLine of={agent} />
         </>
       )}
     />
@@ -216,7 +218,12 @@ export function AgentDetail() {
           {a.name} <VersionBadge version={current.version} />
         </span>
       }
-      subtitle={a.description || `Updated ${formatDate(a.updated_at)}`}
+      subtitle={
+        <>
+          {a.description || `Updated ${formatDate(a.updated_at)}`}
+          <ProvenanceLine of={a} className="mt-0.5" />
+        </>
+      }
       actions={
         <>
           <Button size="sm" onClick={onNewRun} disabled={busy}>
@@ -332,6 +339,7 @@ export function AgentDetail() {
                             <span className="text-muted-foreground block truncate text-xs">
                               {formatDate(run.updated_at)} ·{" "}
                               <RunCountersLine run={run} compact />
+                              <StartedBy run={run} before=" · " className="align-bottom" />
                               {run.chat_id !== null && (
                                 <span data-testid="started-from-chat">
                                   {" "}
@@ -419,6 +427,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     ),
   );
   const [error, setError] = useState<string>();
+  const savedBy = useSavedBy();
 
   if (version.error) return <Placeholder>{version.error}</Placeholder>;
   if (!version.data || !agent.data) return null;
@@ -447,7 +456,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
           {isCurrent && <Badge variant="secondary">current</Badge>}
         </span>
       }
-      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
       actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />

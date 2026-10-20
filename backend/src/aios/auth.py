@@ -3,10 +3,17 @@
 Authlib keeps the OAuth `state` in `request.session`, and after the callback we store
 only the user's id there. The session is a signed (itsdangerous) cookie, so the SPA
 never handles tokens; it just sends the cookie.
+
+Signing in from an invitation link's page (`/login?invite=<token>`) keeps the token in the
+session through the round trip, and the callback joins a new user to the link's organisation
+instead of making them a personal one (`aios.organisations.ensure_membership`). A user it
+couldn't join (the link no longer opens, or they're in an organisation already) is sent back
+to the link's page, which says why.
 """
 
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -14,10 +21,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
+from aios import organisations
 from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
-from aios.models import User
+from aios.models import Organisation, User
 
 settings = get_settings()
 
@@ -35,8 +43,18 @@ oauth.register(
 router = APIRouter()
 
 
+# Where the session keeps the invitation link's token through the OAuth round trip, and the
+# longest it keeps (a real token is 43 characters; the session is a cookie).
+INVITE_TOKEN = "invite_token"
+INVITE_TOKEN_MAX = 256
+
+
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, invite: str | None = None):
+    if invite and len(invite) <= INVITE_TOKEN_MAX:
+        request.session[INVITE_TOKEN] = invite
+    else:
+        request.session.pop(INVITE_TOKEN, None)
     return await oauth.github.authorize_redirect(request, settings.oauth_redirect_uri)
 
 
@@ -61,13 +79,23 @@ async def auth_callback(request: Request, db: DB):
     user.name = profile.get("name")
     user.email = email
     user.avatar_url = profile.get("avatar_url")
+    db.flush()
+    # Their first sign-in makes their personal organisation, or joins the one they were invited
+    # to; afterwards, it's found again.
+    invite_token = request.session.get(INVITE_TOKEN)
+    invite = organisations.open_invite(db, invite_token, lock=True) if invite_token else None
+    org = organisations.ensure_membership(db, user, invite)
     db.commit()
-    await run_in_threadpool(data_store_for, user.id)
+    # And a new organisation's store, provisioned while they look around.
+    await run_in_threadpool(data_store_for, org.id)
 
+    landing = settings.public_url
+    if invite_token and (invite is None or org.id != invite.organisation_id):
+        landing = f"{settings.public_url.rstrip('/')}/invite/{quote(invite_token, safe='')}"
     # Drop anything left over (e.g. OAuth state) and start a fresh session.
     request.session.clear()
     request.session["user_id"] = user.id
-    return RedirectResponse(settings.public_url, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(landing, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -86,11 +114,29 @@ def current_user(request: Request, db: DB) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
-def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
-    """The signed-in user's data store. The request's session is closed once it's resolved (see
-    `data_store_for_request`), so an endpoint that takes this mustn't use `DB` after it."""
-    return data_store_for_request(user.id, db)
+def current_organisation(user: CurrentUser, db: DB) -> Organisation:
+    """The signed-in user's organisation: their one membership (`aios.organisations`). The one
+    place a request's organisation is resolved, so when a user can be in several, this is where
+    the request says which it means."""
+    org = organisations.membership_of(db, user.id)
+    if org is None:
+        # Sign-in, leaving and the upgrade each put a user in one; this is a bug, not a request
+        # that can be answered.
+        raise RuntimeError(f"user {user.id} is in no organisation")
+    return org
 
 
-# For endpoints that reach the user's data only through their store.
+# For endpoints that scope what they touch to the organisation (the user, `CurrentUser`, is for
+# provenance, notifications and chat membership).
+CurrentOrganisation = Annotated[Organisation, Depends(current_organisation)]
+
+
+def current_data_store(org: CurrentOrganisation, db: DB) -> uuid.UUID:
+    """The signed-in user's organisation's data store, the one every member reaches. The
+    request's session is closed once it's resolved (see `data_store_for_request`), so an
+    endpoint that takes this mustn't use `DB` after it."""
+    return data_store_for_request(org.id, db)
+
+
+# For endpoints that reach the organisation's data only through its store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]
