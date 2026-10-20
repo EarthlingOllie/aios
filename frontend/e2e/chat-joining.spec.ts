@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, type ChatUser } from "./fake-api";
 
-const sam: ChatUser = { id: 2, login: "sam", name: "Sam" };
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 // How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
 const LIST_POLL_MS = 5000;
 
@@ -34,8 +34,8 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
   await expect(listItem(page, "Design")).not.toContainText("Not joined");
   await page.getByRole("tab", { name: /Members/ }).click();
   await expect(page.getByRole("tabpanel", { name: /Members/ }).getByRole("listitem")).toHaveText([
-    /Sam.*owner/,
-    /Tester/,
+    /Sam Jones.*owner/,
+    /Terry Tester/,
   ]);
   expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/join`, null]]);
   await page.getByRole("tab", { name: "Chat" }).click();

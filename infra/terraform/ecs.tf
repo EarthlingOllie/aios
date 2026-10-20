@@ -134,6 +134,8 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # The ALB appends the client's address to X-Forwarded-For (the auth rate limits count it).
+      TRUSTED_PROXY_COUNT = "1"
       # Uploaded files (data_store_files.tf).
       DATA_STORE_FILES_BUCKET = aws_s3_bucket.data_store_files.bucket
       # run_python: one Fargate task per agent run (sandbox.tf).
@@ -149,7 +151,7 @@ locals {
   backend_secrets = concat(
     [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET", "DATA_STORE_CREDENTIALS_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
-    [for k in ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
+    [for k in ["ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
   )
 

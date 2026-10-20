@@ -10,7 +10,7 @@ deleted, and reported as the user (`UserOut`), read for a whole list in one quer
 
 from collections.abc import Iterable, Sequence
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
@@ -19,9 +19,8 @@ from aios.models import User
 
 class UserOut(BaseModel):
     id: int
-    login: str
-    name: str | None
-    avatar_url: str | None
+    # Their full name ("First Last", `User.full_name`), read from a user as that.
+    name: str = Field(validation_alias=AliasChoices("full_name", "name"))
 
 
 class Provenance(BaseModel):

@@ -1,10 +1,39 @@
 import type { UIMessage } from "ai";
 
+/** A user's account: who's signed in (with their organisation, `Me`), and the dev picker's users. */
+export type Account = {
+  id: number;
+  first_name: string;
+  last_name: string;
+  email: string;
+};
+
+/** A user as everything else names them (who made, changed or started something; a member). */
 export type User = {
   id: number;
-  login: string;
-  name: string | null;
-  avatar_url: string | null;
+  /** Their full name, "First Last". */
+  name: string;
+};
+
+/** The name the app shows a user by, as the API does: "First Last". */
+export function fullName(user: Pick<Account, "first_name" | "last_name">): string {
+  return `${user.first_name} ${user.last_name}`;
+}
+
+/** What the sign-in page offers besides email and password (`GET /api/auth/options`). */
+export type AuthOptions = {
+  /** The development "sign in as" picker (`DEV_LOGIN_ENABLED`): `devUsers()` and `devSignIn()`. */
+  dev_users: boolean;
+};
+
+export type Registration = {
+  first_name: string;
+  last_name: string;
+  email: string;
+  password: string;
+  password_confirm: string;
+  /** The token of the invitation link whose page they came from: they join its organisation. */
+  invite?: string;
 };
 
 /**
@@ -24,8 +53,8 @@ export type OrganisationSummary = {
   is_creator: boolean;
 };
 
-/** The signed-in user, with their organisation. */
-export type Me = User & { organisation: OrganisationSummary };
+/** The signed-in user (`GET /api/me`), with their organisation. */
+export type Me = Account & { organisation: OrganisationSummary };
 
 export type OrganisationMember = {
   user: User;
@@ -722,10 +751,8 @@ export type ChatMember = {
   role: "owner" | "member" | null;
   /** The user's, agent's or workflow's id. */
   target_id: number;
+  /** A user's full name ("First Last"). */
   name: string;
-  /** Users only. */
-  login: string | null;
-  avatar_url: string | null;
   added_at: string;
 };
 
@@ -765,8 +792,11 @@ export type ChatInput = { name: string; description: string; visibility: ChatVis
 export type ChatMentionRef = { kind: ChatMemberKind; id: number };
 export type ChatMention = ChatMentionRef & { name: string };
 
-/** A member the composer offers to mention. */
-export type ChatMentionable = ChatMention & { login: string | null; avatar_url: string | null };
+/**
+ * A member the composer offers to mention: a user's `name` is their full name, and their first
+ * and last names (null for an agent or a workflow) are what's typed after `@` matches.
+ */
+export type ChatMentionable = ChatMention & { first_name: string | null; last_name: string | null };
 /** Who can be mentioned in a chat (its members), grouped by kind. */
 export type ChatMentionables = {
   users: ChatMentionable[];
@@ -774,13 +804,11 @@ export type ChatMentionables = {
   workflows: ChatMentionable[];
 };
 
-/** Who posted a chat message: a user (with a login and maybe an avatar), an agent or a workflow. */
+/** Who posted a chat message: a user (by full name), an agent or a workflow. */
 export type ChatMessageAuthor = {
   kind: "user" | "agent" | "workflow" | "system";
   id: number;
   name: string;
-  login: string | null;
-  avatar_url: string | null;
 };
 
 export type ChatMessage = {
@@ -848,9 +876,41 @@ export type ChatMessages = { messages: ChatMessage[]; invocations: ChatInvocatio
 /** Which page of messages to read: what's new `after` an id, the history `before` one, or the latest. */
 export type ChatMessagesCursor = { after: number } | { before: number } | Record<string, never>;
 
-// Same-origin requests: the browser attaches the session cookie automatically.
+// What the API answers (401) when a request's session has ended, or never started
+// (`aios.auth.NOT_SIGNED_IN`).
+const NOT_SIGNED_IN = "Not signed in";
+
+let sessionEnded: (() => void) | undefined;
+
+/**
+ * While someone is signed in: what to do when a request finds their session has ended, e.g.
+ * because their password was changed in another browser. Not called for other 401s, such as a
+ * wrong current password on the profile forms. Pass nothing to stop.
+ */
+export function onSessionEnded(handler?: () => void): void {
+  sessionEnded = handler;
+}
+
+/**
+ * `fetch` for the API, for every request to it (`request`, and the chat transports). Same-origin,
+ * so the browser attaches the session cookie; and a 401 for an ended session is reported to
+ * `onSessionEnded`'s handler.
+ */
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, { credentials: "same-origin", ...init });
+  if (res.status === 401 && sessionEnded) {
+    const detail = await res
+      .clone()
+      .json()
+      .then((body) => body?.detail)
+      .catch(() => undefined);
+    if (detail === NOT_SIGNED_IN) sessionEnded();
+  }
+  return res;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { credentials: "same-origin", ...init });
+  const res = await apiFetch(path, init);
   if (!res.ok) throw new ApiError(res.status, await res.text());
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
@@ -889,7 +949,22 @@ const json = (method: string, body: unknown): RequestInit => ({
 
 export const api = {
   me: () => request<Me>("/api/me"),
-  logout: () => request<void>("/logout", { method: "POST" }),
+  register: (body: Registration) => request<Me>("/api/auth/register", json("POST", body)),
+  login: (body: { email: string; password: string }) =>
+    request<Me>("/api/auth/login", json("POST", body)),
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+  authOptions: () => request<AuthOptions>("/api/auth/options"),
+  devUsers: () => request<Account[]>("/api/dev/users"),
+  devSignIn: (userId: number) => request<Me>("/api/dev/session", json("POST", { user_id: userId })),
+  /** Change the signed-in user's name; a name left out is kept. */
+  updateMe: (body: { first_name?: string; last_name?: string }) =>
+    request<Me>("/api/me", json("PATCH", body)),
+  /** Change the email the signed-in user signs in with; it takes their current password. */
+  changeEmail: (body: { email: string; current_password: string }) =>
+    request<Me>("/api/me/email", json("PUT", body)),
+  /** Change the signed-in user's password. It signs out their other sessions, not this one. */
+  changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
+    request<void>("/api/me/password", json("PUT", body)),
   getOrganisation: () => request<Organisation>("/api/organisation"),
   /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
   renameOrganisation: (name: string) =>

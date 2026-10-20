@@ -11,7 +11,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import delete_user, join_organisation, sign_up, store_of
+from conftest import delete_user, join_organisation, make_user, store_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from langchain_core.callbacks import BaseCallbackHandler
 from test_agents import agent_body, chat_body, make_agent
@@ -31,9 +31,7 @@ SEARCH = {"key": "hybrid_search", "config": {}}
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation, who isn't its creator."""
-    u = join_organisation(
-        db, user, -2, "member", name="Member Person", avatar_url="https://a/m.png"
-    )
+    u = join_organisation(db, user, "member", first_name="Member", last_name="Person")
     yield u
     delete_user(db, u)
 
@@ -41,13 +39,13 @@ def member(db, user):
 @pytest.fixture
 def outsider(db):
     """A user in an organisation of their own."""
-    u = sign_up(db, -3, "outsider")
+    u = make_user(db, "outsider")
     yield u
     delete_user(db, u)
 
 
 def person(u) -> dict:
-    return {"id": u.id, "login": u.login, "name": u.name, "avatar_url": u.avatar_url}
+    return {"id": u.id, "name": u.full_name}
 
 
 def ok(resp, code: int = 200) -> dict:

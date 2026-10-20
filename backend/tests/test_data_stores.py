@@ -18,7 +18,7 @@ from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
-from aios import auth, ingest, organisations, search, worker, workflows
+from aios import ingest, organisations, search, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
@@ -252,7 +252,7 @@ def test_the_ingest_task_ingests_in_the_store_it_is_given(user, offline_ingest):
 
 def test_the_ingest_task_skips_a_store_deleted_since(db, offline_ingest):
     """As for a document deleted before its ingest: there's nothing left to ingest."""
-    owner = provisioned_user(db, -4, "gone")
+    owner = provisioned_user(db, "gone")
     store_id = store_of(owner)
     doc_id = add_document(store_id)
     delete_user(db, owner)  # and, with them, their store
@@ -428,44 +428,6 @@ def test_the_platform_database_has_no_documents_or_chunks(db):
     ).all()
     assert "data_stores" in platform
     assert not {"documents", "chunks"} & set(platform)
-
-
-class FakeResponse:
-    def __init__(self, body):
-        self.body = body
-
-    def json(self):
-        return self.body
-
-
-def test_signing_in_gives_the_user_a_store_and_queues_its_provisioning(
-    client, db, monkeypatch, provisioning
-):
-    github = auth.oauth.github
-
-    async def authorize_access_token(request):
-        return {"access_token": "t"}
-
-    async def get(path, token):
-        assert path == "user"
-        return FakeResponse({"id": -3, "login": "new-user", "email": "new@example.com"})
-
-    monkeypatch.setattr(github, "authorize_access_token", authorize_access_token)
-    monkeypatch.setattr(github, "get", get)
-
-    resp = client.get("/auth/callback?code=x&state=y", follow_redirects=False)
-
-    assert resp.status_code == 303
-    user = db.scalar(select(User).where(User.github_id == -3))
-    try:
-        # The new organisation's store.
-        org = organisations.membership_of(db, user.id)
-        stores = db.scalars(select(DataStore).where(DataStore.owner_organisation_id == org.id))
-        stores = stores.all()
-        assert [s.status for s in stores] == [DataStoreStatus.provisioning]
-        assert provisioning == [stores[0].id]
-    finally:
-        delete_user(db, user)
 
 
 def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(

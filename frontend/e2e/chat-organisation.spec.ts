@@ -5,7 +5,7 @@ import { fakeApi } from "./fake-api";
 /** Chats are the organisation's: "public" is its members, names are unique within it, the owner
  * adds any of its members and agents, and another organisation's chats don't exist here. */
 
-const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("the chat header says which member created it", async ({ page }) => {
   const api = await fakeApi(page);

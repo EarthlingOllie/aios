@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Navigate, NavLink, Outlet, Route, Routes, useMatch } from "react-router";
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useSearchParams } from "react-router";
 import {
   Bot,
   Building2,
@@ -16,11 +16,11 @@ import {
 } from "lucide-react";
 
 import { Documents, DocumentsProvider } from "@/components/Documents";
-import { Login } from "@/components/Login";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, type Me } from "@/lib/api";
-import { CurrentUserContext, ReloadCurrentUserContext } from "@/lib/current-user";
+import { api, ApiError, describeError, fullName, onSessionEnded, type Me } from "@/lib/api";
+import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
+import { CurrentUserContext, ReloadCurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
@@ -30,8 +30,9 @@ import {
   AgentsSection,
   AgentVersionPage,
 } from "@/pages/Agents";
+import { LoginPage, RegisterPage } from "@/pages/Auth";
 import { DataPage } from "@/pages/Data";
-import { InvitePage, InviteRoute } from "@/pages/Invite";
+import { InviteRoute } from "@/pages/Invite";
 import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
@@ -62,8 +63,6 @@ type AuthState =
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
-  // An invitation link opens signed out too: its page offers signing in through it.
-  const invite = useMatch("/invite/:token");
 
   const loadMe = useCallback(() => {
     api
@@ -77,15 +76,48 @@ export default function App() {
   }, []);
 
   useEffect(loadMe, [loadMe]);
+  // After a profile edit: the user as the API now has them.
+  const setUser = useCallback((user: Me) => setAuth({ status: "signed-in", user }), []);
+  const signedIn = auth.status === "signed-in";
+  useEffect(() => {
+    if (!signedIn) return;
+    // Signed out from elsewhere (e.g. a password change in another browser): to sign in, then
+    // back here. A fresh page load, as signing out is, so nothing of this user's is left in
+    // memory; once, however many requests found out.
+    let ended = false;
+    onSessionEnded(() => {
+      if (ended) return;
+      ended = true;
+      const { pathname, search, hash } = window.location;
+      window.location.assign(signInPath(pathname, search, hash));
+    });
+    return () => onSessionEnded();
+  }, [signedIn]);
+  const location = useLocation();
+  const onSignedOutPage = SIGNED_OUT_PATHS.includes(location.pathname);
 
   if (auth.status === "loading") return null;
   if (auth.status === "anonymous") {
-    return invite ? (
-      <div className="h-svh">
-        <InvitePage token={invite.params.token!} me={null} />
-      </div>
-    ) : (
-      <Login />
+    const onSignedIn = (user: Me) => setAuth({ status: "signed-in", user });
+    return (
+      <Routes>
+        <Route path="login" element={<LoginPage onSignedIn={onSignedIn} />} />
+        <Route path="register" element={<RegisterPage onSignedIn={onSignedIn} />} />
+        {/* An invitation link opens signed out too: its page offers registering through it. */}
+        <Route
+          path="invite/:token"
+          element={
+            <div className="h-svh">
+              <InviteRoute />
+            </div>
+          }
+        />
+        {/* Anywhere else: sign in first, then come back. */}
+        <Route
+          path="*"
+          element={<Navigate to={signInPath(location.pathname, location.search, location.hash)} replace />}
+        />
+      </Routes>
     );
   }
   if (auth.status === "error") {
@@ -106,7 +138,12 @@ export default function App() {
     );
   }
 
-  const signOut = () => api.logout().then(() => setAuth({ status: "anonymous" }));
+  // Signed in on the sign-in or registration page (just now, or by visiting it): on to where they
+  // were headed.
+  if (onSignedOutPage) return <AfterSignIn />;
+
+  // A fresh page load, so nothing of this user's is left in memory for whoever signs in next.
+  const signOut = () => api.logout().then(() => window.location.assign("/login"));
   return (
     <Routes>
       {/* Documents are held above every page, so the Chats section's panel and the Data page
@@ -116,9 +153,11 @@ export default function App() {
           <DocumentsProvider>
             <NotificationsProvider>
               <CurrentUserContext.Provider value={auth.user}>
-                <ReloadCurrentUserContext.Provider value={loadMe}>
-                  <Shell user={auth.user} onSignOut={signOut} />
-                </ReloadCurrentUserContext.Provider>
+                <SetCurrentUserContext.Provider value={setUser}>
+                  <ReloadCurrentUserContext.Provider value={loadMe}>
+                    <Shell user={auth.user} onSignOut={signOut} />
+                  </ReloadCurrentUserContext.Provider>
+                </SetCurrentUserContext.Provider>
               </CurrentUserContext.Provider>
             </NotificationsProvider>
           </DocumentsProvider>
@@ -170,6 +209,11 @@ export default function App() {
       </Route>
     </Routes>
   );
+}
+
+function AfterSignIn() {
+  const [params] = useSearchParams();
+  return <Navigate to={nextPath(params.get("next"))} replace />;
 }
 
 type NavItem = {
@@ -242,8 +286,7 @@ function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
     <div className="grid h-svh grid-cols-1 grid-rows-[auto_1fr] md:grid-cols-[260px_1fr] md:grid-rows-1">
       <aside className="hidden min-h-0 flex-col gap-4 border-r p-4 md:flex">
         <div className="flex items-center gap-2">
-          {user.avatar_url && <img src={user.avatar_url} alt="" className="size-7 rounded-full" />}
-          <span className="flex-1 truncate text-sm font-medium">{user.name ?? user.login}</span>
+          <span className="flex-1 truncate text-sm font-medium">{fullName(user)}</span>
           <NotificationsMenu />
           <Button variant="ghost" size="icon" aria-label="Sign out" onClick={onSignOut}>
             <LogOut />

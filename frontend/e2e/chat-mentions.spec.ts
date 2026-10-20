@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, type ChatUser } from "./fake-api";
 
-const sam: ChatUser = { id: 2, login: "sam", name: "Sam" };
+const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
 const message = (page: Page, text: string | RegExp) =>
@@ -68,7 +68,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
 
   await composer(page).pressSequentially("Please @");
   const list = suggestions(page);
-  await expect(list.getByRole("group")).toHaveText([/Users.*Tester.*Sam/, /Agents.*Review/, /Workflows.*Review/]);
+  await expect(list.getByRole("group")).toHaveText([/Users.*Terry Tester.*Sam Jones/, /Agents.*Review/, /Workflows.*Review/]);
   await composer(page).pressSequentially("rev");
   // An agent and a workflow with the same name, told apart by kind.
   await expect(list.getByRole("option")).toHaveText(["Review agent", "Review workflow"]);
@@ -79,9 +79,10 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
   await expect(list).toHaveCount(0);
   await expect(composer(page)).toHaveValue(`Please @[Review](workflow:${workflow.id}) `);
 
-  // Picking by mouse works as well.
-  await composer(page).pressSequentially("and @sa");
-  await list.getByRole("option", { name: "Sam user" }).click();
+  // A user is found by their last name (or first), whatever its case; picking by mouse works as well.
+  await composer(page).pressSequentially("and @JON");
+  await expect(list.getByRole("option")).toHaveText(["Sam Jones user"]);
+  await list.getByRole("option", { name: "Sam Jones user" }).click();
   await composer(page).pressSequentially("thanks");
   await composer(page).press("Enter");
 
@@ -90,7 +91,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
   const chip = posted.getByTitle(`Workflow: Review`);
   await expect(chip).toHaveText("Review");
   await expect(chip.getByRole("img", { name: "Workflow" })).toBeVisible();
-  await expect(posted.getByTitle("User: Sam")).toHaveText("Sam");
+  await expect(posted.getByTitle("User: Sam Jones")).toHaveText("Sam Jones");
   // Not the raw token.
   await expect(posted).not.toContainText("workflow:");
   expect(api.writes).toEqual([
@@ -98,7 +99,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
       "POST",
       `/api/chats/${chat.id}/messages`,
       {
-        body: `Please @[Review](workflow:${workflow.id}) and @[Sam](user:2) thanks`,
+        body: `Please @[Review](workflow:${workflow.id}) and @[Sam Jones](user:2) thanks`,
         mentions: [
           { kind: "workflow", id: workflow.id },
           { kind: "user", id: 2 },
@@ -113,7 +114,7 @@ test("Escape closes the suggestions, and Enter then sends", async ({ page }) => 
   const chat = api.addChat("Design");
   await page.goto(`/chats/${chat.id}`);
   await composer(page).pressSequentially("mail @tes");
-  await expect(suggestions(page).getByRole("option")).toHaveText(["Tester user"]);
+  await expect(suggestions(page).getByRole("option")).toHaveText(["Terry Tester user"]);
   await composer(page).press("Escape");
   await expect(suggestions(page)).toHaveCount(0);
   await composer(page).press("Enter");
@@ -139,12 +140,12 @@ test("a message that mentions me is highlighted", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   api.addChatMember(chat, sam);
-  api.addChatMessage(chat, "@[Tester](user:1) can you look?", sam, [{ kind: "user", id: 1, name: "Tester" }]);
-  api.addChatMessage(chat, "@[Sam](user:2) and you?", api.me, [{ kind: "user", id: 2, name: "Sam" }]);
+  api.addChatMessage(chat, "@[Terry Tester](user:1) can you look?", sam, [{ kind: "user", id: 1, name: "Terry Tester" }]);
+  api.addChatMessage(chat, "@[Sam Jones](user:2) and you?", api.me, [{ kind: "user", id: 2, name: "Sam Jones" }]);
   await page.goto(`/chats/${chat.id}`);
 
   const mine = message(page, "can you look?");
-  await expect(mine.getByTitle("User: Tester")).toHaveText("Tester");
+  await expect(mine.getByTitle("User: Terry Tester")).toHaveText("Terry Tester");
   await expect(mine).toContainText("Mentions you");
   await expect(message(page, "and you?")).not.toContainText("Mentions you");
 });

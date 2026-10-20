@@ -27,7 +27,7 @@ export function useSavedBy(): (user: User | null | undefined) => string {
   return (user) => (user ? ` · saved by ${personName(user, me)}` : "");
 }
 
-/** Who started a run: the member, with their avatar, or that a schedule did; nothing when
+/** Who started a run: the member, or that a schedule did; nothing when
  * neither is known. Inline, for a run's line in a list or on its page, between `before` and
  * `after` (separators, say) when it's shown. */
 export function StartedBy({
@@ -49,12 +49,9 @@ export function StartedBy({
       {before}
       <span
         data-testid="started-by"
-        title={run.created_by ? `@${run.created_by.login}` : undefined}
+        title={run.created_by?.name}
         className={cn("inline-flex min-w-0 items-center gap-1", className)}
       >
-        {run.created_by?.avatar_url && (
-          <img src={run.created_by.avatar_url} alt="" className="size-4 shrink-0 rounded-full" />
-        )}
         <span className="truncate">{line}</span>
       </span>
       {after}

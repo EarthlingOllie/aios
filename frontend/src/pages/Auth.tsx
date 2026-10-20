@@ -1,0 +1,377 @@
+import { useEffect, useId, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import { Link, useSearchParams } from "react-router";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { api, fullName, type Account, type Me } from "@/lib/api";
+import { formErrors } from "@/lib/auth";
+
+type Props = {
+  /** Called with the user once they're signed in; the app then takes them on (see `App`). */
+  onSignedIn: (user: Me) => void;
+};
+
+/**
+ * A new password's confirmation, as the forms that take one check it: "Passwords don't match" is
+ * said once the confirmation field is left (`onBlur`) or the form submitted (`check`) while it
+ * differs, and goes as soon as they match. The API checks it too.
+ */
+export function useConfirmation(password: string, confirmation: string) {
+  const [shown, setShown] = useState(false);
+  const differ = confirmation !== password;
+  return {
+    error: shown && differ ? "Passwords don't match" : undefined,
+    onBlur: () => setShown(differ),
+    /** On submit: whether to send it (they match), saying so if not. */
+    check: () => {
+      setShown(differ);
+      return !differ;
+    },
+  };
+}
+
+/** Sign in with an email and password: `/login`. */
+export function LoginPage({ onSignedIn }: Props) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const form = useAuthForm(() => api.login({ email, password }), onSignedIn);
+
+  return (
+    <AuthCard
+      title="Sign in"
+      error={form.error}
+      footer={
+        <>
+          New here? <SwitchLink to="/register">Create an account</SwitchLink>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={form.submit} noValidate>
+        <Field label="Email" error={form.fields.email}>
+          {(props) => (
+            <Input
+              {...props}
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Password" error={form.fields.password}>
+          {(props) => (
+            <Input
+              {...props}
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          )}
+        </Field>
+        <Button type="submit" disabled={form.busy}>
+          Sign in
+        </Button>
+      </form>
+      <DevSignIn onSignedIn={onSignedIn} />
+    </AuthCard>
+  );
+}
+
+/**
+ * The development "sign in as" picker: every user, any of whom it signs in as with no password.
+ * Shown only when the API offers it (`DEV_LOGIN_ENABLED`); there's no build-time flag, since
+ * Compose serves a production build.
+ */
+function DevSignIn({ onSignedIn }: Props) {
+  const id = useId();
+  const [users, setUsers] = useState<Account[]>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let current = true;
+    api
+      .authOptions()
+      .then((options) => (options.dev_users ? api.devUsers() : undefined))
+      .then((list) => {
+        if (current) setUsers(list);
+      })
+      // Without the picker the page still signs in; nothing to say.
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  if (!users) return null;
+
+  async function choose(e: ChangeEvent<HTMLSelectElement>) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      onSignedIn(await api.devSignIn(Number(e.target.value)));
+    } catch (err) {
+      setError(formErrors(err).form ?? "Couldn't sign in");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t pt-4">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor={id} className="text-sm font-medium">
+          Development: sign in as...
+        </label>
+        <Badge variant="outline">dev only</Badge>
+      </div>
+      <select
+        id={id}
+        className="border-input h-9 rounded-md border bg-transparent px-2 text-sm"
+        value=""
+        disabled={busy}
+        onChange={choose}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
+      >
+        <option value="" disabled>
+          Choose a user
+        </option>
+        {users.map((user) => (
+          <option key={user.id} value={user.id}>
+            {fullName(user)} ({user.email})
+          </option>
+        ))}
+      </select>
+      {error && (
+        <p id={`${id}-error`} className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Create an account: `/register`. Signs the new user in. From an invitation link's page
+ * (`/register?invite=<token>`), the new user joins its organisation instead of getting one of
+ * their own, if the link still opens.
+ */
+export function RegisterPage({ onSignedIn }: Props) {
+  const invite = useSearchParams()[0].get("invite") ?? undefined;
+  const [details, setDetails] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    password: "",
+    password_confirm: "",
+  });
+  const confirmation = useConfirmation(details.password, details.password_confirm);
+  const form = useAuthForm(() => api.register({ ...details, invite }), onSignedIn, confirmation.check);
+  const set = (key: keyof typeof details) => (e: ChangeEvent<HTMLInputElement>) => {
+    setDetails((d) => ({ ...d, [key]: e.target.value }));
+  };
+
+  return (
+    <AuthCard
+      title="Create an account"
+      error={form.error}
+      footer={
+        <>
+          Already have an account? <SwitchLink to="/login">Sign in</SwitchLink>
+        </>
+      }
+    >
+      <form className="flex flex-col gap-4" onSubmit={form.submit} noValidate>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="First name" error={form.fields.first_name}>
+            {(props) => (
+              <Input
+                {...props}
+                autoComplete="given-name"
+                required
+                maxLength={100}
+                value={details.first_name}
+                onChange={set("first_name")}
+              />
+            )}
+          </Field>
+          <Field label="Last name" error={form.fields.last_name}>
+            {(props) => (
+              <Input
+                {...props}
+                autoComplete="family-name"
+                required
+                maxLength={100}
+                value={details.last_name}
+                onChange={set("last_name")}
+              />
+            )}
+          </Field>
+        </div>
+        <Field label="Email" error={form.fields.email}>
+          {(props) => (
+            <Input
+              {...props}
+              type="email"
+              autoComplete="email"
+              required
+              value={details.email}
+              onChange={set("email")}
+            />
+          )}
+        </Field>
+        <Field
+          label="Password"
+          hint="At least 12 characters."
+          error={form.fields.password}
+        >
+          {(props) => (
+            <Input
+              {...props}
+              type="password"
+              autoComplete="new-password"
+              required
+              value={details.password}
+              onChange={set("password")}
+            />
+          )}
+        </Field>
+        <Field
+          label="Confirm password"
+          error={confirmation.error ?? form.fields.password_confirm}
+        >
+          {(props) => (
+            <Input
+              {...props}
+              type="password"
+              autoComplete="new-password"
+              required
+              value={details.password_confirm}
+              onChange={set("password_confirm")}
+              onBlur={confirmation.onBlur}
+            />
+          )}
+        </Field>
+        <Button type="submit" disabled={form.busy}>
+          Create account
+        </Button>
+      </form>
+    </AuthCard>
+  );
+}
+
+/**
+ * A sign-in or registration form's request: `send` it on submit (unless `check` says not to),
+ * one at a time, then hand the user on, or say what went wrong.
+ */
+function useAuthForm(send: () => Promise<Me>, onSignedIn: (user: Me) => void, check?: () => boolean) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [fields, setFields] = useState<Record<string, string>>({});
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy || (check && !check())) return;
+    setBusy(true);
+    setError(undefined);
+    setFields({});
+    try {
+      const user = await send();
+      onSignedIn(user);
+    } catch (err) {
+      const errors = formErrors(err);
+      setError(errors.form);
+      setFields(errors.fields);
+      setBusy(false);
+    }
+  }
+
+  return { busy, error, fields, submit };
+}
+
+function AuthCard({
+  title,
+  error,
+  footer,
+  children,
+}: {
+  title: string;
+  error?: string;
+  footer: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-svh items-center justify-center p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle className="text-xl">aios</CardTitle>
+          <CardDescription>{title}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {error && (
+            <p role="alert" className="text-destructive rounded-md border border-current/30 px-3 py-2 text-sm">
+              {error}
+            </p>
+          )}
+          {children}
+          <p className="text-muted-foreground text-center text-sm">{footer}</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/** A labelled input, with an optional hint and its error underneath. Settings' profile forms use it too. */
+export function Field({
+  label,
+  hint,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  error?: string;
+  children: (props: { id: string; "aria-invalid"?: true; "aria-describedby"?: string }) => ReactNode;
+}) {
+  const id = useId();
+  const below = error ?? hint;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className="text-sm font-medium">
+        {label}
+      </label>
+      {children({
+        id,
+        "aria-invalid": error ? true : undefined,
+        "aria-describedby": below ? `${id}-below` : undefined,
+      })}
+      {below && (
+        <p id={`${id}-below`} className={error ? "text-destructive text-xs" : "text-muted-foreground text-xs"}>
+          {below}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SwitchLink({ to, children }: { to: string; children: ReactNode }) {
+  // Keep where the user was headed, and the invitation link they came from, whichever form they
+  // finish on.
+  const [params] = useSearchParams();
+  const kept = new URLSearchParams();
+  for (const key of ["invite", "next"]) {
+    const value = params.get(key);
+    if (value) kept.set(key, value);
+  }
+  const query = kept.toString();
+  return (
+    <Link to={query ? `${to}?${query}` : to} className="text-foreground underline">
+      {children}
+    </Link>
+  );
+}

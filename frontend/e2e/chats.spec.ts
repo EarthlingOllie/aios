@@ -28,7 +28,7 @@ test("creates a chat and opens it", async ({ page }) => {
   // The creator is the owner and only user; the organisation's documents assistant is its first agent.
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
-  await expect(members.getByText("Tester", { exact: true })).toBeVisible();
+  await expect(members.getByText("Terry Tester", { exact: true })).toBeVisible();
   await expect(members.getByText("owner", { exact: true })).toBeVisible();
   await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Documents assistant");
   await expect(members.getByText("No workflows yet")).toBeVisible();
@@ -39,29 +39,29 @@ test("creates a chat and opens it", async ({ page }) => {
 test("the owner removes a member", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design", { visibility: "private" });
-  const member = api.addChatMember(chat, { id: 2, login: "sam", name: "Sam" });
+  const member = api.addChatMember(chat, { id: 2, first_name: "Sam", last_name: "Jones" });
   await page.goto(`/chats/${chat.id}`);
 
   await expect(page.getByRole("heading", { name: "Design", level: 2 })).toContainText("Private");
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
-  await expect(members.getByRole("listitem")).toHaveText([/Tester.*owner/, /Sam/]);
+  await expect(members.getByRole("listitem")).toHaveText([/Terry Tester.*owner/, /Sam Jones/]);
   page.on("dialog", (dialog) => dialog.accept());
-  await members.getByRole("button", { name: "Remove Sam" }).click();
-  await expect(members.getByRole("listitem")).toHaveText([/Tester.*owner/]);
+  await members.getByRole("button", { name: "Remove Sam Jones" }).click();
+  await expect(members.getByRole("listitem")).toHaveText([/Terry Tester.*owner/]);
   expect(api.writes).toEqual([["DELETE", `/api/chats/${chat.id}/members/${member.id}`, null]]);
 });
 
 test("a member sees no owner actions", async ({ page }) => {
   const api = await fakeApi(page);
-  const chat = api.addChat("Design", { owner: { id: 2, login: "sam", name: "Sam" } });
+  const chat = api.addChat("Design", { owner: { id: 2, first_name: "Sam", last_name: "Jones" } });
   api.addChatMember(chat, api.me);
   await page.goto(`/chats/${chat.id}`);
 
   await expect(page.getByRole("heading", { name: "Design" })).toBeVisible();
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
-  await expect(members.getByRole("listitem")).toHaveText([/Sam.*owner/, /Tester/]);
+  await expect(members.getByRole("listitem")).toHaveText([/Sam Jones.*owner/, /Terry Tester/]);
   await expect(page.getByRole("link", { name: "Edit" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
   await expect(members.getByRole("button", { name: /Remove/ })).toHaveCount(0);

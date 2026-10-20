@@ -393,7 +393,7 @@ def test_each_download_mints_its_own_link(api, queued):
 
 
 def test_another_stores_document_is_a_404(api, db, user, queued):
-    other = provisioned_user(db, -7, "other-user")
+    other = provisioned_user(db, "other-user")
     try:
         with store_session(store_of(other), "rw") as store:
             doc = Document(

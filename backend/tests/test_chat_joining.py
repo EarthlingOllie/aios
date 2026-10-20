@@ -10,7 +10,7 @@ from test_chats import add_user, make_chat, messages, post, signed_in_as
 def other(db, user):
     """A second member of the first user's organisation, who finds, joins and leaves their
     chats."""
-    u = join_organisation(db, user, -2, "other")
+    u = join_organisation(db, user, "other")
     yield u
     delete_user(db, u)
 

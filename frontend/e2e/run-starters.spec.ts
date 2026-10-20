@@ -5,7 +5,7 @@ import { fakeApi } from "./fake-api";
 /** Runs are the organisation's: each says which member started it, or that a schedule did, on
  * its list and its page, and every member can open, continue and delete any of them. */
 
-const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: "https://avatars.test/sam.png" };
+const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("an agent's runs say who started each, or that a schedule did", async ({ page }) => {
   const api = await fakeApi(page);
@@ -18,10 +18,9 @@ test("an agent's runs say who started each, or that a schedule did", async ({ pa
   const row = (title: string) => page.getByRole("listitem").filter({ hasText: title });
   await expect(row("Morning digest").getByTestId("started-by")).toHaveText("Scheduled");
   await expect(row("Sam's question").getByTestId("started-by")).toHaveText("Started by Sam Jones");
-  await expect(row("Sam's question").getByTestId("started-by").locator("img")).toHaveAttribute(
-    "src",
-    sam.avatar_url,
-  );
+  // No avatars: a user is their name, whole in the tooltip when the line is cut short.
+  await expect(row("Sam's question").getByTestId("started-by")).toHaveAttribute("title", "Sam Jones");
+  await expect(row("Sam's question").getByTestId("started-by").locator("img")).toHaveCount(0);
   await expect(row("My question").getByTestId("started-by")).toHaveText("Started by you");
 
   // Another member's run opens like any other: to read, continue and delete.

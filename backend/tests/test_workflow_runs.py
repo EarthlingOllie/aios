@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from conftest import delete_user, sign_up, store_of
+from conftest import delete_user, make_user, store_of
 from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
@@ -432,7 +432,7 @@ def test_runs_belong_to_the_workflows_owner(api, client, db, queued):
     assert api.delete(f"/api/workflows/{other_wf['id']}/runs/{started['id']}").status_code == 404
     assert api.get(f"{url}/{2**31}").status_code == 422
 
-    other = sign_up(db, -2, "other")
+    other = make_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(url).status_code == 404

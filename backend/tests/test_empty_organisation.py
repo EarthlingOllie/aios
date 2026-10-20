@@ -19,8 +19,8 @@ from conftest import (
     add_document,
     delete_user,
     join_organisation,
+    make_user,
     provisioned_user,
-    sign_up,
     store_of,
 )
 from sqlalchemy import delete, select, update
@@ -50,7 +50,7 @@ def joiner(db):
     """A user in a personal organisation of their own, with its store provisioned: someone who
     signed up without an invitation. Afterwards they, and whatever is left of their first
     organisation and its store, are deleted."""
-    u = provisioned_user(db, -60, "joiner")
+    u = provisioned_user(db, "joiner")
     with deleted_after(db, u):
         yield u
 
@@ -60,7 +60,7 @@ def newcomer(db, provisioning):
     """A user who has just signed up without an invitation: in a personal organisation of their
     own, its store made but its provisioning only queued (`provisioning`), not run. Deleted
     afterwards as `joiner` is."""
-    u = sign_up(db, -61, "newcomer")
+    u = make_user(db, "newcomer")
     with deleted_after(db, u):
         yield u
 
@@ -142,8 +142,8 @@ def test_accepting_from_an_empty_personal_organisation_deletes_it_and_its_store(
 
         resp = accept(api, link)
         assert resp.status_code == 200, resp.text
-        assert resp.json()["name"] == "test-user"
-        assert api.get("/api/me").json()["organisation"]["name"] == "test-user"
+        assert resp.json()["name"] == "Test User"
+        assert api.get("/api/me").json()["organisation"]["name"] == "Test User"
 
     db.expire_all()
     assert db.get(Organisation, old) is None
@@ -335,11 +335,11 @@ def test_accepting_while_the_organisation_has_things_in_it_says_what_by_kind(api
             {"kind": "table", "count": 1},
         ]
         assert detail["message"] == (
-            "You're a member of joiner, which has things in it: 2 agents, 1 workflow, 1 skill, "
-            "1 chat, 1 schedule, 1 document and 1 data table. Accepting would delete joiner, so "
-            "delete them first."
+            "You're a member of joiner Tester, which has things in it: 2 agents, 1 workflow, "
+            "1 skill, 1 chat, 1 schedule, 1 document and 1 data table. Accepting would delete "
+            "joiner Tester, so delete them first."
         )
-        assert api.get("/api/me").json()["organisation"]["name"] == "joiner"
+        assert api.get("/api/me").json()["organisation"]["name"] == "joiner Tester"
     db.expire_all()
     assert db.get(Organisation, old) is not None
     assert store_row(db, store_id).status == DataStoreStatus.ready
@@ -382,11 +382,11 @@ def test_any_one_thing_in_the_organisation_refuses_accepting(api, db, user, join
 
 def test_accepting_while_others_are_members_is_refused_as_before(api, db, user, joiner):
     link = make_link(api)
-    other = join_organisation(db, joiner, -61, "joiners-friend")
+    other = join_organisation(db, joiner, "joiners-friend")
     try:
         with signed_in_as(joiner):
             assert refusal(api, link) == (
-                "You're a member of joiner. You can be in only one organisation at a time."
+                "You're a member of joiner Tester. You can be in only one organisation at a time."
             )
     finally:
         db.execute(delete(User).where(User.id == other.id))
@@ -405,7 +405,7 @@ def test_accepting_from_an_organisation_that_isnt_personal_is_refused_as_before(
     db.commit()
     with signed_in_as(joiner):
         assert refusal(api, link) == (
-            "You're a member of joiner. You can be in only one organisation at a time."
+            "You're a member of joiner Tester. You can be in only one organisation at a time."
         )
     with SessionLocal() as check:
-        assert organisations.membership_of(check, joiner.id).name == "joiner"
+        assert organisations.membership_of(check, joiner.id).name == "joiner Tester"

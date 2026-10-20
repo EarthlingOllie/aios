@@ -76,10 +76,8 @@ resource "aws_secretsmanager_secret" "external" {
 resource "aws_secretsmanager_secret_version" "external" {
   secret_id = aws_secretsmanager_secret.external.id
   secret_string = jsonencode({
-    GITHUB_CLIENT_ID     = "set-me"
-    GITHUB_CLIENT_SECRET = "set-me"
-    ANTHROPIC_API_KEY    = "set-me"
-    VOYAGE_API_KEY       = "set-me"
+    ANTHROPIC_API_KEY = "set-me"
+    VOYAGE_API_KEY    = "set-me"
   })
 
   lifecycle {

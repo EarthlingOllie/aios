@@ -3,16 +3,16 @@ import { describe, expect, it } from "vitest";
 import type { User } from "@/lib/api";
 import { describeProvenance, describeStarter, personName } from "@/lib/provenance";
 
-const me: User = { id: 1, login: "tester", name: "Tester", avatar_url: null };
-const sam: User = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
-const alex: User = { id: 3, login: "alex", name: null, avatar_url: null };
+const me: User = { id: 1, name: "Terry Tester" };
+const sam: User = { id: 2, name: "Sam Jones" };
+const alex: User = { id: 3, name: "Alex Brown" };
 
 describe("personName", () => {
-  it("is the name, else the login, and 'you' for the signed-in user", () => {
+  it("is the name, and 'you' for the signed-in user", () => {
     expect(personName(sam, me)).toBe("Sam Jones");
-    expect(personName(alex, me)).toBe("alex");
+    expect(personName(alex, me)).toBe("Alex Brown");
     expect(personName(me, me)).toBe("you");
-    expect(personName(me)).toBe("Tester");
+    expect(personName(me)).toBe("Terry Tester");
   });
 });
 
@@ -25,7 +25,7 @@ describe("describeProvenance", () => {
 
   it("says who last changed it when that's someone else", () => {
     expect(describeProvenance({ created_by: sam, updated_by: alex }, me)).toBe(
-      "Created by Sam Jones · last changed by alex",
+      "Created by Sam Jones · last changed by Alex Brown",
     );
     expect(describeProvenance({ created_by: me, updated_by: sam }, me)).toBe(
       "Created by you · last changed by Sam Jones",

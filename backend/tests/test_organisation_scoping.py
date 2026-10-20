@@ -3,27 +3,21 @@ runs and deletes every one, names are unique within it, each says who made and l
 and to anyone in another organisation they don't exist."""
 
 import pytest
-from conftest import delete_user, sign_up
+from conftest import delete_user, join_organisation, make_user
 from test_agents import agent_body, make_agent, make_skill
 from test_chats import signed_in_as
 from test_triggers import schedule
 from test_workflow_runs import queued  # noqa: F401
 from test_workflows import agent_node, make_workflow, workflow_body
 
-from aios import organisations
-from aios.models import Agent, OrganisationMember, Skill, User, Workflow
+from aios.models import Agent, Skill, User, Workflow
 
 
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation. Gone first, with the organisation and what's in
     it: deleting a user alone leaves what they made, which is the organisation's."""
-    u = User(github_id=-2, login="member", name="Member Person", avatar_url="https://a/m.png")
-    db.add(u)
-    db.flush()
-    org = organisations.membership_of(db, user.id)
-    db.add(OrganisationMember(organisation_id=org.id, user_id=u.id))
-    db.commit()
+    u = join_organisation(db, user, "member", first_name="Member", last_name="Person")
     yield u
     delete_user(db, u)
 
@@ -31,13 +25,13 @@ def member(db, user):
 @pytest.fixture
 def outsider(db):
     """A user in an organisation of their own."""
-    u = sign_up(db, -3, "outsider")
+    u = make_user(db, "outsider")
     yield u
     delete_user(db, u)
 
 
 def person(u: User) -> dict:
-    return {"id": u.id, "login": u.login, "name": u.name, "avatar_url": u.avatar_url}
+    return {"id": u.id, "name": u.full_name}
 
 
 def ok(resp, code: int = 200) -> dict:
@@ -245,4 +239,4 @@ def test_deleting_an_agent_finds_the_workflows_and_schedules_any_member_made(api
     with signed_in_as(member):
         paused = ok(api.get(f"/api/triggers/{daily['id']}"))
     # Paused by whoever deleted the agent.
-    assert (paused["enabled"], paused["updated_by"]["login"]) == (False, "test-user")
+    assert (paused["enabled"], paused["updated_by"]["name"]) == (False, "Test User")

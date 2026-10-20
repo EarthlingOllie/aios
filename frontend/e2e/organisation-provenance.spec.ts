@@ -5,7 +5,7 @@ import { fakeApi } from "./fake-api";
 /** Agents and workflows are the organisation's: each says which member made it and who last
  * changed it, on its list and its page. */
 
-const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("an agent says which member made it and who last changed it", async ({ page }) => {
   const api = await fakeApi(page);

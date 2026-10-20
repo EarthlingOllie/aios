@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import delete_user, org_of, sign_up, store_of
+from conftest import delete_user, make_user, org_of, store_of
 from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text, update
@@ -583,7 +583,7 @@ def test_the_export_task_tries_a_busy_or_behind_store_again(user, store_id, monk
 def test_switching_it_on_before_the_store_is_ready_sets_it_up_when_provisioned(
     client, db, history_tasks
 ):
-    u = sign_up(db, -77, "unready")
+    u = make_user(db, "unready")
     app.dependency_overrides[current_user] = lambda: u
     try:
         out = client.put("/api/organisation/settings", json={"export_run_history": True})

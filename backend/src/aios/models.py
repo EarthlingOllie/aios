@@ -33,12 +33,22 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    github_id: Mapped[int] = mapped_column(BigInteger, unique=True)
-    login: Mapped[str] = mapped_column(String(255))
-    name: Mapped[str | None] = mapped_column(String(255))
-    email: Mapped[str | None] = mapped_column(String(320))
-    avatar_url: Mapped[str | None] = mapped_column(Text)
+    # Trimmed and non-empty (`aios.auth.Name`). The app shows them by both (`full_name`).
+    first_name: Mapped[str] = mapped_column(String(100))
+    last_name: Mapped[str] = mapped_column(String(100))
+    # What they sign in with: stored normalised (`aios.auth.Email`), so it's unique in any case.
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    # An Argon2id PHC string (`aios.passwords`).
+    password_hash: Mapped[str] = mapped_column(Text)
+    # Copied into each session at sign-in (`aios.auth.start_session`): a session holding another
+    # value is signed out, so bumping it signs out every session the user has.
+    session_version: Mapped[int] = mapped_column(server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def full_name(self) -> str:
+        """How the app shows the user, wherever it names them: "First Last"."""
+        return f"{self.first_name} {self.last_name}"
 
 
 class Organisation(Base):
@@ -53,7 +63,7 @@ class Organisation(Base):
     __tablename__ = "organisations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Unique among all organisations: a personal one is named after its user's login, suffixed
+    # Unique among all organisations: a personal one is named after its user's full name, suffixed
     # when that's taken.
     name: Mapped[str] = mapped_column(String(255), unique=True)
     # Made for one user, on sign-up or on leaving another organisation. An ordinary organisation

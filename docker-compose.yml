@@ -1,5 +1,5 @@
 # Full stack locally: http://localhost:8080
-#   cp .env.example .env   # fill in GitHub OAuth + API keys
+#   cp .env.example .env   # fill in the API keys
 #   docker compose up --build
 name: aios
 
@@ -142,9 +142,13 @@ services:
     # The merge above is shallow, so the shared environment is merged in again here.
     environment:
       <<: *backend-env
+      # Behind `web`'s nginx, which appends the client's address to X-Forwarded-For.
+      TRUSTED_PROXY_COUNT: 1
       SANDBOX_BACKEND: dev
       SANDBOX_DEV_URL: http://sandbox:8080
       SANDBOX_DEV_TOKEN: dev-sandbox-token
+      # The sign-in page's "sign in as" picker (any user, no password): development only.
+      DEV_LOGIN_ENABLED: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully

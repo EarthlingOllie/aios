@@ -223,7 +223,7 @@ def test_a_chat_owner_who_leaves_the_organisation_hands_it_to_the_member_added_f
     user,
     member,  # noqa: F811
 ):
-    third = join_organisation(db, user, -60, "third")
+    third = join_organisation(db, user, "third")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Handover", visibility="private")
@@ -513,7 +513,7 @@ def test_an_owner_who_has_left_the_organisation_cant_remove_the_member_it_was_ha
     """The removal read the leaver as the chat's owner before their leave deleted the row, and the
     leave commits first, having handed the chat to the member added first: removing that member
     then would leave the others in a chat nobody owns."""
-    third = join_organisation(db, user, -61, "third")
+    third = join_organisation(db, user, "third")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Ours", visibility="private")
@@ -546,7 +546,7 @@ def test_a_member_cant_leave_a_chat_just_handed_to_them(
     """Leaving the chat read the user as a member of it before the owner's leaving the
     organisation handed it to them, and the hand-over commits first: their leaving it then would
     leave the others in a chat nobody owns."""
-    third = join_organisation(db, user, -61, "third")
+    third = join_organisation(db, user, "third")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Ours", visibility="private")
@@ -587,7 +587,7 @@ def test_a_member_added_to_a_chat_as_they_leave_the_organisation_isnt_added(
     has already taken her out of its chats. Had it committed her row, she'd be in a chat of an
     organisation she isn't in, and the member added first, so its owner when its owner leaves:
     an owner it doesn't exist for, and nobody left in the organisation who could manage it."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Plans", visibility="private")
@@ -620,7 +620,7 @@ def test_a_chat_made_as_its_maker_leaves_the_organisation_isnt_made(
 ):
     """Carol makes a chat (in another tab, say) while her leave is under way: the request was for
     the organisation she's leaving. Made, it would be owned by someone it doesn't exist for."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         with signed_in_as(carol):
             with leaving(carol):
@@ -646,7 +646,7 @@ def test_a_chat_joined_as_its_joiner_leaves_the_organisation_isnt_joined(
 ):
     """Carol joins a public chat while her leave is under way. Joined, she'd be in a chat of an
     organisation she isn't in, and the member added first when its owner leaves."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Open", visibility="public")
@@ -674,7 +674,7 @@ def test_a_member_who_leaves_as_theyre_added_to_a_chat_is_taken_out_of_it(
 ):
     """The other order: the add has seen Carol a member, and holds that, when her leave starts.
     The leave waits for the add (it doesn't deadlock with it), then takes her out of the chat."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     checked, go_on = threading.Event(), threading.Event()
     holds_member = organisations.holds_member
 
@@ -771,7 +771,7 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
         """The process stops between posting the message and starting the run."""
 
     monkeypatch.setattr(chats, "start_invocations", lost)
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         with signed_in_as(member):
             chat = make_chat(api, "Old", visibility="public")
@@ -814,7 +814,7 @@ def test_a_member_removed_from_a_chat_as_they_leave_the_organisation_is_removed(
     either way, which is what the owner asked for: the removal is done, not an error, and
     doesn't delete a row that's no longer there (the ORM's delete of it would match no row: a
     warning, or `StaleDataError` were the rows versioned)."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         chat = make_chat(api, "Plans", visibility="private")
         [theirs] = [
@@ -845,7 +845,7 @@ def test_a_member_who_leaves_a_chat_as_they_leave_the_organisation_is_out_of_it(
     """Carol leaves a chat (in another tab, say) as her leave of the organisation is under way:
     leaving the chat read her member row before her leave deleted it, and waits for the leave.
     She's out of it either way: done, and nothing deleted that's no longer there."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         chat = make_chat(api, "Plans", visibility="public")
         add_user(api, chat, carol)
@@ -874,7 +874,7 @@ def test_a_chat_deleted_as_one_of_its_members_leaves_the_organisation_is_deleted
     """The owner deletes the chat as Carol's leave is under way: the deletion read the chat's
     members, Carol among them, before her leave deleted her row, and waits for the leave. The chat
     goes, with nothing deleted that's no longer there."""
-    carol = join_organisation(db, user, -61, "carol")
+    carol = join_organisation(db, user, "carol")
     try:
         chat = make_chat(api, "Plans", visibility="private")
         add_user(api, chat, carol)

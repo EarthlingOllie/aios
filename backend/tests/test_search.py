@@ -3,7 +3,7 @@ import math
 import uuid
 
 import pytest
-from conftest import delete_user, provisioned_user, store_of
+from conftest import build_user, delete_user, provisioned_user, store_of
 
 from aios import search
 from aios.auth import current_data_store, current_user
@@ -11,7 +11,6 @@ from aios.datastores import store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.main import app
-from aios.models import User
 from aios.search import hybrid_search, hybrid_search_with_vector
 
 DIM = 1024
@@ -71,7 +70,7 @@ def test_hybrid_search_fuses_semantic_and_lexical(user):
 def test_search_never_returns_another_users_documents(db, user, monkeypatch):
     """Each store is a database of its own, which only its own roles may connect to
     (test_provisioning): a search runs in one store, so it can't see another's rows."""
-    other = provisioned_user(db, -2, "other-user")
+    other = provisioned_user(db, "other-user")
     try:
         add_chunks(store_of(user), "mine.md", [("Zebrafish fins.", unit(0))])
         add_chunks(store_of(other), "theirs.md", [("Zebrafish genome.", unit(0))])
@@ -116,7 +115,7 @@ def test_search_opens_its_session_after_embedding(user, monkeypatch):
     ],
 )
 def test_search_endpoint_rejects_bad_params(client, params):
-    app.dependency_overrides[current_user] = lambda: User(id=1, github_id=1, login="t")
+    app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
         resp = client.get("/api/search", params=params)

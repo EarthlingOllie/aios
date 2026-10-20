@@ -7,7 +7,7 @@ import { fakeApi } from "./fake-api";
 test("the shell names the organisation, and opens its page with the members", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation.members.push({
-    user: { id: 2, login: "sam", name: "Sam Jones", avatar_url: null },
+    user: { id: 2, first_name: "Sam", last_name: "Jones" },
     joined_at: "2026-10-15T09:00:00Z",
     invite_id: null,
   });
@@ -22,7 +22,7 @@ test("the shell names the organisation, and opens its page with the members", as
   await expect(members.nth(0)).toContainText("Tester");
   await expect(members.nth(0)).toContainText("Creator");
   await expect(members.nth(1)).toContainText("Sam Jones");
-  await expect(members.nth(1)).toContainText("sam");
+  // No handle: a member is their name.
   await expect(members.nth(1)).toContainText("Joined");
   await expect(members.nth(1)).not.toContainText("Creator");
 });
@@ -58,7 +58,7 @@ test("a name another organisation has is refused, and the name stays", async ({ 
 
 test("another member sees who created it, and can't rename it", async ({ page }) => {
   const api = await fakeApi(page);
-  const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+  const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
   api.organisation.name = "Acme";
   api.organisation.personal = false;
   api.organisation.creator = sam;

@@ -7,7 +7,7 @@ import { fakeApi } from "./fake-api";
  * (`/organisation/invitations`, the creator's) and Settings (`/organisation/settings`).
  */
 
-const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
+const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 const tab = (page: Page, name: string | RegExp) =>
   page.getByRole("tablist", { name: "Organisation details" }).getByRole("tab", { name });
 const panel = (page: Page) => page.getByRole("tabpanel");
