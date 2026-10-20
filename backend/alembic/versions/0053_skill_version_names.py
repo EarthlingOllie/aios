@@ -5,8 +5,8 @@ without the column. Add it where it's missing, taking each version's name from i
 name it would have been saved with had the column existed. Databases created since have it
 from 0002, and this does nothing.
 
-Revision ID: 0052
-Revises: 0051
+Revision ID: 0053
+Revises: 0052
 Create Date: 2026-10-18 19:00:00
 """
 
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0052"
-down_revision: str | None = "0051"
+revision: str = "0053"
+down_revision: str | None = "0052"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
