@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 
 import { ErrorBanner, formatDate, Section, useLoad, usePoll } from "@/components/crud";
+import { ProfileSection } from "@/components/Profile";
 import { Button } from "@/components/ui/button";
 import { api, describeError } from "@/lib/api";
 import {
@@ -10,7 +11,7 @@ import {
   historyExportStatus,
 } from "@/lib/settings";
 
-/** The user's settings. So far, the run history export. */
+/** The user's settings: their profile, and the run history export. */
 export function SettingsPage() {
   const { data: settings, error: loadError, reload } = useLoad(api.getSettings);
   const [busy, setBusy] = useState(false);
@@ -63,6 +64,7 @@ export function SettingsPage() {
           <h1 className="text-xl font-semibold">Settings</h1>
           <p className="text-muted-foreground mt-1 text-sm">Manage your account.</p>
         </header>
+        <ProfileSection />
         <ErrorBanner message={loadError} />
         <Section title="Run history export">
           <p className="text-muted-foreground text-sm">

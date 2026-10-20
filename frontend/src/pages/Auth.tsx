@@ -233,8 +233,8 @@ function AuthCard({
   );
 }
 
-/** A labelled input, with an optional hint and its error underneath. */
-function Field({
+/** A labelled input, with an optional hint and its error underneath. Settings' profile forms use it too. */
+export function Field({
   label,
   hint,
   error,

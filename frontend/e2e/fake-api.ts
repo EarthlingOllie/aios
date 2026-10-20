@@ -1554,6 +1554,19 @@ export class FakeApi {
       if (!readable) return fail(404, "Not Found");
     }
 
+    if (path === "/api/me" && method === "PATCH") {
+      // As the API: each name sent is trimmed and must be 1 to 100 characters; one left out is kept.
+      const names: Partial<Record<"first_name" | "last_name", string>> = {};
+      for (const field of ["first_name", "last_name"] as const) {
+        if (body?.[field] === undefined) continue;
+        const value = String(body[field] ?? "").trim();
+        if (!value) return reply(422, { detail: [{ loc: ["body", field], msg: "String should have at least 1 character" }] });
+        if (value.length > 100) return reply(422, { detail: [{ loc: ["body", field], msg: "String should have at most 100 characters" }] });
+        names[field] = value;
+      }
+      Object.assign(account, names);
+      return reply(200, accountOut(account));
+    }
     if (path === "/api/me") return reply(200, accountOut(account));
     if (path === "/api/data-store") {
       await new Promise((resolve) => setTimeout(resolve, this.dataStoreDelay));
