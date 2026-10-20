@@ -160,3 +160,27 @@ test("embedding is offered only while the export is on, and says when it caught 
   await expect(embedToggle).toBeHidden();
   expect(api.settings.embed_run_history).toBe(false);
 });
+
+test("a switch still being saved when another tab opens is read back on returning", async ({ page }) => {
+  const api = await fakeApi(page);
+  // The save takes a while: the user leaves the tab and comes back before it lands.
+  await page.route("**/api/organisation/settings", async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 1000));
+    await route.fallback();
+  });
+  await page.goto("/organisation/settings");
+  const tabs = page.getByRole("tablist", { name: "Organisation details" });
+  const toggle = page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" });
+  const status = page.getByRole("status", { name: "Run history export" });
+  await toggle.check();
+  await tabs.getByRole("tab", { name: /Members/ }).click();
+  await tabs.getByRole("tab", { name: "Settings" }).click();
+
+  // Not what was read before the save landed, and still polling.
+  await expect(toggle).toBeChecked();
+  await expect(status).toHaveText("Setting up the history tables in the data store…");
+  api.settings.history_ready = true;
+  api.settings.history_exported_at = "2026-10-16T10:00:00Z";
+  await expect(status).toContainText("Last exported");
+  expect(api.writes).toEqual([["PUT", "/api/organisation/settings", { export_run_history: true }]]);
+});

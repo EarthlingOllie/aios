@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 
 import { ErrorBanner, formatDate, Section, useLoad, usePoll } from "@/components/crud";
@@ -11,12 +11,19 @@ import {
 } from "@/lib/settings";
 
 /**
+ * The change still being saved, if any. Kept outside the section, which is unmounted while
+ * another of the page's tabs is open: one opened again meanwhile waits for it, then reads the
+ * settings back, rather than showing (and not polling) what was read before it landed.
+ */
+let saving: Promise<unknown> | undefined;
+
+/**
  * The Organisation page's run history export: its switch, embedding, when it last ran, and
  * deleting what it copied. The organisation's, kept on its data store: any member changes it.
  */
 export function RunHistoryExportSection() {
   const { data: settings, error: loadError, reload } = useLoad(api.getSettings);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(() => saving !== undefined);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   // What the switch was just set to, shown until the saved setting is read back.
@@ -24,17 +31,35 @@ export function RunHistoryExportSection() {
   const [embedSwitching, setEmbedSwitching] = useState<boolean>();
   // Ask again while the store is being set up, or until the first export has run.
   usePoll(settings !== undefined && historyExportPending(settings), reload);
+  useEffect(() => {
+    const pending = saving;
+    if (!pending) return;
+    let live = true;
+    pending
+      .catch(() => {})
+      .then(async () => {
+        if (!live) return;
+        await reload();
+        setBusy(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [reload]);
 
   async function act(fn: () => Promise<unknown>, done?: string) {
     setBusy(true);
     setError(undefined);
     setNotice(undefined);
+    const request = fn();
+    saving = request;
     try {
-      await fn();
+      await request;
       if (done) setNotice(done);
     } catch (err) {
       setError(describeError(err));
     } finally {
+      if (saving === request) saving = undefined;
       await reload();
       setBusy(false);
     }
