@@ -422,7 +422,7 @@ when the server turns `DATABASE_URL` away (a missing role or database, a wrong p
 `aios.db_roles` first. The role tests in `tests/test_db_roles.py` also need `DATABASE_ADMIN_URL`,
 from the environment or `.env`, and skip without it, and the documents tests need RustFS, at
 `DATA_STORE_FILES_ENDPOINT` with `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in
-`backend/.env.example`), `terraform test` in `infra/terraform` (it plans and applies against a
+`backend/.env.example`; every test also needs Redis, at `REDIS_URL`, whose rate limits it resets), `terraform test` in `infra/terraform` (it plans and applies against a
 mocked AWS, so needs no account) and `pnpm build && pnpm test && pnpm test:e2e`
 (frontend). The browser tests (Playwright, `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so they
 need no backend. Run `pnpm exec playwright install chromium` once first, or point
@@ -449,6 +449,15 @@ sign-in, and no emails are sent (no verification, no password reset).
   one that no longer matches the user's is signed out (401).
 - A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
   (only ever to a page on aios itself).
+- **Rate limits** (`aios.ratelimits`, the `limits` package, counted in Redis): signing in, 10
+  attempts per 15 minutes per email and 50 per IP; registering, 5 per hour per IP. Past one the
+  API answers 429 with `Retry-After` (and the page says to try again later); nobody is locked
+  out. The numbers are settings (`LOGIN_RATE_LIMIT_PER_EMAIL`, `LOGIN_RATE_LIMIT_PER_IP`,
+  `REGISTER_RATE_LIMIT_PER_IP`). The IP is the one the load balancer (or Compose's nginx)
+  appended to `X-Forwarded-For`, given `TRUSTED_PROXY_COUNT=1` (Terraform and Compose set it);
+  with 0 (the default, for `pnpm dev` against a local API) it's the connection's.
+- **Cross-site requests**: the auth and profile endpoints only take JSON bodies, and refuse
+  (403) a POST, PUT, PATCH or DELETE whose `Origin` isn't `PUBLIC_URL`'s.
 
 **Upgrading a database from GitHub sign-in.** Migration `0029` deletes the users who signed in
 with GitHub (they have no password), and everything they owned. Their data stores' rows go, but

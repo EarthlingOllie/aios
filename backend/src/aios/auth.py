@@ -10,6 +10,7 @@ runs them in the threadpool.
 
 import uuid
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -18,12 +19,33 @@ from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from aios import ratelimits
+from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
 from aios.models import User
 from aios.passwords import hash_password, verify_password
 
-router = APIRouter(prefix="/api/auth")
+
+def _origin(url: str) -> str:
+    parts = urlsplit(url.strip())
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
+def same_origin(request: Request) -> None:
+    """Refuses (403) a request that changes something (POST, PUT, PATCH, DELETE) sent by a page
+    on another site: its `Origin` isn't `PUBLIC_URL`'s. Browsers send `Origin` with every such
+    request, so one without it isn't from a browser, and is let through. A second guard to
+    the SameSite cookie, and to these endpoints only taking JSON (which a cross-site form can't
+    send). For the auth and profile routers."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    origin = request.headers.get("origin")
+    if origin is not None and _origin(origin) != _origin(get_settings().public_url):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-site request refused")
+
+
+router = APIRouter(prefix="/api/auth", dependencies=[Depends(same_origin)])
 
 PASSWORD_MIN_LENGTH = 12
 # Hashing a very long password is costly, so a longer one is refused rather than hashed.
@@ -147,6 +169,10 @@ EMAIL_TAKEN = "An account with this email already exists"
 @router.post("/register", response_model=MeOut, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterIn, request: Request, db: DB):
     """A new account, signed in, with its data store queued to be provisioned."""
+    settings = get_settings()
+    ratelimits.throttle(
+        "register-ip", settings.register_rate_limit_per_ip, ratelimits.client_ip(request)
+    )
     if db.scalar(select(User.id).where(User.email == body.email)) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN)
     user = User(
@@ -176,14 +202,22 @@ BAD_CREDENTIALS = "Email or password is incorrect"
 
 @router.post("/login", response_model=MeOut)
 def login(body: LoginIn, request: Request, db: DB):
-    """Sign in. An unknown email and a wrong password get the same answer, in the same time."""
-    if len(body.password) > PASSWORD_MAX_LENGTH:
-        # No account has one this long, and hashing it would be costly.
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, BAD_CREDENTIALS)
+    """Sign in. An unknown email and a wrong password get the same answer, in the same time.
+    Attempts are throttled per IP (across emails), then per email (across IPs)."""
     try:
         email = normalise_email(body.email)
     except PydanticCustomError:
         email = None
+    settings = get_settings()
+    ratelimits.throttle("login-ip", settings.login_rate_limit_per_ip, ratelimits.client_ip(request))
+    ratelimits.throttle(
+        "login-email",
+        settings.login_rate_limit_per_email,
+        ratelimits.hashed(email or body.email.strip().lower()),
+    )
+    if len(body.password) > PASSWORD_MAX_LENGTH:
+        # No account has one this long, and hashing it would be costly.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, BAD_CREDENTIALS)
     user = db.scalar(select(User).where(User.email == email)) if email else None
     ok, new_hash = verify_password(body.password, user.password_hash if user else None)
     if user is None or not ok:

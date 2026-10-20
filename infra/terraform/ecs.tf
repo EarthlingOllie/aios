@@ -134,6 +134,8 @@ locals {
       COOKIE_SECURE   = tostring(local.https)
       LLM_MODEL       = var.llm_model
       EMBEDDING_MODEL = var.embedding_model
+      # The ALB appends the client's address to X-Forwarded-For (the auth rate limits count it).
+      TRUSTED_PROXY_COUNT = "1"
       # Uploaded files (data_store_files.tf).
       DATA_STORE_FILES_BUCKET = aws_s3_bucket.data_store_files.bucket
       # run_python: one Fargate task per agent run (sandbox.tf).

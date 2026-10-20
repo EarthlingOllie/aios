@@ -63,6 +63,12 @@ describe("formErrors", () => {
     });
   });
 
+  it("says to try again later when throttled, whatever answered", () => {
+    const later = { form: "Too many attempts. Try again later.", fields: {} };
+    expect(formErrors(new ApiError(429, JSON.stringify({ detail: "Slow down" })))).toEqual(later);
+    expect(formErrors(new ApiError(429, "<html>Too Many Requests</html>"))).toEqual(later);
+  });
+
   it("says what went wrong otherwise", () => {
     expect(formErrors(new ApiError(500, "<html>"))).toEqual({ form: "request failed (500)", fields: {} });
     expect(formErrors(new TypeError("Failed to fetch"))).toEqual({ form: "network error", fields: {} });

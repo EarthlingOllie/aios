@@ -390,6 +390,8 @@ export class FakeApi {
   signedInAs: number | null = 1;
   /** How long signing in or registering takes to answer (ms). */
   authDelay = 0;
+  /** While true, signing in and registering answer 429, as the API's rate limits do. */
+  authThrottled = false;
   /** The signed-in user as chats show them (whoever signed in: chats don't name users by account yet). */
   me: ChatUser = { id: 1, login: "tester", name: "Tester", avatar_url: null };
   chats = new Map<number, ChatRow>();
@@ -1483,6 +1485,9 @@ export class FakeApi {
     const findByEmail = (email: string) =>
       this.accounts.find((a) => a.email === email.trim().toLowerCase());
     if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: false }];
+    if (this.authThrottled && (path === "/api/auth/login" || path === "/api/auth/register")) {
+      return [429, { detail: "Too many attempts. Try again later." }];
+    }
     if (path === "/api/auth/logout" && method === "POST") {
       this.signedInAs = null;
       return [204, undefined];

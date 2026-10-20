@@ -1,10 +1,11 @@
 """The signed-in user's own account."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from aios.auth import CurrentUser, MeOut, me_out
+from aios.auth import CurrentUser, MeOut, me_out, same_origin
 
-router = APIRouter(prefix="/api/me")
+# Its PATCH and PUTs refuse cross-site requests.
+router = APIRouter(prefix="/api/me", dependencies=[Depends(same_origin)])
 
 
 @router.get("", response_model=MeOut)

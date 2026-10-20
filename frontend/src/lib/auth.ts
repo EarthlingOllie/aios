@@ -26,12 +26,17 @@ export function signInPath(pathname: string, search: string, hash: string): stri
   return here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`;
 }
 
+const TRY_AGAIN_LATER = "Too many attempts. Try again later.";
+
 /**
- * What a sign-in or registration form shows for a failed request: a refusal (401, 409) or
- * anything unexpected above the form, and each invalid field's message (422) next to it.
+ * What a sign-in or registration form shows for a failed request: a refusal (401, 409), being
+ * throttled (429) or anything unexpected above the form, and each invalid field's message (422)
+ * next to it.
  */
 export function formErrors(err: unknown): { form?: string; fields: Record<string, string> } {
   if (err instanceof ApiError) {
+    // Too many attempts (the API's rate limits, or a proxy's).
+    if (err.status === 429) return { form: TRY_AGAIN_LATER, fields: {} };
     let detail: unknown;
     try {
       detail = JSON.parse(err.message).detail;
