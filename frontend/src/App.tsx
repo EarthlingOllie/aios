@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useSearchParams } from "react-router";
 import {
   Bot,
+  Building2,
   CalendarClock,
   ChartLine,
   Database,
@@ -17,9 +18,9 @@ import {
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, fullName, onSessionEnded, type User } from "@/lib/api";
+import { api, ApiError, describeError, fullName, onSessionEnded, type Me } from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
-import { CurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
+import { CurrentUserContext, ReloadCurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
@@ -31,6 +32,8 @@ import {
 } from "@/pages/Agents";
 import { LoginPage, RegisterPage } from "@/pages/Auth";
 import { DataPage } from "@/pages/Data";
+import { InviteRoute } from "@/pages/Invite";
+import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
 import { SchedulerPage } from "@/pages/Scheduler";
 import { SearchPage } from "@/pages/Search";
@@ -56,7 +59,7 @@ type AuthState =
   | { status: "loading" }
   | { status: "anonymous" }
   | { status: "error"; message: string }
-  | { status: "signed-in"; user: User };
+  | { status: "signed-in"; user: Me };
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -74,7 +77,7 @@ export default function App() {
 
   useEffect(loadMe, [loadMe]);
   // After a profile edit: the user as the API now has them.
-  const setUser = useCallback((user: User) => setAuth({ status: "signed-in", user }), []);
+  const setUser = useCallback((user: Me) => setAuth({ status: "signed-in", user }), []);
   const signedIn = auth.status === "signed-in";
   useEffect(() => {
     if (!signedIn) return;
@@ -95,11 +98,20 @@ export default function App() {
 
   if (auth.status === "loading") return null;
   if (auth.status === "anonymous") {
-    const onSignedIn = (user: User) => setAuth({ status: "signed-in", user });
+    const onSignedIn = (user: Me) => setAuth({ status: "signed-in", user });
     return (
       <Routes>
         <Route path="login" element={<LoginPage onSignedIn={onSignedIn} />} />
         <Route path="register" element={<RegisterPage onSignedIn={onSignedIn} />} />
+        {/* An invitation link opens signed out too: its page offers registering through it. */}
+        <Route
+          path="invite/:token"
+          element={
+            <div className="h-svh">
+              <InviteRoute />
+            </div>
+          }
+        />
         {/* Anywhere else: sign in first, then come back. */}
         <Route
           path="*"
@@ -142,7 +154,9 @@ export default function App() {
             <NotificationsProvider>
               <CurrentUserContext.Provider value={auth.user}>
                 <SetCurrentUserContext.Provider value={setUser}>
-                  <Shell user={auth.user} onSignOut={signOut} />
+                  <ReloadCurrentUserContext.Provider value={loadMe}>
+                    <Shell user={auth.user} onSignOut={signOut} />
+                  </ReloadCurrentUserContext.Provider>
                 </SetCurrentUserContext.Provider>
               </CurrentUserContext.Provider>
             </NotificationsProvider>
@@ -154,7 +168,7 @@ export default function App() {
         <Route path="skills" element={<SkillsSection />}>
           <Route index element={<SkillsIndex />} />
           <Route path="new" element={<SkillForm />} />
-          <Route path=":skillId" element={<SkillDetail />} />
+          <Route path=":skillId/:tab?" element={<SkillDetail />} />
           <Route path=":skillId/edit" element={<SkillForm />} />
           <Route path=":skillId/versions/:version" element={<SkillVersionPage />} />
         </Route>
@@ -162,7 +176,7 @@ export default function App() {
         <Route path="agents" element={<AgentsSection />}>
           <Route index element={<AgentsIndex />} />
           <Route path="new" element={<AgentForm />} />
-          <Route path=":agentId" element={<AgentDetail />} />
+          <Route path=":agentId/:tab?" element={<AgentDetail />} />
           <Route path=":agentId/edit" element={<AgentForm />} />
           <Route path=":agentId/versions/:version" element={<AgentVersionPage />} />
           <Route path=":agentId/runs/:runId" element={<RunPage />} />
@@ -170,18 +184,20 @@ export default function App() {
         <Route path="workflows" element={<WorkflowsSection />}>
           <Route index element={<WorkflowsIndex />} />
           <Route path="new" element={<WorkflowEditorPage />} />
-          <Route path=":workflowId" element={<WorkflowDetail />} />
+          <Route path=":workflowId/:tab?" element={<WorkflowDetail />} />
           <Route path=":workflowId/edit" element={<WorkflowEditorPage />} />
           <Route path=":workflowId/runs/:runId" element={<WorkflowRunPage />} />
           <Route path=":workflowId/versions/:version" element={<WorkflowVersionPage />} />
         </Route>
         <Route path="scheduler" element={<SchedulerPage />} />
-        <Route path="data" element={<DataPage />} />
+        <Route path="data/:tab?" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="organisation/:tab?" element={<OrganisationPage />} />
+        <Route path="invite/:token" element={<InviteRoute />} />
         <Route path="chats" element={<ChatsSection />}>
           <Route index element={<ChatsIndex />} />
           <Route path="new" element={<ChatForm />} />
-          <Route path=":chatId" element={<ChatDetail />} />
+          <Route path=":chatId/:tab?" element={<ChatDetail />} />
           <Route path=":chatId/edit" element={<ChatForm />} />
         </Route>
         {navItems
@@ -227,7 +243,7 @@ const navItems: NavItem[] = [
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
-function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
   // `/` too, which lands in the Chats section: the panel stays mounted through the redirect.
   const onLanding = useMatch("/") !== null;
   const onChats = useMatch("/chats/*") !== null || onLanding;
@@ -249,6 +265,22 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         {label}
       </NavLink>
     ));
+  // Whose things every page shows: the user's organisation, which opens its page.
+  const organisation = (className: string) => (
+    <NavLink
+      to="/organisation"
+      className={({ isActive }) =>
+        cn(
+          "hover:bg-accent flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+          isActive ? "bg-accent font-medium" : "text-muted-foreground",
+          className,
+        )
+      }
+    >
+      <Building2 className="size-4 shrink-0" />
+      <span className="truncate">{user.organisation.name}</span>
+    </NavLink>
+  );
 
   return (
     <div className="grid h-svh grid-cols-1 grid-rows-[auto_1fr] md:grid-cols-[260px_1fr] md:grid-rows-1">
@@ -260,6 +292,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             <LogOut />
           </Button>
         </div>
+        {organisation("")}
         <nav className="flex flex-col gap-0.5">{nav("")}</nav>
         {/* Documents ground the chats' documents assistant, so they live alongside it. */}
         {onChats && (
@@ -270,7 +303,10 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
       </aside>
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
         {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {nav("shrink-0")}
+          {organisation("shrink-0")}
+        </div>
         <NotificationsMenu className="shrink-0" />
         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />

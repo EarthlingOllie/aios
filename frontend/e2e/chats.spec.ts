@@ -25,8 +25,9 @@ test("creates a chat and opens it", async ({ page }) => {
   await expect(heading).toContainText("Public");
   await expect(heading.locator("..")).toContainText("Where design happens");
   await expect(heading.locator("..")).toContainText("2 members");
-  // The creator is the owner and only user; their documents assistant is its first agent.
-  const members = page.getByRole("region", { name: "Members" });
+  // The creator is the owner and only user; the organisation's documents assistant is its first agent.
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("Terry Tester", { exact: true })).toBeVisible();
   await expect(members.getByText("owner", { exact: true })).toBeVisible();
   await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Documents assistant");
@@ -42,7 +43,8 @@ test("the owner removes a member", async ({ page }) => {
   await page.goto(`/chats/${chat.id}`);
 
   await expect(page.getByRole("heading", { name: "Design", level: 2 })).toContainText("Private");
-  const members = page.getByRole("region", { name: "Members" });
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByRole("listitem")).toHaveText([/Terry Tester.*owner/, /Sam Jones/]);
   page.on("dialog", (dialog) => dialog.accept());
   await members.getByRole("button", { name: "Remove Sam Jones" }).click();
@@ -57,7 +59,8 @@ test("a member sees no owner actions", async ({ page }) => {
   await page.goto(`/chats/${chat.id}`);
 
   await expect(page.getByRole("heading", { name: "Design" })).toBeVisible();
-  const members = page.getByRole("region", { name: "Members" });
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByRole("listitem")).toHaveText([/Sam Jones.*owner/, /Terry Tester/]);
   await expect(page.getByRole("link", { name: "Edit" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);

@@ -117,6 +117,7 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page).toHaveURL(`/workflows/${report.id}`);
   await expect(node(page, "draft")).toContainText("Critic");
+  await page.getByRole("tab", { name: /Versions/ }).click();
   await expect(page.getByText("Just the critic")).toBeVisible();
   expect(api.current(report)).toMatchObject({
     version: 2,
@@ -381,7 +382,7 @@ test("with no agents, says so and links to creating one", async ({ page }) => {
   api.addWorkflow("Review");
   await page.goto("/workflows/new");
   await page.getByLabel("Add node").click();
-  await expect(page.getByRole("option")).toHaveText(["Review"]);
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveText(["Review"]);
   await expect(page.getByText("You have no agents yet.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
     "href",
@@ -396,7 +397,7 @@ test("shows the server's reason when a save is refused", async ({ page }) => {
   await page.goto(`/workflows/${report.id}/edit`);
   await page.getByLabel("Name").fill("Taken");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByRole("alert")).toContainText("already have a workflow with that name");
+  await expect(page.getByRole("alert")).toContainText("organisation already has a workflow with that name");
   await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
 });
 

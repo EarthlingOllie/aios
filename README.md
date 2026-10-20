@@ -7,15 +7,27 @@ full-text, fused with Reciprocal Rank Fusion). `/` opens the Chats section (see 
 
 You can also define your own **agents** (a base prompt plus a set of **skills**, which are
 reusable instructions, and **tools** from a built-in library: web search; document search,
-the same hybrid search as the documents assistant's, over the documents of the user running the agent;
-and run history search, the same over their exported past runs)
-and chat with them. The **Search** page runs that hybrid search directly, with no agent in
+the same hybrid search as the documents assistant's, over the documents of the agent's organisation;
+and run history search, the same over its exported past runs)
+and chat with them. The Agents and Skills lists each have a search box: every word typed must
+appear in an item's name or description, ignoring case and accents, and the list shows how many
+of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
+shared link or Back keeps it, and opening, editing, creating or deleting an item, or its versions
+and runs, leaves the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused; Skills:
+All, Used, i.e. by some live agent's current version, and Unused, each saying "Used by 3
+agents") and a sort menu (by name, the default, by most recently updated, and for agents by
+most runs) narrow and order the list, combined with the search and kept in the URL too
+(`?filter=used&sort=runs`);
+**Clear filters** resets them all. The Agents list also has an **Any skill** and an **Any tool**
+select, for the agents whose current version uses that skill (any version of it) or has that
+tool (`?skill=12&tool=web_search`). Pressing `/` jumps to the list's search box, except while
+typing in a field. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
-**Data** page shows the user's data store: its status (Overview), the schema changes its agents
+**Data** page shows the organisation's data store, the same for every member: its status (Overview), the schema changes its agents
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
-status, chunk count, size and upload time, upload, download and delete (the chat's documents
-panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+status, chunk count, size, upload time and who uploaded it, upload, download and delete (the chat's documents
+panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data/documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage. A run also records how it went and what it cost: a status
@@ -41,6 +53,10 @@ the model's behaviour:
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are soft-deleted (old agent versions still reference their versions), and can't be
   deleted while an agent's current version uses them.
+- A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
+  by (the agents whose current version uses it, with a count) and Versions (with a count). The
+  open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
+  and restoring a version returns there.
 - Each run is traced to Langfuse when it's configured (see [Tracing](#tracing)), with
   `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
@@ -48,7 +64,11 @@ the model's behaviour:
 
 **Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
-an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
+an edge shows its configuration. Its list can be searched by name and description, as the Agents
+list can, filtered to the empty workflows (no nodes) and sorted by name or most recently updated. A workflow's page has tabs, as an agent's does: Graph, Runs and
+Versions (each with its count) and Schedule, the open one kept in the URL (`/workflows/7/runs`); its
+title, actions and the form to start a run stay above them, and a run's or a version's page links
+back to its tab. Its editor adds nodes for your agents and workflows, connects
 them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
 make a cycle before you save. Runs are started from the workflow's page; a run's page draws the
 path it took on the graph (which nodes succeeded, failed or never ran, and the edges their
@@ -70,8 +90,8 @@ its step's input, output and conversation, and a subworkflow node opens its own 
   and stay readable (a node whose agent or workflow is gone shows no latest version). A workflow
   can't be deleted while a live workflow's current version runs it; older versions don't count,
   but restoring one that runs something since deleted is refused. Deleting an agent still
-  deletes its runs, their threads and sandboxes. Names are unique among live rows, so they can
-  be reused.
+  deletes its runs, their threads and sandboxes. Names are unique among the organisation's
+  live rows, so they can be reused.
 - An agent is deleted only once what depends on it is resolved (`aios.dependents`).
   `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
   have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
@@ -135,27 +155,109 @@ first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
 does the same for its own (`/api/triggers`).
 
-**Chats** are group conversations, named like channels (a name is unique among all chats). The
-**Chats** page lists the chats you're in, and the public ones you aren't (marked "Not joined", so
-you can find them), most recently active first, and opens one to its header,
-messages and members, grouped by kind: users, and the owner's **agents and workflows**, with the
-icons the navigation uses (`POST /api/chats/{id}/members` with `{kind, id}`; one row per chat and
-user, agent or workflow; an agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a private chat
-doesn't exist for anyone who isn't a member (a 404 on every endpoint), while a public one can be
-opened by anyone signed in. Whoever creates a chat owns it and is its first member; only the owner
-renames or describes it, changes its visibility, adds or removes members and deletes it (a 403 for
-other members). "Public" means every signed-in user of this deployment; organisations will narrow
-it. A public chat you aren't in can be read but not posted in until you **join** it, in one click
+Every user is in an **organisation** (`aios.organisations`), the group that owns what its
+members make. Registering makes a **personal** one named after the user's full name
+(suffixed, `Sam Jones-2`, when that name is taken), with them as its creator and only member
+(`aios.auth.start_session`, which every sign-in goes through, makes one for a user in none);
+the upgrade did the same for every existing user and stamped everything they own (skills,
+agents, workflows, schedules, chats) with their organisation and with them as `created_by`
+(revisions 0029 and 0030); the per-user ownership columns went in the same release (0048,
+which says why, as 0015 did). A user is in exactly one organisation at a time: memberships are a
+table, held to one per user by a unique index, and the request's organisation is resolved in
+one place (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency), never named
+in a URL or header. `GET /api/me` says which organisation the user is in and the shell shows
+its name, which opens the **Organisation** page (`GET /api/organisation`): the name and the
+creator above three tabs, as on the agent page, each a route: **Members**, with when each joined
+and the count (`/organisation`); **Invitations**, the links, for the creator only
+(`/organisation/invitations`); and **Settings**, the run history export and leaving
+(`/organisation/settings`). Only the creator renames it (`PUT /api/organisation`; a
+403 for another member, a 409 for a name another organisation has): a stopgap role until roles
+exist. The **Settings** page is the user's own and links to it.
+
+**Agents, skills, workflows and schedules** belong to the organisation: every member lists,
+reads, edits, versions, restores, runs and deletes every one, whoever made it, and to a user in
+another organisation each is a 404 (each API module's `get_org_*` checks `organisation_id`
+against `CurrentOrganisation`, and lists filter by it). Names are unique within the organisation
+(a 409 names the clash), so two organisations can each have a "Reviewer". Each says which member
+made it and which last changed it (`created_by`, `updated_by`, reported as the user, shown on
+lists and pages: `aios.api.provenance`), each version which member saved it, and a deleted one
+records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
+agents and workflows, and deleting an agent finds what depends on it across the organisation.
+Nothing answers to whoever made it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
+run history export, on the Organisation page's Settings tab.
+
+**Runs** execute for the organisation, however they start: by hand, by a schedule, by a chat
+mention, or as a workflow's agent node. A run's tools use the organisation's store, its trace
+carries the organisation and who started it (see [Tracing](#tracing)), and nothing about it
+depends on whoever made the agent or workflow, so a schedule or a mention goes on working after
+they've left. Each agent run and workflow run records the member who started it (`created_by`:
+who started it by hand or mentioned it; a workflow's agent nodes' runs take the workflow run's),
+null for a schedule's run, which records its schedule (`trigger_id`) instead; run lists and run
+pages show the member, or "Scheduled". Every member reads, continues and
+deletes every run in the organisation, the ones chats and schedules started included, and to
+anyone else each is a 404.
+
+The creator brings people in with **invitation links**, made on the Organisation page's
+Invitations tab (`/organisation/invitations`; `POST /api/organisation/invites`, `expires_in_days`
+1 to 30, a week by default): the response
+carries the link's random token once, and only its hash is stored, so the page shows the link to
+copy and never again. `GET` lists the open links (who made each, when it expires) and `DELETE
+.../invites/{id}` revokes one; all three are the creator's (a 403 for another member). The link
+opens the **invite page** (`/invite/<token>`; `GET /api/invites/{token}`, no sign-in needed), which
+names the organisation; an expired or revoked link is a 404 and says so. Signed out, it offers
+to register (`/register?invite=<token>`, which sends the token with the registration: the new
+user joins the organisation, the membership recording the link, shown beside the member, and
+gets no personal one; a link that no longer opens gets them a personal one) or to sign in
+(`/login`); either comes back to the invite page, which says why a user it couldn't join wasn't. Signed in, Accept (`POST /api/invites/{token}/accept`) joins, since a user is in
+one organisation at a time, a user who's in none or in an **empty** one: personal, theirs alone,
+and holding nothing but the defaults (no agents but the documents assistant, no workflows,
+skills, chats, schedules, documents or data tables). The empty one is deleted as they join, and
+its data store goes `deleting` for the provisioning worker to drop (see Data stores). Otherwise
+it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
+the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page's Settings tab
+(`/organisation/settings`; `POST /api/organisation/leave`): they drop
+out of the organisation's chats (an add, a join or a new chat of theirs at the same moment is a
+404, not a way back into one), their unread notifications about its schema change requests go,
+and they land in a new personal organisation with a data store of its own; what they made stays,
+and a chat they owned goes to its member added first (with nobody left in it, a public one goes
+to whoever joins it next, and a private one, which nobody could join, is deleted, as its owner
+deleting it would be).
+The last member can't leave, nor can the creator while others remain (each a 409, explained on
+the page).
+
+**Chats** are group conversations, and belong to the organisation: a chat of another
+organisation doesn't exist for you (a 404 on every endpoint), and names are unique within the
+organisation (a 409), like channels, so two organisations can each have "general". The
+**Chats** page lists the organisation's chats you're in, and its public ones you aren't (marked
+"Not joined", so you can find them), most recently active first, with a search box over their
+names and descriptions and filter buttons (All, Joined, Not joined, Unread, Private), kept in the
+URL as on the Agents list, and as the list refreshes (it has no sort menu). It opens one to its
+header (name, description, member count, Edit, Delete, Join or Leave, and which member created
+it: `created_by`, `updated_by`, as `aios.api.provenance` reports them) above two tabs, as on the
+agent page: **Chat**, the messages and composer (the default), and **Members**
+(`/chats/5/members`, with the count). The room isn't kept while Members is open, so nothing is
+marked read there and coming back reloads the messages, scrolled to the newest; a message typed
+but not sent is still there on coming back, from Members, the chat's Edit page, another section
+or a reload (kept in the tab's session storage, per user and chat). Members are grouped by kind:
+users, **agents and workflows**, with the icons the navigation uses. The owner adds any member of the organisation, and any of its agents
+and workflows, whoever made them (`POST /api/chats/{id}/members` with `{kind, id}`; a user from
+outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow; an
+agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a
+private chat doesn't exist for anyone who isn't a member, while a public one can be opened by every
+member of the organisation. Whoever creates a chat owns it and is its first member (a role on their
+member row, not ownership of data; one owner per chat); only the owner renames or describes it, changes its visibility, adds
+or removes members and deletes it (a 403 for other members). A public chat you aren't in can be
+read but not posted in until you **join** it, in one click
 (`POST /api/chats/{id}/join`); any member but the owner can **leave** (`POST
 /api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for them).
 
-Each new chat has its owner's **documents assistant** as its first agent (`aios.assistant`): an
-agent of theirs, made the first time they create a chat (`agents.builtin = 'documents'`, one live
-one per user), with the document search tool and instructions to ground its answers in the
+Each new chat has the organisation's **documents assistant** as its first agent
+(`aios.assistant`): an agent of the organisation's, made for whichever member first creates a
+chat (`agents.builtin = 'documents'`, one live one per organisation), with the document search
+tool and instructions to ground its answers in the
 results, citing sources. It's mentioned and answers like any agent member (acknowledgement, brief,
-card and reply, below), and, running as its owner, searches the documents of the user who owns
-the chat. It's listed with their other agents, where it can be edited like one; deleted, a fresh
-one joins their next chat. Chats made before it existed don't get it, but their owner can add it
+card and reply, below), and searches the organisation's documents. It's listed with the organisation's other agents, where it can be edited like one;
+deleted, a fresh one joins the next chat. Chats made before it existed don't get it, but their owner can add it
 like any agent. `/` lands on the most recently active chat you're in, or the new-chat form.
 Leaving or being removed deletes nothing: whoever joins or is added later reads the history from
 the start.
@@ -191,7 +293,8 @@ workflow's acknowledgement with a **run card** under it, and returns them with t
 (`{messages, invocations}`), so the chat never shows a mention without its card. Just after the
 response, the run starts through the same helpers starting one by hand and schedules use (and the
 firing machinery, `aios.firing`), with the message as its input (each mention as `@name`),
-executing as the workflow's owner; the invocation records who asked, the run, and goes `running`.
+started by the member who asked (the run's `created_by`); the invocation records who asked, the
+run, and goes `running`.
 A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
 with the reason. When the run ends (in the worker, found stopped, or deleted before it finished),
 its output or error is posted back as a message from the workflow, belonging to the invocation,
@@ -207,7 +310,7 @@ workflow's others, marked with the chat (while it exists); deleting a chat delet
 and invocations, not the runs.
 
 Mentioning an **agent** runs one turn of a new run of its current version, with the message as
-the user's, executing as the agent's owner; its acknowledgement and card come with the post in the
+the user's, started by the member who asked; its acknowledgement and card come with the post in the
 same way. The turn runs in an API process through the firing machinery schedules use, under the
 same cap (`SCHEDULER_MAX_CONCURRENT_RUNS`): a process with a free slot claims it, just after the
 post or on a scheduler tick (until then it waits, queued, however long), and keeps its heartbeat
@@ -301,15 +404,24 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 backend/            FastAPI app, Celery worker, Alembic migrations, tests
   src/aios/
     main.py         app + SessionMiddleware
-    auth.py         /api/auth/{options,register,login,logout}, start_session, current_user
+    auth.py         /api/auth/{options,register,login,logout}, start_session, current_user,
+                    current_organisation
     passwords.py    Argon2id hashing and checking
-    api/me.py       /api/me: GET, PATCH (name), PUT email and password
+    api/me.py       /api/me: GET (with the user's organisation), PATCH (name), PUT email and
+                    password
+    organisations.py  organisations, which own what their members make: a personal one per
+                    user on sign-up, the user's one membership, invitation links, joining and
+                    leaving (handing over the chats a leaver owned)
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
     api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
+    api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page), invitation
+                    links (/api/organisation/invites, /api/invites/{token}[/accept]), leaving
+    api/provenance.py who made and last changed an organisation's things, as the API reports it
+    api/settings.py GET/PUT /api/organisation/settings (the organisation's: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
@@ -328,11 +440,12 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     runner and the egress proxy
     agent.py        the run context (`ChatDeps`) agents' tools read
     assistant.py    the documents assistant: the built-in agent each new chat gets
-    datastores/     data stores: data_store_for(user), the one place a user becomes a store,
-                    store_session(id, role), the only way to open a session on user data,
+    datastores/     data stores: data_store_for(organisation), the one place an organisation
+                    becomes a store, store_session(id, role), the only way to open a session on
+                    an organisation's data,
                     models.py (the tables every store has: documents, chunks; and the
                     run history export's), history.py (the run history export),
-                    provision.py (creating and migrating each store's database),
+                    provision.py (creating, migrating and deleting each store's database),
                     files.py (uploaded files in S3, and download links), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
@@ -447,8 +560,8 @@ sign-in, and no emails are sent (no verification, no password reset).
   address in any case is one account. Registering a taken one answers 409.
 - **Names** are trimmed and must not be empty; the app shows a user as "First Last".
 - **Sessions** are the signed cookie (`aios_session`, 14 days). Registering signs the new user
-  in and queues their data store, as signing in does if they have none (`aios.auth.start_session`
-  starts every session). Each session holds the user's `session_version` from when it started;
+  in, in a new personal organisation (or the one an invitation link is for), and queues its data
+  store, as signing in does if it has none (`aios.auth.start_session` starts every session). Each session holds the user's `session_version` from when it started;
   one that no longer matches the user's is signed out (401).
 - A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
   (only ever to a page on aios itself). So does a request that finds the session has ended
@@ -476,12 +589,13 @@ sign-in, and no emails are sent (no verification, no password reset).
 - **Cross-site requests**: the auth and profile endpoints only take JSON bodies, and refuse
   (403) a POST, PUT, PATCH or DELETE whose `Origin` isn't `PUBLIC_URL`'s.
 
-**Upgrading a database from GitHub sign-in.** Migration `0029` deletes the users who signed in
-with GitHub (they have no password), and everything they owned. Their data stores' rows go, but
-not the stores' databases and roles, which the app's role can't drop. On a development
-database it's simplest to start again: `docker compose down -v` (which also empties RustFS), or
-drop and recreate the `aios` database, then run the steps above (`aios.db_roles`, `alembic
-upgrade head`) again.
+**Upgrading a database from GitHub sign-in.** Migration `0052` deletes the users who signed in
+with GitHub (they have no password), and, as nobody is then left in any organisation, every
+organisation with everything in it. Their data stores go `deleting`, for the provisioning
+worker's sweep to drop their databases, roles and files (see Data stores), as when an empty
+organisation is deleted. On a development database it's as simple to start again: `docker
+compose down -v` (which also empties RustFS), or drop and recreate the `aios` database, then run
+the steps above (`aios.db_roles`, `alembic upgrade head`) again.
 
 ### Database roles
 
@@ -521,14 +635,19 @@ them without it is measured by its database's size until a superuser adds it.
 
 ### Data stores
 
-Each user has a data store: a Postgres database of their own on the same instance (see
-`plan/user-databases/plan.md` on the plan branch). Signing up creates the store's row
-(`data_stores`, status `provisioning`) and queues `aios.provision_data_store` on the
+Each organisation has a data store: a Postgres database of its own on the same instance (see
+`plan/user-databases/plan.md` on the plan branch), which every member reaches: the Data page,
+uploads and downloads, approvals and the run history export all resolve the signed-in user's
+organisation's store (`aios.datastores.resolve.data_store_for`, the `CurrentDataStore`
+dependency), and a run uses its agent's or workflow's organisation's. A user in another
+organisation finds none of it (404). Each document records who uploaded it (`uploaded_by`, a
+user id: a store has no users table). Signing up makes the new organisation's store's row
+(`data_stores`, `owner_organisation_id`, status `provisioning`) and queues `aios.provision_data_store` on the
 `provisioning` queue, which only the provisioning worker reads. That task, as
 `aios_provisioner`:
 
 - creates the roles `ds_<id>_owner` (no login), `ds_<id>_rw` and `ds_<id>_ro`, named after the
-  store's id (a UUID, never the user's), with a connection limit each
+  store's id (a UUID, never its organisation's), with a connection limit each
   (`DATA_STORE_CONNECTION_LIMIT`), and a default statement timeout and idle-in-transaction
   timeout (`DATA_STORE_STATEMENT_TIMEOUT`, `DATA_STORE_IDLE_IN_TRANSACTION_TIMEOUT`, in
   milliseconds): role defaults, which a session may `SET` otherwise, so code running queries it
@@ -537,12 +656,12 @@ Each user has a data store: a Postgres database of their own on the same instanc
   connections, revokes `CONNECT` (and `TEMPORARY`) from `PUBLIC`, grants `CONNECT` to `_rw` and
   `_ro`, and only then lets them connect;
 - drops its `public` schema, and sets default privileges: `_rw` may read and write the tables
-  the owner creates and `_ro` only read them; neither may create anything;
+  `_owner` creates and `_ro` only read them; neither may create anything;
 - runs the store Alembic tree (`aios.datastores.migrations`, version table
   `aios.alembic_version`) as `_owner`, takes writes on the tree's bookkeeping
   (`aios.alembic_version`, `aios.schema_history`) back from `_rw`, and marks the store `ready`
   at its head revision. The tree makes the `aios` schema (the platform's tables) and an empty
-  `data` schema (the owner's tables, which the tree otherwise leaves alone).
+  `data` schema (the organisation's tables, which the tree otherwise leaves alone).
 
 Every step checks what's already there, so a run that crashed is finished by running it again.
 After six failed tries (the first and five retries, over about half an hour) the store is marked
@@ -550,6 +669,15 @@ After six failed tries (the first and five retries, over about half an hour) the
 along with any still `provisioning` five minutes after they were made (their task was lost with a
 worker, say). Until a store is `ready`, uploads, the document list and search answer 409 ("being
 set up"), and the UI says so.
+
+A store whose organisation is deleted (an empty one, on accepting an invitation) goes `deleting`,
+with no organisation, in the same transaction. The provisioning worker's sweep
+(`aios.delete_data_stores`, queued then, and on the beat every ten minutes) disposes of its own
+engines on the store, drops its database and roles (ending any sessions still on it), deletes its
+files under `stores/<id>/` and marks it `deleted`, keeping the row. Each step can be run again,
+so a sweep cut short is finished by the next. A store still being provisioned (its creator
+accepted an invitation straight after signing up) is never marked ready: the sweep waits for the
+provisioning run, which leaves it `deleting`.
 
 The login roles' passwords are generated with the row, stored encrypted with a key derived from
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
@@ -570,8 +698,8 @@ back, until the provisioning worker's beat brings it to head with the retries ab
 Documents and chunks live in each store, in its `aios` schema (`aios.datastores.models`, made
 by the store tree); the platform database has none. `store_session(id, role)` opens a session
 on the store's own database: uploads, listing, deletion and ingest as `_rw`, search (the API's
-and the document search tools') and downloads as `_ro`. Searches have no owner filter: a store holds only its
-owner's documents, and its roles can't connect to any other database. A store is reached at
+and the document search tools') and downloads as `_ro`. Searches have no organisation filter: a store
+holds only its organisation's documents, and its roles can't connect to any other database. A store is reached at
 `DATABASE_URL`'s address (and with its options, like `sslmode`): stores are on the platform
 database's instance, which the provisioner may know by another name (Compose's `db`, with the
 API on the host). A row's `host` and `port` are for a store moved to another instance later;
@@ -614,9 +742,11 @@ written or deleted from since.
 
 #### Run history export
 
-On the Settings page a user can switch on `export_run_history` (on `users`): a one-way copy of
-their runs into their store's `history` schema, keyed by the platform's ids and recording who
-ran each. Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
+On the Organisation page's Settings tab (`/organisation/settings`) any member can switch on
+`export_run_history` (on `data_stores`): a
+one-way copy of the organisation's runs (every member's and every schedule's, matched to the
+store by their agent's or workflow's organisation) into its store's `history` schema, keyed by the platform's ids and recording who
+started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
 and usage, flattened from the run's checkpoint). Workflow runs go in `history.workflow_runs`,
 with `history.workflow_run_steps`: every step at every depth, with its path, kind, status,
 input, output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign
@@ -624,12 +754,12 @@ key: the two are exported apart). Statuses are copied as text. The platform data
 source of truth (`aios.datastores.history`):
 
 - The `history` tables are the store tree's second line (branch label `history`, revisions
-  `h0001`, ...), which a store gets only once its owner first switches the export on:
+  `h0001`, ...), which a store gets only once the export is first switched on:
   `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
   migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
   same default privileges on it as on `aios`. A store behind the line's head isn't exported
   until it's brought there.
-- Switching it on backfills: every run of the user's, agent and workflow runs alike, goes in the
+- Switching it on backfills: every run in the organisation, agent and workflow runs alike, goes in the
   outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
   `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
   every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
@@ -648,7 +778,7 @@ source of truth (`aios.datastores.history`):
 
 ##### Searchable history
 
-While the export is on, a second setting, `embed_run_history` (on `users`, off by default, and
+While the export is on, a second setting, `embed_run_history` (on `data_stores`, off by default, and
 switched off with the export), embeds the exported messages so agents can search past runs:
 
 - `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
@@ -661,7 +791,7 @@ switched off with the export), embeds the exported messages so agents can search
   on queues the export, which embeds every message already there (a backfill);
   `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
   `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
-  embedding API is down, say) records why (`history_embed_error`, shown on the Settings page) and
+  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page's Settings tab) and
   is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
   new embeddings and keeps the existing ones, which are still searched.
 - The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid
@@ -777,7 +907,7 @@ Known limits:
   waits, and the task tries again a minute later, up to ten times), and deleting a document
   deletes its object, then its row (so should S3 refuse, the document stays to be deleted
   again). Downloading
-  (`GET /api/documents/{id}/download`) looks the document up in the user's own store, so
+  (`GET /api/documents/{id}/download`) looks the document up in the organisation's store, so
   another's is a 404, and redirects to a presigned `GetObject` link that saves it under its
   original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding a link can use it
   until then, so one is minted per click and never shown on the page. Links are signed for
@@ -845,7 +975,7 @@ Known limits:
   available. See `plan/run-python/plan.md`.
 - **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's data
   store, as its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data`
-  (the owner's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+  (the organisation's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
   descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
   `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
   statement is sent with the extended protocol, which takes only one. Rows are streamed and cut
@@ -862,8 +992,8 @@ Known limits:
   store's schema, compiles it to SQL with every identifier quoted (descriptions become
   `COMMENT ON`), records a `schema_change_requests` row, and pauses the run with LangGraph's
   `interrupt()`: the turn ends with a card of the agent's reason and the exact SQL, and the run
-  takes no new messages until it's decided. The store's owner (`can_approve`) approves or
-  rejects it (with an optional note) there or in the Data page's Changes section. Each user who
+  takes no new messages until it's decided. Any member of the store's organisation
+  (`can_approve`, `resolve.approvers`) approves or rejects it (with an optional note) there or in the Data page's Changes section. Each user who
   can decide a new request gets a notification (`aios.notifications`, the `notifications`
   table: user, kind, a jsonb reference, created and read times), which the navigation's bell
   polls for (`GET /api/notifications`, unread first with an unread count, every 10s) and shows
@@ -924,8 +1054,11 @@ LANGFUSE_BASE_URL=https://langfuse.example.com   # your instance; default http:/
 LANGFUSE_ENVIRONMENT=production                  # optional
 ```
 
-Each trace carries the user id, the run's thread id as the Langfuse session, tags for the agent
-and version, and the run metadata above. A chat mention's handoff (see Chats) is traced too,
-tagged `handoff`, with `invocation_id`, the chat, the message, who asked and the member as
+Each trace carries the organisation (`organisation_id`) and the member who started the run
+(`created_by`, also the Langfuse user; a schedule's run has neither a member nor a Langfuse
+user), the run's thread id as the Langfuse session, tags for the agent and version, and the run
+metadata above; a workflow's agent node's carries its workflow run's starter. A chat mention's
+handoff (see Chats) is traced too, tagged `handoff`, with `invocation_id`, the chat, the message,
+who asked (as `created_by` and the Langfuse user, with the organisation) and the member as
 metadata, and `chat-<id>` as the session. With no keys, nothing is traced. Traces are sent in the
 background and flushed when the API shuts down.

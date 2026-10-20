@@ -79,7 +79,7 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
 
   // Where the run is listed with the workflow's others, marked as started from the chat.
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(`/workflows/${report.id}/runs`);
   await expect(page.getByTestId("started-from-chat")).toHaveText(/Started from the chat Design/);
 });
 

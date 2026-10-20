@@ -7,8 +7,8 @@ import { formatBytes } from "@/lib/format-bytes";
 // otherwise unavailable (the failed wording also matches the API's 409). They differ only while
 // it's being set up.
 const FAILED_MESSAGE =
-  "Your data store couldn't be set up. We'll try again; please check back later.";
-const UNAVAILABLE_MESSAGE = "Your data store isn't available.";
+  "The organisation's data store couldn't be set up. We'll try again; please check back later.";
+const UNAVAILABLE_MESSAGE = "The organisation's data store isn't available.";
 
 /**
  * What to say about a data store that isn't ready, with what the user can do once it is (e.g.
@@ -19,7 +19,7 @@ export function dataStoreNotice(status: DataStoreStatus, action: string): string
     case "ready":
       return null;
     case "provisioning":
-      return `Setting up your data store. You can ${action} once it's ready.`;
+      return `Setting up the organisation's data store. You can ${action} once it's ready.`;
     case "failed":
       return FAILED_MESSAGE;
     default:
@@ -34,13 +34,13 @@ export function dataStoreSummary(status: DataStoreStatus): { label: string; mess
       return {
         label: "Ready",
         message:
-          "Your data store is ready. Your agents can keep data in it, and you can upload documents.",
+          "The organisation's data store is ready. Its agents can keep data in it, and you can upload documents.",
       };
     case "provisioning":
       return {
         label: "Being set up",
         message:
-          "We're setting up your data store. This usually takes a few seconds; you can upload documents once it's ready.",
+          "We're setting up the organisation's data store. This usually takes a few seconds; you can upload documents once it's ready.",
       };
     case "failed":
       return { label: "Failed", message: FAILED_MESSAGE };
@@ -126,7 +126,7 @@ export function dataStorePollInterval(status: DataStoreStatus): number | null {
 }
 
 /**
- * The user's data store's status and usage, asked again while it isn't ready. `status` and
+ * The organisation's data store's status and usage, asked again while it isn't ready. `status` and
  * `usage` are undefined until the first answer; a failed request keeps the last ones, says what
  * went wrong in `error`, and tries again. `recheck` asks again straight away, e.g. about a store
  * last seen ready, which nothing polls.
@@ -158,7 +158,7 @@ export function useDataStoreStatus(): {
         })
         .catch((err) => {
           if (stopped) return;
-          setError(`Couldn't check your data store (${describeError(err)}). Trying again…`);
+          setError(`Couldn't check the organisation's data store (${describeError(err)}). Trying again…`);
           timer = setTimeout(check, 5000);
         });
     check();

@@ -29,19 +29,21 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
   await expect(page.getByText("Join the chat to post in it.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Leave" })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Join" }).click();
+  await page.getByRole("button", { name: "Join", exact: true }).click();
   await expect(composer(page)).toBeVisible();
   await expect(listItem(page, "Design")).not.toContainText("Not joined");
-  await expect(page.getByRole("region", { name: "Members" }).getByRole("listitem")).toHaveText([
+  await page.getByRole("tab", { name: /Members/ }).click();
+  await expect(page.getByRole("tabpanel", { name: /Members/ }).getByRole("listitem")).toHaveText([
     /Sam Jones.*owner/,
     /Terry Tester/,
   ]);
   expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/join`, null]]);
+  await page.getByRole("tab", { name: "Chat" }).click();
 
   // And having joined, they can leave again; it's back to one to join.
   page.on("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Leave" }).click();
-  await expect(page.getByRole("button", { name: "Join" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Join", exact: true })).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
   await expect(listItem(page, "Design")).toContainText("Not joined");
   expect(api.writes.at(-1)).toEqual(["POST", `/api/chats/${chat.id}/leave`, null]);
@@ -54,7 +56,7 @@ test("the owner is offered no Leave", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Mine", level: 2 })).toBeVisible();
   await expect(composer(page)).toBeVisible();
   await expect(page.getByRole("button", { name: "Leave" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Join" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Join", exact: true })).toHaveCount(0);
 });
 
 test("a joined chat counts what's new in the list, and reading it clears the count", async ({ page }) => {
@@ -62,7 +64,7 @@ test("a joined chat counts what's new in the list, and reading it clears the cou
   const design = api.addChat("Design", { visibility: "public", owner: sam });
   const other = api.addChat("Other");
   await page.goto(`/chats/${design.id}`);
-  await page.getByRole("button", { name: "Join" }).click();
+  await page.getByRole("button", { name: "Join", exact: true }).click();
   await expect(composer(page)).toBeVisible();
   // Another chat open, Sam posts in this one: the list's next read counts it.
   await listItem(page, "Other").click();

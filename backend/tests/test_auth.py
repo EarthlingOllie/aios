@@ -5,6 +5,7 @@ from conftest import TEST_PASSWORD, delete_user, signed_in_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from aios import organisations
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, User
 
@@ -58,7 +59,24 @@ def test_registering_signs_the_new_user_in(client, registered):
         "first_name": "Alice",
         "last_name": "Smith",
         "email": email,
+        "organisation": me.json()["organisation"],
     }
+
+
+def test_registering_makes_the_new_user_a_personal_organisation_named_after_them(
+    client, registered
+):
+    email = new_email()
+    registered.append(email)
+
+    me = client.post("/api/auth/register", json=registration(email)).json()
+
+    org = me["organisation"]
+    # Suffixed if another test's "Alice Smith" is about.
+    assert org["name"] == "Alice Smith" or org["name"].startswith("Alice Smith-")
+    assert (org["personal"], org["is_creator"]) == (True, True)
+    members = client.get("/api/organisation").json()["members"]
+    assert [m["user"] for m in members] == [{"id": me["id"], "name": "Alice Smith"}]
 
 
 def test_registering_queues_the_new_users_data_store(client, db, registered, provisioning):
@@ -67,8 +85,8 @@ def test_registering_queues_the_new_users_data_store(client, db, registered, pro
 
     resp = client.post("/api/auth/register", json=registration(email))
 
-    user_id = resp.json()["id"]
-    stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == user_id)).all()
+    org_id = resp.json()["organisation"]["id"]
+    stores = db.scalars(select(DataStore).where(DataStore.owner_organisation_id == org_id)).all()
     assert [s.status for s in stores] == [DataStoreStatus.provisioning]
     assert provisioning == [stores[0].id]
 
@@ -83,8 +101,9 @@ def test_registering_trims_names_and_email_and_stores_the_email_normalised(clien
     )
 
     assert resp.status_code == 201
-    assert client.get("/api/me").json() | {"id": 0} == {
+    assert client.get("/api/me").json() | {"id": 0, "organisation": None} == {
         "id": 0,
+        "organisation": None,
         "first_name": "Alice",
         "last_name": "Smith",
         "email": email,
@@ -160,13 +179,14 @@ def test_signing_in_with_the_email_in_any_case(db, user):
     assert client.get("/api/me").json()["email"] == user.email
 
 
-def test_signing_in_starts_the_users_data_store_if_they_have_none(db, new_user, provisioning):
+def test_signing_in_starts_the_organisations_data_store_if_it_has_none(db, new_user, provisioning):
     someone = new_user()
     client = TestClient(app)
 
     client.post("/api/auth/login", json={"email": someone.email, "password": TEST_PASSWORD})
 
-    store = db.scalar(select(DataStore).where(DataStore.owner_user_id == someone.id))
+    org = organisations.membership_of(db, someone.id)
+    store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == org.id))
     assert provisioning == [store.id]
 
 

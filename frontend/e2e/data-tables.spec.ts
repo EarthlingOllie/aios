@@ -39,7 +39,7 @@ test("Tables lists each table with its columns and row count", async ({ page }) 
 
   await page.getByRole("tab", { name: "Tables" }).click();
 
-  await expect(page).toHaveURL(/\/data\?tab=tables$/);
+  await expect(page).toHaveURL(/\/data\/tables$/);
   const fish = tableCard(page, "fish");
   await expect(fish).toContainText("Fish the user has caught");
   await expect(fish).toContainText("3 rows");
@@ -56,11 +56,11 @@ test("Tables lists each table with its columns and row count", async ({ page }) 
 test("opening a table shows its rows, and sorting by a column reorders them", async ({ page }) => {
   const api = await fakeApi(page);
   addFish(api);
-  await page.goto("/data?tab=tables");
+  await page.goto("/data/tables");
 
   await tableCard(page, "fish").getByRole("link", { name: "fish" }).click();
 
-  await expect(page).toHaveURL(/\/data\?tab=tables&table=fish$/);
+  await expect(page).toHaveURL(/\/data\/tables\?table=fish$/);
   await expect(page.getByRole("heading", { name: "fish", level: 2 })).toBeVisible();
   await expect(gridRows(page, "fish")).toHaveText([
     /id\s*name\s*weight_kg/,
@@ -92,14 +92,14 @@ test("opening a table shows its rows, and sorting by a column reorders them", as
 
   // And a link back to the list.
   await page.getByRole("link", { name: "All tables" }).click();
-  await expect(page).toHaveURL(/\/data\?tab=tables$/);
+  await expect(page).toHaveURL(/\/data\/tables$/);
   await expect(tableCard(page, "fish")).toBeVisible();
 });
 
 test("two quick clicks on a column sort it descending", async ({ page }) => {
   const api = await fakeApi(page);
   addFish(api);
-  await page.goto("/data?tab=tables&table=fish");
+  await page.goto("/data/tables?table=fish");
   await expect(firstColumn(page, "fish")).toHaveText(["1", "2", "3"]);
 
   await grid(page, "fish").getByRole("button", { name: "weight_kg" }).dblclick();
@@ -114,7 +114,7 @@ test("two quick clicks on a column sort it descending", async ({ page }) => {
 test("a column added since the list was read heads its own values", async ({ page }) => {
   const api = await fakeApi(page);
   const fish = addFish(api);
-  await page.goto("/data?tab=tables");
+  await page.goto("/data/tables");
   await expect(tableCard(page, "fish")).toBeVisible();
 
   // An agent adds a column before the table is opened.
@@ -139,7 +139,7 @@ test("a big table's rows come a page at a time", async ({ page }) => {
     ["n:integer"],
     Array.from({ length: 120 }, (_, i) => [String(i + 1)]),
   );
-  await page.goto("/data?tab=tables&table=readings");
+  await page.goto("/data/tables?table=readings");
 
   await expect(firstColumn(page, "readings")).toHaveCount(50);
   await expect(page.getByText("Rows 1–50")).toBeVisible();
@@ -174,7 +174,7 @@ test("embeddings show as their dimension, jsonb as it's laid out, and NULL as NU
       ["2", null, null],
     ],
   );
-  await page.goto("/data?tab=tables&table=notes");
+  await page.goto("/data/tables?table=notes");
 
   const first = gridRows(page, "notes").nth(1);
   await expect(first.getByRole("cell").nth(2)).toHaveText("vector(1024)");
@@ -190,7 +190,7 @@ test("a wide value is cut short, and shown in full on asking", async ({ page }) 
   const api = await fakeApi(page);
   const body = "word ".repeat(400) + "the end";
   api.addTable("notes", ["id:integer", "body"], [["1", body]]);
-  await page.goto("/data?tab=tables&table=notes");
+  await page.goto("/data/tables?table=notes");
 
   const cell = gridRows(page, "notes").nth(1).getByRole("cell").nth(1);
   await expect(cell).toContainText("…");
@@ -207,7 +207,7 @@ test("a wide value is cut short, and shown in full on asking", async ({ page }) 
 
 test("an empty store says it has no tables yet", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/data?tab=tables");
+  await page.goto("/data/tables");
 
   await expect(page.getByText("No tables yet.")).toBeVisible();
   await expect(tableList(page)).toBeHidden();
@@ -216,7 +216,7 @@ test("an empty store says it has no tables yet", async ({ page }) => {
 test("an empty table says it has no rows", async ({ page }) => {
   const api = await fakeApi(page);
   api.addTable("empty", ["id:integer"]);
-  await page.goto("/data?tab=tables&table=empty");
+  await page.goto("/data/tables?table=empty");
 
   await expect(page.getByText("This table has no rows yet.")).toBeVisible();
 });
@@ -225,10 +225,10 @@ test("a store being set up shows its tables once it's ready", async ({ page }) =
   const api = await fakeApi(page);
   api.dataStoreStatus = "provisioning";
   addFish(api);
-  await page.goto("/data?tab=tables");
+  await page.goto("/data/tables");
 
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
-    "Setting up your data store.",
+    "Setting up the organisation's data store.",
   );
   await expect(tableList(page)).toBeHidden();
 
@@ -239,7 +239,7 @@ test("a store being set up shows its tables once it's ready", async ({ page }) =
 test("a table that isn't there says so", async ({ page }) => {
   const api = await fakeApi(page);
   addFish(api);
-  await page.goto("/data?tab=tables&table=whales");
+  await page.goto("/data/tables?table=whales");
 
   await expect(page.getByRole("alert", { name: "Table" })).toContainText(
     "There's no table called “whales”.",
@@ -252,7 +252,7 @@ test("tables that couldn't be read say so, and can be tried again", async ({ pag
   const api = await fakeApi(page);
   addFish(api);
   api.tablesFail = true;
-  await page.goto("/data?tab=tables");
+  await page.goto("/data/tables");
 
   const notice = page.getByRole("alert", { name: "Tables" });
   await expect(notice).toContainText("Couldn't load your tables");

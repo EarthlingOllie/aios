@@ -5,10 +5,19 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
-import { ErrorBanner, formatDate, Placeholder, useLoad, usePoll, type ListContext } from "@/components/crud";
+import {
+  ErrorBanner,
+  formatDate,
+  Placeholder,
+  useListHref,
+  useLoad,
+  usePoll,
+  type ListContext,
+} from "@/components/crud";
 import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
 import { Notice } from "@/components/Notice";
+import { StartedBy } from "@/components/provenance";
 import { SchemaChangeCard } from "@/components/SchemaChanges";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +38,7 @@ export function RunPage() {
   const agentId = Number(useParams().agentId);
   const runId = Number(useParams().runId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const run = useLoad(useCallback(() => api.getRun(agentId, runId), [agentId, runId]));
   const [tab, setTab] = useState<Tab>("conversation");
@@ -45,7 +55,7 @@ export function RunPage() {
     try {
       await api.deleteRun(agentId, runId);
       reloadList();
-      navigate(`/agents/${agentId}?tab=runs`);
+      navigate(listHref(`/agents/${agentId}/runs`));
     } catch (err) {
       setDeleteError(describeError(err));
     }
@@ -55,22 +65,18 @@ export function RunPage() {
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <Button asChild variant="ghost" size="icon" aria-label="Back to agent">
-          <Link to={`/agents/${agentId}?tab=runs`}>
+          <Link to={listHref(`/agents/${agentId}/runs`)}>
             <ArrowLeft />
           </Link>
         </Button>
         <div className="min-w-0 flex-1">
           <div className="text-muted-foreground truncate text-xs">
             {run.data.agent_name} ·{" "}
-            {/* The agent's versions are its owner's to read. */}
-            {run.data.is_owner ? (
-              <Link to={`/agents/${agentId}/versions/${run.data.agent_version}`} className="hover:underline">
-                v{run.data.agent_version}
-              </Link>
-            ) : (
-              `v${run.data.agent_version}`
-            )}{" "}
+            <Link to={listHref(`/agents/${agentId}/versions/${run.data.agent_version}`)} className="hover:underline">
+              v{run.data.agent_version}
+            </Link>{" "}
             · run #{runId} · started {formatDate(run.data.created_at)}
+            <StartedBy run={run.data} before=" · " className="align-bottom" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{run.data.title ?? "New run"}</span>
@@ -98,11 +104,9 @@ export function RunPage() {
             </button>
           ))}
         </div>
-        {run.data.is_owner && (
-          <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
-            <Trash2 />
-          </Button>
-        )}
+        <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
+          <Trash2 />
+        </Button>
       </header>
       {deleteError && (
         <div className="px-4 pt-2">
@@ -203,7 +207,7 @@ function RunChat({
           <div ref={bottomRef} />
         </div>
       </div>
-      {run.is_owner && run.waiting && !busy && (
+      {run.waiting && !busy && (
         <div className="mx-auto w-full max-w-3xl px-4 pb-2">
           <Notice label="Waiting" busy className="px-3 py-2">
             {run.schema_change_requests.some((r) => r.status === "pending")
@@ -212,25 +216,16 @@ function RunChat({
           </Notice>
         </div>
       )}
-      {run.is_owner ? (
-        <ChatComposer
-          id="run-input"
-          disabled={run.waiting}
-          placeholder="Message this agent…"
-          value={input}
-          onChange={setInput}
-          busy={busy}
-          onStop={stop}
-          onSubmit={submit}
-        />
-      ) : (
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-          <Notice label="Read only" className="px-3 py-2">
-            {run.chat_name ? `Started from ${run.chat_name}. ` : ""}You can read this run as a member of
-            the chat; only its owner can message the agent.
-          </Notice>
-        </div>
-      )}
+      <ChatComposer
+        id="run-input"
+        disabled={run.waiting}
+        placeholder="Message this agent…"
+        value={input}
+        onChange={setInput}
+        busy={busy}
+        onStop={stop}
+        onSubmit={submit}
+      />
     </div>
   );
 }

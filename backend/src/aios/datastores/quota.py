@@ -125,19 +125,20 @@ def upload_refusal(store: Session, filename: str, size: int) -> str | None:
     # Ingesting it writes its chunks to the database.
     if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
-            f"Your data store is full: its data takes up {_of(db_bytes, db_quota)}, so documents"
-            " can't be uploaded."
+            "The organisation's data store is full: its data takes up"
+            f" {_of(db_bytes, db_quota)}, so documents can't be uploaded."
         )
     files_bytes = store.scalar(_FILES_BYTES)
     if files_bytes >= files_quota:
         return (
-            f"Your data store is full: its documents use {_of(files_bytes, files_quota)}."
-            " Delete some to make room."
+            "The organisation's data store is full: its documents use"
+            f" {_of(files_bytes, files_quota)}. Delete some to make room."
         )
     if files_bytes + size > files_quota:
         return (
-            f"There's no room for {filename}: your documents use {_of(files_bytes, files_quota)},"
-            f" and it's {format_bytes(size)}. Delete some to make room."
+            f"There's no room for {filename}: the organisation's documents use"
+            f" {_of(files_bytes, files_quota)}, and it's {format_bytes(size)}. Delete some to make"
+            " room."
         )
     return None
 
@@ -152,16 +153,17 @@ def write_refusal(store: Session) -> str | None:
     )
     if (db_bytes := _db_full(store, db_quota)) is not None:
         return (
-            f"The user's data store is full: its data takes up {_of(db_bytes, db_quota)}, so rows"
-            " can't be inserted or updated. Reading still works, and deleting rows makes room."
-            " Tell the user: the Data page shows their usage."
+            "The organisation's data store is full: its data takes up"
+            f" {_of(db_bytes, db_quota)}, so rows can't be inserted or updated. Reading still"
+            " works, and deleting rows makes room. Tell the user: the Data page shows its usage."
         )
     files_bytes = store.scalar(_FILES_BYTES)
     if files_bytes >= files_quota:
         return (
-            f"The user's data store is full: its documents use {_of(files_bytes, files_quota)},"
-            " so rows can't be inserted or updated. Reading and deleting rows still work. Tell"
-            " the user: deleting documents on the Data page makes room."
+            "The organisation's data store is full: its documents use"
+            f" {_of(files_bytes, files_quota)}, so rows can't be inserted or updated. Reading and"
+            " deleting rows still work. Tell the user: deleting documents on the Data page makes"
+            " room."
         )
     return None
 

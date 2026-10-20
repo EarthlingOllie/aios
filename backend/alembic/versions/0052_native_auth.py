@@ -5,12 +5,16 @@ columns (`github_id`, `login`, `name`, `avatar_url`) and gains a first and last 
 (normalised) email, a password hash and a session version.
 
 The GitHub-era users can't be carried over (they have no password, and maybe no email), so
-they're deleted, with everything they own. Their data stores' rows go with them, but not the
-stores' databases and roles, which only the provisioner may drop: reset a local database that
-had any (see the README's Auth).
+they're deleted, with everything their organisations own: with every user gone, every
+organisation is left with no members, and nobody could ever see it again. Each organisation's
+data store goes `deleting`, with no organisation, as deleting an empty organisation does
+(`aios.organisations.delete_empty`), for the provisioner's sweep to drop its database, roles
+and files (`aios.datastores.provision.delete_deleting`); then the organisations go, cascading
+to what's in them (what pins another's versions first: workflows pin agents', agents pin
+skills'), and the users, cascading to their memberships, chat memberships and notifications.
 
-Revision ID: 0029
-Revises: 0028
+Revision ID: 0052
+Revises: 0051
 Create Date: 2026-10-20 09:00:00
 """
 
@@ -20,14 +24,23 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0029"
-down_revision: str | None = "0028"
+revision: str = "0052"
+down_revision: str | None = "0051"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _delete_everyone() -> None:
+    op.execute(
+        "UPDATE data_stores SET status = 'deleting', owner_organisation_id = NULL"
+        " WHERE status NOT IN ('deleting', 'deleted')"
+    )
+    for table in ("workflows", "agents", "skills", "organisations", "users"):
+        op.execute(f"DELETE FROM {table}")
+
+
 def upgrade() -> None:
-    op.execute("DELETE FROM users")
+    _delete_everyone()
     op.drop_constraint("users_github_id_key", "users", type_="unique")
     for column in ("github_id", "login", "name", "avatar_url", "email"):
         op.drop_column("users", column)
@@ -44,7 +57,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Native users can't become GitHub ones either.
-    op.execute("DELETE FROM users")
+    _delete_everyone()
     op.drop_constraint("users_email_key", "users", type_="unique")
     for column in ("first_name", "last_name", "email", "password_hash", "session_version"):
         op.drop_column("users", column)

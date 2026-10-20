@@ -10,7 +10,7 @@ const message = (page: Page, text: string | RegExp) =>
 const composer = (page: Page) => page.getByRole("textbox", { name: "Message", exact: true });
 const suggestions = (page: Page) => page.getByRole("listbox", { name: "Mention" });
 
-test("the owner adds their agents and workflows, grouped by kind", async ({ page }) => {
+test("the owner adds the organisation's agents and workflows, grouped by kind", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   const agent = api.addAgent("Review");
@@ -18,7 +18,8 @@ test("the owner adds their agents and workflows, grouped by kind", async ({ page
   api.addWorkflow("Digest");
   await page.goto(`/chats/${chat.id}`);
 
-  const members = page.getByRole("region", { name: "Members" });
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("No agents yet")).toBeVisible();
   await members.getByLabel("Add an agent").selectOption("Review");
   await members.getByRole("button", { name: "Add agent" }).click();
@@ -46,7 +47,8 @@ test("a member who isn't the owner can't add agents or workflows", async ({ page
   api.addChatMember(chat, api.me);
   api.addAgent("Review");
   await page.goto(`/chats/${chat.id}`);
-  const members = page.getByRole("region", { name: "Members" });
+  await page.getByRole("tab", { name: /Members/ }).click();
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("No agents yet")).toBeVisible();
   await expect(members.getByLabel("Add an agent")).toHaveCount(0);
 });

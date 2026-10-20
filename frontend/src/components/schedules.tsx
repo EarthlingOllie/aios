@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { Bot, CalendarClock, Pencil, Plus, Trash2, Workflow } from "lucide-react";
 
 import { ErrorBanner, Field, formatDate, Section, selectClass, useLoad } from "@/components/crud";
+import { ProvenanceLine } from "@/components/provenance";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -327,7 +328,8 @@ export function ScheduleRow({
 }) {
   const t = trigger;
   const TargetIcon = t.target_kind === "agent" ? Bot : Workflow;
-  const targetHref = `/${t.target_kind === "agent" ? "agents" : "workflows"}/${t.target_id}`;
+  // The target's Schedule tab, where this schedule is.
+  const targetHref = `/${t.target_kind === "agent" ? "agents" : "workflows"}/${t.target_id}/schedule`;
   const lastRunHref = runHref(t);
   return (
     <li className={cn("flex items-start gap-3 px-3 py-2.5", !t.enabled && "opacity-60")} data-testid="schedule-row">
@@ -367,6 +369,7 @@ export function ScheduleRow({
         {t.last_status === "failed" && t.last_error && (
           <p className="text-destructive text-xs">{t.last_error}</p>
         )}
+        <ProvenanceLine of={t} />
       </div>
       <div className="flex shrink-0 items-center gap-1">
         <label className="text-muted-foreground mr-1 flex items-center gap-1 text-xs">

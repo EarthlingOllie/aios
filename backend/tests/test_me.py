@@ -19,6 +19,7 @@ def test_editing_both_names(user):
         "first_name": "Alice",
         "last_name": "Smith",
         "email": user.email,
+        "organisation": resp.json()["organisation"],
     }
     assert client.get("/api/me").json() == resp.json()
 
@@ -109,11 +110,12 @@ def test_changing_the_email_moves_sign_in_to_the_new_one(user):
     resp = change_email(client, new_email)
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {
+    assert resp.json() | {"organisation": None} == {
         "id": user.id,
         "first_name": "Test",
         "last_name": "User",
         "email": new_email,
+        "organisation": None,
     }
     assert client.get("/api/me").json()["email"] == new_email
     assert sign_in(new_email).status_code == 200

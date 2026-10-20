@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import make_user
+from conftest import delete_user, make_user
 
 from aios.auth import current_user
 from aios.cron import next_run
@@ -129,8 +129,7 @@ def test_targets_must_be_the_users_live_agents_or_workflows(api, client, db):
         resp = client.post("/api/triggers", json=schedule("workflow", workflow["id"]))
         assert resp.status_code == 422
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_list_is_upcoming_first_and_filters_by_target(api):
@@ -227,8 +226,7 @@ def test_other_users_cannot_see_or_change_triggers(api, client, db):
         )
         assert client.delete(f"/api/triggers/{t['id']}").status_code == 404
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_preview(api):

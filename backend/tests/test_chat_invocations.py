@@ -5,7 +5,8 @@ import asyncio
 import pytest
 from fake_model import model, use_model
 from sqlalchemy import func, select, update
-from test_chats import add, make_chat, messages
+from test_chats import add, make_chat, messages, signed_in_as
+from test_organisation_scoping import member  # noqa: F401
 from test_workflow_runs import abandon, agents, echo
 from test_workflows import agent_node, make_workflow
 
@@ -305,3 +306,29 @@ def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(a
     assert db.scalar(select(func.count()).where(ChatInvocation.chat_id == chat["id"])) == 0
     [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
     assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
+
+
+def test_a_run_going_in_a_private_chat_deleted_as_its_owner_leaves_goes_on_without_it(
+    api,
+    db,
+    user,
+    member,  # noqa: F811
+    queued,
+):
+    """A private chat its owner leaves with nobody else in it is deleted
+    (`organisations.hand_over_chats`) as its owner deleting it is: with its messages and
+    invocations, and a run one started, not yet finished, goes on and finishes without it."""
+    with signed_in_as(member):
+        wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
+        chat = make_chat(api, "Mine", visibility="private")
+        add(api, chat, "workflow", wf)
+        say(api, chat, "Go", wf)
+        assert api.post("/api/organisation/leave").status_code == 200
+    assert db.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
+    assert db.scalar(select(func.count()).where(ChatInvocation.chat_id == chat["id"])) == 0
+
+    with use_model(echo()):
+        asyncio.run(execute_run(queued[0]))
+    [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
+    assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
+    assert db.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0

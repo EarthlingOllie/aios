@@ -67,7 +67,7 @@ test("the Overview reads usage again while it's open", async ({ page }) => {
 test("a store at its file cap can't take uploads, here or in the chat", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   await expect(page.getByRole("alert", { name: "Storage" })).toContainText(
@@ -82,7 +82,7 @@ test("a store at its file cap can't take uploads, here or in the chat", async ({
 test("a store at its database cap can't take uploads either", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: GB };
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   await expect(page.getByRole("alert", { name: "Storage" })).toContainText(
@@ -94,7 +94,7 @@ test("deleting documents at the file cap lets uploads in again", async ({ page }
   const api = await fakeApi(page);
   api.addDocument("big.pdf");
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 
   page.once("dialog", (dialog) => dialog.accept());
@@ -106,7 +106,7 @@ test("deleting documents at the file cap lets uploads in again", async ({ page }
 
 test("uploads refused for the cap say why, each of them, and uploads stop", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
   // Filled (from the chat, say) since the page last asked.
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
@@ -118,8 +118,8 @@ test("uploads refused for the cap say why, each of them, and uploads stop", asyn
 
   const errors = page.getByRole("alert").filter({ hasText: "big.md" });
   await expect(errors).toContainText(
-    "big.md: Your data store is full: its documents use 5.0 GB of the 5.0 GB allowed. Delete some to make room.",
+    "big.md: The organisation's data store is full: its documents use 5.0 GB of the 5.0 GB allowed. Delete some to make room.",
   );
-  await expect(errors).toContainText("more.md: Your data store is full");
+  await expect(errors).toContainText("more.md: The organisation's data store is full");
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });

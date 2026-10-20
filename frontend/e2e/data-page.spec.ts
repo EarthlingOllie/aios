@@ -29,7 +29,7 @@ test("Data is in the navigation and opens on the Overview", async ({ page }) => 
     "true",
   );
   await expect(overview(page)).toContainText("Ready");
-  await expect(overview(page)).toContainText("Your data store is ready.");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.");
 });
 
 test("the Overview says a store is being set up, until it's ready", async ({ page }) => {
@@ -38,10 +38,10 @@ test("the Overview says a store is being set up, until it's ready", async ({ pag
   await page.goto("/data");
 
   await expect(overview(page)).toContainText("Being set up");
-  await expect(overview(page)).toContainText("We're setting up your data store.");
+  await expect(overview(page)).toContainText("We're setting up the organisation's data store.");
 
   api.dataStoreStatus = "ready";
-  await expect(overview(page)).toContainText("Your data store is ready.");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.");
 });
 
 test("the Overview says a store couldn't be set up", async ({ page }) => {
@@ -50,7 +50,7 @@ test("the Overview says a store couldn't be set up", async ({ page }) => {
   await page.goto("/data");
 
   await expect(overview(page)).toContainText("Failed");
-  await expect(overview(page)).toContainText("Your data store couldn't be set up.");
+  await expect(overview(page)).toContainText("The organisation's data store couldn't be set up.");
 });
 
 test("a store whose status can't be read says so, and recovers when it can", async ({ page }) => {
@@ -58,13 +58,13 @@ test("a store whose status can't be read says so, and recovers when it can", asy
   api.dataStoreFails = true;
   await page.goto("/data");
 
-  await expect(overview(page)).toContainText("Couldn't check your data store");
+  await expect(overview(page)).toContainText("Couldn't check the organisation's data store");
   await expect(overview(page)).toContainText("Trying again…");
 
   // It keeps asking, so the page catches up once the server answers again.
   api.dataStoreFails = false;
-  await expect(overview(page)).toContainText("Your data store is ready.", { timeout: 10_000 });
-  await expect(overview(page)).not.toContainText("Couldn't check your data store");
+  await expect(overview(page)).toContainText("The organisation's data store is ready.", { timeout: 10_000 });
+  await expect(overview(page)).not.toContainText("Couldn't check the organisation's data store");
 });
 
 test("Documents and the chat's panel say when the store's status can't be read", async ({
@@ -72,14 +72,14 @@ test("Documents and the chat's panel say when the store's status can't be read",
 }) => {
   const api = await fakeApi(page);
   api.dataStoreFails = true;
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   const notice = page.getByRole("status", { name: "Data store" });
-  await expect(notice).toContainText("Couldn't check your data store");
+  await expect(notice).toContainText("Couldn't check the organisation's data store");
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 
   await page.getByRole("link", { name: "Chat" }).first().click();
-  await expect(notice).toContainText("Couldn't check your data store");
+  await expect(notice).toContainText("Couldn't check the organisation's data store");
 
   api.dataStoreFails = false;
   await expect(notice).toBeHidden({ timeout: 10_000 });
@@ -92,11 +92,11 @@ test("each section has its own URL", async ({ page }) => {
   await page.goto("/data");
 
   await page.getByRole("tab", { name: "Documents" }).click();
-  await expect(page).toHaveURL(/\/data\?tab=documents$/);
+  await expect(page).toHaveURL(/\/data\/documents$/);
   await expect(row(page, "plan.md")).toBeVisible();
 
   // A link (or a reload) opens straight on the section.
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(page.getByRole("tab", { name: "Documents" })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -110,7 +110,7 @@ test("each section has its own URL", async ({ page }) => {
 
 test("an empty store invites an upload", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByText("No documents yet.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
@@ -120,10 +120,10 @@ test("an empty store invites an upload", async ({ page }) => {
 test("a store being set up can't take uploads until it's ready", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "provisioning";
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
-    "Setting up your data store",
+    "Setting up the organisation's data store",
   );
   const upload = page.getByRole("button", { name: "Upload" });
   await expect(upload).toBeDisabled();
@@ -139,10 +139,10 @@ test("a store being set up can't take uploads until it's ready", async ({ page }
 test("a store that couldn't be set up can't take uploads", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "failed";
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 });
@@ -154,7 +154,7 @@ test("lists each document's status, error, chunk count, size and upload time", a
   api.addDocument("report.pdf", { chunk_count: 12, size_bytes: 2.5 * 1024 * 1024 });
   api.addDocument("scan.png", { status: "failed", chunk_count: 0, error: "Unsupported image" });
   api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(documentList(page).getByRole("listitem")).toHaveCount(3);
   await expect(row(page, "report.pdf")).toContainText("Ready");
@@ -172,10 +172,27 @@ test("lists each document's status, error, chunk count, size and upload time", a
   await expect(row(page, "slides.pptx")).toContainText("Ready");
 });
 
+test("each document says which member uploaded it", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.addDocument("old.pdf");
+  api.addDocument("plan.md", {
+    uploaded_by: { id: 2, first_name: "Sam", last_name: "Member" },
+  });
+  await page.goto("/data/documents");
+
+  await expect(row(page, "plan.md")).toContainText("by Sam Member");
+  // One from before uploads were recorded says only when.
+  await expect(row(page, "old.pdf")).not.toContainText(" by ");
+
+  // An upload is the signed-in member's.
+  await page.locator('input[type="file"]').setInputFiles([file("notes.md")]);
+  await expect(row(page, "notes.md")).toContainText("by Terry Tester");
+});
+
 test("each document links to its download", async ({ page }) => {
   const api = await fakeApi(page);
   const doc = api.addDocument("Résumé (final), 2026.pdf");
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   const link = row(page, doc.filename).getByRole("link", { name: `Download ${doc.filename}` });
   // The API's address, never a file's link itself: the API mints one per click, which saves
@@ -190,7 +207,7 @@ test("an upload from the Data page shows its status until it's ready or failed",
 }) => {
   const api = await fakeApi(page);
   api.ingestAs = "pending";
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await page.locator('input[type="file"]').setInputFiles([file("notes.md"), file("broken.md")]);
   await expect(row(page, "notes.md")).toContainText("Waiting");
@@ -227,7 +244,7 @@ test("uploads still in flight when you switch tabs keep their progress and error
   const api = await fakeApi(page);
   api.tooLarge.add("huge.md");
   api.holdUploads();
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(page.getByText("No documents yet.")).toBeVisible();
 
   await page
@@ -297,7 +314,7 @@ test("deleting a document removes it from the list and from search", async ({ pa
   await page.goto("/search?q=drop");
   await expect(page.getByRole("region", { name: "Results" })).toContainText("drop.md");
 
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete drop.md" }).click();
   await expect(row(page, "drop.md")).toHaveCount(0);
@@ -342,11 +359,11 @@ test("a store that stops being ready is noticed on opening the Data or Search pa
   // Nothing polls a ready store, so only opening a page that shows it finds out.
   api.dataStoreStatus = "failed";
   await page.getByRole("link", { name: "Data" }).first().click();
-  await expect(overview(page)).toContainText("Your data store couldn't be set up.");
+  await expect(overview(page)).toContainText("The organisation's data store couldn't be set up.");
 
   await page.getByRole("link", { name: "Search" }).first().click();
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
-    "Your data store couldn't be set up",
+    "The organisation's data store couldn't be set up",
   );
 });
 
@@ -356,7 +373,7 @@ test("a search that matches nothing points to the Data page's Documents", async 
   await expect(page.getByText("No passages matched.")).toBeVisible();
 
   await page.getByRole("link", { name: "Data page" }).click();
-  await expect(page).toHaveURL(/\/data\?tab=documents$/);
+  await expect(page).toHaveURL(/\/data\/documents$/);
   await expect(page.getByText("No documents yet.")).toBeVisible();
 });
 
@@ -365,7 +382,7 @@ test("deleting a document twice, before the list catches up, isn't an error", as
 }) => {
   const api = await fakeApi(page);
   api.addDocument("drop.md");
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(row(page, "drop.md")).toBeVisible();
 
   // The list is slow to answer after the delete, so the row stays up to be clicked again.
@@ -388,7 +405,7 @@ test("deleting a document twice, before the list catches up, isn't an error", as
 test("cancelling a delete keeps the document", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("keep.md");
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Delete keep.md" }).click();
@@ -400,7 +417,7 @@ test("a slow list shows it's loading, not that there are no documents", async ({
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
   api.documentsDelay = 1500;
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByLabel("Loading documents")).toBeVisible();
   await expect(page.getByText("No documents yet")).toBeHidden();
@@ -413,10 +430,10 @@ test("a busy store says so, and the list loads once it's free", async ({ page })
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
   api.dataStoreBusy = true;
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
 
   await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
-    "Your data store is busy.",
+    "The organisation's data store is busy.",
   );
   await expect(page.getByText("No documents yet.")).toBeHidden();
 
@@ -427,20 +444,20 @@ test("a busy store says so, and the list loads once it's free", async ({ page })
 
 test("an upload refused by a busy store says so", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(page.getByText("No documents yet.")).toBeVisible();
 
   api.dataStoreBusy = true;
   await page.locator('input[type="file"]').setInputFiles(file("notes.md"));
   await expect(page.getByRole("alert")).toContainText(
-    "notes.md: Your data store is busy. Try again in a moment.",
+    "notes.md: The organisation's data store is busy. Try again in a moment.",
   );
 });
 
 test("a list refused for good says so once, without asking again", async ({ page }) => {
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(row(page, "report.pdf")).toBeVisible();
 
   // The session expires: the next read of the list is refused, and so would every later one be.
@@ -466,7 +483,7 @@ test("a list refused for good stops polling, even with an ingest still running",
 }) => {
   const api = await fakeApi(page);
   api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(row(page, "slides.pptx")).toContainText("Processing");
 
   let reads = 0;
@@ -491,7 +508,7 @@ test("a slow poll that answers after a delete doesn't bring the document back", 
   // Timers only move when the test says, so no other poll can hide (or cause) a stale list.
   await page.clock.install({ time: START });
   await page.clock.pauseAt(START);
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(row(page, "drop.md")).toBeVisible();
 
   // A poll reads the list (drop.md still in it), but its answer is slow to arrive.
@@ -518,7 +535,7 @@ test("a slow list doesn't stack up polls behind it", async ({ page }) => {
   api.addDocument("slides.pptx", { status: "processing", chunk_count: 0 });
   await page.clock.install({ time: START });
   await page.clock.pauseAt(START);
-  await page.goto("/data?tab=documents");
+  await page.goto("/data/documents");
   await expect(row(page, "slides.pptx")).toBeVisible();
 
   // The store is slow to answer: while a read is out, no more are sent.

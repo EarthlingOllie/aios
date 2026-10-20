@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeTab, keyTarget } from "@/lib/tabs";
+import { activeTab, keyTarget, tabHref, tabRedirect } from "@/lib/tabs";
 
 const ids = ["context", "runs", "versions"];
 
@@ -37,5 +37,37 @@ describe("keyTarget", () => {
   it("ignores other keys", () => {
     expect(keyTarget("Enter", 1, 3)).toBeNull();
     expect(keyTarget("ArrowDown", 1, 3)).toBeNull();
+  });
+});
+
+describe("tabHref", () => {
+  it("is the page's own path for the first tab, and a segment under it for the others", () => {
+    expect(tabHref("/agents/3", ids, "context", "")).toBe("/agents/3");
+    expect(tabHref("/agents/3", ids, "runs", "")).toBe("/agents/3/runs");
+  });
+
+  it("keeps the query, such as the list's search", () => {
+    expect(tabHref("/agents/3", ids, "runs", "?q=web&sort=runs")).toBe("/agents/3/runs?q=web&sort=runs");
+    expect(tabHref("/agents/3", ids, "context", "?q=web")).toBe("/agents/3?q=web");
+  });
+});
+
+describe("tabRedirect", () => {
+  it("is nothing for the page's own path or a known tab's", () => {
+    expect(tabRedirect("/agents/3", ids, undefined, "?q=web")).toBeNull();
+    expect(tabRedirect("/agents/3", ids, "runs", "")).toBeNull();
+  });
+
+  it("sends the first tab's segment, and an unknown one, to the page's own path", () => {
+    expect(tabRedirect("/agents/3", ids, "context", "?q=web")).toBe("/agents/3?q=web");
+    expect(tabRedirect("/agents/3", ids, "nope", "")).toBe("/agents/3");
+  });
+
+  it("turns an old ?tab= link into the tab's path, keeping the rest of the query", () => {
+    expect(tabRedirect("/agents/3", ids, undefined, "?tab=runs&q=web")).toBe("/agents/3/runs?q=web");
+    expect(tabRedirect("/agents/3", ids, undefined, "?tab=context")).toBe("/agents/3");
+    expect(tabRedirect("/data", ["overview", "changes"], undefined, "?tab=changes&request=7")).toBe(
+      "/data/changes?request=7",
+    );
   });
 });

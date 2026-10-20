@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentDataStore
+from aios.api.organisation import UserOut, users_out
+from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
 from aios.datastores import files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus
@@ -35,6 +36,9 @@ class DocumentOut(BaseModel):
     error: str | None
     chunk_count: int
     size_bytes: int
+    # The member who uploaded it; null for documents from before it was recorded, and once
+    # their account is gone.
+    uploaded_by: UserOut | None
     created_at: datetime
 
 
@@ -67,14 +71,15 @@ class DataStoreOut(BaseModel):
 
 @router.get("/data-store", response_model=DataStoreOut)
 def data_store(store_id: CurrentDataStore):
-    """The user's data store's status (documents and search wait until it's `ready`), and its
-    usage against its storage caps."""
+    """The organisation's data store's status (documents and search wait until it's `ready`),
+    and its usage against its storage caps."""
     status, usage = quota.status_and_usage(store_id)
     return DataStoreOut(status=status, usage=UsageOut(**asdict(usage)))
 
 
 @router.get("/documents", response_model=list[DocumentOut])
 def list_documents(store_id: CurrentDataStore):
+    """The organisation's documents, newest first, with who uploaded each."""
     with store_session(store_id, "ro") as db:
         rows = db.execute(
             select(Document, func.count(Chunk.id))
@@ -82,6 +87,8 @@ def list_documents(store_id: CurrentDataStore):
             .group_by(Document.id)
             .order_by(Document.created_at.desc())
         ).all()
+    # Once the store's session is done: the request's own was closed when the store was found.
+    by = users_out({d.uploaded_by for d, _ in rows if d.uploaded_by is not None})
     return [
         DocumentOut(
             id=d.id,
@@ -90,6 +97,7 @@ def list_documents(store_id: CurrentDataStore):
             error=d.error,
             chunk_count=n,
             size_bytes=d.size_bytes,
+            uploaded_by=by.get(d.uploaded_by) if d.uploaded_by is not None else None,
             created_at=d.created_at,
         )
         for d, n in rows
@@ -97,7 +105,7 @@ def list_documents(store_id: CurrentDataStore):
 
 
 @router.post("/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-def upload_document(file: UploadFile, store_id: CurrentDataStore):
+def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataStore):
     # Plain `def`: FastAPI runs it in the threadpool, so the blocking upload to S3, DB commits
     # and broker publish below don't stall the event loop (SSE streams, health checks).
     # The file has been spooled (to disk, if large), so its size is known before it's sent on
@@ -134,6 +142,7 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
                 s3_key=key,
                 size_bytes=stored.size_bytes,
                 sha256=stored.sha256,
+                uploaded_by=user.id,
             )
             db.add(doc)
             db.flush()
@@ -164,6 +173,7 @@ def upload_document(file: UploadFile, store_id: CurrentDataStore):
         error=None,
         chunk_count=0,
         size_bytes=doc.size_bytes,
+        uploaded_by=UserOut.model_validate(user, from_attributes=True),
         created_at=doc.created_at,
     )
 
@@ -190,7 +200,7 @@ def _delete_unkept_file(key: str) -> None:
 def download_document(document_id: DbId, store_id: CurrentDataStore) -> RedirectResponse:
     """Redirects to a link that downloads the document's file under its original name. The link
     is minted for this download, and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS`."""
-    # Only the user's own store is looked in, as its read-only role.
+    # Only the organisation's own store is looked in, as its read-only role.
     with store_session(store_id, "ro") as db:
         doc = db.get(Document, document_id)
         if doc is None:

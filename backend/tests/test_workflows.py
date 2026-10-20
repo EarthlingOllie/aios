@@ -3,7 +3,7 @@ import threading
 from contextlib import contextmanager
 
 import pytest
-from conftest import make_user
+from conftest import delete_user, made_by, make_user, org_of
 from fastapi import HTTPException
 from sqlalchemy import event, func
 from sqlalchemy.exc import IntegrityError
@@ -321,7 +321,7 @@ def test_invalid_workflows_are_rejected(api, db):
 
     agent = make_agent(api, "mine")
     other = make_user(db, "someone-else")
-    theirs = Agent(owner_id=other.id, name="theirs")
+    theirs = Agent(**made_by(db, other), name="theirs")
     db.add(theirs)
     their_version = save_agent_version(
         db, theirs, base_prompt="", skills=[], note=None, user_id=other.id
@@ -342,8 +342,7 @@ def test_invalid_workflows_are_rejected(api, db):
         make_workflow(api, "dup")
         assert api.post("/api/workflows", json=workflow_body("dup")).status_code == 409
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 @contextmanager
@@ -451,7 +450,7 @@ def test_only_current_versions_block_deletion(api):
     make_workflow(api, "Research report")
     resp = api.put(outer_url, json=workflow_body("Research report"))
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "You already have a workflow with that name."
+    assert resp.json()["detail"] == "The organisation already has a workflow with that name."
 
 
 def test_restoring_a_version_whose_targets_are_live_still_works(api):
@@ -468,7 +467,7 @@ def test_restoring_a_version_whose_targets_are_live_still_works(api):
 
 def test_unique_name_only_maps_the_name_index(db, user):
     """Any other integrity error, e.g. a pin of a version that doesn't exist, isn't a name clash."""
-    workflow = Workflow(owner_id=user.id, name="Broken")
+    workflow = Workflow(**made_by(db, user), name="Broken")
     db.add(workflow)
     index = workflows_api.WORKFLOW_NAME_INDEX
     with pytest.raises(IntegrityError, match="agent_version_id"), unique_name(db, "a", index):
@@ -483,10 +482,10 @@ def test_unique_name_only_maps_the_name_index(db, user):
         db.commit()  # the deferred foreign key fails here
     db.rollback()
 
-    db.add(Workflow(owner_id=user.id, name="Taken"))
+    db.add(Workflow(**made_by(db, user), name="Taken"))
     db.commit()
     with pytest.raises(HTTPException) as caught, unique_name(db, "a workflow", index):
-        db.add(Workflow(owner_id=user.id, name="Taken"))
+        db.add(Workflow(**made_by(db, user), name="Taken"))
         db.commit()
     assert caught.value.status_code == 409
 
@@ -503,7 +502,7 @@ def held_save(session, user, workflow_id: int, nodes: list[dict]):
     """A workflow save that has checked and locked its graph, but not committed yet."""
     workflow = session.get(Workflow, workflow_id)
     body = workflows_api.WorkflowIn(**workflow_body(workflow.name, nodes))
-    specs, edges = workflows_api.resolve_graph(session, user.id, body, workflow)
+    specs, edges = workflows_api.resolve_graph(session, org_of(session, user), body, workflow)
     workflows_api.lock_new_graph(session, specs, workflow)
     return lambda: save_workflow_version(
         session, workflow, nodes=specs, edges=edges, note=None, user_id=user.id

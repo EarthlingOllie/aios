@@ -27,7 +27,7 @@ def build(config: HistorySearchConfig) -> list[AgentTool]:
     # (`aios.datastores.history`): by keyword always, and by meaning once embedding is on.
     @tool(parse_docstring=True)
     async def search_history(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
-        """Search the user's past runs (earlier conversations with their agents, including
+        """Search the organisation's past runs (earlier conversations with its agents, including
         workflows' agent steps) with hybrid (semantic + keyword) retrieval.
 
         Each result is a message from a past run: who said it (user or assistant), its text,
@@ -53,8 +53,8 @@ register(
     ToolSpec(
         key="history_search",
         name="Run history search",
-        description="Search your past runs exported to your data store, combining semantic and"
-        " keyword matching.",
+        description="Search the organisation's past runs exported to its data store, combining"
+        " semantic and keyword matching.",
         config_model=HistorySearchConfig,
         build=build,
     )

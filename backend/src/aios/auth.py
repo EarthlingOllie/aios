@@ -6,6 +6,11 @@ just sends the cookie. Bumping a user's `session_version` signs out every sessio
 
 Hashing a password takes tens of milliseconds of CPU, so the endpoints that do are sync: FastAPI
 runs them in the threadpool.
+
+Starting a session puts the user in their organisation (`aios.organisations.ensure_membership`):
+registering makes them a personal one, or, from an invitation link's page (the link's token in
+the request), joins them to the link's organisation instead. A link that no longer opens is
+ignored, and the invite page they're sent back to says why.
 """
 
 import uuid
@@ -14,16 +19,24 @@ from urllib.parse import urlsplit
 
 from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import AfterValidator, BaseModel, StringConstraints, ValidationInfo, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from aios import ratelimits
+from aios import organisations, ratelimits
 from aios.config import get_settings
 from aios.datastores import data_store_for, data_store_for_request
 from aios.db import DB
-from aios.models import User
+from aios.models import Organisation, OrganisationInvite, User
 from aios.passwords import hash_password, verify_password
 
 
@@ -50,6 +63,8 @@ router = APIRouter(prefix="/api/auth", dependencies=[Depends(same_origin)])
 PASSWORD_MIN_LENGTH = 12
 # Hashing a very long password is costly, so a longer one is refused rather than hashed.
 PASSWORD_MAX_LENGTH = 256
+# The longest invitation link token a registration takes (a real one is 43 characters).
+INVITE_TOKEN_MAX = 256
 
 
 def normalise_email(email: str) -> str:
@@ -94,8 +109,8 @@ Email = Annotated[str, AfterValidator(normalise_email)]
 NewPassword = Annotated[str, AfterValidator(check_new_password)]
 
 
-class MeOut(BaseModel):
-    """The signed-in user, as `GET /api/me` and signing in answer."""
+class AccountOut(BaseModel):
+    """A user's account details, as the dev picker lists them."""
 
     id: int
     first_name: str
@@ -103,19 +118,58 @@ class MeOut(BaseModel):
     email: str
 
 
-def me_out(user: User) -> MeOut:
-    return MeOut(id=user.id, first_name=user.first_name, last_name=user.last_name, email=user.email)
+def account_out(user: User) -> AccountOut:
+    return AccountOut(
+        id=user.id, first_name=user.first_name, last_name=user.last_name, email=user.email
+    )
 
 
-def start_session(request: Request, user: User) -> None:
-    """Sign `user` in on this request: the one way a session starts. Their data store is made
-    (and queued to be provisioned) if it's missing, anything left in the session is dropped, and
-    the fresh one holds their id and current `session_version`. It blocks (on the database), so
-    call it from a sync endpoint."""
-    data_store_for(user.id)
+class OrganisationSummaryOut(BaseModel):
+    id: int
+    name: str
+    # Made for one user on sign-up (or on leaving another organisation).
+    personal: bool
+    # Whether the signed-in user is its creator, who alone may rename it.
+    is_creator: bool
+
+
+def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
+    return OrganisationSummaryOut(
+        id=org.id, name=org.name, personal=org.personal, is_creator=org.created_by == user.id
+    )
+
+
+class MeOut(AccountOut):
+    """The signed-in user and the organisation they're in, as `GET /api/me` and signing in
+    answer (the shell shows both)."""
+
+    organisation: OrganisationSummaryOut
+
+
+def me_out(db: Session, user: User) -> MeOut:
+    org = organisations.membership_of(db, user.id)
+    if org is None:
+        # Starting a session and leaving each put a user in one (see `current_organisation`).
+        raise RuntimeError(f"user {user.id} is in no organisation")
+    return MeOut(**account_out(user).model_dump(), organisation=summary_out(org, user))
+
+
+def start_session(
+    request: Request, db: Session, user: User, invite: OrganisationInvite | None = None
+) -> Organisation:
+    """Sign `user` in on this request: the one way a session starts. They're put in their
+    organisation if they're in none (`organisations.ensure_membership`: the open invitation
+    link's `invite`, else a new personal one), whose data store is made (and queued to be
+    provisioned) if it's missing, and `db` is committed. Then anything left in the session is
+    dropped, and the fresh one holds their id and current `session_version`. It blocks (on the
+    database), so call it from a sync endpoint. Answers the user's organisation."""
+    org = organisations.ensure_membership(db, user, invite)
+    data_store_for(org.id, db)
+    db.commit()
     request.session.clear()
     request.session["user_id"] = user.id
     request.session["session_version"] = user.session_version
+    return org
 
 
 # A request's session has ended (or never started). The SPA tells it apart from other 401s (a
@@ -135,13 +189,31 @@ def current_user(request: Request, db: DB) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
-def current_data_store(user: CurrentUser, db: DB) -> uuid.UUID:
-    """The signed-in user's data store. The request's session is closed once it's resolved (see
-    `data_store_for_request`), so an endpoint that takes this mustn't use `DB` after it."""
-    return data_store_for_request(user.id, db)
+def current_organisation(user: CurrentUser, db: DB) -> Organisation:
+    """The signed-in user's organisation: their one membership (`aios.organisations`). The one
+    place a request's organisation is resolved, so when a user can be in several, this is where
+    the request says which it means."""
+    org = organisations.membership_of(db, user.id)
+    if org is None:
+        # Signing in, leaving and the upgrade each put a user in one; this is a bug, not a
+        # request that can be answered.
+        raise RuntimeError(f"user {user.id} is in no organisation")
+    return org
 
 
-# For endpoints that reach the user's data only through their store.
+# For endpoints that scope what they touch to the organisation (the user, `CurrentUser`, is for
+# provenance, notifications and chat membership).
+CurrentOrganisation = Annotated[Organisation, Depends(current_organisation)]
+
+
+def current_data_store(org: CurrentOrganisation, db: DB) -> uuid.UUID:
+    """The signed-in user's organisation's data store, the one every member reaches. The
+    request's session is closed once it's resolved (see `data_store_for_request`), so an
+    endpoint that takes this mustn't use `DB` after it."""
+    return data_store_for_request(org.id, db)
+
+
+# For endpoints that reach the organisation's data only through its store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]
 
 
@@ -161,6 +233,9 @@ class RegisterIn(BaseModel):
     email: Email
     password: NewPassword
     password_confirm: str
+    # The token of the invitation link whose page they came from, if any: they join its
+    # organisation instead of getting a personal one, if it still opens.
+    invite: str | None = Field(default=None, max_length=INVITE_TOKEN_MAX)
 
     @field_validator("password_confirm")
     @classmethod
@@ -173,7 +248,8 @@ EMAIL_TAKEN = "An account with this email already exists"
 
 @router.post("/register", response_model=MeOut, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterIn, request: Request, db: DB):
-    """A new account, signed in, with its data store queued to be provisioned."""
+    """A new account, signed in, in a new personal organisation (or the one the invitation link
+    `invite` is for, if it still opens), with its data store queued to be provisioned."""
     settings = get_settings()
     ratelimits.throttle(
         "register-ip", settings.register_rate_limit_per_ip, ratelimits.client_ip(request)
@@ -188,13 +264,14 @@ def register(body: RegisterIn, request: Request, db: DB):
     )
     db.add(user)
     try:
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         # Registered by another request since the check.
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from exc
-    start_session(request, user)
-    return me_out(user)
+    invite = organisations.open_invite(db, body.invite, lock=True) if body.invite else None
+    start_session(request, db, user, invite)
+    return me_out(db, user)
 
 
 class LoginIn(BaseModel):
@@ -229,9 +306,8 @@ def login(body: LoginIn, request: Request, db: DB):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, BAD_CREDENTIALS)
     if new_hash is not None:
         user.password_hash = new_hash
-        db.commit()
-    start_session(request, user)
-    return me_out(user)
+    start_session(request, db, user)
+    return me_out(db, user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

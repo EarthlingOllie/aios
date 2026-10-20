@@ -12,6 +12,7 @@ import threading
 from datetime import timedelta
 
 import pytest
+from conftest import store_of
 from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body
@@ -28,7 +29,6 @@ from test_workflows import (
 
 from aios import worker, workflows
 from aios.config import get_settings
-from aios.datastores import data_store_for
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -45,7 +45,7 @@ from aios.workflows import execute_run
 
 @pytest.fixture
 def store(db, user) -> DataStore:
-    return provisioned(db, data_store_for(user.id))
+    return provisioned(db, store_of(user))
 
 
 @pytest.fixture
@@ -704,7 +704,7 @@ def test_a_waiting_run_whose_store_cant_be_resolved_on_resume_fails(
     def unavailable(*args, **kwargs):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    monkeypatch.setattr(workflows, "data_store_of", unavailable)
     decide(api, queued, flow, "reject")
 
     out = read(api, workflow, waiting["id"])

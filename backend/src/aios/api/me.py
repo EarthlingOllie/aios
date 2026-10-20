@@ -1,4 +1,4 @@
-"""The signed-in user's own account."""
+"""The signed-in user's own account, and which organisation they're in (`aios.organisations`)."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ValidationInfo, field_validator
@@ -30,8 +30,8 @@ router = APIRouter(prefix="/api/me", dependencies=[Depends(same_origin)])
 
 
 @router.get("", response_model=MeOut)
-def me(user: CurrentUser):
-    return me_out(user)
+def me(user: CurrentUser, db: DB):
+    return me_out(db, user)
 
 
 class NameIn(BaseModel):
@@ -48,7 +48,7 @@ def edit_name(body: NameIn, user: CurrentUser, db: DB):
     for field in body.model_fields_set:
         setattr(user, field, getattr(body, field))
     db.commit()
-    return me_out(user)
+    return me_out(db, user)
 
 
 def check_current_password(user: User, password: str) -> None:
@@ -90,7 +90,7 @@ def change_email(body: EmailIn, user: CurrentUser, db: DB):
         # Taken by another request since the check.
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from exc
-    return me_out(user)
+    return me_out(db, user)
 
 
 class PasswordIn(BaseModel):
@@ -124,4 +124,4 @@ def change_password(body: PasswordIn, request: Request, user: CurrentUser, db: D
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_SIGNED_IN)
     db.commit()
     db.refresh(user)
-    start_session(request, user)
+    start_session(request, db, user)

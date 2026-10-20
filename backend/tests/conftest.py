@@ -15,10 +15,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
 from psycopg import errors
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import checkpoints, ratelimits
+from aios import checkpoints, organisations, ratelimits
+from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import data_store_for, files, history, provision, resolve, store_session
@@ -26,7 +27,15 @@ from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, User
+from aios.models import (
+    Agent,
+    DataStore,
+    Organisation,
+    OrganisationMember,
+    Skill,
+    User,
+    Workflow,
+)
 from aios.passwords import hash_password
 from aios.sandbox import runner
 
@@ -82,6 +91,15 @@ def rate_limits() -> None:
 
 
 @pytest.fixture(autouse=True)
+def store_deletions(monkeypatch) -> list[uuid.UUID]:
+    """Data stores whose deletion sweep was queued (an empty organisation deleted on accepting
+    an invitation), instead of sending it to the broker."""
+    queued: list[uuid.UUID] = []
+    monkeypatch.setattr(organisations, "enqueue_store_deletion", queued.append)
+    return queued
+
+
+@pytest.fixture(autouse=True)
 def handoff_model() -> Iterator[None]:
     """The handoff step's model (`aios.handoff`), scripted rather than the provider's: it
     acknowledges with "On it." and briefs nothing (`fake_model.use_handoff` scripts another).
@@ -101,11 +119,23 @@ def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
 
 
 def delete_user(db, user: User) -> None:
-    """Delete the user, and drop their store's database if it was provisioned."""
-    stores = [
-        provision.StoreNames.of(s)
-        for s in db.scalars(select(DataStore).where(DataStore.owner_user_id == user.id))
-    ]
+    """Delete the user's organisation (cascading to what it owns) with its store, the user, and
+    the store's database if it was provisioned."""
+    orgs = db.scalars(
+        select(Organisation).join(OrganisationMember).where(OrganisationMember.user_id == user.id)
+    ).all()
+    owned = db.scalars(
+        select(DataStore).where(DataStore.owner_organisation_id.in_([o.id for o in orgs]))
+    ).all()
+    stores = [provision.StoreNames.of(s) for s in owned]
+    for store in owned:
+        db.delete(store)
+    for org in orgs:
+        # What pins another's versions first (workflows pin agents', agents pin skills'): one
+        # cascading delete of them all can check a pin before it has deleted the pinning row.
+        for model in (Workflow, Agent, Skill):
+            db.execute(delete(model).where(model.organisation_id == org.id))
+        db.delete(org)
     db.delete(user)
     db.commit()
     if stores:
@@ -138,18 +168,49 @@ def build_user(handle: str | None = None, **values) -> User:
 
 
 def make_user(db, handle: str | None = None, **values) -> User:
-    """A new user (as `build_user`), saved, with no store yet. Delete them with `delete_user`."""
+    """A new user (as `build_user`) in their personal organisation, as registering leaves them,
+    with no store yet. Delete them with `delete_user`."""
     u = build_user(handle, **values)
     db.add(u)
+    db.flush()
+    organisations.create_personal(db, u)
     db.commit()
     return u
 
 
+def store_of(user: User) -> uuid.UUID:
+    """The id of the user's organisation's data store, made (not provisioned) if it has none."""
+    with SessionLocal() as db:
+        return data_store_for(organisations.membership_of(db, user.id).id)
+
+
+def join_organisation(db, of: User, handle: str | None = None, **values) -> User:
+    """A new user (as `build_user`) who is a member of `of`'s organisation (not its creator).
+    Delete them with `delete_user`, which deletes the shared organisation and what's in it."""
+    u = build_user(handle, **values)
+    db.add(u)
+    db.flush()
+    db.add(OrganisationMember(organisation_id=org_of(db, of).id, user_id=u.id))
+    db.commit()
+    return u
+
+
+def org_of(db, user: User) -> Organisation:
+    """The user's organisation, for calling what takes one (as a request's would) directly."""
+    return organisations.membership_of(db, user.id)
+
+
+def made_by(db, user: User) -> dict:
+    """The columns that say whose a row (an agent, skill, workflow, trigger or chat) is, for a
+    test that makes one directly as `user` would: their organisation's, made by them."""
+    return provenance.made_by(org_of(db, user).id, user.id)
+
+
 def provisioned_user(db, handle: str | None = None, **values) -> User:
-    """A new user (as `build_user`), with their store provisioned: a database of its own, ready.
-    Delete them with `delete_user`."""
+    """A new user (as `make_user`), with their organisation's store provisioned: a database of
+    its own, ready. Delete them with `delete_user`."""
     u = make_user(db, handle, **values)
-    provision.provision(data_store_for(u.id))
+    provision.provision(store_of(u))
     return u
 
 
@@ -161,6 +222,21 @@ def signed_in_client(user: User) -> TestClient:
     session = base64.b64encode(json.dumps(data).encode())
     cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(session)
     return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
+
+
+def register(client: TestClient, first_name: str, last_name: str = "Tester", **values):
+    """Register a new account through the API, as the sign-up page does: a fresh email and the
+    password `TEST_PASSWORD`; `values` adds to the body (an invitation link's `invite`). Answers
+    the response. Delete the user it made with `delete_user`."""
+    body = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": f"registered-{secrets.token_hex(4)}@example.com",
+        "password": TEST_PASSWORD,
+        "password_confirm": TEST_PASSWORD,
+        **values,
+    }
+    return client.post("/api/auth/register", json=body)
 
 
 @pytest.fixture
@@ -201,7 +277,8 @@ def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
 
 @pytest.fixture
 def new_user(db) -> Iterator[Callable[[], User]]:
-    """Makes users with no store yet; deletes them (and drops their stores) afterwards."""
+    """Makes users (each in an organisation of their own) with no store yet; deletes them (and
+    drops their stores) afterwards."""
     made: list[User] = []
 
     def make() -> User:

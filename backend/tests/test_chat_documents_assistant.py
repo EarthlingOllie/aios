@@ -1,6 +1,7 @@
 """The documents assistant: a built-in member of every new chat, answering over the documents of
 the chat's owner the way any agent member answers a mention."""
 
+from conftest import store_of
 from fake_model import (
     ToolCall,
     briefs,
@@ -11,19 +12,27 @@ from fake_model import (
     use_model,
 )
 from test_chat_agent_invocations import replies_from, say
-from test_chats import add, add_user, make_chat, messages, other, signed_in_as  # noqa: F401
+from test_chats import (  # noqa: F401
+    add,
+    add_user,
+    make_chat,
+    messages,
+    other,
+    outsider,
+    signed_in_as,
+)
+from test_organisation_scoping import member  # noqa: F401
 from test_triggers import make_agent
 
 from aios import checkpoints
-from aios.datastores import data_store_for
 from aios.tools import hybrid_search
 
 NAME = "Documents assistant"
 
 
 def assistant_of(chat: dict) -> dict:
-    [member] = [m for m in chat["members"]["agents"] if m["name"].startswith(NAME)]
-    return member
+    [found] = [m for m in chat["members"]["agents"] if m["name"].startswith(NAME)]
+    return found
 
 
 def test_a_new_chat_has_the_documents_assistant_as_a_member(api):
@@ -46,12 +55,23 @@ def test_a_new_chat_has_the_documents_assistant_as_a_member(api):
     assert [a["name"] for a in api.get("/api/agents").json()] == [NAME]
 
 
-def test_each_owner_has_their_own_assistant(api, other):  # noqa: F811
+def test_each_organisation_has_its_own_assistant(api, outsider):  # noqa: F811
     mine = assistant_of(make_chat(api, "Mine"))
-    with signed_in_as(other):
+    with signed_in_as(outsider):
         theirs = assistant_of(make_chat(api, "Theirs"))
         assert [a["id"] for a in api.get("/api/agents").json()] == [theirs["target_id"]]
     assert theirs["target_id"] != mine["target_id"]
+
+
+def test_the_members_of_an_organisation_share_one_assistant(api, user, member):  # noqa: F811
+    # Made for whichever member first needs it.
+    with signed_in_as(member):
+        theirs = assistant_of(make_chat(api, "Theirs"))
+    mine = assistant_of(make_chat(api, "Mine"))
+    assert mine["target_id"] == theirs["target_id"]
+    agent = api.get(f"/api/agents/{mine['target_id']}").json()
+    assert agent["created_by"]["id"] == member.id
+    assert [a["id"] for a in api.get("/api/agents").json()] == [mine["target_id"]]
 
 
 def test_an_agent_of_the_same_name_doesnt_stop_the_assistant_joining(api):
@@ -110,7 +130,7 @@ def test_mentioning_the_assistant_searches_the_chat_owners_documents_and_posts_t
     assert invocation["acknowledgement"] == "I'll look for fish in the documents."
     assert invocation["brief"] == "They study fish."
     assert invocation["agent_run"]["tool_call_count"] == 1
-    assert searched == [(data_store_for(user.id), "fish")]
+    assert searched == [(store_of(user), "fish")]
     history = checkpoints.history(invocation["agent_run_id"])
     assert history[0].text == f"They study fish.\n\n@{NAME} fish?"
     assert replies_from(api, chat) == [(NAME, "Found Zebrafish. [fish.md]")]

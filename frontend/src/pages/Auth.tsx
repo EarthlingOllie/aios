@@ -5,12 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { api, fullName, type User } from "@/lib/api";
+import { api, fullName, type Account, type Me } from "@/lib/api";
 import { formErrors } from "@/lib/auth";
 
 type Props = {
   /** Called with the user once they're signed in; the app then takes them on (see `App`). */
-  onSignedIn: (user: User) => void;
+  onSignedIn: (user: Me) => void;
 };
 
 /**
@@ -89,7 +89,7 @@ export function LoginPage({ onSignedIn }: Props) {
  */
 function DevSignIn({ onSignedIn }: Props) {
   const id = useId();
-  const [users, setUsers] = useState<User[]>();
+  const [users, setUsers] = useState<Account[]>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -156,8 +156,13 @@ function DevSignIn({ onSignedIn }: Props) {
   );
 }
 
-/** Create an account: `/register`. Signs the new user in. */
+/**
+ * Create an account: `/register`. Signs the new user in. From an invitation link's page
+ * (`/register?invite=<token>`), the new user joins its organisation instead of getting one of
+ * their own, if the link still opens.
+ */
 export function RegisterPage({ onSignedIn }: Props) {
+  const invite = useSearchParams()[0].get("invite") ?? undefined;
   const [details, setDetails] = useState({
     first_name: "",
     last_name: "",
@@ -166,7 +171,7 @@ export function RegisterPage({ onSignedIn }: Props) {
     password_confirm: "",
   });
   const confirmation = useConfirmation(details.password, details.password_confirm);
-  const form = useAuthForm(() => api.register(details), onSignedIn, confirmation.check);
+  const form = useAuthForm(() => api.register({ ...details, invite }), onSignedIn, confirmation.check);
   const set = (key: keyof typeof details) => (e: ChangeEvent<HTMLInputElement>) => {
     setDetails((d) => ({ ...d, [key]: e.target.value }));
   };
@@ -264,7 +269,7 @@ export function RegisterPage({ onSignedIn }: Props) {
  * A sign-in or registration form's request: `send` it on submit (unless `check` says not to),
  * one at a time, then hand the user on, or say what went wrong.
  */
-function useAuthForm(send: () => Promise<User>, onSignedIn: (user: User) => void, check?: () => boolean) {
+function useAuthForm(send: () => Promise<Me>, onSignedIn: (user: Me) => void, check?: () => boolean) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -355,11 +360,17 @@ export function Field({
 }
 
 function SwitchLink({ to, children }: { to: string; children: ReactNode }) {
-  // Keep where the user was headed, whichever form they finish on.
+  // Keep where the user was headed, and the invitation link they came from, whichever form they
+  // finish on.
   const [params] = useSearchParams();
-  const next = params.get("next");
+  const kept = new URLSearchParams();
+  for (const key of ["invite", "next"]) {
+    const value = params.get(key);
+    if (value) kept.set(key, value);
+  }
+  const query = kept.toString();
   return (
-    <Link to={next ? `${to}?next=${encodeURIComponent(next)}` : to} className="text-foreground underline">
+    <Link to={query ? `${to}?${query}` : to} className="text-foreground underline">
       {children}
     </Link>
   );

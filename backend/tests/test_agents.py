@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
-from conftest import build_user, make_user
+from conftest import build_user, delete_user, make_user, org_of
 from fake_model import ToolCall, model, replies, use_model
 from sqlalchemy import func
 
@@ -14,10 +14,10 @@ from aios import checkpoints, ui_stream
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
-from aios.auth import current_user
+from aios.auth import current_organisation, current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Agent, AgentRun
+from aios.models import Agent, AgentRun, Organisation
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 
@@ -35,8 +35,8 @@ def spy_run(monkeypatch) -> dict:
     seen = {}
     load = agents_api.load_chat_context
 
-    def spy_load(*args):
-        ctx = load(*args)
+    def spy_load(*args, **kwargs):
+        ctx = load(*args, **kwargs)
         seen["metadata"] = ctx.metadata
         return ctx
 
@@ -166,6 +166,31 @@ def test_agent_versions_pin_skill_versions(api):
     assert api.put(url, json=agent_body(agent, skill_version_ids=twice)).status_code == 422
 
 
+def test_agent_list_names_the_current_versions_skills_and_tools(api):
+    terse = make_skill(api, "Terse", "Answer briefly.")
+    haiku = make_skill(api, "Haiku", "5-7-5")
+    poet = make_agent(api, "Poet", "Write.", [terse, haiku])
+    url = f"/api/agents/{poet['id']}"
+    web = {"key": "web_search", "config": {}}
+    search = {"key": "hybrid_search", "config": {}}
+    api.put(url, json=agent_body(poet, tools=[web, search]))
+    make_agent(api, "Plain")
+
+    # Updating a skill leaves the agent on its old version of it: still the same skill.
+    api.put(f"/api/skills/{terse['id']}", json={"name": "Terse", "content": "One line."})
+    listed = {a["name"]: (a["skill_ids"], a["tool_keys"]) for a in api.get("/api/agents").json()}
+    assert listed == {
+        "Poet": ([terse["id"], haiku["id"]], ["web_search", "hybrid_search"]),
+        "Plain": ([], []),
+    }
+
+    # Only the current version counts: what an older version had is gone from the list.
+    poet = api.get(url).json()
+    api.put(url, json=agent_body(poet, skill_version_ids=[haiku["current_version"]["id"]]))
+    listed = {a["name"]: (a["skill_ids"], a["tool_keys"]) for a in api.get("/api/agents").json()}
+    assert listed["Poet"] == ([haiku["id"]], [])
+
+
 def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     skill = make_skill(api, "Haiku", "5-7-5")
     agent = make_agent(api, "Poet", "Write.", [skill])
@@ -193,6 +218,29 @@ def test_skill_rename_is_pinned_like_content(api, monkeypatch):
     assert (v2["version"], v2["skills"][0]["name"]) == (2, "Poetry")
     assert '<skill name="Poetry">' in v2["instructions"]
     assert "Haiku" not in v2["instructions"]
+
+
+def test_skill_list_counts_the_live_agents_using_each_skill(api):
+    pirate = make_skill(api, "Pirate", "Arr.")
+    terse = make_skill(api, "Terse", "One line.")
+    make_skill(api, "Unused")
+    make_agent(api, "Both", skills=[pirate, terse])
+    make_agent(api, "Pirate only", skills=[pirate])
+    dropped = make_agent(api, "Dropped", skills=[terse])
+    gone = make_agent(api, "Gone", skills=[terse])
+    # An agent still pinning an older version of the skill counts as using it.
+    api.put(f"/api/skills/{pirate['id']}", json={"name": "Pirate", "content": "Arr!"})
+
+    def counts() -> dict[str, int]:
+        return {s["name"]: s["agent_count"] for s in api.get("/api/skills").json()}
+
+    assert counts() == {"Pirate": 2, "Terse": 3, "Unused": 0}
+
+    # Only an agent's current version counts, not one it has moved on from, and only live agents.
+    url = f"/api/agents/{dropped['id']}"
+    assert api.put(url, json=agent_body(dropped, skill_version_ids=[])).status_code == 200
+    assert api.delete(f"/api/agents/{gone['id']}").status_code == 204
+    assert counts() == {"Pirate": 2, "Terse": 1, "Unused": 0}
 
 
 def test_skill_delete_blocked_while_in_use_then_soft(api):
@@ -227,7 +275,7 @@ def test_skill_delete_waits_for_in_flight_attach(api, user):
     with SessionLocal() as session:
         # An agent save that has resolved (and locked) the skill but not yet committed.
         skills = agents_api.resolve_skill_versions(
-            session, user.id, [skill["current_version"]["id"]]
+            session, org_of(session, user), [skill["current_version"]["id"]]
         )
         deleter = threading.Thread(
             target=lambda: result.update(resp=api.delete(f"/api/skills/{skill['id']}"))
@@ -282,7 +330,7 @@ def test_agent_delete_is_soft_and_takes_its_runs(api, db):
     assert make_agent(api, "Bot")["name"] == "Bot"
     resp = api.post("/api/agents", json={"name": "Bot"})
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "You already have an agent with that name."
+    assert resp.json()["detail"] == "The organisation already has an agent with that name."
 
 
 def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
@@ -316,8 +364,7 @@ def test_other_users_cannot_see_agents(api, client, db):
         assert client.post(f"/api/agents/{agent['id']}/runs").status_code == 404
         assert client.get("/api/agents").json() == []
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
@@ -331,8 +378,7 @@ def test_other_users_cannot_read_a_deleted_agents_versions(api, client, db):
         for gone in (url, f"{url}/versions", f"{url}/versions/1"):
             assert client.get(gone).status_code == 404
     finally:
-        db.delete(other)
-        db.commit()
+        delete_user(db, other)
 
 
 def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
@@ -445,7 +491,7 @@ def test_concurrent_turns_on_a_run_take_turns(api, user):
             await asyncio.sleep(delay)
             with SessionLocal() as db:
                 response = await agents_api.run_chat(
-                    agent["id"], run["id"], chat_body(text), user, db
+                    agent["id"], run["id"], chat_body(text), user, db, org_of(db, user)
                 )
             return await consume(response)
 
@@ -483,7 +529,7 @@ def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
     async def delete_mid_turn():
         with SessionLocal() as db:
             response = await agents_api.run_chat(
-                agent["id"], run["id"], chat_body("hello"), user, db
+                agent["id"], run["id"], chat_body("hello"), user, db, org_of(db, user)
             )
         turn = asyncio.create_task(consume(response))
         await started.wait()
@@ -515,7 +561,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
         yield object()
         events.append("db closed")
 
-    def fake_load(db, user_id, agent_id, run_id):
+    def fake_load(db, agent_id, run_id, *, org=None):
         events.append(("load on loop", on_event_loop()))
         return agents_api.ChatContext(
             model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()
@@ -540,6 +586,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     # Run 1 is made up, like the rest of what the turn loads.
     monkeypatch.setattr(checkpoints, "_run_gone", run_there)
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
+    app.dependency_overrides[current_organisation] = lambda: Organisation(id=1, name="t")
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):
@@ -630,7 +677,9 @@ def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
         yield "never sent"
 
     async def stop_after_first_text():
-        response = await agents_api.run_chat(agent["id"], run["id"], chat_body("stop me"), user, db)
+        response = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("stop me"), user, db, org_of(db, user)
+        )
         got_text = asyncio.Event()
 
         async def consume():
@@ -680,7 +729,9 @@ def stop_during_searches(
     monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
 
     async def drop_while_searching():
-        chunks = await agents_api.run_chat(agent["id"], run["id"], chat_body("find"), user, db)
+        chunks = await agents_api.run_chat(
+            agent["id"], run["id"], chat_body("find"), user, db, org_of(db, user)
+        )
         async for chunk in chunks:
             if chunk["type"] == "tool-output-available":
                 break

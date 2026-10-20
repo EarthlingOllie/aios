@@ -7,6 +7,7 @@ from conftest import delete_user, make_user
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from aios import organisations
 from aios.config import Settings, get_settings
 from aios.main import create_app
 from aios.models import DataStore, DataStoreStatus, User
@@ -71,17 +72,19 @@ def test_picking_a_user_signs_in_as_them(dev_client, users, db, provisioning, ca
     with caplog.at_level(logging.INFO, logger="aios.dev_auth"):
         resp = dev_client.post("/api/dev/session", json={"user_id": chosen.id})
 
+    org = organisations.membership_of(db, chosen.id)
     expected = {
         "id": chosen.id,
         "first_name": chosen.first_name,
         "last_name": chosen.last_name,
         "email": chosen.email,
+        "organisation": {"id": org.id, "name": org.name, "personal": True, "is_creator": True},
     }
     assert resp.status_code == 200
     assert resp.json() == expected
     assert dev_client.get("/api/me").json() == expected
-    # Their data store, which they didn't have, is queued as on any sign-in.
-    stores = db.scalars(select(DataStore).where(DataStore.owner_user_id == chosen.id)).all()
+    # Their organisation's data store, which it didn't have, is queued as on any sign-in.
+    stores = db.scalars(select(DataStore).where(DataStore.owner_organisation_id == org.id)).all()
     assert [s.status for s in stores] == [DataStoreStatus.provisioning]
     assert provisioning == [stores[0].id]
     assert any(chosen.email in r.getMessage() for r in caplog.records)

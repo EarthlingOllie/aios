@@ -10,22 +10,54 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   type ListContext,
 } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ProvenanceLine, useSavedBy } from "@/components/provenance";
 import {
   CompareVersions,
   RestoreButton,
   VersionBadge,
   VersionHistory,
 } from "@/components/versions";
-import { api, describeError, type SkillInput, type SkillVersion } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type SkillInput,
+  type SkillSummary,
+  type SkillVersion,
+} from "@/lib/api";
+import {
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
+import { plural } from "@/lib/utils";
+
+const SKILL_FILTERS: ListFilterGroup<SkillSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    // Used: an agent's current version uses some version of it, so it can't be deleted.
+    options: [
+      { key: "used", label: "Used", test: (skill) => skill.agent_count > 0 },
+      { key: "unused", label: "Unused", test: (skill) => skill.agent_count === 0 },
+    ],
+  },
+];
+
+const SKILL_SORTS: ListSort<SkillSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function SkillsSection() {
   const { data, error, reload } = useLoad(api.listSkills);
@@ -37,17 +69,25 @@ export function SkillsSection() {
       error={error}
       empty="No skills yet. Skills are reusable instructions you can give to agents."
       reloadList={reload}
-      renderItem={(skill) => (
-        <>
-          <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
-            <VersionBadge version={skill.version} />
-          </div>
-          {skill.description && (
-            <div className="text-muted-foreground truncate text-xs">{skill.description}</div>
-          )}
-        </>
-      )}
+      search={nameAndDescription}
+      filters={SKILL_FILTERS}
+      sorts={SKILL_SORTS}
+      renderItem={(skill) => {
+        const about = [skill.agent_count > 0 && `Used by ${plural(skill.agent_count, "agent")}`]
+          .concat(skill.description)
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+              <VersionBadge version={skill.version} />
+            </div>
+            {about && <div className="text-muted-foreground truncate text-xs">{about}</div>}
+            <ProvenanceLine of={skill} />
+          </>
+        );
+      }}
     />
   );
 }
@@ -78,6 +118,7 @@ function SkillContent({ version }: { version: SkillVersion }) {
 export function SkillDetail() {
   const id = Number(useParams().skillId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: skill, error } = useLoad(useCallback(() => api.getSkill(id), [id]));
   const versions = useLoad(useCallback(() => api.listSkillVersions(id), [id]));
@@ -92,7 +133,7 @@ export function SkillDetail() {
     try {
       await api.deleteSkill(id);
       await reloadList();
-      navigate("/skills");
+      navigate(listHref("/skills"));
     } catch (err) {
       setDeleteError(describeError(err));
     }
@@ -105,11 +146,16 @@ export function SkillDetail() {
           {skill.name} <VersionBadge version={current.version} />
         </span>
       }
-      subtitle={`Updated ${formatDate(skill.updated_at)}`}
+      subtitle={
+        <>
+          Updated {formatDate(skill.updated_at)}
+          <ProvenanceLine of={skill} className="mt-0.5" />
+        </>
+      }
       actions={
         <>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref(`/skills/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -122,38 +168,52 @@ export function SkillDetail() {
       }
     >
       <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(undefined)} />
-      <SkillContent version={current} />
-      <Section title="Used by">
-        {skill.agents.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No agents use this skill yet.</p>
-        ) : (
-          <ul className="divide-y rounded-md border">
-            {skill.agents.map((use) => (
-              <li key={use.agent_id}>
-                <Link
-                  to={`/agents/${use.agent_id}`}
-                  className="hover:bg-accent flex items-center gap-2 px-3 py-2 text-sm"
-                >
-                  <span className="flex-1">{use.agent_name}</span>
-                  <span className="text-muted-foreground text-xs">uses</span>
-                  <VersionBadge version={use.skill_version} />
-                  {use.skill_version < current.version && (
-                    <Badge variant="secondary">update available</Badge>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <Section title="Version history">
-        <VersionHistory
-          versions={versions.data}
-          error={versions.error}
-          current={current.version}
-          href={(v) => `/skills/${id}/versions/${v}`}
-        />
-      </Section>
+      <Tabs
+        label="Skill details"
+        tabs={[
+          { id: "content", label: "Content", content: <SkillContent version={current} /> },
+          {
+            id: "used-by",
+            label: "Used by",
+            count: skill.agents.length,
+            content:
+              skill.agents.length === 0 ? (
+                <p className="text-muted-foreground text-sm">No agents use this skill yet.</p>
+              ) : (
+                <ul className="divide-y rounded-md border">
+                  {skill.agents.map((use) => (
+                    <li key={use.agent_id}>
+                      <Link
+                        to={`/agents/${use.agent_id}`}
+                        className="hover:bg-accent flex items-center gap-2 px-3 py-2 text-sm"
+                      >
+                        <span className="flex-1">{use.agent_name}</span>
+                        <span className="text-muted-foreground text-xs">uses</span>
+                        <VersionBadge version={use.skill_version} />
+                        {use.skill_version < current.version && (
+                          <Badge variant="secondary">update available</Badge>
+                        )}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              ),
+          },
+          {
+            id: "versions",
+            label: "Versions",
+            count: versions.data?.length,
+            content: (
+              <VersionHistory
+                versions={versions.data}
+                error={versions.error}
+                current={current.version}
+                href={(v) => listHref(`/skills/${id}/versions/${v}`)}
+              />
+            ),
+          },
+        ]}
+      />
     </DetailPage>
   );
 }
@@ -168,6 +228,7 @@ export function SkillVersionPage() {
 
 function SkillVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const skill = useLoad(useCallback(() => api.getSkill(id), [id]));
   const version = useLoad(useCallback(() => api.getSkillVersion(id, number), [id, number]));
@@ -185,6 +246,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     ),
   );
   const [error, setError] = useState<string>();
+  const savedBy = useSavedBy();
 
   if (version.error) return <Placeholder>{version.error}</Placeholder>;
   if (!version.data || !skill.data) return null;
@@ -195,7 +257,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreSkillVersion(id, number);
       await reloadList();
-      navigate(`/skills/${id}`);
+      navigate(listHref(`/skills/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -206,14 +268,14 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/skills/${id}`} className="hover:underline">
+          <Link to={listHref(`/skills/${id}/versions`)} className="hover:underline">
             {skill.data.name}
           </Link>
           <VersionBadge version={v.version} />
           {isCurrent && <Badge variant="secondary">current</Badge>}
         </span>
       }
-      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}`}
+      subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
       actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
@@ -238,6 +300,7 @@ export function SkillForm() {
   const params = useParams();
   const id = params.skillId ? Number(params.skillId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<SkillInput>();
   const [version, setVersion] = useState<number>();
@@ -268,7 +331,7 @@ export function SkillForm() {
     try {
       const saved = id === undefined ? await api.createSkill(body) : await api.updateSkill(id, body);
       await reloadList();
-      navigate(`/skills/${saved.id}`);
+      navigate(listHref(`/skills/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

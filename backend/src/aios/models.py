@@ -43,17 +43,96 @@ class User(Base):
     # Copied into each session at sign-in (`aios.auth.start_session`): a session holding another
     # value is signed out, so bumping it signs out every session the user has.
     session_version: Mapped[int] = mapped_column(server_default=text("0"))
-    # Copy their agent runs into their data store's `history` schema (`aios.datastores.history`).
-    export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
-    # Embed the exported messages too, so agents can search past runs by meaning. Only while
-    # the export is on: switching it off switches this off.
-    embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     @property
     def full_name(self) -> str:
         """How the app shows the user, wherever it names them: "First Last"."""
         return f"{self.first_name} {self.last_name}"
+
+
+class Organisation(Base):
+    """A group of users, which owns what its members make (`aios.organisations`).
+
+    Every user is in exactly one organisation at a time: a personal one, made when they sign up
+    (or leave another), or one they joined through an invitation link. Nothing in an organisation
+    is private to one member. The creator is the one member who may rename it and, later, invite
+    others: a stopgap until roles exist.
+    """
+
+    __tablename__ = "organisations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Unique among all organisations: a personal one is named after its user's full name, suffixed
+    # when that's taken.
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    # Made for one user, on sign-up or on leaving another organisation. An ordinary organisation
+    # all the same (it can be renamed and, later, invited into); the flag only decides whether it
+    # may be deleted when its one member joins another.
+    personal: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
+    members: Mapped[list["OrganisationMember"]] = relationship(
+        back_populates="organisation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="OrganisationMember.joined_at",
+    )
+
+
+class OrganisationInvite(Base):
+    """A shareable invitation link into an organisation. The link carries a random token; only
+    its hash is stored, so the link is shown once, when it's made."""
+
+    __tablename__ = "organisation_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Set when the creator cuts the link off; a revoked link opens for no one.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OrganisationMember(Base):
+    """A user's membership of an organisation. A user has one at a time (the unique index on
+    the user), though the table allows several, for later."""
+
+    __tablename__ = "organisation_members"
+
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    # The invitation link they came in through, if any (null for a creator, or once the link's
+    # row is gone).
+    invite_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organisation_invites.id", ondelete="SET NULL")
+    )
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    organisation: Mapped[Organisation] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship()
+
+    __table_args__ = (
+        # One organisation per user, for now (`aios.auth.current_organisation` reads the one):
+        # drop this to allow several.
+        Index("uq_organisation_members_user_id", "user_id", unique=True),
+    )
 
 
 class DataStoreStatus(enum.StrEnum):
@@ -63,18 +142,20 @@ class DataStoreStatus(enum.StrEnum):
     # Provisioning gave up; re-running it (`aios.datastores.provision.retry_unfinished` does, every
     # few minutes, as does the deploy's `migrate_all`) carries on.
     failed = "failed"
-    # For deleting users' stores (not yet used).
+    # Its organisation was deleted (an empty one, on accepting an invitation): the provisioning
+    # worker's sweep drops its database, roles and files (`provision.delete_deleting`) ...
     deleting = "deleting"
+    # ... and then it's this: the row is kept, as a record of the store.
     deleted = "deleted"
 
 
 class DataStore(Base):
-    """Where a user's data lives: a database of its own (see `aios.datastores`).
+    """Where an organisation's data lives: a database of its own (see `aios.datastores`).
 
-    It has an id of its own, rather than being the user's, so a store can later change hands
-    (to a team) without renaming anything named after it: its database and roles are named
-    after this id, never a user's. Its documents and chunks are in its database
-    (`aios.datastores.models`), not here.
+    It has an id of its own, rather than being its organisation's, so a store could change
+    hands (it did, from users to organisations) without renaming anything named after it: its
+    database and roles are named after this id, never its organisation's. Its documents and
+    chunks are in its database (`aios.datastores.models`), not here.
     """
 
     __tablename__ = "data_stores"
@@ -82,9 +163,10 @@ class DataStore(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    # One store per user, for now. Teams will own stores too (an `owner_team_id`).
-    owner_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    # The organisation whose store it is: one each. Null only once it's `deleting` (its
+    # organisation was deleted) or `deleted`.
+    owner_organisation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organisations.id", ondelete="SET NULL"), unique=True
     )
     status: Mapped[DataStoreStatus] = mapped_column(
         Enum(DataStoreStatus, name="data_store_status"),
@@ -104,7 +186,7 @@ class DataStore(Base):
     ro_password: Mapped[str | None] = mapped_column(Text)
     # The store tree's Alembic revision its database is at (`aios.datastores.migrations`).
     schema_revision: Mapped[str | None] = mapped_column(String(64))
-    # The revision of the tree's `history` branch it's at: null until its owner first switches
+    # The revision of the tree's `history` branch it's at: null until a member first switches
     # the run history export on, which creates the `history` schema.
     history_revision: Mapped[str | None] = mapped_column(String(64))
     # When the run history export last caught up (copied in whatever runs were pending).
@@ -116,6 +198,12 @@ class DataStore(Base):
     # first, after a turn); both cleared once it catches up.
     history_embed_error: Mapped[str | None] = mapped_column(Text)
     history_embed_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Copy the organisation's agent runs and workflow runs into the store's `history` schema
+    # (`aios.datastores.history`, on the Organisation page).
+    export_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Embed the exported messages too, so agents can search past runs by meaning. Only while
+    # the export is on: switching it off switches this off.
+    embed_run_history: Mapped[bool] = mapped_column(server_default=text("false"))
     # Why provisioning, or the last migration, failed.
     error: Mapped[str | None] = mapped_column(Text)
     delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -125,6 +213,13 @@ class DataStore(Base):
     db_bytes: Mapped[int | None] = mapped_column(BigInteger)
     files_bytes: Mapped[int | None] = mapped_column(BigInteger)
     usage_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "owner_organisation_id IS NOT NULL OR status IN ('deleting', 'deleted')",
+            name="ck_data_stores_owner_organisation",
+        ),
+    )
 
 
 class HistoryExportKind(enum.StrEnum):
@@ -184,13 +279,22 @@ class Skill(Base):
     __tablename__ = "skills"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The organisation it belongs to (`aios.organisations`), and what it answers to: every
+    # member's, and gone with the organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    # Which member made it and which last changed it; null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(String(255))
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("skill_versions.id", use_alter=True, name="fk_skills_current_version_id")
     )
     # Soft delete: old agent versions pin skill versions, so those must outlive the skill.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Which member deleted it; null once that user is deleted.
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -201,10 +305,11 @@ class Skill(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live skills, so a deleted skill's name can be reused.
+        # Names are unique among the organisation's live skills, so a deleted skill's name
+        # can be reused.
         Index(
-            "uq_skills_owner_id_name_live",
-            "owner_id",
+            "uq_skills_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -254,17 +359,27 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The organisation it belongs to (`aios.organisations`), and what it answers to: every
+    # member's, and gone with the organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    # Which member made it and which last changed it; null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, server_default="")
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", use_alter=True, name="fk_agents_current_version_id")
     )
-    # Which of the app's built-in agents it is, if it's one: made for its owner by the app rather
-    # than by them (`aios.assistant`), and found again by this. Null for the owner's own agents.
+    # Which of the app's built-in agents it is, if it's one: made for its organisation by the app
+    # rather than by a member (`aios.assistant`), and found again by this. Null for the members'
+    # own agents.
     builtin: Mapped[str | None] = mapped_column(String(32))
     # Soft delete: workflow versions pin agent versions, so those must outlive the agent.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Which member deleted it; null once that user is deleted.
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -278,18 +393,19 @@ class Agent(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live agents, so a deleted agent's name can be reused.
+        # Names are unique among the organisation's live agents, so a deleted agent's name
+        # can be reused.
         Index(
-            "uq_agents_owner_id_name_live",
-            "owner_id",
+            "uq_agents_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        # One live agent of each built-in kind per owner.
+        # One live agent of each built-in kind per organisation.
         Index(
-            "uq_agents_owner_id_builtin_live",
-            "owner_id",
+            "uq_agents_organisation_id_builtin_live",
+            "organisation_id",
             "builtin",
             unique=True,
             postgresql_where=text("builtin IS NOT NULL AND deleted_at IS NULL"),
@@ -370,6 +486,8 @@ class AgentRun(Base):
     trigger_id: Mapped[int | None] = mapped_column(
         ForeignKey("triggers.id", ondelete="SET NULL"), index=True
     )
+    # The member who started it; null for a schedule's run, or once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     # Running while a turn of it is in progress, then how that turn ended.
@@ -446,7 +564,14 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The organisation it belongs to (`aios.organisations`), and what it answers to: every
+    # member's, and gone with the organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    # Which member made it and which last changed it; null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, server_default="")
     current_version_id: Mapped[int | None] = mapped_column(
@@ -457,6 +582,8 @@ class Workflow(Base):
     layout: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     # Soft delete: other workflows' versions pin its versions, so those must outlive it.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Which member deleted it; null once that user is deleted.
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -467,10 +594,11 @@ class Workflow(Base):
     )
 
     __table_args__ = (
-        # Names are unique among live workflows, so a deleted workflow's name can be reused.
+        # Names are unique among the organisation's live workflows, so a deleted workflow's name
+        # can be reused.
         Index(
-            "uq_workflows_owner_id_name_live",
-            "owner_id",
+            "uq_workflows_organisation_id_name_live",
+            "organisation_id",
             "name",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -520,9 +648,10 @@ class WorkflowNode(Base):
         Enum(WorkflowNodeKind, name="workflow_node_kind")
     )
     # Exactly one of these is set, matching `kind`. No ON DELETE: agents and workflows are
-    # soft-deleted, so the versions a node pins are never deleted by the API. Only deleting a
-    # user removes them, cascading to their agents and workflows alike, so the check is deferred
-    # to commit: by then the nodes pinning them have gone too, whatever order the cascades ran in.
+    # soft-deleted, so the versions a node pins are never deleted by the API. Only deleting an
+    # organisation removes them, cascading to its agents and workflows alike, so the check is
+    # deferred to commit: by then the nodes pinning them have gone too, whatever order the
+    # cascades ran in.
     agent_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", deferrable=True, initially="DEFERRED"), index=True
     )
@@ -611,6 +740,15 @@ class WorkflowRun(Base):
     workflow_version_id: Mapped[int] = mapped_column(
         ForeignKey("workflow_versions.id", ondelete="CASCADE"), index=True
     )
+    # The member who started it; null for a schedule's run, or once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # The trigger that started it (a schedule), if one did and it still exists.
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "triggers.id", ondelete="SET NULL", use_alter=True, name="workflow_runs_trigger_id_fkey"
+        ),
+        index=True,
+    )
     status: Mapped[WorkflowRunStatus] = mapped_column(
         Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
     )
@@ -694,13 +832,20 @@ class Trigger(Base):
     __tablename__ = "triggers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The organisation it belongs to (`aios.organisations`), and what it answers to: every
+    # member's, and gone with the organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    # Which member made it and which last changed it; null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     kind: Mapped[TriggerKind] = mapped_column(Enum(TriggerKind, name="trigger_kind"))
     target_kind: Mapped[TriggerTargetKind] = mapped_column(
         Enum(TriggerTargetKind, name="trigger_target_kind")
     )
     # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted, and
-    # deleting one deletes its triggers; the cascade is for deleting the user.
+    # deleting one deletes its triggers; the cascade is for deleting the organisation.
     agent_id: Mapped[int | None] = mapped_column(
         ForeignKey("agents.id", ondelete="CASCADE"), index=True
     )
@@ -741,7 +886,9 @@ class Trigger(Base):
 
     agent: Mapped[Agent | None] = relationship()
     workflow: Mapped[Workflow | None] = relationship()
-    last_workflow_run: Mapped[WorkflowRun | None] = relationship()
+    last_workflow_run: Mapped[WorkflowRun | None] = relationship(
+        foreign_keys=[last_workflow_run_id]
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -759,7 +906,7 @@ class Trigger(Base):
 
 
 class SchemaChangeStatus(enum.StrEnum):
-    pending = "pending"  # waiting for the owner
+    pending = "pending"  # waiting for a member to decide it
     approved = "approved"  # being applied
     rejected = "rejected"
     expired = "expired"  # undecided for too long; counts as rejected
@@ -776,7 +923,7 @@ class SchemaChangeStatus(enum.StrEnum):
 
 class SchemaChangeRequest(Base):
     """An agent's request to change its store's `data` schema (`aios.datastores.schema_changes`):
-    the spec it asked for, the SQL it compiles to, and what the owner and the platform did
+    the spec it asked for, the SQL it compiles to, and what a member and the platform did
     with it. The run that asked waits on it (a LangGraph interrupt) until it's decided."""
 
     __tablename__ = "schema_change_requests"
@@ -791,7 +938,7 @@ class SchemaChangeRequest(Base):
     ops: Mapped[list] = mapped_column(JSONB)
     sql: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)
-    # The agent's explanation, for the owner.
+    # The agent's explanation, for the members.
     reason: Mapped[str] = mapped_column(Text)
     # The agent run that asked, and the tool call it asked in (so the call, run again when the
     # run resumes, finds its request rather than making another).
@@ -810,7 +957,7 @@ class SchemaChangeRequest(Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # The owner's note on a rejection.
+    # The note of the member who rejected it.
     note: Mapped[str | None] = mapped_column(Text)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why applying it failed, or why it's stale.
@@ -851,8 +998,9 @@ class Notification(Base):
 
 # Chats are group conversations between users, agents and workflows. A member row says who is
 # in a chat; which kind it is decides which id column is set, like a trigger's target, so agents
-# and workflows can be members as well as users. Only users have a role: the owner (one per chat,
-# the user who made it) can change the chat, remove members and delete it.
+# and workflows can be members as well as users. Only users have a role: the owner (one per chat:
+# the user who made it, or whom it was handed to when they left the organisation) can change the
+# chat, remove members and delete it.
 
 
 class ChatVisibility(enum.StrEnum):
@@ -875,11 +1023,22 @@ class Chat(Base):
     """A group conversation. Its members are `ChatMember` rows, its messages `ChatMessage`s."""
 
     __tablename__ = "chats"
+    __table_args__ = (
+        # Unique within the organisation: a chat is named like a channel, not like one member's
+        # own thing, and two organisations can each have "general".
+        Index("uq_chats_organisation_id_name", "organisation_id", "name", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    # Unique among all chats: a chat is named like a channel, not like a user's own thing.
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    # The organisation it belongs to (`aios.organisations`): the chat exists only for its
+    # members, and goes with it. Who owns the chat is a role of its members (`ChatMember.role`).
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    # Which member made it and which last changed it; null once that user is deleted.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, server_default="")
     # A private chat doesn't exist for a user who isn't a member of it.
     visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
@@ -898,7 +1057,7 @@ class Chat(Base):
 
 
 class ChatMember(Base):
-    """Who is in a chat: a user, an agent or a workflow (one the chat's owner owns)."""
+    """Who is in a chat: a user, an agent or a workflow (all of the chat's organisation)."""
 
     __tablename__ = "chat_members"
 
@@ -906,7 +1065,8 @@ class ChatMember(Base):
     chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
     kind: Mapped[ChatMemberKind] = mapped_column(Enum(ChatMemberKind, name="chat_member_kind"))
     # Exactly one is set, matching `kind`. Agents and workflows are soft-deleted; the cascades are
-    # for deleting a user, which deletes their agents and workflows too.
+    # for deleting a user, and for deleting an organisation, which deletes its agents and
+    # workflows.
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
@@ -947,6 +1107,13 @@ class ChatMember(Base):
         UniqueConstraint("chat_id", "user_id"),
         UniqueConstraint("chat_id", "agent_id"),
         UniqueConstraint("chat_id", "workflow_id"),
+        # One owner at most: none only while nobody is left in it to hand the chat to.
+        Index(
+            "uq_chat_members_chat_id_owner",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("role = 'owner'"),
+        ),
     )
 
 
@@ -1050,7 +1217,7 @@ class ChatInvocation(Base):
     message_id: Mapped[int] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True
     )
-    # Who mentioned it. The run executes as its agent's or workflow's owner, as runs do.
+    # Who mentioned it: the member who started its run (the run's `created_by`).
     requested_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
@@ -1058,7 +1225,7 @@ class ChatInvocation(Base):
         Enum(TriggerTargetKind, name="chat_invocation_target_kind")
     )
     # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted; the
-    # cascades are for deleting a user, which deletes their agents and workflows too.
+    # cascades are for deleting an organisation, which deletes its agents and workflows too.
     agent_id: Mapped[int | None] = mapped_column(
         ForeignKey("agents.id", ondelete="CASCADE"), index=True
     )

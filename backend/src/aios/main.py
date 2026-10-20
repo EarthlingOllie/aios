@@ -21,6 +21,7 @@ from aios.api import (
     dropped,
     me,
     notifications,
+    organisation,
     schema_changes,
     skills,
     tools,
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(dropped.router)
     app.include_router(notifications.router)
     app.include_router(settings_api.router)
+    app.include_router(organisation.router)
     app.include_router(chats.router)
     if settings.dev_login_enabled:
         log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
@@ -90,14 +92,17 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DataStoreNotReady)
     async def data_store_not_ready(request: Request, exc: DataStoreNotReady) -> JSONResponse:
-        # Uploads, document lists and searches, until the user's store is provisioned (or, made
-        # by the release before during a deploy, brought to the store tree's head).
+        # Uploads, document lists and searches, until the organisation's store is provisioned
+        # (or, made by the release before during a deploy, brought to the store tree's head).
         if isinstance(exc, DataStoreBehind):
-            detail = "Your data store is being upgraded. Try again in a moment."
+            detail = "The organisation's data store is being upgraded. Try again in a moment."
         elif exc.status == DataStoreStatus.failed:
-            detail = "Your data store couldn't be set up. We'll try again; please check back later."
+            detail = (
+                "The organisation's data store couldn't be set up. We'll try again; please check"
+                " back later."
+            )
         else:
-            detail = "Your data store is being set up. Try again in a moment."
+            detail = "The organisation's data store is being set up. Try again in a moment."
         return JSONResponse(
             {"detail": detail, "data_store_status": exc.status.value},
             status_code=status.HTTP_409_CONFLICT,
@@ -107,7 +112,7 @@ def create_app() -> FastAPI:
     async def data_store_busy(request: Request, exc: DataStoreBusy) -> JSONResponse:
         # The store's role (or its instance) is at its connection limit: a moment's wait frees one.
         return JSONResponse(
-            {"detail": "Your data store is busy. Try again in a moment."},
+            {"detail": "The organisation's data store is busy. Try again in a moment."},
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             headers={"Retry-After": "1"},
         )

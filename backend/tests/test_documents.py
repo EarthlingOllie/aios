@@ -7,7 +7,7 @@ import httpx
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 from celery.exceptions import Retry
-from conftest import delete_user, provisioned_user
+from conftest import delete_user, provisioned_user, store_of
 from pydantic import SecretStr
 from sqlalchemy import event, select
 
@@ -15,7 +15,7 @@ from aios import ingest, worker
 from aios.api import documents
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, store_engine, store_session
+from aios.datastores import files, store_engine, store_session
 from aios.datastores.models import Document, DocumentStatus
 from aios.main import app
 
@@ -48,7 +48,7 @@ def test_an_upload_goes_to_s3_under_the_stores_prefix(api, user, queued):
     assert r.status_code == 201, r.text
     doc = r.json()
     assert doc["size_bytes"] == len(PDF)
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     key = f"stores/{store_id}/documents/{doc['id']}"
     assert stored_keys(store_id) == [key]
     assert files.read(key) == PDF
@@ -84,14 +84,14 @@ def test_upload_enqueue_failure_returns_503_and_leaves_no_row_or_object(
         app.dependency_overrides.clear()
 
     assert resp.status_code == 503
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     with store_session(store_id, "ro") as store:
         assert store.scalars(select(Document)).all() == []
     assert stored_keys(store_id) == []
 
 
 def test_an_upload_whose_insert_fails_leaves_no_object(api, user, queued):
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
 
     def refuse_insert(conn, cursor, statement, *args):
         if statement.startswith("INSERT INTO aios.documents"):
@@ -112,7 +112,7 @@ def test_an_upload_whose_insert_fails_leaves_no_object(api, user, queued):
 def test_an_upload_whose_row_outlives_a_failed_enqueue_keeps_its_object(api, user, monkeypatch):
     # The broker is down, and so is the store by the time the row is to be removed again: the
     # row stays, so its file must too, for the document to be downloaded or deleted.
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
 
     def broker_down(*args):
         raise ConnectionError("broker unreachable")
@@ -144,7 +144,7 @@ def test_an_upload_that_s3_refuses_answers_503_and_leaves_no_row(api, user, queu
     r = upload(api)
 
     assert r.status_code == 503, r.text
-    with store_session(data_store_for(user.id), "ro") as store:
+    with store_session(store_of(user), "ro") as store:
         assert store.scalars(select(Document)).all() == []
     assert queued == []
 
@@ -160,7 +160,7 @@ def test_an_upload_whose_reply_from_s3_is_lost_leaves_no_object(api, user, queue
 
     assert upload(api).status_code == 503
 
-    assert stored_keys(data_store_for(user.id)) == []
+    assert stored_keys(store_of(user)) == []
     assert queued == []
 
 
@@ -169,7 +169,7 @@ def test_an_upload_over_the_limit_is_refused_before_s3(api, user, queued, monkey
 
     assert upload(api, data=b"four").status_code == 413
 
-    assert stored_keys(data_store_for(user.id)) == []
+    assert stored_keys(store_of(user)) == []
     assert queued == []
 
 
@@ -198,7 +198,7 @@ def test_ingest_reads_the_upload_from_s3(api, user, queued, monkeypatch):
 def test_ingest_fails_a_document_whose_object_is_gone(api, user, queued, monkeypatch):
     monkeypatch.setattr(ingest, "chunk_document", lambda *a: pytest.fail("nothing to chunk"))
     doc = upload(api).json()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     files.delete(files.document_key(store_id, doc["id"]))
 
     with pytest.raises(Exception, match="NoSuchKey"):
@@ -248,7 +248,7 @@ def test_an_ingest_that_cant_reach_s3_is_tried_again(
     api, user, queued, offline_chunks, monkeypatch, error
 ):
     doc = upload(api).json()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     retried = []
 
     def retry(**kwargs):
@@ -275,7 +275,7 @@ def test_an_ingest_that_still_cant_reach_s3_on_its_last_try_fails(
     api, user, queued, offline_chunks, monkeypatch
 ):
     doc = upload(api).json()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     s3_down_for(monkeypatch, 1, S3_UNREACHABLE)
     worker.ingest_document_task.push_request(
         id="last", retries=worker.FILES_RETRIES, called_directly=False
@@ -294,7 +294,7 @@ def test_an_ingest_that_still_cant_reach_s3_on_its_last_try_fails(
 
 def test_deleting_a_document_deletes_its_object(api, user, queued):
     doc = upload(api).json()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     assert stored_keys(store_id) != []
 
     assert api.delete(f"/api/documents/{doc['id']}").status_code == 204
@@ -309,7 +309,7 @@ def test_a_delete_holds_no_lock_on_the_document_while_s3_deletes_its_object(
     # S3 can be slow (its client's retries take minutes): meanwhile the document's ingest must
     # still be able to claim it, and no transaction sit idle into the store's timeout.
     doc = upload(api).json()
-    store_id = data_store_for(user.id)
+    store_id = store_of(user)
     delete = files.delete
     claimable = []
 
@@ -395,10 +395,10 @@ def test_each_download_mints_its_own_link(api, queued):
 def test_another_stores_document_is_a_404(api, db, user, queued):
     other = provisioned_user(db, "other-user")
     try:
-        with store_session(data_store_for(other.id), "rw") as store:
+        with store_session(store_of(other), "rw") as store:
             doc = Document(
                 filename="theirs.pdf",
-                s3_key=files.document_key(data_store_for(other.id), 1),
+                s3_key=files.document_key(store_of(other), 1),
                 size_bytes=1,
                 sha256="0" * 64,
             )
@@ -464,7 +464,7 @@ def test_uploaded_documents_are_listed_and_queued_in_the_users_store(api, user, 
 
     doc = api.post("/api/documents", files={"file": ("a.txt", b"hello", "text/plain")}).json()
 
-    assert queued == [(str(data_store_for(user.id)), doc["id"])]
+    assert queued == [(str(store_of(user)), doc["id"])]
     listed = api.get("/api/documents").json()
     assert [(d["id"], d["filename"], d["status"]) for d in listed] == [
         (doc["id"], "a.txt", "pending")

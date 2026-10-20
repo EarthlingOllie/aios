@@ -42,10 +42,10 @@ class Mention:
         assert self.prepared
         if self.cant_start:
             raise firing.CantStart(self.cant_start)
-        run = new_agent_run(db, db.get(Agent, self.agent_id))
+        run = new_agent_run(db, db.get(Agent, self.agent_id), created_by=self.user_id)
         db.commit()
         self.run_id = run.id
-        return firing.Turn(self.user_id, self.agent_id, run.id, self.message)
+        return firing.Turn(self.agent_id, run.id, self.message)
 
     def beat(self, db) -> None:
         self.beats += 1

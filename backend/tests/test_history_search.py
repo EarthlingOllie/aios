@@ -7,7 +7,7 @@ import math
 import re
 
 import pytest
-from conftest import delete_user, provisioned_user
+from conftest import delete_user, provisioned_user, store_of
 from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 from sqlalchemy import func, text, update
 from test_agents import agent_body, chat_body, make_agent
@@ -17,7 +17,6 @@ from aios import search, worker
 from aios.auth import current_user
 from aios.datastores import (
     DataStoreNotReady,
-    data_store_for,
     history,
     store_engine,
     store_session,
@@ -63,12 +62,12 @@ def embedded(monkeypatch) -> list[str]:
 
 
 def embed(api, on: bool):
-    return api.put("/api/settings", json={"embed_run_history": on})
+    return api.put("/api/organisation/settings", json={"embed_run_history": on})
 
 
 @pytest.fixture
 def store_id(user):
-    return data_store_for(user.id)
+    return store_of(user)
 
 
 def embedded_messages(store_id) -> list[tuple]:
@@ -248,7 +247,7 @@ def test_deleting_exported_history_embeds_it_again_as_its_exported_again(
     history.export(store_id)
     assert settings(api)["history_embedded_at"] is not None
 
-    assert api.delete("/api/settings/exported-history").status_code == 204
+    assert api.delete("/api/organisation/settings/exported-history").status_code == 204
 
     # Not caught up until what's exported again is embedded again.
     assert settings(api)["history_embedded_at"] is None
@@ -385,7 +384,7 @@ def test_searching_history_never_returns_another_stores_runs(
     other = provisioned_user(db, "other-user")
     try:
         app.dependency_overrides[current_user] = lambda: other
-        other_store = data_store_for(other.id)
+        other_store = store_of(other)
         switch(api, True)
         embed(api, True)
         set_up_and_export(other_store, history_tasks)

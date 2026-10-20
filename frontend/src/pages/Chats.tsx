@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
 import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
+import { ProvenanceLine } from "@/components/provenance";
 import {
   DetailPage,
   ErrorBanner,
@@ -12,13 +13,14 @@ import {
   MasterDetail,
   Placeholder,
   POLL_MS,
-  Section,
   selectClass,
+  useListHref,
   useLoad,
   usePoll,
   useVisible,
   type ListContext,
 } from "@/components/crud";
+import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,21 +32,39 @@ import {
   type ChatInput,
   type ChatListed,
   type ChatMember,
-  type ChatTargetKind,
+  type ChatMemberKind,
   type ChatVisibility,
 } from "@/lib/api";
+import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { useCurrentUser } from "@/lib/current-user";
+import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
 const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
-  public: { label: "Public", hint: "Anyone signed in can see it." },
+  public: { label: "Public", hint: "Every member of the organisation can find and join it." },
   private: { label: "Private", hint: "Only its members can see it." },
 };
 
 /** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
 export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
 const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
+
+// No sort menu: the list stays most recently active first.
+const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [
+      { key: "joined", label: "Joined", test: (chat) => chat.is_member },
+      { key: "not-joined", label: "Not joined", test: (chat) => !chat.is_member },
+      { key: "unread", label: "Unread", test: (chat) => (chat.unread_count ?? 0) > 0 },
+      { key: "private", label: "Private", test: (chat) => chat.visibility === "private" },
+    ],
+  },
+];
 
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
@@ -59,6 +79,8 @@ export function ChatsSection() {
       error={error}
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
+      search={nameAndDescription}
+      filters={CHAT_FILTERS}
       renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
@@ -112,6 +134,7 @@ export function ChatsIndex() {
 export function ChatDetail() {
   const id = Number(useParams().chatId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
   // Who the composer offers to mention: the members, again whenever they change.
@@ -123,6 +146,20 @@ export function ChatDetail() {
     [reloadChat, reloadMentionable],
   );
   const [actionError, setActionError] = useState<string>();
+  // The composer's unsent text, per chat. Held outside the room, which unmounts while the
+  // Members tab is open, and outside this page, so it survives the Edit page, another section
+  // and a reload; keyed so one chat's (or user's) draft never shows in another.
+  const userId = useCurrentUser()?.id ?? 0;
+  const [, rerender] = useState(0);
+  const draft = chatDrafts.get(userId, id);
+  const setDraft = useCallback(
+    (update: SetStateAction<string>) => {
+      const current = chatDrafts.get(userId, id);
+      chatDrafts.set(userId, id, typeof update === "function" ? update(current) : update);
+      rerender((n) => n + 1);
+    },
+    [userId, id],
+  );
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
     (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
@@ -137,7 +174,7 @@ export function ChatDetail() {
     try {
       await api.deleteChat(id);
       await reloadList();
-      navigate("/chats");
+      navigate(listHref("/chats"));
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -158,14 +195,14 @@ export function ChatDetail() {
       await api.leaveChat(id);
       await reloadList();
       // A private chat is gone for them once they've left; a public one is still there to read.
-      if (chat!.visibility === "private") navigate("/chats");
+      if (chat!.visibility === "private") navigate(listHref("/chats"));
       else await reload();
     } catch (err) {
       setActionError(describeError(err));
     }
   }
 
-  async function onAdd(kind: ChatTargetKind, targetId: number) {
+  async function onAdd(kind: ChatMemberKind, targetId: number) {
     try {
       await api.addChatMember(id, { kind, id: targetId });
       await Promise.all([reload(), reloadList()]);
@@ -198,13 +235,14 @@ export function ChatDetail() {
           <p>
             {plural(chat.member_count, "member")} · Last active {formatDate(chat.updated_at)}
           </p>
+          <ProvenanceLine of={chat} />
         </>
       }
       actions={
         chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
-              <Link to="edit">
+              <Link to={listHref(`/chats/${id}/edit`)}>
                 <Pencil />
                 Edit
               </Link>
@@ -228,21 +266,39 @@ export function ChatDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
-      <ChatRoom
-        key={chat.id}
-        chatId={chat.id}
-        canPost={chat.is_member}
-        mentionable={mentionable}
-        onPosted={reloadList}
-        onRead={chat.is_member ? onRead : undefined}
+      <Tabs
+        label="Chat details"
+        tabs={[
+          {
+            id: "chat",
+            label: "Chat",
+            content: (
+              <ChatRoom
+                key={chat.id}
+                chatId={chat.id}
+                canPost={chat.is_member}
+                mentionable={mentionable}
+                onPosted={reloadList}
+                onRead={chat.is_member ? onRead : undefined}
+                draft={draft}
+                onDraftChange={setDraft}
+              />
+            ),
+          },
+          {
+            id: "members",
+            label: "Members",
+            count: chat.member_count,
+            content: (
+              <MembersPanel
+                chat={chat}
+                onAdd={chat.is_owner ? onAdd : undefined}
+                onRemove={chat.is_owner ? onRemove : undefined}
+              />
+            ),
+          },
+        ]}
       />
-      <Section title="Members" label="Members">
-        <MembersPanel
-          chat={chat}
-          onAdd={chat.is_owner ? onAdd : undefined}
-          onRemove={chat.is_owner ? onRemove : undefined}
-        />
-      </Section>
     </DetailPage>
   );
 }
@@ -253,13 +309,13 @@ function MembersPanel({
   onRemove,
 }: {
   chat: Chat;
-  /** Set for the owner, who can add their own agents and workflows. */
-  onAdd?: (kind: ChatTargetKind, id: number) => Promise<void>;
+  /** Set for the owner, who can add the organisation's members, agents and workflows. */
+  onAdd?: (kind: ChatMemberKind, id: number) => Promise<void>;
   /** Set for the owner, who can remove any member but themselves. */
   onRemove?: (member: ChatMember) => void;
 }) {
-  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatTargetKind }[] = [
-    { title: "Users", members: chat.members.users, empty: "No users." },
+  const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatMemberKind }[] = [
+    { title: "Users", members: chat.members.users, empty: "No users.", add: "user" },
     { title: "Agents", members: chat.members.agents, empty: "No agents yet.", add: "agent" },
     { title: "Workflows", members: chat.members.workflows, empty: "No workflows yet.", add: "workflow" },
   ];
@@ -305,18 +361,26 @@ function MembersPanel({
   );
 }
 
-const ADDABLE = {
+/** The organisation's members, as the picker offers them. */
+async function listPeople(): Promise<{ id: number; name: string }[]> {
+  const { members } = await api.getOrganisation();
+  return members.map(({ user }) => ({ id: user.id, name: user.name }));
+}
+
+const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
+  user: { list: listPeople, a: "a member" },
   agent: { list: api.listAgents, a: "an agent" },
   workflow: { list: api.listWorkflows, a: "a workflow" },
 };
 
-/** The owner's picker for adding one of their agents or workflows that isn't a member yet. */
+/** The owner's picker for adding one of the organisation's members, agents or workflows that
+ * isn't in the chat yet. */
 function AddMember({
   kind,
   members,
   onAdd,
 }: {
-  kind: ChatTargetKind;
+  kind: ChatMemberKind;
   members: ChatMember[];
   onAdd: (id: number) => Promise<void>;
 }) {
@@ -357,7 +421,7 @@ function AddMember({
       </select>
       <Button type="submit" variant="outline" size="sm" disabled={!chosen || adding}>
         <Plus />
-        Add {kind}
+        Add {kind === "user" ? "member" : kind}
       </Button>
     </form>
   );
@@ -369,6 +433,7 @@ export function ChatForm() {
   const params = useParams();
   const id = params.chatId ? Number(params.chatId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<ChatInput>();
   const [error, setError] = useState<string>();
@@ -394,7 +459,7 @@ export function ChatForm() {
     try {
       const saved = id === undefined ? await api.createChat(form!) : await api.updateChat(id, form!);
       await reloadList();
-      navigate(`/chats/${saved.id}`);
+      navigate(listHref(`/chats/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -406,7 +471,7 @@ export function ChatForm() {
     <DetailPage title={id === undefined ? "New chat" : "Edit chat"}>
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
-        <Field label="Name" htmlFor="chat-name" hint="Unique among chats.">
+        <Field label="Name" htmlFor="chat-name" hint="Unique among the organisation's chats.">
           <Input
             id="chat-name"
             required

@@ -1,15 +1,22 @@
 import type { UIMessage } from "ai";
 
-/** The signed-in user (`GET /api/me`). */
-export type User = {
+/** A user's account: who's signed in (with their organisation, `Me`), and the dev picker's users. */
+export type Account = {
   id: number;
   first_name: string;
   last_name: string;
   email: string;
 };
 
+/** A user as everything else names them (who made, changed or started something; a member). */
+export type User = {
+  id: number;
+  /** Their full name, "First Last". */
+  name: string;
+};
+
 /** The name the app shows a user by, as the API does: "First Last". */
-export function fullName(user: Pick<User, "first_name" | "last_name">): string {
+export function fullName(user: Pick<Account, "first_name" | "last_name">): string {
   return `${user.first_name} ${user.last_name}`;
 }
 
@@ -25,9 +32,69 @@ export type Registration = {
   email: string;
   password: string;
   password_confirm: string;
+  /** The token of the invitation link whose page they came from: they join its organisation. */
+  invite?: string;
 };
 
-/** The user's data store: documents and search wait until it's "ready". */
+/**
+ * Who made something of the organisation's (an agent, skill, workflow or schedule) and who last
+ * changed it. Null once that member's account is deleted, or for what was made before
+ * organisations, where it isn't known.
+ */
+export type Provenance = { created_by: User | null; updated_by: User | null };
+
+/** The organisation the signed-in user is in, as `/api/me` says it: what the shell shows. */
+export type OrganisationSummary = {
+  id: number;
+  name: string;
+  /** Made for one user on sign-up (or on leaving another organisation). */
+  personal: boolean;
+  /** Whether the signed-in user created it; the creator alone can rename it. */
+  is_creator: boolean;
+};
+
+/** The signed-in user (`GET /api/me`), with their organisation. */
+export type Me = Account & { organisation: OrganisationSummary };
+
+export type OrganisationMember = {
+  user: User;
+  joined_at: string;
+  /** The invitation link they came in through, if any. */
+  invite_id: string | null;
+};
+
+/** The Organisation page. */
+export type Organisation = OrganisationSummary & {
+  /** Null once the creator's account is deleted. */
+  creator: User | null;
+  /** In the order they joined. */
+  members: OrganisationMember[];
+  created_at: string;
+};
+
+/** An open invitation link into the organisation, as its creator lists them. */
+export type Invite = {
+  id: string;
+  /** Null once their account is deleted. */
+  creator: User | null;
+  created_at: string;
+  expires_at: string;
+};
+
+/** A link just made: the only time its token (and so the link) is shown. */
+export type NewInvite = Invite & { token: string; url: string };
+
+/** What the invite page shows of an open link, to anyone holding it. */
+export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
+
+/** What can be in an organisation, as a refused accept counts it. */
+export type ContentKind = "agent" | "workflow" | "skill" | "chat" | "schedule" | "document" | "table";
+
+/** Accepting refused (a 409) because the user's organisation has things in it, which accepting
+ * would delete with it: the reason, and how many of each kind there are. */
+export type NotEmpty = { message: string; contents: { kind: ContentKind; count: number }[] };
+
+/** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
 
 /** What a data store uses, as last measured (null until it's first measured), and its caps. */
@@ -39,7 +106,7 @@ export type DataStoreUsage = {
   measured_at: string | null;
 };
 
-/** The user's settings (the Settings page). */
+/** The organisation's settings (the Organisation page), kept on its data store. */
 export type Settings = {
   /** Copy agent and workflow runs into the data store's `history` tables. */
   export_run_history: boolean;
@@ -65,6 +132,8 @@ export type DocumentInfo = {
   error: string | null;
   chunk_count: number;
   size_bytes: number;
+  /** The member who uploaded it; null for documents from before it was recorded. */
+  uploaded_by: User | null;
   created_at: string;
 };
 
@@ -79,7 +148,7 @@ export type DataColumn = {
   embedding: boolean;
 };
 
-/** A table in the store's `data` schema: what the user's agents keep. */
+/** A table in the store's `data` schema: what the organisation's agents keep. */
 export type DataTable = {
   name: string;
   description: string | null;
@@ -125,13 +194,15 @@ export type SearchHit = {
   lexical_rank: number | null;
 };
 
-export type SkillSummary = {
+export type SkillSummary = Provenance & {
   id: number;
   name: string;
   description: string;
   version: number;
   version_id: number;
   updated_at: string;
+  /** How many live agents' current versions use some version of it. */
+  agent_count: number;
 };
 
 export type SkillVersionSummary = {
@@ -139,6 +210,8 @@ export type SkillVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
 };
 
 export type SkillVersion = SkillVersionSummary & {
@@ -148,7 +221,7 @@ export type SkillVersion = SkillVersionSummary & {
   content: string;
 };
 
-export type Skill = {
+export type Skill = Provenance & {
   id: number;
   name: string;
   created_at: string;
@@ -207,6 +280,8 @@ export type AgentVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   skill_count: number;
   tool_count: number;
   run_count: number;
@@ -217,6 +292,8 @@ export type AgentVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   base_prompt: string;
   model: string | null;
   /** The exact instructions this version sends to the model. */
@@ -225,7 +302,7 @@ export type AgentVersion = {
   tools: AgentTool[];
 };
 
-export type AgentSummary = {
+export type AgentSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -234,11 +311,14 @@ export type AgentSummary = {
   version_id: number;
   skill_count: number;
   tool_count: number;
+  /** The skills (any version of each) and tools its current version has, in order. */
+  skill_ids: number[];
+  tool_keys: string[];
   run_count: number;
   updated_at: string;
 };
 
-export type Agent = {
+export type Agent = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -281,6 +361,9 @@ export type RunSummary = {
   /** The chat a mention in it started it from, while that chat exists. */
   chat_id: number | null;
   chat_name: string | null;
+  /** The member who started it (by hand, by a mention, or by starting the workflow run it's a
+   * node's conversation in); null for a schedule's run, or once that user is deleted. */
+  created_by: User | null;
   created_at: string;
   updated_at: string;
 };
@@ -313,7 +396,7 @@ export type SchemaChangeStatus =
   | "stale"
   | "cancelled";
 
-/** An agent's request to change the tables in the user's data store. */
+/** An agent's request to change the tables in the organisation's data store. */
 export type SchemaChangeRequest = {
   id: string;
   data_store_id: string;
@@ -392,13 +475,8 @@ export type NotificationList = {
 };
 
 export type Run = RunSummary & {
-  /** The agent's name: the reader may not own it, and so can't read the agent itself. */
+  /** The agent's name, so the page needn't read the agent as well. */
   agent_name: string;
-  /**
-   * Whether the reader owns the run's agent. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't message the agent or delete the run.
-   */
-  is_owner: boolean;
   ui_messages: UIMessage[];
   messages: ModelMessage[];
   /** The pinned version's instructions: the system prompt of every model call. */
@@ -435,6 +513,8 @@ export type WorkflowVersionSummary = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   node_count: number;
 };
 
@@ -443,11 +523,13 @@ export type WorkflowVersion = {
   version: number;
   note: string | null;
   created_at: string;
+  /** The member who saved it. */
+  created_by: User | null;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
 };
 
-export type WorkflowSummary = {
+export type WorkflowSummary = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -459,7 +541,7 @@ export type WorkflowSummary = {
   contains: number[];
 };
 
-export type Workflow = {
+export type Workflow = Provenance & {
   id: number;
   name: string;
   description: string;
@@ -504,6 +586,11 @@ export type WorkflowRunSummary = {
   /** The chat a mention in it started it from, while that chat exists. */
   chat_id: number | null;
   chat_name: string | null;
+  /** The member who started it (by hand, or by a mention); null for a schedule's run, or once
+   * that user is deleted. */
+  created_by: User | null;
+  /** The trigger (a schedule) that started it, if one did and it still exists. */
+  trigger_id: number | null;
 };
 
 /** A node that has started in a run; see plan/workflow-editor/runs-api.md. */
@@ -549,20 +636,15 @@ export type WorkflowRun = WorkflowRunSummary & {
 
 /** A workflow run as its page reads it. */
 export type WorkflowRunPage = WorkflowRun & {
-  /** The workflow's name: the reader may not own it, and so can't read the workflow itself. */
+  /** The workflow's name, so the page needn't read the workflow as well. */
   workflow_name: string;
-  /**
-   * Whether the reader owns the run's workflow. Anyone else reads it as a member of a chat that
-   * started it, and only reads it: they can't delete it or decide what it waits on.
-   */
-  is_owner: boolean;
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
 export type TriggerStatus = "running" | "succeeded" | "failed";
 
 /** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
-export type Trigger = {
+export type Trigger = Provenance & {
   id: number;
   kind: "schedule";
   target_kind: TriggerTargetKind;
@@ -657,7 +739,7 @@ export type AgentDeleteResolutions = {
 };
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
-/** The kinds of member a chat's owner adds from what they own. */
+/** The kinds of member that aren't users: the organisation's agents and workflows. */
 export type ChatTargetKind = Exclude<ChatMemberKind, "user">;
 
 /** Someone in a chat: a user (with a role), an agent or a workflow. */
@@ -674,14 +756,16 @@ export type ChatMember = {
   added_at: string;
 };
 
-export type ChatSummary = {
+/** Who made it and last changed it: the chat's owner role is separate (`is_owner`). */
+export type ChatSummary = Provenance & {
   id: number;
   name: string;
   description: string;
-  /** A private chat doesn't exist for anyone who isn't a member. */
+  /** Public: every member of the organisation can find it. Private: it doesn't exist for anyone
+   * who isn't in it. */
   visibility: ChatVisibility;
-  owner_id: number;
-  /** Whether the signed-in user owns it: only the owner edits, deletes or removes members. */
+  /** Whether the signed-in user is its owner (the role on their member row): only the owner
+   * edits, deletes or removes members. */
   is_owner: boolean;
   /** Whether the signed-in user is in it, and so can post: anyone can read a public chat. */
   is_member: boolean;
@@ -864,30 +948,51 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
-  me: () => request<User>("/api/me"),
-  register: (body: Registration) => request<User>("/api/auth/register", json("POST", body)),
+  me: () => request<Me>("/api/me"),
+  register: (body: Registration) => request<Me>("/api/auth/register", json("POST", body)),
   login: (body: { email: string; password: string }) =>
-    request<User>("/api/auth/login", json("POST", body)),
+    request<Me>("/api/auth/login", json("POST", body)),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   authOptions: () => request<AuthOptions>("/api/auth/options"),
-  devUsers: () => request<User[]>("/api/dev/users"),
-  devSignIn: (userId: number) => request<User>("/api/dev/session", json("POST", { user_id: userId })),
+  devUsers: () => request<Account[]>("/api/dev/users"),
+  devSignIn: (userId: number) => request<Me>("/api/dev/session", json("POST", { user_id: userId })),
   /** Change the signed-in user's name; a name left out is kept. */
   updateMe: (body: { first_name?: string; last_name?: string }) =>
-    request<User>("/api/me", json("PATCH", body)),
+    request<Me>("/api/me", json("PATCH", body)),
   /** Change the email the signed-in user signs in with; it takes their current password. */
   changeEmail: (body: { email: string; current_password: string }) =>
-    request<User>("/api/me/email", json("PUT", body)),
+    request<Me>("/api/me/email", json("PUT", body)),
   /** Change the signed-in user's password. It signs out their other sessions, not this one. */
   changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
     request<void>("/api/me/password", json("PUT", body)),
+  getOrganisation: () => request<Organisation>("/api/organisation"),
+  /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
+  renameOrganisation: (name: string) =>
+    request<Organisation>("/api/organisation", json("PUT", { name })),
+  /** Invitation links: the creator only (a 403 otherwise). */
+  listInvites: () => request<Invite[]>("/api/organisation/invites"),
+  makeInvite: (expiresInDays: number) =>
+    request<NewInvite>("/api/organisation/invites", json("POST", { expires_in_days: expiresInDays })),
+  revokeInvite: (id: string) =>
+    request<void>(`/api/organisation/invites/${id}`, { method: "DELETE" }),
+  /** No sign-in needed; an expired or revoked link is a 404. */
+  getInvitation: (token: string) =>
+    request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
+  /** A 409 says why the user can't join (they're in another organisation). */
+  /** From an empty personal organisation, deletes it; a 409 (`NotEmpty`'s detail when it has
+   * things in it) when the user can't. */
+  acceptInvitation: (token: string) =>
+    request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
+  /** A 409 for the last member, and for the creator while others remain; otherwise the new
+   * personal organisation the user lands in. */
+  leaveOrganisation: () => request<Organisation>("/api/organisation/leave", { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
-  getSettings: () => request<Settings>("/api/settings"),
+  getSettings: () => request<Settings>("/api/organisation/settings"),
   updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
-    request<Settings>("/api/settings", json("PUT", body)),
+    request<Settings>("/api/organisation/settings", json("PUT", body)),
   deleteExportedHistory: () =>
-    request<void>("/api/settings/exported-history", { method: "DELETE" }),
+    request<void>("/api/organisation/settings/exported-history", { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>("/api/documents"),
   deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
