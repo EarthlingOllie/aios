@@ -90,6 +90,8 @@ test("changing your email needs your current password, then signs you in with th
 
   // Only the new email signs in.
   await page.locator("aside").getByRole("button", { name: "Sign out" }).click();
+  // Signing out loads /login; until then Settings' email form is still on the page.
+  await expect(page).toHaveURL("/login");
   await page.getByLabel("Email").fill("tester@example.com");
   await page.getByLabel("Password").fill("correct horse battery");
   await page.getByRole("button", { name: "Sign in" }).click();
