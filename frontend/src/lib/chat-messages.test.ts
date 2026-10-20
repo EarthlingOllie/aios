@@ -19,7 +19,7 @@ function message(id: number, body = `message ${id}`): ChatMessage {
   return {
     id,
     chat_id: 1,
-    author: { kind: "user", id: 1, name: "Tester", login: "tester", avatar_url: null },
+    author: { kind: "user", id: 1, name: "Terry Tester" },
     kind: "text",
     body,
     mentions: [],

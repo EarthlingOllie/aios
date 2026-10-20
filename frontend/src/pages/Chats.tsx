@@ -277,16 +277,10 @@ function MembersPanel({
                   <ChatAvatar
                     kind={member.kind}
                     name={member.name}
-                    avatarUrl={member.avatar_url}
                     // The name is beside it; an agent's or workflow's icon says which it is.
                     alt={member.kind === "user" ? "" : MEMBER_KIND[member.kind].label}
                   />
-                  <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate">
-                    <span>{member.name}</span>
-                    {member.login && member.login !== member.name && (
-                      <span className="text-muted-foreground text-xs">@{member.login}</span>
-                    )}
-                  </span>
+                  <span className="min-w-0 flex-1 truncate">{member.name}</span>
                   {member.role === "owner" && <Badge variant="secondary">owner</Badge>}
                   {onRemove && member.role !== "owner" && (
                     <Button
