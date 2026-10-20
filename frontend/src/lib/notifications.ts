@@ -13,7 +13,7 @@ export function describeNotification(notification: Notification): NotificationVi
     return {
       heading: "A schema change is waiting for you",
       detail: notification.title ?? "This request no longer exists.",
-      to: `/data?tab=changes&request=${encodeURIComponent(notification.ref.request_id)}`,
+      to: `/data/changes?request=${encodeURIComponent(notification.ref.request_id)}`,
     };
   }
   return { heading: notification.title ?? "Notification", detail: null, to: null };

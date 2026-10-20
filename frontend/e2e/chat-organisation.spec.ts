@@ -50,9 +50,9 @@ test("the owner adds a fellow member and another member's agent", async ({ page 
   const agent = api.addAgent("Their reviewer");
   agent.created_by = sam;
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(`/chats/${chat.id}/members`);
 
-  const members = page.getByRole("region", { name: "Members" });
+  const members = page.getByRole("tabpanel", { name: /Members/ });
   await members.getByLabel("Add a member").selectOption("Sam Jones");
   await members.getByRole("button", { name: "Add member" }).click();
   await expect(members.getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([

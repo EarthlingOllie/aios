@@ -13,7 +13,7 @@ test("an agent's runs say who started each, or that a schedule did", async ({ pa
   const scheduled = api.addAgentRun(agent, "Morning digest", 2, { created_by: null, trigger_id: 7 });
   const theirs = api.addAgentRun(agent, "Sam's question", 2, { created_by: sam });
   const mine = api.addAgentRun(agent, "My question", 2);
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
 
   const row = (title: string) => page.getByRole("listitem").filter({ hasText: title });
   await expect(row("Morning digest").getByTestId("started-by")).toHaveText("Scheduled");
@@ -44,7 +44,7 @@ test("a workflow's runs say who started each, or that a schedule did", async ({ 
   const done = { status: "succeeded" as const, finished_at: "2026-10-15T12:05:00Z" };
   api.addRun(report, { ...done, input: "Scheduled report", created_by: null, trigger_id: 7 });
   const theirs = api.addRun(report, { ...done, input: "Sam's report", created_by: sam });
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(`/workflows/${report.id}/runs`);
 
   const runs = page.getByRole("list", { name: "Runs" });
   const row = (input: string) => runs.getByRole("listitem").filter({ hasText: input });

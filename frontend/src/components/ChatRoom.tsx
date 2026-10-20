@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
 import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
@@ -82,7 +92,8 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * offers `mentionable`; a message mentioning the signed-in user is highlighted. A mentioned agent's
  * or workflow's acknowledgement carries a card following its run, kept up to date by the same poll,
  * which brings the state of every invocation still going. Whenever the reader is at the bottom of
- * the visible chat, `onRead` hears of the newest message, once each.
+ * the visible chat, `onRead` hears of the newest message, once each. The composer's unsent text is
+ * held by the caller (`draft`), so it outlives the room, e.g. while another tab is open.
  */
 export function ChatRoom({
   chatId,
@@ -90,6 +101,8 @@ export function ChatRoom({
   mentionable,
   onPosted,
   onRead,
+  draft,
+  onDraftChange,
 }: {
   chatId: number;
   /** Members post; anyone else may only read. */
@@ -103,6 +116,9 @@ export function ChatRoom({
    * fails, the same message is reported again the next time the reader is seen at the bottom.
    */
   onRead?: (messageId: number) => Promise<unknown>;
+  /** What's in the composer, not yet sent. */
+  draft: string;
+  onDraftChange: Dispatch<SetStateAction<string>>;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>();
   const [invocations, setInvocations] = useState<Invocations>({});
@@ -111,7 +127,6 @@ export function ChatRoom({
   // Set at once, unlike the state: scroll events come faster than renders.
   const loadingOlderNow = useRef(false);
   const [error, setError] = useState<string>();
-  const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   // What's shown, as of the last read: polls take their cursor from it.
@@ -221,6 +236,9 @@ export function ChatRoom({
     if (!body.trim() || posting) return;
     setPosting(true);
     setError(undefined);
+    // What's being sent leaves the composer at once: the draft outlives this room (and `posting`),
+    // so left in place it could be sent again from the room shown on coming back to the chat.
+    onDraftChange("");
     try {
       // Only the members the composer offered are mentions; any other token is plain text.
       const mentions = mentionable ? mentionsIn(body, mentionable) : [];
@@ -228,10 +246,11 @@ export function ChatRoom({
       const posted = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
       show(posted, { to: "bottom" });
-      setDraft("");
       onPosted?.();
     } catch (err) {
       setError(describeError(err));
+      // Not sent: back in the composer to try again, unless something else was typed since.
+      onDraftChange((current) => current || body);
     } finally {
       setPosting(false);
     }
@@ -272,7 +291,7 @@ export function ChatRoom({
           id={`chat-${chatId}-composer`}
           placeholder="Write a message"
           value={draft}
-          onChange={setDraft}
+          onChange={onDraftChange}
           busy={false}
           disabled={posting}
           onStop={() => undefined}

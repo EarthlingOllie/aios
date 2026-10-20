@@ -74,7 +74,7 @@ export function WaitingSection({
                   </Button>
                 )}
                 <Button asChild size="sm" variant="ghost">
-                  <Link to="/data?tab=changes">
+                  <Link to="/data/changes">
                     <Database />
                     All schema changes
                   </Link>

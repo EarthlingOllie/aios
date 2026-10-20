@@ -10,6 +10,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   usePoll,
   type ListContext,
@@ -19,17 +20,41 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { TargetSchedules } from "@/components/schedules";
+import { Tabs } from "@/components/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { RestoreButton, VersionBadge, VersionHistory } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
 import { GraphEditor } from "@/components/workflow/editor";
 import { Inspector } from "@/components/workflow/inspector";
 import { RunStatusBadge } from "@/components/workflow/status";
-import { api, describeError, type NodePosition, type WorkflowVersion } from "@/lib/api";
+import {
+  api,
+  describeError,
+  type NodePosition,
+  type WorkflowSummary,
+  type WorkflowVersion,
+} from "@/lib/api";
 import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
+import {
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 
+const WORKFLOW_FILTERS: ListFilterGroup<WorkflowSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [{ key: "empty", label: "Empty", test: (workflow) => workflow.node_count === 0 }],
+  },
+];
+
+const WORKFLOW_SORTS: ListSort<WorkflowSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function WorkflowsSection() {
   const { data, error, reload } = useLoad(api.listWorkflows);
@@ -41,6 +66,9 @@ export function WorkflowsSection() {
       error={error}
       empty="No workflows yet. A workflow chains agents, and other workflows, into a graph."
       reloadList={reload}
+      search={nameAndDescription}
+      filters={WORKFLOW_FILTERS}
+      sorts={WORKFLOW_SORTS}
       renderItem={(workflow) => (
         <>
           <div className="flex items-center gap-2">
@@ -115,6 +143,7 @@ export function WorkflowDetail() {
 
 function WorkflowDetailView({ id }: { id: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const versions = useLoad(useCallback(() => api.listWorkflowVersions(id), [id]));
@@ -145,7 +174,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     try {
       await api.deleteWorkflow(id);
       await reloadList();
-      navigate("/workflows");
+      navigate(listHref("/workflows"));
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -157,7 +186,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     setActionError(undefined);
     try {
       const run = await api.createWorkflowRun(id, runInput!);
-      navigate(`runs/${run.id}`);
+      navigate(listHref(`/workflows/${id}/runs/${run.id}`));
     } catch (err) {
       setActionError(describeError(err));
     } finally {
@@ -190,7 +219,7 @@ function WorkflowDetailView({ id }: { id: number }) {
             Run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref(`/workflows/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -228,62 +257,94 @@ function WorkflowDetailView({ id }: { id: number }) {
           </div>
         </form>
       )}
-      <Section title="Graph">
-        {/* Keyed so the selection resets when the graph changes under it. */}
-        <GraphView
-          key={current.id}
-          version={current}
-          layout={w.layout}
-          editHref={`/workflows/${id}/edit`}
-        />
-      </Section>
-      <TargetSchedules kind="workflow" id={id} />
-      <Section title="Runs">
-        {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
-        {runs.data?.length === 0 && (
-          <p className="text-muted-foreground text-sm">No runs yet. Start one to watch it go.</p>
-        )}
-        {!!runs.data?.length && (
-          <ul aria-label="Runs" className="divide-y rounded-md border">
-            {runs.data.map((run) => (
-              <li key={run.id}>
-                <Link
-                  to={`runs/${run.id}`}
-                  className="hover:bg-accent flex items-center gap-3 px-3 py-2"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">{run.input}</span>
-                    <span className="text-muted-foreground flex items-center gap-1 text-xs">
-                      {formatDate(run.created_at)}
-                      <StartedBy run={run} before="· " />
-                      {run.chat_id !== null && (
-                        <span className="flex min-w-0 items-center gap-1" data-testid="started-from-chat">
-                          · <MessagesSquare className="size-3.5 shrink-0" aria-hidden />
-                          <span className="truncate">Started from the chat {run.chat_name}</span>
-                        </span>
-                      )}
-                    </span>
-                  </span>
-                  <VersionBadge version={run.workflow_version} />
-                  <RunStatusBadge status={run.status} />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <Section title="Version history">
-        <VersionHistory
-          versions={versions.data}
-          error={versions.error}
-          current={current.version}
-          href={(v) => `/workflows/${id}/versions/${v}`}
-          detail={(v) => {
-            const s = versions.data?.find((x) => x.version === v);
-            return plural(s?.node_count ?? 0, "node");
-          }}
-        />
-      </Section>
+      <Tabs
+        label="Workflow details"
+        tabs={[
+          {
+            id: "graph",
+            label: "Graph",
+            content: (
+              // Keyed so the selection resets when the graph changes under it.
+              <GraphView
+                key={current.id}
+                version={current}
+                layout={w.layout}
+                editHref={listHref(`/workflows/${id}/edit`)}
+              />
+            ),
+          },
+          {
+            id: "runs",
+            label: "Runs",
+            count: runs.data?.length,
+            content: (
+              <>
+                {runs.error && <p className="text-destructive text-sm">{runs.error}</p>}
+                {runs.data?.length === 0 && (
+                  <p className="text-muted-foreground text-sm">
+                    No runs yet. Start one to watch it go.
+                  </p>
+                )}
+                {!!runs.data?.length && (
+                  <ul aria-label="Runs" className="divide-y rounded-md border">
+                    {runs.data.map((run) => (
+                      <li key={run.id}>
+                        <Link
+                          to={listHref(`/workflows/${id}/runs/${run.id}`)}
+                          className="hover:bg-accent flex items-center gap-3 px-3 py-2"
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm">{run.input}</span>
+                            <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                              {formatDate(run.created_at)}
+                              <StartedBy run={run} before="· " />
+                              {run.chat_id !== null && (
+                                <span
+                                  className="flex min-w-0 items-center gap-1"
+                                  data-testid="started-from-chat"
+                                >
+                                  · <MessagesSquare className="size-3.5 shrink-0" aria-hidden />
+                                  <span className="truncate">
+                                    Started from the chat {run.chat_name}
+                                  </span>
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                          <VersionBadge version={run.workflow_version} />
+                          <RunStatusBadge status={run.status} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ),
+          },
+          {
+            id: "versions",
+            label: "Versions",
+            count: versions.data?.length,
+            content: (
+              <VersionHistory
+                versions={versions.data}
+                error={versions.error}
+                current={current.version}
+                href={(v) => listHref(`/workflows/${id}/versions/${v}`)}
+                detail={(v) => {
+                  const s = versions.data?.find((x) => x.version === v);
+                  return plural(s?.node_count ?? 0, "node");
+                }}
+              />
+            ),
+          },
+          {
+            id: "schedule",
+            label: "Schedule",
+            content: <TargetSchedules kind="workflow" id={id} />,
+          },
+        ]}
+      />
     </DetailPage>
   );
 }
@@ -296,6 +357,7 @@ export function WorkflowVersionPage() {
 
 function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
@@ -312,7 +374,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
     try {
       await api.restoreWorkflowVersion(id, number);
       await reloadList();
-      navigate(`/workflows/${id}`);
+      navigate(listHref(`/workflows/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -323,7 +385,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
       wide
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/workflows/${id}`} className="hover:underline">
+          <Link to={listHref(`/workflows/${id}/versions`)} className="hover:underline">
             {workflow.data.name}
           </Link>
           <VersionBadge version={v.version} />
@@ -352,6 +414,7 @@ export function WorkflowEditorPage() {
 
 function WorkflowEditorView({ id }: { id: number | undefined }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [meta, setMeta] = useState<{ name: string; description: string; note: string }>();
   const [draft, setDraft] = useState<Draft>();
@@ -429,7 +492,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const back = () => {
     if (dirty && !window.confirm("Discard your unsaved changes?")) return;
     done.current = true;
-    navigate(id === undefined ? "/workflows" : `/workflows/${id}`);
+    navigate(listHref(id === undefined ? "/workflows" : `/workflows/${id}`));
   };
 
   async function onSubmit(e: React.FormEvent) {
@@ -443,7 +506,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
       await reloadList();
       done.current = true;
-      navigate(`/workflows/${saved.id}`);
+      navigate(listHref(`/workflows/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

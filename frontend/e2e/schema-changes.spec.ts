@@ -172,7 +172,7 @@ test("the Changes section lists pending requests first, with the run that asked"
     decided_at: "2026-10-14T10:00:00Z",
     resumed_at: "2026-10-14T10:00:01Z",
   });
-  await page.goto("/data?tab=changes");
+  await page.goto("/data/changes");
 
   const pending = page.getByRole("region", { name: "Pending changes" });
   const history = page.getByRole("region", { name: "Change history" });
@@ -193,7 +193,7 @@ test("the Changes section lists pending requests first, with the run that asked"
 test("deciding from the Changes section moves the request to the history", async ({ page }) => {
   const api = await fakeApi(page);
   const { request } = waitingRun(api);
-  await page.goto("/data?tab=changes");
+  await page.goto("/data/changes");
 
   await card(page).getByRole("button", { name: "Approve" }).click();
 
@@ -220,7 +220,7 @@ test("the history shows expired and cancelled requests, with no controls", async
     decided_at: "2026-10-15T10:00:00Z",
     resumed_at: "2026-10-15T10:00:00Z",
   });
-  await page.goto("/data?tab=changes");
+  await page.goto("/data/changes");
 
   const history = page.getByRole("region", { name: "Change history" });
   const expired = history.getByRole("region", { name: "Schema change: Create table data.places" });
@@ -239,7 +239,7 @@ test("the history shows expired and cancelled requests, with no controls", async
 test("a request the user may not decide has no controls", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSchemaChange({ decider: false });
-  await page.goto("/data?tab=changes");
+  await page.goto("/data/changes");
 
   await expect(card(page)).toBeVisible();
   await expect(card(page).getByRole("button")).toHaveCount(0);

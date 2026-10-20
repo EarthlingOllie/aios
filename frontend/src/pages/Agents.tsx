@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import {
   ArrowUpCircle,
   CalendarClock,
@@ -18,6 +18,7 @@ import {
   MasterDetail,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   type ListContext,
 } from "@/components/crud";
@@ -43,13 +44,95 @@ import {
   type Agent,
   type AgentInput,
   type AgentSkill,
+  type AgentSummary,
   type AgentVersion,
   type SkillSummary,
   type ToolInfo,
 } from "@/lib/api";
+import {
+  byMostRuns,
+  nameAndDescription,
+  NAME_SORT,
+  UPDATED_SORT,
+  type ListFilterGroup,
+  type ListSort,
+} from "@/lib/list-filter";
+
+const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [
+      { key: "used", label: "Used", test: (agent) => agent.run_count > 0 },
+      { key: "unused", label: "Unused", test: (agent) => agent.run_count === 0 },
+    ],
+  },
+];
+
+const AGENT_SORTS: ListSort<AgentSummary>[] = [
+  NAME_SORT,
+  UPDATED_SORT,
+  { key: "runs", label: "Most runs", compare: byMostRuns },
+];
+
+/**
+ * The Agents list's filters: Used or Unused, and the select of a skill and of a tool, filled
+ * from the user's skills and the tool library. Until those have loaded (or if they can't), the
+ * skill or tool already in the URL (`chosen`) is the only option, so a link opens filtered
+ * straight away; once they have, one that doesn't exist is as if none were chosen.
+ */
+function agentFilters(
+  skills: SkillSummary[] | undefined,
+  tools: ToolInfo[] | undefined,
+  chosen: { skill: string | null; tool: string | null },
+): ListFilterGroup<AgentSummary>[] {
+  const choices = (loaded: { key: string; label: string }[] | undefined, key: string | null) =>
+    loaded ?? (key ? [{ key, label: key }] : []);
+  const skillChoices = choices(
+    skills?.map((skill) => ({ key: String(skill.id), label: skill.name })),
+    chosen.skill,
+  );
+  const toolChoices = choices(
+    tools?.map((tool) => ({ key: tool.key, label: tool.name })),
+    chosen.tool,
+  );
+  return [
+    ...AGENT_FILTERS,
+    {
+      param: "skill",
+      label: "Skill",
+      all: "Any skill",
+      kind: "select",
+      options: skillChoices.map((choice) => ({
+        ...choice,
+        test: (agent) => agent.skill_ids.map(String).includes(choice.key),
+      })),
+    },
+    {
+      param: "tool",
+      label: "Tool",
+      all: "Any tool",
+      kind: "select",
+      options: toolChoices.map((choice) => ({
+        ...choice,
+        test: (agent) => agent.tool_keys.includes(choice.key),
+      })),
+    },
+  ];
+}
 
 export function AgentsSection() {
   const { data, error, reload } = useLoad(api.listAgents);
+  const { data: skills } = useLoad(api.listSkills);
+  const { data: tools } = useLoad(api.listTools);
+  const [params] = useSearchParams();
+  const skill = params.get("skill");
+  const tool = params.get("tool");
+  const filters = useMemo(
+    () => agentFilters(skills, tools, { skill, tool }),
+    [skills, tools, skill, tool],
+  );
   return (
     <MasterDetail
       title="Agents"
@@ -58,6 +141,9 @@ export function AgentsSection() {
       error={error}
       empty="No agents yet. An agent is a base prompt plus a set of skills and tools."
       reloadList={reload}
+      search={nameAndDescription}
+      filters={filters}
+      sorts={AGENT_SORTS}
       renderItem={(agent) => (
         <>
           <div className="flex items-center gap-2">
@@ -138,6 +224,7 @@ function VersionConfig({ version }: { version: AgentVersion }) {
 export function AgentDetail() {
   const id = Number(useParams().agentId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
@@ -166,14 +253,14 @@ export function AgentDetail() {
 
   const onDeleted = async () => {
     await reloadList();
-    navigate("/agents");
+    navigate(listHref("/agents"));
   };
 
   const onNewRun = () =>
     act(async () => {
       const run = await api.createRun(id);
       reloadList();
-      navigate(`runs/${run.id}`);
+      navigate(listHref(`/agents/${id}/runs/${run.id}`));
     });
 
   const onUpdateSkill = (skill: AgentSkill) => {
@@ -231,7 +318,7 @@ export function AgentDetail() {
             New run
           </Button>
           <Button asChild variant="outline" size="sm">
-            <Link to="edit">
+            <Link to={listHref(`/agents/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
@@ -314,7 +401,7 @@ export function AgentDetail() {
                     {runs.data.map((run) => (
                       <li key={run.id} className="group flex items-center gap-2 pr-2">
                         <Link
-                          to={`runs/${run.id}`}
+                          to={listHref(`/agents/${id}/runs/${run.id}`)}
                           className="hover:bg-accent flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
                         >
                           {run.trigger_id ? (
@@ -375,7 +462,7 @@ export function AgentDetail() {
                 versions={versions.data}
                 error={versions.error}
                 current={current.version}
-                href={(v) => `/agents/${id}/versions/${v}`}
+                href={(v) => listHref(`/agents/${id}/versions/${v}`)}
                 detail={(v) => {
                   const s = versions.data?.find((x) => x.version === v);
                   const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -409,6 +496,7 @@ export function AgentVersionPage() {
 
 function AgentVersionView({ id, number }: { id: number; number: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const version = useLoad(useCallback(() => api.getAgentVersion(id, number), [id, number]));
@@ -439,7 +527,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
       await api.restoreAgentVersion(id, number);
       await reloadList();
       // Back to where the version was opened from, which now lists the restored copy as current.
-      navigate(`/agents/${id}?tab=versions`);
+      navigate(listHref(`/agents/${id}/versions`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -449,7 +537,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
     <DetailPage
       title={
         <span className="flex items-center gap-2">
-          <Link to={`/agents/${id}?tab=versions`} className="hover:underline">
+          <Link to={listHref(`/agents/${id}/versions`)} className="hover:underline">
             {agent.data.name}
           </Link>
           <VersionBadge version={v.version} />
@@ -508,6 +596,7 @@ export function AgentForm() {
   const params = useParams();
   const id = params.agentId ? Number(params.agentId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<FormState>();
   // The version being edited, if any.
@@ -581,7 +670,7 @@ export function AgentForm() {
     try {
       const saved = id === undefined ? await api.createAgent(body) : await api.updateAgent(id, body);
       await reloadList();
-      navigate(`/agents/${saved.id}`);
+      navigate(listHref(`/agents/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

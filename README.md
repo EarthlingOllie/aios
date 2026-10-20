@@ -9,13 +9,25 @@ You can also define your own **agents** (a base prompt plus a set of **skills**,
 reusable instructions, and **tools** from a built-in library: web search; document search,
 the same hybrid search as the documents assistant's, over the documents of the agent's organisation;
 and run history search, the same over its exported past runs)
-and chat with them. The **Search** page runs that hybrid search directly, with no agent in
+and chat with them. The Agents and Skills lists each have a search box: every word typed must
+appear in an item's name or description, ignoring case and accents, and the list shows how many
+of its items match ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a
+shared link or Back keeps it, and opening, editing, creating or deleting an item, or its versions
+and runs, leaves the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and Unused; Skills:
+All, Used, i.e. by some live agent's current version, and Unused, each saying "Used by 3
+agents") and a sort menu (by name, the default, by most recently updated, and for agents by
+most runs) narrow and order the list, combined with the search and kept in the URL too
+(`?filter=used&sort=runs`);
+**Clear filters** resets them all. The Agents list also has an **Any skill** and an **Any tool**
+select, for the agents whose current version uses that skill (any version of it) or has that
+tool (`?skill=12&tool=web_search`). Pressing `/` jumps to the list's search box, except while
+typing in a field. The **Search** page runs that hybrid search directly, with no agent in
 between, and shows each passage with how the semantic and keyword branches ranked it. The
 **Data** page shows the organisation's data store, the same for every member: its status (Overview), the schema changes its agents
 asked for (Changes: those waiting for a decision, then the history), the tables and columns
 they dropped (Dropped: restorable until purged), and its documents, with each one's ingest
 status, chunk count, size, upload time and who uploaded it, upload, download and delete (the chat's documents
-panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data?tab=documents`). Each
+panel in the Chats section uploads to the same list). Each section is a tab with its own URL (`/data/documents`). Each
 conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
 conversation and an event log: messages, model responses, tool calls and results, the
 instructions sent and token usage. A run also records how it went and what it cost: a status
@@ -41,6 +53,10 @@ the model's behaviour:
 - Restoring an old version creates a new one with that config; numbers only go up.
 - Skills are soft-deleted (old agent versions still reference their versions), and can't be
   deleted while an agent's current version uses them.
+- A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
+  by (the agents whose current version uses it, with a count) and Versions (with a count). The
+  open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
+  and restoring a version returns there.
 - Each run is traced to Langfuse when it's configured (see [Tracing](#tracing)), with
   `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
@@ -48,7 +64,11 @@ the model's behaviour:
 
 **Workflows** graph agents together, and can run other workflows as subgraphs (`/api/workflows`).
 The Workflows page draws each one as a graph (React Flow, laid out with dagre); clicking a node or
-an edge shows its configuration. Its editor adds nodes for your agents and workflows, connects
+an edge shows its configuration. Its list can be searched by name and description, as the Agents
+list can, filtered to the empty workflows (no nodes) and sorted by name or most recently updated. A workflow's page has tabs, as an agent's does: Graph, Runs and
+Versions (each with its count) and Schedule, the open one kept in the URL (`/workflows/7/runs`); its
+title, actions and the form to start a run stay above them, and a run's or a version's page links
+back to its tab. Its editor adds nodes for your agents and workflows, connects
 them by dragging between nodes, and removes, renames or re-points them, refusing edges that would
 make a cycle before you save. Runs are started from the workflow's page; a run's page draws the
 path it took on the graph (which nodes succeeded, failed or never ran, and the edges their
@@ -145,8 +165,11 @@ which says why, as 0015 did). A user is in exactly one organisation at a time: m
 table, held to one per user by a unique index, and the request's organisation is resolved in
 one place (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency), never named
 in a URL or header. `GET /api/me` says which organisation the user is in and the shell shows
-its name, which opens the **Organisation** page (`GET /api/organisation`): the name, the creator
-and the members with when each joined. Only the creator renames it (`PUT /api/organisation`; a
+its name, which opens the **Organisation** page (`GET /api/organisation`): the name and the
+creator above three tabs, as on the agent page, each a route: **Members**, with when each joined
+and the count (`/organisation`); **Invitations**, the links, for the creator only
+(`/organisation/invitations`); and **Settings**, the run history export and leaving
+(`/organisation/settings`). Only the creator renames it (`PUT /api/organisation`; a
 403 for another member, a 409 for a name another organisation has): a stopgap role until roles
 exist. The **Settings** page is the user's own and links to it.
 
@@ -160,7 +183,7 @@ lists and pages: `aios.api.provenance`), each version which member saved it, and
 records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
 agents and workflows, and deleting an agent finds what depends on it across the organisation.
 Nothing answers to whoever made it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
-run history export, on the Organisation page.
+run history export, on the Organisation page's Settings tab.
 
 **Runs** execute for the organisation, however they start: by hand, by a schedule, by a chat
 mention, or as a workflow's agent node. A run's tools use the organisation's store, its trace
@@ -173,8 +196,9 @@ pages show the member, with their avatar, or "Scheduled". Every member reads, co
 deletes every run in the organisation, the ones chats and schedules started included, and to
 anyone else each is a 404.
 
-The creator brings people in with **invitation links**, made on the Organisation page
-(`POST /api/organisation/invites`, `expires_in_days` 1 to 30, a week by default): the response
+The creator brings people in with **invitation links**, made on the Organisation page's
+Invitations tab (`/organisation/invitations`; `POST /api/organisation/invites`, `expires_in_days`
+1 to 30, a week by default): the response
 carries the link's random token once, and only its hash is stored, so the page shows the link to
 copy and never again. `GET` lists the open links (who made each, when it expires) and `DELETE
 .../invites/{id}` revokes one; all three are the creator's (a 403 for another member). The link
@@ -189,7 +213,8 @@ and holding nothing but the defaults (no agents but the documents assistant, no 
 skills, chats, schedules, documents or data tables). The empty one is deleted as they join, and
 its data store goes `deleting` for the provisioning worker to drop (see Data stores). Otherwise
 it's a 409 with the reason: when their organisation has things in it, how many of each kind, which
-the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page (`POST /api/organisation/leave`): they drop
+the invite page lists with links to where each can be deleted. A member **leaves** from the Organisation page's Settings tab
+(`/organisation/settings`; `POST /api/organisation/leave`): they drop
 out of the organisation's chats (an add, a join or a new chat of theirs at the same moment is a
 404, not a way back into one), their unread notifications about its schema change requests go,
 and they land in a new personal organisation with a data store of its own; what they made stays,
@@ -203,10 +228,17 @@ the page).
 organisation doesn't exist for you (a 404 on every endpoint), and names are unique within the
 organisation (a 409), like channels, so two organisations can each have "general". The
 **Chats** page lists the organisation's chats you're in, and its public ones you aren't (marked
-"Not joined", so you can find them), most recently active first, and opens one to its header
-(which says which member created it: `created_by`, `updated_by`, as `aios.api.provenance`
-reports them), messages and members, grouped by kind: users, **agents and workflows**, with the
-icons the navigation uses. The owner adds any member of the organisation, and any of its agents
+"Not joined", so you can find them), most recently active first, with a search box over their
+names and descriptions and filter buttons (All, Joined, Not joined, Unread, Private), kept in the
+URL as on the Agents list, and as the list refreshes (it has no sort menu). It opens one to its
+header (name, description, member count, Edit, Delete, Join or Leave, and which member created
+it: `created_by`, `updated_by`, as `aios.api.provenance` reports them) above two tabs, as on the
+agent page: **Chat**, the messages and composer (the default), and **Members**
+(`/chats/5/members`, with the count). The room isn't kept while Members is open, so nothing is
+marked read there and coming back reloads the messages, scrolled to the newest; a message typed
+but not sent is still there on coming back, from Members, the chat's Edit page, another section
+or a reload (kept in the tab's session storage, per user and chat). Members are grouped by kind:
+users, **agents and workflows**, with the icons the navigation uses. The owner adds any member of the organisation, and any of its agents
 and workflows, whoever made them (`POST /api/chats/{id}/members` with `{kind, id}`; a user from
 outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow; an
 agent or workflow since deleted is no longer a member). A chat is **public** or **private**: a
@@ -651,7 +683,8 @@ written or deleted from since.
 
 #### Run history export
 
-On the Organisation page any member can switch on `export_run_history` (on `data_stores`): a
+On the Organisation page's Settings tab (`/organisation/settings`) any member can switch on
+`export_run_history` (on `data_stores`): a
 one-way copy of the organisation's runs (every member's and every schedule's, matched to the
 store by their agent's or workflow's organisation) into its store's `history` schema, keyed by the platform's ids and recording who
 started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in `history.agent_runs`, with `history.messages` (role, text, tool calls
@@ -699,7 +732,7 @@ switched off with the export), embeds the exported messages so agents can search
   on queues the export, which embeds every message already there (a backfill);
   `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
   `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
-  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page) and
+  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation page's Settings tab) and
   is tried again after `EMBED_RETRY_AFTER`, or at the store's next export. Switching it off stops
   new embeddings and keeps the existing ones, which are still searched.
 - The **Run history search** tool (`history_search`, the agent's `search_history`) runs the hybrid

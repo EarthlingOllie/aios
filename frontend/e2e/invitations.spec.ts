@@ -9,7 +9,7 @@ const sam = { id: 2, login: "sam", name: "Sam Jones", avatar_url: null };
 test("the creator makes a link, copies it once, and revokes it", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const api = await fakeApi(page);
-  await page.goto("/organisation");
+  await page.goto("/organisation/invitations");
   const links = page.getByRole("region", { name: "Invitation links" });
   await expect(links.getByText("No open links.")).toBeVisible();
 
@@ -66,6 +66,7 @@ test("members show the link they came in through", async ({ page }) => {
   const members = page.getByRole("list", { name: "Members" }).getByRole("listitem");
   await expect(members.nth(1)).toContainText("through link 3f2a9c1e");
   await expect(members.nth(0)).not.toContainText("through link");
+  await page.getByRole("tab", { name: "Invitations" }).click();
   await expect(
     page.getByRole("list", { name: "Open links" }).getByRole("listitem").first(),
   ).toContainText("link 3f2a9c1e");
@@ -84,11 +85,16 @@ test("a member who isn't the creator sees no invitation controls", async ({ page
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Invitation links" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Make a link" })).toBeHidden();
+  // There's no Invitations tab, and its URL opens the Members tab.
+  await expect(page.getByRole("tab", { name: "Invitations" })).toHaveCount(0);
+  await page.goto("/organisation/invitations");
+  await expect(page).toHaveURL("/organisation");
+  await expect(page.getByRole("tab", { name: /Members/ })).toHaveAttribute("aria-selected", "true");
 });
 
 test("the last member can't leave, and is told why", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   const leave = page.getByRole("region", { name: "Leave" });
   await expect(leave).toContainText(
     "You're its only member, so you can't leave: an organisation can't be left empty.",
@@ -99,7 +105,7 @@ test("the last member can't leave, and is told why", async ({ page }) => {
 test("the creator can't leave while others remain", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation.members.push({ user: sam, joined_at: "2026-10-15T09:00:00Z", invite_id: null });
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   const leave = page.getByRole("region", { name: "Leave" });
   await expect(leave).toContainText("only its creator can invite people");
   await expect(leave.getByRole("button", { name: "Leave organisation" })).toBeDisabled();
@@ -114,7 +120,7 @@ test("a member leaves, and lands in a personal organisation of their own", async
     creator: sam,
     members: [{ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null }, ...api.organisation.members],
   };
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Leave organisation" }).click();
@@ -149,8 +155,36 @@ test("accepting while in an organisation with others in it says why it can't", a
   await expect(page.getByRole("alert")).toContainText(
     "You're a member of tester. You can be in only one organisation at a time.",
   );
-  await page.getByRole("alert").getByRole("link", { name: "Organisation" }).click();
-  await expect(page).toHaveURL(/\/organisation$/);
+  // Leaving is the way in: the link goes to where it's done.
+  await expect(page.getByRole("alert")).toContainText("To join Acme, leave tester first");
+  await page.getByRole("alert").getByRole("link", { name: "organisation settings" }).click();
+  await expect(page).toHaveURL(/\/organisation\/settings$/);
+  await expect(page.getByRole("region", { name: "Leave" })).toBeVisible();
+});
+
+test("accepting after joining elsewhere meanwhile says they're in it, without saying to leave", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
+  await page.goto("/invite/abc");
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  // Joined Acme in another tab: the accept is refused as already a member, and `me` says so.
+  api.organisation = { ...api.organisation, id: 7, name: "Acme" };
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByText("You're already a member of Acme.")).toBeVisible();
+  await expect(page.getByText(/leave .* first/)).toBeHidden();
+  await expect(page.getByRole("button", { name: "Accept" })).toBeHidden();
+});
+
+test("accepting a link revoked since it was opened says so, without saying to leave", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.invitations.set("abc", { organisation: { id: 7, name: "Acme" }, expires_at: "2026-10-21T08:00:00Z" });
+  await page.goto("/invite/abc");
+  await expect(page.getByRole("heading", { name: "Join Acme" })).toBeVisible();
+  api.invitations.delete("abc");
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "This invitation link has expired or been revoked, or never existed.",
+  );
 });
 
 test("accepting while the organisation has things in it lists them, linking to where each is deleted", async ({

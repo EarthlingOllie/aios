@@ -32,9 +32,28 @@ type AgentRow = {
   description: string;
   base_prompt: string;
   versions: number[];
+  /** The keys of the tools its current version has (`addToolUse`). */
+  tools: string[];
   /** The members who made it and last changed it (`me` unless a test says otherwise). */
   created_by: ChatUser | null;
   updated_by: ChatUser | null;
+};
+type SkillVersionRow = {
+  id: number;
+  version: number;
+  note: string | null;
+  name: string;
+  description: string;
+  content: string;
+};
+type SkillRow = {
+  id: number;
+  name: string;
+  versions: SkillVersionRow[];
+  /** The agents whose current version uses the skill, and the version of it each pins. */
+  usedBy: { agent: AgentRow; version: number }[];
+  /** When it was last changed, if a test sets it; NOW otherwise. */
+  updated_at?: string;
 };
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
@@ -388,6 +407,9 @@ export class FakeApi {
   agentVersions = new Map<number, [number, number]>();
   // Agent version id -> note, for the versions that have one.
   agentNotes = new Map<number, string>();
+  skills = new Map<number, SkillRow>();
+  /** The tool library (`GET /api/tools`): empty unless a test adds to it (`addTool`). */
+  tools: { key: string; name: string; description: string; config_schema: object; default_config: object }[] = [];
   workflows = new Map<number, WorkflowRow>();
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
@@ -424,6 +446,8 @@ export class FakeApi {
    */
   invitations = new Map<string, InvitationRow>();
   chats = new Map<number, ChatRow>();
+  /** The schedules, as `GET /api/triggers` lists them. */
+  schedules: Record<string, unknown>[] = [];
   invocations = new Map<number, InvocationRow>();
   /** What each mentioned agent's or workflow's handoff writes, by its id (`HANDOFF` if unset). */
   handoffs = new Map<number, Handoff>();
@@ -707,6 +731,7 @@ export class FakeApi {
       description,
       base_prompt: `You are ${name}.`,
       versions: [],
+      tools: [],
       created_by: this.me,
       updated_by: this.me,
     };
@@ -717,6 +742,82 @@ export class FakeApi {
     }
     this.agents.set(agent.id, agent);
     return agent;
+  }
+
+  /**
+   * Adds a skill with `versions` versions, each with its own instructions ("<name> instructions, vN.")
+   * and `description` (by default "Use when writing <name>.").
+   */
+  addSkill(name: string, versions = 1, description = `Use when writing ${name.toLowerCase()}.`): SkillRow {
+    const skill: SkillRow = { id: this.id(), name, versions: [], usedBy: [] };
+    for (let n = 1; n <= versions; n++) {
+      skill.versions.push({
+        id: this.id(),
+        version: n,
+        note: null,
+        name,
+        description,
+        content: `${name} instructions, v${n}.`,
+      });
+    }
+    this.skills.set(skill.id, skill);
+    return skill;
+  }
+
+  /** Adds a tool, with no settings, to the library. */
+  addTool(key: string, name: string) {
+    this.tools.push({ key, name, description: `${name}.`, config_schema: {}, default_config: {} });
+  }
+
+  /** Gives `agent`'s current version the tool `key`. */
+  addToolUse(agent: AgentRow, key: string) {
+    agent.tools.push(key);
+  }
+
+  /** Has `agent`'s current version use `skill` at `version` (by default its latest). */
+  addSkillUse(skill: SkillRow, agent: AgentRow, version = skill.versions.length) {
+    skill.usedBy.push({ agent, version });
+  }
+
+  private skillOut(skill: SkillRow) {
+    const current = skill.versions.at(-1)!;
+    return {
+      id: skill.id,
+      name: skill.name,
+      created_at: NOW,
+      updated_at: NOW,
+      current_version: { ...current, created_at: NOW },
+      agents: skill.usedBy.map(({ agent, version }) => ({
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_version: agent.versions.length,
+        skill_version: version,
+      })),
+    };
+  }
+
+  /** Adds an enabled daily schedule of the agent or workflow. */
+  addSchedule(kind: "agent" | "workflow", target: AgentRow | WorkflowRow) {
+    this.schedules.push({
+      id: this.id(),
+      kind: "schedule",
+      target_kind: kind,
+      target_id: target.id,
+      target_name: target.name,
+      enabled: true,
+      input: "Go",
+      cron: "0 9 * * *",
+      description: "At 09:00",
+      timezone: "UTC",
+      next_run_at: NOW,
+      last_fired_at: null,
+      last_status: null,
+      last_error: null,
+      last_run_id: null,
+      last_workflow_run_id: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
   }
 
   /** The documents assistant `me` has, made the first time a chat needs it (or again once deleted). */
@@ -1296,6 +1397,19 @@ export class FakeApi {
       agent_version: this.agentVersions.get(run.agent_version_id)![1],
       created_at: NOW,
       updated_at: NOW,
+    };
+  }
+
+  /** What the list says `agent`'s current version has: its skills and tools. */
+  private agentUses(agent: AgentRow) {
+    const skillIds = [...this.skills.values()]
+      .filter((s) => s.usedBy.some((use) => use.agent === agent))
+      .map((s) => s.id);
+    return {
+      skill_count: skillIds.length,
+      tool_count: agent.tools.length,
+      skill_ids: skillIds,
+      tool_keys: agent.tools,
     };
   }
 
@@ -1897,7 +2011,54 @@ export class FakeApi {
       notification.read_at ??= NOW;
       return reply(200, this.notificationOut(notification));
     }
-    if (path === "/api/tools") return reply(200, []);
+    if (path === "/api/tools") return reply(200, this.tools);
+    if (path === "/api/skills" && method === "GET") {
+      return reply(
+        200,
+        [...this.skills.values()].map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.versions.at(-1)!.description,
+          version: s.versions.length,
+          version_id: s.versions.at(-1)!.id,
+          updated_at: s.updated_at ?? NOW,
+          agent_count: new Set(
+            s.usedBy.filter(({ agent }) => this.agents.has(agent.id)).map(({ agent }) => agent.id),
+          ).size,
+        })),
+      );
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
+      const skill = this.skills.get(Number(m[1]));
+      const from = skill?.versions[Number(m[2]) - 1];
+      if (!skill || !from) return fail(404, "Not Found");
+      skill.versions.push({
+        ...from,
+        id: this.id(),
+        version: skill.versions.length + 1,
+        note: `Restored from v${from.version}`,
+      });
+      return reply(200, this.skillOut(skill));
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)(\/.*)?$/)) && method === "GET") {
+      const skill = this.skills.get(Number(m[1]));
+      const rest = m[2] ?? "";
+      if (!skill) return fail(404, "Not Found");
+      if (rest === "") return reply(200, this.skillOut(skill));
+      if (rest === "/versions") {
+        return reply(
+          200,
+          skill.versions
+            .map(({ id, version, note }) => ({ id, version, note, created_at: NOW }))
+            .reverse(),
+        );
+      }
+      if ((m = rest.match(/^\/versions\/(\d+)$/))) {
+        const version = skill.versions[Number(m[1]) - 1];
+        if (!version) return fail(404, "Not Found");
+        return reply(200, { ...version, created_at: NOW });
+      }
+    }
     if (path === "/api/agents") {
       return reply(
         200,
@@ -1907,8 +2068,7 @@ export class FakeApi {
           description: a.description,
           version: a.versions.length,
           version_id: a.versions.at(-1),
-          skill_count: 0,
-          tool_count: 0,
+          ...this.agentUses(a),
           run_count: this.agentRunsOf(a).length,
           updated_at: NOW,
           created_by: a.created_by,
@@ -2009,7 +2169,14 @@ export class FakeApi {
         return reply(200, this.agentVersionOut(agent, version));
       }
     }
-    if (path === "/api/triggers" && method === "GET") return reply(200, []);
+    if (path === "/api/triggers" && method === "GET") {
+      const kind = url.searchParams.get("target_kind");
+      const target = Number(url.searchParams.get("target_id"));
+      return reply(
+        200,
+        this.schedules.filter((t) => kind === null || (t.target_kind === kind && t.target_id === target)),
+      );
+    }
     if (path === "/api/triggers/timezones") return reply(200, this.timezones);
     if (path === "/api/triggers/preview" && method === "POST") {
       // Any expression is fine here; the timezone is checked as the server checks it.

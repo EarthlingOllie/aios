@@ -172,6 +172,8 @@ export type SkillSummary = Provenance & {
   version: number;
   version_id: number;
   updated_at: string;
+  /** How many live agents' current versions use some version of it. */
+  agent_count: number;
 };
 
 export type SkillVersionSummary = {
@@ -280,6 +282,9 @@ export type AgentSummary = Provenance & {
   version_id: number;
   skill_count: number;
   tool_count: number;
+  /** The skills (any version of each) and tools its current version has, in order. */
+  skill_ids: number[];
+  tool_keys: string[];
   run_count: number;
   updated_at: string;
 };

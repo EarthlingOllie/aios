@@ -8,6 +8,7 @@ import {
   formatDate,
   Placeholder,
   Section,
+  useListHref,
   useLoad,
   usePoll,
 } from "@/components/crud";
@@ -85,6 +86,7 @@ export function WorkflowRunPage() {
 
 function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const navigate = useNavigate();
+  const listHref = useListHref();
   const workflow = useLoad(useCallback(() => api.getWorkflow(id), [id]));
   const run = useLoad(useCallback(() => api.getWorkflowRun(id, runId), [id, runId]));
   // The subworkflows opened below the run's workflow, outermost first.
@@ -155,7 +157,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
     if (!window.confirm("Delete this run, and the agent conversations it started?")) return;
     try {
       await api.deleteWorkflowRun(id, runId);
-      navigate(`/workflows/${id}`);
+      navigate(listHref(`/workflows/${id}/runs`));
     } catch (err) {
       setError(describeError(err));
     }
@@ -171,7 +173,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
       wide
       title={
         <span className="flex flex-wrap items-center gap-2">
-          <Link to={`/workflows/${id}`} className="hover:underline">
+          <Link to={listHref(`/workflows/${id}/runs`)} className="hover:underline">
             {name}
           </Link>
           <span className="text-muted-foreground font-normal">run #{r.id}</span>

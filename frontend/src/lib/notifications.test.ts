@@ -20,7 +20,7 @@ describe("describeNotification", () => {
     expect(describeNotification(notification({}))).toEqual({
       heading: "A schema change is waiting for you",
       detail: "Create table data.contacts",
-      to: "/data?tab=changes&request=r1",
+      to: "/data/changes?request=r1",
     });
   });
 

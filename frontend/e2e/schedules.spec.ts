@@ -38,3 +38,22 @@ test("a timezone the server knows but the browser doesn't is shown in UTC", asyn
   await expect(page.getByTestId("schedule-preview")).toContainText("in UTC");
   await expect(page.getByTestId("schedule-preview")).toContainText("1:00");
 });
+
+test("a schedule's agent or workflow opens on its Schedule tab", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Researcher");
+  const workflow = api.addWorkflow("Report");
+  api.addSchedule("agent", agent);
+  api.addSchedule("workflow", workflow);
+  await page.goto("/scheduler");
+
+  await page.getByRole("link", { name: "Researcher" }).click();
+  await expect(page).toHaveURL(`/agents/${agent.id}/schedule`);
+  await expect(page.getByRole("tab", { name: "Schedule" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tabpanel").getByTestId("schedule-row")).toHaveCount(1);
+
+  await page.goto("/scheduler");
+  await page.getByRole("link", { name: "Report" }).click();
+  await expect(page).toHaveURL(`/workflows/${workflow.id}/schedule`);
+  await expect(page.getByRole("tab", { name: "Schedule" })).toHaveAttribute("aria-selected", "true");
+});

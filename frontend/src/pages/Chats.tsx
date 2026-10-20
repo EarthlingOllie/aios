@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
 import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
@@ -13,13 +13,14 @@ import {
   MasterDetail,
   Placeholder,
   POLL_MS,
-  Section,
   selectClass,
+  useListHref,
   useLoad,
   usePoll,
   useVisible,
   type ListContext,
 } from "@/components/crud";
+import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +35,10 @@ import {
   type ChatMemberKind,
   type ChatVisibility,
 } from "@/lib/api";
+import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { useCurrentUser } from "@/lib/current-user";
+import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
 
@@ -46,6 +50,21 @@ const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
 /** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
 export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
 const CHAT_LIST_HIDDEN_POLL_MS = 30_000;
+
+// No sort menu: the list stays most recently active first.
+const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
+  {
+    param: "filter",
+    label: "Show",
+    all: "All",
+    options: [
+      { key: "joined", label: "Joined", test: (chat) => chat.is_member },
+      { key: "not-joined", label: "Not joined", test: (chat) => !chat.is_member },
+      { key: "unread", label: "Unread", test: (chat) => (chat.unread_count ?? 0) > 0 },
+      { key: "private", label: "Private", test: (chat) => chat.visibility === "private" },
+    ],
+  },
+];
 
 export function ChatsSection() {
   const { data, error, reload } = useLoad(api.listChats);
@@ -60,6 +79,8 @@ export function ChatsSection() {
       error={error}
       empty="No chats yet. A chat is a group conversation; create one and add members."
       reloadList={reload}
+      search={nameAndDescription}
+      filters={CHAT_FILTERS}
       renderItem={(chat) => <ChatListItem chat={chat} />}
     />
   );
@@ -113,6 +134,7 @@ export function ChatsIndex() {
 export function ChatDetail() {
   const id = Number(useParams().chatId);
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const { data: chat, error, reload: reloadChat } = useLoad(useCallback(() => api.getChat(id), [id]));
   // Who the composer offers to mention: the members, again whenever they change.
@@ -124,6 +146,20 @@ export function ChatDetail() {
     [reloadChat, reloadMentionable],
   );
   const [actionError, setActionError] = useState<string>();
+  // The composer's unsent text, per chat. Held outside the room, which unmounts while the
+  // Members tab is open, and outside this page, so it survives the Edit page, another section
+  // and a reload; keyed so one chat's (or user's) draft never shows in another.
+  const userId = useCurrentUser()?.id ?? 0;
+  const [, rerender] = useState(0);
+  const draft = chatDrafts.get(userId, id);
+  const setDraft = useCallback(
+    (update: SetStateAction<string>) => {
+      const current = chatDrafts.get(userId, id);
+      chatDrafts.set(userId, id, typeof update === "function" ? update(current) : update);
+      rerender((n) => n + 1);
+    },
+    [userId, id],
+  );
   // Reading to the bottom clears the chat's unread count in the list.
   const onRead = useCallback(
     (messageId: number) => api.markChatRead(id, messageId).then(reloadList),
@@ -138,7 +174,7 @@ export function ChatDetail() {
     try {
       await api.deleteChat(id);
       await reloadList();
-      navigate("/chats");
+      navigate(listHref("/chats"));
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -159,7 +195,7 @@ export function ChatDetail() {
       await api.leaveChat(id);
       await reloadList();
       // A private chat is gone for them once they've left; a public one is still there to read.
-      if (chat!.visibility === "private") navigate("/chats");
+      if (chat!.visibility === "private") navigate(listHref("/chats"));
       else await reload();
     } catch (err) {
       setActionError(describeError(err));
@@ -206,7 +242,7 @@ export function ChatDetail() {
         chat.is_owner ? (
           <>
             <Button asChild variant="outline" size="sm">
-              <Link to="edit">
+              <Link to={listHref(`/chats/${id}/edit`)}>
                 <Pencil />
                 Edit
               </Link>
@@ -230,21 +266,39 @@ export function ChatDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
-      <ChatRoom
-        key={chat.id}
-        chatId={chat.id}
-        canPost={chat.is_member}
-        mentionable={mentionable}
-        onPosted={reloadList}
-        onRead={chat.is_member ? onRead : undefined}
+      <Tabs
+        label="Chat details"
+        tabs={[
+          {
+            id: "chat",
+            label: "Chat",
+            content: (
+              <ChatRoom
+                key={chat.id}
+                chatId={chat.id}
+                canPost={chat.is_member}
+                mentionable={mentionable}
+                onPosted={reloadList}
+                onRead={chat.is_member ? onRead : undefined}
+                draft={draft}
+                onDraftChange={setDraft}
+              />
+            ),
+          },
+          {
+            id: "members",
+            label: "Members",
+            count: chat.member_count,
+            content: (
+              <MembersPanel
+                chat={chat}
+                onAdd={chat.is_owner ? onAdd : undefined}
+                onRemove={chat.is_owner ? onRemove : undefined}
+              />
+            ),
+          },
+        ]}
       />
-      <Section title="Members" label="Members">
-        <MembersPanel
-          chat={chat}
-          onAdd={chat.is_owner ? onAdd : undefined}
-          onRemove={chat.is_owner ? onRemove : undefined}
-        />
-      </Section>
     </DetailPage>
   );
 }
@@ -385,6 +439,7 @@ export function ChatForm() {
   const params = useParams();
   const id = params.chatId ? Number(params.chatId) : undefined;
   const navigate = useNavigate();
+  const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
   const [form, setForm] = useState<ChatInput>();
   const [error, setError] = useState<string>();
@@ -410,7 +465,7 @@ export function ChatForm() {
     try {
       const saved = id === undefined ? await api.createChat(form!) : await api.updateChat(id, form!);
       await reloadList();
-      navigate(`/chats/${saved.id}`);
+      navigate(listHref(`/chats/${saved.id}`));
     } catch (err) {
       setError(describeError(err));
     } finally {

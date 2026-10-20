@@ -66,7 +66,7 @@ test("mentioning an agent shows its card at once, ticking and counting, then pos
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
 
   // Where the run is listed with the agent's others, marked as started from the chat.
-  await page.goto(`/agents/${agent.id}?tab=runs`);
+  await page.goto(`/agents/${agent.id}/runs`);
   await expect(page.getByTestId("started-from-chat")).toHaveText(/Started from the chat Design/);
 });
 

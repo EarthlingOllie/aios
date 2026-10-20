@@ -98,8 +98,9 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
   await page.getByLabel("Change note").fill("Publish when reviewed");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page).toHaveURL(`/workflows/${weekly.id}`);
-  await expect(page.getByText("Publish when reviewed")).toBeVisible();
   await expect(edge(page, "review", "publisher")).toBeAttached();
+  await page.getByRole("tab", { name: /Versions/ }).click();
+  await expect(page.getByText("Publish when reviewed")).toBeVisible();
   expect(weekly.versions).toHaveLength(2);
 
   // 4. Start a run of the new version.
@@ -149,7 +150,7 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
 
   // 6. Back on the workflow, the finished run is listed; open it again.
   await page.getByRole("heading").getByRole("link", { name: "Weekly report" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(page).toHaveURL(`/workflows/${weekly.id}/runs`);
   const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
   await expect(latest).toContainText("Write this week's report");
   await expect(latest).toContainText("Succeeded");

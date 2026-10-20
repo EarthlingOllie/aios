@@ -62,7 +62,7 @@ test("a waiting run shows its waiting node and the request, approved from the ru
   );
   await expect(waiting.getByRole("link", { name: "All schema changes" })).toHaveAttribute(
     "href",
-    "/data?tab=changes",
+    "/data/changes",
   );
 
   await card.getByRole("button", { name: "Approve" }).click();
