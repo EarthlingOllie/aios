@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { formErrors } from "@/lib/auth";
 import { useCurrentUser, useSetCurrentUser } from "@/lib/current-user";
-import { Field, MISMATCH } from "@/pages/Auth";
+import { Field, useConfirmation } from "@/pages/Auth";
 
 /**
  * The Settings page's Profile section: the signed-in user's own details. Each detail has its own
@@ -127,9 +127,7 @@ function PasswordForm() {
     new_password: "",
     new_password_confirm: "",
   });
-  // As registering: said once the confirmation is left (or the form submitted) while it differs.
-  const [mismatch, setMismatch] = useState(false);
-  const differ = passwords.new_password_confirm !== passwords.new_password;
+  const confirmation = useConfirmation(passwords.new_password, passwords.new_password_confirm);
   const form = useProfileForm();
   const set = (key: keyof typeof passwords) => (value: string) =>
     setPasswords((p) => ({ ...p, [key]: value }));
@@ -140,8 +138,7 @@ function PasswordForm() {
       form={form}
       onSubmit={(e) => {
         e.preventDefault();
-        setMismatch(differ);
-        if (differ) return;
+        if (!confirmation.check()) return;
         form.submit(e, async () => {
           await api.changePassword(passwords);
           setPasswords({ current_password: "", new_password: "", new_password_confirm: "" });
@@ -163,7 +160,7 @@ function PasswordForm() {
       </Field>
       <Field
         label="Confirm new password"
-        error={(mismatch && differ ? MISMATCH : undefined) ?? form.fields.new_password_confirm}
+        error={confirmation.error ?? form.fields.new_password_confirm}
       >
         {(props) => (
           <Input
@@ -172,7 +169,7 @@ function PasswordForm() {
             autoComplete="new-password"
             value={passwords.new_password_confirm}
             onChange={(e) => set("new_password_confirm")(e.target.value)}
-            onBlur={() => setMismatch(differ)}
+            onBlur={confirmation.onBlur}
           />
         )}
       </Field>

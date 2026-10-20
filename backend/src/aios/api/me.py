@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ValidationInfo, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from aios import ratelimits
 from aios.auth import (
     EMAIL_TAKEN,
+    NOT_SIGNED_IN,
     PASSWORD_MAX_LENGTH,
     CurrentUser,
     Email,
@@ -108,7 +109,19 @@ def change_password(body: PasswordIn, request: Request, user: CurrentUser, db: D
     """Change the user's password, given their current one. Every other session they have is
     signed out (its `session_version` is out of date); this one starts again, so it's kept."""
     check_current_password(user, body.current_password)
-    user.password_hash = hash_password(body.new_password)
-    user.session_version += 1
+    # Only from the version this session holds: of two changes at once (from two sessions), the
+    # second finds it bumped, so it's refused rather than both sessions surviving.
+    bumped = db.execute(
+        update(User)
+        .where(User.id == user.id, User.session_version == user.session_version)
+        .values(
+            password_hash=hash_password(body.new_password),
+            session_version=User.session_version + 1,
+        )
+    )
+    if bumped.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_SIGNED_IN)
     db.commit()
+    db.refresh(user)
     start_session(request, user)

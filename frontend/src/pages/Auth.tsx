@@ -13,7 +13,24 @@ type Props = {
   onSignedIn: (user: User) => void;
 };
 
-export const MISMATCH = "Passwords don't match";
+/**
+ * A new password's confirmation, as the forms that take one check it: "Passwords don't match" is
+ * said once the confirmation field is left (`onBlur`) or the form submitted (`check`) while it
+ * differs, and goes as soon as they match. The API checks it too.
+ */
+export function useConfirmation(password: string, confirmation: string) {
+  const [shown, setShown] = useState(false);
+  const differ = confirmation !== password;
+  return {
+    error: shown && differ ? "Passwords don't match" : undefined,
+    onBlur: () => setShown(differ),
+    /** On submit: whether to send it (they match), saying so if not. */
+    check: () => {
+      setShown(differ);
+      return !differ;
+    },
+  };
+}
 
 /** Sign in with an email and password: `/login`. */
 export function LoginPage({ onSignedIn }: Props) {
@@ -148,13 +165,8 @@ export function RegisterPage({ onSignedIn }: Props) {
     password: "",
     password_confirm: "",
   });
-  // Shown once the confirmation is left (or the form submitted) while it differs.
-  const [mismatch, setMismatch] = useState(false);
-  const differ = details.password_confirm !== details.password;
-  const form = useAuthForm(() => api.register(details), onSignedIn, () => {
-    setMismatch(differ);
-    return !differ;
-  });
+  const confirmation = useConfirmation(details.password, details.password_confirm);
+  const form = useAuthForm(() => api.register(details), onSignedIn, confirmation.check);
   const set = (key: keyof typeof details) => (e: ChangeEvent<HTMLInputElement>) => {
     setDetails((d) => ({ ...d, [key]: e.target.value }));
   };
@@ -226,7 +238,7 @@ export function RegisterPage({ onSignedIn }: Props) {
         </Field>
         <Field
           label="Confirm password"
-          error={(mismatch && differ ? MISMATCH : undefined) ?? form.fields.password_confirm}
+          error={confirmation.error ?? form.fields.password_confirm}
         >
           {(props) => (
             <Input
@@ -236,7 +248,7 @@ export function RegisterPage({ onSignedIn }: Props) {
               required
               value={details.password_confirm}
               onChange={set("password_confirm")}
-              onBlur={() => setMismatch(differ)}
+              onBlur={confirmation.onBlur}
             />
           )}
         </Field>

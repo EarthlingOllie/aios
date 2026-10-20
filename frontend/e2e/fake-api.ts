@@ -250,6 +250,18 @@ export type RunRow = {
 export type Account = { id: number; first_name: string; last_name: string; email: string; password: string };
 const accountOut = ({ password: _password, ...user }: Account) => user;
 
+/** A 422 for one field, as the API answers it: [status, body]. */
+const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
+const isEmail = (email: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+
+/** Why a new password (in `field`) is refused, as the API says it, or undefined when it isn't. */
+function newPasswordInvalid(field: string, password: string, confirmation: unknown, confirmField: string) {
+  if (password.length < 12) return invalid(field, "Password must be at least 12 characters");
+  if (password.length > 256) return invalid(field, "Password must be at most 256 characters");
+  if (confirmation !== password) return invalid(confirmField, "Passwords don't match");
+  return undefined;
+}
+
 /** A user as chats show them (an `Account` is one). */
 export type ChatUser = Pick<Account, "id" | "first_name" | "last_name">;
 type ChatVisibility = "public" | "private";
@@ -1481,7 +1493,6 @@ export class FakeApi {
 
   /** `/api/auth/*` and `/api/dev/*`, as the API checks what it's sent: [status, body]. */
   private auth(method: string, path: string, body: Record<string, string> | null): [number, unknown] {
-    const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
     const findByEmail = (email: string) =>
       this.accounts.find((a) => a.email === email.trim().toLowerCase());
     if (path === "/api/auth/options" && method === "GET") return [200, { dev_users: this.devUsers }];
@@ -1515,10 +1526,9 @@ export class FakeApi {
       const [first_name, last_name, email] = [body.first_name.trim(), body.last_name.trim(), body.email.trim()];
       if (!first_name) return invalid("first_name", "String should have at least 1 character");
       if (!last_name) return invalid("last_name", "String should have at least 1 character");
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return invalid("email", "The email address is not valid.");
-      if (body.password.length < 12) return invalid("password", "Password must be at least 12 characters");
-      if (body.password.length > 256) return invalid("password", "Password must be at most 256 characters");
-      if (body.password_confirm !== body.password) return invalid("password_confirm", "Passwords don't match");
+      if (!isEmail(email)) return invalid("email", "The email address is not valid.");
+      const refused = newPasswordInvalid("password", body.password, body.password_confirm, "password_confirm");
+      if (refused) return refused;
       if (findByEmail(email)) return [409, { detail: "An account with this email already exists" }];
       const account = { id: this.id(), first_name, last_name, email: email.toLowerCase(), password: body.password };
       this.accounts.push(account);
@@ -1534,10 +1544,9 @@ export class FakeApi {
    * keeps only one).
    */
   private changeCredentials(account: Account, path: string, body: Record<string, string> | null): [number, unknown] {
-    const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
     if (path === "/api/me/email") {
       const email = String(body?.email ?? "").trim().toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return invalid("email", "The email address is not valid.");
+      if (!isEmail(email)) return invalid("email", "The email address is not valid.");
       if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
       if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
       if (this.accounts.some((a) => a.email === email && a.id !== account.id)) {
@@ -1547,9 +1556,8 @@ export class FakeApi {
       return [200, accountOut(account)];
     }
     const password = String(body?.new_password ?? "");
-    if (password.length < 12) return invalid("new_password", "Password must be at least 12 characters");
-    if (password.length > 256) return invalid("new_password", "Password must be at most 256 characters");
-    if (body?.new_password_confirm !== password) return invalid("new_password_confirm", "Passwords don't match");
+    const refused = newPasswordInvalid("new_password", password, body?.new_password_confirm, "new_password_confirm");
+    if (refused) return refused;
     if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
     if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
     account.password = password;
