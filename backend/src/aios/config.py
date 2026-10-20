@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     session_cookie: str = "aios_session"
     session_max_age: int = 60 * 60 * 24 * 14
     cookie_secure: bool = False
+    # The sign-in page's "sign in as" picker (`aios.dev_auth`): any user, with no password. For
+    # development only: Compose turns it on; production never does.
+    dev_login_enabled: bool = False
 
     # Inference. Model strings are LangChain "provider:model" names; API keys
     # (ANTHROPIC_API_KEY, VOYAGE_API_KEY) are read by the providers from the environment.

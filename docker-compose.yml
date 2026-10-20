@@ -145,6 +145,8 @@ services:
       SANDBOX_BACKEND: dev
       SANDBOX_DEV_URL: http://sandbox:8080
       SANDBOX_DEV_TOKEN: dev-sandbox-token
+      # The sign-in page's "sign in as" picker (any user, no password): development only.
+      DEV_LOGIN_ENABLED: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully
