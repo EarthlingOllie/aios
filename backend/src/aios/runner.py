@@ -11,9 +11,17 @@ from aios.tools.web_search import WEB_SEARCH
 
 
 def server_tools(tools: list[AgentTool], model: str | None) -> list[AgentTool]:
-    """The tools, with provider-run tools given the version the run's model supports."""
+    """The tools, with provider-run tools given the version the run's model supports.
+
+    Web search alongside tools the agent calls itself gets the basic version. The dynamic one
+    filters results in a server-side code execution that the model can start in the same
+    response as a call to one of ours; the response then stops for our call with that
+    execution unfinished, its result arrives in the next response, and the API refuses the
+    history from then on (`code_execution` tool use without its result), failing the run.
+    """
+    dynamic = not any(not isinstance(t, dict) for t in tools)
     return [
-        t | {"type": llm.web_search_type(model)}
+        t | {"type": llm.web_search_type(model, dynamic=dynamic)}
         if isinstance(t, dict) and t.get("type") == WEB_SEARCH
         else t
         for t in tools
