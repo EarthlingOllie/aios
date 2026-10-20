@@ -101,11 +101,13 @@ class Settings(BaseSettings):
     # development only: Compose turns it on; production never does.
     dev_login_enabled: bool = False
 
-    # Rate limits on signing in and registering (`aios.ratelimits`), as `limits` strings
-    # ("<count>/<period>", e.g. "10/15 minutes"), counted in Redis. Past one: 429, no lockout.
+    # Rate limits on signing in, registering and checking a signed-in user's current password
+    # (`aios.ratelimits`), as `limits` strings ("<count>/<period>", e.g. "10/15 minutes"),
+    # counted in Redis. Past one: 429, no lockout.
     login_rate_limit_per_email: str = "10/15 minutes"
     login_rate_limit_per_ip: str = "50/15 minutes"
     register_rate_limit_per_ip: str = "5/hour"
+    current_password_rate_limit_per_user: str = "10/15 minutes"
     # How many proxies in front of the API append the address they saw to X-Forwarded-For: 1
     # behind the load balancer (or Compose's nginx), 0 when the API is reached directly. The
     # client's address, which the per-IP limits count, is the one the outermost proxy appended.

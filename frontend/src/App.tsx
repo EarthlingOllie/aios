@@ -17,7 +17,7 @@ import {
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, fullName, type User } from "@/lib/api";
+import { api, ApiError, describeError, fullName, onSessionEnded, type User } from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
 import { CurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
@@ -75,6 +75,21 @@ export default function App() {
   useEffect(loadMe, [loadMe]);
   // After a profile edit: the user as the API now has them.
   const setUser = useCallback((user: User) => setAuth({ status: "signed-in", user }), []);
+  const signedIn = auth.status === "signed-in";
+  useEffect(() => {
+    if (!signedIn) return;
+    // Signed out from elsewhere (e.g. a password change in another browser): to sign in, then
+    // back here. A fresh page load, as signing out is, so nothing of this user's is left in
+    // memory; once, however many requests found out.
+    let ended = false;
+    onSessionEnded(() => {
+      if (ended) return;
+      ended = true;
+      const { pathname, search, hash } = window.location;
+      window.location.assign(signInPath(pathname, search, hash));
+    });
+    return () => onSessionEnded();
+  }, [signedIn]);
   const location = useLocation();
   const onSignedOutPage = SIGNED_OUT_PATHS.includes(location.pathname);
 

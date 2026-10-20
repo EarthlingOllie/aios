@@ -118,12 +118,17 @@ def start_session(request: Request, user: User) -> None:
     request.session["session_version"] = user.session_version
 
 
+# A request's session has ended (or never started). The SPA tells it apart from other 401s (a
+# wrong password) by this detail, and sends the user to sign in.
+NOT_SIGNED_IN = "Not signed in"
+
+
 def current_user(request: Request, db: DB) -> User:
     user_id = request.session.get("user_id")
     user = db.get(User, user_id) if user_id is not None else None
     # A session from before the user's `session_version` was bumped is signed out.
     if user is None or request.session.get("session_version") != user.session_version:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not signed in")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_SIGNED_IN)
     return user
 
 

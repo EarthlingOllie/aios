@@ -142,3 +142,18 @@ test("registration shows a taken email above the form and an invalid field next 
   await page.getByRole("link", { name: "Sign in" }).click();
   await expect(page).toHaveURL("/login");
 });
+
+test("signed out elsewhere, the next request goes to sign in and back afterwards", async ({ page }) => {
+  const api = await fakeApi(page);
+  await page.goto("/settings");
+  await expect(sidebar(page)).toContainText("Terry Tester");
+
+  // As if the password was changed in another browser: this session is no longer valid.
+  api.signedInAs = null;
+  await sidebar(page).getByRole("link", { name: "Agents" }).click();
+
+  await expect(page).toHaveURL("/login?next=%2Fagents");
+  await signIn(page, "tester@example.com", "correct horse battery");
+  await expect(page).toHaveURL("/agents");
+  await expect(sidebar(page)).toContainText("Terry Tester");
+});

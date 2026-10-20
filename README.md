@@ -303,7 +303,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     main.py         app + SessionMiddleware
     auth.py         /api/auth/{options,register,login,logout}, start_session, current_user
     passwords.py    Argon2id hashing and checking
-    api/me.py       GET /api/me
+    api/me.py       /api/me: GET, PATCH (name), PUT email and password
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
     api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
@@ -451,7 +451,13 @@ sign-in, and no emails are sent (no verification, no password reset).
   starts every session). Each session holds the user's `session_version` from when it started;
   one that no longer matches the user's is signed out (401).
 - A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
-  (only ever to a page on aios itself).
+  (only ever to a page on aios itself). So does a request that finds the session has ended
+  while you're using the app (401 "Not signed in"), e.g. after a password change elsewhere.
+- **Profile** (Settings): `PATCH /api/me` changes your name. `PUT /api/me/email` changes your
+  email, straight away (nothing is sent to it), given your current password; 409 if it's taken.
+  `PUT /api/me/password` changes your password, given the current one and the new one twice,
+  and bumps your `session_version`, which signs out every other session; the one that made the
+  change starts again, so it's kept. A wrong current password answers 401.
 - **Dev sign-in picker**: with `DEV_LOGIN_ENABLED=true`, `/login` also offers a "sign in as"
   dropdown of every user, which signs in as them with no password (`aios.dev_auth`, under
   `/api/dev`). Docker Compose turns it on for its `api`, and `backend/.env.example` does for
@@ -459,10 +465,12 @@ sign-in, and no emails are sent (no verification, no password reset).
   off, `/api/dev/*` doesn't exist (404). The API logs a warning at start-up when it's on, and
   names the user at each dev sign-in.
 - **Rate limits** (`aios.ratelimits`, the `limits` package, counted in Redis): signing in, 10
-  attempts per 15 minutes per email and 50 per IP; registering, 5 per hour per IP. Past one the
-  API answers 429 with `Retry-After` (and the page says to try again later); nobody is locked
-  out. The numbers are settings (`LOGIN_RATE_LIMIT_PER_EMAIL`, `LOGIN_RATE_LIMIT_PER_IP`,
-  `REGISTER_RATE_LIMIT_PER_IP`). The IP is the one the load balancer (or Compose's nginx)
+  attempts per 15 minutes per email and 50 per IP; registering, 5 per hour per IP; checking a
+  signed-in user's current password (the email and password forms), 10 per 15 minutes per
+  user. Past one the API answers 429 with `Retry-After` (and the page says to try again later);
+  nobody is locked out. The numbers are settings (`LOGIN_RATE_LIMIT_PER_EMAIL`,
+  `LOGIN_RATE_LIMIT_PER_IP`, `REGISTER_RATE_LIMIT_PER_IP`,
+  `CURRENT_PASSWORD_RATE_LIMIT_PER_USER`). The IP is the one the load balancer (or Compose's nginx)
   appended to `X-Forwarded-For`, given `TRUSTED_PROXY_COUNT=1` (Terraform and Compose set it);
   with 0 (the default, for `pnpm dev` against a local API) it's the connection's.
 - **Cross-site requests**: the auth and profile endpoints only take JSON bodies, and refuse

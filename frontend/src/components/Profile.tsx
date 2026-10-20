@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { formErrors } from "@/lib/auth";
 import { useCurrentUser, useSetCurrentUser } from "@/lib/current-user";
-import { Field } from "@/pages/Auth";
+import { Field, MISMATCH } from "@/pages/Auth";
 
 /**
  * The Settings page's Profile section: the signed-in user's own details. Each detail has its own
@@ -17,6 +17,8 @@ export function ProfileSection() {
     <Section title="Profile" label="Profile">
       <div className="grid gap-4 md:grid-cols-2">
         <NameForm />
+        <EmailForm />
+        <PasswordForm />
       </div>
     </Section>
   );
@@ -73,6 +75,140 @@ function NameForm() {
         Save
       </Button>
     </ProfileForm>
+  );
+}
+
+/** The email a user signs in with. Changing it takes their current password. */
+function EmailForm() {
+  const user = useCurrentUser();
+  const setUser = useSetCurrentUser();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const form = useProfileForm();
+
+  return (
+    <ProfileForm
+      title="Email"
+      form={form}
+      onSubmit={(e) =>
+        form.submit(e, async () => {
+          const saved = await api.changeEmail({ email, current_password: password });
+          setUser(saved);
+          setEmail("");
+          setPassword("");
+          return "Email changed.";
+        })
+      }
+    >
+      <p className="text-muted-foreground text-sm">Currently {user?.email}.</p>
+      <Field label="New email" error={form.fields.email}>
+        {(props) => (
+          <Input
+            {...props}
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        )}
+      </Field>
+      <CurrentPassword form={form} value={password} onChange={setPassword} />
+      <Button type="submit" size="sm" disabled={form.busy || !email.trim() || !password}>
+        Change email
+      </Button>
+    </ProfileForm>
+  );
+}
+
+/** A user's password: the current one, then the new one twice. Signs out their other sessions. */
+function PasswordForm() {
+  const [passwords, setPasswords] = useState({
+    current_password: "",
+    new_password: "",
+    new_password_confirm: "",
+  });
+  // As registering: said once the confirmation is left (or the form submitted) while it differs.
+  const [mismatch, setMismatch] = useState(false);
+  const differ = passwords.new_password_confirm !== passwords.new_password;
+  const form = useProfileForm();
+  const set = (key: keyof typeof passwords) => (value: string) =>
+    setPasswords((p) => ({ ...p, [key]: value }));
+
+  return (
+    <ProfileForm
+      title="Password"
+      form={form}
+      onSubmit={(e) => {
+        e.preventDefault();
+        setMismatch(differ);
+        if (differ) return;
+        form.submit(e, async () => {
+          await api.changePassword(passwords);
+          setPasswords({ current_password: "", new_password: "", new_password_confirm: "" });
+          return "Password changed. You've been signed out everywhere else.";
+        });
+      }}
+    >
+      <CurrentPassword form={form} value={passwords.current_password} onChange={set("current_password")} />
+      <Field label="New password" hint="At least 12 characters." error={form.fields.new_password}>
+        {(props) => (
+          <Input
+            {...props}
+            type="password"
+            autoComplete="new-password"
+            value={passwords.new_password}
+            onChange={(e) => set("new_password")(e.target.value)}
+          />
+        )}
+      </Field>
+      <Field
+        label="Confirm new password"
+        error={(mismatch && differ ? MISMATCH : undefined) ?? form.fields.new_password_confirm}
+      >
+        {(props) => (
+          <Input
+            {...props}
+            type="password"
+            autoComplete="new-password"
+            value={passwords.new_password_confirm}
+            onChange={(e) => set("new_password_confirm")(e.target.value)}
+            onBlur={() => setMismatch(differ)}
+          />
+        )}
+      </Field>
+      <Button
+        type="submit"
+        size="sm"
+        disabled={form.busy || !passwords.current_password || !passwords.new_password}
+      >
+        Change password
+      </Button>
+    </ProfileForm>
+  );
+}
+
+/** The current password a form needs; a wrong one is refused above the form (401). */
+function CurrentPassword({
+  form,
+  value,
+  onChange,
+}: {
+  form: ProfileFormState;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label="Current password" error={form.fields.current_password}>
+      {(props) => (
+        <Input
+          {...props}
+          type="password"
+          autoComplete="current-password"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
+    </Field>
   );
 }
 

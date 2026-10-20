@@ -792,9 +792,41 @@ export type ChatMessages = { messages: ChatMessage[]; invocations: ChatInvocatio
 /** Which page of messages to read: what's new `after` an id, the history `before` one, or the latest. */
 export type ChatMessagesCursor = { after: number } | { before: number } | Record<string, never>;
 
-// Same-origin requests: the browser attaches the session cookie automatically.
+// What the API answers (401) when a request's session has ended, or never started
+// (`aios.auth.NOT_SIGNED_IN`).
+const NOT_SIGNED_IN = "Not signed in";
+
+let sessionEnded: (() => void) | undefined;
+
+/**
+ * While someone is signed in: what to do when a request finds their session has ended, e.g.
+ * because their password was changed in another browser. Not called for other 401s, such as a
+ * wrong current password on the profile forms. Pass nothing to stop.
+ */
+export function onSessionEnded(handler?: () => void): void {
+  sessionEnded = handler;
+}
+
+/**
+ * `fetch` for the API, for every request to it (`request`, and the chat transports). Same-origin,
+ * so the browser attaches the session cookie; and a 401 for an ended session is reported to
+ * `onSessionEnded`'s handler.
+ */
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, { credentials: "same-origin", ...init });
+  if (res.status === 401 && sessionEnded) {
+    const detail = await res
+      .clone()
+      .json()
+      .then((body) => body?.detail)
+      .catch(() => undefined);
+    if (detail === NOT_SIGNED_IN) sessionEnded();
+  }
+  return res;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { credentials: "same-origin", ...init });
+  const res = await apiFetch(path, init);
   if (!res.ok) throw new ApiError(res.status, await res.text());
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
@@ -843,6 +875,12 @@ export const api = {
   /** Change the signed-in user's name; a name left out is kept. */
   updateMe: (body: { first_name?: string; last_name?: string }) =>
     request<User>("/api/me", json("PATCH", body)),
+  /** Change the email the signed-in user signs in with; it takes their current password. */
+  changeEmail: (body: { email: string; current_password: string }) =>
+    request<User>("/api/me/email", json("PUT", body)),
+  /** Change the signed-in user's password. It signs out their other sessions, not this one. */
+  changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
+    request<void>("/api/me/password", json("PUT", body)),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
   getSettings: () => request<Settings>("/api/settings"),

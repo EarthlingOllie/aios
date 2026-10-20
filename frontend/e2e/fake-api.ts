@@ -394,7 +394,10 @@ export class FakeApi {
   authDelay = 0;
   /** Whether the dev "sign in as" picker is on (DEV_LOGIN_ENABLED): off, /api/dev/* is a 404. */
   devUsers = false;
-  /** While true, signing in and registering answer 429, as the API's rate limits do. */
+  /**
+   * While true, signing in, registering, and the profile's current-password checks (changing the
+   * email or password) answer 429, as the API's rate limits do.
+   */
   authThrottled = false;
   /** The signed-in account (the first while no one is): who a chat's owner, member or author is by default. */
   get me(): Account {
@@ -1525,6 +1528,34 @@ export class FakeApi {
     return [404, { detail: "Not Found" }];
   }
 
+  /**
+   * `PUT /api/me/email` and `/api/me/password`, as the API checks them: [status, body]. Changing
+   * the password signs out the API's other sessions, but this one stays signed in (and the fake
+   * keeps only one).
+   */
+  private changeCredentials(account: Account, path: string, body: Record<string, string> | null): [number, unknown] {
+    const invalid = (field: string, msg: string): [number, unknown] => [422, { detail: [{ loc: ["body", field], msg }] }];
+    if (path === "/api/me/email") {
+      const email = String(body?.email ?? "").trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return invalid("email", "The email address is not valid.");
+      if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
+      if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
+      if (this.accounts.some((a) => a.email === email && a.id !== account.id)) {
+        return [409, { detail: "An account with this email already exists" }];
+      }
+      account.email = email;
+      return [200, accountOut(account)];
+    }
+    const password = String(body?.new_password ?? "");
+    if (password.length < 12) return invalid("new_password", "Password must be at least 12 characters");
+    if (password.length > 256) return invalid("new_password", "Password must be at most 256 characters");
+    if (body?.new_password_confirm !== password) return invalid("new_password_confirm", "Passwords don't match");
+    if (this.authThrottled) return [429, { detail: "Too many attempts. Try again later." }];
+    if (body?.current_password !== account.password) return [401, { detail: "Current password is incorrect" }];
+    account.password = password;
+    return [204, undefined];
+  }
+
   async install(page: Page) {
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -1581,6 +1612,10 @@ export class FakeApi {
       }
       Object.assign(account, names);
       return reply(200, accountOut(account));
+    }
+    if ((path === "/api/me/email" || path === "/api/me/password") && method === "PUT") {
+      const [status, json] = this.changeCredentials(account, path, body);
+      return reply(status, json);
     }
     if (path === "/api/me") return reply(200, accountOut(account));
     if (path === "/api/data-store") {

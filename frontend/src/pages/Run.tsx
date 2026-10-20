@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   api,
+  apiFetch,
   describeError,
   type ContentBlock,
   type ModelMessage,
@@ -142,7 +143,7 @@ function RunChat({
     () =>
       new DefaultChatTransport({
         api: `/api/agents/${run.agent_id}/runs/${run.id}/chat`,
-        credentials: "same-origin",
+        fetch: apiFetch,
         // The server keeps the run's history; send only the new message.
         prepareSendMessagesRequest: ({ id, messages, trigger }) => ({
           body: { id, trigger, messages: messages.slice(-1) },

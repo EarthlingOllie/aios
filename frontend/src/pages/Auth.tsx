@@ -13,7 +13,7 @@ type Props = {
   onSignedIn: (user: User) => void;
 };
 
-const MISMATCH = "Passwords don't match";
+export const MISMATCH = "Passwords don't match";
 
 /** Sign in with an email and password: `/login`. */
 export function LoginPage({ onSignedIn }: Props) {

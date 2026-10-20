@@ -1,10 +1,28 @@
 """The signed-in user's own account."""
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, ValidationInfo, field_validator
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from aios.auth import CurrentUser, MeOut, Name, me_out, same_origin
+from aios import ratelimits
+from aios.auth import (
+    EMAIL_TAKEN,
+    PASSWORD_MAX_LENGTH,
+    CurrentUser,
+    Email,
+    MeOut,
+    Name,
+    NewPassword,
+    check_confirmation,
+    me_out,
+    same_origin,
+    start_session,
+)
+from aios.config import get_settings
 from aios.db import DB
+from aios.models import User
+from aios.passwords import hash_password, verify_password
 
 # Its PATCH and PUTs refuse cross-site requests.
 router = APIRouter(prefix="/api/me", dependencies=[Depends(same_origin)])
@@ -30,3 +48,67 @@ def edit_name(body: NameIn, user: CurrentUser, db: DB):
         setattr(user, field, getattr(body, field))
     db.commit()
     return me_out(user)
+
+
+def check_current_password(user: User, password: str) -> None:
+    """Refuses (401) a request whose `password` isn't `user`'s current one. The checks are
+    throttled per user (429 past the limit), so a stolen session can't be used to guess it. If
+    the stored hash is due an upgrade, the user is given the new one (for the caller to commit)."""
+    ratelimits.throttle(
+        "current-password", get_settings().current_password_rate_limit_per_user, str(user.id)
+    )
+    ok, new_hash = (
+        verify_password(password, user.password_hash)
+        if len(password) <= PASSWORD_MAX_LENGTH
+        # No account has one this long, and hashing it would be costly.
+        else (False, None)
+    )
+    if not ok:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Current password is incorrect")
+    if new_hash is not None:
+        user.password_hash = new_hash
+
+
+class EmailIn(BaseModel):
+    email: Email
+    current_password: str
+
+
+@router.put("/email", response_model=MeOut)
+def change_email(body: EmailIn, user: CurrentUser, db: DB):
+    """Change the email the user signs in with, straight away (nothing is sent to it). It needs
+    their current password. Their sessions are kept."""
+    check_current_password(user, body.current_password)
+    taken = select(User.id).where(User.email == body.email, User.id != user.id)
+    if db.scalar(taken) is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN)
+    user.email = body.email
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Taken by another request since the check.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from exc
+    return me_out(user)
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: NewPassword
+    new_password_confirm: str
+
+    @field_validator("new_password_confirm")
+    @classmethod
+    def _confirms(cls, value: str, info: ValidationInfo) -> str:
+        return check_confirmation(value, info, of="new_password")
+
+
+@router.put("/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(body: PasswordIn, request: Request, user: CurrentUser, db: DB) -> None:
+    """Change the user's password, given their current one. Every other session they have is
+    signed out (its `session_version` is out of date); this one starts again, so it's kept."""
+    check_current_password(user, body.current_password)
+    user.password_hash = hash_password(body.new_password)
+    user.session_version += 1
+    db.commit()
+    start_session(request, user)
