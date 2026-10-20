@@ -167,7 +167,8 @@ Reading the open chat to the bottom, with its tab visible, reports the newest me
 asks again every 5 seconds (30 while hidden). Joining counts what was already there as read; a
 member added by the owner has the history to read. Nothing is sent off-app.
 
-Members post **messages** in markdown, shown with their author's avatar and name. The open chat
+Members post **messages** in markdown, shown with their author's name (a user's full name, "First
+Last") and initial (an agent's or workflow's icon). The open chat
 asks for what's new every second (`GET /api/chats/{id}/messages?after=N`, every 30 seconds while
 its tab is hidden, and at once when it's shown again), follows new messages when scrolled to the
 bottom and otherwise leaves the reader where they are; scrolling to the top loads the page before
@@ -176,8 +177,10 @@ for anyone else). A read returns `{messages, invocations}` (below). Posting make
 author is deleted, with no author, or removed from the chat.
 
 Typing `@` in the composer offers the chat's members (`GET /api/chats/{id}/mentionable`), grouped
-by kind so an agent and a workflow with the same name are told apart. Picking one inserts a token,
-`@[name](kind:id)`, and the message is posted with its **mentions** (`{body, mentions: [{kind,
+by kind so an agent and a workflow with the same name are told apart, and narrows them as you type:
+a user by their first or last name (`@ali` and `@smi` both find Alice Smith), an agent or workflow
+by its name, ignoring case. Picking one inserts a token, `@[name](kind:id)`, which points at the
+member by id (so it still does once they're renamed), and the message is posted with its **mentions** (`{body, mentions: [{kind,
 id}]}`), stored structurally as `[{kind, id, name}]`; the message shows each as a chip with the
 member's kind and name, and a message that mentions you is highlighted. Mentioning anyone who isn't
 a member is a 422 (and a token typed by hand for one is plain text).
