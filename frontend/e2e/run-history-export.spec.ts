@@ -6,7 +6,7 @@ import { fakeApi } from "./fake-api";
 
 test("switching the export on sets the store up, then says when it last ran", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
 
   await expect(page.getByRole("heading", { name: "Run history export" })).toBeVisible();
   const toggle = page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" });
@@ -40,7 +40,7 @@ test("with no runs to export, the page settles once the store is set up", async 
   page.on("request", (r) => {
     if (r.method() === "GET" && new URL(r.url()).pathname === "/api/organisation/settings") asked++;
   });
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   await page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" }).check();
   const status = page.getByRole("status", { name: "Run history export" });
   await expect(status).toHaveText("Setting up the history tables in the data store…");
@@ -64,7 +64,7 @@ test("switching it off keeps what was exported, which can then be deleted", asyn
     history_ready: true,
     history_exported_at: "2026-10-16T10:00:00Z",
   };
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
 
   const toggle = page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" });
   await toggle.uncheck();
@@ -90,7 +90,7 @@ test("deleting exported history while it's on starts the export over", async ({ 
     history_ready: true,
     history_exported_at: "2026-10-16T10:00:00Z",
   };
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   const status = page.getByRole("status", { name: "Run history export" });
   await expect(status).toContainText("Last exported");
 
@@ -115,7 +115,7 @@ test("deleting exported history while it's on starts the export over", async ({ 
 test("deleting exported history asks first", async ({ page }) => {
   const api = await fakeApi(page);
   api.settings = { ...api.settings, history_ready: true };
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
 
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Delete exported history" }).click();
@@ -127,7 +127,7 @@ test("embedding is offered only while the export is on, and says when it caught 
   page,
 }) => {
   const api = await fakeApi(page);
-  await page.goto("/organisation");
+  await page.goto("/organisation/settings");
   const exportToggle = page.getByRole("checkbox", {
     name: "Export the organisation's run history to its data store",
   });

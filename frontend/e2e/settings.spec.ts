@@ -17,6 +17,11 @@ test("the Settings link opens the page, which points to the organisation's setti
 
   await page.getByText("You're in").getByRole("link", { name: "Organisation" }).click();
   await expect(page).toHaveURL(/\/organisation$/);
+  await expect(page.getByRole("tab", { name: /Members/ })).toHaveAttribute("aria-selected", "true");
+
+  await page.goBack();
+  await page.getByText("You're in").getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(/\/organisation\/settings$/);
   await expect(page.getByRole("heading", { name: "Run history export" })).toBeVisible();
   await expect(
     page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" }),

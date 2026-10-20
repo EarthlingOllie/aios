@@ -153,7 +153,7 @@ export default function App() {
         <Route path="scheduler" element={<SchedulerPage />} />
         <Route path="data/:tab?" element={<DataPage />} />
         <Route path="settings" element={<SettingsPage />} />
-        <Route path="organisation" element={<OrganisationPage />} />
+        <Route path="organisation/:tab?" element={<OrganisationPage />} />
         <Route path="invite/:token" element={<InviteRoute />} />
         <Route path="chats" element={<ChatsSection />}>
           <Route index element={<ChatsIndex />} />

@@ -18,11 +18,15 @@ export function SettingsPage() {
           <Section title="Organisation">
             <p className="text-muted-foreground text-sm">
               You're in <span className="text-foreground font-medium">{me.organisation.name}</span>.
-              Its name, members and run history export are on the{" "}
+              Its name and members are on the{" "}
               <Link to="/organisation" className="text-foreground underline underline-offset-4">
                 Organisation
               </Link>{" "}
-              page.
+              page, and its run history export on that page's{" "}
+              <Link to="/organisation/settings" className="text-foreground underline underline-offset-4">
+                Settings
+              </Link>{" "}
+              tab.
             </p>
           </Section>
         )}

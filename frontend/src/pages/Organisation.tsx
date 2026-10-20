@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
-import { ErrorBanner, formatDate, Placeholder, Section, useLoad } from "@/components/crud";
+import { ErrorBanner, formatDate, Placeholder, useLoad } from "@/components/crud";
 import { RunHistoryExportSection } from "@/components/RunHistoryExport";
+import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,8 +13,12 @@ import { api, describeError } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
 
-/** The user's organisation: its name (the creator renames it), creator and members, its
- * invitation links (the creator's), its settings (the run history export), and leaving it. */
+/**
+ * The user's organisation: its name (the creator renames it) above three tabs, as on the agent
+ * page: its creator and members (`/organisation`), its invitation links (`/organisation/invitations`,
+ * the creator's only), and its settings, the run history export and leaving it
+ * (`/organisation/settings`).
+ */
 export function OrganisationPage() {
   const me = useCurrentUser();
   const reloadMe = useReloadCurrentUser();
@@ -29,6 +34,59 @@ export function OrganisationPage() {
       </Placeholder>
     );
   }
+
+  const tabs: Tab[] = [
+    {
+      id: "members",
+      label: "Members",
+      count: org.members.length,
+      content: (
+        <ul aria-label="Members" className="divide-y rounded-md border">
+          {org.members.map((m) => (
+            <li key={m.user.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+              {m.user.avatar_url ? (
+                <img src={m.user.avatar_url} alt="" className="size-7 rounded-full" />
+              ) : (
+                <span className="bg-muted size-7 shrink-0 rounded-full" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate font-medium">{m.user.name ?? m.user.login}</span>
+                  {m.user.id === me?.id && <Badge variant="secondary">You</Badge>}
+                  {m.user.id === org.creator?.id && <Badge variant="outline">Creator</Badge>}
+                </div>
+                <div className="text-muted-foreground truncate text-xs">
+                  {m.user.login} · Joined {formatDate(m.joined_at)}
+                  {m.invite_id && ` through ${linkName(m.invite_id)}`}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ),
+    },
+    // Only the creator makes and revokes links, so only they have the tab.
+    ...(org.is_creator
+      ? [{ id: "invitations", label: "Invitations", content: <InvitesSection key={org.id} /> }]
+      : []),
+    {
+      id: "settings",
+      label: "Settings",
+      content: (
+        <>
+          <RunHistoryExportSection key={`export-${org.id}`} />
+          <LeaveSection
+            org={org}
+            onLeft={async () => {
+              // Into a new personal organisation, which the shell names.
+              reloadMe();
+              await reload();
+            }}
+          />
+        </>
+      ),
+    },
+  ];
 
   return (
     <div className="h-full overflow-y-auto">
@@ -58,40 +116,7 @@ export function OrganisationPage() {
             }}
           />
         )}
-        <Section title="Members">
-          <ul aria-label="Members" className="divide-y rounded-md border">
-            {org.members.map((m) => (
-              <li key={m.user.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                {m.user.avatar_url ? (
-                  <img src={m.user.avatar_url} alt="" className="size-7 rounded-full" />
-                ) : (
-                  <span className="bg-muted size-7 shrink-0 rounded-full" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium">{m.user.name ?? m.user.login}</span>
-                    {m.user.id === me?.id && <Badge variant="secondary">You</Badge>}
-                    {m.user.id === org.creator?.id && <Badge variant="outline">Creator</Badge>}
-                  </div>
-                  <div className="text-muted-foreground truncate text-xs">
-                    {m.user.login} · Joined {formatDate(m.joined_at)}
-                    {m.invite_id && ` through ${linkName(m.invite_id)}`}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Section>
-        {org.is_creator && <InvitesSection key={org.id} />}
-        <RunHistoryExportSection key={`export-${org.id}`} />
-        <LeaveSection
-          org={org}
-          onLeft={async () => {
-            // Into a new personal organisation, which the shell names.
-            reloadMe();
-            await reload();
-          }}
-        />
+        <Tabs label="Organisation details" tabs={tabs} />
       </div>
     </div>
   );

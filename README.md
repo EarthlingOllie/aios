@@ -165,8 +165,11 @@ which says why, as 0015 did). A user is in exactly one organisation at a time: m
 table, held to one per user by a unique index, and the request's organisation is resolved in
 one place (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency), never named
 in a URL or header. `GET /api/me` says which organisation the user is in and the shell shows
-its name, which opens the **Organisation** page (`GET /api/organisation`): the name, the creator
-and the members with when each joined. Only the creator renames it (`PUT /api/organisation`; a
+its name, which opens the **Organisation** page (`GET /api/organisation`): the name and the
+creator above three tabs, as on the agent page, each a route: **Members**, with when each joined
+and the count (`/organisation`); **Invitations**, the links, for the creator only
+(`/organisation/invitations`); and **Settings**, the run history export and leaving
+(`/organisation/settings`). Only the creator renames it (`PUT /api/organisation`; a
 403 for another member, a 409 for a name another organisation has): a stopgap role until roles
 exist. The **Settings** page is the user's own and links to it.
 
@@ -180,7 +183,7 @@ lists and pages: `aios.api.provenance`), each version which member saved it, and
 records who deleted it (`deleted_by`). A workflow or schedule can only run the organisation's
 agents and workflows, and deleting an agent finds what depends on it across the organisation.
 Nothing answers to whoever made it. The **data store** is the organisation's (see [Data stores](#data-stores)), and so is the
-run history export, on the Organisation page.
+run history export, on the Organisation page's Settings tab.
 
 **Runs** execute for the organisation, however they start: by hand, by a schedule, by a chat
 mention, or as a workflow's agent node. A run's tools use the organisation's store, its trace
