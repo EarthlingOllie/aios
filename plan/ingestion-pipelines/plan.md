@@ -43,6 +43,11 @@ which the sandbox now makes safe to run.
 | D5 | Credentials for sources | **v1 supports keyless sources only.** Next comes organisation secrets: encrypted like data store passwords, entered on a page (never in chat, never seen by a model), named in a pipeline version, and given as environment variables to that pipeline's sandbox only. |
 | D6 | Approval gates | **Three gates, and any member may approve**, as for schema changes: the source, the schema change (or the new folder), and the final pipeline. Every new pipeline version, edits included, goes through the final gate again. |
 | D7 | Drift and failures | **v1 notifies members**, and a member starts a repair build by hand: the builder workflow, given the current version and the failing run. Automatic repair comes later; its result would still go through approval. |
+| D8 | Build-time egress | **The approved source grants its domains to the builder's workflow run** (`run_domain_grants`). Each node's sandbox may reach its `run_python` settings' domains plus the run's grants, minted into its proxy token. Until a source is approved, the scout probes only through `web_search`; to probe a candidate directly, it asks for that domain with `request_approval` first. No wildcard allowlists. |
+| D9 | A final rejection that needs an earlier step | **v1**: publish can only revise the schedule and the summary; a rejection that needs a different source or target fails the run, and the member starts a new build with the note, reusing the draft's still-valid parts. **Later**: a "rewind to step" action on the workflow run page, which re-runs a node and those after it on the same draft, for every workflow. No cycles. |
+| D10 | Steps that need no model | **v1**: saving the pipeline and its schedule happens in the publish step's `save_pipeline` tool, built from the draft. A **code node** kind for workflows waits until a second built-in workflow needs a deterministic step. |
+| D11 | Passing results between steps | **A pipeline draft**: `pipeline_drafts`, one row per builder run, with typed fields written by the steps' tools and rendered into each node's input. `save_pipeline` builds the version from the draft, never from the model's arguments. |
+| D12 | Can the organisation edit the built-in workflow? | **Yes**, like any workflow, as the documents assistant can be edited. The gates are enforced by the tools, not the graph: `save_pipeline` refuses a draft with no approved source or no target, so an edited graph can't skip an approval. |
 
 ## What the codebase already gives us
 
@@ -233,7 +238,7 @@ version from the draft and not from the model's arguments, so what's approved is
 
 **Domains across steps.** Each node is its own agent run, and so has its own sandbox, and `/work`
 doesn't carry over from scout to author. The draft carries the script. Approving the source
-grants its domains to the whole builder run, so the author's sandbox can reach them (A2).
+grants its domains to the whole builder run, so the author's sandbox can reach them (D8).
 
 **Starting a build.** A member starts one from a **New pipeline** form on the Pipelines page.
 It starts a run of the builder workflow with the request as its input, and opens the run's page,
@@ -249,17 +254,12 @@ These still need decisions. Each has a recommendation.
 | # | Question | Options | Recommendation |
 | --- | --- | --- | --- |
 | A1 | **Where does the data get written from?** The sandbox has no route to the database or S3. | (a) the output contract plus a trusted loader (§3); (b) give the sandbox scoped credentials (a per-pipeline role with `INSERT` on its tables, presigned PUT URLs), which needs a network path from sandbox subnets to RDS and S3 | **(a)**. It keeps the sandbox invariant, and reuses `write_data`'s checks, quota and embeddings. Costs: the output is bounded by the cap, and a very large backfill has to be paginated across runs through the state cursor. |
-| A2 | **Build-time egress.** The scout probes domains it only finds while running, but `run_python`'s allowlist is fixed in the agent version's settings. Each step is a separate agent run with its own sandbox. | (a) the approved source grants its domains to the builder's workflow run (`run_domain_grants`); each node's effective allowlist is its settings plus the run's grants, and the session's proxy token is minted with them; (b) give the scout a wildcard allowlist; (c) the scout only uses `web_search`, and the member lists the domains up front | **(a)**, with the scout probing only through `web_search` until a source is approved. To probe a source before proposing it, the scout can call `request_approval` for that domain first. (b) makes the scout an open egress for prompt-injected content. |
-| A3 | **A final rejection that needs an earlier step.** At publish, the member may decide the source or the target is wrong. The graph can't go back. | (a) publish can only revise the schedule and summarise; a rejection with a note fails the run, and the member starts a new build with the note, which reuses the draft's still-valid parts; (b) add a "rewind to step" action on the run page that re-runs a node and those after it, on the same draft; (c) allow cycles in this one workflow | **(a) for v1**, then **(b)**. Rewinding is useful to every workflow, not just this one, so it belongs in the workflow runtime. (c) breaks the DAG guarantees the runtime depends on. |
-| A4 | **Steps that need no model.** Saving the pipeline and creating its schedule are deterministic, but workflows only have agent and workflow nodes. | (a) keep them in the publish agent's `save_pipeline` tool, which builds from the draft (§6); (b) add a **code node** kind to workflows: a registered platform function run with the run's context | **(a) for v1.** (b) is worth it once a second built-in workflow needs a deterministic step, since it means a new node kind across the editor, the runtime, versions and the run page. |
-| A5 | **The draft: a table, or text along the edges?** | (a) `pipeline_drafts`, written by tools, rendered into each node's input (§6); (b) each node outputs JSON, which the next one parses | **(a)**. A typed draft can be validated, shown on the run page, and trusted by `save_pipeline`. With (b), a model would be relaying the script and domains, and could change them in transit. |
-| A6 | **Can the organisation edit the built-in workflow?** | (a) read-only, upgraded by the platform; (b) editable like any workflow (its agents' prompts and skills, more steps), with the platform's version as the default | **(b)**, matching the documents assistant, but the draft tools check which step they're called from by the node's tool set and not its key, so an edited graph can't skip a gate: `save_pipeline` refuses a draft with no approved source or no target. |
-| A7 | **Structured or unstructured: who decides, and what about mixed records** (tickets, filings with metadata)? | (a) the target step decides one target, and the member confirms it in the schema change or in the final approval; (b) allow both, with rows in a table plus documents linked by `external_id` | **(a) for v1**, with the contract already allowing both directories, so (b) is only a loader change later. |
-| A8 | **What is a "directory" in S3?** Documents are flat today. | (a) a store table `aios.document_folders` (name, description, `pipeline_id`), with `documents.folder_id` and `documents.external_id`, keys under `folders/<id>/`, and the Data page's Documents tab grouped by folder; (b) a bare S3 prefix with no rows | **(a)**. It's a store migration (`0008`). Ingested files then show on the Data page, count against the files quota, and are found by document search (which could filter by folder later). |
-| A9 | **Who owns runs and costs?** A scheduled run has no member. | As schedules do: `created_by` null and `trigger_id` set. Quotas: the data store caps already bound storage; is a per-organisation cap on sandbox minutes needed? | Follow schedules. Add `PIPELINE_MAX_RUNS_PER_DAY` per organisation as a cheap guard until billing exists. |
-| A10 | **Is a pipeline its own entity, or a target kind of agent?** | (a) new `pipelines` and `pipeline_versions` (§2); (b) store the script on an agent version as a "no-model agent" | **(a)**. It's a different runtime (no model, no thread) with different limits. It shares the versioning helpers, not the tables. |
-| A11 | **Prompt injection at build time.** The scout reads untrusted pages, and later steps hold tools that change the schema and schedule code. | Each such tool pauses for a member, who sees the exact SQL, script, domains and schedule. Is that enough? | The fixed steps already split the reader (scout) from the writers (target, author, publish), and each writer's tool pauses for a member. That's enough for v1, as long as each card shows the **exact** artefact (the full script, diffed against the previous version) and not the model's summary of it. |
-| A12 | **Approvals in a headless context.** | A build is always started by a member, but `request_approval` in an unattended workflow waits up to 7 days. | Keep the expiry. Expired counts as rejected, and the agent is told so. |
+| A2 | **Structured or unstructured: who decides, and what about mixed records** (tickets, filings with metadata)? | (a) the target step decides one target, and the member confirms it in the schema change or in the final approval; (b) allow both, with rows in a table plus documents linked by `external_id` | **(a) for v1**, with the contract already allowing both directories, so (b) is only a loader change later. |
+| A3 | **What is a "directory" in S3?** Documents are flat today. | (a) a store table `aios.document_folders` (name, description, `pipeline_id`), with `documents.folder_id` and `documents.external_id`, keys under `folders/<id>/`, and the Data page's Documents tab grouped by folder; (b) a bare S3 prefix with no rows | **(a)**. It's a store migration (`0008`). Ingested files then show on the Data page, count against the files quota, and are found by document search (which could filter by folder later). |
+| A4 | **Who owns runs and costs?** A scheduled run has no member. | As schedules do: `created_by` null and `trigger_id` set. Quotas: the data store caps already bound storage; is a per-organisation cap on sandbox minutes needed? | Follow schedules. Add `PIPELINE_MAX_RUNS_PER_DAY` per organisation as a cheap guard until billing exists. |
+| A5 | **Is a pipeline its own entity, or a target kind of agent?** | (a) new `pipelines` and `pipeline_versions` (§2); (b) store the script on an agent version as a "no-model agent" | **(a)**. It's a different runtime (no model, no thread) with different limits. It shares the versioning helpers, not the tables. |
+| A6 | **Prompt injection at build time.** The scout reads untrusted pages, and later steps hold tools that change the schema and schedule code. | Each such tool pauses for a member, who sees the exact SQL, script, domains and schedule. Is that enough? | The fixed steps already split the reader (scout) from the writers (target, author, publish), and each writer's tool pauses for a member. That's enough for v1, as long as each card shows the **exact** artefact (the full script, diffed against the previous version) and not the model's summary of it. |
+| A7 | **Approvals in a headless context.** | A build is always started by a member, but `request_approval` in an unattended workflow waits up to 7 days. | Keep the expiry. Expired counts as rejected, and the agent is told so. |
 
 ## Phases
 
@@ -279,18 +279,18 @@ Each phase is a mergeable PR (or a small stack), and each is useful on its own.
    - a Pipelines page with versions, runs and "Run now";
    - pipelines can be created by hand with a pasted script, which tests the runtime without
      the builder.
-3. **Document folders** (A8): store migration `0008` (`document_folders`, `documents.folder_id`,
+3. **Document folders** (A3): store migration `0008` (`document_folders`, `documents.folder_id`,
    `external_id`, `source_url`), the loader for documents, and folders on the Data page.
 4. **Scheduling pipelines**: `TriggerTargetKind.pipeline`, the scheduler path, the floor and
    the daily cap, failure notifications, and pausing after repeated failures.
-5. **Builder tools**: `run_python` with the output contract and domain grants for a workflow run (A2),
-   `create_document_folder`, `test_pipeline`, `save_pipeline`, and the pipeline draft (A5).
+5. **Builder tools**: `run_python` with the output contract and domain grants for a workflow run (D8),
+   `create_document_folder`, `test_pipeline`, `save_pipeline`, and the pipeline draft (D11).
 6. **The builder workflow**: built-in workflows (`workflows.builtin`), the four step agents
    and their skills, the draft shown on the run page, the New pipeline form, and an
    end-to-end test with the fake model (`tests/fake_model.py`) driving a build through all four
    steps and three approvals against a local HTTP fixture.
 7. **Later**: organisation secrets (D5), repair builds and then auto-repair (D7), rewinding a
-   workflow run to a step (A3), code nodes (A4), mixed targets (A7), and pipeline lineage on
+   workflow run to a step (D9), code nodes (D10), mixed targets (A2), and pipeline lineage on
    rows and documents (which run wrote what).
 
 ## Risks
