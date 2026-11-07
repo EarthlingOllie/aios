@@ -7,9 +7,9 @@ what it is about.
 ## Organisations and people
 
 **Organisation**:
-The group that owns everything its members make, say and produce, and the boundary of who can
-see what. Each has its own store. A company that needs separate groups makes separate
-organisations. Shown on screen as "Team".
+The group that shares one store, owns everything its members make, say and produce, and is the
+boundary of who can see what. Usually a whole company; a company that needs departments kept
+apart uses one organisation each. Shown on screen as "Team" (but see Flagged ambiguities).
 _Avoid_: Tenant, workspace, account
 
 **Member**:
@@ -205,3 +205,8 @@ _Avoid_: Schema change request (in prose), migration
   an execution is a **Turn**.
 - "Invocation" meant only what a mention made; it now covers every cause.
 - "Private chat" is now a **Direct message**, and chats no longer have owners.
+- "Tenant" has been used for both an organisation and the whole aios service; use
+  **Organisation**, or name the service.
+- Showing an organisation as "Team" clashes with the roadmap's teams feature, which means groups
+  inside an organisation. Undecided: keep "Team" on screen until then, or say "Organisation"
+  and keep "Team" for that feature.

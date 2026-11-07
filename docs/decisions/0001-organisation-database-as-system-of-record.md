@@ -38,6 +38,9 @@ test suites are the expensive parts, and they suit the aim.
 
 ## Decision
 
+The terms used here are defined in the glossary, [`CONTEXT.md`](../../CONTEXT.md). A grilling
+session on this record settled the details marked "(settled in review)" below.
+
 The organisation's data store becomes the system of record for everything the organisation
 makes, says and produces. The platform database keeps only who people are, which organisations
 exist, and how to reach and schedule work in each store.
@@ -62,7 +65,7 @@ Tool keys are never renamed, so `history_search` stays registered. Under D1 it b
 unified search restricted to run messages. R1 therefore lands as the first step of D1, so that
 agent versions using `history_search` never lose their tool.
 
-#### R2. Archive agents instead of deleting them
+#### R2. Archive instead of delete
 
 An agent can be archived and unarchived. An archived agent:
 
@@ -78,6 +81,13 @@ workflow deactivation (`aios.dependents`'s cancel paths, `DELETE /api/agents/{id
 protocol, `AgentDeleteDialog`). Keep a read-only "used by" list on the agent's page, so people
 can see what archiving affects. Workflows and skills get the same archive model, for
 consistency. Rows are deleted outright only when their organisation is.
+
+The archive dialog warns about the data tables the agent owns. They become read-only until an
+editor transfers them to another agent (D5). Syncs aren't affected, because they write as their
+source, not as an agent. The agent's memory is kept, and comes back if it's unarchived.
+
+Chats are archived rather than deleted too (D6). An archived chat is read-only but still
+searchable.
 
 #### R3. Many organisations per user, made only on request
 
@@ -97,6 +107,21 @@ consistency. Rows are deleted outright only when their organisation is.
   from the path, checking membership). It stays the only place this happens. `GET /api/me`
   lists the user's organisations. The shell gets a switcher.
 - Existing personal organisations become ordinary organisations. Nothing is migrated away.
+- **What an organisation is for a customer (settled in review).** An organisation is the unit
+  that shares one store, and the boundary of who can see what. A company that wants one shared
+  body of knowledge across its departments uses one organisation, and that's the recommended
+  setup in most cases. A company that needs departments kept apart (Legal from Sales, say) uses
+  one organisation each and shares agents between them by export and import (D14). Groups
+  inside one organisation, with their own visibility, are the future teams feature (see
+  [the roadmap](../roadmap.md)).
+- **Deleting an organisation (settled in review).**
+  - An admin can delete an organisation. The deletion is scheduled after a grace period (14
+    days by default, configurable), during which an admin can cancel it, and everyone in it is
+    notified.
+  - Once the grace period ends, the store, its files and its synced items are destroyed, through
+    the existing store teardown. The platform database keeps a record of the deletion: when and
+    by whom.
+  - The last person in an organisation can delete it but can't leave it.
 
 ### Part B: Adaptation
 
@@ -118,7 +143,7 @@ consistency. Rows are deleted outright only when their organisation is.
   store, in a `langgraph` schema there);
 - chats, chat members, messages, mentions, invocations and handoff briefs;
 - trigger definitions;
-- schema change requests and approvals (D7, D8);
+- approvals: schema changes and workflow approval steps (D7, D8);
 - agent memory (D5);
 - the audit log (D8);
 - sources and what they sync (D2);
@@ -150,14 +175,14 @@ dedicated session) or a Redis lock.
 - a reference to its row;
 - its text, `tsvector` and embedding;
 - when it was written;
-- its visibility: the whole organisation, or one private chat.
+- its visibility: the whole organisation, or one direct message.
 
 Each writer indexes what it writes, in the same transaction. Embedding happens afterwards,
 under the budget the history embedder uses now.
 
 A new tool, `search`, takes a query and optional filters (kinds, time range, chat, agent,
 source) and runs the existing RRF search over the index. Visibility is enforced from the run's
-context: a private chat's content is found only by runs started in that chat. `hybrid_search`
+context: a direct message's content is found only by runs started in that direct message. `hybrid_search`
 and `history_search` stay registered, as `search` fixed to their kinds. The Search page becomes
 the people's view of the same index, showing only what the signed-in member may read.
 
@@ -167,11 +192,12 @@ offers **Keep indefinitely**, which is the default.
 
 - **Runs:** a daily job deletes runs that finished longer ago than the setting, with their
   steps, checkpoint threads and search index entries.
-  - Runs still going, or waiting on a request, are never pruned.
+  - Runs still going, or waiting on an approval, are never pruned.
   - An agent's continuing run in a chat (D5) is pruned turn by turn rather than whole.
-- **Chats:** the same job deletes messages older than the setting, with their mentions,
+- **Chats and direct messages:** one setting covers both (settled in review). The same job
+  deletes messages older than the setting, with their mentions,
   invocations, briefs and handbacks, and their search index entries.
-  - The chat itself stays.
+  - The chat or direct message itself stays.
   - A message whose invocation is still going is kept until it finishes.
 - **Untouched:** pruning never touches agent memory, `data` tables, documents or the audit log.
   The audit log records each prune: what kind, how many, and up to when.
@@ -224,7 +250,14 @@ the store holds a searchable copy, and the copy follows its source:
   ordinary documents.
 
 What agents produce from synced content (messages, memory, rows in `data` tables) is the
-organisation's own and stays.
+organisation's own and stays. Uploaded documents are the organisation's own too: they stay until
+someone deletes them, even when the same file is also synced (settled in review).
+
+**Syncing shares (settled in review).** Synced content is visible to everyone in the
+organisation, whatever its permissions were at the source. Picking a private Slack channel or a
+restricted Drive folder warns the admin that everyone in the organisation will be able to search
+it. Keeping the source's permissions needs people's Slack and Google identities matched to
+theirs in aios, which comes with single sign-on (see [the roadmap](../roadmap.md)).
 
 **First connectors:**
 
@@ -262,13 +295,26 @@ without scanning them all.
   and chains are capped in depth.
 - Bursts are coalesced. A trigger can set a debounce window, after which it fires once with
   the batch.
+- A `chat.message` trigger can listen to any chat. It can listen to a direct message only if
+  whoever set it up is in that direct message (settled in review). If they leave, the trigger
+  stops, and its page says why.
 
 #### D4. Delivering results, and notifications
 
 - A new `post_message` tool lets an agent post markdown to a chat it is a member of. As today,
   mentions in what agents and workflows post start nothing.
 - Triggers get a **deliver to** setting, a chat. A scheduled or event-fired run then posts its
-  output or its failure there without any prompting.
+  output or its failure there without any prompting. A trigger can deliver to any chat, and to a
+  direct message only if whoever set it up is in it. The rule is the same as for listening
+  (D3), and so is what happens when they leave (settled in review).
+- **Every run has an invocation (settled in review).** An invocation records:
+  - the run's cause: a mention, schedule, event, by hand, or an agent's `start_workflow`;
+  - who or what caused it;
+  - where its result goes;
+  - the causation chain (D3).
+
+  Budgets (D12), handback, delivery and Insights' breakdown by cause all read it. Today only
+  mentions create invocations.
 - **Handback.** Results returning to a chat go through a handback step, the counterpart of the
   handoff brief.
   - What it summarises: a workflow's output, a trigger's delivery, a `start_workflow` result
@@ -286,8 +332,7 @@ without scanning them all.
     the admins.
   - `reply`: to whoever mentioned the agent or workflow, when its result is posted.
   - `mention`: to a person mentioned in a chat.
-  - `approval_needed`: to the members allowed to decide a schema change request or a workflow
-    approval step (D7, D8).
+  - `approval_needed`: to the members allowed to decide an approval (D7, D8).
 
   Notifications stay per user in the platform database, so one bell covers every organisation
   the user is in. Each holds the organisation and a reference, never content. Email delivery
@@ -295,8 +340,14 @@ without scanning them all.
 
 #### D5. Agents as persistent team members
 
-**Continuity.** An agent keeps one run per chat. Each mention is a new turn of that run, not a
-new run. The handoff brief becomes "what has happened in the chat since your last turn".
+**Continuity.** An agent keeps one run per chat or direct message. Each mention is a new turn
+of that run, not a new run. The handoff brief becomes "what has happened in the chat since your
+last turn".
+
+That run moves to the agent's current version at the start of each turn, and each turn records
+the version it ran on (settled in review). A fix to an agent then reaches its conversations at
+once. Workflow runs, and runs waiting on an approval, stay on the version they started on.
+Turns, not runs, are what Insights counts and judges as succeeded or failed (D9).
 
 Over weeks that thread outgrows the model's context, so older turns are compacted:
 
@@ -312,9 +363,16 @@ run that wrote it, and created and updated times. The `remember` and `forget` to
 and `search` with kind `memory` reads it, only the agent's own. People see, edit and delete an
 agent's memories on a Memory tab on its page.
 
+Each memory takes the visibility of where it was learned, as search items do (settled in
+review). A memory learned in a direct message is recalled only in that direct message, so
+nothing said there leaks into a chat through the agent. The Memory tab shows each person only
+the memories they could see where they were learned.
+
 **Table ownership.** A table created by a schema change an agent requested is owned by that
 agent, recorded in `aios.table_ownership`. The owner may write it; other agents may read it.
-Admins can change both on the Data page (D8). Postgres ownership stays with `_owner`, because
+Editors and admins share write access and transfer ownership on the Data page, and the audit
+log records it (settled in review). A table whose owner is archived is read-only until it's
+transferred (R2). Postgres ownership stays with `_owner`, because
 DDL only ever comes through approved schema changes. "Owns" here means stewardship plus a write
 grant.
 
@@ -333,9 +391,34 @@ escape it.
 
 #### D6. One chat experience, streamed
 
+**Chats and direct messages (settled in review).** Private chats and chat owners go. There are
+two kinds of conversation:
+
+- A **chat** is open. Anyone in the organisation can find it, join it and leave it.
+- A **direct message** is closed. It exists only for the people, agents and workflows in it,
+  and nobody outside can read it, admins included. Anyone in it can add others, who see its
+  history from the start. It never becomes a chat. Copying it into a new chat is the deliberate
+  way out.
+
+"Chat member" means anyone in either: a person, an agent or a workflow, all equal. With no
+owners, chats need no hand-over when someone leaves.
+
+| | Anyone in it | Admin |
+| --- | --- | --- |
+| **Chat:** read, post, mention, leave | ✓ | ✓ |
+| **Chat:** rename, describe, add or remove agents and workflows | ✓ | ✓ |
+| **Chat:** remove a person, archive or unarchive | | ✓ |
+| **Direct message:** read, post, mention, add people, agents and workflows, leave | ✓ | |
+
+Anyone in the organisation can join a chat; nobody joins a direct message unless added. Removing
+someone from a direct message isn't possible: leaving is how you get out. Renames and archiving
+are recorded in the audit log. Today's private chats become direct messages, and today's owners
+become ordinary chat members.
+
+**One experience.**
+
 - Remove the one-to-one agent run chat (the `useChat` conversation on the run page). A
-  conversation with one agent is a **direct message**: a private chat with you and the agent,
-  which works like every other chat.
+  conversation with an agent is a direct message, which works like every other conversation.
 - Run pages become read-only: the trace, events and usage, linked from run cards.
 - Chats stream. `GET /api/o/{organisation}/chats/{id}/stream` is a server-sent events stream of
   new messages, invocation updates and the token deltas of replies being written. A reply
@@ -364,12 +447,16 @@ escape it.
     behave as before.
 - **Approval node.** A new node kind, `approval`, has a prompt and the role allowed to decide
   (D8).
-  - Reaching it creates an approval request carrying its input, notifies the approvers (D4), and
+  - Reaching it creates an approval carrying its input, notifies the approvers (D4), and
     makes the step `waiting`, exactly as a schema change wait does now.
   - Deciding resumes the run. The node outputs `{approved, note, decided_by}`, which conditional
     edges can route on.
-  - Schema change requests and approval steps share one requests mechanism: the waiting, expiry,
-    notification and resume code.
+  - Schema changes and approval steps are both **approvals**, sharing one mechanism: the
+    waiting, expiry, notification and resume code. "Approval" is the word in the product and the
+    code. "Request" is retired, because it collides with HTTP requests (settled in review).
+  - Approvers see an approval's reason and details in full, even when it was raised in a direct
+    message they can't read (settled in review). An agent asking for one is told that what it
+    writes goes to approvers outside the conversation.
 - **`start_workflow` tool.** Its settings name the workflows an agent may start. It starts a run
   with structured input and waits up to a set time for the output. If the run takes longer, it
   returns the run's id, and the result is posted to the chat the turn came from (D4). The
@@ -395,7 +482,9 @@ organisation, whatever their role.
 | Post in chats, mention agents and workflows | ✓ | ✓ | ✓ |
 | Start runs from agent and workflow pages | ✓ | ✓ | ✓ |
 | Create and edit agents, skills, workflows, triggers | ✓ | ✓ | |
-| Archive, roles, invitations, connectors, organisation settings | ✓ | | |
+| Share and transfer data tables between agents | ✓ | ✓ | |
+| Archive, roles, invitations, connectors, organisation settings, default chat agents | ✓ | | |
+| Remove people from chats, archive chats, delete the organisation | ✓ | | |
 
 A participant's runs act with the agent's tools, writes and external actions included. That's
 intended: whoever built the agent decided what it may do, and a participant uses it as built.
@@ -427,8 +516,8 @@ Admins read it on the Organisation page, and agents can query it like any other 
 The Insights page shows every metric the store holds, beginning with what's already recorded
 and growing as D12's usage ledger lands. Standard panels show:
 
-- runs over time and their success rate, by agent, workflow and cause (mention, schedule,
-  event, by hand);
+- turns and workflow runs over time and their success rate, by agent, workflow and cause
+  (mention, schedule, event, by hand, `start_workflow`);
 - tokens and tool calls, by agent, workflow and member;
 - estimated cost from a per-model price table (an estimate for the team, not a bill: see
   Future);
@@ -452,7 +541,13 @@ The documents assistant becomes the **organisation assistant** (`builtin = 'assi
 tools are `search` (documents, chats, run history and sources), `describe_data` and
 `query_data`, and its instructions cover all of them.
 
-It's made when its organisation is, not when the first chat is. An existing documents assistant
+It's made when its organisation is, not when the first chat is.
+
+**Default chat agents (settled in review).** Admins choose which agents join every new chat
+automatically. The organisation assistant is the default for a new organisation. Direct messages
+get only the agents chosen when they're made, never the defaults.
+
+An existing documents assistant
 gets a new version with these tools. Versions already pinned are unchanged. A new organisation's
 assistant can answer from everything in its store from the first day.
 
@@ -673,6 +768,20 @@ Executors and the fair queue replace the per-process cap in `aios.firing` and th
 `workflows` Celery queue. Celery stays for ingest and maintenance, where tasks are CPU-bound or
 rare, until the lanes there need the same fairness.
 
+#### D14. Moving agents and workflows between organisations
+
+(Settled in review.) An editor can export an agent or a workflow as a file. The file holds the
+version's configuration, the skills it uses and the workflows nested in it. Another
+organisation's editor imports it as new, unconnected copies.
+
+- Data, memory, runs and connector credentials never travel.
+- Connector tools are carried by name and must be set up again in the importing organisation.
+  Until they are, the imported version can't run, as with a tool that has left the library.
+- Imports are recorded in the audit log.
+
+Organisations are the security boundary, so nothing is shared live between them. Export and
+import is also how agents are backed up today, and how templates could be published later.
+
 ## Sequencing
 
 Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
@@ -692,7 +801,7 @@ Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
    D13's executor service, node-by-node workflows and fair queue also land here, after D1.
    They change where every run executes, so they come before the features that add more runs.
    Autoscaling and the split lanes follow as load needs them.
-2. **Team experience:** D6, D10 and D4.
+2. **Team experience:** D6, D10, D4 and D14.
 3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets), then D3.
 4. **Inflow and insight:** D2 and D9.
 
@@ -725,26 +834,5 @@ contract in a later release.
 
 ## Future
 
-- **Single sign-on.** Enterprise customers need sign-in through their identity provider:
-  OIDC (Okta, Entra ID, Google Workspace) and SAML. Alongside it:
-  - verified domains that route their users to it;
-  - optional just-in-time membership with a default role;
-  - SCIM provisioning and deprovisioning, mapped onto D8's roles.
-
-  The existing email and password accounts stay for everyone else. `aios.auth.start_session`,
-  which every sign-in already goes through, is where an SSO sign-in joins them.
-
-- **Billing.** In a production service, the usage ledger (D12) becomes the basis for billing:
-  - priced plans with included usage and per-organisation limits (D13's in-flight cap and D12's
-    budgets set by plan);
-  - metered overage, invoices and a billing provider;
-  - the cost estimates on Insights replaced by the billed figures.
-
-  Until then, Insights shows estimates and budgets are only internal guards.
-
-- **Value-based pruning.** Beyond pruning by age, a periodic semantic scan over chats and runs
-  could judge how much context each holds: decisions, facts the team relies on, things agents
-  still refer to, as against chatter and routine runs. It would offer admins targeted pruning
-  options, such as keeping the decision and dropping the discussion around it, or summarising a
-  thread before it's pruned. It builds on the search index and the usage ledger, and would
-  itself be a budgeted run.
+Work deliberately left for later is kept in [the roadmap](../roadmap.md): single sign-on, roles
+and teams, billing, value-based pruning, and smaller follow-ons that this record defers.
