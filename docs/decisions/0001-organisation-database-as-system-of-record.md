@@ -378,21 +378,33 @@ escape it.
 
 #### D8. Governance
 
-**Roles.** Each membership has a role: `admin`, `member` or `viewer`. The creator stopgap goes.
-Existing creators become admins, and everyone else becomes a member.
+**Roles.** Each membership has a role. The creator stopgap goes. Existing creators become
+admins, and everyone else becomes an editor.
 
-| | Admin | Member | Viewer |
+- **`participant`:** works with the agents and workflows others have set up. A participant chats,
+  mentions, starts runs and decides nothing about how those agents and workflows are built.
+- **`editor`:** builds and changes agents, skills, workflows and triggers.
+- **`admin`:** also runs the organisation.
+
+The names say what each role does with the agents. "Member" stays the word for anyone in the
+organisation, whatever their role.
+
+| | Admin | Editor | Participant |
 | --- | --- | --- | --- |
 | Read everything they can see, search | ✓ | ✓ | ✓ |
 | Post in chats, mention agents and workflows | ✓ | ✓ | ✓ |
-| Start runs from agent and workflow pages | ✓ | ✓ | |
+| Start runs from agent and workflow pages | ✓ | ✓ | ✓ |
 | Create and edit agents, skills, workflows, triggers | ✓ | ✓ | |
 | Archive, roles, invitations, connectors, organisation settings | ✓ | | |
+
+A participant's runs act with the agent's tools, writes and external actions included. That's
+intended: whoever built the agent decided what it may do, and a participant uses it as built.
+An editor who wants an agent kept to some people sets its **invocable by** (D12).
 
 **Approval rules.** Each kind of change has a rule naming the role that may decide it. The
 defaults:
 
-- `create_table`, `add_column` and `create_index`: a member;
+- `create_table`, `add_column` and `create_index`: an editor;
 - `drop_table` and `drop_column`, restoring and purging dropped objects, changing table
   ownership or grants: an admin.
 
@@ -412,14 +424,21 @@ Admins read it on the Organisation page, and agents can query it like any other 
 
 #### D9. Insights
 
-The Insights page is built from the store: runs, steps, statuses, tool calls and token usage,
-with costs from a per-model price table. Standard panels show:
+The Insights page shows every metric the store holds, beginning with what's already recorded
+and growing as D12's usage ledger lands. Standard panels show:
 
-- runs over time and their success rate;
-- cost by agent and by workflow;
-- the most used tools;
-- the slowest workflows;
-- how long approvals wait.
+- runs over time and their success rate, by agent, workflow and cause (mention, schedule,
+  event, by hand);
+- tokens and tool calls, by agent, workflow and member;
+- estimated cost from a per-model price table (an estimate for the team, not a bill: see
+  Future);
+- the most used tools and agents;
+- the slowest workflows and nodes, and where runs fail;
+- how long approvals wait, and how often they're approved;
+- chat activity: messages, mentions and their outcomes;
+- storage used against the caps, and sync health once sources exist.
+
+Runs from before counters were kept show as "not tracked", as run pages do today.
 
 People can also ask for a chart in words. A built-in **insights agent** with `describe_data` and
 `query_data` answers with a SQL query and a Vega-Lite spec. The query runs through the existing
@@ -505,8 +524,8 @@ Nothing turns these counts into money, adds them up per organisation or member, 
 because of them. aios also sets no cap of its own on model calls or tokens within a turn: a
 turn is bounded only by LangGraph's default recursion limit and the provider's output limit.
 
-**What viewers mentioning changes.** Any member can already start unbounded spend by
-mentioning. Letting viewers post and mention widens that to people who can't edit anything,
+**What participants mentioning changes.** Any member can already start unbounded spend by
+mentioning. Letting participants post and mention widens that to people who can't edit anything,
 often a larger and less familiar group. The plan's other decisions make each mention cost
 more:
 
@@ -514,20 +533,17 @@ more:
   run, and a workflow runs every agent node in it, for up to two hours.
 - **Amplification:**
   - `start_workflow` (D7) lets one run start others.
-  - Event triggers (D3) on `chat.message` mean a viewer's ordinary message, with no mention at
+  - Event triggers (D3) on `chat.message` mean a participant's ordinary message, with no mention at
     all, can start runs.
   - Handback (D4) adds a call per result.
   - Continuing threads (D5) make each turn's input larger, until compaction trims it.
 - **Fairness:** the concurrency cap is per process, not per organisation. One organisation's
   burst queues behind it every other organisation's chat turns and schedules on that process.
-  This problem exists today, and more mentions make it worse.
-- **Acting with an agent's powers:** a viewer can't edit an agent but can mention one. The agent
-  then acts with its own tools on the viewer's behalf: `write_data`, requesting schema changes,
-  posting to Slack, commenting on GitHub. This is a privilege question as much as a cost one.
-  Schema changes are safe, because a member or admin still decides them (D8). Direct writes and
-  external actions aren't.
+  This problem exists today, and more mentions make it worse. D13 addresses it.
+- **Acting with an agent's powers:** a participant's mention makes the agent act with its own
+  tools. That's intended (D8). The cost of those actions is what this item budgets.
 
-**Decision.** Add budgets in five layers, checked in this order before anything costs money:
+**Decision.** Add budgets in four layers, checked in this order before anything costs money:
 invocation permission, then rate limits, then budget, then the handoff call.
 
 1. **Measure as cost.**
@@ -547,24 +563,108 @@ invocation permission, then rate limits, then budget, then the handoff call.
    - An admin sets a monthly spend budget for the organisation. Admins are notified at 80%.
    - At 100%, new runs are refused while runs in flight finish. The refusal shows on the run card
      or schedule, and costs no handoff call.
-   - Optional allowances per role and per member, with a lower default for viewers. They're
+   - Optional allowances per role and per member, with a lower default for participants. They're
      counted against the person who caused the run, including runs their messages fire through
      `chat.message` triggers.
 4. **Limits on invoking.**
    - A rate limit on mentions per member per minute (counted in Redis, as the sign-in limits
      are).
    - The cap on agents and workflows mentioned per message drops from 100 to 5.
-   - Each agent and workflow has an **invocable by** setting: everyone, members, or admins.
-     It defaults to **members** when the agent has any tool that writes or acts outside aios:
-     `write_data`, connector actions such as `post_to_slack`, `start_workflow` or `post_message`
-     to another chat. Otherwise it defaults to **everyone**, viewers included.
+   - Each agent and workflow has an **invocable by** setting: everyone, editors, or admins. It
+     defaults to everyone, and an editor narrows it where an agent should be kept to fewer
+     people.
    - A refused mention says why on its card.
-5. **Share capacity fairly.** The firing machinery takes each organisation's in-flight count into
-   account: a share per organisation, coordinated through Redis across processes. One
-   organisation's burst then waits on its own share rather than on everyone's.
+Sharing capacity fairly between organisations is D13's.
 
-Measurement, per-run caps, mention limits and **invocable by** land with D8, before viewers
-exist and before event triggers. Organisation budgets and fair sharing land before D3.
+Measurement, per-run caps, mention limits and **invocable by** land with D8, before
+participants exist and before event triggers. Organisation budgets land before D3.
+
+#### D13. Execution and scaling
+
+**How work runs today.** There is no worker per organisation. All organisations share a few
+small pools, and each takes work first come, first served:
+
+| Work | Where it runs | Default capacity, whole deployment |
+| --- | --- | --- |
+| Chat agent turns and schedules | inside the API processes (`aios.firing`) | 5 per API task × 2 tasks = 10 turns |
+| Workflow runs | `workflow-worker`, Celery prefork | 1 task × 2 processes = **2 runs** |
+| Ingests | `worker`, Celery prefork | 1 task × 2 processes = 2 documents |
+| Provisioning, store migrations, schema change applies, restores, purges, measuring, expiry | `provisioning-worker` with the beat | 1 task × 1 process = **1 job** |
+
+So the bottleneck is a small shared pool with coarse units of work and no fairness, not one
+worker per organisation:
+
+- **Coarse units.** A workflow run holds a whole worker process from start to finish, up to two
+  hours, though it spends nearly all of that awaiting the model. Two long runs anywhere stop
+  every other organisation's workflows.
+- **Low, fixed concurrency.** Celery's prefork model gives one process per concurrent task, so
+  I/O-bound work that one event loop could interleave by the hundred takes a process each.
+  Nothing scales with demand.
+- **Turns in the API.** Agent turns run beside HTTP requests, so a burst of turns competes with
+  serving pages. A deploy that replaces API tasks stops the turns in them ("The service stopped
+  mid-run.").
+- **No fairness or priority.** One queue per kind, first come, first served. A burst from one
+  organisation, or 50 schedules at 9:00, delays everyone's chat replies.
+- **One maintenance lane.** An approved schema change, which a person and a paused run are
+  waiting on, can queue behind another store's migration or the storage measurements.
+
+**Decision.** Keep one shared, elastic pool of executors that serves every organisation. Reserve
+nothing per organisation, so an inactive organisation costs nothing but its database, and
+make the pool fair, finer-grained and able to scale.
+
+1. **A run executor service.**
+   - A new service runs every agent turn, whatever its cause: chat mention, direct message,
+     schedule, event, workflow node or `start_workflow`.
+   - The API stops running turns. It enqueues them and streams their progress from Redis
+     (D6).
+   - Executors are asyncio processes that each interleave many turns (a semaphore, say 50),
+     because a turn is almost entirely waiting on the model and tools. They're not prefork
+     workers.
+2. **Workflows advance node by node.**
+   - A workflow run no longer holds a process. Each ready node is enqueued as its own unit of
+     work.
+   - When a node finishes, a short coordinator step records it, works out which nodes are now
+     ready (D7's conditions included) and enqueues them.
+   - This reuses what pause and resume already do: rebuild a run's state from its recorded
+     steps.
+   - The run's time limit becomes a check of elapsed time at each step, and a waiting run holds
+     nothing, as now.
+3. **A fair queue.**
+   - Work goes in a queue table in the platform database (a D1 coordination index). Each row
+     records the organisation, the store, the lane and when it became ready. Redis pub/sub wakes
+     executors, so they don't poll.
+   - An executor claims with `FOR UPDATE SKIP LOCKED`, as the scheduler does now. Among
+     organisations under their in-flight cap, it takes from the one with the least running,
+     oldest first within it.
+   - Each organisation has an in-flight cap, which billing tiers can set later. A burst from
+     one organisation waits on its own share, and idle organisations simply don't appear.
+4. **Lanes by kind of work, not by organisation.**
+   - **Interactive:** mentions, direct messages and handbacks. Someone is watching, so this lane
+     has reserved capacity and is claimed first.
+   - **Background:** schedules, events, workflow nodes and `start_workflow`.
+   - **Ingest and sync:** CPU and memory heavy (Docling), on their own workers sized for it, with
+     the same fair claiming.
+   - **Maintenance:** split into **urgent** (schema change applies, restores: someone is
+     waiting) and **routine** (migrations, measurements, retention, expiry, syncs' cleanup), each
+     with its own workers. The beat stays a single scheduler that only enqueues.
+5. **Autoscaling.**
+   - Executors and ingest workers scale on queue depth and the age of the oldest ready item,
+     published as a metric (ECS service autoscaling on AWS).
+   - They have a small floor (one or two executors) and scale in when idle. Capacity follows
+     load across all organisations, so nothing sits idle on an inactive one.
+   - Interactive latency is the target the scaling policy keeps.
+6. **Shared limits that hold across executors.**
+   - The model provider's rate limits become the real ceiling. A token bucket per model in
+     Redis, shared by every executor, paces calls, sharing the bucket by the same fairness rule.
+   - Store connections are opened per tool call, through the pooler (D1), and per-store engines
+     are evicted when idle, so an inactive organisation holds no connections.
+7. **Graceful deploys.** On shutdown an executor stops claiming, lets its turns finish up to a
+   grace period, and hands back what it can't finish: the turn is re-queued from its last
+   checkpoint, not failed. Interrupted turns resume rather than ending "stopped mid-run".
+
+Executors and the fair queue replace the per-process cap in `aios.firing` and the
+`workflows` Celery queue. Celery stays for ingest and maintenance, where tasks are CPU-bound or
+rare, until the lanes there need the same fairness.
 
 ## Sequencing
 
@@ -581,10 +681,12 @@ Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
 1. **Foundation:** D1 (with R1 as its first step, and the pooler before reads switch), then
    D8 with the first parts of D12: measurement, per-run caps, mention limits and
    **invocable by**. Roles are needed by approvals, ownership and notifications. The audit log
-   needs D1. Viewers can't mention until D12's guards exist.
+   needs D1. Participants can't mention until D12's guards exist.
+   D13's executor service, node-by-node workflows and fair queue also land here, after D1.
+   They change where every run executes, so they come before the features that add more runs.
+   Autoscaling and the split lanes follow as load needs them.
 2. **Team experience:** D6, D10 and D4.
-3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets and fair sharing),
-   then D3.
+3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets), then D3.
 4. **Inflow and insight:** D2 and D9.
 
 Each item gets its own plan in `plan/<item>/plan.md` before it starts, as earlier features did,
@@ -611,10 +713,18 @@ contract in a later release.
 
 ## Open questions
 
-- The default per-run caps and viewer allowance. These are set from measured usage once
+- The default per-run caps, participant allowance and per-organisation in-flight cap. These are set from measured usage once
   D12's ledger has a few weeks of data.
 
 ## Future
+
+- **Billing.** In a production service, the usage ledger (D12) becomes the basis for billing:
+  - priced plans with included usage and per-organisation limits (D13's in-flight cap and D12's
+    budgets set by plan);
+  - metered overage, invoices and a billing provider;
+  - the cost estimates on Insights replaced by the billed figures.
+
+  Until then, Insights shows estimates and budgets are only internal guards.
 
 - **Value-based pruning.** Beyond pruning by age, a periodic semantic scan over chats and runs
   could judge how much context each holds: decisions, facts the team relies on, things agents
