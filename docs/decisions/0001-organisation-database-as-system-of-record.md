@@ -576,6 +576,13 @@ invocation permission, then rate limits, then budget, then the handoff call.
    - A refused mention says why on its card.
 Sharing capacity fairly between organisations is D13's.
 
+**Every limit is configurable, with permissive defaults for now.** That covers the per-run caps,
+budgets, allowances, mention rate limits, mentions per message and D13's in-flight cap. Each is a
+deployment setting, overridable per organisation by an admin where this item says so. Real
+values are chosen once the usage ledger has data. Until then they're set high enough not to get
+in the way, but they exist and are enforced, so tightening them later is configuration, not
+code.
+
 Measurement, per-run caps, mention limits and **invocable by** land with D8, before
 participants exist and before event triggers. Organisation budgets land before D3.
 
@@ -717,6 +724,15 @@ contract in a later release.
   D12's ledger has a few weeks of data.
 
 ## Future
+
+- **Single sign-on.** Enterprise customers need sign-in through their identity provider:
+  OIDC (Okta, Entra ID, Google Workspace) and SAML. Alongside it:
+  - verified domains that route their users to it;
+  - optional just-in-time membership with a default role;
+  - SCIM provisioning and deprovisioning, mapped onto D8's roles.
+
+  The existing email and password accounts stay for everyone else. `aios.auth.start_session`,
+  which every sign-in already goes through, is where an SSO sign-in joins them.
 
 - **Billing.** In a production service, the usage ledger (D12) becomes the basis for billing:
   - priced plans with included usage and per-organisation limits (D13's in-flight cap and D12's
