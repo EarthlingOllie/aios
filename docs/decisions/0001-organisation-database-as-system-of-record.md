@@ -161,6 +161,19 @@ context: a private chat's content is found only by runs started in that chat. `h
 and `history_search` stay registered, as `search` fixed to their kinds. The Search page becomes
 the people's view of the same index, showing only what the signed-in member may read.
 
+**Retention.** Each organisation chooses how long runs are kept before they're pruned
+(`run_retention_days`, an admin setting; empty keeps them forever, which is the default).
+
+- A daily job deletes runs that finished longer ago than that. This covers agent runs, workflow
+  runs and steps, their checkpoint threads, and their entries in the search index.
+- Runs that are still going or waiting on a request are never pruned.
+- An agent's continuing run in a chat (D5) is pruned turn by turn rather than whole.
+- Pruning doesn't touch chat messages, agent memory or the audit log. The audit log records each
+  prune: how many runs were removed and up to when.
+
+Synced items (D2) don't follow this setting. They're copies of content whose system of record
+is elsewhere, and they follow their source instead.
+
 #### D2. Sources and connectors
 
 A **source** is something that brings content into the store. Its kinds:
@@ -194,6 +207,28 @@ tool that left the library does today. This keeps "tools are code" true of the l
 each organisation chooses its own connectors.
 
 Syncs run on their own Celery queue (`sources`). Only admins add or remove connectors (D8).
+
+**What synced items are.** The store is the system of record for everything that happens in
+aios. Content synced from Slack, Drive or GitHub is still owned by the system it came from, so
+the store holds a searchable copy, and the copy follows its source:
+
+- an item edited upstream is updated at the next sync;
+- an item deleted upstream, or that the connector can no longer see, is deleted at the next
+  sync, which reconciles against what the source still lists;
+- removing a connector deletes everything it synced, unless the admin chooses to keep it as
+  ordinary documents.
+
+What agents produce from synced content (messages, memory, rows in `data` tables) is the
+organisation's own and stays.
+
+**First connectors:**
+
+- **Slack:** channels the admin picks, synced as messages with their threads. A
+  `post_to_slack` tool sends to an allowed channel.
+- **Google Drive:** folders the admin picks, synced as documents through the existing ingest
+  pipeline.
+- **GitHub:** repositories the admin picks, synced as issues, pull requests and their comments,
+  and optionally README and docs files, with tools to comment and open issues.
 
 #### D3. Event triggers
 
@@ -229,6 +264,18 @@ without scanning them all.
   mentions in what agents and workflows post start nothing.
 - Triggers get a **deliver to** setting, a chat. A scheduled or event-fired run then posts its
   output or its failure there without any prompting.
+- **Handback.** Results returning to a chat go through a handback step, the counterpart of the
+  handoff brief.
+  - What it summarises: a workflow's output, a trigger's delivery, a `start_workflow` result
+    posted later, and any output longer than about a screen or in JSON.
+  - It reads the output along with the brief and message that started the run, and posts a short
+    answer to what was asked.
+  - The full output is kept on the invocation, behind a disclosure on the run card, and links to
+    the run.
+  - It uses the handoff model and is traced the same way (tagged `handback`).
+  - If it fails, the raw output is posted with a note saying so, rather than nothing.
+  - An agent's reply to a mention is not summarised. The agent was briefed and already writes
+    for the chat, and its reply streams straight in (D6).
 - Notifications cover more kinds:
   - `run_failed`: to whoever started the run. For a trigger's run, to the trigger's creator and
     the admins.
@@ -244,8 +291,16 @@ without scanning them all.
 #### D5. Agents as persistent team members
 
 **Continuity.** An agent keeps one run per chat. Each mention is a new turn of that run, not a
-new run. The handoff brief becomes "what has happened in the chat since your last turn". Long
-threads are compacted by summarising older turns into the thread.
+new run. The handoff brief becomes "what has happened in the chat since your last turn".
+
+Over weeks that thread outgrows the model's context, so older turns are compacted:
+
+- When the thread passes a token threshold, the turns before the most recent few are replaced,
+  in what the model sees, by a summary written by the handoff model.
+- The latest turns stay verbatim. Summaries are summarised again as they grow.
+- The full turns stay in the store (and in search) until retention prunes them, so compaction
+  loses nothing a person or `search` can reach. Only the model's working context is
+  shortened.
 
 **Memory.** `aios.agent_memory` in the store holds an agent's memories: content, embedding, the
 run that wrote it, and created and updated times. The `remember` and `forget` tools write it,
@@ -324,7 +379,8 @@ Existing creators become admins, and everyone else becomes a member.
 | | Admin | Member | Viewer |
 | --- | --- | --- | --- |
 | Read everything they can see, search | ✓ | ✓ | ✓ |
-| Post in chats, mention, start runs | ✓ | ✓ | |
+| Post in chats, mention agents and workflows | ✓ | ✓ | ✓ |
+| Start runs from agent and workflow pages | ✓ | ✓ | |
 | Create and edit agents, skills, workflows, triggers | ✓ | ✓ | |
 | Archive, roles, invitations, connectors, organisation settings | ✓ | | |
 
@@ -452,8 +508,6 @@ contract in a later release.
 
 ## Open questions
 
-- Whether viewers may post in chats (read-only observers, or participants without edit rights).
-- Retention: how long runs, checkpoints and synced items are kept, and whether an organisation
-  can choose.
-- Whether an agent's run per chat (D5) is compacted by summarising or by windowing alone.
-- Which connectors to build first. A proposal: Slack, Google Drive and GitHub.
+- Whether chat messages get a retention setting of their own, as runs do, or are kept for as
+  long as their chat exists.
+- Whether viewers' mentions should count against a usage budget, since they start runs.
