@@ -527,7 +527,7 @@ more:
   Schema changes are safe, because a member or admin still decides them (D8). Direct writes and
   external actions aren't.
 
-**Decision.** Add budgets in four layers, checked in this order before anything costs money:
+**Decision.** Add budgets in five layers, checked in this order before anything costs money:
 invocation permission, then rate limits, then budget, then the handoff call.
 
 1. **Measure as cost.**
