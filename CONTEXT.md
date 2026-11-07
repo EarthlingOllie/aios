@@ -9,7 +9,7 @@ what it is about.
 **Organisation**:
 The group that owns everything its members make, say and produce, and the boundary of who can
 see what. Each has its own store. A company that needs separate groups makes separate
-organisations.
+organisations. Shown on screen as "Team".
 _Avoid_: Tenant, workspace, account
 
 **Member**:
@@ -93,7 +93,7 @@ _Avoid_: Deleted
 
 **Memory**:
 What an agent has chosen to remember across its runs, private to that agent and visible to
-people.
+people. A memory learned in a direct message is only recalled there.
 
 ## Running
 
@@ -128,12 +128,19 @@ A configurable limit on usage, for a run, a member or the organisation.
 ## Chats
 
 **Chat**:
-A conversation between members, agents and workflows in an organisation, public or private.
-_Avoid_: Channel, room, conversation
+An open conversation in an organisation that any member can find, join and leave, with agents
+and workflows in it too.
+_Avoid_: Channel, room, conversation, public chat
 
 **Direct message**:
-A private chat between one person and one agent.
-_Avoid_: Agent chat, run chat
+A conversation that exists only for the people and agents in it, and that nobody outside it,
+admins included, can read.
+_Avoid_: Private chat, agent chat, run chat
+
+**Chat member**:
+A person, agent or workflow in a chat or direct message; always "chat member", never just
+"member". Every chat member is equal: a chat has no owner.
+_Avoid_: Participant (a role), chat owner
 
 **Mention**:
 Naming an agent, workflow or person in a message; mentioning an agent or workflow creates an
@@ -159,7 +166,8 @@ _Avoid_: Integration, plugin
 
 **Synced item**:
 A searchable copy of content whose system of record is an external system; it follows its
-source and is removed when the source removes it.
+source and is removed when the source removes it. Syncing shares it with the whole
+organisation, whatever its permissions were at the source.
 
 **Document**:
 A file in the store, parsed and indexed for search. An uploaded document belongs to the
@@ -193,3 +201,4 @@ _Avoid_: Schema change request (in prose), migration
 - "Run" meant both the conversation and one execution of it; the conversation is the **Run**,
   an execution is a **Turn**.
 - "Invocation" meant only what a mention made; it now covers every cause.
+- "Private chat" is now a **Direct message**, and chats no longer have owners.
