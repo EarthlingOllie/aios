@@ -35,7 +35,7 @@ when each step counts as done.
 
 | Phase | Steps | Depends on |
 | --- | --- | --- |
-| **0. Refactor and guard rails** | 0.1 docs split · 0.2 module split · 0.3 full-stack test · 0.4 archive · 0.5 many organisations | — |
+| **0. Refactor and guard rails** | 0.1 docs split · 0.2 module split · 0.3 full-stack test · 0.4 sharded tests · 0.5 archive · 0.6 many organisations | — |
 | **1. Foundation** | 1.1 pooler and turn lock · 1.2 store as system of record · 1.3 unified search, and removing the export · 1.4 retention · 1.5 roles and audit log · 1.6 invocations, usage and guards · 1.7 run executor and fair queue | phase 0 |
 | **2. Organisation experience** | 2.1 chats and direct messages · 2.2 streaming, one chat experience · 2.3 organisation assistant and default agents · 2.4 delivery, handback and notifications · 2.5 export and import | phase 1 |
 | **3. Agents and automation** | 3.1 continuing runs · 3.2 memory · 3.3 table ownership and per-agent roles · 3.4 structured workflows · 3.5 budgets · 3.6 event triggers · 3.7 lanes and autoscaling | phase 2 |
@@ -114,7 +114,59 @@ These are pure moves, with no behaviour changes, so the later steps touch small 
 - **Done when:** it passes in CI and fails if any link in the loop breaks. Later steps extend it
   rather than adding parallel harnesses.
 
-### 0.4 Archive instead of delete (R2)
+### 0.4 Sharded test runs
+
+The suites will grow with every step that follows, so CI should split them across machines
+before they do. The aim is that CI time stays roughly flat as tests are added: add shards, not
+waiting.
+
+**Today:**
+- one backend job runs lint, format, role setup, migrations, `alembic check` and all of `pytest`
+  in sequence against one Postgres, one Redis and one RustFS;
+- one frontend job runs the build, unit tests and every Playwright spec. Playwright runs specs in
+  parallel on that machine (`fullyParallel`), but never across machines.
+
+The backend tests share one database and write real rows. They also reset Redis between tests
+and share one files bucket. That's why sharding across machines, each with its own services, is
+the safe first move, rather than running in parallel inside one machine.
+
+- **Backend shards.**
+  - A CI matrix of N jobs. Each has its own Postgres, Redis and RustFS service containers, so
+    shards can't see each other's data, rate limits or files.
+  - Each job runs role setup and migrations, then its share of the tests.
+  - Tests are split by file and balanced on recorded durations: `pytest-split`, with a
+    `.test_durations` file in the repository, refreshed by a manual or weekly workflow.
+  - The dependency is pinned exactly, as the dependency policy requires.
+  - N is one number in the workflow.
+- **Checks that run once.** Lint, format and `alembic check` move to their own fast job, so they
+  aren't repeated per shard. A final job requires every shard to pass, so branch protection
+  needs only one required check.
+- **Order independence.**
+  - Run the whole backend suite once in random order (`pytest-randomly`, pinned) and fix what
+    fails: tests that rely on another's rows, or on global counts such as "every user" or "every
+    store".
+  - Keep random order on in CI, with the seed printed, so new order dependencies show up as soon
+    as they're written.
+- **Frontend shards.**
+  - Playwright's own `--shard=i/N` across a matrix of jobs.
+  - Each shard writes a blob report, and a final job merges them (`playwright merge-reports`)
+    into one HTML report, uploaded on failure as today.
+  - Unit tests (`pnpm test`) and the build run once, in their own job.
+- **Full-stack test (step 0.3).** It uses the same Playwright sharding. Each shard brings up its
+  own Compose stack, so shards share nothing.
+- **Running locally.** `uv run pytest --splits N --group i` and `pnpm test:e2e --shard=i/N`
+  reproduce one CI shard. The docs page on testing says how.
+- **Not in scope.** Parallel workers inside one machine (`pytest-xdist`) would need a database,
+  Redis index, bucket prefix and store name prefix per worker. Do it later only if a single
+  shard becomes the bottleneck.
+- **Done when:**
+  - the backend and Playwright suites each run in N balanced shards;
+  - the slowest shard takes close to total time divided by N, plus setup;
+  - the suite passes in random order;
+  - changing N is a one-line change;
+  - a failing shard's report is still downloadable.
+
+### 0.5 Archive instead of delete (R2)
 
 - **Model.** Agents, skills and workflows get `archived_at` and `archived_by`. Names stay
   reserved while archived.
@@ -140,7 +192,7 @@ These are pure moves, with no behaviour changes, so the later steps touch small 
 - **Done when:** no route deletes an agent, skill or workflow, archived ones can't start
   anything anywhere, and the full-stack test still passes.
 
-### 0.5 Many organisations per person (R3)
+### 0.6 Many organisations per person (R3)
 
 - **Memberships.**
   - Drop the unique index on `organisation_members.user_id`.
@@ -179,8 +231,8 @@ These are pure moves, with no behaviour changes, so the later steps touch small 
   - deletion runs end to end with cancellation;
   - the browser tests cover the switcher and the onboarding page.
 
-**Phase 0 is done when:** steps 0.1–0.5 are merged, the README is short, and the full-stack test
-runs in CI.
+**Phase 0 is done when:** steps 0.1–0.6 are merged, the README is short, and the full-stack test
+runs in CI, sharded like the rest of the suite.
 
 ---
 
@@ -669,8 +721,9 @@ its agents perform.
 | 0.1 Docs by domain | — | not started |
 | 0.2 Modules by domain | — | not started |
 | 0.3 Full-stack test | — | not started |
-| 0.4 Archive | — | not started |
-| 0.5 Many organisations | — | not started |
+| 0.4 Sharded tests | — | not started |
+| 0.5 Archive | — | not started |
+| 0.6 Many organisations | — | not started |
 | 1.1 Pooler and turn lock | — | not started |
 | 1.2 Store as system of record | — | not started |
 | 1.3 Unified search, remove export | — | not started |
