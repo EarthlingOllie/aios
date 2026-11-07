@@ -87,9 +87,9 @@ An immutable snapshot of an agent's, skill's or workflow's configuration; editin
 one, and runs are pinned to the version they started on.
 
 **Archived**:
-An agent, skill, workflow or chat that starts no new runs but keeps its history, memory and tables,
-and can be unarchived.
-A chat that is archived is read-only but still searchable.
+Put away rather than deleted, and can be unarchived. An archived agent, skill or workflow
+starts no new runs but keeps its history, memory and tables; an archived chat is read-only but
+still searchable.
 _Avoid_: Deleted
 
 **Memory**:
