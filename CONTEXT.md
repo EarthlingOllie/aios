@@ -53,11 +53,12 @@ _Avoid_: User table, custom table
 
 **Table owner**:
 The agent that stewards a data table and may write it; other agents may only read it unless
-shared. A table whose owner is archived is read-only until ownership is transferred.
+shared. Editors and admins share and transfer tables. A table whose owner is archived is
+read-only until ownership is transferred.
 
 **Retention**:
-How long an organisation keeps its runs and its chat messages before they're pruned; "keep
-indefinitely" is the default.
+How long an organisation keeps its runs, and its chat and direct message history, before
+they're pruned; "keep indefinitely" is the default.
 
 ## Agents, skills and workflows
 
@@ -84,7 +85,8 @@ One agent, workflow or approval step in a workflow's graph.
 
 **Version**:
 An immutable snapshot of an agent's, skill's or workflow's configuration; editing creates a new
-one, and runs are pinned to the version they started on.
+one. Workflow runs, and runs waiting on an approval, stay on the version they started on; an
+agent's ongoing run in a chat takes the current version at each turn.
 
 **Archived**:
 Put away rather than deleted, and can be unarchived. An archived agent, skill or workflow
@@ -103,8 +105,8 @@ An agent's conversation, or a workflow's execution, pinned to one version. An ag
 last one turn (a schedule's) or many (its ongoing run in a chat); a run itself has no outcome.
 
 **Turn**:
-One exchange within an agent's run: a message in, the agent's work, and its reply. Turns are
-what is counted, budgeted and judged as succeeded or failed.
+One exchange within an agent's run: a message in, the agent's work, and its reply, on one
+version of the agent. Turns are what is counted, budgeted and judged as succeeded or failed.
 
 **Invocation**:
 One request for an agent or workflow to act, whatever caused it (a mention, a schedule, an
