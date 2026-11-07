@@ -4,7 +4,7 @@ Status: **plan** (2026-11-07). The decisions are made in
 [decision record 0001](../../docs/decisions/0001-organisation-database-as-system-of-record.md),
 the words are the glossary's ([`CONTEXT.md`](../../CONTEXT.md)), and what waits for later is in
 [the roadmap](../../docs/roadmap.md). This plan turns those decisions into ordered,
-shippable steps. Nothing here is built yet.
+shippable steps, and each phase has a spec in [`docs/specs/`](../../docs/specs/). Nothing here is built yet.
 
 Each step below is roughly one pull request, or a short series of them. Each one gets a detailed
 plan of its own (`plan/<step>/plan.md`, as earlier features had) before work starts. That plan

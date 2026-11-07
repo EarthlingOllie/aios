@@ -151,6 +151,16 @@ searchable.
 
 Documents, chunks and `data` tables are already there.
 
+**Conversation content is closed to the data tools.** Once chats live in the store, a query
+tool reading the whole store would expose direct messages to people outside them, breaking D6.
+So conversation content goes in private store schemas reached only by the platform's own code,
+through its own login role: chats, direct messages, mentions, invocations, briefs, run messages,
+checkpoints and memory. The roles behind `query_data`, `describe_data` and the Tables view (and
+D5's per-agent roles) can neither read nor list those schemas. Agents reach conversation content
+only through `search`, which enforces visibility. Reporting views carry ids, counts, times and
+statuses, never content, for Insights and agents. This was found while writing the phase specs
+([`docs/specs/`](../specs/)).
+
 **People.** A store has no users table. It gets `aios.people`: a mirror of the organisation's
 members (user id, name, role), kept up to date by the platform on membership and profile
 changes. Agents can then answer "who" from the store alone, and content keeps its author ids
@@ -566,7 +576,7 @@ assistant can answer from everything in its store from the first day.
   - governance
   - deploy
   - tracing
-- **Glossary and decisions.** `docs/glossary.md` defines the terms these pages use
+- **Glossary and decisions.** The glossary, `CONTEXT.md`, defines the terms these pages use
   (organisation, store, run, turn, invocation, brief, source, connector, trigger, ...). Decisions
   go in `docs/decisions/`, starting with this one.
 - **Stale lines.** Fix them as the pages move:
