@@ -161,15 +161,20 @@ context: a private chat's content is found only by runs started in that chat. `h
 and `history_search` stay registered, as `search` fixed to their kinds. The Search page becomes
 the people's view of the same index, showing only what the signed-in member may read.
 
-**Retention.** Each organisation chooses how long runs are kept before they're pruned
-(`run_retention_days`, an admin setting; empty keeps them forever, which is the default).
+**Retention.** Each organisation chooses how long runs and chats are kept before they're
+pruned. These are two admin settings, `run_retention_days` and `chat_retention_days`, and each
+offers **Keep indefinitely**, which is the default.
 
-- A daily job deletes runs that finished longer ago than that. This covers agent runs, workflow
-  runs and steps, their checkpoint threads, and their entries in the search index.
-- Runs that are still going or waiting on a request are never pruned.
-- An agent's continuing run in a chat (D5) is pruned turn by turn rather than whole.
-- Pruning doesn't touch chat messages, agent memory or the audit log. The audit log records each
-  prune: how many runs were removed and up to when.
+- **Runs:** a daily job deletes runs that finished longer ago than the setting, with their
+  steps, checkpoint threads and search index entries.
+  - Runs still going, or waiting on a request, are never pruned.
+  - An agent's continuing run in a chat (D5) is pruned turn by turn rather than whole.
+- **Chats:** the same job deletes messages older than the setting, with their mentions,
+  invocations, briefs and handbacks, and their search index entries.
+  - The chat itself stays.
+  - A message whose invocation is still going is kept until it finishes.
+- **Untouched:** pruning never touches agent memory, `data` tables, documents or the audit log.
+  The audit log records each prune: what kind, how many, and up to when.
 
 Synced items (D2) don't follow this setting. They're copies of content whose system of record
 is elsewhere, and they follow their source instead.
@@ -466,6 +471,101 @@ assistant can answer from everything in its store from the first day.
   schema change, an admin approves it, the run resumes, and its reply is posted in the chat.
   It runs in CI alongside the fake-API browser tests.
 
+#### D12. Usage budgets
+
+**What exists today.** aios measures usage but enforces no budget on it. What it has are
+guards against runaway work and resource exhaustion:
+
+| Kind | Mechanism | Default |
+| --- | --- | --- |
+| Concurrency | `SCHEDULER_MAX_CONCURRENT_RUNS`: schedules and chat agent turns fired at once, per API process. Excess waits, queued | 5 |
+| Concurrency | Celery worker processes for workflow runs and ingests | per deployment |
+| Time | `WORKFLOW_RUN_TIME_LIMIT`, a whole workflow run (waiting excluded) | 2 hours |
+| Time | `WORKFLOW_RUN_NO_PROGRESS_LIMIT` | 5 minutes |
+| Time | `INGEST_TIME_LIMIT` per attempt | 30 minutes |
+| Time | the handoff call | 1 minute |
+| Time | sandbox idle and total, and a cap per `run_python` call | 15 minutes, 2 hours |
+| Time | the store roles' statement timeout | 30 seconds |
+| Per tool | `web_search` `max_uses` per model request (each search is billed) | tool setting |
+| Per tool | document and history search `max_results` | tool setting |
+| Per tool | `query_data` rows and bytes | 200 rows, 64 KB |
+| Per tool | `write_data` rows | 100 |
+| Storage | store data and files, per store | 1 GiB, 5 GiB |
+| Storage | one upload | 50 MB |
+| Context | handoff window | 30 messages or about 8,000 tokens |
+| Rate | sign-in, registration and password checks only | per email, IP or user |
+| Chat | message length, mentions per message | 100,000 characters, 100 |
+
+Measurement:
+- Each agent run records its model input and output tokens and its tool calls.
+- Workflow runs and the run pages total them.
+- Langfuse traces carry the organisation and the starter.
+
+Nothing turns these counts into money, adds them up per organisation or member, or stops a run
+because of them. aios also sets no cap of its own on model calls or tokens within a turn: a
+turn is bounded only by LangGraph's default recursion limit and the provider's output limit.
+
+**What viewers mentioning changes.** Any member can already start unbounded spend by
+mentioning. Letting viewers post and mention widens that to people who can't edit anything,
+often a larger and less familiar group. The plan's other decisions make each mention cost
+more:
+
+- **Fan-out:** one message may mention 100 agents and workflows. Each costs a handoff call and a
+  run, and a workflow runs every agent node in it, for up to two hours.
+- **Amplification:**
+  - `start_workflow` (D7) lets one run start others.
+  - Event triggers (D3) on `chat.message` mean a viewer's ordinary message, with no mention at
+    all, can start runs.
+  - Handback (D4) adds a call per result.
+  - Continuing threads (D5) make each turn's input larger, until compaction trims it.
+- **Fairness:** the concurrency cap is per process, not per organisation. One organisation's
+  burst queues behind it every other organisation's chat turns and schedules on that process.
+  This problem exists today, and more mentions make it worse.
+- **Acting with an agent's powers:** a viewer can't edit an agent but can mention one. The agent
+  then acts with its own tools on the viewer's behalf: `write_data`, requesting schema changes,
+  posting to Slack, commenting on GitHub. This is a privilege question as much as a cost one.
+  Schema changes are safe, because a member or admin still decides them (D8). Direct writes and
+  external actions aren't.
+
+**Decision.** Add budgets in four layers, checked in this order before anything costs money:
+invocation permission, then rate limits, then budget, then the handoff call.
+
+1. **Measure as cost.**
+   - Every billable unit goes into a usage ledger in the store, `aios.usage`: model calls
+     (including handoff, handback and compaction), embeddings, web searches and sandbox
+     seconds.
+   - Each entry records its organisation, agent or workflow, run, the member who caused it, and
+     the cause (manual, mention, schedule, event, `start_workflow`).
+   - Each entry is priced from D9's price table.
+   - Insights (D9) reports it.
+2. **Cap each run.**
+   - Set aios's own limits on model calls and tokens per turn, and a cost cap per run and per
+     workflow run.
+   - An agent or workflow can lower these, and only admins can raise them.
+   - A turn that hits a cap ends with a clear error rather than being cut off silently.
+3. **Budgets for the organisation and its people.**
+   - An admin sets a monthly spend budget for the organisation. Admins are notified at 80%.
+   - At 100%, new runs are refused while runs in flight finish. The refusal shows on the run card
+     or schedule, and costs no handoff call.
+   - Optional allowances per role and per member, with a lower default for viewers. They're
+     counted against the person who caused the run, including runs their messages fire through
+     `chat.message` triggers.
+4. **Limits on invoking.**
+   - A rate limit on mentions per member per minute (counted in Redis, as the sign-in limits
+     are).
+   - The cap on agents and workflows mentioned per message drops from 100 to 5.
+   - Each agent and workflow has an **invocable by** setting: everyone, members, or admins.
+     It defaults to **members** when the agent has any tool that writes or acts outside aios:
+     `write_data`, connector actions such as `post_to_slack`, `start_workflow` or `post_message`
+     to another chat. Otherwise it defaults to **everyone**, viewers included.
+   - A refused mention says why on its card.
+5. **Share capacity fairly.** The firing machinery takes each organisation's in-flight count into
+   account: a share per organisation, coordinated through Redis across processes. One
+   organisation's burst then waits on its own share rather than on everyone's.
+
+Measurement, per-run caps, mention limits and **invocable by** land with D8, before viewers
+exist and before event triggers. Organisation budgets and fair sharing land before D3.
+
 ## Sequencing
 
 Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
@@ -479,9 +579,12 @@ Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
    The split comes first because nearly every later change touches `models.py` and the large
    API modules. The test guards the moves that follow.
 1. **Foundation:** D1 (with R1 as its first step, and the pooler before reads switch), then
-   D8. Roles are needed by approvals, ownership and notifications. The audit log needs D1.
+   D8 with the first parts of D12: measurement, per-run caps, mention limits and
+   **invocable by**. Roles are needed by approvals, ownership and notifications. The audit log
+   needs D1. Viewers can't mention until D12's guards exist.
 2. **Team experience:** D6, D10 and D4.
-3. **Agents and automation:** D5, D7 and D3.
+3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets and fair sharing),
+   then D3.
 4. **Inflow and insight:** D2 and D9.
 
 Each item gets its own plan in `plan/<item>/plan.md` before it starts, as earlier features did,
@@ -508,6 +611,14 @@ contract in a later release.
 
 ## Open questions
 
-- Whether chat messages get a retention setting of their own, as runs do, or are kept for as
-  long as their chat exists.
-- Whether viewers' mentions should count against a usage budget, since they start runs.
+- The default per-run caps and viewer allowance. These are set from measured usage once
+  D12's ledger has a few weeks of data.
+
+## Future
+
+- **Value-based pruning.** Beyond pruning by age, a periodic semantic scan over chats and runs
+  could judge how much context each holds: decisions, facts the team relies on, things agents
+  still refer to, as against chatter and routine runs. It would offer admins targeted pruning
+  options, such as keeping the decision and dropping the discussion around it, or summarising a
+  thread before it's pruned. It builds on the search index and the usage ledger, and would
+  itself be a budgeted run.
