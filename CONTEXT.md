@@ -87,8 +87,9 @@ An immutable snapshot of an agent's, skill's or workflow's configuration; editin
 one, and runs are pinned to the version they started on.
 
 **Archived**:
-An agent, skill or workflow that starts no new runs but keeps its history, memory and tables,
+An agent, skill, workflow or chat that starts no new runs but keeps its history, memory and tables,
 and can be unarchived.
+A chat that is archived is read-only but still searchable.
 _Avoid_: Deleted
 
 **Memory**:
@@ -129,12 +130,12 @@ A configurable limit on usage, for a run, a member or the organisation.
 
 **Chat**:
 An open conversation in an organisation that any member can find, join and leave, with agents
-and workflows in it too.
+and workflows in it too. A new chat starts with the agents an admin has chosen as defaults.
 _Avoid_: Channel, room, conversation, public chat
 
 **Direct message**:
-A conversation that exists only for the people and agents in it, and that nobody outside it,
-admins included, can read.
+A closed conversation between the people, agents and workflows in it, which anyone in it can
+add others to and nobody outside it, admins included, can read. It never becomes a chat.
 _Avoid_: Private chat, agent chat, run chat
 
 **Chat member**:
