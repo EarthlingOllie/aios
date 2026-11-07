@@ -170,6 +170,7 @@ For people, replies arrive in jumps. For the operator, the polling is a constant
 86. As an agent, I want to post to a conversation by naming it, so that I can report to the right place.
 87. As an agent, I want a clear refusal if I try to post into the conversation I'm already answering, so that I don't duplicate my reply.
 88. As a member of a direct message, I want an agent answering there to be unable to post into any other conversation in the same turn, so that nothing said there is copied out.
+88a. As a member of a direct message, I want agents working elsewhere to be unable to post into it, so that it only holds what happens inside it and what its own members set up.
 89. As an agent, I want a clear refusal if I post into an archived conversation or one I'm not in, so that I can tell the person why.
 90. As a member mentioned by an agent's post, I want to be notified if I can see the conversation, so that the agent can get my attention.
 91. As a member, I want agents and workflows mentioned in an agent's post to start nothing, so that agents can't set off loops.
@@ -388,6 +389,7 @@ A new tool key, `post_message`, in the tool library.
   - archived conversations;
   - conversations the agent isn't a chat member of;
   - from a turn started in a direct message, any other conversation;
+  - from a turn started in a chat (or by a trigger, `start_workflow` or a workflow node), any direct message;
   - more than the per-turn cap.
 - **The posted message** comes from the agent, belongs to the turn's invocation, and is published to the stream.
 - **Mentions in it:** people mentioned are notified if they can see the conversation; agents and workflows mentioned start nothing.
@@ -668,7 +670,6 @@ They never check how a module does it: not which helper ran, nor the shape of th
 2. **Skipping reply notifications.** Only a stream whose tab is visible counts as watching. The
    client reports visibility on the stream.
 
-**Open question**
-1. **Agents posting into direct messages unprompted.** A turn started in a chat could post into a
-   direct message the agent is in, because nothing private leaves the direct message. Allow it,
-   or limit `post_message` from a chat turn to chats?
+3. **Agents don't post into direct messages unprompted.** A turn started in a chat can only post
+   into chats. A direct message only receives posts from turns started inside it, and from
+   triggers set up by someone in it.
