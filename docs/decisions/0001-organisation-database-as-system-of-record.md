@@ -657,7 +657,8 @@ invocation permission, then rate limits, then budget, then the handoff call.
      seconds.
    - Each entry records its organisation, agent or workflow, run, the member who caused it, and
      the cause (manual, mention, schedule, event, `start_workflow`).
-   - Each entry is priced from D9's price table.
+   - Each entry is priced from D9's price table, in pounds sterling (GBP). Budgets are in GBP per
+     calendar month (UTC).
    - Insights (D9) reports it.
 2. **Cap each run.**
    - Set aios's own limits on model calls and tokens per turn, and a cost cap per run and per

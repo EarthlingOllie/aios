@@ -558,10 +558,10 @@ achieves it.
 - **Random order may expose many order-dependent tests.** Budget time to fix them before
   sharding lands.
 
-**Open questions** (new, raised by this spec)
-1. **Organisation names.** This spec drops their global uniqueness in favour of unique slugs.
-   Confirm.
-2. **The gap before roles.** A creator can't leave an organisation others are in until phase 1
-   adds admins. Accept the gap, or add a small "transfer creator" action now?
-3. **Slugs or ids in links.** This spec uses slugs in browser links and ids in the API. Confirm.
-4. **Who may archive before roles.** Any member, or only the creator?
+**Decided after review** (these were this spec's open questions)
+1. **Organisation names** are no longer unique across organisations. Slugs are unique instead.
+2. **The gap before roles.** Until phase 1 adds admins, a creator can't leave an organisation
+   others are in. There's no "transfer creator" action; roles close the gap.
+3. **Links** use slugs in the browser and ids in the API.
+4. **Archiving before roles:** any member may archive, as any member may delete today. Phase 1's
+   roles then restrict it to admins.

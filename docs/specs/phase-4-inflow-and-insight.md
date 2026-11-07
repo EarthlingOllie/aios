@@ -842,15 +842,14 @@ schemas that no data tool role can read or describe, and agents reach it only th
 Phase 3's per-agent roles inherit the rule. Insights' metrics-only role is a further narrowing on
 top.
 
-**Open questions.**
-1. **Notifications for sources.** Add a notification kind to admins for a source that is failing
-   or needs reconnecting? D4 lists four kinds. Recommended: yes, one kind.
-2. **Usage by person on Insights.** This spec makes it admin-only by default, with a switch.
-   Confirm, or show it to everyone as D9's wording suggests.
-3. **One webhook concept.** Webhook triggers (phase 3) and webhook sources share endpoint
-   machinery. Should they be a single concept with a "keep deliveries" option? Recommended: yes,
-   settled in the phase 3 and 4.1 step plans together.
-4. **Email without inbound mail.** If the deployment has no inbound mail service, should email
-   sources move to the roadmap rather than block 4.1?
-5. **Deleting synced documents.** This spec refuses it. Alternative: allow it and keep a
-   per-source exclusion list.
+**Decided after review**
+1. **Notifications for sources.** One new notification kind tells admins when a source is
+   failing or needs reconnecting.
+2. **Usage by person on Insights** is shown to admins only by default, with a setting to show it
+   to everyone.
+3. **One webhook concept.** Webhook triggers (phase 3) and webhook sources are one concept, with
+   a "keep deliveries" option. The step plans for 3.6 and 4.1 settle its shape together.
+4. **Email sources** go on the roadmap for deployments without an inbound mail service, rather
+   than blocking step 4.1.
+5. **Deleting synced documents** stays refused. Remove the item at its source instead.
+6. **Costs** on Insights are estimates in pounds sterling (GBP).

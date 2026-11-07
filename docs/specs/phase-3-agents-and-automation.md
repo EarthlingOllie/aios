@@ -869,8 +869,8 @@ generous default, overridable per organisation where marked.
 - **Totals.** A store table of running totals, per calendar month in UTC, for the organisation
   and per person. They're updated in the same transaction as each usage ledger entry, and a
   nightly job reconciles them against the ledger and logs any drift.
-- **Budget and allowances.** A monthly organisation budget, in phase 1's estimated cost (US
-  dollars), with none set by default. Default allowances per role, and per-person overrides.
+- **Budget and allowances.** A monthly organisation budget, in phase 1's estimated cost (pounds
+  sterling), with none set by default. Default allowances per role, and per-person overrides.
 - **Attribution.** Allowances are charged to the chain's root person: whoever mentioned,
   started by hand, or posted the message that fired a chat-message trigger. Schedules and events
   without a person count only against the organisation budget.
@@ -1196,19 +1196,18 @@ latency stays within target. It's run on demand, not per pull request.
 - **Event volume.** Events are emitted with no consumer for one release to measure it. There are
   per-trigger rate caps, debounce, and event retention.
 
-### Open questions (new to this spec)
+### Decided after review
 
-1. **Unowned tables.** This spec keeps tables with no traceable owner writable by any agent, so
-   existing agents keep working. Should they instead be read-only until an editor assigns an
-   owner?
-2. **Approval buttons in a direct message.** Should an approval raised in a direct message also
-   offer its decision buttons on the card in that direct message, to someone there with the
-   right role, or only in the Approvals list?
-3. **Deleting memories.** Confirm that anyone in a direct message, whatever their role, may delete
-   memories learned there, while only editors and admins edit or delete others.
-4. **Currency and period.** Confirm US dollars per UTC calendar month for budgets until billing.
-5. **Turn records.** Coordinate with the phase 1 spec on whether its usage work introduces the
-   per-turn record this phase extends.
+1. **Unowned tables** stay writable by any agent, so existing agents keep working, until an editor
+   assigns an owner.
+2. **Approval buttons in a direct message.** An approval raised there shows its decision buttons
+   on the card, to someone there with the right role, and also appears in the Approvals list.
+3. **Deleting memories.** Anyone in a direct message may delete memories learned there. Only
+   editors and admins edit or delete any other memory.
+4. **Currency and period.** Budgets are in estimated pounds sterling (GBP) per calendar month in
+   UTC, until billing exists.
+5. **Turn records.** Phase 1 introduces the per-turn record, with its usage. This phase adds the
+   version each turn ran on.
 
 ### Where the decision record, the plan and the code differ
 

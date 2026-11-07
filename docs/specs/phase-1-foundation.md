@@ -955,12 +955,14 @@ Security properties get adversarial tests that try to break them.
 - The ADR names RDS Proxy as an option for pooling; this spec chooses PgBouncer.
 - The plan keeps the scheduler "only to enqueue"; this spec moves it into executors.
 
-**New open questions:**
-1. Should participants be able to upload and delete documents? This spec says editors and
-   admins only. ADR 0001's role table doesn't mention documents.
-2. Is a soft per-organisation in-flight cap acceptable, or should claims be serialised per
-   organisation, which is exact but slower?
-3. Should agents read organisation-wide chat text through reporting views, or only through
-   search? This spec says only through search.
-4. Should a run page turn continue after the browser disconnects, during the two phases before
-   that chat is removed? Today it's abandoned.
+**Decided after review** (these were this spec's open questions)
+1. **Documents:** participants may view and search documents. Only editors and admins upload or
+   delete them.
+2. **The in-flight cap is soft.** Executors claiming at the same moment may overshoot it by a few
+   items. Fairness doesn't need it to be exact, and serialising claims would slow every
+   organisation.
+3. **Chat text reaches agents only through `search`,** never through reporting views.
+4. **Run-page turns** are still abandoned when the browser disconnects, until phase 2 removes that
+   chat.
+5. **Currency:** estimated costs and budgets are in pounds sterling (GBP). The price table is
+   configured in GBP per model; an operator converts provider prices when setting it.

@@ -661,7 +661,14 @@ They never check how a module does it: not which helper ran, nor the shape of th
 - **Live update load.** Many idle connections per process. Mitigation: caps, heartbeats, and measuring connections per process before raising limits.
 - **Handback changes what people read.** A summary can drop detail. Mitigation: the full output is always one click away, and the threshold is configurable.
 
-**Open questions.**
-1. **Tracing direct-message turns.** Langfuse traces of direct-message turns contain their content and are readable by the deployment's operators. That doesn't break the record's rule, which is about organisation admins, but customers may expect otherwise. Proposed: keep tracing them, and say so in the docs; consider redaction as an organisation setting if asked.
-2. **"Watching" for skipping reply notifications.** Proposed: only a stream whose tab is visible counts, with the client reporting visibility on the stream.
-3. **Agents posting into direct messages unprompted.** A turn started from a chat may post into a direct message the agent is in, because nothing private leaves the direct message. Confirm that agents may speak into direct messages unprompted, or limit `post_message` to chats.
+**Decided after review**
+1. **Tracing direct-message turns.** They're traced to Langfuse like any other turn, and the docs
+   say that whoever operates the deployment can read those traces. Redaction is a possible
+   organisation setting later.
+2. **Skipping reply notifications.** Only a stream whose tab is visible counts as watching. The
+   client reports visibility on the stream.
+
+**Open question**
+1. **Agents posting into direct messages unprompted.** A turn started in a chat could post into a
+   direct message the agent is in, because nothing private leaves the direct message. Allow it,
+   or limit `post_message` from a chat turn to chats?

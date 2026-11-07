@@ -93,6 +93,11 @@ A direct message could choose to expire sooner than the organisation's chat rete
 
 Email and other off-app delivery of notifications, and per-kind preferences.
 
+### Email sources without inbound mail
+
+Email sources need an inbound mail service. Deployments without one get them once aios provides
+or integrates one.
+
 ### Templates
 
 Publishing exported agents and workflows as templates that any organisation can import.
