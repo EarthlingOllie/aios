@@ -784,6 +784,9 @@ import is also how agents are backed up today, and how templates could be publis
 
 ## Sequencing
 
+The step-by-step plan, with scope and done criteria for each step, is
+[`plan/platform-cohesion/plan.md`](../../plan/platform-cohesion/plan.md).
+
 Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
 
 0. **Refactor and guard rails:**
