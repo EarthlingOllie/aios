@@ -9,7 +9,7 @@ what it is about.
 **Organisation**:
 The group that shares one store, owns everything its members make, say and produce, and is the
 boundary of who can see what. Usually a whole company; a company that needs departments kept
-apart uses one organisation each. Shown on screen as "Team" (but see Flagged ambiguities).
+apart uses one organisation each. Called "Organisation" on screen too.
 _Avoid_: Tenant, workspace, account
 
 **Member**:
@@ -207,6 +207,5 @@ _Avoid_: Schema change request (in prose), migration
 - "Private chat" is now a **Direct message**, and chats no longer have owners.
 - "Tenant" has been used for both an organisation and the whole aios service; use
   **Organisation**, or name the service.
-- Showing an organisation as "Team" clashes with the roadmap's teams feature, which means groups
-  inside an organisation. Undecided: keep "Team" on screen until then, or say "Organisation"
-  and keep "Team" for that feature.
+- "Team" is reserved for the roadmap's groups inside an organisation; it never means the
+  organisation itself.
