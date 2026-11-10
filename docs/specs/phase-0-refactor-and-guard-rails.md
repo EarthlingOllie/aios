@@ -535,8 +535,8 @@ achieves it.
 
 - **Roles** (admin, editor, participant) and transferring an organisation's creator. Phase 1.
 - **Moving content into the store**, including contracting the soft-delete columns. Phase 1.
-- **Chat changes:** owners, private chats, archiving chats, direct messages. Phase 2. Leaving
-  still hands over owned chats.
+- **Chat changes:** open chats without owners, and archiving chats. Phase 2. Leaving still
+  hands over owned chats.
 - **Table ownership.** Phase 3. The archive dialog's table list is empty until then.
 - **Parallel tests on one machine.**
 - **Renaming tables, tool keys or the store tree.**

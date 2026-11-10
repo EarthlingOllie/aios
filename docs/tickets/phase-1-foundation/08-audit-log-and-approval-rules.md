@@ -11,7 +11,7 @@
 - [ ] Updating or deleting audit entries as the app's role, even through the store's owner, fails; a test proves it.
 - [ ] An entry for a platform-side action written while the store is unavailable arrives once it's back, exactly once.
 - [ ] The Audit log tab is admins-only and filters by actor, action and date, newest first.
-- [ ] Adversarial test: `query_data` can't read audit entries' details; the reporting view shows only action, actor, target and time.
+- [ ] Adversarial test: `write_data` can't insert, update or delete audit entries; the reporting view shows action, actor, target and time.
 - [ ] An editor can't approve a request that adds one column and drops another; only admins were notified of it.
 - [ ] Lowering a rule below its default answers 422; raising it works and is recorded in the audit log.
 - [ ] The Data page's Changes tab shows the role each approval needs and disables Approve for those who can't decide it.

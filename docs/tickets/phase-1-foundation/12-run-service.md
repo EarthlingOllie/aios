@@ -11,7 +11,7 @@
 - [ ] Starvation test: while one organisation floods the queue, another organisation's mentioned turn starts within the target time.
 - [ ] An item whose lease expires is retried elsewhere, and after three attempts its invocation fails with "The service stopped mid-run."
 - [ ] An organisation at its in-flight cap waits while other organisations' work is claimed; each process keeps reserved capacity for people waiting in chat.
-- [ ] A lost enqueue is repaired by the reconciler.
+- [ ] A lost enqueue is repaired by the repair sweep.
 - [ ] Agent and workflow mentions are briefed on the run service, and a failed handoff fails its invocation as today.
 - [ ] Each run of a schedule fires exactly once across run service processes, the scheduler-enabled setting applies to them, and missed runs aren't caught up.
 - [ ] Compose and the AWS deployment run the run service.

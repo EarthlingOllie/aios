@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-1-foundation.md)
 
-**Blocked by:** [02: Private schemas, toolkit for moving domains, people mirror](02-private-schemas-and-move-toolkit.md), [Phase 0 · 12: Delete an organisation with a grace period; remove unscoped routes](../phase-0-refactor-and-guard-rails/12-delete-organisation.md)
+**Blocked by:** [02: People mirror](02-people-mirror.md), [Phase 0 · 12: Delete an organisation with a grace period; remove unscoped routes](../phase-0-refactor-and-guard-rails/12-delete-organisation.md)
 
 **Status:** ready-for-agent
 

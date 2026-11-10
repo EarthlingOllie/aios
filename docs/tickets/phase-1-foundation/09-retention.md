@@ -1,6 +1,6 @@
 # 09: Retention for runs and chats
 
-**What to build:** Admins choose how long runs are kept and how long chat history is kept, covering private chats too, each defaulting to keep indefinitely. A nightly, batched job prunes finished runs with their steps, turns, sandbox sessions, histories and search entries, and old messages with their mentions, invocations, briefs and search entries, keeping each chat. Work in flight is never touched, and each prune is recorded in the audit log.
+**What to build:** Admins choose how long runs are kept and how long chat history is kept, covering every chat, each defaulting to keep indefinitely. A nightly, batched job prunes finished runs with their steps, turns, sandbox sessions, histories and search entries, and old messages with their mentions, invocations, briefs and search entries, keeping each chat. Work in flight is never touched, and each prune is recorded in the audit log.
 
 [Spec](../../specs/phase-1-foundation.md)
 

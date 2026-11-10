@@ -1,6 +1,6 @@
 # 04: Runs, checkpoints and workflow runs move
 
-**What to build:** Agent runs, sandbox sessions, workflow runs and their steps move into the store, and each store gets its own checkpointer, connecting as `_app` through the pooler, with every run's history copied across. The run page, run cards and chat turns read and write the store, turn leases live on the store's run rows, and waiting and resumed runs survive the move.
+**What to build:** Agent runs, sandbox sessions, workflow runs and their steps move into the store in one change that also deletes their old platform tables, and each store gets its own checkpointer, connecting through the pooler. The run page, run cards and chat turns read and write the store, and turn leases live on the store's run rows. Dev data is rebuilt with `make seed`.
 
 [Spec](../../specs/phase-1-foundation.md)
 
@@ -8,10 +8,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] After backfill, every run's latest checkpoint in the store matches the platform's, and message counts agree.
-- [ ] A new turn on a migrated run continues its existing history.
+- [ ] A new turn on an existing run continues its history from the store's checkpointer.
 - [ ] Deleting a run removes its history from the store.
-- [ ] Workflow runs waiting on an approval before the move resume correctly after it.
-- [ ] The run page's graph, steps and conversations match what they showed before the move.
+- [ ] A workflow run waiting on an approval resumes correctly once it's decided.
+- [ ] The run page's graph, steps and conversations show as before, read from the store.
 - [ ] Trace sessions carry the organisation as well as the run.
-- [ ] The verifier is clean, and reads can be switched back.
+- [ ] The platform database no longer holds run, sandbox session, workflow run, step or checkpoint tables.
