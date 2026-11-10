@@ -1,6 +1,6 @@
 # 04: Table ownership, sharing and transfer
 
-**What to build:** Every data table can have an owning agent, and only the owner and the agents it's shared with may write it. Applying a schema change that creates a table makes the requesting agent its owner, and existing tables are given owners by a backfill. Editors and admins see and manage access on the Data page: share, unshare and transfer. Archiving an owner makes its tables read-only until they're transferred. In this ticket the write tool enforces this; the database enforces it in the next.
+**What to build:** Every data table can have an owning agent, and only the owner and the agents it's shared with may write it. Applying a schema change that creates a table makes the requesting agent its owner. Tables without an owner stay writable by any agent until an editor assigns one; development data is rebuilt with `make seed`. Editors and admins see and manage access on the Data page: share, unshare and transfer. Archiving an owner makes its tables read-only until they're transferred. In this ticket the write tool enforces this; the database enforces it in the next.
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
@@ -9,7 +9,6 @@
 **Status:** ready-for-agent
 
 - [ ] Applying an approved create-table schema change records the requesting agent as the table's owner.
-- [ ] The backfill makes the agent behind the earliest applied create request the owner, if that agent still exists (archived counts). Otherwise the table is unowned.
 - [ ] Unowned tables stay writable by any agent with `write_data`, and the Data page marks them "No owner". An editor can assign an owner at any time.
 - [ ] `write_data` refuses agents that neither own nor share an owned table, naming the owner.
 - [ ] Editors and admins share, unshare and transfer tables on the Data page. Each change respects the approval rules and is recorded in the audit log.

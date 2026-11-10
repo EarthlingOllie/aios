@@ -10,7 +10,7 @@ Members can save a chart to the organisation's Insights page, where it re-runs i
 
 **Status:** ready-for-agent
 
-- [ ] The insights-role adversarial test passes: no access to conversation content, direct messages, memory, synced text, base tables or another store.
+- [ ] The insights-role adversarial test passes: no access to conversation content, memory, synced text, base tables or another store.
 - [ ] Every refused spec feature (external data, links, images, signal parameters, expression strings) is rejected; a failing spec is sent back to the agent once, then the error is shown with the SQL.
 - [ ] Row, byte and time caps apply, and truncated results are drawn and marked as truncated.
 - [ ] Asking past the per-person rate limit answers 429; budget or allowance refusals follow phase 3's contract; each question appears in the usage ledger against the asker.

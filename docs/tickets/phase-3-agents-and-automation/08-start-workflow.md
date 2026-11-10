@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [06: Structured workflows: typed I/O, templates, conditional edges](06-structured-workflows.md), [Phase 1 · 10: An invocation for every run, and turns as records](../phase-1-foundation/10-invocations-and-turns.md), [Phase 2 · 08: Handback, and delivery to chats and direct messages](../phase-2-organisation-experience/08-handback-and-delivery.md)
+**Blocked by:** [06: Structured workflows: typed I/O, templates, conditional edges](06-structured-workflows.md), [Phase 1 · 10: An invocation for every run, and turns as records](../phase-1-foundation/10-invocations-and-turns.md), [Phase 2 · 08: Handback, and delivery to chats](../phase-2-organisation-experience/08-handback-and-delivery.md)
 
 **Status:** ready-for-agent
 

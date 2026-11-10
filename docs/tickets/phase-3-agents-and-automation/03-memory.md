@@ -1,19 +1,18 @@
-# 03: Memory: tools, visibility, Memory tab
+# 03: Memory: tools, recall, Memory tab
 
-**What to build:** Agents remember facts across runs, and people can see and correct what they remember. An agent stores and forgets memories with new tools, and recalls them through the unified search. Each memory keeps the visibility of where it was learned: one learned in a direct message is only ever recalled in that direct message. The agent's page gets a Memory tab listing its memories, filtered to what the viewer may see.
+**What to build:** Agents remember facts across runs, and people can see and correct what they remember. An agent stores and forgets memories with new tools, and recalls them through the unified search. A memory isn't tied to the conversation it was learned in: the agent recalls it wherever it works. The agent's page gets a Memory tab listing its memories.
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [Phase 1 · 06: Unified search across documents, chats and runs](../phase-1-foundation/06-unified-search.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md), [Phase 2 · 03: Direct messages, and copying one into a chat](../phase-2-organisation-experience/03-direct-messages.md)
+**Blocked by:** [Phase 1 · 06: Unified search across documents, chats and runs](../phase-1-foundation/06-unified-search.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md)
 
 **Status:** ready-for-agent
 
-- [ ] `remember` stores a memory with the run's visibility. Storing the same text again (ignoring case and whitespace) with the same visibility refreshes the existing memory instead of duplicating it.
-- [ ] `remember` refuses over the length limit, or at the per-agent cap, with a clear message. `forget` deletes one of the agent's own memories that's visible in that run.
-- [ ] Recall through search returns only the calling agent's memories. A visibility matrix test passes across direct message A, direct message B, a chat, and a run with no conversation.
-- [ ] Memories live where no data tool role can read or describe them.
-- [ ] The Memory tab lists memories with where each was learned. Memories from a direct message are hidden from people outside it.
-- [ ] Editors and admins edit or delete any memory they can see. Anyone in a direct message, whatever their role, can delete memories learned there.
-- [ ] Edits and deletions are recorded in the audit log, without the content of direct-message memories.
+- [ ] `remember` stores a memory. Storing the same text again (ignoring case and whitespace) refreshes the existing memory instead of duplicating it.
+- [ ] `remember` refuses over the length limit, or at the per-agent cap, with a clear message. `forget` deletes one of the agent's own memories.
+- [ ] Recall through search returns only the calling agent's memories. A memory learned in one chat, or in a run with no conversation, is recalled in another chat.
+- [ ] The Memory tab lists memories with where each was learned.
+- [ ] Editors and admins edit or delete any memory; other roles can't.
+- [ ] Edits and deletions are recorded in the audit log.
 - [ ] Memories survive archiving and unarchiving, are never pruned by retention, and are left out of exports.
 - [ ] An agent version without `remember` still recalls its existing memories.

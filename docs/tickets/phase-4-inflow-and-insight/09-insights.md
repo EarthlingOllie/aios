@@ -5,7 +5,7 @@
 - turns and workflow runs over time with success rate, by agent, workflow or cause;
 - tokens, tool calls and estimated cost in GBP, and the most used agents and tools; usage by person is admin-only unless an admin turns on the setting;
 - the slowest workflows and nodes, where runs fail, and approval waiting times and rates;
-- chat activity, with direct messages only as an unnamed aggregate;
+- chat activity by chat: messages, mentions and their outcomes;
 - storage against its caps over time, from samples the existing measurement now records;
 - source health, once the organisation has sources beyond Uploads.
 
@@ -20,7 +20,6 @@
 - [ ] Cost appears in GBP from the price table, labelled "estimate, not a bill".
 - [ ] A non-admin asking for a person grouping gets 403 until an admin turns on the setting; switching the setting is admin-only and audited.
 - [ ] Workflow durations exclude waiting time; failure counts link to the failing nodes' latest errors; expired approvals are counted separately.
-- [ ] Direct messages are never named or broken down by person in any panel.
 - [ ] Storage samples are written at each measurement and pruned after the history period, and the storage panel shows usage against the caps over time.
 - [ ] Sync health on Insights matches the Sources tab, and the panel is hidden when the organisation has only Uploads.
 - [ ] Panels read only through the read-only path and are cached for the configured time.

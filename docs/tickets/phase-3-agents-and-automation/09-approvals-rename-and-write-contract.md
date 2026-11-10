@@ -1,6 +1,6 @@
 # 09: Remove old forms: approvals rename; read-write role loses data writes
 
-**What to build:** The old forms are removed once nothing needs them. The store's read-write role loses write access to data tables, so only agent logins write them. The schema change table becomes approvals, with a compatibility view under the old name for one release. A following release drops the view, the old routes, the old step reference and the old expiry setting alias.
+**What to build:** The old forms are removed. The store's read-write role loses write access to data tables, so only agent logins write them. The schema change table becomes approvals in one change that also drops the old step reference and the old expiry setting. Development data is rebuilt with `make seed`.
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
@@ -8,9 +8,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Once the per-store switch is on in every store, the read-write role can't insert, update or delete data tables, and has no default privilege to.
+- [ ] The read-write role can't insert, update or delete data tables, and has no default privilege to.
 - [ ] Platform writes (documents, chunks) are unaffected.
-- [ ] Rolling back is a store migration that restores the read-write role's grant.
-- [ ] The underlying table is renamed to approvals. The previous release keeps working through the view under the old name.
-- [ ] The next release removes the view, the old schema change routes, the old step reference and the old expiry setting alias.
-- [ ] The full suite passes after each release.
+- [ ] The underlying table is renamed to approvals, with no view under the old name. The old step reference and the old expiry setting are gone.
+- [ ] `make seed` rebuilds development data on the new schema, and the full suite passes.

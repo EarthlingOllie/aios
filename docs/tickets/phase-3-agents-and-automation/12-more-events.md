@@ -3,7 +3,7 @@
 **What to build:** Event triggers cover the rest of the store and the outside world.
 
 - **Table written and schema applied:** filtered by table and operation.
-- **Chat message:** filtered by author kind, mentions and whole-word keywords. A trigger can name a direct message only if its creator is in it.
+- **Chat message:** filtered by author kind, mentions and whole-word keywords. A trigger can listen to any chat, and deliver to any chat.
 - **Debounce:** a burst gathers into one run.
 - **Webhooks:** each trigger gets its own signed public endpoint.
 
@@ -16,7 +16,7 @@
 - [ ] Table-written and schema-applied triggers filter by table and operation. An agent's own writes don't re-trigger it.
 - [ ] The full-stack test covers a table-written trigger firing once, and its echo being refused.
 - [ ] Chat-message keywords match whole words, ignoring case.
-- [ ] Naming a direct message the creator isn't in is refused (403). The creator leaving disables the trigger and shows why. The same rule covers the trigger's delivery chat.
+- [ ] A trigger can listen to, and deliver to, a chat its creator isn't in.
 - [ ] With a debounce window, thirty matches give one run. Batches are capped, with a dropped count.
 - [ ] A webhook trigger returns its URL and secret on create (the secret only once), and the secret can be rotated.
 - [ ] The endpoint answers 401 for a bad signature or stale timestamp, and 404 for an unknown or disabled token. A repeated delivery id is accepted (202) without writing an event.
