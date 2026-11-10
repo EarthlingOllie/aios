@@ -19,5 +19,5 @@
   - [ ] Organisations without an assistant get one; archived ones stay archived.
 - [ ] Each organisation has at most one live built-in assistant, with archived rows excluded from that rule.
 - [ ] Only admins can change the default chat agents setting, on the organisation's Settings tab.
-- [ ] Default agents join new chats only, never direct messages. Archived agents are skipped and shown as archived on the setting.
+- [ ] Default agents join new chats only, except chats made by **Chat with this agent**. Archived agents are skipped and shown as archived on the setting.
 - [ ] An agent the chat's creator can't invoke is still added, and that person's mentions of it are refused on the card.

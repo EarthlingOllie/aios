@@ -2,12 +2,12 @@
 
 **What to build:** The bell covers every organisation a person belongs to, each notification labelled with its organisation, and updates live from the person stream. Its ten-second poll goes. (Notifications already carry their organisation from phase 0.)
 
-- **Routes.** Notifications move to person-scoped routes, with the old routes redirecting for one release.
+- **Routes.** Notifications move to person-scoped routes, and the old routes and reference keys go in the same change.
 - **Rendering.** Each notification's text is built when it's read, by resolving its reference in that organisation's store. A notification never stores content.
 - **New kinds:**
   - **mention:** a person mentioned by another person;
   - **reply:** whoever mentioned an agent or workflow, when its result is posted, unless they're watching the conversation in a visible tab;
-  - **run failed:** whoever caused a failed run started by hand, by mention or in a direct message.
+  - **run failed:** whoever caused a failed run started by hand or by mention.
 - **Approvals.** Today's schema change request notifications become **approval needed**.
 - **Read marking and cleanup.**
   - At most one unread notification per thing.
@@ -25,12 +25,11 @@
 - [ ] The bell lists notifications from every organisation the person is in, each labelled with its organisation. Clicking one from another organisation switches to it and opens the notification.
 - [ ] New and read notifications reach the bell through the person stream, with no polling.
 - [ ] A notification whose reference the person can no longer see is dropped from the list and marked read.
-- [ ] Notifications about direct messages name its chat members and never show content.
-- [ ] Mention notifications go only to people who can see the conversation, never for mentioning yourself.
+- [ ] Mention notifications go to the people mentioned, never for mentioning yourself.
 - [ ] The reply notification is skipped while the asker has the conversation's stream open in a visible tab; the client reports visibility on the stream.
 - [ ] A failed run notifies whoever caused it.
 - [ ] Repeats about the same thing never create a second unread notification.
 - [ ] Reading a conversation past a message clears the reply, mention and run-failed notifications about it. Mark all read works.
 - [ ] Approval notifications behave as before under the "approval needed" kind, and clear for everyone once the approval is decided, cancelled or expired.
 - [ ] Leaving an organisation deletes its notifications for that person. Read notifications older than the retention setting are pruned.
-- [ ] The old notification routes redirect to the new ones.
+- [ ] The old notification routes and reference keys are gone, and the browser tests use only the new routes.
