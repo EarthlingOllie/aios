@@ -5,11 +5,11 @@
 - No turn posts into the chat it's answering, into an archived chat, or into a chat the agent isn't a chat member of.
 - Each turn has a cap on how many posts it can make.
 
-Posts come from the agent, belong to the turn's invocation, and appear live on the stream. People mentioned in a post are notified; agents and workflows mentioned start nothing.
+Posts come from the agent, belong to the turn's invocation, and appear live on the stream. They're derived text: stored with the verdict `derived`, never re-classified by Jev, and wrapped as untrusted wherever they enter model context. People mentioned in a post are notified; agents and workflows mentioned start nothing.
 
 [Spec](../../specs/phase-2-organisation-experience.md)
 
-**Blocked by:** [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [07: Notifications across organisations: mentions, replies, failures](07-notifications.md)
+**Blocked by:** [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [07: Notifications across organisations: mentions, replies, failures](07-notifications.md), [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md)
 
 **Status:** ready-for-agent
 
@@ -18,3 +18,4 @@ Posts come from the agent, belong to the turn's invocation, and appear live on t
 - [ ] The per-turn cap refuses posts beyond it.
 - [ ] People mentioned in a post are notified. Agents and workflows mentioned start nothing.
 - [ ] Each post is recorded in the usage ledger as a tool call.
+- [ ] A post carries the verdict `derived`, and a later turn receives it inside an untrusted block.

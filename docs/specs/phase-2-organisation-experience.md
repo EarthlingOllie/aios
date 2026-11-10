@@ -9,7 +9,7 @@ People in an organisation talk to each other and to their agents in two places, 
 **Two conversation models.**
 - Group chats are public or private. A private chat has an owner, who alone can rename it, add or remove people, or delete it. If the owner leaves the organisation, the chat is handed to someone else or deleted.
 - New chats are private by default, so most conversations are closed to the rest of the organisation without anyone deciding that. Chats are meant to be the team's shared way into its agents.
-- Separately, an agent's run page has its own one-to-one chat, which streams. Group chats don't stream.
+- Since phase 1, run pages are read-only, so talking to one agent means mentioning it in a group chat. Group chats don't stream.
 
 **Polling instead of streaming.**
 - Group chats ask the server for news every second while open, and every 30 seconds while hidden.
@@ -44,12 +44,12 @@ For people, replies arrive in jumps. For the operator, the polling is a constant
 - Nobody removes a person from a chat. Leaving is the only way out.
 - Admins only archive and unarchive chats. Nobody deletes one.
 
-**Everything streams.** An open chat streams new messages, run card updates and replies as they're written. The chat list and the bell update live from a per-person stream. Nothing polls every second. The run page becomes a read-only trace, and talking to one agent happens in a new chat made by **Chat with this agent**.
+**Everything streams.** An open chat streams new messages, run card updates and replies as they're written. The chat list and the bell update live from a per-person stream. Nothing polls every second. Talking to one agent happens in a new chat made by **Chat with this agent**.
 
 **Messages are checked before they're stored.** Every message a person posts is classified by Jev, the external prompt-injection classifier phase 1 integrates.
 - A flagged message is refused, never stored, and the sender sees why.
-- If Jev can't answer within a few seconds, the message is refused with "couldn't check this message, try again".
-- Every person's message reaching an agent's model context is wrapped as untrusted, whatever Jev said, in case Jev misses something.
+- If Jev can't answer within a few seconds, the message is refused with "couldn't check this message, try again". While Jev is down, the composer says so.
+- Every person's message reaching an agent's model context is wrapped as untrusted, whatever Jev said, in case Jev misses something. So is text agents write (posts, handbacks, deliveries), which isn't re-classified.
 
 **The organisation assistant.** It replaces the documents assistant:
 - it can search everything in the store and query data tables;
@@ -93,132 +93,127 @@ For people, replies arrive in jumps. For the operator, the polling is a constant
 20. As a member, I want a message refused with "couldn't check this message, try again" when Jev can't be reached in time, so that nothing unchecked reaches the agents.
 21. As an admin, I want flagged messages never stored, so that a prompt injection can't sit in a chat for agents to read later.
 22. As an operator, I want the check to time out after a few seconds, so that posting never hangs on Jev.
-23. As an admin, I want people's messages wrapped as untrusted in every agent's model context, so that an injection Jev misses still can't pass as the agent's own instructions.
+23. As a member, I want a notice in the composer while Jev is down, so that I know why posting won't work before I try.
+24. As an admin, I want people's messages wrapped as untrusted in every agent's model context, so that an injection Jev misses still can't pass as the agent's own instructions.
 
 ### Streaming
 
-24. As a member, I want new messages to appear in an open chat as soon as they're posted, so that the conversation feels live.
-25. As a member, I want to watch a run card move from queued to briefing to running to finished as it happens, so that I know what's going on.
-26. As a member, I want an agent's reply to appear as it's written, marked as being written, so that I can start reading straight away.
-27. As a member, I want the finished reply to replace the draft in place, so that nothing jumps or duplicates.
-28. As a member, I want a draft to disappear and the failure to show if the turn fails, so that I'm not left with half an answer.
-29. As a member whose connection drops, I want the chat to catch up with every message I missed, exactly once, when it reconnects, so that I never see gaps or duplicates.
-30. As a member who opens a chat mid-reply, I want to see the reply so far, so that I don't wait for the end.
-31. As a member, I want my chat list's unread counts to update live, so that I notice new activity without refreshing.
-32. As a member, I want my bell to update live, so that notifications reach me when they happen.
-33. As a member who leaves an organisation, I want my open views of its chats to close with the reason, so that I'm not left looking at a stale page.
-34. As a member viewing a chat that gets archived, I want it to turn read-only in front of me, so that I don't try to post.
-35. As a member, I want the app to keep working, more slowly, if live updates are unavailable, and to go back to live updates by itself, so that an outage doesn't break the app.
-36. As a member with many tabs open, I want a sensible limit on how many live connections I hold, with the oldest closed first, so that one person can't exhaust the server.
-37. As an operator, I want nothing in the browser to poll once a second, so that the API and database aren't loaded by idle tabs.
-38. As an operator, I want live connections to send regular heartbeats, so that load balancers and proxies don't cut quiet connections.
-39. As an operator, I want a per-process cap on live connections, answered with a retry hint when it's reached, so that a process can't be overwhelmed.
-40. As an operator, I want live updates to work across many API processes and executors, so that it scales horizontally.
-41. As a developer, I want the database to stay the record, with live updates only as a fast path, so that losing a live message never loses data.
+25. As a member, I want new messages to appear in an open chat as soon as they're posted, so that the conversation feels live.
+26. As a member, I want to watch a run card move from queued to briefing to running to finished as it happens, so that I know what's going on.
+27. As a member, I want an agent's reply to appear as it's written, marked as being written, so that I can start reading straight away.
+28. As a member, I want the finished reply to replace the draft in place, so that nothing jumps or duplicates.
+29. As a member, I want a draft to disappear and the failure to show if the turn fails, so that I'm not left with half an answer.
+30. As a member whose connection drops, I want the chat to catch up with every message I missed, exactly once, when it reconnects, so that I never see gaps or duplicates.
+31. As a member who opens a chat mid-reply, I want to see the reply so far, so that I don't wait for the end.
+32. As a member, I want my chat list's unread counts to update live, so that I notice new activity without refreshing.
+33. As a member, I want my bell to update live, so that notifications reach me when they happen.
+34. As a member who leaves an organisation, I want my open views of its chats to close with the reason, so that I'm not left looking at a stale page.
+35. As a member viewing a chat that gets archived, I want it to turn read-only in front of me, so that I don't try to post.
+36. As a member, I want the app to keep working, more slowly, if live updates are unavailable, and to go back to live updates by itself, so that an outage doesn't break the app.
+37. As a member with many tabs open, I want a sensible limit on how many live connections I hold, with the oldest closed first, so that one person can't exhaust the server.
+38. As an operator, I want nothing in the browser to poll once a second, so that the API and database aren't loaded by idle tabs.
+39. As an operator, I want live connections to send regular heartbeats, so that load balancers and proxies don't cut quiet connections.
+40. As an operator, I want a per-process cap on live connections, answered with a retry hint when it's reached, so that a process can't be overwhelmed.
+41. As an operator, I want live updates to work across many API processes and run service workers, so that it scales horizontally.
+42. As a developer, I want the database to stay the record, with live updates only as a fast path, so that losing a live message never loses data.
 
 ### One chat experience
 
-42. As a member, I want a **Chat with this agent** button on an agent's page that makes a new chat with that agent included, named "<Agent> – <person> – <date>", so that talking to one agent works like any other conversation.
-43. As a member, I want to rename a chat made that way, so that I can say what it's about.
-44. As a participant, I want **Chat with this agent** to respect who may invoke the agent, so that restricted agents stay restricted.
-45. As a member, I want a run page to show the run's trace, usage and version per turn, read-only, so that I can understand what happened without a second chat on it.
-46. As a member, I want a run page to link to the chat the run came from, so that I can get back to the context.
-47. As a member, I want runs made by the old run page chat to stay readable, so that history isn't lost.
-48. As a developer, I want the run page's chat endpoint and empty-run creation removed, so that there's one way to talk to an agent.
+43. As a member, I want a **Chat with this agent** button on an agent's page that makes a new chat with that agent included, named "<Agent> – <person> – <date>", so that talking to one agent works like any other conversation.
+44. As a member, I want to rename a chat made that way, so that I can say what it's about.
+45. As a member, I want a chat made that way to say that the whole organisation can see it, so that I don't mistake it for a private conversation.
+46. As a participant, I want **Chat with this agent** to respect who may invoke the agent, so that restricted agents stay restricted.
 
 ### Organisation assistant and default agents
 
-49. As a member of a new organisation, I want an organisation assistant there from the start, so that I can ask questions straight away.
-50. As a member, I want the organisation assistant to search documents, chats, past runs and synced content, so that it answers from everything the organisation knows.
-51. As a member, I want the organisation assistant to query data tables for figures rather than guess, so that its numbers are right.
-52. As a member, I want the organisation assistant to cite where an answer came from, so that I can check it.
-53. As a member, I want the organisation assistant to say plainly when nothing answers my question, so that I don't get a made-up answer.
-54. As an editor, I want to edit the organisation assistant like any other agent, so that the organisation can tailor it.
-55. As an editor whose organisation renamed its documents assistant, I want the upgrade to keep that name, so that our choices are respected.
-56. As a member of an existing organisation, I want the documents assistant upgraded to the organisation assistant as a new version, so that it gains the new abilities without losing its history.
-57. As a member of an organisation that had no documents assistant, I want one made by the upgrade, so that every organisation has an assistant.
-58. As an admin, I want to choose an ordered list of agents that join every new chat, so that the organisation's useful agents are always to hand.
-59. As an admin, I want archived agents on that list skipped when a chat is made, and shown as archived on the setting, so that the list fails gracefully.
-60. As an admin, I want changes to the default agents to affect only new chats, so that existing conversations aren't changed under people.
-61. As a participant, I want default agents I'm not allowed to invoke to still be in new chats, with my mentions of them refused on their cards, so that being present and being invoked are separate.
+47. As a member of a new organisation, I want an organisation assistant there from the start, so that I can ask questions straight away.
+48. As a member, I want the organisation assistant to search documents, chats, past runs and synced content, so that it answers from everything the organisation knows.
+49. As a member, I want the organisation assistant to query data tables for figures rather than guess, so that its numbers are right.
+50. As a member, I want the organisation assistant to cite where an answer came from, so that I can check it.
+51. As a member, I want the organisation assistant to say plainly when nothing answers my question, so that I don't get a made-up answer.
+52. As an editor, I want to edit the organisation assistant like any other agent, so that the organisation can tailor it.
+53. As an admin, I want to choose an ordered list of agents that join every new chat, so that the organisation's useful agents are always to hand.
+54. As an admin, I want archived agents on that list skipped when a chat is made, and shown as archived on the setting, so that the list fails gracefully.
+55. As an admin, I want changes to the default agents to affect only new chats, so that existing conversations aren't changed under people.
+56. As a participant, I want default agents I'm not allowed to invoke to still be in new chats, with my mentions of them refused on their cards, so that being present and being invoked are separate.
 
 ### `post_message`
 
-62. As an editor, I want to give an agent a tool to post into chats it's a chat member of, so that it can report results where people will see them.
-63. As an agent, I want to post to a chat by naming it, so that I can report to the right place.
-64. As an agent, I want a clear refusal if I try to post into the chat I'm already answering, so that I don't duplicate my reply.
-65. As an agent, I want a clear refusal if I post into an archived chat or one I'm not in, so that I can tell the person why.
-66. As a member mentioned by an agent's post, I want to be notified, so that the agent can get my attention.
-67. As a member, I want agents and workflows mentioned in an agent's post to start nothing, so that agents can't set off loops.
-68. As an operator, I want a configurable cap on posts per turn, so that a confused agent can't flood a chat.
-69. As an admin, I want agents' posts recorded as tool calls in the usage ledger, so that I can see what they cost.
+57. As an editor, I want to give an agent a tool to post into chats it's a chat member of, so that it can report results where people will see them.
+58. As an agent, I want to post to a chat by naming it, so that I can report to the right place.
+59. As an agent, I want a clear refusal if I try to post into the chat I'm already answering, so that I don't duplicate my reply.
+60. As an agent, I want a clear refusal if I post into an archived chat or one I'm not in, so that I can tell the person why.
+61. As a member mentioned by an agent's post, I want to be notified, so that the agent can get my attention.
+62. As a member, I want agents and workflows mentioned in an agent's post to start nothing, so that agents can't set off loops.
+63. As an operator, I want a configurable cap on posts per turn, so that a confused agent can't flood a chat.
+64. As an admin, I want agents' posts recorded as tool calls in the usage ledger, so that I can see what they cost.
 
 ### Delivering results
 
-70. As an editor, I want a schedule to deliver its result to a chat, so that the team sees a nightly summary without asking.
-71. As an editor, I want the schedule's agent or workflow added to the chat when I choose it as the destination, so that the result comes from a chat member.
-72. As an editor, I want the schedule's page to say why a delivery didn't happen, with a prompt to choose again, so that I can fix it.
-73. As the person who chose the destination, I want to be notified when a delivery can't happen, so that I find out without checking.
-74. As a member, I want a delivered result posted once, when the run ends, not as a card when it starts, so that scheduled jobs don't clutter chats.
-75. As a member, I want a failed scheduled run to post a short failure message where its result would have gone, so that the team knows it didn't work.
-76. As an editor, I want a scheduled run to still run when its delivery can't happen, so that any other work it does carries on.
-77. As an editor, I want deliveries to archived chats refused with a clear reason, so that results don't vanish silently.
+65. As an editor, I want a schedule to deliver its result to a chat, so that the team sees a nightly summary without asking.
+66. As an editor, I want the schedule's agent or workflow added to the chat when I choose it as the destination, so that the result comes from a chat member.
+67. As an editor, I want the schedule's page to say why a delivery didn't happen, with a prompt to choose again, so that I can fix it.
+68. As the person who chose the destination, I want to be notified when a delivery can't happen, so that I find out without checking.
+69. As a member, I want a delivered result posted once, when the run ends, not as a card when it starts, so that scheduled jobs don't clutter chats.
+70. As a member, I want a failed scheduled run to post a short failure message where its result would have gone, so that the team knows it didn't work.
+71. As an editor, I want a scheduled run to still run when its delivery can't happen, so that any other work it does carries on.
+72. As an editor, I want deliveries to archived chats refused with a clear reason, so that results don't vanish silently.
 
 ### Handback
 
-78. As a member who mentioned a workflow, I want its result posted as a short summary answering what I asked, so that I don't have to read raw output.
-79. As a member, I want the full output one click away on the run card, so that nothing is hidden from me.
-80. As a member, I want JSON output shown pretty-printed behind that disclosure, so that it's readable.
-81. As a member, I want an agent's reply to my mention posted as written, unless it's very long or is JSON, so that ordinary answers aren't rewritten.
-82. As a member, I want a run card to say "Summarising" while the handback runs, so that I know the result is coming.
-83. As a member, I want the raw output posted with a note if summarising fails, so that I always get the result.
-84. As a member, I want a run whose summary failed still marked as succeeded, so that a summarising problem doesn't look like the run failed.
-85. As an operator, I want handback to run as its own queued step, retried if an executor dies, so that ending a run never waits on a model call.
-86. As an operator, I want the handback model configurable, defaulting to the handoff model, so that I can choose cost and quality.
-87. As an admin, I want handback calls recorded in the usage ledger and traced, so that their cost and behaviour are visible.
-88. As a developer, I want the handback built for workflows and deliveries now, so that phase 3's agent-started workflows can reuse it.
+73. As a member who mentioned a workflow, I want its result posted as a short summary answering what I asked, so that I don't have to read raw output.
+74. As a member, I want the full output one click away on the run card, so that nothing is hidden from me.
+75. As a member, I want JSON output shown pretty-printed behind that disclosure, so that it's readable.
+76. As a member, I want an agent's reply to my mention posted as written, unless it's very long or is JSON, so that ordinary answers aren't rewritten.
+77. As a member, I want a run card to say "Summarising" while the handback runs, so that I know the result is coming.
+78. As a member, I want the raw output posted with a note if summarising fails, so that I always get the result.
+79. As a member, I want a run whose summary failed still marked as succeeded, so that a summarising problem doesn't look like the run failed.
+80. As an operator, I want handback to run as its own queued step, retried if a run service worker dies, so that ending a run never waits on a model call.
+81. As an operator, I want the handback model configurable, defaulting to the handoff model, so that I can choose cost and quality.
+82. As an admin, I want handback calls recorded in the usage ledger and traced, so that their cost and behaviour are visible.
+83. As a developer, I want the handback built for workflows and deliveries now, so that phase 3's agent-started workflows can reuse it.
 
 ### Notifications
 
-89. As a member, I want to be notified when a run I started, or mentioned, fails, so that I can act on it.
-90. As an editor who created a schedule, I want to be notified, along with the admins, when its run fails, so that broken automation is noticed.
-91. As a member, I want to be notified when an agent or workflow I mentioned replies, unless I'm watching the chat, so that I can go and do something else meanwhile.
-92. As a member, I want to be notified when someone mentions me, so that I see requests for my attention.
-93. As a member, I want never to be notified for mentioning myself, so that the bell isn't noisy.
-94. As an editor or admin, I want to be notified when an approval needs me, under the approval rules, so that runs aren't left waiting.
-95. As a member, I want an approval's notifications marked read for everyone once it's decided, cancelled or expired, so that the bell stays accurate.
-96. As a member, I want reading a chat past a message to mark the reply, mention or failure notifications about it as read, so that I don't have to clear them twice.
-97. As a member, I want at most one unread notification about the same thing, so that repeats don't pile up.
-98. As a member of several organisations, I want one bell showing notifications from all of them, each labelled with its organisation, so that I don't miss anything.
-99. As a member, I want opening a notification from another organisation to switch me there and take me to it, so that it's one click.
-100. As a member, I want notifications about things I can no longer see to disappear, so that the bell never points at something I can't open.
-101. As a member, I want a **Mark all read** action, so that I can clear the bell quickly.
-102. As a member who leaves an organisation, I want its notifications removed from my bell, so that it shows only where I belong.
-103. As an operator, I want old read notifications pruned after a configurable time, so that the table doesn't grow for ever.
-104. As an admin, I want notifications to hold references, never content, so that what's said stays in the organisation's store.
+84. As a member, I want to be notified when a run I started, or mentioned, fails, so that I can act on it.
+85. As an editor who created a schedule, I want to be notified, along with the admins, when its run fails, so that broken automation is noticed.
+86. As a member, I want to be notified when an agent or workflow I mentioned replies, unless I'm watching the chat, so that I can go and do something else meanwhile.
+87. As a member, I want to be notified when someone mentions me, so that I see requests for my attention.
+88. As a member, I want never to be notified for mentioning myself, so that the bell isn't noisy.
+89. As an editor or admin, I want to be notified when an approval needs me, under the approval rules, so that runs aren't left waiting.
+90. As a member, I want an approval's notifications marked read for everyone once it's decided, cancelled or expired, so that the bell stays accurate.
+91. As a member, I want reading a chat past a message to mark the reply, mention or failure notifications about it as read, so that I don't have to clear them twice.
+92. As a member, I want at most one unread notification about the same thing, so that repeats don't pile up.
+93. As a member of several organisations, I want one bell showing notifications from all of them, each labelled with its organisation, so that I don't miss anything.
+94. As a member, I want opening a notification from another organisation to switch me there and take me to it, so that it's one click.
+95. As a member, I want notifications whose references no longer exist (pruned, or in an organisation I left) to disappear, so that the bell never points at something I can't open.
+96. As a member, I want a **Mark all read** action, so that I can clear the bell quickly.
+97. As a member who leaves an organisation, I want its notifications removed from my bell, so that it shows only where I belong.
+98. As an operator, I want old read notifications pruned after a configurable time, so that the table doesn't grow for ever.
+99. As an admin, I want notifications to hold references, never content, so that what's said stays in the organisation's store.
 
 ### Export and import
 
-105. As an editor, I want to export an agent version as a file, so that I can take it to another organisation.
-106. As an editor, I want to export a workflow version, with the agents, skills and nested workflows it uses, so that it arrives complete.
-107. As an editor, I want an agent or skill used several times in a workflow to be exported once, so that the import doesn't duplicate it.
-108. As an editor, I want to import a file into my organisation as new copies, so that our version is ours to change.
-109. As an editor, I want imported skills always copied, never matched to ours by name, so that the two organisations stay unconnected.
-110. As an editor, I want imported items renamed with "(imported)" when a name is already taken, so that the import never fails on a clash.
-111. As an editor, I want a dry run that shows what would be created, renamed or left unrunnable, so that I can check before importing.
-112. As an editor, I want an imported agent that needs a tool or connector we don't have to say so and refuse to start, rather than block the import, so that I can set the connector up afterwards.
-113. As an admin, I want data, memory, runs, triggers, chats and credentials never to be in an export, so that exporting can't leak them.
-114. As an admin, I want an exported organisation assistant to import as an ordinary agent, so that an organisation never ends up with two built-in assistants.
-115. As an admin, I want exports and imports recorded in the audit log, so that I can see what came and went.
-116. As a participant, I want export and import unavailable to me, so that only builders move agents.
-117. As an editor, I want a clear error for a file that isn't an export or is too large, with nothing created, so that a bad file is harmless.
+100. As an editor, I want to export an agent version as a file, so that I can take it to another organisation.
+101. As an editor, I want to export a workflow version, with the agents, skills and nested workflows it uses, so that it arrives complete.
+102. As an editor, I want an agent or skill used several times in a workflow to be exported once, so that the import doesn't duplicate it.
+103. As an editor, I want to import a file into my organisation as new copies, so that our version is ours to change.
+104. As an editor, I want imported skills always copied, never matched to ours by name, so that the two organisations stay unconnected.
+105. As an editor, I want imported items renamed with "(imported)" when a name is already taken, so that the import never fails on a clash.
+106. As an editor, I want a dry run that shows what would be created, renamed or left unrunnable, so that I can check before importing.
+107. As an editor, I want an imported agent that needs a tool or connector we don't have to say so and refuse to start, rather than block the import, so that I can set the connector up afterwards.
+108. As an admin, I want data, memory, runs, triggers, chats and credentials never to be in an export, so that exporting can't leak them.
+109. As an admin, I want an exported organisation assistant to import as an ordinary agent, so that an organisation never ends up with two built-in assistants.
+110. As an admin, I want exports and imports recorded in the audit log, so that I can see what came and went.
+111. As a participant, I want export and import unavailable to me, so that only builders move agents.
+112. As an editor, I want a clear error for a file that isn't an export or is too large, with nothing created, so that a bad file is harmless.
 
 ### Developer and operator
 
-118. As a developer, I want the owner and hand-over logic removed, so that the conversation code has one set of rules.
-119. As a developer, I want one permission check for chat actions, following the chat rules, so that the API and the screens agree.
-120. As a developer, I want the Jev check in the one posting path every person's message goes through, so that a new screen can't skip it.
-121. As an operator, I want the proxies' settings checked for live updates (buffering off, timeouts above the heartbeat), so that streams work in every deployment.
+113. As a developer, I want the owner and hand-over logic removed, so that the conversation code has one set of rules.
+114. As a developer, I want one permission check for chat actions, following the chat rules, so that the API and the screens agree.
+115. As a developer, I want the Jev check in the one posting path every person's message goes through, so that a new screen can't skip it.
+116. As an operator, I want the proxies' settings checked for live updates (buffering off, timeouts above the heartbeat), so that streams work in every deployment.
 
 ## Implementation Decisions
 
@@ -229,7 +224,8 @@ For people, replies arrive in jumps. For the operator, the polling is a constant
 - roles, the audit log, the usage ledger and **invocable by** exist (phase 1);
 - unified search exists (phase 1);
 - the Jev client, its `classify(content, source)` interface, its fake and untrusted wrapping exist (phase 1);
-- agents run on the executor service with its queue and lanes (phase 1).
+- agents run on the run service with its queue and lanes (phase 1);
+- run pages are already read-only traces, with no chat of their own (phase 1).
 
 ### Conversation model
 
@@ -267,22 +263,26 @@ People join themselves; nobody adds another person to a chat. This spec decides 
 
 ### Checking messages with Jev
 
+**What Jev flags.** Prompt injection only, not other kinds of unsafe content.
+
 **Where.** In the one posting path for people's messages, after the permission, archived and mention checks and before anything is written, the message body goes through phase 1's `classify(content, source)` with the source "chat message".
 
 **Flagged.** The post is refused and nothing is written: no message, no invocation, no search item, no notification, nothing on the stream. The response says the message was flagged, and the screen keeps the text in the composer.
 
-**Fails closed.** If Jev errors or doesn't answer within the timeout (a few seconds), the post is refused with "couldn't check this message, try again", and nothing is written.
+**Fails closed.** If Jev errors or doesn't answer within the timeout (a few seconds), the post is refused with "couldn't check this message, try again", and nothing is written. While phase 1's Jev health check reports Jev down, the composer shows a notice saying messages can't be checked right now.
 
-**Passed.** The message is stored with its verdict, and the verdict is copied onto its search item, as phase 1 does for documents.
+**Clean.** The message is stored with the verdict `clean`, copied onto its search item, as phase 1 does for documents. Chat messages are never `awaiting_check`: the check is synchronous.
 
-**Untrusted wrapping.** Wherever people's messages enter model context (the mentioning message, the chat history the handoff reads, the brief built from them, and the asking message given to handback), each is wrapped in an untrusted block, whatever its verdict.
+**Derived text.** Posts by agents and workflows (`post_message`, handback and delivery) don't go through the gate. They may be derived from untrusted content, so they're stored with the verdict `derived`: searchable, and never re-classified.
 
-**Not gated.** Posts by agents and workflows (`post_message`, handback and delivery) don't go through the gate: they're not people's input, and the tool results behind them were classified in phase 1.
+**Untrusted wrapping.** Wherever these enter model context, each is wrapped in an untrusted block, whatever its verdict:
+- people's messages: the mentioning message, the chat history the handoff reads, and the asking message given to handback;
+- derived text: agents' posts, handbacks, deliveries, run messages and briefs.
 
 ### Streaming
 
 **New modules:**
-- a stream publisher, used by the API and executors after they commit;
+- a stream publisher, used by the API and the run service after they commit;
 - a stream relay in the API, holding connections and relaying events.
 
 Redis pub/sub carries events between processes. There's one channel per chat (keyed by store and chat) and one per person.
@@ -316,10 +316,10 @@ Redis pub/sub carries events between processes. There's one channel per chat (ke
 The client also drops ids it already has. The existing "messages after N" and "before N" reads stay.
 
 **Drafts.**
-- While a turn runs, the executor keeps the reply so far in Redis, with an expiry, and publishes the whole text at a capped rate. A missed event therefore costs nothing.
+- While a turn runs, the run service keeps the reply so far in Redis, with an expiry, and publishes the whole text at a capped rate. A missed event therefore costs nothing.
 - Drafts never reach the database. The final message replaces the draft.
 - On failure, the invocation event says so and the draft is dropped.
-- The existing Vercel AI SDK stream adapter is kept only for turning the LangGraph stream into text. Its run-page output goes.
+- The existing Vercel AI SDK stream adapter is kept only for turning the LangGraph stream into text.
 
 **Authorisation and limits.**
 - Authorisation is checked on connect: anyone in the organisation may open a chat's stream. Leaving the organisation closes the person's streams with `gone`. Leaving a chat doesn't, since anyone can read it.
@@ -329,8 +329,7 @@ The client also drops ids it already has. The existing "messages after N" and "b
 **When Redis is unavailable**, streams answer 503, and the client falls back to reading every few seconds until a reconnect succeeds. The one-second chat poll, the five-second list poll and the ten-second bell poll are removed.
 
 **One chat experience.**
-- The run page's chat endpoint and the empty-run creation endpoint are removed. The run page becomes a read-only trace, with usage and version per turn, linking to its chat.
-- **Chat with this agent** calls chat creation with that agent and no name. It makes a new open chat that includes only that agent (not the default agents), with the caller as its first person, named "<Agent> – <person> – <date>"; a clash adds " (2)", " (3)" and so on. Any chat member can rename it. Each click makes a new chat. It requires permission to invoke the agent.
+- **Chat with this agent** calls chat creation with that agent and no name. It makes a new open chat that includes only that agent (not the default agents), with the caller as its first person, named "<Agent> – <person> – <date>"; a clash adds " (2)", " (3)" and so on. Any chat member can rename it. The chat shows a short notice that the whole organisation can see it. Each click makes a new chat. It requires permission to invoke the agent.
 
 ### Organisation assistant and default agents
 
@@ -340,10 +339,7 @@ The client also drops ids it already has. The existing "messages after N" and "b
 - It's made in the organisation creation path, by the creator, not lazily in chat creation.
 - One live built-in per organisation, as today's partial unique index enforces, extended to exclude archived rows.
 
-**The migration.**
-- Each existing documents assistant gets a new version with the new tools and instructions, noted "Upgraded to the organisation assistant". Pinned versions are untouched.
-- An assistant still called "Documents assistant" is renamed "Organisation assistant" if that name is free; renamed ones keep their names.
-- Organisations without one get one. Archived ones stay archived.
+**No upgrade migration.** The assistant is made with the organisation; `make seed` rebuilds dev organisations.
 
 **Default chat agents** are an organisation setting in the store: an ordered list of agents, defaulting to the assistant. Admins edit it on the organisation's Settings tab. Chat creation adds the listed agents that aren't archived, except for **Chat with this agent**. **invocable by** doesn't stop an agent being added, only mentions of it.
 
@@ -391,7 +387,7 @@ Agent replies to mentions under the threshold are posted as written.
 **Flow.**
 1. Where the run ends (the workflow end-of-run path and the turn finish path), the invocation is marked "handing back" and the full output stored, in the same transaction.
 2. A handback item is enqueued on the interactive lane.
-3. The executor runs the handback, posts the summary as the message, stores the summary on the invocation, and marks it succeeded.
+3. The run service runs the handback, posts the summary as the message, stores the summary on the invocation, and marks it succeeded.
 
 **On failure** (model error, timeout, or a malformed answer), it posts the raw output cut to a limit, with a note, and records the error. The invocation still succeeds. A lost item is retried by the queue, and posts raw output once its attempts run out.
 
@@ -399,7 +395,7 @@ Each call is traced, tagged handback, and recorded in the usage ledger with caus
 
 ### Notifications
 
-**Platform table changes:** it gains the organisation, and a unique index keeping at most one unread notification per person, kind and reference. Today's schema change request kind becomes "approval needed", with references naming the approval.
+**Platform table changes:** it gains a unique index keeping at most one unread notification per person, kind and reference. Today's schema change request kind becomes "approval needed", with references naming the approval.
 
 | Kind | Recipients | Marked read |
 | --- | --- | --- |
@@ -408,7 +404,7 @@ Each call is traced, tagged handback, and recorded in the usage ledger with caus
 | mention | People mentioned by people or by agents' posts; never yourself | Reading past the message |
 | approval needed | Everyone who can decide, by the phase 1 rules | Decided, cancelled or expired |
 
-**Rendering.** The bell renders text at read time, by resolving references in each organisation's store, batched per store. References the person can no longer see are dropped and marked read.
+**Rendering.** The bell renders text at read time, by resolving references in each organisation's store, batched per store. References that no longer exist (pruned, or in an organisation the person left) are dropped and marked read.
 
 **Routes.** The person's notifications move under the person (not the organisation) and list every organisation's. A mark-all-read action is added, and the old routes are removed in the same change.
 
@@ -447,7 +443,7 @@ Each change ships in one release and removes what it replaces in the same change
 - visibility, the chat member role and their enum types dropped.
 
 **Store, 2.3:**
-- the assistant marker rename, new versions, and missing assistants made;
+- the assistant marker rename;
 - the default chat agents table.
 
 **Store, 2.4:**
@@ -455,7 +451,6 @@ Each change ships in one release and removes what it replaces in the same change
 - on triggers: destination, and who set it.
 
 **Platform, 2.4:**
-- the notification organisation, required;
 - the kind rename, and the unread unique index;
 - the old reference keys dropped.
 
@@ -494,8 +489,6 @@ All routes are organisation-scoped, except the person stream and the person's no
 
 **Removed:**
 - deleting a chat;
-- the run page chat;
-- creating an empty run;
 - the old notification routes.
 
 ### Settings and defaults
@@ -525,14 +518,12 @@ All routes are organisation-scoped, except the person stream and the person's no
 1. **Open chats and the Jev gate (2.1).**
    - Visibility, owner roles and chat deletion go in the same change. Dev data is rebuilt with `make seed`.
    - *Undo:* the previous release, with `make seed`.
-2. **Organisation assistant and default agents (2.3).** *Undo:* restore the previous assistant version.
-3. **Streaming and the read-only run page (2.2).**
+2. **Organisation assistant and default agents (2.3).** Dev data is rebuilt with `make seed`. *Undo:* the previous release, with `make seed`.
+3. **Streaming and Chat with this agent (2.2).**
    - The proxy configurations are checked for buffering and timeouts.
    - *Undo:* a client build that uses the fallback read only.
 4. **Delivery, handback and notifications (2.4)**, with the old notification routes removed. *Undo:* the previous release.
 5. **Export and import (2.5).** Additive.
-
-The assistant migration runs in the store migration command, store by store. A failing store keeps its revision and is retried.
 
 ## Testing Decisions
 
@@ -567,9 +558,8 @@ They never check how a module does it: not which helper ran, nor the shape of th
    - 404s for people outside the organisation;
    - limits;
    - Redis being unavailable.
-3. **Worker entry points, where the API can't reach:** the executor's drain-the-queue-once entry point from phase 1, to run handback items, including retry after an abandoned lease and raw fallback once attempts run out. Prior art: workflow run tests calling the run executor entry directly.
-4. **The store migration command**, to check the assistant migration on a store seeded with today's shapes.
-5. **Fake-API browser tests for screens.** Prior art: the existing chat, chat joining, chat tabs, chat messages, mentions, invocations, agent invocations, handoff, documents assistant, notifications and run starters specs. These are updated, and new specs are added for:
+3. **Worker entry points, where the API can't reach:** the run service's drain-the-queue-once entry point from phase 1, to run handback items, including retry after an abandoned lease and raw fallback once attempts run out. Prior art: workflow run tests calling the run entry directly.
+4. **Fake-API browser tests for screens.** Prior art: the existing chat, chat joining, chat tabs, chat messages, mentions, invocations, agent invocations, handoff, documents assistant, notifications and run starters specs. These are updated, and new specs are added for:
    - reading a chat without joining, and posting to join;
    - **Add it to this chat** after a refused mention;
    - a flagged or unchecked message refused and kept in the composer;
@@ -578,11 +568,10 @@ They never check how a module does it: not which helper ran, nor the shape of th
    - streaming (drafts, reconnecting, fallback);
    - handback disclosure;
    - default agents;
-   - export and import;
-   - the read-only run page.
+   - export and import.
 
    The fake API gains streams, archiving, included agents, message refusals, defaults and export/import.
-6. **The full-stack browser test from phase 0**, extended rather than duplicated:
+5. **The full-stack browser test from phase 0**, extended rather than duplicated:
    - a chat made with **Chat with this agent**, whose reply streams into the browser;
    - a mentioned workflow whose result is posted as a handback, with the full output checked;
    - a member reading a chat they haven't joined, then posting and so joining it.
@@ -614,13 +603,14 @@ They never check how a module does it: not which helper ran, nor the shape of th
   - invocations for every cause;
   - the usage ledger;
   - **invocable by**;
-  - the executor, its queue and its drain entry point.
+  - the run service, its queue and its drain entry point.
 - [Phase 3](phase-3-agents-and-automation.md) reuses delivery for event triggers and handback for agent-started workflows.
 - [Phase 4](phase-4-inflow-and-insight.md) gives exports their connector tools, and classifies synced source items with Jev.
 
 **Risks.**
 - **Prompt injection from untrusted content.** People's messages reach agents' model context. Mitigation: the Jev gate refuses flagged messages before they're stored, and every message is wrapped as untrusted in model context in case Jev misclassifies.
-- **Jev being down stops posting.** The gate fails closed. Mitigation: a short timeout and a clear "try again", so a Jev outage is visible and brief rather than silent.
+- **Jev being down stops posting.** The gate fails closed. Mitigation: a short timeout, a clear "try again", and a notice in the composer while Jev is down, so an outage is visible rather than silent.
+- **Chat messages go to Jev.** Jev may be hosted outside the deployment. Accepted for the demo (settled in review).
 - **Live update load.** Many idle connections per process. Mitigation: caps, heartbeats, and measuring connections per process before raising limits.
 - **Handback changes what people read.** A summary can drop detail. Mitigation: the full output is always one click away, and the threshold is configurable.
 
@@ -632,3 +622,10 @@ They never check how a module does it: not which helper ran, nor the shape of th
    nothing in phase 2 hides content from members of the organisation.
 3. **The Jev gate fails closed (settled in review).** A message that can't be checked isn't
    posted. Flagged messages are never stored, so later turns can't read them.
+4. **Derived text is wrapped, not re-checked (settled in review).** Agents' posts, handbacks and
+   deliveries get the verdict `derived` and are always wrapped as untrusted in model context.
+5. **The run-page chat went in phase 1 (settled in review).** Run pages became read-only there;
+   this phase only adds **Chat with this agent**, whose chats show that the whole organisation
+   can see them.
+6. **No assistant upgrade migration (settled in review).** The assistant is made with the
+   organisation; `make seed` rebuilds dev organisations.

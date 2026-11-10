@@ -9,7 +9,7 @@ The docs pages are brought up to date at the same time.
 
 [Spec](../../specs/phase-2-organisation-experience.md)
 
-**Blocked by:** [05: One chat experience: read-only run page, "Chat with this agent"](05-one-chat-experience.md), [08: Handback, and delivery to chats](08-handback-and-delivery.md), [09: post_message tool](09-post-message.md)
+**Blocked by:** [05: One chat experience: "Chat with this agent"](05-one-chat-experience.md), [08: Handback, and delivery to chats](08-handback-and-delivery.md), [09: post_message tool](09-post-message.md)
 
 **Status:** ready-for-agent
 

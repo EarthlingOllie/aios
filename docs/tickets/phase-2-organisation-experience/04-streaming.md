@@ -17,7 +17,7 @@
 
 [Spec](../../specs/phase-2-organisation-experience.md)
 
-**Blocked by:** [01: Open chats, and the Jev check on posted messages](01-open-chats.md), [Phase 1 · 12: Run service: queue, mentioned turns, handoff, scheduler](../phase-1-foundation/12-run-service.md)
+**Blocked by:** [01: Open chats, and the Jev check on posted messages](01-open-chats.md), [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [Phase 1 · 12: Run service: queue, mentioned turns, handoff, scheduler](../phase-1-foundation/12-run-service.md)
 
 **Status:** ready-for-agent
 
