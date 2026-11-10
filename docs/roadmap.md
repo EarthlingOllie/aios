@@ -85,9 +85,9 @@ chatter and routine runs. It would offer admins targeted options, such as keepin
 dropping the discussion around it, or summarising a thread before it's pruned. It would itself be
 a budgeted run.
 
-### Retention per direct message
+### Retention per chat
 
-A direct message could choose to expire sooner than the organisation's chat retention.
+A chat could choose to expire sooner than the organisation's chat retention.
 
 ### Notification delivery
 

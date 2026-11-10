@@ -57,8 +57,7 @@ shared. Editors and admins share and transfer tables. A table whose owner is arc
 read-only until ownership is transferred.
 
 **Retention**:
-How long an organisation keeps its runs, and its chat and direct message history, before
-they're pruned; "keep indefinitely" is the default.
+How long an organisation keeps its runs and its chat history before they're pruned; "keep indefinitely" is the default.
 
 ## Agents, skills and workflows
 
@@ -96,7 +95,7 @@ _Avoid_: Deleted
 
 **Memory**:
 What an agent has chosen to remember across its runs, private to that agent and visible to
-people. A memory learned in a direct message is only recalled there.
+people. It isn't tied to the chat it was learned in.
 
 ## Running
 
@@ -131,18 +130,15 @@ A configurable limit on usage, for a run, a member or the organisation.
 ## Chats
 
 **Chat**:
-An open conversation in an organisation that any member can find, join and leave, with agents
-and workflows in it too. A new chat starts with the agents an admin has chosen as defaults.
-_Avoid_: Channel, room, conversation, public chat
-
-**Direct message**:
-A closed conversation between the people, agents and workflows in it, which anyone in it can
-add others to and nobody outside it, admins included, can read. It never becomes a chat.
-_Avoid_: Private chat, agent chat, run chat
+A conversation in an organisation, and the only kind there is. Every chat is open: any member
+can read it without joining, and posting joins it. Only the agents and workflows it includes
+can be mentioned there. A new chat starts with the agents an admin has chosen as defaults.
+_Avoid_: Channel, room, conversation, public chat, private chat, direct message, agent chat,
+run chat
 
 **Chat member**:
-A person, agent or workflow in a chat or direct message; always "chat member", never just
-"member". Every chat member is equal: a chat has no owner.
+A person, agent or workflow in a chat; always "chat member", never just "member". Every chat
+member is equal: a chat has no owner.
 _Avoid_: Participant (a role), chat owner
 
 **Mention**:
@@ -204,7 +200,8 @@ _Avoid_: Schema change request (in prose), migration
 - "Run" meant both the conversation and one execution of it; the conversation is the **Run**,
   an execution is a **Turn**.
 - "Invocation" meant only what a mention made; it now covers every cause.
-- "Private chat" is now a **Direct message**, and chats no longer have owners.
+- "Private chat" and "direct message" are gone: every **Chat** is open, and chats no longer
+  have owners.
 - "Tenant" has been used for both an organisation and the whole aios service; use
   **Organisation**, or name the service.
 - "Team" is reserved for the roadmap's groups inside an organisation; it never means the

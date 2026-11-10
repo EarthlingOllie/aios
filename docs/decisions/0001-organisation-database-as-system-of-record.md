@@ -41,6 +41,12 @@ test suites are the expensive parts, and they suit the aim.
 The terms used here are defined in the glossary, [`CONTEXT.md`](../../CONTEXT.md). A grilling
 session on this record settled the details marked "(settled in review)" below.
 
+**Dropped in a second review (settled in review).** Direct messages, private store schemas and
+the migration machinery (expand and contract, mirror writes, backfill, verifier, read switches,
+reconciler) were dropped. aios is a demo, not live, so there is nothing to migrate. Chat is the
+shared entry point into the team's work with its agents, so no conversation is private. Jev was
+added to defend against prompt injection, the risk that open content brings (D1).
+
 The organisation's data store becomes the system of record for everything the organisation
 makes, says and produces. The platform database keeps only who people are, which organisations
 exist, and how to reach and schedule work in each store.
@@ -151,31 +157,51 @@ searchable.
 
 Documents, chunks and `data` tables are already there.
 
-**Conversation content is closed to the data tools.** Once chats live in the store, a query
-tool reading the whole store would expose direct messages to people outside them, breaking D6.
-So conversation content goes in private store schemas reached only by the platform's own code,
-through its own login role: chats, direct messages, mentions, invocations, briefs, run messages,
-checkpoints and memory. The roles behind `query_data`, `describe_data` and the Tables view (and
-D5's per-agent roles) can neither read nor list those schemas. Agents reach conversation content
-only through `search`, which enforces visibility. Reporting views carry ids, counts, times and
-statuses, never content, for Insights and agents. This was found while writing the phase specs
-([`docs/specs/`](../specs/)).
+**Untrusted content and Jev (settled in review).** Conversation content (chats, mentions,
+invocations, briefs, run messages, checkpoints and memory) lives in ordinary store schemas. The
+data tools read it like any other table: `query_data`, `describe_data`, the Tables view and D5's
+per-agent roles. Every chat is open (D6), so there is nothing to hide from them. The risk that
+remains is prompt injection: content written by people or fetched from outside that steers an
+agent. The defence is Jev, an existing external classifier for prompt injection and unsafe
+content. aios integrates it rather than building its own.
+
+- **What's classified.** Everything untrusted, before it can reach a model's context: chat
+  messages people send, documents, synced source items (D2), and every tool result from
+  outside, including web search, web fetch and `query_data`.
+- **Wrapped regardless.** Every untrusted input is also wrapped in an untrusted block in the
+  model's context, whatever its verdict, in case Jev misclassifies.
+- **When.** Stored content is classified when it's written. Its verdict is kept on its row and
+  copied onto its search item. Tool results are classified inline, as the tool returns.
+- **Flagged content.**
+  - A flagged chat message is refused as it's sent and never stored. The sender sees why.
+  - A flagged document or synced item is stored with its verdict, but left out of search and
+    context.
+  - A flagged tool result is blocked, and the agent sees an error instead.
+- **Fails closed.** If Jev is down or slow:
+  - a chat message is refused after a short timeout of a few seconds ("couldn't check this
+    message, try again");
+  - documents and synced items wait as "awaiting check", are retried by their pipeline, and
+    aren't searchable until they have a verdict;
+  - a tool result that can't be checked is replaced by an error the agent sees.
+- **Admin release.** Settings lists flagged documents and synced items. An admin can release
+  one, marking it trusted. It's still wrapped as untrusted, and the release is recorded in the
+  audit log (D8).
+- **Wiring.** A Python client behind a `classify(content, source) -> verdict` interface calls
+  Jev's HTTP API, with its URL and key in `.env`. A fake serves the unit tests, and one contract
+  test runs against real Jev.
 
 **People.** A store has no users table. It gets `aios.people`: a mirror of the organisation's
 members (user id, name, role), kept up to date by the platform on membership and profile
 changes. Agents can then answer "who" from the store alone, and content keeps its author ids
 without foreign keys across databases.
 
-**Migration.** Expand and contract, organisation by organisation, in `migrate-all`:
-
-1. Make the store tables.
-2. Copy each organisation's rows into them, keeping ids, along with their checkpoint threads.
-3. Switch reads and writes to the store.
-4. In a later release, drop the platform tables.
+**Migration.** aios isn't live, so no data is carried over. Each domain moves to the store in
+one change that makes its store tables, points the code at them, and drops the old platform
+tables and columns. Development data is rebuilt with `make seed`.
 
 **Connections.** Moving everything onto stores multiplies connections: organisations ×
 processes × roles. Put a pooler in front of the stores (PgBouncer, or RDS Proxy on AWS) before
-step 3. Transaction pooling breaks session advisory locks, so the turn lock that serialises a
+the first domain moves. Transaction pooling breaks session advisory locks, so the turn lock that serialises a
 run's turns moves to a row lock on the run (`SELECT ... FOR UPDATE` held for the turn on a
 dedicated session) or a Redis lock.
 
@@ -185,16 +211,16 @@ dedicated session) or a Redis lock.
 - a reference to its row;
 - its text, `tsvector` and embedding;
 - when it was written;
-- its visibility: the whole organisation, or one direct message.
+- its Jev verdict, copied from its row.
 
 Each writer indexes what it writes, in the same transaction. Embedding happens afterwards,
-under the budget the history embedder uses now.
+under the budget the history embedder uses now. Items that are flagged or still awaiting a
+verdict are left out of results.
 
 A new tool, `search`, takes a query and optional filters (kinds, time range, chat, agent,
-source) and runs the existing RRF search over the index. Visibility is enforced from the run's
-context: a direct message's content is found only by runs started in that direct message. `hybrid_search`
-and `history_search` stay registered, as `search` fixed to their kinds. The Search page becomes
-the people's view of the same index, showing only what the signed-in member may read.
+source) and runs the existing RRF search over the index. `hybrid_search` and `history_search`
+stay registered, as `search` fixed to their kinds. The Search page becomes the people's view of
+the same index. Everyone in the organisation can find everything in it.
 
 **Retention.** Each organisation chooses how long runs and chats are kept before they're
 pruned. These are two admin settings, `run_retention_days` and `chat_retention_days`, and each
@@ -204,10 +230,9 @@ offers **Keep indefinitely**, which is the default.
   steps, checkpoint threads and search index entries.
   - Runs still going, or waiting on an approval, are never pruned.
   - An agent's continuing run in a chat (D5) is pruned turn by turn rather than whole.
-- **Chats and direct messages:** one setting covers both (settled in review). The same job
-  deletes messages older than the setting, with their mentions,
+- **Chats:** the same job deletes messages older than the setting, with their mentions,
   invocations, briefs and handbacks, and their search index entries.
-  - The chat or direct message itself stays.
+  - The chat itself stays.
   - A message whose invocation is still going is kept until it finishes.
 - **Untouched:** pruning never touches agent memory, `data` tables, documents or the audit log.
   The audit log records each prune: what kind, how many, and up to when.
@@ -305,18 +330,14 @@ without scanning them all.
   and chains are capped in depth.
 - Bursts are coalesced. A trigger can set a debounce window, after which it fires once with
   the batch.
-- A `chat.message` trigger can listen to any chat. It can listen to a direct message only if
-  whoever set it up is in that direct message (settled in review). If they leave, the trigger
-  stops, and its page says why.
+- A `chat.message` trigger can listen to any chat.
 
 #### D4. Delivering results, and notifications
 
 - A new `post_message` tool lets an agent post markdown to a chat it is a member of. As today,
   mentions in what agents and workflows post start nothing.
 - Triggers get a **deliver to** setting, a chat. A scheduled or event-fired run then posts its
-  output or its failure there without any prompting. A trigger can deliver to any chat, and to a
-  direct message only if whoever set it up is in it. The rule is the same as for listening
-  (D3), and so is what happens when they leave (settled in review).
+  output or its failure there without any prompting. A trigger can deliver to any chat.
 - **Every run has an invocation (settled in review).** An invocation records:
   - the run's cause: a mention, schedule, event, by hand, or an agent's `start_workflow`;
   - who or what caused it;
@@ -350,7 +371,7 @@ without scanning them all.
 
 #### D5. Agents as persistent team members
 
-**Continuity.** An agent keeps one run per chat or direct message. Each mention is a new turn
+**Continuity.** An agent keeps one run per chat. Each mention is a new turn
 of that run, not a new run. The handoff brief becomes "what has happened in the chat since your
 last turn".
 
@@ -373,10 +394,8 @@ run that wrote it, and created and updated times. The `remember` and `forget` to
 and `search` with kind `memory` reads it, only the agent's own. People see, edit and delete an
 agent's memories on a Memory tab on its page.
 
-Each memory takes the visibility of where it was learned, as search items do (settled in
-review). A memory learned in a direct message is recalled only in that direct message, so
-nothing said there leaks into a chat through the agent. The Memory tab shows each person only
-the memories they could see where they were learned.
+Memory isn't scoped to where it was learned (settled in review). Every chat is open, so an
+agent recalls its memories in any chat, and the Memory tab shows all of them.
 
 **Table ownership.** A table created by a schema change an agent requested is owned by that
 agent, recorded in `aios.table_ownership`. The owner may write it; other agents may read it.
@@ -401,34 +420,37 @@ escape it.
 
 #### D6. One chat experience, streamed
 
-**Chats and direct messages (settled in review).** Private chats and chat owners go. There are
-two kinds of conversation:
+**Open chats (settled in review).** Private chats and chat owners go. Every conversation is a
+chat, and every chat is open to the whole organisation:
 
-- A **chat** is open. Anyone in the organisation can find it, join it and leave it.
-- A **direct message** is closed. It exists only for the people, agents and workflows in it,
-  and nobody outside can read it, admins included. Anyone in it can add others, who see its
-  history from the start. It never becomes a chat. Copying it into a new chat is the deliberate
-  way out.
+- Anyone in the organisation can read any chat without joining it. Posting joins it.
+- People join and leave. Nobody removes a person from a chat.
+- Any chat member can rename the chat, change its description, and choose which agents and
+  workflows it includes. Only those can be mentioned or triggered there. Mentioning an agent
+  that isn't in the chat is refused, with a prompt to add it to the chat.
+- Admins archive and unarchive chats. An archived chat is read-only, shows a banner, and is
+  still searchable. Chats aren't deleted.
+- With no owners, nothing is handed over when someone leaves. Leaving the organisation removes a
+  person from every chat.
 
-"Chat member" means anyone in either: a person, an agent or a workflow, all equal. With no
-owners, chats need no hand-over when someone leaves.
+"Chat member" means a person, agent or workflow in a chat, all equal.
 
-| | Anyone in it | Admin |
-| --- | --- | --- |
-| **Chat:** read, post, mention, leave | ✓ | ✓ |
-| **Chat:** rename, describe, add or remove agents and workflows | ✓ | ✓ |
-| **Chat:** remove a person, archive or unarchive | | ✓ |
-| **Direct message:** read, post, mention, add people, agents and workflows, leave | ✓ | |
+| | Who |
+| --- | --- |
+| Read a chat, find it in search | anyone in the organisation |
+| Post (which joins the chat), mention its agents and workflows | anyone in the organisation |
+| Rename, describe, choose its agents and workflows | any chat member |
+| Leave | any person in it |
+| Archive or unarchive | admins |
 
-Anyone in the organisation can join a chat; nobody joins a direct message unless added. Removing
-someone from a direct message isn't possible: leaving is how you get out. Renames and archiving
-are recorded in the audit log. Today's private chats become direct messages, and today's owners
-become ordinary chat members.
+Renames and archiving are recorded in the audit log. Today's owner and visibility columns are
+dropped when chats move to the store (D1). Nothing is migrated, because aios isn't live.
 
 **One experience.**
 
 - Remove the one-to-one agent run chat (the `useChat` conversation on the run page). A
-  conversation with an agent is a direct message, which works like every other conversation.
+  conversation with an agent is an ordinary chat. **Chat with this agent** makes a new chat with
+  that agent included, named "<Agent> – <person> – <date>", which anyone in it can rename.
 - Run pages become read-only: the trace, events and usage, linked from run cards.
 - Chats stream. `GET /api/o/{organisation}/chats/{id}/stream` is a server-sent events stream of
   new messages, invocation updates and the token deltas of replies being written. A reply
@@ -464,9 +486,6 @@ become ordinary chat members.
   - Schema changes and approval steps are both **approvals**, sharing one mechanism: the
     waiting, expiry, notification and resume code. "Approval" is the word in the product and the
     code. "Request" is retired, because it collides with HTTP requests (settled in review).
-  - Approvers see an approval's reason and details in full, even when it was raised in a direct
-    message they can't read (settled in review). An agent asking for one is told that what it
-    writes goes to approvers outside the conversation.
 - **`start_workflow` tool.** Its settings name the workflows an agent may start. It starts a run
   with structured input and waits up to a set time for the output. If the run takes longer, it
   returns the run's id, and the result is posted to the chat the turn came from (D4). The
@@ -494,7 +513,7 @@ organisation, whatever their role.
 | Create and edit agents, skills, workflows, triggers | ✓ | ✓ | |
 | Share and transfer data tables between agents | ✓ | ✓ | |
 | Archive, roles, invitations, connectors, organisation settings, default chat agents | ✓ | | |
-| Remove people from chats, archive chats, delete the organisation | ✓ | | |
+| Archive chats, release flagged content, delete the organisation | ✓ | | |
 
 A participant's runs act with the agent's tools, writes and external actions included. That's
 intended: whoever built the agent decided what it may do, and a participant uses it as built.
@@ -554,8 +573,7 @@ tools are `search` (documents, chats, run history and sources), `describe_data` 
 It's made when its organisation is, not when the first chat is.
 
 **Default chat agents (settled in review).** Admins choose which agents join every new chat
-automatically. The organisation assistant is the default for a new organisation. Direct messages
-get only the agents chosen when they're made, never the defaults.
+automatically. The organisation assistant is the default for a new organisation.
 
 An existing documents assistant
 gets a new version with these tools. Versions already pinned are unchanged. A new organisation's
@@ -726,8 +744,8 @@ nothing per organisation, so an inactive organisation costs nothing but its data
 make the pool fair, finer-grained and able to scale.
 
 1. **A run executor service.**
-   - A new service runs every agent turn, whatever its cause: chat mention, direct message,
-     schedule, event, workflow node or `start_workflow`.
+   - A new service runs every agent turn, whatever its cause: chat mention, schedule, event,
+     workflow node or `start_workflow`.
    - The API stops running turns. It enqueues them and streams their progress from Redis
      (D6).
    - Executors are asyncio processes that each interleave many turns (a semaphore, say 50),
@@ -752,7 +770,7 @@ make the pool fair, finer-grained and able to scale.
    - Each organisation has an in-flight cap, which billing tiers can set later. A burst from
      one organisation waits on its own share, and idle organisations simply don't appear.
 4. **Lanes by kind of work, not by organisation.**
-   - **Interactive:** mentions, direct messages and handbacks. Someone is watching, so this lane
+   - **Interactive:** mentions and handbacks. Someone is watching, so this lane
      has reserved capacity and is claimed first.
    - **Background:** schedules, events, workflow nodes and `start_workflow`.
    - **Ingest and sync:** CPU and memory heavy (Docling), on their own workers sized for it, with
@@ -808,20 +826,22 @@ Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
 
    The split comes first because nearly every later change touches `models.py` and the large
    API modules. The test guards the moves that follow.
-1. **Foundation:** D1 (with R1 as its first step, and the pooler before reads switch), then
+1. **Foundation:** D1 (with R1 as its first step, the pooler before the first domain moves,
+   and Jev classifying documents and tool results alongside unified search), then
    D8 with the first parts of D12: measurement, per-run caps, mention limits and
    **invocable by**. Roles are needed by approvals, ownership and notifications. The audit log
    needs D1. Participants can't mention until D12's guards exist.
    D13's executor service, node-by-node workflows and fair queue also land here, after D1.
    They change where every run executes, so they come before the features that add more runs.
    Autoscaling and the split lanes follow as load needs them.
-2. **Team experience:** D6, D10, D4 and D14.
+2. **Team experience:** D6 (with Jev's check on chat messages as they're posted), D10, D4 and
+   D14.
 3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets), then D3.
-4. **Inflow and insight:** D2 and D9.
+4. **Inflow and insight:** D2 (with Jev classifying synced items) and D9.
 
-Each item gets its own plan in `plan/<item>/plan.md` before it starts, as earlier features did,
-and each lands behind the existing migration discipline: store migrations expand now and
-contract in a later release.
+Each item gets its own plan in `plan/<item>/plan.md` before it starts, as earlier features did.
+A change that moves or drops tables does so in one step, and development data is rebuilt with
+`make seed`.
 
 ## Consequences
 
@@ -840,6 +860,8 @@ contract in a later release.
 - Per-agent database roles and connector tools add security surface. Each needs an adversarial
   test before it ships: escaping an agent's role, and a connector reaching hosts or data beyond
   its grant.
+- Jev becomes a required service. While it's down, chat messages are refused and new documents
+  and synced items wait unsearchable, because classification fails closed.
 
 ## Open questions
 

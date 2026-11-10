@@ -13,17 +13,15 @@ when each step counts as done.
 
 ## Rules for every step
 
-- **Migrations expand, then contract.** A platform or store migration must work with the code
-  before it. Columns and tables are removed in a later release than the one that stops using
-  them. Moving data between the platform database and the stores goes: dual-write, backfill,
-  switch reads, contract.
+- **A move is one change.** aios isn't live, so nothing is kept for the release before. A
+  change that moves a domain into the store, or stops using tables or columns, drops them in the
+  same change. Development data is rebuilt with `make seed`.
 - **Tool keys are never renamed.** `hybrid_search` and `history_search` stay registered. New
   behaviour gets new keys (`search`, `remember`, `post_message`, `start_workflow`, ...).
 - **Every limit is a setting.** Caps, budgets, allowances, rate limits, in-flight caps, grace
   periods and retention all come from configuration, with generous defaults, overridable per
   organisation where 0001 says so. Real values come later (roadmap).
-- **Words follow the glossary.** Screens and docs say organisation, chat, direct message, chat
-  member, approval, turn, invocation. Code keeps its internal names where renaming would only
+- **Words follow the glossary.** Screens and docs say organisation, chat, chat member, approval, turn, invocation. Code keeps its internal names where renaming would only
   churn: `data_stores`, `chat_members`, `organisation_members`.
 - **Tests come with the change.** That means backend tests (`backend/tests`), the fake-API
   browser tests (`frontend/e2e`, updating `fake-api.ts`), and from step 0.3 the full-stack
@@ -36,8 +34,8 @@ when each step counts as done.
 | Phase | Steps | Depends on |
 | --- | --- | --- |
 | **0. Refactor and guard rails** | 0.1 docs split · 0.2 module split · 0.3 full-stack test · 0.4 sharded tests · 0.5 archive · 0.6 many organisations | — |
-| **1. Foundation** | 1.1 pooler and turn lock · 1.2 store as system of record · 1.3 unified search, and removing the export · 1.4 retention · 1.5 roles and audit log · 1.6 invocations, usage and guards · 1.7 run executor and fair queue | phase 0 |
-| **2. Organisation experience** | 2.1 chats and direct messages · 2.2 streaming, one chat experience · 2.3 organisation assistant and default agents · 2.4 delivery, handback and notifications · 2.5 export and import | phase 1 |
+| **1. Foundation** | 1.1 pooler and turn lock · 1.2 store as system of record · 1.3 unified search and Jev, then removing the export · 1.4 retention · 1.5 roles and audit log · 1.6 invocations, usage and guards · 1.7 run executor and fair queue | phase 0 |
+| **2. Organisation experience** | 2.1 open chats · 2.2 streaming, one chat experience · 2.3 organisation assistant and default agents · 2.4 delivery, handback and notifications · 2.5 export and import | phase 1 |
 | **3. Agents and automation** | 3.1 continuing runs · 3.2 memory · 3.3 table ownership and per-agent roles · 3.4 structured workflows · 3.5 budgets · 3.6 event triggers · 3.7 lanes and autoscaling | phase 2 |
 | **4. Inflow and insight** | 4.1 sources and connectors · 4.2 Slack, Google Drive, GitHub · 4.3 Insights | phase 3 (4.3 can start after 1.6) |
 
@@ -255,13 +253,9 @@ guards in place, and every run executes on a fair, shared executor pool.
 ### 1.2 The store as system of record (D1)
 
 This moves, domain by domain, everything an organisation makes, says and produces into its
-store. Each domain goes through the same four sub-steps, in its own release:
-
-1. **Expand:** a store migration adds the tables.
-2. **Dual-write and backfill:** writes go to both databases, and `migrate-all` copies existing
-   rows, keeping their ids.
-3. **Switch reads:** reads come from the store.
-4. **Contract:** a later release drops the platform tables.
+store. Each domain moves in one change: a store migration adds its tables, the code reads and
+writes them, and the old platform tables and columns are dropped. Nothing is copied across,
+because aios isn't live; development data is rebuilt with `make seed`.
 
 Domains, in order:
 
@@ -285,19 +279,30 @@ idempotently.
 - every domain reads from the store;
 - the platform database holds only identity, organisations, memberships, invitations, the store
   registry and its credentials, notifications, and coordination indexes;
-- the full-stack test passes with no organisation content in the platform database.
+- the full-stack test passes with no organisation content in the platform database;
+- `make seed` builds a working organisation from scratch.
 
-### 1.3 Unified search, then removing the export (D1, R1)
+### 1.3 Unified search and Jev, then removing the export (D1, R1)
 
 - **Index.** Add `aios.search_items` to the store. Each item records its kind, a reference to
-  its row, its text, a `tsvector` and an embedding, when it was written, and its visibility (the
-  organisation, or one direct message). Each writer indexes in the same transaction, and
-  embedding happens afterwards under a budget. Backfill documents' chunks, chat messages, run
-  messages and briefs.
-- **Tool.** A new `search` tool, with filters for kind, time, chat, agent and source, enforces
-  visibility from the run's context. `hybrid_search` and `history_search` keep their keys and
-  become `search` fixed to their kinds. The Search page queries the same index, showing what the
-  signed-in person may read.
+  its row, its text, a `tsvector` and an embedding, when it was written, and its Jev verdict.
+  Each writer indexes in the same transaction, and embedding happens afterwards under a budget.
+  `make seed` fills it through the same writers.
+- **Tool.** A new `search` tool, with filters for kind, time, chat, agent and source.
+  `hybrid_search` and `history_search` keep their keys and become `search` fixed to their kinds.
+  The Search page queries the same index and shows everything in the organisation. Flagged items,
+  and items still awaiting a verdict, are left out.
+- **Jev.** Classify untrusted content before it reaches a model (0001, D1):
+  - a Python client behind `classify(content, source) -> verdict` over Jev's HTTP API, with its
+    URL and key in `.env`, a fake for unit tests, and one contract test against real Jev;
+  - a verdict column on documents and search items, set as ingestion classifies each document.
+    Flagged documents are kept but left out of search and context; documents Jev couldn't check
+    wait as "awaiting check" and are retried;
+  - every tool result from outside (web search, web fetch, `query_data`) classified inline and
+    wrapped in an untrusted block. A flagged result, or one that can't be checked, reaches the
+    agent as an error;
+  - a flagged list in Settings, where an admin releases a document as trusted. It's still
+    wrapped as untrusted, and the release goes in the audit log.
 - **Remove the run history export (R1).** This happens only once `history_search` reads the new
   index. Remove:
   - `datastores/history.py` and the `history_exports` outbox;
@@ -306,13 +311,14 @@ idempotently.
   - the `history_*`, `export_run_history` and `embed_run_history` columns;
   - `RunHistoryExport.tsx`, its API, and `test_history_export.py`.
 - **Done when:** one search finds a document, a chat message and a past run's message; an agent
-  version using `history_search` still runs; and the export code is gone.
+  version using `history_search` still runs; a flagged document stays out of search until an
+  admin releases it; a tool result is blocked when Jev flags it or is down; and the export code is
+  gone.
 
 ### 1.4 Retention
 
 - **Settings.** Two admin settings on the organisation, `run_retention_days` and
-  `chat_retention_days`. Both default to "keep indefinitely", and the chat setting covers direct
-  messages.
+  `chat_retention_days`. Both default to "keep indefinitely".
 - **Daily pruning job, on the maintenance worker:**
   - **Runs** that finished before the cutoff, with their steps, checkpoints and index entries.
     Never runs still going or waiting on an approval. An agent's continuing run (from step 3.1)
@@ -357,8 +363,7 @@ idempotently.
 
 - **Invocations.** Every run has an invocation, whatever its cause (mention, schedule, event, by
   hand, `start_workflow`). It records who or what caused it, where its result goes, and its
-  causation chain. Extend `chat_invocations` (now in the store) and backfill causes for existing
-  runs.
+  causation chain. Extend `chat_invocations` (now in the store).
 - **Usage ledger.** `aios.usage` in the store records every model call (including handoff),
   embedding, web search and sandbox second. Each entry carries its organisation, agent or
   workflow, run, turn, person, cause, and an estimated cost from a price table kept in
@@ -403,7 +408,7 @@ idempotently.
   - a deploy mid-turn resumes the turn instead of failing it;
   - the full-stack test passes on executors.
 
-**Phase 1 is done when:** steps 1.1–1.7 are merged and contracted, the platform database holds no
+**Phase 1 is done when:** steps 1.1–1.7 are merged, the platform database holds no
 organisation content, and participants can safely mention.
 
 ---
@@ -413,27 +418,30 @@ organisation content, and participants can safely mention.
 The aim is one streamed chat experience with the right rules, results that come back to people,
 and an assistant that knows everything in the store.
 
-### 2.1 Chats and direct messages (D6)
+### 2.1 Open chats (D6)
 
 - **Remove owners and private chats.**
-  - Remove `ChatMemberRole` and the owner checks.
-  - Today's private chats become direct messages, and today's owners become ordinary chat
-    members.
-  - Remove the hand-over logic in `organisations.py` for when an owner leaves.
-- **Chats** are open: anyone in the organisation can find, join and leave one. Any chat member
-  can rename or describe it and add or remove agents and workflows. Only admins remove people
-  and archive or unarchive chats. An archived chat is read-only but searchable.
-- **Direct messages** are closed:
-  - they exist only for their chat members;
-  - anyone in one can add people, agents and workflows, who see its history from the start;
-  - leaving is the only way out, and nobody removes anyone;
-  - a direct message never becomes a chat, though copying it into a new chat is offered;
-  - admins can't read them;
-  - search, memory and triggers respect them.
-- **UI.** The Chats list separates chats and direct messages, with a "New direct message" flow.
-  The Members tab lists chat members by kind.
-- **Done when:** the permission table in 0001's D6 is covered by tests, private chats have
-  migrated cleanly, and an admin can't read a direct message through any route or search.
+  - Remove `ChatMemberRole`, the owner checks and the visibility column. They're dropped, not
+    migrated.
+  - Remove the hand-over logic in `organisations.py` for when an owner leaves. Leaving the
+    organisation removes a person from every chat.
+- **Every chat is open.**
+  - Anyone in the organisation can read any chat without joining it, and posting joins it.
+  - People join and leave; nobody removes a person.
+  - Any chat member can rename it, change its description, and choose which agents and
+    workflows it includes.
+  - Only included agents and workflows can be mentioned or triggered there. Mentioning one that
+    isn't included is refused, with a prompt to add it to the chat.
+  - Only admins archive and unarchive. An archived chat is read-only, shows a banner, and is
+    still searchable. Nothing deletes a chat.
+- **Jev on posting.** Each chat message a person sends is classified by Jev before it's stored.
+  A flagged message is refused and never stored, and the sender sees why. If Jev doesn't answer
+  within a few seconds, the message is refused with "couldn't check this message, try again".
+- **UI.** One Chats list. The Members tab lists chat members by kind, and the chat's settings
+  choose its agents and workflows.
+- **Done when:** the rules above are covered by tests, a mention of an agent the chat doesn't
+  include is refused, and a flagged message, or one sent while Jev is down, is refused and never
+  stored.
 
 ### 2.2 Streaming, and one chat experience (D6)
 
@@ -445,8 +453,9 @@ and an assistant that knows everything in the store.
   hidden poll go. Unread counts update from the stream.
 - **One experience.** Remove the one-to-one agent chat on the run page (`useChat` in
   `pages/Run.tsx`). Run pages become read-only: trace, events, usage and versions per turn. A
-  conversation with an agent is a direct message. "Chat with this agent" opens or creates one.
-- **Done when:** replies stream in chats and direct messages, a dropped connection recovers
+  conversation with an agent is an ordinary chat. "Chat with this agent" creates a new open chat
+  with that agent included, named "<Agent> – <person> – <date>", which can be renamed.
+- **Done when:** replies stream in chats, a dropped connection recovers
   without gaps or duplicates, and nothing polls every second.
 
 ### 2.3 Organisation assistant and default agents (D10)
@@ -455,16 +464,15 @@ and an assistant that knows everything in the store.
   `describe_data` and `query_data`. Existing documents assistants get a new version with these
   tools.
 - **Default chat agents.** Admins choose which agents join every new chat; the organisation
-  assistant is the default. Direct messages get only the agents chosen when they're made.
+  assistant is the default.
 - **Done when:** a new organisation's assistant can answer from documents, chats, past runs and
   data tables, and the defaults setting applies to new chats only.
 
 ### 2.4 Delivery, handback and notifications (D4)
 
-- **`post_message` tool.** An agent posts to a chat or direct message it's a chat member of.
+- **`post_message` tool.** An agent posts to a chat it's a chat member of.
   Mentions in what it posts start nothing.
-- **Deliver to.** Triggers can deliver to any chat, and to a direct message only if whoever set
-  them up is in it. If they leave, deliveries stop and the trigger says why.
+- **Deliver to.** Triggers can deliver to any chat.
 - **Handback.**
   - Summarises:
     - workflow outputs;
@@ -496,8 +504,8 @@ and an assistant that knows everything in the store.
 - **Done when:** an export from one organisation imports and runs in another, and a version that
   needs a missing connector says so.
 
-**Phase 2 is done when:** steps 2.1–2.5 are merged, and the full-stack test covers a direct
-message, a streamed reply and a handback.
+**Phase 2 is done when:** steps 2.1–2.5 are merged, and the full-stack test covers "Chat with
+this agent", a streamed reply and a handback.
 
 ---
 
@@ -508,8 +516,8 @@ reacts to events, all under budgets.
 
 ### 3.1 Continuing runs (D5)
 
-- **One run per conversation.** An agent keeps one run per chat or direct message, and each
-  mention is a new turn.
+- **One run per conversation.** An agent keeps one run per chat, and each mention is a new
+  turn.
 - **Current version.** The run takes the agent's current version at each turn, and each turn
   records its version. Workflow runs, and runs waiting on an approval, stay pinned.
 - **Brief.** The handoff brief becomes "what has happened since your last turn".
@@ -523,12 +531,9 @@ reacts to events, all under budgets.
 
 - **Table.** `aios.agent_memory`, with `remember` and `forget` tools. Recall is through `search`
   with kind `memory`, only the agent's own.
-- **Visibility.** Each memory takes the visibility of where it was learned: a memory from a
-  direct message is recalled only there.
-- **Memory tab.** On the agent's page, people can see, edit and delete memories, each person
-  seeing only those from where they could see.
-- **Done when:** a memory from a direct message never surfaces in a chat (with a test for it), and
-  memories survive archiving and unarchiving.
+- **Memory tab.** On the agent's page, people can see, edit and delete memories.
+- **Done when:** an agent recalls in one chat what it remembered in another, and memories
+  survive archiving and unarchiving.
 
 ### 3.3 Table ownership and per-agent database roles (D5)
 
@@ -566,7 +571,6 @@ reacts to events, all under budgets.
     node, which names the role that decides it.
   - Both kinds share the waiting, expiry, notification and resume code.
   - The Data page's Changes tab becomes an **Approvals** list that covers both kinds.
-  - Approvers see the reason in full, and an agent asking for an approval is told so.
 - **`start_workflow` tool.**
   - Its settings name the workflows an agent may start.
   - It waits up to a set time for the output; past that, the result is delivered by handback to
@@ -601,8 +605,6 @@ reacts to events, all under budgets.
   - loop prevention through the causation chain;
   - webhooks get their own URL and an HMAC secret, and their payloads are checked against the
     workflow's input schema.
-- **Direct messages.** `chat.message` triggers can listen to a direct message only if whoever set
-  them up is in it.
 - **Done when:** each event kind fires its trigger once, a loop is refused at its cap, and a burst
   is coalesced.
 
@@ -646,6 +648,10 @@ its agents perform.
   - sync runs on the `sources` lane, incrementally from a stored cursor, and reconciles deletions
     against what the source still lists;
   - synced items are indexed as `source_item` for search;
+  - Jev classifies each synced item as it's written. Flagged items are kept with their verdict
+    but left out of search and context, items Jev couldn't check wait as "awaiting check" and are
+    retried by the sync, and admins can release flagged items from the same Settings list as
+    documents;
   - a `connector` tool kind exposes a connector's tools to agent versions, which pin the tools
     allowed.
 - **Lifecycle.**
@@ -654,8 +660,8 @@ its agents perform.
   - Removing a connector deletes what it synced, unless the admin keeps it as documents.
 - **Admin only.** Admins add and remove sources and connectors. Picking restricted content warns
   that everyone in the organisation will be able to search it.
-- **Done when:** a URL source and a test connector sync, update and reconcile deletions, and a
-  connector tool runs in an agent turn.
+- **Done when:** a URL source and a test connector sync, update and reconcile deletions, a
+  flagged synced item stays out of search, and a connector tool runs in an agent turn.
 
 ### 4.2 Slack, Google Drive, GitHub
 
@@ -706,10 +712,10 @@ its agents perform.
 
 | Risk | Where | Mitigation |
 | --- | --- | --- |
-| Data loss while moving domains into stores | 1.2 | Dual-write, backfill, verify counts per store, switch reads, then contract a release later. Keep ids, and rehearse on a copy of production. |
+| A domain's move breaking the app | 1.2 | One domain per change, `make seed` rebuilds development data, and the full-stack test passes after each move. |
 | Connection exhaustion as all traffic moves to stores | 1.1, 1.2 | The pooler first; idle per-store engines evicted. |
 | Model-written SQL escaping an agent's role | 3.3 | Separate login roles, plus the adversarial test as a merge gate. |
-| Direct message content leaking | 1.3, 2.1, 3.2 | One visibility rule shared by search, memory and triggers, with tests from each side. |
+| Prompt injection from untrusted content | 1.3, 2.1, 4.1 | Jev classifies chat messages, documents, synced items and tool results, failing closed, and every untrusted input is wrapped as untrusted whatever its verdict. |
 | Runaway cost before budgets | 1.6, 3.5 | Per-turn caps, mention limits and **invocable by** before participants can mention. |
 | One organisation starving others | 1.7 | Fair claiming with per-organisation caps, plus a starvation test. |
 | Scope creep in connectors | 4.1, 4.2 | MCP first, three connectors only, everything else on the roadmap. |
@@ -726,12 +732,12 @@ its agents perform.
 | 0.6 Many organisations | — | not started |
 | 1.1 Pooler and turn lock | — | not started |
 | 1.2 Store as system of record | — | not started |
-| 1.3 Unified search, remove export | — | not started |
+| 1.3 Unified search and Jev, remove export | — | not started |
 | 1.4 Retention | — | not started |
 | 1.5 Roles and audit log | — | not started |
 | 1.6 Invocations, usage and guards | — | not started |
 | 1.7 Executor and fair queue | — | not started |
-| 2.1 Chats and direct messages | — | not started |
+| 2.1 Open chats | — | not started |
 | 2.2 Streaming, one chat experience | — | not started |
 | 2.3 Organisation assistant | — | not started |
 | 2.4 Delivery, handback, notifications | — | not started |
