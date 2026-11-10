@@ -8,7 +8,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every new run has exactly one invocation with the right cause: mention, schedule or manual, including each turn posted on a run page.
+- [ ] Every new run has exactly one invocation with the right cause: mention, schedule or manual.
 - [ ] A workflow agent node's invocation is a child of its workflow run's invocation, with the chain and depth set.
 - [ ] Each turn records the version it ran on, and run lists and the run page show the same totals as before.
 - [ ] The run page lists a run's turns.

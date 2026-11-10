@@ -15,9 +15,11 @@ which the deletion can be cancelled. Admins can do this once phase 1 adds roles.
 
   Members with no organisation left land on the welcome page.
 
-This ticket also contracts the earlier wide refactor:
-- the transition routes without an organisation are removed;
-- the global uniqueness of organisation names is dropped;
+This ticket also finishes the many-organisations work:
+- any route without an organisation that's left, other than those explicitly unscoped, is
+  removed;
+- the global uniqueness of organisation names is dropped, so names may repeat while slugs stay
+  unique;
 - the personal flag is dropped;
 - "personal" leaves the API and screens.
 

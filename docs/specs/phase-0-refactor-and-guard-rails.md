@@ -177,71 +177,69 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
     to see that a skill my agent uses is archived, so that I know to replace it.
 50. As a member, I want an Archived filter on the Agents, Skills and Workflows lists, so that I
     can find archived items, and the default list to hide them.
-51. As a member, I want agents deleted before this change to stay hidden, so that the lists don't
-    fill with items that can't be restored.
-52. As a member, I want to keep deleting individual runs, so that I can still tidy up one
+51. As a member, I want to keep deleting individual runs, so that I can still tidy up one
     conversation without archiving its agent.
 
 ### Docs
 
-53. As a developer, I want a short README with an overview, the architecture and a quick start,
+52. As a developer, I want a short README with an overview, the architecture and a quick start,
     so that I can orient myself in minutes.
-54. As a developer, I want one docs page per domain (accounts and organisations, stores, agents
+53. As a developer, I want one docs page per domain (accounts and organisations, stores, agents
     and skills, tools, workflows, chats, triggers, development, deploy, tracing, testing), so that
     I can find how one thing works without reading everything.
-55. As a developer, I want every section of the old README to have exactly one home, so that
+54. As a developer, I want every section of the old README to have exactly one home, so that
     nothing is lost or duplicated.
-56. As a developer, I want the stale lines fixed as they move (stores "one per user", the plan "on
+55. As a developer, I want the stale lines fixed as they move (stores "one per user", the plan "on
     the plan branch", "later a mention in a chat", "once runs can pause"), so that the docs match
     the code.
-57. As a developer, I want the docs to use the glossary's words, so that docs, screens and
+56. As a developer, I want the docs to use the glossary's words, so that docs, screens and
     conversation agree.
 
 ### Modules
 
-58. As a developer, I want the models grouped by domain (identity and organisations, the store
+57. As a developer, I want the models grouped by domain (identity and organisations, the store
     registry, agents and skills, workflows, triggers, approvals, notifications, chats), so that I
     can see what phase 1 moves into the store.
-59. As a developer, I want the agents, chats, workflows and schema change modules split into
+58. As a developer, I want the agents, chats, workflows and schema change modules split into
     smaller ones by sub-domain, so that each change touches a small file.
-60. As a developer, I want every existing import and task name to keep working after the split, so
+59. As a developer, I want every existing import and task name to keep working after the split, so
     that the move breaks nothing.
-61. As a developer, I want the split to change no behaviour, schema, route or setting, so that it
+60. As a developer, I want the split to change no behaviour, schema, route or setting, so that it
     can be reviewed as a move.
 
 ### Full-stack test
 
-62. As a developer, I want a browser test that runs the core loop (mention, schema change,
+61. As a developer, I want a browser test that runs the core loop (mention, schema change,
     approval, resume, reply) against the real API, workers, database, Redis and storage, so that
     a break anywhere in the loop is caught.
-63. As a developer, I want the full-stack test to use a scripted model, with no calls to model,
+62. As a developer, I want the full-stack test to use a scripted model, with no calls to model,
     embedding or tracing providers, so that it's deterministic and free.
-64. As an operator, I want the scripted model impossible to switch on in a production-like
+63. As an operator, I want the scripted model impossible to switch on in a production-like
     configuration, so that a test setting can't reach real users.
-65. As a developer, I want later steps to add scenarios to this test rather than build new
+64. As a developer, I want later steps to add scenarios to this test rather than build new
     harnesses, so that there's one place to look.
-66. As a developer, I want the stack's logs and the test report kept when it fails in CI, so that
+65. As a developer, I want the stack's logs and the test report kept when it fails in CI, so that
     I can see why.
 
 ### Sharded test runs
 
-67. As a developer, I want the backend tests split across several CI machines, each with its own
+66. As a developer, I want the backend tests split across several CI machines, each with its own
     database, Redis and storage, so that CI time stays roughly flat as tests are added.
-68. As a developer, I want shards balanced on recorded test durations, refreshed on a schedule,
+67. As a developer, I want shards balanced on recorded test durations, refreshed on a schedule,
     so that no shard drags.
-69. As a developer, I want new test files run even before their durations are recorded, so that
+68. As a developer, I want new test files run even before their durations are recorded, so that
     nothing is skipped.
-70. As a developer, I want lint, formatting and the migration check run once rather than in every
+69. As a developer, I want lint, formatting and the migration check run once rather than in every
     shard, so that shards only run tests.
-71. As a developer, I want one required check that passes only if every shard passed, so that
+70. As a developer, I want one required check that passes only if every shard passed, so that
     branch protection stays simple.
-72. As a developer, I want tests run in random order with the seed printed, so that tests that
+71. As a developer, I want tests run in random order with the seed printed, so that tests that
     depend on each other are caught as soon as they're written.
-73. As a developer, I want browser tests sharded across machines and their reports merged into
+72. As a developer, I want browser tests sharded across machines and their reports merged into
     one, so that a failure is easy to read.
-74. As a developer, I want to run any single shard locally with one command, and reproduce a
+73. As a developer, I want to run any single shard locally with one command, and reproduce a
     random order from its seed, so that CI failures are easy to chase.
-75. As a developer, I want each shard count to be a single setting, so that adding capacity is a
+74. As a developer, I want each shard count to be a single setting, so that adding capacity is a
     one-line change.
 
 ## Implementation Decisions
@@ -345,12 +343,11 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
 - **Out of scope.** Parallelism inside one machine.
 
 ### Archive (0.5)
-- **Schema.** Platform, expand: agents, skills and workflows gain an archived timestamp and the
-  person who archived them, a nullable user reference that clears if the user is deleted.
-  - Archived rows are not soft-deleted, so the existing per-organisation name uniqueness keeps
-    their names reserved.
-  - The soft-delete columns stay, only for rows deleted before this release. Nothing writes them
-    again. Phase 1 contracts them when these tables move to the store.
+- **Schema.** Platform: agents, skills and workflows gain an archived timestamp and the person
+  who archived them, a nullable user reference that clears if the user is deleted.
+  - The per-organisation name uniqueness keeps archived items' names reserved.
+  - The soft-delete columns are dropped in the same change. aios isn't live, so nothing is kept
+    for rows deleted earlier: dev data is rebuilt with `make seed`.
 - **One runnability check covers every start path:**
   - a turn started by hand;
   - a schedule firing;
@@ -376,7 +373,7 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
   | Endpoint | Behaviour |
   | --- | --- |
   | archive, for each kind | returns the item with its archived fields |
-  | unarchive, for each kind | 409 only if a row from before this release holds the name |
+  | unarchive, for each kind | returns the item with its archived fields cleared |
   | used by, for an agent | workflows (at any depth), schedules, chats and tables (empty until phase 3) |
   | used by, for a workflow | nesting workflows, schedules and chats |
   | used by, for a skill | agents whose current version uses it |
@@ -384,19 +381,19 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
   List endpoints take an archived filter, and every item carries its archived fields. Starting,
   mentioning or scheduling an archived item answers 409 "archived".
 - **Who may archive.** Any member, until roles arrive in phase 1, matching who may delete today.
-  After that, admins.
+  After that, editors and admins.
 
 ### Many organisations (0.6)
-- **Schema.** Platform, expand:
+- **Schema.** Platform:
   - drop the one-membership-per-user index;
-  - add a unique slug to organisations, backfilled from names with numeric suffixes on clashes,
-    and never changed by a rename;
+  - add a unique slug to organisations, made from the name with numeric suffixes on clashes when
+    the organisation is created, and never changed by a rename;
   - add deletion scheduling to organisations: when it was scheduled, by whom, and when it's due;
   - add a deletion record table: organisation id, name, slug, who scheduled it, when, and when it
     was deleted, with no foreign keys so it outlives the organisation.
 
-  A following release contracts: drop global uniqueness of organisation names, and drop the
-  personal flag.
+  The same step drops global uniqueness of organisation names and the personal flag. Dev data is
+  rebuilt with `make seed`.
 - **Sessions.** Signing in no longer ensures a membership or creates anything. The "me" response
   lists the person's organisations: id, name, slug, whether they're its creator, and any
   scheduled deletion date. It no longer names a single organisation.
@@ -424,9 +421,9 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
     - notifications, each item now carrying its organisation's id and slug;
     - the tool library;
     - the list of timezones.
-- **Transition.** For one release the old unscoped routes still answer, resolving to the
-  person's most recently joined membership, so an old front-end bundle keeps working during a
-  rolling deploy. They're removed in the next release.
+- **No transition routes.** Each route's unprefixed form goes in the change that moves it under
+  the prefix. Nothing is kept for an older front-end bundle: the single-page app ships with the
+  API.
 - **Deleting an organisation.**
   - Scheduling takes the typed name and is for the creator (admins after phase 1). It answers 409
     if already scheduled.
@@ -458,20 +455,17 @@ D11), [the plan](../../plan/platform-cohesion/plan.md) and [the glossary](../../
   | organisation deletion check interval | 600 seconds |
   | backend, frontend and full-stack shard counts | 4, 3 and 1 |
 
-### Rollout
-Releases in order, each deployable alone:
+### Order of work
+Changes in order, each one step. Nothing is kept for an earlier release, and dev data is rebuilt
+with `make seed`:
 1. Docs.
 2. Module splits, one at a time.
 3. The full-stack test and the scripted provider.
 4. Sharding.
-5. Archive, with its expand migration. The delete routes go in the same release, because the
-   single-page app ships with the API and has no other clients.
-6. Many organisations, with its expand migration and slug backfill. The API ships both route
-   sets, and the web deploys after it.
-7. Removal of the old routes, and the contract migration.
-
-Rolling back release 6 is only safe before anyone holds two memberships. The release notes carry
-a script that keeps each person's most recent membership for that case.
+5. Archive. The delete routes and the soft-delete columns go in the same change.
+6. Many organisations: the organisation prefix, then moving routes and screens under it, then
+   joining, switching and leaving, then deletion, which also drops name uniqueness and the
+   personal flag.
 
 ## Testing Decisions
 
@@ -511,7 +505,6 @@ achieves it.
   - runs already going finish;
   - schedules stay paused across unarchiving;
   - names stay reserved;
-  - rows deleted before the release stay hidden;
   - used-by results.
 
   The dependents tests and the agent delete browser spec are removed.
@@ -522,8 +515,7 @@ achieves it.
   - idempotent accepts;
   - leave refusals;
   - slugs and clashes;
-  - deletion scheduling, cancellation and completion through store teardown;
-  - the transition routes.
+  - deletion scheduling, cancellation and completion through store teardown.
 
   The empty-organisation tests are removed, and the organisation, invitation, scoping and auth
   tests are rewritten for no personal organisations.
@@ -534,7 +526,7 @@ achieves it.
 ## Out of Scope
 
 - **Roles** (admin, editor, participant) and transferring an organisation's creator. Phase 1.
-- **Moving content into the store**, including contracting the soft-delete columns. Phase 1.
+- **Moving content into the store.** Phase 1.
 - **Chat changes:** open chats without owners, and archiving chats. Phase 2. Leaving still
   hands over owned chats.
 - **Table ownership.** Phase 3. The archive dialog's table list is empty until then.
@@ -548,13 +540,13 @@ achieves it.
   - the domain-grouped models (the store move goes module by module);
   - the organisation prefix on every route (roles hang off memberships);
   - the full-stack test and sharded CI.
-- Roles replace "creator" wherever this phase says only the creator may act. Phase 1 decides who
-  may archive.
+- Roles replace "creator" wherever this phase says only the creator may act. Phase 1 gives
+  archiving agents, skills and workflows to editors and admins; phase 2 gives archiving chats to
+  admins.
 
 **Risks**
 - **Moving every route under a prefix** touches the whole API and every browser spec at once.
-  The generated scoping test and the one-release transition routes contain the risk.
-- **Rolling back many organisations** is only clean before people hold several memberships.
+  The generated scoping test contains the risk.
 - **Random order may expose many order-dependent tests.** Budget time to fix them before
   sharding lands.
 
@@ -564,4 +556,6 @@ achieves it.
    others are in. There's no "transfer creator" action; roles close the gap.
 3. **Links** use slugs in the browser and ids in the API.
 4. **Archiving before roles:** any member may archive, as any member may delete today. Phase 1's
-   roles then restrict it to admins.
+   roles then give it to editors and admins.
+5. **Nothing is live.** No expand-and-contract, no columns kept for older rows, no transition
+   routes, no rollback script: each change is one step, and dev data is rebuilt with `make seed`.

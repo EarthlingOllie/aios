@@ -346,7 +346,7 @@ and the Tables view. An adversarial test checks that the data tools can't read t
 
 - **Settings.** Two admin settings on the organisation, `run_retention_days` and
   `chat_retention_days`. Both default to "keep indefinitely". This step needs step 1.5's audit
-  log first.
+  log and step 1.6's invocations and turns first.
 - **Daily pruning job, on the maintenance worker:**
   - **Runs** that finished before the cutoff, with their steps, checkpoints and index entries.
     Never runs still going or waiting on an approval. An agent's continuing run (from step 3.1)

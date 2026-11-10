@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-1-foundation.md)
 
-**Blocked by:** [05: Triggers, chats, invocations and schema change requests move](05-move-triggers-chats-approvals.md), [08: Audit log and approval rules](08-audit-log-and-approval-rules.md)
+**Blocked by:** [06: Unified search across documents, chats and runs](06-unified-search.md), [08: Audit log and approval rules](08-audit-log-and-approval-rules.md), [10: An invocation for every run, and turns as records](10-invocations-and-turns.md)
 
 **Status:** ready-for-agent
 

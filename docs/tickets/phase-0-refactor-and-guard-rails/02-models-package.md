@@ -14,7 +14,7 @@ The domain modules are:
 - notifications;
 - chats.
 
-This is a wide, mechanical refactor, sequenced as expand → migrate → contract:
+This is a wide, mechanical refactor of code only, done in three steps:
 1. Make the package, re-exporting every name, with today's contents moved in whole.
 2. Move the domains out, a few at a time.
 3. Remove the leftover module.

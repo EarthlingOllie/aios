@@ -24,8 +24,9 @@ These routes stay unscoped:
 - the tool library;
 - the list of timezones.
 
-The in-memory fake API and every browser spec move with the screens. The domains can migrate in
-batches, each its own change.
+The in-memory fake API and every browser spec move with the screens. The domains can move in
+batches, each its own change, and each route's unprefixed form goes in the change that moves
+it: no transition routes are kept.
 
 [Spec](../../specs/phase-0-refactor-and-guard-rails.md)
 

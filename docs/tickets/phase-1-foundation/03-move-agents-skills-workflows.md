@@ -1,6 +1,6 @@
 # 03: Agents, skills and workflows move to the store
 
-**What to build:** Agents, skills and workflows, with all their versions, skill pins, tool settings, nodes, edges and layout, move into the organisation's store in one change that also deletes their old platform tables; dev data is rebuilt with `make seed`. Every agents, skills and workflows screen and endpoint works from the store, including archiving, versions, restore, the graph view and the editor. The store tables carry the archive fields from phase 0 and the new invocable-by and limits fields.
+**What to build:** Agents, skills and workflows, with all their versions, skill pins, tool settings, nodes, edges and layout, move into the organisation's store in one change that also deletes their old platform tables; dev data is rebuilt with `make seed`. Every agents, skills and workflows screen and endpoint works from the store, including archiving, versions, restore, the graph view and the editor. The store tables carry the archive fields from phase 0; invocable-by and limits arrive with ticket 11.
 
 [Spec](../../specs/phase-1-foundation.md)
 

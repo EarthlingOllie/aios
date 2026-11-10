@@ -23,11 +23,12 @@ Archiving is never blocked by anything on that list.
 - Its name stays reserved.
 
 **Unarchiving** brings it back. Any member may archive and unarchive, as any member may delete
-today. Phase 1's roles later restrict this to admins.
+today. Phase 1's roles later give this to editors and admins.
 
-The agents list gets an Archived filter, and the default list hides archived agents. Agents
-deleted before this change stay hidden. Agents, skills and workflows all gain archived fields
-here; workflows and skills use theirs in the next ticket.
+The agents list gets an Archived filter, and the default list hides archived agents. Agents,
+skills and workflows all gain archived fields here, and their soft-delete columns are dropped in
+the same change; dev data is rebuilt with `make seed`. Workflows and skills use their archived
+fields in the next ticket.
 
 [Spec](../../specs/phase-0-refactor-and-guard-rails.md)
 
@@ -50,4 +51,5 @@ here; workflows and skills use theirs in the next ticket.
 - [ ] The "Used by" list matches what the old delete flow found as dependents (with tables empty
   for now), and archiving is never refused.
 - [ ] The Agents list's Archived filter shows archived agents, and the default list hides them.
-- [ ] Agents deleted before this change appear in no list and can't be unarchived.
+- [ ] The soft-delete columns are gone from agents, skills and workflows, and `make seed`
+  rebuilds dev data.

@@ -16,7 +16,6 @@ number of them.
   - The last member is told to delete the organisation instead.
   - The creator is refused while others remain. There's no transfer action; phase 1's roles close
     that gap.
-- **Names.** Organisation names may repeat. Slugs stay unique.
 - **Full-stack test.** It now starts from the welcome page.
 
 [Spec](../../specs/phase-0-refactor-and-guard-rails.md)
@@ -30,7 +29,6 @@ number of them.
 - [ ] A new registrant without an invitation has no organisations, nothing is provisioned, and
   they land on the welcome page.
 - [ ] Creating an organisation from the welcome page provisions its store and opens it.
-- [ ] Creating an organisation with another organisation's name is allowed.
 - [ ] Registering through an invitation joins only that organisation.
 - [ ] A person in one organisation accepts an invitation to another and is in both.
 - [ ] Accepting the same invitation twice answers 200 the second time and adds nothing.

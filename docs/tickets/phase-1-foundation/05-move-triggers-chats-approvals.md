@@ -1,6 +1,6 @@
 # 05: Triggers, chats, invocations and schema change requests move
 
-**What to build:** Schedules, chats, chat members, messages, mentions, invocations and schema change requests move into the store in one change per domain that also deletes the old platform tables; dev data is rebuilt with `make seed`. Schedule definitions live in the store while the platform keeps only a thin index of what's due, written when a schedule is saved; firing re-reads the schedule under a row lock. Chat invocations become the store's general invocations table, with mention as their cause. Notifications keep pointing at the right organisation's approvals.
+**What to build:** Schedules, chats, chat members, messages, mentions, invocations and schema change requests move into the store in one change per domain that also deletes the old platform tables; dev data is rebuilt with `make seed`. Schedule definitions live in the store while the platform keeps only a thin index of what's due, written when a schedule is saved and rebuilt by the repair sweep from the store's triggers; firing re-reads the schedule under a row lock. Chats move as they are, owner and visibility columns included; phase 2's open chats (P2-01) drop them. Chat invocations become the store's general invocations table, with mention as their cause. Notifications keep pointing at the right organisation's approvals.
 
 [Spec](../../specs/phase-1-foundation.md)
 
@@ -8,7 +8,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Editing a schedule updates its due-index row, and an edit racing a claim drops that firing.
+- [ ] Editing a schedule updates its due-index row, a lost due row is rebuilt by the repair sweep (which reports it), and an edit racing a claim drops that firing.
 - [ ] The Scheduler page and each agent's and workflow's schedules work from the store.
 - [ ] Posting, mentions, run cards, the handoff and unread counts work from the store.
 - [ ] Approving, applying, expiring and cancelling schema change requests work from the store, and the chat or workflow run that asked resumes.

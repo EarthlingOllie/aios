@@ -188,7 +188,7 @@ only, not for other kinds of content.
   wherever it enters a model's context, whatever its verdict, in case Jev misclassifies.
 - **When.** Stored content is classified when it's written. Its verdict is kept on its row and
   copied onto its search item. Tool results are classified inline, as the tool returns.
-- **`query_data` results.** Text cells are classified in chunks (about 8 KB each), the chunks
+- **`query_data` results.** Text cells are classified in chunks of up to 4,000 characters, the chunks
   of one result in parallel within the timeout. A flagged cell is redacted to
   "[withheld: flagged by Jev]" rather than blocking the whole result. Rows from tables that
   carry a stored verdict of `clean`, `released` or `derived` aren't classified again; text from

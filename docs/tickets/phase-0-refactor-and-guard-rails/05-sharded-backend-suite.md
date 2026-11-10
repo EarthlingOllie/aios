@@ -23,7 +23,9 @@
 - [ ] A new test file with no recorded duration still runs, in some shard.
 - [ ] Lint, formatting and the migration check run once, in their own job, and shards don't
   repeat them.
-- [ ] A failing shard fails the gate. Branch protection needs only the checks job and the gate.
+- [ ] A failing shard fails the gate. Branch protection requires the checks job, the backend
+  gate, the frontend gate, the full-stack job and the Terraform job, as the spec sets out
+  (ticket 06 adds the frontend gate and the full-stack shards).
 - [ ] Changing the shard count is a one-line change.
 - [ ] New test dependencies are pinned exactly, per the dependency policy.
 - [ ] The testing docs page explains:
