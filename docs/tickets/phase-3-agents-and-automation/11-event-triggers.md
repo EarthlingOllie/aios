@@ -10,7 +10,7 @@ Editors and admins create document-ingested triggers, with filters, on the trigg
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [Phase 1 · 10: An invocation for every run, and turns as records](../phase-1-foundation/10-invocations-and-turns.md), [Phase 1 · 12: Run service: queue, mentioned turns, handoff, scheduler](../phase-1-foundation/12-run-service.md)
+**Blocked by:** [Phase 1 · 10: An invocation for every run, and turns as records](../phase-1-foundation/10-invocations-and-turns.md), [Phase 1 · 12: Run service: queue, mentioned turns, handoff, scheduler](../phase-1-foundation/12-run-service.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md)
 
 **Status:** ready-for-agent
 

@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md)
+**Blocked by:** [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md), [08: start_workflow tool](08-start-workflow.md), [12: More events: table written, schema applied, chat message, debounce, webhooks](12-more-events.md), [Phase 2 · 07: Notifications across organisations: mentions, replies, failures](../phase-2-organisation-experience/07-notifications.md)
 
 **Status:** ready-for-agent
 

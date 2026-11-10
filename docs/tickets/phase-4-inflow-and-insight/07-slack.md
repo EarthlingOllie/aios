@@ -9,7 +9,7 @@
 **Status:** ready-for-agent
 
 - [ ] Recorded responses cover new messages, thread replies, and edits and deletions inside and outside each re-read window, plus a full resync.
-- [ ] A channel removed from scope, archived, or left by the app has its items removed while other channels carry on, and the channel is flagged on the connector page.
+- [ ] A channel removed from scope, archived, or left by the app has its items removed while other channels carry on, and the channel is marked as needing attention on the connector page.
 - [ ] A rate-limited response slows the sync instead of failing it.
 - [ ] The scope picker explains that private channels must invite the app first.
 - [ ] Posting to a channel outside the tool's allowed list is refused and the model is told.

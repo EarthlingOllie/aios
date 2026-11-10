@@ -147,224 +147,227 @@ messages.
     the release in the audit log, so that a false alarm doesn't hide real content.
 31. As a member, I want an item Jev couldn't check yet kept out of search and retried by the next
     sync, so that nothing unchecked reaches an agent while Jev is unavailable.
+32. As an admin, I want a released item that changes at its source checked again, and to be told,
+    so that a release never covers content I haven't seen.
 
 ### URL, webhook and email sources
 
-32. As an admin, I want to add a web page as a source and have it re-fetched on a schedule, so
+33. As an admin, I want to add a web page as a source and have it re-fetched on a schedule, so
     that a public policy or price page stays current.
-33. As an admin, I want an unchanged page not to be re-ingested, so that schedules don't waste
+34. As an admin, I want an unchanged page not to be re-ingested, so that schedules don't waste
     work.
-34. As an admin, I want a URL that now returns "not found" or "gone" to have its document removed
+35. As an admin, I want a URL that now returns "not found" or "gone" to have its document removed
     while the source keeps trying, so that it behaves like a deletion.
-35. As an operator, I want URL sources unable to reach private, loopback, link-local or cloud
+36. As an operator, I want URL sources unable to reach private, loopback, link-local or cloud
     metadata addresses, even through redirects or DNS tricks, so that a source can't be used to
     probe our network.
-36. As an admin, I want a clear refusal when a URL isn't reachable from aios, so that I know why
+37. As an admin, I want a clear refusal when a URL isn't reachable from aios, so that I know why
     it can't be added.
-37. As an operator, I want URL fetches limited in size, redirects and time, so that one source
+38. As an operator, I want URL fetches limited in size, redirects and time, so that one source
     can't tie up a worker.
-38. As an admin, I want a webhook source with its own URL and secret, so that another system can
+39. As an admin, I want a webhook source with its own URL and secret, so that another system can
     push events into the store.
-39. As an admin, I want the webhook secret shown once and regenerable, so that it isn't exposed
+40. As an admin, I want the webhook secret shown once and regenerable, so that it isn't exposed
     by revisiting the page.
-40. As an operator, I want deliveries with bad signatures, or replays, rejected and stored
+41. As an operator, I want deliveries with bad signatures, or replays, rejected and stored
     nowhere, so that nobody can inject content without the secret.
-41. As an editor, I want every valid webhook delivery to fire the webhook-received event, so that
-    a workflow can react to it.
-42. As an admin, I want an email source with its own unguessable inbound address, so that people
+42. As an editor, I want every valid webhook delivery that Jev finds clean to fire the
+    webhook-received event, so that a workflow can react to it without reacting to planted
+    instructions.
+43. As an admin, I want an email source with its own unguessable inbound address, so that people
     can forward mail into the store.
-43. As an admin, I want email accepted only from senders I allow and only when it passes sender
+44. As an admin, I want email accepted only from senders I allow and only when it passes sender
     authentication, so that spoofed mail can't plant content.
-44. As a member, I want forwarded emails threaded and their attachments ingested as documents, so
+45. As a member, I want forwarded emails threaded and their attachments ingested as documents, so
     that a forwarded conversation is searchable whole.
-45. As an admin, I want to regenerate an email source's address, so that I can cut off an address
+46. As an admin, I want to regenerate an email source's address, so that I can cut off an address
     that leaked.
 
 ### Connectors
 
-46. As an admin, I want to connect Slack, Google Drive or GitHub from aios, so that their content
+47. As an admin, I want to connect Slack, Google Drive or GitHub from aios, so that their content
     comes in without exporting anything.
-47. As an admin, I want to see which connectors this deployment offers, and why any are
+48. As an admin, I want to see which connectors this deployment offers, and why any are
     unavailable, so that I'm not left guessing.
-48. As an admin, I want one connector per system in the organisation, so that there's one clear
+49. As an admin, I want one connector per system in the organisation, so that there's one clear
     connection to manage.
-49. As an admin, I want to choose exactly which channels, folders or repositories are synced, so
+50. As an admin, I want to choose exactly which channels, folders or repositories are synced, so
     that only what's relevant comes in.
-50. As an admin, I want items that are restricted at the source flagged when I pick them, and a
-    warning I must accept that everyone in the organisation will be able to search them, so that
-    I never share something private by accident.
-51. As a member, I want everything synced to be searchable by everyone in the organisation, so
+51. As an admin, I want items that are restricted at the source marked restricted when I pick
+    them, and a warning I must accept that everyone in the organisation will be able to search
+    them, so that I never share something private by accident.
+52. As a member, I want everything synced to be searchable by everyone in the organisation, so
     that the rules stay simple and match what the admin agreed to.
-52. As an admin, I want a connector whose access has been revoked to show "Reconnect" and stop
+53. As an admin, I want a connector whose access has been revoked to show "Reconnect" and stop
     syncing, so that it fails visibly.
-53. As an admin, I want reconnecting to carry on from where syncing stopped, so that nothing is
+54. As an admin, I want reconnecting to carry on from where syncing stopped, so that nothing is
     re-imported from scratch.
-54. As an admin, I want to remove a connector and choose between deleting its content and keeping
+55. As an admin, I want to remove a connector and choose between deleting its content and keeping
     it as ordinary documents, so that ending a connection doesn't force losing knowledge.
-55. As an admin, I want removing a connector to stop its syncs and tools immediately and revoke
+56. As an admin, I want removing a connector to stop its syncs and tools immediately and revoke
     its access at the provider, so that the connection is fully ended.
-56. As an operator, I want connector credentials encrypted in the platform database with their
+57. As an operator, I want connector credentials encrypted in the platform database with their
     own key, never in the store, so that agents querying the store can't reach them.
-57. As an operator, I want credentials never returned by the API, written to logs or traces, or
+58. As an operator, I want credentials never returned by the API, written to logs or traces, or
     shown to a model, so that one leak can't expose them.
-58. As an operator, I want each provider's app settings to be deployment configuration, and a
+59. As an operator, I want each provider's app settings to be deployment configuration, and a
     provider without them simply unavailable, so that a deployment offers only what it has set
     up.
-59. As an operator, I want to switch a provider off for the whole deployment at once, so that I
+60. As an operator, I want to switch a provider off for the whole deployment at once, so that I
     can respond to an incident without touching each organisation.
-60. As an operator, I want workers to reach only the hosts each enabled provider needs, so that a
+61. As an operator, I want workers to reach only the hosts each enabled provider needs, so that a
     compromised sync can't call arbitrary hosts.
-61. As a developer, I want a test provider with a scriptable change feed and listing, so that the
+62. As a developer, I want a test provider with a scriptable change feed and listing, so that the
     framework can be built and tested without third parties.
 
 ### Connector tools
 
-62. As an editor, I want each connector to appear in the agent editor's tool picker with its
+63. As an editor, I want each connector to appear in the agent editor's tool picker with its
     tools, so that I can give an agent exactly the actions it needs.
-63. As an editor, I want an agent version to pin the connector and the tool names it may use, so
+64. As an editor, I want an agent version to pin the connector and the tool names it may use, so
     that its behaviour doesn't change when the provider adds tools.
-64. As an editor, I want to limit each tool to chosen channels or repositories, so that an agent
+65. As an editor, I want to limit each tool to chosen channels or repositories, so that an agent
     can't post where it shouldn't.
-65. As an editor, I want saving an agent with another organisation's connector, or a tool the
+66. As an editor, I want saving an agent with another organisation's connector, or a tool the
     connector doesn't offer, refused, so that versions are always valid.
-66. As a participant, I want agents with connector tools to act when I mention them, so that I
+67. As a participant, I want agents with connector tools to act when I mention them, so that I
     can use what editors built.
-67. As an editor, I want **invocable by** to limit who can start an agent with outward-facing
+68. As an editor, I want **invocable by** to limit who can start an agent with outward-facing
     tools, so that I can keep sensitive agents to fewer people.
-68. As a member, I want every post, comment or issue an agent makes outside aios signed with the
+69. As a member, I want every post, comment or issue an agent makes outside aios signed with the
     agent's name, so that people at the other end know where it came from.
-69. As an admin, I want every outward action recorded in the audit log, with the agent, the
+70. As an admin, I want every outward action recorded in the audit log, with the agent, the
     target, the turn and who caused it, so that I can trace what happened.
-70. As an agent, I want to be told when a connector or one of my tools is unavailable, so that I
+71. As an agent, I want to be told when a connector or one of my tools is unavailable, so that I
     can say so instead of failing silently.
-71. As an editor, I want a tool that disappears at the provider to be left out of the turn and
+72. As an editor, I want a tool that disappears at the provider to be left out of the turn and
     logged, rather than failing the whole turn, so that the agent keeps working.
-72. As a member, I want agent versions that depend on a removed connector to refuse to start,
+73. As a member, I want agent versions that depend on a removed connector to refuse to start,
     with the reason, so that nothing runs half-equipped.
-73. As an operator, I want connector tool results capped in size, so that one huge response can't
+74. As an operator, I want connector tool results capped in size, so that one huge response can't
     overwhelm a turn.
-74. As an agent, I want a connector tool's result checked by Jev and wrapped as untrusted, and an
+75. As an agent, I want a connector tool's result checked by Jev and wrapped as untrusted, and an
     error instead when it's flagged or can't be checked, so that a tool result can't redirect me.
 
 ### Slack
 
-75. As an admin, I want to pick Slack channels from those the aios app can see, so that I only
+76. As an admin, I want to pick Slack channels from those the aios app can see, so that I only
     sync what I intend.
-76. As an admin, I want to be told a private channel must invite the aios app first, so that I
+77. As an admin, I want to be told a private channel must invite the aios app first, so that I
     know why it isn't listed.
-77. As a member, I want Slack messages and their thread replies synced with their channel, author
+78. As a member, I want Slack messages and their thread replies synced with their channel, author
     name and a link, so that answers can point back to the conversation.
-78. As a member, I want edits and deletions in recent Slack history reflected within a short
+79. As a member, I want edits and deletions in recent Slack history reflected within a short
     window, and older ones caught by the daily reconciliation, so that the store matches Slack.
-79. As an admin, I want a full resync to re-read everything, so that I can correct very old
+80. As an admin, I want a full resync to re-read everything, so that I can correct very old
     edits.
-80. As an admin, I want a channel removed from scope, archived, or left by the app to have its
+81. As an admin, I want a channel removed from scope, archived, or left by the app to have its
     messages removed, so that scope changes take effect.
-81. As an operator, I want Slack's rate limits honoured by slowing down rather than failing, so
+82. As an operator, I want Slack's rate limits honoured by slowing down rather than failing, so
     that large workspaces sync reliably.
-82. As an editor, I want a post-to-Slack tool limited to chosen channels, so that an agent can
+83. As an editor, I want a post-to-Slack tool limited to chosen channels, so that an agent can
     deliver results where the team works.
 
 ### Google Drive
 
-83. As an admin, I want to pick Drive folders, including shared drives, and have everything under
+84. As an admin, I want to pick Drive folders, including shared drives, and have everything under
     them synced, so that a whole area of documents comes in.
-84. As a member, I want Google Docs, Sheets and Slides exported to formats aios can read, so that
+85. As a member, I want Google Docs, Sheets and Slides exported to formats aios can read, so that
     native Google files are searchable.
-85. As an admin, I want unsupported and oversized files listed as skipped, so that I know what
+86. As an admin, I want unsupported and oversized files listed as skipped, so that I know what
     isn't in the store.
-86. As a member, I want files moved into a chosen folder added and files moved out removed, so
+87. As a member, I want files moved into a chosen folder added and files moved out removed, so
     that the scope means what it says.
-87. As a member, I want an edited Google Doc re-ingested promptly, so that answers use the latest
+88. As a member, I want an edited Google Doc re-ingested promptly, so that answers use the latest
     text.
-88. As an operator, I want Drive shown as unavailable until Google has verified the app for
+89. As an operator, I want Drive shown as unavailable until Google has verified the app for
     production, so that admins don't hit a consent error.
 
 ### GitHub
 
-89. As an admin, I want to install the aios GitHub App on chosen repositories and pick from them
+90. As an admin, I want to install the aios GitHub App on chosen repositories and pick from them
     in aios, so that access is limited by GitHub's own permissions.
-90. As a member, I want issues, pull requests and their comments synced, with state, labels,
+91. As a member, I want issues, pull requests and their comments synced, with state, labels,
     author and link, so that agents can answer questions about ongoing work.
-91. As an admin, I want to optionally sync README and docs files from the default branch, so that
+92. As an admin, I want to optionally sync README and docs files from the default branch, so that
     a project's documentation is searchable.
-92. As a member, I want transferred or deleted issues removed at reconciliation, so that the
+93. As a member, I want transferred or deleted issues removed at reconciliation, so that the
     store matches GitHub.
-93. As an editor, I want comment-on-issue and open-issue tools limited to chosen repositories, so
+94. As an editor, I want comment-on-issue and open-issue tools limited to chosen repositories, so
     that an agent can report findings where the engineers are.
 
 ### Insights
 
-94. As a member, I want an Insights page instead of "Coming soon", so that I can see how the
+95. As a member, I want an Insights page instead of "Coming soon", so that I can see how the
     organisation's agents are doing.
-95. As a member, I want turns and workflow runs over time with their success rate, grouped by
+96. As a member, I want turns and workflow runs over time with their success rate, grouped by
     agent, workflow or cause, so that I can spot trends and failures.
-96. As a member, I want tokens, tool calls and estimated cost by agent, workflow and cause, so
+97. As a member, I want tokens, tool calls and estimated cost by agent, workflow and cause, so
     that I can see what is expensive.
-97. As an admin, I want the cost shown clearly as an estimate, not a bill, so that nobody mistakes
+98. As an admin, I want the cost shown clearly as an estimate, not a bill, so that nobody mistakes
     it for invoicing.
-98. As an editor, I want the most used agents and tools, so that I know what to maintain and what
+99. As an editor, I want the most used agents and tools, so that I know what to maintain and what
     to retire.
-99. As an editor, I want the slowest workflows and nodes and where runs fail, with the latest
-    errors, so that I know where to improve.
-100. As an admin, I want approval waiting times and approval and rejection rates by kind, so that
+100. As an editor, I want the slowest workflows and nodes and where runs fail, with the latest
+     errors, so that I know where to improve.
+101. As an admin, I want approval waiting times and approval and rejection rates by kind, so that
      I can see whether approvals hold work up.
-101. As a member, I want chat activity (messages, mentions and their outcomes) by chat, so that I
+102. As a member, I want chat activity (messages, mentions and their outcomes) by chat, so that I
      can see where the organisation works with its agents.
-102. As an admin, I want storage against the caps over time, so that I can see growth before
+103. As an admin, I want storage against the caps over time, so that I can see growth before
      writes are refused.
-103. As an admin, I want source health on Insights, so that inflow problems are visible alongside
+104. As an admin, I want source health on Insights, so that inflow problems are visible alongside
      everything else.
-104. As a member, I want turns from before counts were kept shown as "not tracked" rather than
+105. As a member, I want turns from before counts were kept shown as "not tracked" rather than
      zero, so that history isn't misleading.
-105. As a member, I want a time range and grouping kept in the URL, so that I can share exactly
+106. As a member, I want a time range and grouping kept in the URL, so that I can share exactly
      the view I'm looking at.
-106. As an admin, I want usage by person shown only to admins unless I choose to show it to
+107. As an admin, I want usage by person shown only to admins unless I choose to show it to
      everyone, so that individual usage isn't exposed by default.
-107. As a member, I want to ask for a chart in words and get it drawn, so that I don't need SQL.
-108. As a member, I want to see the SQL behind any chart, so that I can trust or check it.
-109. As a member, I want to save a chart for the whole organisation, so that a useful view
+108. As a member, I want to ask for a chart in words and get it drawn, so that I don't need SQL.
+109. As a member, I want to see the SQL behind any chart, so that I can trust or check it.
+110. As a member, I want to save a chart for the whole organisation, so that a useful view
      becomes part of the page.
-110. As a member, I want a saved chart to re-run its query on current data when I open it, so
+111. As a member, I want a saved chart to re-run its query on current data when I open it, so
      that it never shows stale numbers.
-111. As a chart's creator or an admin, I want to rename or delete a saved chart, so that the page
+112. As a chart's creator or an admin, I want to rename or delete a saved chart, so that the page
      stays tidy.
-112. As an admin, I want chart saves and deletions in the audit log, so that changes to a shared
+113. As an admin, I want chart saves and deletions in the audit log, so that changes to a shared
      page are traceable.
-113. As a member, I want a chart that no longer works to say so and show its SQL, rather than
+114. As a member, I want a chart that no longer works to say so and show its SQL, rather than
      disappearing, so that someone can fix it.
-114. As an admin, I want charts unable to read message bodies, briefs, tool inputs and outputs,
+115. As an admin, I want charts unable to read message bodies, briefs, tool inputs and outputs,
      memory or synced text, enforced by the database, so that charts stay metrics whatever the
      model writes.
-115. As an operator, I want chart queries read-only, time-limited and capped in rows and bytes,
+116. As an operator, I want chart queries read-only, time-limited and capped in rows and bytes,
      so that one question can't load the store.
-116. As an operator, I want chart specs restricted to safe marks and transforms, with no external
+117. As an operator, I want chart specs restricted to safe marks and transforms, with no external
      data, links or expressions, so that a chart can't fetch from or send data anywhere.
-117. As a member, I want an invalid chart sent back to the agent once to fix before I see an
+118. As a member, I want an invalid chart sent back to the agent once to fix before I see an
      error, so that most questions just work.
-118. As an admin, I want chart questions rate-limited per person and charged to whoever asked,
+119. As an admin, I want chart questions rate-limited per person and charged to whoever asked,
      within their allowance and the organisation's budget, so that Insights can't run away with
      cost.
-119. As a member, I want panels cached briefly, so that the page is quick and repeated viewing
+120. As a member, I want panels cached briefly, so that the page is quick and repeated viewing
      doesn't re-run heavy queries.
-120. As a member, I want charts drawn in the app's light and dark themes, so that they're
+121. As a member, I want charts drawn in the app's light and dark themes, so that they're
      readable either way.
 
 ### Operating and developing
 
-121. As an operator, I want syncs to run on the ingest-and-sync lane under each organisation's
-     fair share, so that one organisation's big sync can't delay others.
-122. As an operator, I want only one sync per source running at a time, so that syncs never
+122. As an operator, I want syncs to run on the run service's `sources` lane under each
+     organisation's fair share, so that one organisation's big sync can't delay others.
+123. As an operator, I want only one sync per source running at a time, so that syncs never
      overlap or race.
-123. As an operator, I want sync records and storage samples pruned after configurable periods,
+124. As an operator, I want sync records and storage samples pruned after configurable periods,
      so that bookkeeping doesn't grow forever.
-124. As a developer, I want every limit and interval in this phase to be a setting with a generous
+125. As a developer, I want every limit and interval in this phase to be a setting with a generous
      default, so that real values can be set from real usage later.
-125. As a developer, I want each provider built against recorded responses, with no live calls in
+126. As a developer, I want each provider built against recorded responses, with no live calls in
      CI, so that tests are fast and stable.
-126. As a developer, I want a fake MCP connector server, so that the tool kind is tested against
+127. As a developer, I want a fake MCP connector server, so that the tool kind is tested against
      the real protocol without third parties.
-127. As a developer, I want the full-stack test to cover a source syncing, an answer from a synced
+128. As a developer, I want the full-stack test to cover a source syncing, an answer from a synced
      item, its removal, and a connector tool's audited action, so that the whole inflow loop is
      guarded.
 
@@ -410,7 +413,8 @@ the tool runtime, which is how connector tools find their connector and credenti
   - it leaves out names that have vanished, and records that in the run's events;
   - it leaves everything out, telling the model why, when the connector is paused, removing or
     needs reconnecting.
-- **Results** are tool results from outside, so phase 1's rule applies
+- **Results** are tool results from outside, not on phase 1's trusted list, so phase 1's rule
+  applies
   ([Phase 1 · 15](../tickets/phase-1-foundation/15-jev-classification.md)): each is classified by
   Jev inline and wrapped as untrusted. A flagged result, or one Jev can't check, reaches the agent
   as an error instead. Results are also capped.
@@ -418,7 +422,7 @@ the tool runtime, which is how connector tools find their connector and credenti
   the invocation, and a summary, without the content.
 
 **The MCP client** is new.
-- It uses MCP's streamable HTTP transport, inside executor and sync processes.
+- It uses MCP's streamable HTTP transport, inside run service and sync processes.
 - Providers use MCP for their tools where a maintained server exists. Bulk sync is always native.
   Which of Slack's and GitHub's tools go through MCP is settled per provider in the step plan,
   after confirming the official servers' availability and auth.
@@ -458,8 +462,8 @@ sample, so storage can be drawn over time.
   - A full listing (reconciliation) runs daily and on demand, to catch deletions a change feed
     misses.
   - One sync per source runs at a time; a second is skipped.
-  - Syncs run on the ingest-and-sync lane (D13) under fair claiming. *This replaces D2's mention of
-    a dedicated Celery queue with the D13 lane that the plan uses.*
+  - Syncs run on the run service's `sources` lane (D13, added in phase 3 step 3.7) under fair
+    claiming. *This replaces D2's mention of a dedicated Celery queue.*
 - **Health and failure.**
   - Health is derived from recent syncs: healthy, delayed, failing or needs reconnecting.
   - A source that fails several times in a row backs off to a slow retry and becomes `failing`.
@@ -471,12 +475,20 @@ sample, so storage can be drawn over time.
   when it writes it, and again when its content hash changes.
   - The verdict is stored on the synced item and copied onto its search item. File items are
     classified as documents by phase 1's ingest, and the document carries the verdict.
+  - Verdicts use phase 1's set: `awaiting_check`, `clean`, `flagged`, `released` (and `derived`,
+    which synced items never get).
   - **Flagged** items are stored with their verdict but left out of search and agents' context.
     They appear on phase 1's flagged list in Settings, where an admin can release one. A release
-    marks it trusted and is recorded in the audit log.
-  - **Awaiting check.** If Jev is down or slow, the item is stored as awaiting check and isn't
-    searchable. The next sync retries it, whether or not its content changed. The sync record
+    sets the verdict to `released` and is recorded in the audit log.
+  - **Awaiting check.** If Jev is down or slow, the item is stored as `awaiting_check` and isn't
+    searchable. The next sync retries it, whether or not its content changed; items with no next
+    sync (webhook and email items) are retried by phase 1's awaiting-check sweep. The sync record
     counts items still awaiting check.
+  - **Re-checking.** A released item whose content changes goes back to `awaiting_check`, and
+    admins are notified. Phase 1's re-check job, run when Jev's model or policy changes, covers
+    synced items too.
+  - **Events wait for a verdict.** `webhook.received` and `document.ingested` fire only when an
+    item is found `clean`. Releasing a flagged item makes it searchable but fires nothing.
   - Whatever the verdict, released items included, synced text reaches a model wrapped as
     untrusted.
 - **Connectors.**
@@ -507,15 +519,18 @@ sample, so storage can be drawn over time.
   - limited redirects, body size and time;
   - conditional requests, and storage only when the content hash changes;
   - "not found" and "gone" count as removal.
-- **Webhook sources** reuse the receiving endpoint and signature checks introduced for webhook
-  triggers in phase 3. Each valid delivery is stored as a message item and fires the
-  webhook-received event. Webhook items are never reconciled.
+- **Webhook sources** reuse the receiving endpoint, signature checks and Jev check introduced for
+  webhook triggers in phase 3. Each valid delivery is stored as a message item, and fires the
+  webhook-received event once Jev finds it clean. A flagged delivery is stored as flagged, fires
+  nothing, and answers 422; one Jev can't check answers 503 and isn't stored, so the caller
+  retries. Webhook items are never reconciled.
 - **Email sources** have:
   - an unguessable inbound address on a configured domain;
   - an allowed-senders list that is empty by default (nothing accepted);
   - a requirement to pass sender authentication (SPF or DKIM, as reported by the receiving
     service);
-  - threading by reply headers, with attachments becoming file items.
+  - threading by reply headers, with attachments becoming file items;
+  - Jev classification of each message before it's searchable, as for every synced item.
 
   They're available only where the deployment has an inbound mail service.
 - **Insights runs on metrics only.**
@@ -566,7 +581,7 @@ sample, so storage can be drawn over time.
 | --- | --- |
 | Sources | Kind (`upload`, `url`, `webhook`, `email`, `connector`), name, settings (never secrets), the connector (for kind `connector`), status (`active`, `paused`, `failing`, `needs_reauth`, `removing`), interval, cursor, last reconciliation, failure count, creator, timestamps. |
 | Connectors | Provider, name, scope (channels, folders or repositories), status, creator, timestamps. Unique per provider. |
-| Synced items | Source, external id (unique per source), parent item, kind (`message` or `file`), title, URL, author name as the source gives it, time updated at the source, content hash, text (message items), document (file items), Jev verdict (`awaiting_check`, `trusted`, `flagged`; released items become `trusted`), last seen, timestamps. |
+| Synced items | Source, external id (unique per source), parent item, kind (`message` or `file`), title, URL, author name as the source gives it, time updated at the source, content hash, text (message items), document (file items), Jev verdict (`awaiting_check`, `clean`, `flagged` or `released`), last seen, timestamps. |
 | Source syncs | Source, kind (`incremental`, `full`, `manual`), status, start, finish, counts (added, updated, removed, skipped, dropped), error. Pruned after a configurable history period. |
 | Documents (changed) | Gains a required source (Uploads for uploads) and, for file items, a synced item. |
 | Insight charts | Title, the question asked, SQL, spec, creator, timestamps. |
@@ -604,7 +619,7 @@ All routes are under the organisation's path (from phase 0). Errors follow exist
 - **Callback:** a single route, not organisation-scoped, because providers need a fixed redirect
   address. It validates the signed `state` against the session, returning 400 for a bad or expired
   state and 403 for a mismatched session.
-- **Scope options:** searchable, with restricted-at-source flags.
+- **Scope options:** searchable, with items restricted at the source marked restricted.
 - **Set scope:** a 422 if restricted items are picked without acknowledgement.
 - **Tools:** names, descriptions and input schemas, for the agent editor. A 409 when the connector
   needs reconnecting.
@@ -719,7 +734,10 @@ override it there.
 
 ### Rollout order
 
-Each step ships as one change, and development data is rebuilt with `make seed`.
+Each step ships as one change, and development data is rebuilt with `make seed`. Sources, sync
+and connectors (4.1 and 4.2) can run alongside phase 3 once its lanes (3.7) are in; URL, webhook
+and email sources need phase 3's more events (3.6), Insights panels its approvals (3.4), and
+Insights charts its budgets (3.5).
 
 1. **4.1a:**
    - the platform credential and storage-sample tables;
@@ -730,8 +748,9 @@ Each step ships as one change, and development data is rebuilt with `make seed`.
 2. **4.1b:** the `connector` tool kind and the MCP client. Email sources, where inbound mail can
    be configured.
 3. **4.2a GitHub**, then **4.2b Slack**, then **4.2c Google Drive** (gated on verification).
-4. **4.3a Insights panels:** the `insights` views and role. Can ship any time after step 1.6.
-5. **4.3b Insights charts:** the insights agent, asking, saved charts, and the chart runtime.
+4. **4.3a Insights panels:** the `insights` views and role, after phase 3's approvals.
+5. **4.3b Insights charts:** the insights agent, asking, saved charts, and the chart runtime,
+   after phase 3's budgets.
 
 **Undoing.**
 - Removing a provider from the enabled list stops its syncs and tools at once and leaves its data.
@@ -763,13 +782,14 @@ is prior art. Through it:
   with the scripted model returning SQL and specs; per-person visibility; rate limiting.
 
 **The sync worker entry point.** Syncs aren't reachable over HTTP, so tests call "run one sync of
-this source" directly, as workflow run tests call the run executor's entry. Through it:
+this source" directly, as workflow run tests call the run service's entry. Through it:
 - cursor resume after a failure part-way;
 - hash skipping;
 - reconciliation removals;
 - Jev verdicts, with phase 1's fake classifier: a flagged item stored but not searchable, and
   searchable once an admin releases it; an item awaiting check while the fake is down, retried
-  and searchable at the next sync;
+  and searchable at the next sync; a released item that changes going back to awaiting check;
+  events firing only for clean items;
 - the storage cap;
 - backoff into `failing`;
 - `needs_reauth` on a final 401;
@@ -852,14 +872,14 @@ exchanges, with no live calls in CI. The recordings cover:
     ([Phase 1 · 15](../tickets/phase-1-foundation/15-jev-classification.md));
   - roles and the audit log;
   - invocations for every cause and the usage ledger (Insights' main source);
-  - the executor and fair queue.
+  - the run service and its fair queue.
 - **[Phase 2](phase-2-organisation-experience.md):** notifications, and the organisation assistant
   that answers from synced items.
 - **[Phase 3](phase-3-agents-and-automation.md):**
-  - approvals (the approvals panel);
-  - budgets and allowances (charging chart questions);
-  - event triggers and the webhook receiving endpoint;
-  - the ingest-and-sync lane.
+  - approvals (the approvals panel; Phase 3 · 07);
+  - budgets and allowances (charging chart questions; Phase 3 · 10);
+  - event triggers and the webhook receiving endpoint, with its Jev check (Phase 3 · 12);
+  - the run service's `sources` lane (Phase 3 · 13).
 
 **Risks.**
 - Google's verification can take weeks and gates Drive in production. Apply at the start of 4.1.
@@ -883,3 +903,9 @@ exchanges, with no live calls in CI. The recordings cover:
    than blocking step 4.1.
 5. **Deleting synced documents** stays refused. Remove the item at its source instead.
 6. **Costs** on Insights are estimates in pounds sterling (GBP).
+7. **Jev for synced items** (settled in review). Every synced item, webhook and email ones
+   included, is classified before it's searchable or fires an event. Verdicts use phase 1's set.
+   A released item that changes is checked again and admins are told.
+8. **Phase 3 first, in part** (settled in review). Insights panels wait for phase 3's approvals,
+   charts for its budgets, and URL, webhook and email sources for its more events. The rest of
+   4.1 and 4.2 can run alongside phase 3.

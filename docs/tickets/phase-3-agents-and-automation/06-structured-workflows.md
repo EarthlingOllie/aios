@@ -10,7 +10,7 @@ The editor gets fields for schemas, templates and conditions (with a simple buil
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [Phase 1 · 13: Workflows node by node; approvals resume there; workflow worker removed](../phase-1-foundation/13-workflows-node-by-node.md)
+**Blocked by:** [Phase 1 · 13: Workflows node by node; approvals resume there; workflow worker removed](../phase-1-foundation/13-workflows-node-by-node.md), [Phase 1 · 15: Jev: classify untrusted content](../phase-1-foundation/15-jev-classification.md)
 
 **Status:** ready-for-agent
 
@@ -21,5 +21,6 @@ The editor gets fields for schemas, templates and conditions (with a simple buil
 - [ ] Saving rejects conditions that use operators outside the allowed subset, exceed the size cap, or read fields missing from the declared schemas.
 - [ ] Diamond, all-skipped and only-final-node-skipped graphs behave as specified, and skips propagate.
 - [ ] A condition that errors fails the run, naming the edge.
+- [ ] A node output passed to a later agent node, templated or not, reaches its model wrapped as untrusted (verdict `derived`).
 - [ ] Resuming a paused run rebuilds its skips and condition results from recorded steps.
 - [ ] Workflows without schemas, templates or conditions behave exactly as today, and the existing workflow run tests pass unchanged.

@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-4-inflow-and-insight.md)
 
-**Blocked by:** [03: URL, webhook and email sources](03-url-webhook-email-sources.md), [04: Connectors: credentials, allowlist, choosing what syncs, removal](04-connectors.md), [05: Connector tools and the MCP client](05-connector-tools-and-mcp.md), [09: Insights page and every panel](09-insights.md)
+**Blocked by:** [03: URL, webhook and email sources](03-url-webhook-email-sources.md), [04: Connectors: credentials, allowlist, choosing what syncs, removal](04-connectors.md), [05: Connector tools and the MCP client](05-connector-tools-and-mcp.md), [09: Insights page and every panel](09-insights.md), [Phase 2 · 06: Organisation assistant and default chat agents](../phase-2-organisation-experience/06-organisation-assistant.md)
 
 **Status:** ready-for-agent
 

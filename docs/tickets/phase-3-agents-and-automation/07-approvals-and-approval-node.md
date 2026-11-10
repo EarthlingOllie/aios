@@ -1,6 +1,6 @@
 # 07: Approvals as one concept, and the approval node
 
-**What to build:** Schema changes and workflow sign-offs become one concept: the **approval**.
+**What to build:** Schema changes and workflow approval steps become one concept: the **approval**.
 
 - **One mechanism.** The waiting, notification, expiry, cancellation and resume behaviour is extracted from schema change requests and shared.
 - **One list.** The Data page's Changes tab becomes the Approvals list, covering both kinds.
@@ -8,7 +8,7 @@
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [06: Structured workflows: typed I/O, templates, conditional edges](06-structured-workflows.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md), [Phase 2 · 07: Notifications across organisations: mentions, replies, failures](../phase-2-organisation-experience/07-notifications.md)
+**Blocked by:** [06: Structured workflows: typed I/O, templates, conditional edges](06-structured-workflows.md), [Phase 2 · 07: Notifications across organisations: mentions, replies, failures](../phase-2-organisation-experience/07-notifications.md)
 
 **Status:** ready-for-agent
 

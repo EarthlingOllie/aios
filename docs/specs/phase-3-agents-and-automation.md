@@ -36,7 +36,7 @@ still don't behave like team members, and the organisation can't automate around
     list.
   - There's no way to branch ("escalate if the score is high, otherwise archive").
   - The only pause for a person is a schema change. A workflow can't stop and ask an admin to
-    sign off a spend.
+    approve a spend.
   - An agent can't start a workflow.
 - **Automation can only start on a timer.** An editor can't say "when a new document lands,
   summarise it", "when the leads table changes, enrich it", "when someone writes 'outage' in
@@ -51,14 +51,14 @@ still don't behave like team members, and the organisation can't automate around
 - **There is no ceiling on spend.** Phase 1 added per-turn caps and mention limits, but nothing
   stops a month's usage running away. A participant who mentions agents all day, or an event
   trigger that fires on every message, has no bound.
-- **Schema changes and sign-offs are two systems.** The schema change list on the Data page will
+- **Schema changes and other approvals are two systems.** The schema change list on the Data page will
   sit beside a second kind of decision once workflows can pause, unless the two are one.
 
 ### Operators and developers
 
-- **Every kind of work queues together.** After phase 1, every agent turn runs on a fair
-  executor pool. But a burst of background work (200 schedules at 09:00, a flood of events) still
-  competes with a person waiting for a reply.
+- **Syncs have nowhere fair to run.** After phase 1, agent turns run on the run service, with
+  capacity reserved for people waiting in chat. Phase 4's syncs will need a lane of their own
+  there, so one organisation's big sync neither delays chat nor starves another organisation.
 - **Maintenance is one lane.** Urgent maintenance (applying an approved change someone is
   waiting on) shares a single worker with routine sweeps.
 - **Nothing scales with load.**
@@ -126,7 +126,7 @@ still don't behave like team members, and the organisation can't automate around
 
 ### Capacity
 
-- Interactive work (someone waiting in a chat) has reserved capacity and goes first.
+- Phase 4's syncs get their own lane on the run service.
 - Urgent maintenance has its own lane.
 - Workers scale up with queued work and back down when idle.
 
@@ -190,293 +190,297 @@ still don't behave like team members, and the organisation can't automate around
     that my memory stays clean.
 26. As an agent, I want to be told when I'm at my memory limit, so that I can forget something
     before I remember more.
-27. As a member, I want memories an agent learns in any chat, or in runs with no conversation,
+27. As an agent, I want `remember` refused with an error when Jev flags the text or can't check
+    it, so that planted instructions can't become a memory I recall later.
+28. As a member, I want memories an agent learns in any chat, or in runs with no conversation,
     to be available wherever the agent works, so that shared knowledge is actually shared.
-28. As an editor, I want to see an agent's memories on a Memory tab, with where each was learned,
+29. As an editor, I want to see an agent's memories on a Memory tab, with where each was learned,
     so that I understand why it behaves as it does.
-29. As an editor, I want to edit or delete an agent's memories, so that I can correct what it got
+30. As an editor, I want to edit or delete an agent's memories, so that I can correct what it got
     wrong.
-30. As an admin, I want edits and deletions of memories recorded in the audit log, so that
+31. As an admin, I want edits and deletions of memories recorded in the audit log, so that
     changes are accountable.
-31. As an editor, I want an agent's memories kept when it's archived and back when it's
+32. As an editor, I want an agent's memories kept when it's archived and back when it's
     unarchived, so that archiving doesn't wipe what it knows.
-32. As an admin, I want memories never pruned by retention, so that agents don't lose knowledge
+33. As an admin, I want memories never pruned by retention, so that agents don't lose knowledge
     because old chats were pruned.
-33. As an editor, I want memories left out of agent exports, so that what an agent learned in
+34. As an editor, I want memories left out of agent exports, so that what an agent learned in
     one organisation never travels to another.
-34. As an editor, I want an agent version without the remember tool to still recall its existing
+35. As an editor, I want an agent version without the remember tool to still recall its existing
     memories, so that removing the tool stops new memories without losing old ones.
 
 ### Table ownership and per-agent roles (3.3)
 
-35. As an editor, I want the agent whose schema change created a table to own it automatically,
+36. As an editor, I want the agent whose schema change created a table to own it automatically,
     so that every new table has someone responsible for it.
-36. As an editor, I want only a table's owner and the agents it's shared with to write it, so
+37. As an editor, I want only a table's owner and the agents it's shared with to write it, so
     that one agent can't overwrite another's data.
-37. As an agent, I want to read every table, so that I can use the organisation's data while
+38. As an agent, I want to read every table, so that I can use the organisation's data while
     only writing my own.
-38. As an agent, I want a refused write to tell me who owns the table, so that I can explain to
+39. As an agent, I want a refused write to tell me who owns the table, so that I can explain to
     people what's needed.
-39. As an editor, I want to share write access to a table with another agent, so that two agents
+40. As an editor, I want to share write access to a table with another agent, so that two agents
     can maintain it together.
-40. As an editor, I want to unshare a table, so that an agent that shouldn't write it any more
+41. As an editor, I want to unshare a table, so that an agent that shouldn't write it any more
     can't.
-41. As an editor, I want to transfer a table to another agent, so that ownership follows whoever
+42. As an editor, I want to transfer a table to another agent, so that ownership follows whoever
     now maintains it.
-42. As an admin, I want approval rules to be able to require an admin for ownership changes, so
+43. As an admin, I want approval rules to be able to require an admin for ownership changes, so
     that sensitive tables can't be handed over casually.
-43. As an admin, I want every share, unshare and transfer recorded in the audit log, so that I
+44. As an admin, I want every share, unshare and transfer recorded in the audit log, so that I
     can see who gave which agent access.
-44. As an editor, I want a table whose owner is archived to become read-only, including for the
+45. As an editor, I want a table whose owner is archived to become read-only, including for the
     agents it was shared with, so that nothing writes it without a responsible owner.
-45. As an editor, I want the archive dialog to list the tables that will become read-only, so
+46. As an editor, I want the archive dialog to list the tables that will become read-only, so
     that I know what archiving affects.
-46. As an editor, I want the Data page to show each table's owner, who it's shared with, and
+47. As an editor, I want the Data page to show each table's owner, who it's shared with, and
     when its owner is archived, so that access is visible at a glance.
-47. As an editor, I want access changes to show as pending until the database has applied them,
+48. As an editor, I want access changes to show as pending until the database has applied them,
     so that I know when they take effect.
-48. As an editor, I want tables with no owner to stay writable by any agent, and marked "No
+49. As an editor, I want tables with no owner to stay writable by any agent, and marked "No
     owner", so that agents keep working until someone assigns one.
-49. As an editor, I want to assign an owner to an unowned table, so that I can tighten access
+50. As an editor, I want to assign an owner to an unowned table, so that I can tighten access
     when I'm ready.
-50. As an editor, I want a dropped and restored table to keep its owner and shares, so that
+51. As an editor, I want a dropped and restored table to keep its owner and shares, so that
     restoring doesn't reset access.
-51. As an admin, I want the database itself to refuse a write by an agent that doesn't own or
+52. As an admin, I want the database itself to refuse a write by an agent that doesn't own or
     share the table, so that a bug in the application can't bypass ownership.
-52. As an admin, I want SQL written by a model to run only as a role that can't write anything,
+53. As an admin, I want SQL written by a model to run only as a role that can't write anything,
     so that no query an agent writes can change data.
-53. As an admin, I want an agent's database login unable to switch to any other role, so that
+54. As an admin, I want an agent's database login unable to switch to any other role, so that
     an agent can't borrow another's access.
-54. As an admin, I want an agent's database login unable to reach any other organisation's store
+55. As an admin, I want an agent's database login unable to reach any other organisation's store
     or the platform database, so that isolation between organisations holds.
-55. As an agent, I want a write to a table whose access is still being set up to tell me to try
+56. As an agent, I want a write to a table whose access is still being set up to tell me to try
     again shortly, so that a timing gap doesn't fail my turn.
-56. As an operator, I want agents' database logins to go through the pooler with their own
+57. As an operator, I want agents' database logins to go through the pooler with their own
     connection limits, so that many agents don't exhaust a store's connections.
-57. As an operator, I want each agent's database password generated, encrypted at rest, and sent
+58. As an operator, I want each agent's database password generated, encrypted at rest, and sent
     to Postgres only as a verifier, so that credentials never appear in logs.
-58. As an operator, I want archiving an agent to close its connections and revoke its grants, so
+59. As an operator, I want archiving an agent to close its connections and revoke its grants, so
     that an archived agent holds nothing open.
-59. As a member, I want an agent's own database role able to read chats, briefs, run messages
+60. As a member, I want an agent's own database role able to read chats, briefs, run messages
     and memory but never write them, so that conversation history changes only through aios.
-60. As a developer, I want an adversarial test suite that tries every known way to escape an
+61. As a developer, I want an adversarial test suite that tries every known way to escape an
     agent's database role, required to pass before merging, so that a change to grants can never
     silently open a hole.
 
 ### Structured workflows (3.4)
 
-61. As an editor, I want to declare a JSON Schema for a workflow's input, so that every run
+62. As an editor, I want to declare a JSON Schema for a workflow's input, so that every run
     starts with the data it expects.
-62. As an editor, I want a run with input that doesn't fit the schema to be refused with the
+63. As an editor, I want a run with input that doesn't fit the schema to be refused with the
     validation errors, so that bad input never starts a run.
-63. As an editor, I want the start-run form to be generated from the input schema, so that
+64. As an editor, I want the start-run form to be generated from the input schema, so that
     people fill in fields rather than writing JSON.
-64. As an editor, I want to declare an output schema for an agent node, so that it returns
+65. As an editor, I want to declare an output schema for an agent node, so that it returns
     structured data the next node can use.
-65. As an editor, I want an agent node's structured output validated, with one retry that shows
+66. As an editor, I want an agent node's structured output validated, with one retry that shows
     the model what was wrong, so that occasional slips don't fail the run.
-66. As an editor, I want a node whose structured output still doesn't validate to fail with the
+67. As an editor, I want a node whose structured output still doesn't validate to fail with the
     path and message, so that I can fix the prompt or schema.
-67. As an editor, I want to build a node's input from named fields of its predecessors and the
+68. As an editor, I want to build a node's input from named fields of its predecessors and the
     run input, so that each node gets exactly what it needs.
-68. As an editor, I want saving to refuse a template that refers to a node that isn't a
+69. As an editor, I want saving to refuse a template that refers to a node that isn't a
     predecessor, so that mistakes are caught before a run.
-69. As an editor, I want a run to fail, naming the missing field, when a template refers to a
+70. As an editor, I want a run to fail, naming the missing field, when a template refers to a
     field a predecessor didn't produce, so that I know which node to fix.
-70. As an editor, I want nodes without templates to get their input as today, so that existing
+71. As an editor, I want nodes without templates to get their input as today, so that existing
     workflows keep working unchanged.
-71. As an editor, I want to declare a workflow output schema that the final output is checked
+72. As an editor, I want to declare a workflow output schema that the final output is checked
     against, so that whatever consumes the result can rely on its shape.
-72. As an editor, I want a workflow with several final nodes to output an object keyed by node,
+73. As an editor, I want a workflow with several final nodes to output an object keyed by node,
     so that every final result is kept.
-73. As an editor, I want to put a condition on an edge, so that the workflow branches on a
+74. As an editor, I want to put a condition on an edge, so that the workflow branches on a
     node's output.
-74. As an editor, I want conditions to be simple data, not code, so that nothing anyone writes
+75. As an editor, I want conditions to be simple data, not code, so that nothing anyone writes
     is ever executed.
-75. As an editor, I want saving to check that the fields a condition reads exist in the source
+76. As an editor, I want saving to check that the fields a condition reads exist in the source
     node's schema, so that typos are caught early.
-76. As an editor, I want a simple builder for comparing one field with a value, with a raw editor
+77. As an editor, I want a simple builder for comparing one field with a value, with a raw editor
     for anything more, so that common branches are easy to set up.
-77. As an editor, I want a node that no active path reaches to be skipped, and everything only
+78. As an editor, I want a node that no active path reaches to be skipped, and everything only
     downstream of it skipped too, so that branches don't leave nodes hanging.
-78. As an editor, I want a node fed by several branches to run when any of them reaches it, with
+79. As an editor, I want a node fed by several branches to run when any of them reaches it, with
     only those branches' outputs, so that branches can rejoin.
-79. As an editor, I want a run in which no final node ran to succeed with "No final step ran",
+80. As an editor, I want a run in which no final node ran to succeed with "No final step ran",
     so that an all-skipped path is visible rather than an error.
-80. As an editor, I want a condition that can't be evaluated to fail the run, naming the edge,
+81. As an editor, I want a condition that can't be evaluated to fail the run, naming the edge,
     so that I can fix it.
-81. As an editor, I want workflows without conditions to behave exactly as before, so that
+82. As an editor, I want workflows without conditions to behave exactly as before, so that
     adding the feature doesn't change existing automations.
-82. As a member, I want skipped steps shown greyed on the run page, with structured outputs
+83. As a member, I want skipped steps shown greyed on the run page, with structured outputs
     formatted, so that I can follow which path a run took.
-83. As a developer, I want a resumed run to rebuild its skips and condition results from its
+84. As a developer, I want a resumed run to rebuild its skips and condition results from its
     recorded steps, so that resuming never re-takes a different path.
 
 ### Approvals and the approval node (3.4)
 
-84. As an editor, I want an approval node that pauses a workflow until a person decides, so that
-    risky steps get a human sign-off.
-85. As an editor, I want to set which role decides an approval node, so that spending sign-offs
+85. As an editor, I want an approval node that pauses a workflow until a person decides, so that
+    risky steps get a human approval.
+86. As an editor, I want to set which role decides an approval node, so that spending approvals
     go to admins and routine checks to editors.
-86. As an editor, I want the approval node's prompt to be built from its input, so that the
+87. As an editor, I want the approval node's prompt to be built from its input, so that the
     approver sees exactly what they're being asked to approve.
-87. As an editor, I want to branch on the approval's outcome, so that a rejection can notify the
+88. As an editor, I want to branch on the approval's outcome, so that a rejection can notify the
     requester and an approval can carry on.
-88. As an editor, I want an undecided approval to expire as a rejection after a set time, so that
+89. As an editor, I want an undecided approval to expire as a rejection after a set time, so that
     runs don't wait forever.
-89. As an editor, I want to set an approval node's own expiry, so that urgent sign-offs time out
+90. As an editor, I want to set an approval node's own expiry, so that urgent approvals time out
     sooner.
-90. As an admin, I want to be notified only of approvals I'm allowed to decide, so that my
+91. As an admin, I want to be notified only of approvals I'm allowed to decide, so that my
     notifications are actionable.
-91. As an admin, I want schema changes and approval steps in one Approvals list, filterable by
+92. As an admin, I want schema changes and approval steps in one Approvals list, filterable by
     kind and status, so that I have one place to make decisions.
-92. As an approver, I want to see the full reason and input of an approval, so that I can
+93. As an approver, I want to see the full reason and input of an approval, so that I can
     decide well.
-93. As an approver, I want decide buttons only on approvals I may decide, so that I'm not
+94. As an approver, I want decide buttons only on approvals I may decide, so that I'm not
     offered actions that will be refused.
-94. As an approver, I want dropping data still to need the table names typed, so that
+95. As an approver, I want dropping data still to need the table names typed, so that
     destructive approvals stay deliberate.
-95. As an admin, I want every decision recorded in the audit log, so that sign-offs are
+96. As an admin, I want every decision recorded in the audit log, so that approvals are
     accountable.
-96. As a member, I want cancelling a workflow run to cancel its pending approvals and clear
+97. As a member, I want cancelling a workflow run to cancel its pending approvals and clear
     their notifications, so that nobody is asked to decide something no longer needed.
-97. As a developer, I want schema changes and approval steps to share the waiting, expiry,
+98. As a developer, I want schema changes and approval steps to share the waiting, expiry,
     notification and resume code, so that a fix to one fixes both.
 
 ### Starting workflows from agents (3.4)
 
-98. As an editor, I want to give an agent a tool that starts specific workflows, so that an
+99. As an editor, I want to give an agent a tool that starts specific workflows, so that an
     agent can hand a structured task to an automation.
-99. As an agent, I want the tool's description to list the workflows I may start, with their
-    input schemas, so that I call them correctly.
-100. As an agent, I want a quick workflow's output returned straight to me, so that I can use it
+100. As an agent, I want the tool's description to list the workflows I may start, with their
+     input schemas, so that I call them correctly.
+101. As an agent, I want a quick workflow's output returned straight to me, so that I can use it
      in the same turn.
-101. As a participant, I want a slow workflow's result posted to our conversation when it ends,
+102. As a participant, I want a slow workflow's result posted to our conversation when it ends,
      so that I get the answer without the agent waiting.
-102. As an editor, I want a slow workflow started from a run with no conversation to deliver its
+103. As an editor, I want a slow workflow started from a run with no conversation to deliver its
      result to the trigger's chat, or else only to its run page, so that results always land
      somewhere sensible.
-103. As an agent, I want a refusal (wrong input, budget, invocable by, an archived workflow)
+104. As an agent, I want a refusal (wrong input, budget, invocable by, an archived workflow)
      returned as the tool's result, so that I can explain it rather than failing.
-104. As an admin, I want an agent starting a workflow that's already running in its chain of
+105. As an admin, I want an agent starting a workflow that's already running in its chain of
      causes to be refused, so that agents can't loop through workflows.
-105. As an admin, I want chains of causes to have a maximum depth, so that indirect loops are
+106. As an admin, I want chains of causes to have a maximum depth, so that indirect loops are
      cut too.
-106. As an editor, I want an archived workflow in an agent's allowed list to refuse only that
+107. As an editor, I want an archived workflow in an agent's allowed list to refuse only that
      call, so that the agent stays usable for its other workflows.
 
 ### Budgets (3.5)
 
-107. As an admin, I want to set a monthly budget for the organisation, so that spending has a
+108. As an admin, I want to set a monthly budget for the organisation, so that spending has a
      ceiling.
-108. As an admin, I want to be warned once when spending reaches 80% of the budget, so that I can
+109. As an admin, I want to be warned once when spending reaches 80% of the budget, so that I can
      act before work is refused.
-109. As an admin, I want to be told when the budget is reached, so that I know why work is being
+110. As an admin, I want to be told when the budget is reached, so that I know why work is being
      refused.
-110. As an admin, I want new work refused at 100% before any model call, so that the refusal
+111. As an admin, I want new work refused at 100% before any model call, so that the refusal
      itself costs nothing.
-111. As a participant, I want work already under way to finish when the budget is reached, so
+112. As a participant, I want work already under way to finish when the budget is reached, so
      that nothing is cut off mid-reply.
-112. As a member, I want a refused mention or trigger to say the budget was reached, so that I
+113. As a member, I want a refused mention or trigger to say the budget was reached, so that I
      understand what happened.
-113. As an admin, I want to set default monthly allowances per role, so that participants can't
+114. As an admin, I want to set default monthly allowances per role, so that participants can't
      spend as much as builders.
-114. As an admin, I want to override a person's allowance, so that heavy users can be given more.
-115. As an admin, I want allowances charged to whoever started the chain of causes, including
+115. As an admin, I want to override a person's allowance, so that heavy users can be given more.
+116. As an admin, I want allowances charged to whoever started the chain of causes, including
      through triggers fired by their messages and workflows their mentions started, so that
      indirect spending is counted.
-116. As an admin, I want schedules and events with no person behind them to count only against
+117. As an admin, I want schedules and events with no person behind them to count only against
      the organisation budget, so that automation isn't charged to whoever set it up.
-117. As an admin, I want this month's spend shown against the budget and each person's
+118. As an admin, I want this month's spend shown against the budget and each person's
      allowance, so that I can see where money goes.
-118. As an admin, I want budget changes to take effect at once and be audited, so that raising a
+119. As an admin, I want budget changes to take effect at once and be audited, so that raising a
      limit unblocks work straight away and accountably.
-119. As an operator, I want budget checks to read running totals rather than summing the ledger,
+120. As an operator, I want budget checks to read running totals rather than summing the ledger,
      with a nightly reconciliation, so that checks stay fast and correct.
-120. As an admin, I want everything to work as before when no budget is set, so that budgets are
+121. As an admin, I want everything to work as before when no budget is set, so that budgets are
      opt-in.
 
 ### Event triggers (3.6)
 
-121. As an editor, I want a trigger that fires when a document has been ingested, so that new
+122. As an editor, I want a trigger that fires when a document has been ingested, so that new
      documents are summarised or filed automatically.
-122. As an editor, I want to filter document events by source and file type, so that only the
+123. As an editor, I want to filter document events by source and file type, so that only the
      documents I care about start runs.
-123. As an editor, I want a trigger that fires when a data table is written, filtered by table
+124. As an editor, I want a trigger that fires when a data table is written, filtered by table
      and operation, so that changes to data drive follow-up work.
-124. As an editor, I want a trigger that fires when a schema change is applied, so that a new
+125. As an editor, I want a trigger that fires when a schema change is applied, so that a new
      table can be populated automatically.
-125. As an editor, I want a trigger that fires on messages in a chat, filtered by author kind,
+126. As an editor, I want a trigger that fires on messages in a chat, filtered by author kind,
      mentions and keywords, so that automations can watch a conversation.
-126. As an editor, I want keyword filters to match whole words, ignoring case, so that "outage"
+127. As an editor, I want keyword filters to match whole words, ignoring case, so that "outage"
      doesn't match "outages".
-127. As an editor, I want a webhook trigger with its own URL and secret, so that an external
+128. As an editor, I want a webhook trigger with its own URL and secret, so that an external
      system can start a workflow.
-128. As an editor, I want the webhook secret shown once and rotatable, so that a leaked secret
+129. As an editor, I want the webhook secret shown once and rotatable, so that a leaked secret
      can be replaced.
-129. As an editor, I want a webhook payload checked against the workflow's input schema, so that
+130. As an editor, I want a webhook payload checked against the workflow's input schema, so that
      malformed calls never start a run.
-130. As an operator, I want webhooks to reject bad signatures, stale timestamps, oversized or
+131. As an operator, I want webhooks to reject bad signatures, stale timestamps, oversized or
      non-JSON bodies, and repeated delivery ids, so that the public endpoint can't be abused or
      replayed.
-131. As an operator, I want the webhook endpoint rate limited per trigger, so that one caller
+132. As an admin, I want each webhook body checked by Jev before anything fires, and refused when
+     it's flagged or can't be checked, so that an outside caller can't plant instructions.
+133. As an operator, I want the webhook endpoint rate limited per trigger, so that one caller
      can't flood an organisation.
-132. As an editor, I want to gather a burst of matching events into one run after a set window,
+134. As an editor, I want to gather a burst of matching events into one run after a set window,
      so that 30 writes in a minute start one run, not 30.
-133. As an editor, I want a batch capped in size, with a count of what was left out, so that a
+135. As an editor, I want a batch capped in size, with a count of what was left out, so that a
      flood doesn't build an enormous input.
-134. As an editor, I want an event-started agent run to be its own run on the agent's current
+136. As an editor, I want an event-started agent run to be its own run on the agent's current
      version, so that it doesn't interfere with the agent's conversations.
-135. As an editor, I want an event-started workflow's input built from a template over the event,
+137. As an editor, I want an event-started workflow's input built from a template over the event,
      or the event itself when there's no template, so that runs get the data they need.
-136. As an admin, I want a trigger never to fire on events its own target caused, unless the
+138. As an admin, I want a trigger never to fire on events its own target caused, unless the
      editor explicitly allows it, so that an agent writing a table doesn't re-trigger itself.
-137. As an admin, I want a trigger never to fire twice in one chain of causes, so that two
+139. As an admin, I want a trigger never to fire twice in one chain of causes, so that two
      triggers can't feed each other forever.
-138. As an admin, I want chains of causes cut at a maximum depth, shared with workflows started
+140. As an admin, I want chains of causes cut at a maximum depth, shared with workflows started
      by agents, so that long indirect loops stop too.
-139. As an admin, I want each trigger rate-limited per minute as a last guard, showing "Rate
+141. As an admin, I want each trigger rate-limited per minute as a last guard, showing "Rate
      limited" when it's hit, so that a runaway trigger is visible and bounded.
-140. As an editor, I want every refusal (loop, depth, rate, budget) recorded on the trigger and in
+142. As an editor, I want every refusal (loop, depth, rate, budget) recorded on the trigger and in
      the audit log, so that I can see why it didn't fire.
-141. As an editor, I want a chat-message trigger to listen to any chat, and deliver to any
+143. As an editor, I want a chat-message trigger to listen to any chat, and deliver to any
      chat, whether or not I'm in it, so that automation can watch the whole organisation.
-142. As an editor, I want triggers only creatable by editors and admins, so that participants
+144. As a member, I want a trigger's agent or workflow added to the chat it listens to, so that
+     everyone there can see what is watching.
+145. As an editor, I want triggers only creatable by editors and admins, so that participants
      can't set up automation.
-143. As a member, I want mentions in what agents and workflows post to still start nothing, so
+146. As a member, I want mentions in what agents and workflows post to still start nothing, so
      that automated posts can't cascade through mentions.
-144. As an operator, I want events written in the same transaction as the change that caused
+147. As an operator, I want events written in the same transaction as the change that caused
      them, so that no event is lost and none is invented by a rolled-back change.
-145. As an operator, I want the dispatcher woken when a store has events, with a sweep as a
+148. As an operator, I want the dispatcher woken when a store has events, with a sweep as a
      fallback, so that events are handled promptly and never stranded.
-146. As an operator, I want dispatched events pruned after a set time, so that the outbox doesn't
+149. As an operator, I want dispatched events pruned after a set time, so that the outbox doesn't
      grow forever.
-147. As a developer, I want a "drain the events once" entry point for the dispatcher, so that
+150. As a developer, I want a "drain the events once" entry point for the dispatcher, so that
      tests can drive dispatch deterministically.
 
 ### Lanes and autoscaling (3.7)
 
-148. As a participant, I want my mention answered promptly even while hundreds of schedules are
+151. As a participant, I want my mention answered promptly even while hundreds of schedules are
      running, so that background work never makes chat feel slow.
-149. As an operator, I want each executor to reserve slots for interactive work, so that a
-     background flood can't take every slot.
-150. As an operator, I want fairness between organisations kept within each lane, so that one
-     organisation can't starve another in either lane.
-151. As an admin, I want an approved change applied on an urgent lane that never waits behind
+152. As an operator, I want fairness between organisations kept within each lane, including the
+     sources lane for phase 4's syncs, so that one organisation can't starve another.
+153. As an admin, I want an approved change applied on an urgent lane that never waits behind
      routine migrations or sweeps, so that people waiting on a decision aren't held up.
-152. As an operator, I want routine maintenance on its own lane and workers, so that sweeps,
+154. As an operator, I want routine maintenance on its own lane and workers, so that sweeps,
      measurement and retention never compete with urgent work.
-153. As an operator, I want only the maintenance workers to hold the provisioner's credentials,
+155. As an operator, I want only the maintenance workers to hold the provisioner's credentials,
      so that those powers stay confined.
-154. As an operator, I want queue depth and the age of the oldest ready item published per lane,
+156. As an operator, I want queue depth and the age of the oldest ready item published per lane,
      so that I can see load and set scaling.
-155. As an operator, I want executors to scale on interactive latency and background depth, and
-     ingest workers on ingest depth, so that capacity follows demand.
-156. As an operator, I want workers to scale back to a small floor when idle, so that we don't
+157. As an operator, I want run service processes to scale on interactive latency and
+     background depth, and ingest workers on ingest depth, so that capacity follows demand.
+158. As an operator, I want workers to scale back to a small floor when idle, so that we don't
      pay for capacity nobody uses.
-157. As an operator, I want scale-in to rely on graceful shutdown, so that shrinking capacity
+159. As an operator, I want scale-in to rely on graceful shutdown, so that shrinking capacity
      never fails a turn.
-158. As an operator, I want each service's minimum and maximum configurable, so that I can tune
+160. As an operator, I want each service's minimum and maximum configurable, so that I can tune
      cost and headroom.
 
 ## Implementation Decisions
@@ -486,6 +490,23 @@ which is where phase 1 moved runs, workflows, triggers, chats and approvals. "Pl
 live in the shared platform database. Each schema change ships in one change with the code that
 uses it, removing what it replaces; development data is rebuilt with `make seed`. Every limit is
 a setting with a generous default, overridable per organisation where marked.
+
+### Untrusted content
+
+Phase 1's Jev rules ([Phase 1 · 15](../tickets/phase-1-foundation/15-jev-classification.md))
+cover what this phase adds. Verdicts use phase 1's set: `awaiting_check`, `clean`, `flagged`,
+`released` and `derived`.
+- **Classified when written.** `remember` content (3.2) and trigger webhook bodies (3.6) are
+  checked by Jev before anything else happens. Flagged or unchecked content is refused: no memory
+  is stored, and no event fires.
+- **Derived text is always wrapped.** Text agents write from possibly untrusted content isn't
+  classified again. It carries the verdict `derived`, stays searchable, and is wrapped as
+  untrusted wherever it enters a model's context:
+  - workflow node outputs passed to later nodes (3.4);
+  - `start_workflow` input (3.4);
+  - compaction summaries (3.1);
+  - recalled memories (3.2);
+  - the briefs and run messages a continuing run reads (3.1).
 
 ### What exists today (verified)
 
@@ -541,13 +562,8 @@ a setting with a generous default, overridable per organisation where marked.
   - **Other runs.** Runs started by hand, by triggers, by the start-workflow tool, or as
     workflow nodes never set it. A trigger delivering to a chat posts by handback and doesn't
     join the conversation run.
-- **Turns.** A turn record holds:
-  - its run and invocation;
-  - the version it ran on;
-  - its status, times, tool calls, tokens and error.
-
-  If phase 1's usage work already introduced a turn record, this step adds the version to it;
-  otherwise it adds the record. The run's version reference becomes "the latest turn's version".
+- **Turns.** Phase 1's turn record already holds its run, invocation and the version it ran on.
+  The run's version reference becomes "the latest turn's version".
 - **Version selection** happens at the start of each turn:
   - **Normally:** the agent's current version.
   - **Paused runs:** a run with a pending approval keeps its version until that turn is
@@ -561,7 +577,7 @@ a setting with a generous default, overridable per organisation where marked.
   - Mentions arriving while a turn is underway, or while the run waits on an approval, are
     queued invocations, shown with a waiting status.
   - They're claimed in message order after the run is free. A cancelled approval frees the run.
-  - The turn lock from phase 1 serialises turns.
+  - The turn lease from phase 1 serialises turns.
 - **Compaction.**
   - A model-call hook in the agent builder applies the run's latest summary in place of the
     turns it covers, before each model call. It's LangChain's agent middleware or an
@@ -572,14 +588,13 @@ a setting with a generous default, overridable per organisation where marked.
   - The cut is only ever made between turns, so tool calls and results stay paired.
   - Each compaction is a usage ledger entry with cause "compaction", traced and tagged as such.
   - The checkpointed messages are never altered.
+  - A summary is derived text: it's wrapped as untrusted when the model reads it.
 - **Retention** (phase 1) prunes conversation runs turn by turn. A summary is deleted once
   every turn it covers is gone.
 - **Settings:**
   - compaction threshold: 120,000 tokens;
   - turns kept verbatim: 6;
   - summary size: 4,000 tokens.
-
-  Compaction ships effectively off (a very high threshold) for one release.
 
 ### 3.2 Memory
 
@@ -592,12 +607,15 @@ a setting with a generous default, overridable per organisation where marked.
 
   Memories are indexed in phase 1's unified search index as kind "memory", with the agent.
 - **New tools.** Their keys are permanent.
-  - **remember(content):** stores a memory. Text equal after normalising case and whitespace
+  - **remember(content):** classifies the text with Jev, then stores it as a memory with the
+    verdict `derived`. Flagged or unchecked text is refused, and the agent gets an error. Text
+    equal after normalising case and whitespace
     bumps the existing memory instead. It refuses at the per-agent cap, or over the length
     limit.
   - **forget(memory id):** deletes one of the agent's own memories.
   - **Recall** uses phase 1's search tool with kind "memory", restricted to the calling agent.
-    A memory isn't tied to the conversation it was learned in.
+    A memory isn't tied to the conversation it was learned in. Recalled memories are wrapped as
+    untrusted.
 - **Memory API.**
   - Lists an agent's memories with where each was learned.
   - Editors and admins may edit and delete them.
@@ -637,7 +655,8 @@ a setting with a generous default, overridable per organisation where marked.
       columns are dropped;
     - read on the embedding-column markers the write tool needs.
     - read on conversation content (chats, briefs, run messages, checkpoints, memory), which
-      phase 1 keeps in ordinary store schemas that every data tool role can read;
+      phase 1 keeps in ordinary store schemas that every data tool role can read, except phase
+      1's deny list (secret and credential columns, people's emails, audit log details);
     - **nothing else.** An agent's role writes only the data tables it owns or is shared, the
       group role's unowned tables, and platform tables explicitly allowed for the write tool.
       It never writes conversation content or memory, its own agent's memory included.
@@ -711,6 +730,8 @@ a setting with a generous default, overridable per organisation where marked.
   - A missing field at run time fails the step, naming the path.
 - **Default input** (no template) is today's rule over the active incoming edges only, with
   structured outputs serialised as compact JSON.
+- **Node outputs passed on** are derived text, wrapped as untrusted in the next agent node's
+  input, whether templated or not.
 - **Run input** is validated at start for every way of starting a run. A refused start returns
   the validation errors. A mention of a workflow with an input schema passes the brief and
   message as an object, if the schema accepts that shape, and is otherwise refused with that
@@ -800,7 +821,8 @@ a setting with a generous default, overridable per organisation where marked.
   - the allowed workflows;
   - the wait time: default 120 seconds, maximum 600.
 - **A call** takes a workflow and an input. It creates an invocation caused by "start
-  workflow", chained to the calling turn's invocation.
+  workflow", chained to the calling turn's invocation. The input is derived text, wrapped as
+  untrusted wherever it reaches a model.
 - **Checks**, before the run starts:
   - input against the schema;
   - invocable by;
@@ -847,7 +869,7 @@ a setting with a generous default, overridable per organisation where marked.
   - an event type and a filter object;
   - a debounce window;
   - a "fire on own events" flag (default off);
-  - a webhook token hash and an encrypted webhook secret;
+  - a webhook token hash and an encrypted webhook secret, both on phase 1's deny list;
   - a disabled reason.
 
   A constraint requires an event type for event triggers.
@@ -880,7 +902,7 @@ a setting with a generous default, overridable per organisation where marked.
   4. marks the events dispatched.
 
   **Firing** creates an invocation (cause "event", with the event and its chain), applies
-  phase 1's checks and step 3.5's, and enqueues it on the executor queue.
+  phase 1's checks and step 3.5's, and enqueues it on the run service's queue.
   - **Agent targets** get a new one-turn run of the current version.
   - **Workflow targets** get a run whose input is the trigger's template rendered with the event,
     or else the event as JSON. It's validated against the input schema.
@@ -898,7 +920,8 @@ a setting with a generous default, overridable per organisation where marked.
   Each refusal sets the trigger's last status and error, and is audited. Mentions in automated
   posts still start nothing.
 - **Any chat.** A chat-message trigger may name any chat in the organisation, and so may its
-  delivery chat. Its creator needn't be in either.
+  delivery chat. Its creator needn't be in either. Saving the trigger adds its target agent or
+  workflow to the chat it listens to, as delivery does to the delivery chat.
 - **Webhooks.**
   - A public endpoint keyed by the trigger's random token (only its hash is stored). It resolves
     the trigger and organisation without the organisation in the path.
@@ -906,8 +929,13 @@ a setting with a generous default, overridable per organisation where marked.
     timestamp and raw body. An optional delivery id is de-duplicated for 24 hours, in a store
     table.
   - Bodies must be JSON of at most 1 MiB, with a per-token rate limit of 120 a minute.
+  - **Jev.** The body is classified before the delivery is recorded or any event is written.
+    Nothing fires for a flagged or unchecked body, and its delivery id isn't recorded, so the
+    caller can retry. Flagged bodies are audited.
   - Responses:
     - 202 with the delivery id (dispatch is asynchronous);
+    - 422 for a body Jev flags;
+    - 503 with a retry-after when Jev can't check it;
     - 401 for a bad signature or timestamp;
     - 404 for an unknown or disabled token;
     - 413, 415 and 429 as usual.
@@ -928,15 +956,16 @@ a setting with a generous default, overridable per organisation where marked.
 
 ### 3.7 Lanes and autoscaling
 
-- **Lanes.** The executor queue's lane (added in phase 1) is interactive or background:
+- **Lanes.** The run service's queue has phase 1's lanes, with interactive work's reserved
+  capacity, and gains a third:
   - **Interactive:** mentions and handbacks.
   - **Background:** schedules, events, workflow nodes, start-workflow and the dispatcher.
+  - **`sources`:** phase 4's syncs (D13), so a big sync waits on its own share.
 
-  Each executor reserves slots (10 by default) for interactive work, and claims interactive
-  work first. Background work never takes reserved slots. Fair claiming between organisations
-  applies within each lane.
+  Background and sources work never take interactive work's reserved capacity. Fair claiming
+  between organisations applies within each lane.
 - **Celery** gets three queues, each with its own worker service:
-  - **Ingest:** ingest, then syncs in phase 4.
+  - **Ingest:** document ingest.
   - **Urgent maintenance:** applying approvals, restores, table access changes and agent role
     creation.
   - **Routine maintenance:** provisioning retries, migrations, measuring, purging, expiry,
@@ -950,8 +979,8 @@ a setting with a generous default, overridable per organisation where marked.
 
   They go to CloudWatch on AWS, and are logged locally.
 - **Autoscaling.**
-  - Executors scale on the age of the oldest interactive item (target 5 seconds) and on
-    background depth.
+  - Run service processes (executors) scale on the age of the oldest interactive item (target 5
+    seconds) and on background and sources depth.
   - Ingest workers scale on ingest depth.
   - Every service has a configurable minimum and maximum: one to four, and a minimum of two for
     executors.
@@ -962,8 +991,8 @@ a setting with a generous default, overridable per organisation where marked.
 Each numbered item is one or more changes. Each change removes what it replaces, and
 development data is rebuilt with `make seed`.
 
-1. **Continuing runs.** The conversation reference and turn records, with mention code switched
-   to conversation runs. Compaction ships off, then on.
+1. **Continuing runs.** The conversation reference, with mention code switched to conversation
+   runs. Then compaction.
 2. **Memory.** The table and index entries. Ship the tools, then the tab.
 3. **Ownership:**
    1. The ownership, shares and credential tables, the group roles, application-level checks and
@@ -977,16 +1006,14 @@ development data is rebuilt with `make seed`.
    3. The rename to approvals, dropping the old step reference and setting.
 5. **Budgets.** The totals table. Checks, a no-op with no budget set. Then the UI.
 6. **Event triggers:**
-   1. The trigger columns and the events table.
-   2. Emit events with no consumer for one release, to watch volume.
-   3. The dispatcher.
-   4. The UI.
-   5. Webhooks.
+   1. The trigger columns, the events table and the dispatcher.
+   2. The UI.
+   3. Webhooks.
 
    **Undo** is disabling event triggers per organisation.
-7. **Lanes and autoscaling.** New queues and workers, while the old provisioning queue drains.
-   Retire it. Then conservative scaling policies. This can start any time after phase 1's
-   executor work, as load needs it.
+7. **Lanes and autoscaling.** The sources lane, then new queues and workers, while the old
+   provisioning queue drains. Retire it. Then conservative scaling policies. This can start any
+   time after phase 1's run service, and comes before phase 4's syncs.
 
 ## Testing Decisions
 
@@ -1038,9 +1065,9 @@ development data is rebuilt with `make seed`.
 
    The existing schema change, workflow editor, workflow run and schedule specs are updated.
 4. **Narrower seams**, only where the API can't reach:
-   - **The workflow run executor entry point**, for node-by-node readiness, skip propagation,
+   - **The run service's workflow entry point**, for node-by-node readiness, skip propagation,
      resume after a pause with skips rebuilt, and compaction across long runs. Prior art: the
-     workflow run tests calling the executor entry directly.
+     workflow run tests calling the run entry directly.
    - **Tool invocation**, for remember, forget, memory recall, start-workflow and write refusals
      at the database. Prior art: the data tools tests.
    - **The event dispatcher's "drain once" entry point** (new to this phase), for:
@@ -1106,19 +1133,21 @@ latency stays within target. It's run on demand, not per pull request.
   - The organisation in the URL.
 - **Phase 1.**
   - Everything in the store: runs, workflows, triggers, chats, approvals.
-  - The pooler and turn lock.
+  - The pooler and turn lease.
+  - Jev, its verdicts and untrusted wrapping.
   - The unified search index and search tool (memory recall).
   - Retention (turn-by-turn pruning).
   - Roles, approval rules and the audit log.
   - Invocations for every cause, with chains, the usage ledger, per-turn caps and invocable by.
-  - The executor queue with its lane column and node-by-node workflows.
+  - The run service's queue, with its lanes and interactive reserve, and node-by-node
+    workflows.
 - **Phase 2.**
   - Open chats, each with its included agents and workflows.
   - Handback and delivery to chats (start-workflow results, trigger delivery).
   - The post-message tool, whose posts emit chat-message events.
   - Notification kinds, including "approval needed".
-- **Phase 4.** It consumes this phase's events (document ingested, table written by syncs) and
-  the ingest lane. Syncs write as their source, not as an agent, and are unaffected by table
+- **Phase 4.** It consumes this phase's approvals (3.4), budgets (3.5), events (3.6: document
+  ingested, table written by syncs, webhooks) and the sources lane (3.7). Syncs write as their source, not as an agent, and are unaffected by table
   ownership.
 
 ### Risks
@@ -1128,10 +1157,8 @@ latency stays within target. It's run on demand, not per pull request.
   gates merges.
 - **Connection growth from per-agent roles.** Mitigated by the pooler, per-role limits, idle
   eviction, and connecting only for writes.
-- **Compaction losing meaning.** It ships off first. Full turns stay searchable, and summaries
-  are traced for review.
-- **Event volume.** Events are emitted with no consumer for one release to measure it. There are
-  per-trigger rate caps, debounce, and event retention.
+- **Compaction losing meaning.** Full turns stay searchable, and summaries are traced for review.
+- **Event volume.** There are per-trigger rate caps, debounce, and event retention.
 
 ### Decided after review
 
@@ -1140,11 +1167,16 @@ latency stays within target. It's run on demand, not per pull request.
 2. **Deleting memories.** Only editors and admins edit or delete memories.
 3. **Currency and period.** Budgets are in estimated pounds sterling (GBP) per calendar month in
    UTC, until billing exists.
-4. **Turn records.** Phase 1 introduces the per-turn record, with its usage. This phase adds the
-   version each turn ran on.
+4. **Turn records.** Phase 1 introduces the per-turn record, with its usage and version. This
+   phase chooses the version per turn.
 5. **Open conversations** (settled in review). Every chat is open to the whole organisation.
    Memory isn't tied to a conversation, triggers can watch and deliver to any chat, and agents'
    roles may read conversation tables.
+6. **Jev in this phase** (settled in review). `remember` and webhook bodies are classified when
+   written; flagged or unchecked means refused. Derived text (node outputs, `start_workflow`
+   input, summaries, recalled memories) isn't re-classified but is always wrapped.
+7. **Chat-message triggers join the chat** (settled in review). Listening to a chat adds the
+   trigger's target to it, as delivery does.
 
 ### Where the decision record, the plan and the code differ
 
@@ -1154,5 +1186,3 @@ latency stays within target. It's run on demand, not per pull request.
 - **Data tools and agent roles.** 0001 D5 says an agent's data tools run as its own role. This
   spec runs only the write tool that way, and keeps model-written SQL on the read-only role. That
   narrows the decision for safety rather than contradicting it.
-- **Schema change request storage.** Schema change requests live in the platform database today.
-  This spec assumes phase 1 has moved them into the store, as 0001 D1 lists.

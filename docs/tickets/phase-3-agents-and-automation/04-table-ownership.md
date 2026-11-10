@@ -4,7 +4,7 @@
 
 [Spec](../../specs/phase-3-agents-and-automation.md)
 
-**Blocked by:** [Phase 0 · 08: Archive workflows and skills; remove every hard delete](../phase-0-refactor-and-guard-rails/08-archive-workflows-and-skills.md), [Phase 1 · 05: Triggers, chats, invocations and schema change requests move](../phase-1-foundation/05-move-triggers-chats-approvals.md), [Phase 1 · 07: Roles and permissions on every route](../phase-1-foundation/07-roles-and-permissions.md)
+**Blocked by:** [Phase 0 · 08: Archive workflows and skills; remove every hard delete](../phase-0-refactor-and-guard-rails/08-archive-workflows-and-skills.md), [Phase 1 · 05: Triggers, chats, invocations and schema change requests move](../phase-1-foundation/05-move-triggers-chats-approvals.md), [Phase 1 · 07: Roles and permissions on every route](../phase-1-foundation/07-roles-and-permissions.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md)
 
 **Status:** ready-for-agent
 
