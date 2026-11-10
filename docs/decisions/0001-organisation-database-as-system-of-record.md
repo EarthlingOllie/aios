@@ -78,22 +78,23 @@ An agent can be archived and unarchived. An archived agent:
 - starts no new runs: by hand, by schedule, by mention, or as a workflow node (starting a
   workflow that pins it is refused, as running a deleted agent is today);
 - lets runs already under way finish, rather than being cancelled;
-- has its schedules paused, and leaves chats' mention lists while staying in their member
-  lists, marked archived;
+- has its schedules paused, and stays a chat member of its chats, marked archived, but can't
+  be mentioned there;
 - keeps its name reserved, so unarchiving can't clash.
 
 Remove the hard delete and its resolution flow: the dependents check with run cancellation and
 workflow deactivation (`aios.dependents`'s cancel paths, `DELETE /api/agents/{id}`'s 409
 protocol, `AgentDeleteDialog`). Keep a read-only "used by" list on the agent's page, so people
 can see what archiving affects. Workflows and skills get the same archive model, for
-consistency. Rows are deleted outright only when their organisation is.
+consistency. Editors archive and unarchive agents, skills and workflows (D8). Rows are
+deleted outright only when their organisation is.
 
 The archive dialog warns about the data tables the agent owns. They become read-only until an
 editor transfers them to another agent (D5). Syncs aren't affected, because they write as their
 source, not as an agent. The agent's memory is kept, and comes back if it's unarchived.
 
-Chats are archived rather than deleted too (D6). An archived chat is read-only but still
-searchable.
+Chats are archived rather than deleted too (D6), by admins. An archived chat is read-only but
+still searchable.
 
 #### R3. Many organisations per user, made only on request
 
@@ -160,18 +161,38 @@ Documents, chunks and `data` tables are already there.
 **Untrusted content and Jev (settled in review).** Conversation content (chats, mentions,
 invocations, briefs, run messages, checkpoints and memory) lives in ordinary store schemas. The
 data tools read it like any other table: `query_data`, `describe_data`, the Tables view and D5's
-per-agent roles. Every chat is open (D6), so there is nothing to hide from them. The risk that
-remains is prompt injection: content written by people or fetched from outside that steers an
-agent. The defence is Jev, an existing external classifier for prompt injection and unsafe
-content. aios integrates it rather than building its own.
+per-agent roles. Every chat is open (D6), so there is nothing to hide from them, except a short
+deny list. The risk that remains is prompt injection: content written by people or fetched from
+outside that steers an agent. The defence is Jev, an existing external classifier for prompt
+injection. aios integrates it rather than building its own. Jev refuses for prompt injection
+only, not for other kinds of content.
 
-- **What's classified.** Everything untrusted, before it can reach a model's context: chat
-  messages people send, documents, synced source items (D2), and every tool result from
-  outside, including web search, web fetch and `query_data`.
-- **Wrapped regardless.** Every untrusted input is also wrapped in an untrusted block in the
-  model's context, whatever its verdict, in case Jev misclassifies.
+- **Verdicts.** One set everywhere: `awaiting_check`, `clean`, `flagged`, `released` (an admin
+  released a flagged item) and `derived` (below).
+- **What's classified.** Everything untrusted, before it can reach a model's context:
+  - chat messages people send;
+  - documents, and synced source items (D2), including webhook, email and URL items;
+  - webhook bodies that fire triggers (D3). Nothing fires on a body that is flagged or not yet
+    checked;
+  - every tool result, except a short trusted list of the platform's own tools whose output
+    isn't from outside, such as `describe_data`'s schema listing. That covers web search and
+    fetch, `run_python` output and sandbox files read back, `query_data`, and connector and MCP
+    results;
+  - what an agent asks to `remember` (D5). A flagged memory is refused, and the agent sees an
+    error.
+- **Derived text.** What agents write from possibly untrusted content isn't classified again:
+  posts, handbacks, deliveries, workflow node outputs passed on, `start_workflow` input,
+  compaction summaries, recalled memory, run messages and briefs. Its verdict is `derived`. It's
+  searchable, and always wrapped.
+- **Wrapped regardless.** Every untrusted or derived input is wrapped in an untrusted block
+  wherever it enters a model's context, whatever its verdict, in case Jev misclassifies.
 - **When.** Stored content is classified when it's written. Its verdict is kept on its row and
   copied onto its search item. Tool results are classified inline, as the tool returns.
+- **`query_data` results.** Text cells are classified in chunks (about 8 KB each), the chunks
+  of one result in parallel within the timeout. A flagged cell is redacted to
+  "[withheld: flagged by Jev]" rather than blocking the whole result. Rows from tables that
+  carry a stored verdict of `clean`, `released` or `derived` aren't classified again; text from
+  rows that are `flagged` or `awaiting_check` is redacted.
 - **Flagged content.**
   - A flagged chat message is refused as it's sent and never stored. The sender sees why.
   - A flagged document or synced item is stored with its verdict, but left out of search and
@@ -180,20 +201,36 @@ content. aios integrates it rather than building its own.
 - **Fails closed.** If Jev is down or slow:
   - a chat message is refused after a short timeout of a few seconds ("couldn't check this
     message, try again");
-  - documents and synced items wait as "awaiting check", are retried by their pipeline, and
-    aren't searchable until they have a verdict;
+  - documents and synced items wait as `awaiting_check`, are retried by their pipeline, and
+    aren't searchable until they have a verdict. A periodic sweep re-checks anything stuck there;
   - a tool result that can't be checked is replaced by an error the agent sees.
-- **Admin release.** Settings lists flagged documents and synced items. An admin can release
-  one, marking it trusted. It's still wrapped as untrusted, and the release is recorded in the
-  audit log (D8).
+- **Running it.** A health check feeds an alert and metrics, and people see a notice while Jev
+  is down. Whoever uploads a document sees its verdict.
+- **Admin release.** Settings has a flagged list of documents and synced items. An admin can
+  release one, which sets it to `released`. It's still wrapped as untrusted, and the release is
+  recorded in the audit log (D8).
+- **Re-checking.** When Jev's model or policy version changes, a job classifies stored content
+  again. A released item whose content changes goes back to `awaiting_check`, and the admins are
+  told.
+- **Deny list.** A few columns and tables are left out of the grants of the read-only and
+  per-agent roles, and so out of `query_data`, `describe_data` and the Tables view: secret and
+  credential columns (trigger webhook secrets, token hashes, connector credentials), people's
+  emails in the people mirror, and audit log details. An adversarial test checks that the data
+  tools can't read them, and that `write_data` can't write outside the `data` schema.
 - **Wiring.** A Python client behind a `classify(content, source) -> verdict` interface calls
-  Jev's HTTP API, with its URL and key in `.env`. A fake serves the unit tests, and one contract
-  test runs against real Jev.
+  Jev's HTTP API, with its URL and key in `.env`. A fake serves the unit tests and `make seed`,
+  and one contract test runs against real Jev.
+- **Accepted risk.** Chat messages, documents and tool results are sent to Jev, which may be
+  hosted. That's accepted for the demo.
 
 **People.** A store has no users table. It gets `aios.people`: a mirror of the organisation's
 members (user id, name, role), kept up to date by the platform on membership and profile
 changes. Agents can then answer "who" from the store alone, and content keeps its author ids
 without foreign keys across databases.
+
+**Repair sweep.** A small periodic sweep rebuilds the schedules' due index from each store's
+triggers, and the people mirror from memberships, and reports what it fixed. It's upkeep for
+the copies D1 keeps, not migration machinery.
 
 **Migration.** aios isn't live, so no data is carried over. Each domain moves to the store in
 one change that makes its store tables, points the code at them, and drops the old platform
@@ -201,9 +238,9 @@ tables and columns. Development data is rebuilt with `make seed`.
 
 **Connections.** Moving everything onto stores multiplies connections: organisations ×
 processes × roles. Put a pooler in front of the stores (PgBouncer, or RDS Proxy on AWS) before
-the first domain moves. Transaction pooling breaks session advisory locks, so the turn lock that serialises a
-run's turns moves to a row lock on the run (`SELECT ... FOR UPDATE` held for the turn on a
-dedicated session) or a Redis lock.
+the first domain moves. Transaction pooling breaks session advisory locks, so the turn lease
+that serialises a run's turns becomes a row lock on the run (`SELECT ... FOR UPDATE` held for
+the turn on a dedicated session) or a Redis lock.
 
 **Unified search.** One index in the store, `aios.search_items`. Each item records:
 
@@ -214,8 +251,8 @@ dedicated session) or a Redis lock.
 - its Jev verdict, copied from its row.
 
 Each writer indexes what it writes, in the same transaction. Embedding happens afterwards,
-under the budget the history embedder uses now. Items that are flagged or still awaiting a
-verdict are left out of results.
+under the budget the history embedder uses now. Items that are `flagged` or `awaiting_check`
+are left out of results.
 
 A new tool, `search`, takes a query and optional filters (kinds, time range, chat, agent,
 source) and runs the existing RRF search over the index. `hybrid_search` and `history_search`
@@ -254,8 +291,8 @@ A **connector** is one connection to an external system, with credentials, and i
 purposes:
 
 - **Sync:** pull content into the store on a schedule, incrementally from a stored cursor. Each
-  item keeps its source, external id, URL and updated time. It's chunked, embedded and indexed
-  as a `source_item`, and found by `search`.
+  item keeps its source, external id, URL and updated time. It's classified by Jev (D1), chunked,
+  embedded and indexed as a `source_item`, and found by `search`.
 - **Tools:** expose the system's actions to agents during a run.
 
 We implement connectors as MCP clients wherever a server exists (Slack, Google Drive, GitHub,
@@ -272,7 +309,7 @@ are fetched when a run starts. A connector removed later makes that version unru
 tool that left the library does today. This keeps "tools are code" true of the library, while
 each organisation chooses its own connectors.
 
-Syncs run on their own Celery queue (`sources`). Only admins add or remove connectors (D8).
+Syncs run on the run service's `sources` lane (D13). Only admins add or remove connectors (D8).
 
 **What synced items are.** The store is the system of record for everything that happens in
 aios. Content synced from Slack, Drive or GitHub is still owned by the system it came from, so
@@ -330,14 +367,18 @@ without scanning them all.
   and chains are capped in depth.
 - Bursts are coalesced. A trigger can set a debounce window, after which it fires once with
   the batch.
-- A `chat.message` trigger can listen to any chat.
+- A `chat.message` trigger can listen to any chat. Setting it to listen adds its agent or
+  workflow to that chat, as delivery does (D4).
+- A webhook body is classified by Jev before anything fires (D1). Nothing fires on a body that
+  is flagged or not yet checked.
 
 #### D4. Delivering results, and notifications
 
 - A new `post_message` tool lets an agent post markdown to a chat it is a member of. As today,
   mentions in what agents and workflows post start nothing.
 - Triggers get a **deliver to** setting, a chat. A scheduled or event-fired run then posts its
-  output or its failure there without any prompting. A trigger can deliver to any chat.
+  output or its failure there without any prompting. A trigger can deliver to any chat, and setting
+  it to deliver there adds its agent or workflow to the chat.
 - **Every run has an invocation (settled in review).** An invocation records:
   - the run's cause: a mention, schedule, event, by hand, or an agent's `start_workflow`;
   - who or what caused it;
@@ -392,7 +433,8 @@ Over weeks that thread outgrows the model's context, so older turns are compacte
 **Memory.** `aios.agent_memory` in the store holds an agent's memories: content, embedding, the
 run that wrote it, and created and updated times. The `remember` and `forget` tools write it,
 and `search` with kind `memory` reads it, only the agent's own. People see, edit and delete an
-agent's memories on a Memory tab on its page.
+agent's memories on a Memory tab on its page. Jev classifies what an agent asks to remember as
+it's written, and a flagged memory is refused (D1).
 
 Memory isn't scoped to where it was learned (settled in review). Every chat is open, so an
 agent recalls its memories in any chat, and the Memory tab shows all of them.
@@ -443,15 +485,19 @@ chat, and every chat is open to the whole organisation:
 | Leave | any person in it |
 | Archive or unarchive | admins |
 
-Renames and archiving are recorded in the audit log. Today's owner and visibility columns are
-dropped when chats move to the store (D1). Nothing is migrated, because aios isn't live.
+Renames and archiving are recorded in the audit log. Chats move to the store as they are
+(D1), and this change then drops their owner and visibility columns. Nothing is migrated,
+because aios isn't live.
 
 **One experience.**
 
-- Remove the one-to-one agent run chat (the `useChat` conversation on the run page). A
-  conversation with an agent is an ordinary chat. **Chat with this agent** makes a new chat with
-  that agent included, named "<Agent> – <person> – <date>", which anyone in it can rename.
-- Run pages become read-only: the trace, events and usage, linked from run cards.
+- Remove the one-to-one agent run chat (the `useChat` conversation on the run page). This
+  happens in phase 1, with the run service (D13), so turns from the run page are never built
+  there. Run pages become read-only: the trace, events and usage, linked from run cards. Until
+  chats stream, people talk to agents by mentioning them in chats.
+- A conversation with an agent is an ordinary chat. **Chat with this agent** makes a new chat
+  with that agent included, named "<Agent> – <person> – <date>", which anyone in it can rename.
+  The chat shows a short notice that the whole organisation can see it.
 - Chats stream. `GET /api/o/{organisation}/chats/{id}/stream` is a server-sent events stream of
   new messages, invocation updates and the token deltas of replies being written. A reply
   appears as a draft message that fills in as it streams.
@@ -507,12 +553,12 @@ organisation, whatever their role.
 
 | | Admin | Editor | Participant |
 | --- | --- | --- | --- |
-| Read everything they can see, search | ✓ | ✓ | ✓ |
+| Read and search everything in the organisation | ✓ | ✓ | ✓ |
 | Post in chats, mention agents and workflows | ✓ | ✓ | ✓ |
 | Start runs from agent and workflow pages | ✓ | ✓ | ✓ |
-| Create and edit agents, skills, workflows, triggers | ✓ | ✓ | |
+| Create, edit, archive and unarchive agents, skills, workflows; create and edit triggers | ✓ | ✓ | |
 | Share and transfer data tables between agents | ✓ | ✓ | |
-| Archive, roles, invitations, connectors, organisation settings, default chat agents | ✓ | | |
+| Roles, invitations, connectors, organisation settings, default chat agents | ✓ | | |
 | Archive chats, release flagged content, delete the organisation | ✓ | | |
 
 A participant's runs act with the agent's tools, writes and external actions included. That's
@@ -575,9 +621,9 @@ It's made when its organisation is, not when the first chat is.
 **Default chat agents (settled in review).** Admins choose which agents join every new chat
 automatically. The organisation assistant is the default for a new organisation.
 
-An existing documents assistant
-gets a new version with these tools. Versions already pinned are unchanged. A new organisation's
-assistant can answer from everything in its store from the first day.
+The assistant is made with the organisation, and `make seed` rebuilds development
+organisations, so no existing assistant is upgraded. A new organisation's assistant can answer
+from everything in its store from the first day.
 
 #### D11. Docs and code by domain
 
@@ -739,18 +785,18 @@ worker per organisation:
 - **One maintenance lane.** An approved schema change, which a person and a paused run are
   waiting on, can queue behind another store's migration or the storage measurements.
 
-**Decision.** Keep one shared, elastic pool of executors that serves every organisation. Reserve
+**Decision.** Keep one shared, elastic run service that serves every organisation. Reserve
 nothing per organisation, so an inactive organisation costs nothing but its database, and
 make the pool fair, finer-grained and able to scale.
 
-1. **A run executor service.**
-   - A new service runs every agent turn, whatever its cause: chat mention, schedule, event,
-     workflow node or `start_workflow`.
+1. **A run service.**
+   - A new service, the run service, runs every agent turn, whatever its cause: chat mention,
+     schedule, event, workflow node or `start_workflow`.
    - The API stops running turns. It enqueues them and streams their progress from Redis
      (D6).
-   - Executors are asyncio processes that each interleave many turns (a semaphore, say 50),
-     because a turn is almost entirely waiting on the model and tools. They're not prefork
-     workers.
+   - Its worker processes, executors, are asyncio processes that each interleave many turns (a
+     semaphore, say 50), because a turn is almost entirely waiting on the model and tools.
+     They're not prefork workers.
 2. **Workflows advance node by node.**
    - A workflow run no longer holds a process. Each ready node is enqueued as its own unit of
      work.
@@ -773,8 +819,9 @@ make the pool fair, finer-grained and able to scale.
    - **Interactive:** mentions and handbacks. Someone is watching, so this lane
      has reserved capacity and is claimed first.
    - **Background:** schedules, events, workflow nodes and `start_workflow`.
-   - **Ingest and sync:** CPU and memory heavy (Docling), on their own workers sized for it, with
-     the same fair claiming.
+   - **Sources:** syncs, on the run service, with the same fair claiming.
+   - **Ingest:** CPU and memory heavy (Docling), on its own workers sized for it, with the same
+     fair claiming.
    - **Maintenance:** split into **urgent** (schema change applies, restores: someone is
      waiting) and **routine** (migrations, measurements, retention, expiry, syncs' cleanup), each
      with its own workers. The beat stays a single scheduler that only enqueues.
@@ -793,7 +840,7 @@ make the pool fair, finer-grained and able to scale.
    grace period, and hands back what it can't finish: the turn is re-queued from its last
    checkpoint, not failed. Interrupted turns resume rather than ending "stopped mid-run".
 
-Executors and the fair queue replace the per-process cap in `aios.firing` and the
+The run service and the fair queue replace the per-process cap in `aios.firing` and the
 `workflows` Celery queue. Celery stays for ingest and maintenance, where tasks are CPU-bound or
 rare, until the lanes there need the same fairness.
 
@@ -816,7 +863,10 @@ import is also how agents are backed up today, and how templates could be publis
 The step-by-step plan, with scope and done criteria for each step, is
 [`plan/platform-cohesion/plan.md`](../../plan/platform-cohesion/plan.md).
 
-Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
+Each phase depends on the one before it, with one exception. Sources, sync and connectors in
+phase 4 (D2's first parts) can run alongside phase 3. The rest of phase 4 waits for parts of
+phase 3: Insights' approval panels need D7's approvals, prompted charts need the organisation
+budgets, and webhook, URL and email sources need D3's further events.
 
 0. **Refactor and guard rails:**
    - R2 (archive)
@@ -831,11 +881,12 @@ Each phase depends on the one before it. Phases 3 and 4 can run in parallel.
    D8 with the first parts of D12: measurement, per-run caps, mention limits and
    **invocable by**. Roles are needed by approvals, ownership and notifications. The audit log
    needs D1. Participants can't mention until D12's guards exist.
-   D13's executor service, node-by-node workflows and fair queue also land here, after D1.
+   D13's run service, node-by-node workflows and fair queue also land here, after D1.
    They change where every run executes, so they come before the features that add more runs.
+   The run-page chat goes with them (D6), and run pages become read-only.
    Autoscaling and the split lanes follow as load needs them.
-2. **Team experience:** D6 (with Jev's check on chat messages as they're posted), D10, D4 and
-   D14.
+2. **Team experience:** the rest of D6 (open chats, streaming, Jev's check on chat messages
+   as they're posted), D10, D4 and D14.
 3. **Agents and automation:** D5, D7, the rest of D12 (organisation budgets), then D3.
 4. **Inflow and insight:** D2 (with Jev classifying synced items) and D9.
 
@@ -850,7 +901,7 @@ A change that moves or drops tables does so in one step, and development data is
 - The platform database shrinks to identity, tenancy and coordination. Cross-database
   transactions are avoided by keeping each operation on one side of the boundary. Where both
   sides change (membership and `aios.people`, notifications), the platform side is the source
-  and the store copy catches up.
+  and the store copy catches up. A periodic repair sweep fixes any copy that drifts.
 - Connections per store grow, so the pooler becomes a required part of the deployment, locally
   and on AWS.
 - The run history export, the agent hard delete flow and the empty-organisation rules are
@@ -862,6 +913,8 @@ A change that moves or drops tables does so in one step, and development data is
   its grant.
 - Jev becomes a required service. While it's down, chat messages are refused and new documents
   and synced items wait unsearchable, because classification fails closed.
+- Content sent to Jev leaves aios, possibly to a hosted service. That's an accepted risk for the
+  demo.
 
 ## Open questions
 

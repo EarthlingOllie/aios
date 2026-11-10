@@ -13,9 +13,11 @@ when each step counts as done.
 
 ## Rules for every step
 
-- **A move is one change.** aios isn't live, so nothing is kept for the release before. A
-  change that moves a domain into the store, or stops using tables or columns, drops them in the
-  same change. Development data is rebuilt with `make seed`.
+- **A move is one change.** aios isn't live, from phase 0 on, so nothing is kept for the
+  release before: no expand and contract, no columns kept for older rows, no old routes kept for
+  a release, no staged rollouts and no rollback scripts. A change that moves a domain into the
+  store, or stops using tables, columns or routes, drops them in the same change. Development
+  data is rebuilt with `make seed`.
 - **Tool keys are never renamed.** `hybrid_search` and `history_search` stay registered. New
   behaviour gets new keys (`search`, `remember`, `post_message`, `start_workflow`, ...).
 - **Every limit is a setting.** Caps, budgets, allowances, rate limits, in-flight caps, grace
@@ -34,13 +36,16 @@ when each step counts as done.
 | Phase | Steps | Depends on |
 | --- | --- | --- |
 | **0. Refactor and guard rails** | 0.1 docs split · 0.2 module split · 0.3 full-stack test · 0.4 sharded tests · 0.5 archive · 0.6 many organisations | — |
-| **1. Foundation** | 1.1 pooler and turn lock · 1.2 store as system of record · 1.3 unified search and Jev, then removing the export · 1.4 retention · 1.5 roles and audit log · 1.6 invocations, usage and guards · 1.7 run executor and fair queue | phase 0 |
+| **1. Foundation** | 1.1 pooler and turn lease · 1.2 store as system of record · 1.3 unified search and Jev, then removing the export · 1.4 retention · 1.5 roles and audit log · 1.6 invocations, usage and guards · 1.7 run service and fair queue | phase 0 |
 | **2. Organisation experience** | 2.1 open chats · 2.2 streaming, one chat experience · 2.3 organisation assistant and default agents · 2.4 delivery, handback and notifications · 2.5 export and import | phase 1 |
 | **3. Agents and automation** | 3.1 continuing runs · 3.2 memory · 3.3 table ownership and per-agent roles · 3.4 structured workflows · 3.5 budgets · 3.6 event triggers · 3.7 lanes and autoscaling | phase 2 |
-| **4. Inflow and insight** | 4.1 sources and connectors · 4.2 Slack, Google Drive, GitHub · 4.3 Insights | phase 3 (4.3 can start after 1.6) |
+| **4. Inflow and insight** | 4.1 sources and connectors · 4.2 Slack, Google Drive, GitHub · 4.3 Insights | phase 2, and parts of phase 3 (below) |
 
-Phases 3 and 4 can run in parallel once phase 2 is done. Within each phase, the order below is
-the order of dependency.
+Phase 4 is not wholly parallel with phase 3. Sources, sync and connectors (4.1, 4.2) can run
+alongside phase 3, but webhook, URL and email sources wait for step 3.6's further events,
+Insights' approval panels wait for step 3.4's approvals, and prompted charts wait for step 3.5's
+budgets. Within each phase, the order below is the order of dependency, with one exception in
+phase 1: 1.3's Jev part and 1.4 need 1.5's audit log, so the audit log ships first.
 
 ---
 
@@ -167,7 +172,7 @@ the safe first move, rather than running in parallel inside one machine.
 ### 0.5 Archive instead of delete (R2)
 
 - **Model.** Agents, skills and workflows get `archived_at` and `archived_by`. Names stay
-  reserved while archived.
+  reserved while archived. Editors archive and unarchive them; until step 1.5, any member can.
 - **What archiving does:**
   - Nothing new starts on an archived agent or workflow: by hand, by schedule, by mention, as a
     workflow node, or as a workflow pinning it. Each refusal says it's archived.
@@ -214,8 +219,7 @@ the safe first move, rather than running in parallel inside one machine.
   - `CurrentOrganisation` reads the organisation from the path and checks membership. It stays
     the only place this is resolved.
   - `GET /api/me` lists the person's organisations.
-  - The shell gets an organisation switcher, and old URLs redirect to the person's last-used
-    organisation.
+  - The shell gets an organisation switcher. Old URLs aren't kept.
 - **Deleting an organisation.**
   - An admin schedules it, with a grace period: `ORGANISATION_DELETION_GRACE_DAYS`, 14 by
     default.
@@ -237,14 +241,15 @@ runs in CI, sharded like the rest of the suite.
 ## Phase 1: Foundation
 
 The aim is that the store is the system of record, with roles, an audit log, usage tracking and
-guards in place, and every run executes on a fair, shared executor pool.
+guards in place, and every run executes on a fair, shared run service.
 
-### 1.1 Connection pooler and turn lock
+### 1.1 Connection pooler and turn lease
 
 - **Pooler.** Add a pooler in front of the stores: PgBouncer in Compose, RDS Proxy (or PgBouncer
   on ECS) in Terraform. Stores are reached through it in transaction pooling mode.
-- **Turn lock.** Transaction pooling breaks session advisory locks, so the per-run turn lock in
-  `checkpoints.py` moves to a row lock on the run, held for the turn, or to a Redis lock.
+- **Turn lease.** Transaction pooling breaks session advisory locks, so the per-run turn lock in
+  `checkpoints.py` becomes a turn lease: a row lock on the run, held for the turn, or a Redis
+  lock.
 - **Connection limits.** Revisit `DATA_STORE_CONNECTION_LIMIT` and the per-process pools, now
   that the pooler multiplexes.
 - **Done when:** the whole suite and the full-stack test pass through the pooler, two tabs'
@@ -267,20 +272,29 @@ Domains, in order:
    Each store gets a `langgraph` schema and its own checkpointer.
 4. **Triggers.** Definitions move to the store. The platform keeps a thin "due" index (trigger
    id, store, next run time) for the scheduler.
-5. **Chats:** chats, chat members, messages, mentions, invocations and briefs.
+5. **Chats:** chats, chat members, messages, mentions, invocations and briefs, moved as they
+   are. Step 2.1 drops the owner and visibility columns.
 6. **Approvals:** schema change requests, which become approvals in step 3.4. Notifications stay
    in the platform database, as references.
 
 **Cross-database rules.** No transaction spans both databases. Where both sides change
 (membership and `aios.people`), the platform writes first and the store catches up,
-idempotently.
+idempotently. A small periodic repair sweep rebuilds the due index from each store's triggers
+and the people mirror from memberships, and reports what it fixed.
+
+**Deny list.** A few grant lines keep secret and credential columns (trigger webhook secrets,
+token hashes, connector credentials), people's emails in the people mirror, and audit log
+details out of the read-only and per-agent roles, and so out of `query_data`, `describe_data`
+and the Tables view. An adversarial test checks that the data tools can't read them and that
+`write_data` can't write outside the `data` schema.
 
 **Done when:**
 - every domain reads from the store;
 - the platform database holds only identity, organisations, memberships, invitations, the store
   registry and its credentials, notifications, and coordination indexes;
 - the full-stack test passes with no organisation content in the platform database;
-- `make seed` builds a working organisation from scratch.
+- `make seed` builds a working organisation from scratch;
+- the repair sweep and the deny list's adversarial test pass.
 
 ### 1.3 Unified search and Jev, then removing the export (D1, R1)
 
@@ -292,17 +306,30 @@ idempotently.
   `hybrid_search` and `history_search` keep their keys and become `search` fixed to their kinds.
   The Search page queries the same index and shows everything in the organisation. Flagged items,
   and items still awaiting a verdict, are left out.
-- **Jev.** Classify untrusted content before it reaches a model (0001, D1):
+- **Jev.** Classify untrusted content before it reaches a model (0001, D1). This part needs
+  step 1.5's audit log first. It adds:
   - a Python client behind `classify(content, source) -> verdict` over Jev's HTTP API, with its
-    URL and key in `.env`, a fake for unit tests, and one contract test against real Jev;
+    URL and key in `.env`, a fake for unit tests and `make seed`, and one contract test against
+    real Jev;
+  - one verdict set: `awaiting_check`, `clean`, `flagged`, `released`, `derived`;
   - a verdict column on documents and search items, set as ingestion classifies each document.
     Flagged documents are kept but left out of search and context; documents Jev couldn't check
-    wait as "awaiting check" and are retried;
-  - every tool result from outside (web search, web fetch, `query_data`) classified inline and
-    wrapped in an untrusted block. A flagged result, or one that can't be checked, reaches the
-    agent as an error;
-  - a flagged list in Settings, where an admin releases a document as trusted. It's still
-    wrapped as untrusted, and the release goes in the audit log.
+    wait as `awaiting_check`, are retried, and a periodic sweep re-checks any that are stuck.
+    The uploader sees each document's verdict;
+  - every tool result classified inline and wrapped in an untrusted block, except a short
+    trusted list of the platform's own tools (named in the ticket). That covers web search and
+    fetch, `run_python` output and sandbox files read back, and `query_data`. A flagged result,
+    or one that can't be checked, reaches the agent as an error;
+  - `query_data` text cells classified in chunks, in parallel within the timeout. A flagged cell
+    is redacted, not the whole result, and rows that already carry a verdict aren't classified
+    again;
+  - derived text (posts, handbacks, briefs, run messages and the like) gets the verdict
+    `derived`, isn't classified again, and is always wrapped;
+  - a flagged list in Settings, where an admin releases a document, setting it to `released`.
+    It's still wrapped as untrusted, and the release goes in the audit log;
+  - a health check with an alert and metrics, and a notice to people while Jev is down;
+  - a job that classifies stored content again when Jev's model or policy version changes. A
+    released item whose content changes goes back to `awaiting_check`, and admins are told.
 - **Remove the run history export (R1).** This happens only once `history_search` reads the new
   index. Remove:
   - `datastores/history.py` and the `history_exports` outbox;
@@ -318,7 +345,8 @@ idempotently.
 ### 1.4 Retention
 
 - **Settings.** Two admin settings on the organisation, `run_retention_days` and
-  `chat_retention_days`. Both default to "keep indefinitely".
+  `chat_retention_days`. Both default to "keep indefinitely". This step needs step 1.5's audit
+  log first.
 - **Daily pruning job, on the maintenance worker:**
   - **Runs** that finished before the cutoff, with their steps, checkpoints and index entries.
     Never runs still going or waiting on an approval. An agent's continuing run (from step 3.1)
@@ -381,16 +409,21 @@ idempotently.
 - **Done when:** every billable call writes exactly one ledger row (with a test that counts
   them), each guard refuses at its limit, and participants can mention.
 
-### 1.7 Run executor and fair queue (D13, core)
+### 1.7 Run service and fair queue (D13, core)
 
 - **Queue.** A table in the platform database records each item's organisation, store, lane,
   readiness time, attempts and lease. Executors claim with `FOR UPDATE SKIP LOCKED`, picking
   the organisation with the least in flight among those under their cap
   (`ORGANISATION_MAX_IN_FLIGHT`). Redis pub/sub wakes them, so they don't poll.
-- **Executor service.** A new ECS service and Compose service, using the API image. Each process
-  runs many turns at once on asyncio, up to a setting (50 by default). It runs every agent turn,
-  whatever caused it. The API stops running turns: remove that role from `aios.firing` and
-  `launch_turns`, and keep the scheduler only to enqueue what's due.
+- **Run service.** A new ECS service and Compose service, using the API image. Each of its
+  processes, an executor, runs many turns at once on asyncio, up to a setting (50 by default).
+  It runs every agent turn, whatever caused it, and interactive turns have reserved capacity.
+  The API stops running turns: remove that role from `aios.firing` and `launch_turns`, and keep
+  the scheduler only to enqueue what's due.
+- **Run pages become read-only.** Remove the one-to-one agent chat on the run page (`useChat` in
+  `pages/Run.tsx`), so turns from the run page are never built on the run service. Run pages
+  show the trace, events, usage and versions per turn. Until step 2.2, people talk to agents by
+  mentioning them in chats.
 - **Workflows advance node by node.**
   - Each ready node is a queue item. Finishing one runs a short coordinator step that records the
     step, works out which nodes are now ready, and enqueues them. This reuses the rebuilding of a
@@ -406,7 +439,8 @@ idempotently.
   - one organisation flooding the queue doesn't delay another's chat turn past a set target,
     with a test for it;
   - a deploy mid-turn resumes the turn instead of failing it;
-  - the full-stack test passes on executors.
+  - the full-stack test passes on the run service;
+  - no run page can start a turn.
 
 **Phase 1 is done when:** steps 1.1–1.7 are merged, the platform database holds no
 organisation content, and participants can safely mention.
@@ -446,23 +480,23 @@ and an assistant that knows everything in the store.
 ### 2.2 Streaming, and one chat experience (D6)
 
 - **Stream.** `GET /api/o/{organisation}/chats/{id}/stream` is a server-sent events stream
-  carrying new messages, invocation updates and reply token deltas. Executors publish to Redis;
-  API processes relay to browsers. A reply appears as a draft message that fills in as it
+  carrying new messages, invocation updates and reply token deltas. The run service publishes to
+  Redis; API processes relay to browsers. A reply appears as a draft message that fills in as it
   streams.
 - **Catching up.** `?after=N` stays for after a reconnect. The one-second poll and the 30-second
   hidden poll go. Unread counts update from the stream.
-- **One experience.** Remove the one-to-one agent chat on the run page (`useChat` in
-  `pages/Run.tsx`). Run pages become read-only: trace, events, usage and versions per turn. A
-  conversation with an agent is an ordinary chat. "Chat with this agent" creates a new open chat
-  with that agent included, named "<Agent> – <person> – <date>", which can be renamed.
+- **One experience.** A conversation with an agent is an ordinary chat (the run-page chat went
+  in step 1.7). "Chat with this agent" creates a new open chat with that agent included, named
+  "<Agent> – <person> – <date>", which can be renamed. It shows a short notice that the whole
+  organisation can see the chat.
 - **Done when:** replies stream in chats, a dropped connection recovers
   without gaps or duplicates, and nothing polls every second.
 
 ### 2.3 Organisation assistant and default agents (D10)
 
 - **Assistant.** `builtin = 'assistant'`, made when the organisation is. Its tools are `search`,
-  `describe_data` and `query_data`. Existing documents assistants get a new version with these
-  tools.
+  `describe_data` and `query_data`. `make seed` rebuilds development organisations, so no
+  existing assistant is upgraded.
 - **Default chat agents.** Admins choose which agents join every new chat; the organisation
   assistant is the default.
 - **Done when:** a new organisation's assistant can answer from documents, chats, past runs and
@@ -472,7 +506,8 @@ and an assistant that knows everything in the store.
 
 - **`post_message` tool.** An agent posts to a chat it's a chat member of.
   Mentions in what it posts start nothing.
-- **Deliver to.** Triggers can deliver to any chat.
+- **Deliver to.** Triggers can deliver to any chat. Setting one to deliver there adds its agent
+  or workflow to the chat.
 - **Handback.**
   - Summarises:
     - workflow outputs;
@@ -490,7 +525,8 @@ and an assistant that knows everything in the store.
   - `mention`: to a person mentioned;
   - `approval_needed`: to whoever can decide.
 
-  The bell lists them across all the person's organisations.
+  The bell lists them across all the person's organisations (each notification carries its
+  organisation from step 0.6).
 - **Done when:** a scheduled workflow's summary lands in a chat, every notification kind is
   covered, and the full-stack test checks a handback.
 
@@ -531,6 +567,8 @@ reacts to events, all under budgets.
 
 - **Table.** `aios.agent_memory`, with `remember` and `forget` tools. Recall is through `search`
   with kind `memory`, only the agent's own.
+- **Jev.** What an agent asks to remember is classified as it's written. A flagged memory is
+  refused, and the agent sees an error. Recalled memory is `derived` and always wrapped.
 - **Memory tab.** On the agent's page, people can see, edit and delete memories.
 - **Done when:** an agent recalls in one chat what it remembered in another, and memories
   survive archiving and unarchiving.
@@ -598,27 +636,31 @@ reacts to events, all under budgets.
   - `webhook.received`
 - **Event outbox.** `aios.events` in the store, written in the same transaction as the change
   that causes the event. A flag on the store in the platform database means the dispatcher
-  never scans idle stores. The dispatcher enqueues matching triggers on the executor queue.
+  never scans idle stores. The dispatcher enqueues matching triggers on the run service's queue.
 - **Filters and safeguards:**
   - each event has its filters, as in D3;
   - debounce windows;
   - loop prevention through the causation chain;
   - webhooks get their own URL and an HMAC secret, and their payloads are checked against the
-    workflow's input schema.
+    workflow's input schema. Jev classifies each body first, and nothing fires on a body that
+    is flagged or not yet checked;
+  - setting a `chat.message` trigger to listen to a chat adds its agent or workflow to that
+    chat, as delivery does.
 - **Done when:** each event kind fires its trigger once, a loop is refused at its cap, and a burst
   is coalesced.
 
 ### 3.7 Lanes and autoscaling (D13)
 
 - **Lanes:**
-  - **interactive**, with reserved capacity, claimed first;
+  - **interactive**, claimed first (its reserved capacity ships in step 1.7);
   - **background**;
-  - **ingest and sync**, on workers sized for them;
+  - **sources**: syncs, on the run service;
+  - **ingest**, on workers sized for it;
   - **urgent maintenance**: approvals, applying changes, restores;
   - **routine maintenance**: migrations, measuring, retention, expiry and sync cleanup.
 
   The beat only enqueues.
-- **Autoscaling.** Executors and ingest workers scale on queue depth and the age of the oldest
+- **Autoscaling.** The run service and ingest workers scale on queue depth and the age of the oldest
   item, published as metrics, with a small floor. The target is interactive latency.
 - **When to do it.** As load needs it. It can start any time after step 1.7.
 - **Done when:** a batch of schedules doesn't delay a chat reply past target, and idle capacity
@@ -642,16 +684,20 @@ its agents perform.
   - webhook, shared with step 3.6;
   - email inbox;
   - connector.
+
+  Webhook, URL and email sources wait for step 3.6's further events. Their items are classified
+  by Jev before anything fires or they become searchable.
 - **Connectors:**
   - credentials are encrypted in the platform database, never in the store;
   - an MCP client handles the connection, with native adapters only where MCP can't do bulk sync;
-  - sync runs on the `sources` lane, incrementally from a stored cursor, and reconciles deletions
-    against what the source still lists;
+  - sync runs on the run service, in the background lane until step 3.7 adds the `sources`
+    lane, incrementally from a stored cursor, and reconciles deletions against what the source
+    still lists;
   - synced items are indexed as `source_item` for search;
   - Jev classifies each synced item as it's written. Flagged items are kept with their verdict
-    but left out of search and context, items Jev couldn't check wait as "awaiting check" and are
-    retried by the sync, and admins can release flagged items from the same Settings list as
-    documents;
+    but left out of search and context, items Jev couldn't check wait as `awaiting_check` and
+    are retried by the sync, and admins can release flagged items (`released`) from the same
+    flagged list as documents;
   - a `connector` tool kind exposes a connector's tools to agent versions, which pin the tools
     allowed.
 - **Lifecycle.**
@@ -700,8 +746,8 @@ its agents perform.
     before drawing.
   - Saved charts (`aios.insight_charts`) run again on view under the same limits.
 - **Navigation.** Replaces the "Coming soon" Insights page.
-- **When to do it.** The panels can ship as soon as step 1.6's ledger exists. Prompted charts
-  follow.
+- **When to do it.** Most panels can ship as soon as step 1.6's ledger exists. The approval
+  panels wait for step 3.4, and prompted charts for step 3.5.
 - **Done when:** every panel reads from real data, and a prompted chart can be saved and reloaded.
 
 **Phase 4 is done when:** steps 4.1–4.3 are merged and documented.
@@ -715,7 +761,8 @@ its agents perform.
 | A domain's move breaking the app | 1.2 | One domain per change, `make seed` rebuilds development data, and the full-stack test passes after each move. |
 | Connection exhaustion as all traffic moves to stores | 1.1, 1.2 | The pooler first; idle per-store engines evicted. |
 | Model-written SQL escaping an agent's role | 3.3 | Separate login roles, plus the adversarial test as a merge gate. |
-| Prompt injection from untrusted content | 1.3, 2.1, 4.1 | Jev classifies chat messages, documents, synced items and tool results, failing closed, and every untrusted input is wrapped as untrusted whatever its verdict. |
+| Prompt injection from untrusted content | 1.3, 2.1, 3.2, 3.6, 4.1 | Jev classifies chat messages, documents, synced items, webhook bodies, memories and tool results, failing closed, and every untrusted or derived input is wrapped as untrusted whatever its verdict. |
+| Content sent to Jev, which may be hosted | 1.3 | Accepted for the demo. |
 | Runaway cost before budgets | 1.6, 3.5 | Per-turn caps, mention limits and **invocable by** before participants can mention. |
 | One organisation starving others | 1.7 | Fair claiming with per-organisation caps, plus a starvation test. |
 | Scope creep in connectors | 4.1, 4.2 | MCP first, three connectors only, everything else on the roadmap. |
@@ -730,13 +777,13 @@ its agents perform.
 | 0.4 Sharded tests | — | not started |
 | 0.5 Archive | — | not started |
 | 0.6 Many organisations | — | not started |
-| 1.1 Pooler and turn lock | — | not started |
+| 1.1 Pooler and turn lease | — | not started |
 | 1.2 Store as system of record | — | not started |
 | 1.3 Unified search and Jev, remove export | — | not started |
 | 1.4 Retention | — | not started |
 | 1.5 Roles and audit log | — | not started |
 | 1.6 Invocations, usage and guards | — | not started |
-| 1.7 Executor and fair queue | — | not started |
+| 1.7 Run service and fair queue | — | not started |
 | 2.1 Open chats | — | not started |
 | 2.2 Streaming, one chat experience | — | not started |
 | 2.3 Organisation assistant | — | not started |

@@ -25,12 +25,13 @@ runs. A participant's runs act with whatever powers the agent was given.
 _Avoid_: Viewer, guest, user
 
 **Editor**:
-A member who builds and changes agents, skills, workflows and triggers.
+A member who builds, changes, archives and unarchives agents, skills and workflows, and builds
+and changes triggers.
 _Avoid_: Builder, member (as a role)
 
 **Admin**:
-A member who also runs the organisation: members, roles, connectors, settings, archiving and
-destructive approvals.
+A member who also runs the organisation: members, roles, connectors, settings, archiving chats,
+releasing flagged content and destructive approvals.
 _Avoid_: Owner, creator
 
 ## The store
@@ -56,8 +57,20 @@ The agent that stewards a data table and may write it; other agents may only rea
 shared. Editors and admins share and transfer tables. A table whose owner is archived is
 read-only until ownership is transferred.
 
+**People mirror**:
+`aios.people` in the store: a copy of the organisation's members (id, name, role) that the
+platform keeps up to date, so agents can answer "who" from the store alone.
+
+**Reporting view**:
+A view in the store that summarises runs, turns, usage or the audit log for agents and Insights.
+
+**Deny list**:
+The few columns and tables (secrets, credentials, people's emails, audit log details) kept out
+of the data tools' grants.
+
 **Retention**:
-How long an organisation keeps its runs and its chat history before they're pruned; "keep indefinitely" is the default.
+How long an organisation keeps its runs and its chat history before they're pruned; "keep
+indefinitely" is the default.
 
 ## Agents, skills and workflows
 
@@ -95,12 +108,13 @@ _Avoid_: Deleted
 
 **Memory**:
 What an agent has chosen to remember across its runs, private to that agent and visible to
-people. It isn't tied to the chat it was learned in.
+people. It isn't tied to the chat it was learned in. Jev checks it as it's written.
 
 ## Running
 
 **Run**:
-An agent's conversation, or a workflow's execution, pinned to one version. An agent's run may
+An agent's working session in one chat or for one trigger, or a workflow's execution, pinned
+to one version. An agent's run may
 last one turn (a schedule's) or many (its ongoing run in a chat); a run itself has no outcome.
 
 **Turn**:
@@ -124,8 +138,31 @@ a data table written or a chat message posted.
 The billable work a run causes (model calls, embeddings, searches, sandbox time), recorded
 against who and what caused it.
 
+**Cap**:
+A configurable limit on one run or turn: model calls, tokens or cost.
+
+**Allowance**:
+A configurable monthly spending limit for a role or one member, charged to whoever caused the
+usage.
+
 **Budget**:
-A configurable limit on usage, for a run, a member or the organisation.
+The organisation's monthly spending limit, set by an admin.
+
+**Invocable by**:
+An agent's or workflow's setting for who may start it: everyone, editors or admins.
+
+**Run service**:
+The shared service that runs every agent turn and workflow node, for every organisation, from
+a fair queue. Each of its worker processes is an **executor**.
+_Avoid_: Run executor, executor service, worker (for the service)
+
+**Lane**:
+A kind of work in the run service's queue, claimed in its own order: interactive, background,
+sources, ingest, and urgent or routine maintenance.
+
+**Turn lease**:
+The hold a turn takes on its run so that two turns of one run never overlap.
+_Avoid_: Turn lock
 
 ## Chats
 
@@ -172,6 +209,27 @@ organisation, whatever its permissions were at the source.
 A file in the store, parsed and indexed for search. An uploaded document belongs to the
 organisation and stays until someone deletes it; a synced document is a synced item.
 
+**Jev**:
+The external classifier that checks untrusted content for prompt injection before it reaches a
+model. aios integrates it; it doesn't build its own.
+
+**Untrusted content**:
+Anything that comes from people or from outside: chat messages people send, documents, synced
+items, webhook bodies and tool results. It's classified by Jev, and always wrapped in an
+**untrusted block** in a model's context, whatever its verdict.
+
+**Derived**:
+Text agents write from possibly untrusted content (posts, handbacks, briefs, run messages,
+summaries, recalled memory). It isn't classified again, but is always wrapped as untrusted.
+
+**Verdict**:
+What Jev's check recorded on a piece of content: `awaiting_check`, `clean`, `flagged`,
+`released` or `derived`. Only clean, released and derived content is searchable.
+
+**Flagged list**:
+The list in Settings of flagged documents and synced items, where an admin can release one. A
+released item is still wrapped as untrusted, and the release is in the audit log.
+
 **Approval**:
 Something a member with the right role must decide, approving or rejecting it, before a run
 can carry on: a schema change, or a workflow's approval step.
@@ -197,7 +255,7 @@ _Avoid_: Schema change request (in prose), migration
 - "Member" was both a person in an organisation and one of three roles; the role is now
   **Editor**, and "member" means anyone in the organisation.
 - "Data store" and "isolated database" both meant the **Store**.
-- "Run" meant both the conversation and one execution of it; the conversation is the **Run**,
+- "Run" meant both the conversation and one execution of it; the working session is the **Run**,
   an execution is a **Turn**.
 - "Invocation" meant only what a mention made; it now covers every cause.
 - "Private chat" and "direct message" are gone: every **Chat** is open, and chats no longer
@@ -206,3 +264,9 @@ _Avoid_: Schema change request (in prose), migration
   **Organisation**, or name the service.
 - "Team" is reserved for the roadmap's groups inside an organisation; it never means the
   organisation itself.
+- "Budget" covered every usage limit; per-run limits are **Caps**, per-person limits are
+  **Allowances**, and only the organisation's limit is the **Budget**.
+- "Executor" meant both the service and one of its processes; the service is the **Run
+  service**, and an **executor** is one process.
+- "Flagged" means only Jev's verdict; a Slack channel or scope with a problem is "marked
+  restricted" or "needs attention".
