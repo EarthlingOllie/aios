@@ -1,0 +1,144 @@
+# Agents and skills
+
+An **agent** is a base prompt plus a set of **skills** (reusable instructions) and **tools** from
+a built-in library (see [Tools](tools.md)), and you chat with it. Each conversation with an
+agent is a **run**. Agents are LangGraph agents (LangChain's `create_agent`, on Anthropic).
+Agents, skills and the runs of agents belong to the organisation (see
+[Accounts and organisations](accounts-and-organisations.md#what-the-organisation-owns)).
+
+## The Agents and Skills lists
+
+The Agents and Skills lists each have a search box: every word typed must appear in an item's
+name or description, ignoring case and accents, and the list shows how many of its items match
+("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a shared link or Back
+keeps it, and opening, editing, creating or deleting an item, or its versions and runs, leaves
+the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and
+Unused; Skills: All, Used, i.e. by some live agent's current version, and Unused, each saying
+"Used by 3 agents") and a sort menu (by name, the default, by most recently updated, and for
+agents by most runs) narrow and order the list, combined with the search and kept in the URL too
+(`?filter=used&sort=runs`); **Clear filters** resets them all. The Agents list also has an
+**Any skill** and an **Any tool** select, for the agents whose current version uses that skill
+(any version of it) or has that tool (`?skill=12&tool=web_search`). Pressing `/` jumps to the
+list's search box, except while typing in a field.
+
+## Versions
+
+Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
+chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
+the model's behaviour:
+
+- Changing an agent's prompt, skills or tools (or a tool's settings) creates a new version.
+  Renaming doesn't, and nor does saving without changes (configs are compared by hash).
+- Changing a skill's description or content creates a new version, and so does renaming it: the
+  name is sent to the model in each agent's instructions, so each skill version snapshots it.
+- Each agent version pins specific skill versions and stores the exact rendered instructions.
+  Editing a skill doesn't change any agent; the agent shows "Update to vN" and taking the update
+  creates a new agent version.
+- A run is pinned to the agent version it started on, so editing an agent mid-conversation
+  doesn't change it.
+- Restoring an old version creates a new one with that config; numbers only go up.
+- Skills are soft-deleted (old agent versions still reference their versions), and can't be
+  deleted while an agent's current version uses them.
+- A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
+  by (the agents whose current version uses it, with a count) and Versions (with a count). The
+  open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
+  and restoring a version returns there.
+- Each run is traced to Langfuse when it's configured (see [Tracing](tracing.md)), with
+  `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
+  settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
+  session.
+- Agents are soft-deleted too (older workflow versions keep pinning their versions: see
+  [Workflows](workflows.md#versions)). Names are unique among the organisation's live rows, so
+  they can be reused.
+- Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so
+  a delete can't race a save that starts using what it deletes.
+
+**Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
+description and instructions in a `<skill>` block). That's simple and works well for a handful
+of skills. With many large skills, switch to progressive disclosure: list only names and
+descriptions, and give the agent a tool to load a skill's full instructions.
+
+## Runs
+
+Each conversation with an agent is saved as a **run** (a LangGraph thread), whose page shows the
+conversation and an event log: messages, model responses, tool calls and results, the
+instructions sent and token usage. A run also records how it went and what it cost: a status
+(running, succeeded, failed), when its latest turn began and ended, and, over all its turns, the
+model's tool calls and its input and output tokens (each model call's, summed, so the context is
+counted again at each step, as bills count it). The run list and the run page show these; runs
+from before they were kept show "not tracked" rather than zero, and the run page's event log
+still totals the stored messages for them.
+
+- Each run is a LangGraph thread (`agent-run-<id>`) kept by the Postgres checkpointer, the
+  client sends only its new message, and the agent continues from the thread's latest
+  checkpoint. The user's message is checkpointed before the model is called; if a turn fails or
+  is stopped, the reply's text so far (or an error result for each tool call that hadn't
+  finished) is added to the thread, so the next turn sees what the user saw. Turns of the same
+  run are serialized by a Postgres advisory lock: a second tab's turn waits for the first, then
+  builds on it. `agent_runs` keeps a message count and title for listings, and the run's status,
+  times and counters, written by each turn.
+- **The checkpointer's tables are LangGraph's, not Alembic's.** They live in the `langgraph`
+  schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
+  first time a process runs a turn. Alembic only compares the `public` schema, so `alembic
+  check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
+  keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
+  `CREATE` on the database.
+
+Runs start by hand, from a chat mention (see [Chats](chats.md)), from a schedule (see
+[Triggers](triggers.md)) or as a workflow's agent node (see [Workflows](workflows.md)).
+
+## The documents assistant
+
+Each new chat has the organisation's **documents assistant** as its first agent
+(`aios.assistant`): the glossary's organisation assistant, today an agent of the
+organisation's, made for whichever member first creates a chat (`agents.builtin =
+'documents'`, one live one per organisation), with the document search tool and instructions
+to ground its answers in the results, citing sources. It calls the hybrid search tool (vector
+plus full-text, fused with Reciprocal Rank Fusion: see [Tools](tools.md#search)) over the
+organisation's documents. It's mentioned and answers like any agent chat member
+(acknowledgement, brief, card and reply: see [Chats](chats.md)). It's listed with the
+organisation's other agents, where it can be edited like one; deleted, a fresh one joins the
+next chat. Chats made before it existed don't get it, but their owner can add it like any
+agent.
+
+## Deleting an agent
+
+Deleting an agent still deletes its runs, their threads and sandboxes. An agent is deleted only
+once what depends on it is resolved (`aios.dependents`).
+
+`GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
+have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
+version runs it at any depth, the live workflows whose current version runs it (directly, or
+through a nested workflow's pinned version) with their schedules, and its own schedules.
+`DELETE /api/agents/{id}` answers 409 with that list (`detail.dependents`, and a
+`detail.message`) until its body resolves each: `cancel_agent_runs` and
+`cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
+deactivate; any other workflow must first be edited to stop running the agent (the agent's
+page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
+that starts waiting, after the user looked refuses the delete rather than being cancelled
+unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
+failed first, as reading it would.
+
+- Cancelling a workflow run fails it (`aios.workflows.cancel_runs`), closes out its requests
+  (pending ones cancelled, their notifications cleared) and starts no more of its nodes; a
+  worker running it stops at its next beat. A chat run is deleted with the agent, as before,
+  cancelling its requests.
+- Any turn still underway on the agent's runs (a chat's, a schedule's, a cancelled workflow
+  run's node) is stopped: the connection holding its turn lock is ended
+  (`checkpoints.stop_turns`), so it fails at its next write, and a model or tool call already
+  underway finishes unrecorded. A turn that only takes its run's lock after the run has gone
+  finds it gone and does nothing, so no thread is left behind.
+- **Deactivating** a workflow turns off its schedules (as pausing each would, dropping a firing
+  claimed but not started), and with the agent gone no run of it can start, by hand or by
+  schedule: starting one is refused as running a deleted agent. It stays, to be edited
+  (removing the node, or taking a nested workflow's newer version) or deleted; its schedules
+  can be turned back on once it runs.
+- It all happens in one transaction, with the agent and the workflows that run it locked, so a
+  run being started is either seen (and refuses the delete) or waits and then can't start.
+
+On the agent's page, Delete opens a dialog that loads the list: with nothing in it, a simple
+confirm; otherwise each run (with the node it waits at and its requests), workflow and schedule
+links to where it's seen or managed, in a new tab, with a "Cancel these runs" box and
+Deactivate or Edit workflow for each workflow. Delete stays disabled until each has a
+resolution, and the list is checked again when the window regains focus (or on "Check again"),
+so a workflow edited meanwhile leaves it.

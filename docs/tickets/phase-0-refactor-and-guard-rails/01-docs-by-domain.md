@@ -16,18 +16,18 @@ Pages describe today's behaviour and use the glossary's words.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A docs index page lists every page with one line each.
-- [ ] Every heading of the old README exists on exactly one docs page. Nothing is lost or
+- [x] A docs index page lists every page with one line each.
+- [x] Every heading of the old README exists on exactly one docs page. Nothing is lost or
   duplicated.
-- [ ] Each stale line is fixed:
-  - [ ] stores described as "one per user" (they're per organisation);
-  - [ ] the reference to a plan "on the plan branch" is removed;
-  - [ ] "and later a mention in a chat" is corrected;
-  - [ ] "once runs can pause" is corrected.
-- [ ] No page contradicts the code, and pages use glossary vocabulary, with "Organisation" on
+- [x] Each stale line is fixed:
+  - [x] stores described as "one per user" (they're per organisation);
+  - [x] the reference to a plan "on the plan branch" is removed;
+  - [x] "and later a mention in a chat" is corrected;
+  - [x] "once runs can pause" is corrected.
+- [x] No page contradicts the code, and pages use glossary vocabulary, with "Organisation" on
   screen.
-- [ ] The README is about 150 lines: product summary, architecture diagram and stack table, quick
+- [x] The README is about 150 lines: product summary, architecture diagram and stack table, quick
   start, and links to the glossary, docs index, decision records and roadmap.
-- [ ] Nothing remains only in the README that isn't also on a docs page.
+- [x] Nothing remains only in the README that isn't also on a docs page.

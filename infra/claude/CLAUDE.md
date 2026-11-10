@@ -2,7 +2,9 @@
 
 You are running in the `claude` container of the aios `docker compose` project, on the same
 network as the running stack. The repo is bind-mounted at `/workspace`: edits you make there
-change the developer's working copy directly. Read `/workspace/README.md` for the architecture.
+change the developer's working copy directly. Read `/workspace/README.md` for the architecture,
+and `/workspace/docs/` for how each part works (one page per domain, listed in
+`/workspace/docs/README.md`).
 
 ## Services (hostnames on this network)
 
