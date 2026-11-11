@@ -53,7 +53,11 @@ def test_archiving_and_unarchiving_a_workflow(api, user, queued):  # noqa: F811
     archived = archive(api, workflow)
 
     assert archived["archived_at"] is not None
-    assert archived["archived_by"] == {"id": user.id, "name": user.full_name}
+    assert archived["archived_by"] == {
+        "id": user.id,
+        "name": user.full_name,
+        "former_member": False,
+    }
     # Its page still opens, archived, with its versions and runs.
     shown = api.get(f"/api/workflows/{workflow['id']}").json()
     assert shown["archived_at"] == archived["archived_at"]
@@ -258,7 +262,11 @@ def test_any_member_archives_and_unarchives(api, member):  # noqa: F811
 
     with signed_in_as(member):
         archived = archive(api, workflow)
-        assert archived["archived_by"] == {"id": member.id, "name": member.full_name}
+        assert archived["archived_by"] == {
+            "id": member.id,
+            "name": member.full_name,
+            "former_member": False,
+        }
         assert unarchive(api, workflow)["archived_at"] is None
 
 

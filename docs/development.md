@@ -101,6 +101,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     models.py (the tables every store has: documents, chunks; and the
                     run history export's), history.py (the run history export),
                     provision.py (creating, migrating and deleting each store's database),
+                    people.py (the people mirror, and its repair sweep),
                     files.py (uploaded files in S3, and download links), schema_changes/
                     (schema change requests: spec, compile, apply, expiry), and
                     migrations/ (the store Alembic tree)

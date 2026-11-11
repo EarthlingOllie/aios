@@ -268,7 +268,7 @@ def list_triggers(
     elif target_kind == TriggerTargetKind.workflow:
         query = query.where(Trigger.workflow_id == target_id)
     triggers = db.scalars(query).all()
-    known = people(db, [i for t in triggers for i in (t.created_by, t.updated_by)])
+    known = people(db, org.id, [i for t in triggers for i in (t.created_by, t.updated_by)])
     return [trigger_out(db, t, known) for t in triggers]
 
 

@@ -16,7 +16,7 @@ from test_provisioning import login_url
 
 from aios import worker
 from aios.config import get_settings, libpq_conninfo
-from aios.datastores import store_not_ready
+from aios.datastores import store_not_ready, store_session
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
 from aios.testing.fake_model import ToolCall
@@ -300,7 +300,14 @@ def test_a_call_is_written_whole_or_not_at_all(api, store, agent):
 
 
 @pytest.mark.parametrize(
-    "table", ["aios.schema_history", "aios.embedding_columns", "public.fish", "schema_history"]
+    "table",
+    [
+        "aios.schema_history",
+        "aios.embedding_columns",
+        "aios.people",
+        "public.fish",
+        "schema_history",
+    ],
 )
 def test_only_data_tables_can_be_written(api, store, agent, table):
     with as_owner(store) as conn:
@@ -412,14 +419,59 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agen
     assert store.role_prefix not in result["error"]
 
 
-def test_it_writes_as_the_stores_read_write_role(api, store, agent):
+def test_it_writes_as_the_stores_writer_reached_as_its_read_write_role(api, store, agent):
     with as_owner(store) as conn:
-        conn.execute("CREATE TABLE data.audit (id int PRIMARY KEY, who text DEFAULT current_user)")
+        conn.execute(
+            "CREATE TABLE data.audit (id int PRIMARY KEY, who text DEFAULT current_user,"
+            " via text DEFAULT session_user)"
+        )
 
     write(api, agent, table="audit", operation="insert", rows=[{"id": 1}])
 
     with as_owner(store) as conn:
-        assert conn.execute("SELECT who FROM data.audit").fetchone() == (f"{store.role_prefix}_rw",)
+        assert conn.execute("SELECT who, via FROM data.audit").fetchone() == (
+            f"{store.role_prefix}_writer",
+            f"{store.role_prefix}_rw",
+        )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO aios.people (id, first_name, last_name, email, role, joined_at)"
+        " VALUES (999, 'Eve', 'Intruder', 'eve@example.com', 'admin', now())",
+        "UPDATE aios.people SET role = 'admin'",
+        "DELETE FROM aios.people",
+        "UPDATE aios.documents SET filename = 'x'",
+        "DELETE FROM aios.chunks",
+        "INSERT INTO aios.schema_history (summary, sql) VALUES ('x', 'x')",
+        "DELETE FROM aios.embedding_columns",
+        "SELECT email FROM aios.people",
+        "CREATE TABLE data.eels (id int)",
+        "ALTER TABLE data.fish ADD COLUMN colour text",
+        "DROP TABLE data.fish",
+    ],
+)
+def test_the_role_write_data_writes_as_cant_write_outside_the_data_schema(store, statement):
+    """Adversarial: whatever the tool lets through, the role it runs as may write only in `data`
+    (and can't read people's emails). The tool sends no SQL of the model's, so nothing can reset
+    the role within its transaction."""
+    with store_session(store.id, "rw") as session:
+        pg = session.connection().connection.driver_connection
+        write_data.as_writer(pg)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            pg.execute(statement)
+
+
+def test_the_writer_writes_in_the_data_schema(store):
+    with store_session(store.id, "rw") as session:
+        pg = session.connection().connection.driver_connection
+        write_data.as_writer(pg)
+        pg.execute("INSERT INTO data.fish (name) VALUES ('eel')")
+        pg.execute("UPDATE data.fish SET weight_kg = 1 WHERE name = 'eel'")
+        pg.execute("DELETE FROM data.fish WHERE name = 'pike'")
+        session.commit()
+    assert [name for name, *_ in fish(store)] == ["perch", "eel"]
 
 
 def test_values_of_each_type(api, store, agent):

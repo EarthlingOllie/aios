@@ -56,7 +56,7 @@ def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
-    known = people(db, [v.created_by for v, *_ in rows])
+    known = people(db, org.id, [v.created_by for v, *_ in rows])
     return [
         AgentVersionSummary(
             id=v.id,

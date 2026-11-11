@@ -10,10 +10,14 @@ This ticket also sets up the deny list: a few columns and tables are left out of
 
 **Blocked by:** [Phase 0 · 02: Models split into a package by domain](../phase-0-refactor-and-guard-rails/02-models-package.md), [Phase 0 · 12: Delete an organisation with a grace period; remove unscoped routes](../phase-0-refactor-and-guard-rails/12-delete-organisation.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Joining, leaving, renaming and role changes reach the store's people mirror.
-- [ ] Lists and pages show who made and last changed each thing from the store, and "former member" for people who have left.
-- [ ] A new store and an existing store both have the mirror after provisioning or the store migration command.
-- [ ] A deleted or stale mirror row is rebuilt by the repair sweep, which reports what it fixed.
-- [ ] Adversarial test: `query_data` and `describe_data` can't read or list people's emails in the mirror, and `write_data` can't write outside the `data` schema.
+- [x] Joining, leaving, renaming and role changes reach the store's people mirror.
+  (Until roles arrive (Phase 1 · 07) a member's role is derived: admin for the creator, editor
+  for everyone else. A role change marks the mirror changed (`aios.datastores.people.changed`),
+  as joining, leaving, a rename and a new email do; the tests change the creator to stand in for
+  the role endpoint that ticket adds.)
+- [x] Lists and pages show who made and last changed each thing from the store, and "former member" for people who have left.
+- [x] A new store and an existing store both have the mirror after provisioning or the store migration command.
+- [x] A deleted or stale mirror row is rebuilt by the repair sweep, which reports what it fixed.
+- [x] Adversarial test: `query_data` and `describe_data` can't read or list people's emails in the mirror, and `write_data` can't write outside the `data` schema.

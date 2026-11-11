@@ -21,8 +21,9 @@ from aios.auth import (
     start_session,
 )
 from aios.config import get_settings
+from aios.datastores import people
 from aios.db import DB
-from aios.models import User
+from aios.models import OrganisationMember, User
 from aios.passwords import hash_password, verify_password
 
 # Its PATCH and PUTs refuse cross-site requests.
@@ -47,8 +48,20 @@ def edit_name(body: NameIn, user: CurrentUser, db: DB):
     """Change the user's first and/or last name. No password is needed."""
     for field in body.model_fields_set:
         setattr(user, field, getattr(body, field))
+    mirrored(db, user)
     db.commit()
     return me_out(db, user)
+
+
+def mirrored(db: DB, user: User) -> None:
+    """Mark the people mirrors of every organisation the user is in as changed: their name or
+    email is about to be, once the caller commits."""
+    people.changed(
+        db,
+        db.scalars(
+            select(OrganisationMember.organisation_id).where(OrganisationMember.user_id == user.id)
+        ).all(),
+    )
 
 
 def check_current_password(user: User, password: str) -> None:
@@ -84,6 +97,7 @@ def change_email(body: EmailIn, user: CurrentUser, db: DB):
     if db.scalar(taken) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN)
     user.email = body.email
+    mirrored(db, user)
     try:
         db.commit()
     except IntegrityError as exc:

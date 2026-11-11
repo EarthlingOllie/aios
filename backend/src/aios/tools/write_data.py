@@ -10,7 +10,8 @@ in one transaction per call: a call is written whole, or not at all.
   or any others): there's no "every row".
 - A call writes at most `WRITE_DATA_MAX_ROWS` rows. Inserts and upserts past it are refused
   before anything is run, as are updates and deletes that match more (they're counted first).
-- Only `data` tables: the platform's (`aios`) are never written here.
+- Only `data` tables: the platform's (`aios`) are never written here. It runs as the store's
+  writer role (`as_writer`), which may write in `data` and nowhere else.
 
 Embedding columns are marked in `aios.embedding_columns`: a `vector(EMBEDDING_DIM)` column, and
 the text column in the same table it embeds. Writing the text writes its embedding too, made
@@ -40,6 +41,7 @@ from aios.config import get_settings
 from aios.datastores import quota, store_session
 from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.models import EMBEDDING_DIM
+from aios.datastores.provision import writer_of
 from aios.datastores.reads import jsonable
 from aios.embeddings import embed_documents
 from aios.tools.data import (
@@ -511,11 +513,20 @@ def _over_cap(plan: Plan, max_rows: int) -> Refused:
     )
 
 
+def as_writer(pg: psycopg.Connection) -> None:
+    """Act as the store's writer role for the rest of the transaction (`SET LOCAL`, so nothing
+    outlives it on a pooled connection): it may write only in `data`
+    (`provision.WRITER_SUFFIX`), whatever the read-write role it's reached as may."""
+    (rw,) = pg.execute("SELECT current_user").fetchone()
+    pg.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(writer_of(rw))))
+
+
 def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> Any:
     """Writes the call, or says what it needs embedding first (`NeedsEmbedding`)."""
     max_rows = get_settings().write_data_max_rows
     with store_session(data_store_id, "rw") as session:
         pg: psycopg.Connection = session.connection().connection.driver_connection
+        as_writer(pg)
         try:
             plan = _plan(pg, call)
             vectors: list[list[float]] = []

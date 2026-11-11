@@ -60,7 +60,9 @@ def list_agents(
         )
         .order_by(Agent.name)
     ).all()
-    known = people(db, [i for a, *_ in rows for i in (a.created_by, a.updated_by, a.archived_by)])
+    known = people(
+        db, org.id, [i for a, *_ in rows for i in (a.created_by, a.updated_by, a.archived_by)]
+    )
     return [
         AgentSummary(
             id=a.id,

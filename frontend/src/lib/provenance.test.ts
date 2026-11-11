@@ -14,6 +14,17 @@ describe("personName", () => {
     expect(personName(me, me)).toBe("you");
     expect(personName(me)).toBe("Terry Tester");
   });
+
+  it("says someone who has left the organisation is a former member", () => {
+    const left: User = { id: 4, name: "Lee Gone", former_member: true };
+    expect(personName(left, me)).toBe("Lee Gone (former member)");
+    expect(describeProvenance({ created_by: left, updated_by: sam }, me)).toBe(
+      "Created by Lee Gone (former member) · last changed by Sam Jones",
+    );
+    expect(describeStarter({ created_by: left, trigger_id: null }, me)).toBe(
+      "Started by Lee Gone (former member)",
+    );
+  });
 });
 
 describe("describeProvenance", () => {

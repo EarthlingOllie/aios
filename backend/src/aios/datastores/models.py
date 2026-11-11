@@ -100,6 +100,31 @@ class DroppedObject(StoreBase):
     restore_error: Mapped[str | None] = mapped_column(Text)
 
 
+class Person(StoreBase):
+    """The people mirror: one row per person who is or was a member of the store's organisation,
+    as the platform (the source of truth) has them (`aios.datastores.people`). The platform
+    writes it after its own commits, and the repair sweep rebuilds it from memberships. Their
+    email is on the deny list: the read-only role (and so `query_data`, `describe_data` and the
+    Tables view) may read every column but it (`provision.DENIED_COLUMNS`)."""
+
+    __tablename__ = "people"
+    __table_args__ = {
+        "comment": "The organisation's people, current and former members, with their roles"
+    }
+
+    # Their platform user id (a store has no users table, so no foreign key).
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    first_name: Mapped[str] = mapped_column(Text)
+    last_name: Mapped[str] = mapped_column(Text)
+    email: Mapped[str] = mapped_column(Text)
+    # admin, editor or participant.
+    role: Mapped[str] = mapped_column(Text)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # When they left; null while they're a member.
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class DocumentStatus(enum.StrEnum):
     pending = "pending"
     processing = "processing"

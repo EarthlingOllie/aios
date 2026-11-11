@@ -42,6 +42,8 @@ celery_app.conf.update(
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         "aios.delete_data_stores": {"queue": "provisioning"},
+        # The repair sweep: upkeep of what the platform copies into stores.
+        "aios.repair_stores": {"queue": "provisioning"},
         # Run by the provisioning worker's beat; it queues the stores' teardown there too.
         "aios.delete_due_organisations": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
@@ -74,6 +76,8 @@ PURGE_DROPPED_EVERY = 3600
 # Stores with runs still waiting to be exported (their export was never queued, or was lost)
 # are queued this often (seconds), by the same beat; the exports go to the app workers.
 EXPORT_PENDING_HISTORY_EVERY = 60
+# The repair sweep (`repair_stores_task`) runs this often (seconds), by the same beat.
+REPAIR_STORES_EVERY = 600
 celery_app.conf.beat_schedule = {
     "retry-unfinished-data-stores": {
         "task": "aios.retry_unfinished_data_stores",
@@ -112,6 +116,11 @@ celery_app.conf.beat_schedule = {
         "task": "aios.export_pending_history",
         "schedule": EXPORT_PENDING_HISTORY_EVERY,
         "options": {"expires": EXPORT_PENDING_HISTORY_EVERY},
+    },
+    "repair-stores": {
+        "task": "aios.repair_stores",
+        "schedule": REPAIR_STORES_EVERY,
+        "options": {"expires": REPAIR_STORES_EVERY},
     },
 }
 
@@ -280,6 +289,19 @@ def export_history_task(self, data_store_id: str) -> None:
     except (DataStoreNotFound, DataStoreNotReady):
         # Deleted, or being deleted, since: its outbox goes with it.
         return
+
+
+@celery_app.task(
+    name="aios.repair_stores",
+    soft_time_limit=REPAIR_STORES_EVERY,
+    time_limit=REPAIR_STORES_EVERY + 60,
+)
+def repair_stores_task() -> None:
+    """The repair sweep: bring every ready store's people mirror back in line with its
+    organisation's memberships, logging what it fixed (`aios.datastores.people.repair`)."""
+    from aios.datastores import people
+
+    people.repair()
 
 
 @celery_app.task(name="aios.export_pending_history")

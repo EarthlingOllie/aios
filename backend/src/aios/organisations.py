@@ -31,6 +31,10 @@ stays in the organisation, and a chat they owned goes to its member added first
 (`hand_over_chats`); one with nobody left in it goes to whoever joins it next if it's public, and
 is deleted if it's private, as nobody could join it.
 
+**The people mirror.** Joining, leaving, and changes to a member's name, email or role mark the
+organisation's store's people mirror as changed (`aios.datastores.people.changed`), which is
+brought up to date once the platform's transaction commits.
+
 **Deleting** is deliberate and slow. The creator schedules it (`schedule_deletion`) by typing the
 organisation's name; it's deleted `ORGANISATION_DELETION_GRACE_DAYS` (14 by default) later, and
 every member is notified, and again if the creator cancels it in the meantime
@@ -57,6 +61,7 @@ from sqlalchemy.orm import Session
 
 from aios import notifications
 from aios.config import get_settings
+from aios.datastores import people
 from aios.models import (
     Agent,
     Chat,
@@ -157,6 +162,7 @@ def create(db: Session, user: User, name: str) -> Organisation:
             break
     db.add(OrganisationMember(organisation_id=org_id, user_id=user.id))
     db.flush()
+    people.changed(db, org_id)
     return db.get_one(Organisation, org_id)
 
 
@@ -232,6 +238,7 @@ def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
         .on_conflict_do_nothing(index_elements=["organisation_id", "user_id"])
     )
     db.flush()
+    people.changed(db, invite.organisation_id)
     return db.get_one(Organisation, invite.organisation_id)
 
 
@@ -299,6 +306,8 @@ def leave(db: Session, org: Organisation, user: User) -> None:
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
         _forget_requests(db, user, store_id)
+    # They stay in its people mirror, as a former member.
+    people.changed(db, org.id)
     # The bulk deletes bypass the session: anything it loaded of them (`org.members`) is stale.
     db.expire_all()
 

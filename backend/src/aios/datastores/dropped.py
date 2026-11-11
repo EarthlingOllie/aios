@@ -20,7 +20,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg import sql
@@ -36,6 +36,9 @@ from aios.datastores.schema_changes import (
 )
 from aios.db import SessionLocal
 from aios.models import DataStore
+
+if TYPE_CHECKING:
+    from aios.datastores.provision import StoreNames
 
 log = logging.getLogger(__name__)
 
@@ -125,13 +128,16 @@ _COLUMNS_SQL = """
 """
 
 
-def grant_access(conn: psycopg.Connection, rw: str, ro: str, table: str) -> None:
-    """Give the store's login roles (`rw`, `ro`) the access to `data.<table>` it calls for now:
-    none if it's dropped; only to its other columns if it has dropped columns; otherwise what
-    the store's default privileges give a new table. Run as the owner, in the transaction that
-    changed it."""
+def grant_access(conn: psycopg.Connection, names: "StoreNames", table: str) -> None:
+    """Give the store's roles (`rw` and `write_data`'s writer, which write, and `ro`) the access
+    to `data.<table>` it calls for now: none if it's dropped; only to its other columns if it has
+    dropped columns; otherwise what the store's default privileges give a new table. Run as the
+    owner, in the transaction that changed it."""
     relation = sql.Identifier(SCHEMA, table)
-    both = sql.SQL("{}, {}").format(sql.Identifier(rw), sql.Identifier(ro))
+    writers = sql.SQL("{}, {}").format(sql.Identifier(names.rw), sql.Identifier(names.writer))
+    both = sql.SQL("{}, {}, {}").format(
+        sql.Identifier(names.rw), sql.Identifier(names.ro), sql.Identifier(names.writer)
+    )
     # Takes its column privileges too.
     conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(relation, both))
     if is_dropped(table):
@@ -142,9 +148,7 @@ def grant_access(conn: psycopg.Connection, rw: str, ro: str, table: str) -> None
     if kept == columns:
         conn.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(relation, both))
         conn.execute(
-            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(
-                relation, sql.Identifier(rw)
-            )
+            sql.SQL("GRANT INSERT, UPDATE, DELETE ON TABLE {} TO {}").format(relation, writers)
         )
         return
     listed = sql.SQL(", ").join(map(sql.Identifier, kept))
@@ -157,10 +161,10 @@ def grant_access(conn: psycopg.Connection, rw: str, ro: str, table: str) -> None
     )
     conn.execute(
         sql.SQL("GRANT INSERT ({0}), UPDATE ({0}) ON TABLE {1} TO {2}").format(
-            listed, relation, sql.Identifier(rw)
+            listed, relation, writers
         )
     )
-    conn.execute(sql.SQL("GRANT DELETE ON TABLE {} TO {}").format(relation, sql.Identifier(rw)))
+    conn.execute(sql.SQL("GRANT DELETE ON TABLE {} TO {}").format(relation, writers))
 
 
 # --- The Dropped section, and restoring ---------------------------------------------------------
@@ -342,7 +346,7 @@ def restore(data_store_id: uuid.UUID, dropped_id: int) -> str | None:
                 )
                 for statement in statements:
                     conn.execute(statement)
-                grant_access(conn, names.rw, names.ro, table)
+                grant_access(conn, names, table)
                 _record(conn, summary, statements)
         except _Refused as exc:
             conn.execute(
@@ -424,7 +428,7 @@ def purge(data_store_id: uuid.UUID, wait: bool = True) -> list[str]:
                     for statement in statements:
                         conn.execute(statement)
                     if table is not None and table_exists(conn, table):
-                        grant_access(conn, names.rw, names.ro, table)
+                        grant_access(conn, names, table)
                     _record(conn, summary, statements)
                 purged.append(summary)
     if purged:

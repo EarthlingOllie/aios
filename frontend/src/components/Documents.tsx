@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-store";
 import { formatBytes } from "@/lib/format-bytes";
+import { personName } from "@/lib/provenance";
 import { cn } from "@/lib/utils";
 
 const statusVariant = {
@@ -411,8 +412,7 @@ export function DocumentsSection() {
                 <p className="truncate text-sm">{doc.filename}</p>
                 <p className="text-muted-foreground text-xs">
                   Uploaded {formatDate(doc.created_at)}
-                  {doc.uploaded_by &&
-                    ` by ${doc.uploaded_by.name}`}
+                  {doc.uploaded_by && ` by ${personName(doc.uploaded_by)}`}
                   {doc.status === "ready" &&
                     ` · ${doc.chunk_count} ${doc.chunk_count === 1 ? "chunk" : "chunks"}`}
                 </p>

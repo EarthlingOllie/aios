@@ -67,7 +67,7 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
         )
         .order_by(Chat.updated_at.desc(), Chat.id.desc())
     ).all()
-    known = people(db, [i for row in rows for i in (row[0].created_by, row[0].updated_by)])
+    known = people(db, org.id, [i for row in rows for i in (row[0].created_by, row[0].updated_by)])
     return [
         ChatListed(
             **chat_summary(db, chat, count, role, known=known).model_dump(),

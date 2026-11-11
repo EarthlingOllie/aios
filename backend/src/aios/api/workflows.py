@@ -375,7 +375,9 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
 
 
 def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
-    saved_by = people(object_session(version), [version.created_by]).get(version.created_by)
+    saved_by = people(
+        object_session(version), version.workflow.organisation_id, [version.created_by]
+    ).get(version.created_by)
     return WorkflowVersionOut(
         id=version.id,
         version=version.version,
@@ -388,7 +390,11 @@ def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
 
 
 def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
-    known = people(db, [workflow.created_by, workflow.updated_by, workflow.archived_by])
+    known = people(
+        db,
+        workflow.organisation_id,
+        [workflow.created_by, workflow.updated_by, workflow.archived_by],
+    )
     return WorkflowOut(
         id=workflow.id,
         name=workflow.name,
@@ -466,7 +472,9 @@ def list_workflows(
         .order_by(Workflow.name)
     ).all()
     contained = contained_workflows(db, org)
-    known = people(db, [i for w, *_ in rows for i in (w.created_by, w.updated_by, w.archived_by)])
+    known = people(
+        db, org.id, [i for w, *_ in rows for i in (w.created_by, w.updated_by, w.archived_by)]
+    )
     return [
         WorkflowSummary(
             id=w.id,
@@ -596,7 +604,7 @@ def list_workflow_versions(workflow_id: DbId, org: CurrentOrganisation, db: DB):
         .where(WorkflowVersion.workflow_id == workflow.id)
         .order_by(WorkflowVersion.version.desc())
     ).all()
-    known = people(db, [v.created_by for v, _ in rows])
+    known = people(db, org.id, [v.created_by for v, _ in rows])
     return [
         WorkflowVersionSummary(
             id=v.id,
@@ -879,7 +887,10 @@ def workflow_run_summary_query():
 
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
     row = db.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
-    return started_by(db, [row], WorkflowRunSummary)[0]
+    organisation_id = db.scalar(
+        select(Workflow.organisation_id).join(WorkflowRun).where(WorkflowRun.id == run_id)
+    )
+    return started_by(db, organisation_id, [row], WorkflowRunSummary)[0]
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
@@ -892,7 +903,7 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
         .where(WorkflowRun.workflow_id == workflow.id)
         .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
     ).all()
-    return started_by(db, rows, WorkflowRunSummary)
+    return started_by(db, org.id, rows, WorkflowRunSummary)
 
 
 @router.post(

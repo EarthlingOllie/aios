@@ -224,7 +224,11 @@ def version_summary(
 
 def skill_out(db: Session, skill: Skill) -> SkillOut:
     version = skill.current_version
-    known = people(db, [skill.created_by, skill.updated_by, skill.archived_by, version.created_by])
+    known = people(
+        db,
+        skill.organisation_id,
+        [skill.created_by, skill.updated_by, skill.archived_by, version.created_by],
+    )
     return SkillOut(
         id=skill.id,
         name=skill.name,
@@ -262,7 +266,9 @@ def list_skills(
         )
         .order_by(Skill.name)
     ).all()
-    known = people(db, [i for s, _, _ in rows for i in (s.created_by, s.updated_by, s.archived_by)])
+    known = people(
+        db, org.id, [i for s, _, _ in rows for i in (s.created_by, s.updated_by, s.archived_by)]
+    )
     return [
         SkillSummary(
             id=skill.id,
@@ -363,14 +369,15 @@ def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB):
         .where(SkillVersion.skill_id == skill.id)
         .order_by(SkillVersion.version.desc())
     ).all()
-    known = people(db, [v.created_by for v in versions])
+    known = people(db, org.id, [v.created_by for v in versions])
     return [version_summary(v, known, SkillVersionSummary) for v in versions]
 
 
 @router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
 def get_skill_version_detail(skill_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
     version = get_skill_version(db, get_org_skill(db, org, skill_id), number)
-    return version_summary(version, people(db, [version.created_by]), SkillVersionOut)
+    known = people(db, org.id, [version.created_by])
+    return version_summary(version, known, SkillVersionOut)
 
 
 @router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)

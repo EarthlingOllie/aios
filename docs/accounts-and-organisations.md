@@ -132,7 +132,9 @@ another organisation each is a 404 (each API module's `get_org_*` checks `organi
 against `CurrentOrganisation`, and lists filter by it). Names are unique within the
 organisation (a 409 names the clash), so two organisations can each have a "Reviewer". Each
 says which member made it and which last changed it (`created_by`, `updated_by`, reported as
-the user, shown on lists and pages: `aios.api.provenance`), each version which member saved it,
+the person, shown on lists and pages: `aios.api.provenance`, resolved through the store's people
+mirror, see [Stores](stores.md#the-people-mirror); someone who has left shows as a "former
+member"), each version which member saved it,
 and a deleted one records who deleted it (`deleted_by`). A workflow or schedule can only run
 the organisation's agents and workflows, and deleting an agent finds what depends on it across
 the organisation. Nothing answers to whoever made it. The **store** is the organisation's (see

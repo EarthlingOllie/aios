@@ -45,7 +45,7 @@ from aios.auth import (
 from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.db import DB, SessionLocal
-from aios.models import Organisation, OrganisationInvite, OrganisationMember, User
+from aios.models import DataStore, Organisation, OrganisationInvite, OrganisationMember, User
 
 router = APIRouter(prefix="/api")
 
@@ -294,10 +294,15 @@ def leave_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     return me_out(db, user)
 
 
-def users_out(user_ids: set[int]) -> dict[int, UserOut]:
-    """The users with these ids whose accounts are still there, by id, on a session of its own:
-    for what records who did it where users can't be joined (a data store's documents)."""
+def users_out(store_id: uuid.UUID, user_ids: set[int]) -> dict[int, UserOut]:
+    """The store's organisation's people with these ids, by id, on a session of its own: for
+    what records who did it in a store (its documents)."""
     if not user_ids:
         return {}
     with SessionLocal() as db:
-        return people(db, user_ids)
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == store_id)
+        )
+        if organisation_id is None:
+            return {}
+        return people(db, organisation_id, user_ids)

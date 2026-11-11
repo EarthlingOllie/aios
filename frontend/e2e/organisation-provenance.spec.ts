@@ -33,3 +33,18 @@ test("a workflow made and changed by one member names only them", async ({ page 
   const list = page.getByRole("list", { name: "Workflows" });
   await expect(list.getByTestId("provenance")).toHaveText("Created by Sam Jones");
 });
+
+test("someone who has left the organisation shows as a former member", async ({ page }) => {
+  const api = await fakeApi(page);
+  const agent = api.addAgent("Reviewer");
+  agent.created_by = { ...sam, former_member: true };
+  agent.archived_at = "2026-11-01T09:00:00Z";
+  agent.archived_by = { ...sam, former_member: true };
+  await page.goto(inOrg(`/agents/${agent.id}`));
+
+  const header = page.getByRole("heading", { name: /Reviewer/ }).locator("..");
+  await expect(header.getByTestId("provenance")).toHaveText(
+    "Created by Sam Jones (former member) · last changed by you",
+  );
+  await expect(page.getByText(/This agent is archived by Sam Jones \(former member\)/)).toBeVisible();
+});

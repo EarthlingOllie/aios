@@ -33,7 +33,11 @@ def test_archiving_and_unarchiving_a_skill(api, user):
     archived = archive(api, skill)
 
     assert archived["archived_at"] is not None
-    assert archived["archived_by"] == {"id": user.id, "name": user.full_name}
+    assert archived["archived_by"] == {
+        "id": user.id,
+        "name": user.full_name,
+        "former_member": False,
+    }
     # Its page still opens, archived, with its versions.
     assert api.get(f"/api/skills/{skill['id']}").json()["archived_at"] == archived["archived_at"]
     assert api.get(f"/api/skills/{skill['id']}/versions").status_code == 200
@@ -141,7 +145,11 @@ def test_any_member_archives_and_unarchives(api, member):  # noqa: F811
 
     with signed_in_as(member):
         archived = archive(api, skill)
-        assert archived["archived_by"] == {"id": member.id, "name": member.full_name}
+        assert archived["archived_by"] == {
+            "id": member.id,
+            "name": member.full_name,
+            "former_member": False,
+        }
         assert unarchive(api, skill)["archived_at"] is None
 
 

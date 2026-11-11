@@ -190,7 +190,7 @@ def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
         conn.execute(request.sql)  # several statements: sent whole, with no parameters
         for table in _access_changed(spec):
             if table_exists(conn, table):
-                dropped.grant_access(conn, names.rw, names.ro, table)
+                dropped.grant_access(conn, names, table)
         record_history(conn, request.summary, request.sql, request.id)
 
 

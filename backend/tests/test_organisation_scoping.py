@@ -31,7 +31,7 @@ def outsider(db):
 
 
 def person(u: User) -> dict:
-    return {"id": u.id, "name": u.full_name}
+    return {"id": u.id, "name": u.full_name, "former_member": False}
 
 
 def ok(resp, code: int = 200) -> dict:

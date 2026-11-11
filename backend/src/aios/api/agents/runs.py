@@ -132,7 +132,10 @@ def run_summary_query():
 
 def run_summary(db: Session, run_id: int) -> RunSummary:
     row = db.execute(run_summary_query().where(AgentRun.id == run_id)).one()
-    return started_by(db, [row], RunSummary)[0]
+    organisation_id = db.scalar(
+        select(Agent.organisation_id).join(AgentRun).where(AgentRun.id == run_id)
+    )
+    return started_by(db, organisation_id, [row], RunSummary)[0]
 
 
 def build_version_tools(
@@ -154,7 +157,7 @@ def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return started_by(db, rows, RunSummary)
+    return started_by(db, org.id, rows, RunSummary)
 
 
 def new_agent_run(

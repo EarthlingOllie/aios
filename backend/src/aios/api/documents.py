@@ -88,7 +88,7 @@ def list_documents(store_id: CurrentDataStore):
             .order_by(Document.created_at.desc())
         ).all()
     # Once the store's session is done: the request's own was closed when the store was found.
-    by = users_out({d.uploaded_by for d, _ in rows if d.uploaded_by is not None})
+    by = users_out(store_id, {d.uploaded_by for d, _ in rows if d.uploaded_by is not None})
     return [
         DocumentOut(
             id=d.id,

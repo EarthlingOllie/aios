@@ -51,6 +51,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { personName } from "@/lib/provenance";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 import { ArchivedBadge } from "@/pages/Agents";
 
@@ -268,7 +269,7 @@ function WorkflowDetailView({ id }: { id: number }) {
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       {w.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
-          This workflow is archived{w.archived_by ? ` by ${w.archived_by.name}` : ""} on{" "}
+          This workflow is archived{w.archived_by ? ` by ${personName(w.archived_by)}` : ""} on{" "}
           {formatDate(w.archived_at)}. It starts nothing new until it's unarchived, nor does a
           workflow that nests it; its schedules stay paused until someone resumes them.
         </p>

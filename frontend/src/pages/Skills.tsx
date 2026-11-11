@@ -43,6 +43,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { personName } from "@/lib/provenance";
 import { plural } from "@/lib/utils";
 import { ArchivedBadge } from "@/pages/Agents";
 
@@ -196,7 +197,7 @@ export function SkillDetail() {
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       {skill.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
-          This skill is archived{skill.archived_by ? ` by ${skill.archived_by.name}` : ""} on{" "}
+          This skill is archived{skill.archived_by ? ` by ${personName(skill.archived_by)}` : ""} on{" "}
           {formatDate(skill.archived_at)}. It can't be added to an agent until it's unarchived;
           agents that use it keep running with it.
         </p>

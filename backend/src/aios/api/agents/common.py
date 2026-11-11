@@ -238,7 +238,7 @@ def tool_out(tool: AgentVersionTool) -> AgentToolOut:
 def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) -> AgentVersionOut:
     """The version, with who saved it from `known` (`provenance.people`), else read now."""
     if known is None:
-        known = people(object_session(version), [version.created_by])
+        known = people(object_session(version), version.agent.organisation_id, [version.created_by])
     skills = []
     for sv in version.skills:
         skill = sv.skill
@@ -271,7 +271,11 @@ def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) 
 
 def agent_out(db: Session, agent: Agent) -> AgentOut:
     version = agent.current_version
-    known = people(db, [agent.created_by, agent.updated_by, agent.archived_by, version.created_by])
+    known = people(
+        db,
+        agent.organisation_id,
+        [agent.created_by, agent.updated_by, agent.archived_by, version.created_by],
+    )
     return AgentOut(
         id=agent.id,
         name=agent.name,

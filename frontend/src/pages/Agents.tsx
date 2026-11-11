@@ -59,6 +59,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { personName } from "@/lib/provenance";
 
 const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
   {
@@ -378,7 +379,7 @@ export function AgentDetail() {
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       {a.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
-          This agent is archived{a.archived_by ? ` by ${a.archived_by.name}` : ""} on{" "}
+          This agent is archived{a.archived_by ? ` by ${personName(a.archived_by)}` : ""} on{" "}
           {formatDate(a.archived_at)}. It starts nothing new until it's unarchived; its schedules
           stay paused until someone resumes them.
         </p>

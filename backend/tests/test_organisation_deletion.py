@@ -79,7 +79,7 @@ def test_the_creator_schedules_deletion_by_typing_the_name_and_every_member_is_t
     resp = schedule(api)
     assert resp.status_code == 200, resp.text
     deletion = resp.json()["deletion"]
-    assert deletion["scheduled_by"] == {"id": user.id, "name": "Test User"}
+    assert deletion["scheduled_by"] == {"id": user.id, "name": "Test User", "former_member": False}
     # The grace period: 14 days by default.
     assert parse(deletion["deletes_at"]) - parse(deletion["scheduled_at"]) == timedelta(days=14)
 

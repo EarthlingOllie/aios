@@ -154,6 +154,43 @@ deletion, search, ingest and the document search tools open their sessions with
 the `data_store_id`, so a run's tools act on its organisation's store whoever started it. Each store is a database of its own, so
 keeping organisations' documents apart is the database's job, not a filter in every query.
 
+### The people mirror
+
+Each store has a **people mirror**, `aios.people` (`aios.datastores.people`): one row per person
+who is or was a member of its organisation, with their id (their platform user id), first and
+last names, email, role (admin for the creator, editor for everyone else, until roles exist), and
+when they joined and left (`left_at`, null while they're a member). The platform is its source
+of truth, and writes it after its own commit: joining, leaving, a rename or a new email, and a
+role change mark the organisation's mirror as changed on the platform's session
+(`people.changed`), and once that commits it's brought to match the memberships
+(`people.refresh`), as the store's `_rw`, under a lock so the last to write read the latest. A
+store not ready yet is filled by its provisioning (a step before it's marked ready, as the
+owner), and the store migration command fills an existing store's as it brings it to the
+revision that makes the table (`0008`). A write that fails is logged and left to the **repair
+sweep** (`aios.repair_stores`, on the provisioning worker's beat every ten minutes), which brings
+every ready store's mirror to match its organisation's memberships and logs and returns what it
+fixed: rows it added (one deleted, or never written), updated (stale) and marked left.
+
+"Made by" and "changed by" resolve through it (`people.resolve`, for `aios.api.provenance`): a
+person's name, and whether they're a former member, from the mirror; anyone it doesn't have
+(the store isn't ready or can't be reached, or it hasn't caught up) from the platform.
+
+### The deny list
+
+A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so
+out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror,
+for now (later: audit log details, secrets and credentials). The role keeps the table's other
+columns. It's a few grant lines, applied every time a store is migrated (the default
+privileges would otherwise give a new table's every column).
+
+`write_data` writes as the store's **writer** role, `ds_<id>_writer` (no login): `_rw` may
+`SET ROLE` to it but doesn't inherit its privileges, and the tool does so for each call's
+transaction (`SET LOCAL ROLE`, so nothing outlives it on a pooled connection). The writer may
+read, insert, update and delete in `data` (dropped tables and columns aside, as `_rw`), read the
+bookkeeping it plans with (`aios.embedding_columns`, `aios.dropped_objects`) and nothing else:
+it writes only in the `data` schema, and can't read the deny list either. Provisioning creates
+it, and migrating a store made before it creates it and gives it its grants.
+
 ### Uploaded files
 
 **Uploaded files are in S3** (`aios.datastores.files`; RustFS locally, in Compose and the

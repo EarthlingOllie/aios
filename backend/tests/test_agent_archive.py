@@ -49,7 +49,11 @@ def test_archiving_and_unarchiving_an_agent(api, user):
     archived = archive(api, agent)
 
     assert archived["archived_at"] is not None
-    assert archived["archived_by"] == {"id": user.id, "name": user.full_name}
+    assert archived["archived_by"] == {
+        "id": user.id,
+        "name": user.full_name,
+        "former_member": False,
+    }
     # Its page still opens, archived, with its versions and runs.
     shown = api.get(f"/api/agents/{agent['id']}").json()
     assert shown["archived_at"] == archived["archived_at"]
@@ -277,7 +281,11 @@ def test_any_member_archives_and_unarchives(api, user, member):  # noqa: F811
 
     with signed_in_as(member):
         archived = archive(api, agent)
-        assert archived["archived_by"] == {"id": member.id, "name": member.full_name}
+        assert archived["archived_by"] == {
+            "id": member.id,
+            "name": member.full_name,
+            "former_member": False,
+        }
         assert unarchive(api, agent)["archived_at"] is None
 
 

@@ -13,6 +13,8 @@ export type User = {
   id: number;
   /** Their full name, "First Last". */
   name: string;
+  /** They've left the organisation; what they made still names them. */
+  former_member?: boolean;
 };
 
 /** The name the app shows a user by, as the API does: "First Last". */

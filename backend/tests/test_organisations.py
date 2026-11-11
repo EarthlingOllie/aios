@@ -165,7 +165,7 @@ def test_creating_an_organisation_makes_the_person_its_creator_and_only_member(
             "founders-ltd",
             True,
         )
-        assert org["creator"] == {"id": person.id, "name": "Founder Tester"}
+        assert org["creator"] == {"id": person.id, "name": "Founder Tester", "former_member": False}
         assert [m["user"]["id"] for m in org["members"]] == [person.id]
         assert client.get("/api/me").json()["organisations"] == [
             {
@@ -242,10 +242,10 @@ def test_the_organisation_page_shows_the_name_creator_and_members_with_when_they
 ):
     org = api.get("/api/organisation").json()
     assert (org["name"], org["is_creator"]) == ("Test User", True)
-    assert org["creator"] == {"id": user.id, "name": "Test User"}
+    assert org["creator"] == {"id": user.id, "name": "Test User", "former_member": False}
     assert [(m["user"], m["invite_id"]) for m in org["members"]] == [
-        ({"id": user.id, "name": "Test User"}, None),
-        ({"id": member.id, "name": "Member Person"}, None),
+        ({"id": user.id, "name": "Test User", "former_member": False}, None),
+        ({"id": member.id, "name": "Member Person", "former_member": False}, None),
     ]
     first, second = (m["joined_at"] for m in org["members"])
     assert first <= second

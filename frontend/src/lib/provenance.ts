@@ -3,9 +3,10 @@ import type { Provenance, User } from "@/lib/api";
 /** Whom `me` is, for saying "you": the signed-in user, or anyone with an id. */
 type Self = Pick<User, "id"> | null | undefined;
 
-/** A member as a line of text names them: "you", or their name. */
+/** A member as a line of text names them: "you", or their name, saying when they've left. */
 export function personName(user: User, me?: Self): string {
-  return user.id === me?.id ? "you" : user.name;
+  if (user.id === me?.id) return "you";
+  return user.former_member ? `${user.name} (former member)` : user.name;
 }
 
 /**

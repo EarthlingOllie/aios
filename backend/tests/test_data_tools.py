@@ -54,6 +54,21 @@ def provisioned(db, store_id: uuid.UUID) -> DataStore:
     return store_row(db, store_id)
 
 
+def new_sessions(store: DataStore, role: str) -> None:
+    """End every session the store's `role` has, so the next are new and take the role's
+    settings now: this process's pools, and the pooler's server connections (which outlive
+    them, and which reading who made something through the people mirror has opened)."""
+    dispose_engines()
+    name = f"{store.role_prefix}_{role}"
+    with psycopg.connect(
+        libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
+    ) as conn:
+        conn.execute(f'GRANT "{name}" TO CURRENT_USER WITH INHERIT TRUE, SET FALSE')
+        conn.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = %s", (name,)
+        )
+
+
 @pytest.fixture
 def store(db, user) -> DataStore:
     """The signed-in user's store, provisioned, with a hand-made `data.fish` table."""
@@ -78,8 +93,9 @@ def data_agent(api) -> dict:
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=DATA_TOOLS)).json()
 
 
-def run_tools(api, agent: dict, *calls: ToolCall) -> list:
-    """One agent turn in which the model makes `calls` (in turn); returns what each gave."""
+def run_tools(api, agent: dict, *calls: ToolCall, before_turn=None) -> list:
+    """One agent turn in which the model makes `calls` (in turn); returns what each gave.
+    `before_turn` is called once the run is made, before the turn."""
     outputs = []
     pending = list(calls)
 
@@ -91,6 +107,8 @@ def run_tools(api, agent: dict, *calls: ToolCall) -> list:
             yield "done"
 
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    if before_turn is not None:
+        before_turn()
     with use_model(model(script)):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("go")).status_code == 200
@@ -247,7 +265,7 @@ def short_timeout(store) -> str:
         libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
     ) as conn:
         conn.execute(f"ALTER ROLE \"{store.role_prefix}_ro\" SET statement_timeout = '300ms'")
-    dispose_engines()  # the role's settings apply to new sessions
+    new_sessions(store, "ro")
     return "SELECT pg_sleep(5)"
 
 
@@ -366,7 +384,7 @@ def two_second_timeout(store) -> None:
         libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
     ) as conn:
         conn.execute(f"ALTER ROLE \"{store.role_prefix}_ro\" SET statement_timeout = '2s'")
-    dispose_engines()  # the role's settings apply to new sessions
+    new_sessions(store, "ro")
 
 
 def test_a_huge_result_is_cut_short_without_reading_it_all(api, data_agent, two_second_timeout):
@@ -539,6 +557,7 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
         ("aios", "chunks"),
         ("aios", "documents"),
         ("aios", "embedding_columns"),
+        ("aios", "people"),
         ("aios", "schema_history"),
     }
     assert query(api, data_agent, "SELECT current_database()")["rows"] == [[store.dbname]]
@@ -592,6 +611,7 @@ def test_each_run_reads_its_own_organisations_store(api, store, other_store, dat
         ("aios", "chunks"),
         ("aios", "documents"),
         ("aios", "embedding_columns"),
+        ("aios", "people"),
         ("aios", "schema_history"),
     }
     assert result["rows"] == [["hunter2"]]
@@ -632,27 +652,28 @@ def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, stat
         ("CONNECTION LIMIT 0", "busy"),
     ],
 )
+@pytest.mark.parametrize(
+    "call", [ToolCall("describe_data", {}), ToolCall("query_data", {"sql": "SELECT 1"})]
+)
 def test_a_store_that_cant_be_reached_is_an_error_for_the_model(
-    api, store, data_agent, change, says
+    api, store, data_agent, change, says, call
 ):
-    """Not a failed turn: the model is told, and can tell the user."""
-    with psycopg.connect(
-        libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
-    ) as conn:
-        conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
-    dispose_engines()
+    """Not a failed turn: the model is told, and can tell the user. One call each: through the
+    pooler, a login after a failed one answers alike for a while (`server_login_retry`)."""
 
-    described, queried = run_tools(
-        api,
-        data_agent,
-        ToolCall("describe_data", {}),
-        ToolCall("query_data", {"sql": "SELECT 1"}),
-    )
+    def unreachable() -> None:
+        # Once the run is made: showing it reads who started it from the store, as the role.
+        with psycopg.connect(
+            libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
+        ) as conn:
+            conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
+        new_sessions(store, "ro")
 
-    for result in (described, queried):
-        assert set(result) == {"error"}
-        assert says in result["error"]
-        assert store.role_prefix not in result["error"]
+    (result,) = run_tools(api, data_agent, call, before_turn=unreachable)
+
+    assert set(result) == {"error"}
+    assert says in result["error"]
+    assert store.role_prefix not in result["error"]
 
 
 def test_the_tools_keep_working_call_after_call(api, store, data_agent):

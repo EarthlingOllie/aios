@@ -153,7 +153,7 @@ def test_members_share_the_organisations_store_and_see_who_uploaded_each_documen
 ):
     assert store_of(member) == store_of(user)
     mine = upload(api, "mine.md")
-    assert mine["uploaded_by"] == {"id": user.id, "name": "Test User"}
+    assert mine["uploaded_by"] == {"id": user.id, "name": "Test User", "former_member": False}
 
     with signed_in_as(member):
         theirs = upload(api, "theirs.md")

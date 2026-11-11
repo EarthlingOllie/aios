@@ -283,7 +283,8 @@ function newPasswordInvalid(field: string, password: string, confirmation: unkno
 }
 
 /** A user as chats show them (an `Account` is one). */
-export type ChatUser = Pick<Account, "id" | "first_name" | "last_name">;
+// `former_member`: they've left the organisation (the API says so from its store's people mirror).
+export type ChatUser = Pick<Account, "id" | "first_name" | "last_name"> & { former_member?: boolean };
 type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
   | {
