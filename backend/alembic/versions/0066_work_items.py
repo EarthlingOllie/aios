@@ -38,9 +38,7 @@ def upgrade() -> None:
             sa.ForeignKey("data_stores.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column(
-            "lane", sa.Enum("interactive", "background", name="work_lane"), nullable=False
-        ),
+        sa.Column("lane", sa.Enum("interactive", "background", name="work_lane"), nullable=False),
         sa.Column(
             "kind", sa.Enum("invocation_start", "agent_turn", name="work_kind"), nullable=False
         ),
