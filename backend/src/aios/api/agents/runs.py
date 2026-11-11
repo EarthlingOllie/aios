@@ -83,9 +83,9 @@ class RunOut(RunSummary):
 
 
 def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> AgentRun:
-    """A run of the organisation's live agent; a 404 otherwise, as if it didn't exist. Every
-    member reads, continues and deletes every run of the organisation's, whoever started it
-    and however (by hand, from a chat, by a schedule)."""
+    """A run of the organisation's agent (archived or not); a 404 otherwise, as if it didn't
+    exist. Every member reads, continues and deletes every run of the organisation's, whoever
+    started it and however (by hand, from a chat, by a schedule)."""
     run = get_live_run(db, agent_id, run_id)
     if run.agent.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -93,10 +93,10 @@ def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> A
 
 
 def get_live_run(db: Session, agent_id: int, run_id: int) -> AgentRun:
-    """A run of the live agent, whoever's it is; a 404 otherwise."""
+    """A run of the agent, whoever's it is; a 404 otherwise."""
     agent = db.get(Agent, agent_id)
     run = db.get(AgentRun, run_id)
-    if agent is None or agent.deleted_at is not None or run is None or run.agent_id != agent.id:
+    if agent is None or run is None or run.agent_id != agent.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
@@ -164,9 +164,9 @@ def new_agent_run(
     `created_by`: who asked for it by hand or in a chat. It runs for the agent's organisation,
     not for them (`load_chat_context`).
 
-    Raises `HTTPException` if it can't run: 404 if the agent has been deleted, 409 if its
-    version can't be built. The caller commits; the share lock taken here, held until then,
-    keeps a concurrent delete from missing the run and leaving it behind. Also how a schedule
+    Raises `HTTPException` if it can't run: 409 if the agent is archived ("The agent <name> is
+    archived.") or its version can't be built. The caller commits; the share lock taken here,
+    held until then, keeps a concurrent archive or delete from missing the run. Also how a schedule
     starts one (`aios.scheduler`), passing its `trigger_id` and no member.
     """
     lock_live_agent(db, agent, read=True)

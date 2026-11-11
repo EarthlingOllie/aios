@@ -37,6 +37,9 @@ type AgentRow = {
   /** The members who made it and last changed it (`me` unless a test says otherwise). */
   created_by: ChatUser | null;
   updated_by: ChatUser | null;
+  /** When it was archived, and by whom: both null while it isn't. */
+  archived_at: string | null;
+  archived_by: ChatUser | null;
 };
 type SkillVersionRow = {
   id: number;
@@ -322,6 +325,7 @@ type ChatMemberOut = {
   target_id: number;
   name: string;
   added_at: string;
+  archived: boolean;
 };
 export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
 /** An open invitation link, with the token the fake keeps (the API keeps only its hash). */
@@ -827,6 +831,8 @@ export class FakeApi {
       tools: [],
       created_by: this.me,
       updated_by: this.me,
+      archived_at: null,
+      archived_by: null,
     };
     for (let n = 1; n <= versions; n++) {
       const vid = this.id();
@@ -1293,6 +1299,11 @@ export class FakeApi {
       [],
       { kind: "run_card", invocation_id: invocation.id },
     );
+    // An archived agent's fails at once, as the API's does: no handoff, no run.
+    if ("archived_at" in target && target.archived_at !== null) {
+      const error = `The agent ${target.name} is archived`;
+      this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
+    }
     return invocation;
   }
 
@@ -1530,6 +1541,8 @@ export class FakeApi {
       updated_at: NOW,
       created_by: agent.created_by,
       updated_by: agent.updated_by,
+      archived_at: agent.archived_at,
+      archived_by: agent.archived_by,
       current_version: this.agentVersionOut(agent, agent.versions.length),
     };
   }
@@ -1620,11 +1633,12 @@ export class FakeApi {
         const { id, kind, added_at } = m;
         if (kind === "user") {
           const { user, role } = m;
-          return [{ id, kind, role, target_id: user.id, name: fullName(user), added_at }];
+          return [{ id, kind, role, target_id: user.id, name: fullName(user), added_at, archived: false }];
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
-        return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at }];
+        const archived = "archived_at" in target && target.archived_at !== null;
+        return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at, archived }];
       })
       .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
   }
@@ -1633,11 +1647,12 @@ export class FakeApi {
     return { ...this.chatSummary(chat), members: byKind(this.liveMembers(chat)) };
   }
 
-  /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them. */
-  private mentionable(chat: ChatRow) {
+  /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them: not its
+   * archived agents, unless `archived` (posting takes a mention of one, which fails at once). */
+  private mentionable(chat: ChatRow, archived = false) {
     const users = new Map(chat.members.flatMap((m) => (m.kind === "user" ? [[m.user.id, m.user]] : [])));
     return byKind(
-      this.liveMembers(chat).map(({ kind, target_id, name }) => {
+      this.liveMembers(chat).filter((m) => archived || !m.archived).map(({ kind, target_id, name }) => {
         const user = kind === "user" ? users.get(target_id) : undefined;
         return { kind, id: target_id, name, first_name: user?.first_name ?? null, last_name: user?.last_name ?? null };
       }),
@@ -2241,9 +2256,10 @@ export class FakeApi {
       }
     }
     if (path === "/api/agents") {
+      const archived = url.searchParams.get("archived") === "true";
       return reply(
         200,
-        [...this.agents.values()].map((a) => ({
+        [...this.agents.values()].filter((a) => (a.archived_at !== null) === archived).map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -2254,8 +2270,34 @@ export class FakeApi {
           updated_at: NOW,
           created_by: a.created_by,
           updated_by: a.updated_by,
+          archived_at: a.archived_at,
+          archived_by: a.archived_by,
         })),
       );
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/(archive|unarchive)$/)) && method === "POST") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      if (m[2] === "unarchive") {
+        agent.archived_at = null;
+        agent.archived_by = null;
+      } else if (agent.archived_at === null) {
+        agent.archived_at = new Date().toISOString();
+        agent.archived_by = this.me;
+        for (const t of this.schedules) {
+          if (t.target_kind === "agent" && t.target_id === agent.id) t.enabled = false;
+        }
+      }
+      return reply(200, this.agentOut(agent));
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/used-by$/)) && method === "GET") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      const { workflows, triggers } = this.dependentsOf(agent.id);
+      const chats = [...this.chats.values()]
+        .filter((c) => c.members.some((x) => x.kind === "agent" && x.target_id === agent.id))
+        .map((c) => ({ id: c.id, name: c.name }));
+      return reply(200, { workflows, triggers, chats, tables: [] });
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/runs\/(\d+)$/)) && method === "DELETE") {
       const run = this.agentRuns.get(Number(m[2]));
@@ -2590,7 +2632,7 @@ export class FakeApi {
       }
       if (rest === "/messages" && method === "POST") {
         if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
-        const members = Object.values(this.mentionable(chat)).flat();
+        const members = Object.values(this.mentionable(chat, true)).flat();
         const mentions: ChatMention[] = [];
         for (const { kind, id } of (body.mentions ?? []) as ChatMention[]) {
           const member = members.find((x) => x.kind === kind && x.id === id);

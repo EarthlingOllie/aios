@@ -30,13 +30,12 @@ INSTRUCTIONS = (
 
 
 def free_name(db: Session, org: Organisation) -> str:
-    """`NAME`, or the first of "NAME 2", "NAME 3"… none of the organisation's live agents is
-    called."""
+    """`NAME`, or the first of "NAME 2", "NAME 3"… none of the organisation's agents is called
+    (an archived agent's name stays reserved)."""
     taken = set(
         db.scalars(
             select(Agent.name).where(
                 Agent.organisation_id == org.id,
-                Agent.deleted_at.is_(None),
                 Agent.name.startswith(NAME),
             )
         )
@@ -49,13 +48,11 @@ def free_name(db: Session, org: Organisation) -> str:
 
 def documents_assistant(db: Session, org: Organisation, user_id: int) -> Agent:
     """The organisation's documents assistant, made by `user_id` (the member who needs it) if it
-    has none (live); in the caller's transaction, which it holds the organisation's row locked
-    in, so two chats made at once, by one member or two, share one."""
+    has none (archived or not); in the caller's transaction, which it holds the organisation's
+    row locked in, so two chats made at once, by one member or two, share one."""
     db.execute(select(Organisation.id).where(Organisation.id == org.id).with_for_update())
     agent = db.scalars(
-        select(Agent).where(
-            Agent.organisation_id == org.id, Agent.builtin == BUILTIN, Agent.deleted_at.is_(None)
-        )
+        select(Agent).where(Agent.organisation_id == org.id, Agent.builtin == BUILTIN)
     ).one_or_none()
     if agent is not None:
         return agent

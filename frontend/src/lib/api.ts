@@ -302,7 +302,13 @@ export type AgentVersion = {
   tools: AgentTool[];
 };
 
-export type AgentSummary = Provenance & {
+/** When an agent was archived and by whom: both null while it isn't. */
+export type Archived = {
+  archived_at: string | null;
+  archived_by: User | null;
+};
+
+export type AgentSummary = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -318,7 +324,7 @@ export type AgentSummary = Provenance & {
   updated_at: string;
 };
 
-export type Agent = Provenance & {
+export type Agent = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -731,6 +737,18 @@ export type AgentDependents = {
   triggers: DependentTrigger[];
 };
 
+/** What uses an agent, as its archive confirmation shows it (GET /api/agents/{id}/used-by). */
+export type AgentUsedBy = {
+  /** Live workflows that run it at any depth, with their schedules. */
+  workflows: AgentDependents["workflows"];
+  /** Its own schedules, which archiving pauses. */
+  triggers: DependentTrigger[];
+  /** The chats it's a member of. */
+  chats: { id: number; name: string }[];
+  /** The data tables it will leave read-only: none until tables have owners. */
+  tables: { name: string }[];
+};
+
 /** How to resolve what depends on an agent as it's deleted (DELETE /api/agents/{id}). */
 export type AgentDeleteResolutions = {
   cancel_agent_runs: number[];
@@ -754,6 +772,8 @@ export type ChatMember = {
   /** A user's full name ("First Last"). */
   name: string;
   added_at: string;
+  /** An archived agent: still a member, but not offered to mention. */
+  archived: boolean;
 };
 
 /** Who made it and last changed it: the chat's owner role is separate (`is_owner`). */
@@ -1049,7 +1069,13 @@ export const api = {
   restoreSkillVersion: (id: number, version: number) =>
     request<Skill>(`/api/skills/${id}/versions/${version}/restore`, { method: "POST" }),
   listTools: () => request<ToolInfo[]>("/api/tools"),
-  listAgents: () => request<AgentSummary[]>("/api/agents"),
+  /** The agents that aren't archived; with `archived`, the archived ones instead. */
+  listAgents: (archived = false) =>
+    request<AgentSummary[]>(archived ? "/api/agents?archived=true" : "/api/agents"),
+  archiveAgent: (id: number) => request<Agent>(`/api/agents/${id}/archive`, { method: "POST" }),
+  unarchiveAgent: (id: number) =>
+    request<Agent>(`/api/agents/${id}/unarchive`, { method: "POST" }),
+  getAgentUsedBy: (id: number) => request<AgentUsedBy>(`/api/agents/${id}/used-by`),
   getAgent: (id: number) => request<Agent>(`/api/agents/${id}`),
   createAgent: (body: AgentInput) => request<Agent>("/api/agents", json("POST", body)),
   updateAgent: (id: number, body: AgentInput) =>

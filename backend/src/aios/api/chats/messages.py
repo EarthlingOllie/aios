@@ -273,8 +273,8 @@ MESSAGE_LOAD = (
 
 def resolve_mentions(chat: Chat, mentions: list[MentionIn]) -> list[MentionOut]:
     """The members a message mentions, each once in the order given, with their names: a 422 if
-    any isn't a (live) member of the chat."""
-    found = mentionables(chat)
+    any isn't a member of the chat. An archived agent still is."""
+    found = mentionables(chat, archived=True)
     members = {(m.kind, m.id): m for m in [*found.users, *found.agents, *found.workflows]}
     resolved: dict[tuple[ChatMemberKind, int], MentionOut] = {}
     for mention in mentions:

@@ -22,7 +22,6 @@ from aios.api.skills import unique_name
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
-    Agent,
     Chat,
     ChatMember,
     ChatMemberKind,
@@ -48,14 +47,9 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
     mine = aliased(ChatMember)
     member_count = (
         select(func.count(ChatMember.id))
-        # Not counting agents or workflows since deleted (see `live_members`).
-        .outerjoin(Agent, Agent.id == ChatMember.agent_id)
+        # Not counting workflows since archived (see `live_members`).
         .outerjoin(Workflow, Workflow.id == ChatMember.workflow_id)
-        .where(
-            ChatMember.chat_id == Chat.id,
-            Agent.deleted_at.is_(None),
-            Workflow.deleted_at.is_(None),
-        )
+        .where(ChatMember.chat_id == Chat.id, Workflow.archived_at.is_(None))
         .scalar_subquery()
     )
     unread = case(

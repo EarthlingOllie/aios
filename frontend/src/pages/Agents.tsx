@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import {
+  Archive,
+  ArchiveRestore,
   ArrowUpCircle,
   CalendarClock,
   MessageSquare,
@@ -22,6 +24,7 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { AgentArchiveDialog } from "@/components/AgentArchiveDialog";
 import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
 import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
@@ -66,6 +69,9 @@ const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
     options: [
       { key: "used", label: "Used", test: (agent) => agent.run_count > 0 },
       { key: "unused", label: "Unused", test: (agent) => agent.run_count === 0 },
+      // The list is loaded from the archived agents for this one (`AgentsSection`); the others
+      // narrow the default list, which leaves archived agents out.
+      { key: "archived", label: "Archived", test: (agent) => agent.archived_at !== null },
     ],
   },
 ];
@@ -122,11 +128,19 @@ function agentFilters(
   ];
 }
 
+/** The badge an archived agent carries, in the list and on its page. */
+export function ArchivedBadge() {
+  return <Badge variant="secondary">archived</Badge>;
+}
+
 export function AgentsSection() {
-  const { data, error, reload } = useLoad(api.listAgents);
+  const [params] = useSearchParams();
+  const archived = params.get("filter") === "archived";
+  const { data, error, reload } = useLoad(
+    useCallback(() => api.listAgents(archived), [archived]),
+  );
   const { data: skills } = useLoad(api.listSkills);
   const { data: tools } = useLoad(api.listTools);
-  const [params] = useSearchParams();
   const skill = params.get("skill");
   const tool = params.get("tool");
   const filters = useMemo(
@@ -148,6 +162,7 @@ export function AgentsSection() {
         <>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate font-medium">{agent.name}</span>
+            {agent.archived_at && <ArchivedBadge />}
             <VersionBadge version={agent.version} />
           </div>
           <div className="text-muted-foreground truncate text-xs">
@@ -233,6 +248,7 @@ export function AgentDetail() {
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
   if (!agent.data) return null;
@@ -255,6 +271,17 @@ export function AgentDetail() {
     await reloadList();
     navigate(listHref("/agents"));
   };
+
+  const onArchived = async () => {
+    setArchiving(false);
+    await Promise.all([agent.reload(), reloadList()]);
+  };
+
+  const onUnarchive = () =>
+    act(async () => {
+      await api.unarchiveAgent(id);
+      await Promise.all([agent.reload(), reloadList()]);
+    });
 
   const onNewRun = () =>
     act(async () => {
@@ -303,6 +330,7 @@ export function AgentDetail() {
       title={
         <span className="flex items-center gap-2">
           {a.name} <VersionBadge version={current.version} />
+          {a.archived_at && <ArchivedBadge />}
         </span>
       }
       subtitle={
@@ -313,16 +341,29 @@ export function AgentDetail() {
       }
       actions={
         <>
-          <Button size="sm" onClick={onNewRun} disabled={busy}>
-            <Play />
-            New run
-          </Button>
+          {a.archived_at ? (
+            <Button size="sm" onClick={onUnarchive} disabled={busy}>
+              <ArchiveRestore />
+              Unarchive
+            </Button>
+          ) : (
+            <Button size="sm" onClick={onNewRun} disabled={busy}>
+              <Play />
+              New run
+            </Button>
+          )}
           <Button asChild variant="outline" size="sm">
             <Link to={listHref(`/agents/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
           </Button>
+          {!a.archived_at && (
+            <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
+              <Archive />
+              Archive
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -335,8 +376,22 @@ export function AgentDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {a.archived_at && (
+        <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
+          This agent is archived{a.archived_by ? ` by ${a.archived_by.name}` : ""} on{" "}
+          {formatDate(a.archived_at)}. It starts nothing new until it's unarchived; its schedules
+          stay paused until someone resumes them.
+        </p>
+      )}
       {deleting && (
         <AgentDeleteDialog agent={a} onClose={() => setDeleting(false)} onDeleted={onDeleted} />
+      )}
+      {archiving && (
+        <AgentArchiveDialog
+          agent={a}
+          onClose={() => setArchiving(false)}
+          onArchived={onArchived}
+        />
       )}
 
       <Tabs

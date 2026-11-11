@@ -34,22 +34,22 @@ fields in the next ticket.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Archiving and unarchiving an agent work from its page, with an archived badge shown.
-- [ ] Starting a turn by hand, a schedule firing, and starting a workflow that includes the agent
+- [x] Archiving and unarchiving an agent work from its page, with an archived badge shown.
+- [x] Starting a turn by hand, a schedule firing, and starting a workflow that includes the agent
   at any depth (a nested workflow at depth 2 included) are each refused with "archived", naming
   the agent.
-- [ ] Mentioning an archived agent posts the message, fails its invocation with "The agent
+- [x] Mentioning an archived agent posts the message, fails its invocation with "The agent
   <name> is archived", and makes no model call.
-- [ ] An archived agent shows as archived among chat members and isn't offered in mention
+- [x] An archived agent shows as archived among chat members and isn't offered in mention
   suggestions. Unarchiving restores both.
-- [ ] A turn already going finishes, and a workflow run already past its start runs the agent's
+- [x] A turn already going finishes, and a workflow run already past its start runs the agent's
   node.
-- [ ] Schedules are paused on archiving and stay paused after unarchiving.
-- [ ] Creating a new agent with an archived agent's name answers 409 naming the clash.
-- [ ] The "Used by" list matches what the old delete flow found as dependents (with tables empty
+- [x] Schedules are paused on archiving and stay paused after unarchiving.
+- [x] Creating a new agent with an archived agent's name answers 409 naming the clash.
+- [x] The "Used by" list matches what the old delete flow found as dependents (with tables empty
   for now), and archiving is never refused.
-- [ ] The Agents list's Archived filter shows archived agents, and the default list hides them.
-- [ ] The soft-delete columns are gone from agents, skills and workflows, and `make seed`
+- [x] The Agents list's Archived filter shows archived agents, and the default list hides them.
+- [x] The soft-delete columns are gone from agents, skills and workflows, and `make seed`
   rebuilds dev data.

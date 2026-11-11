@@ -227,7 +227,7 @@ def test_an_agent_nothing_depends_on_is_deleted_as_before(api, builder):  # noqa
 
     assert delete(api, builder).status_code == 204
 
-    assert api.get(f"/api/agents/{builder['id']}").status_code == 404
+    assert api.get(f"/api/agents/{builder['id']}").json()["archived_at"] is not None
     assert api.get(f"/api/agents/{builder['id']}/runs/{run['id']}").status_code == 404
 
 
@@ -392,10 +392,10 @@ def test_deactivating_a_workflow_turns_off_its_schedules_and_it_cant_start(
     # A schedule that would have fired by now doesn't.
     fired = tick(datetime.now(UTC) + timedelta(days=2))
     assert unrelated["id"] in fired and daily["id"] not in fired
-    # Nor can a run be started by hand: it runs a deleted agent.
+    # Nor can a run be started by hand: it runs an archived agent.
     resp = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"})
     assert resp.status_code == 409
-    assert "deleted" in resp.json()["detail"]
+    assert "archived" in resp.json()["detail"]
     # The workflow itself stays, to be edited.
     assert api.get(f"/api/workflows/{workflow['id']}").status_code == 200
 
@@ -459,7 +459,7 @@ def test_a_run_starting_during_the_delete_is_seen_or_waits_and_then_cant(
     with SessionLocal() as session:
         assert lock_live(session, Agent, [builder["id"]])
         assert lock_live(session, Workflow, [workflow["id"]])
-        session.get(Agent, builder["id"]).deleted_at = func.now()
+        session.get(Agent, builder["id"]).archived_at = func.now()
         starter = threading.Thread(
             target=lambda: result.update(
                 start=api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"})
@@ -515,7 +515,7 @@ def test_a_node_starting_as_its_agent_is_deleted_waits_rather_than_deadlocking(
         starter.join(timeout=0.5)
         assert starter.is_alive(), "the node should wait for the agent"
         workflows.cancel_runs(session, [run_id], "Cancelled")
-        session.get(Agent, builder["id"]).deleted_at = func.now()
+        session.get(Agent, builder["id"]).archived_at = func.now()
         session.commit()
     starter.join(timeout=10)
 

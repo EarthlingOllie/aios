@@ -338,6 +338,7 @@ function MembersPanel({
                   />
                   <span className="min-w-0 flex-1 truncate">{member.name}</span>
                   {member.role === "owner" && <Badge variant="secondary">owner</Badge>}
+                  {member.archived && <Badge variant="secondary">archived</Badge>}
                   {onRemove && member.role !== "owner" && (
                     <Button
                       variant="ghost"
@@ -369,7 +370,7 @@ async function listPeople(): Promise<{ id: number; name: string }[]> {
 
 const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
   user: { list: listPeople, a: "a member" },
-  agent: { list: api.listAgents, a: "an agent" },
+  agent: { list: () => api.listAgents(), a: "an agent" },
   workflow: { list: api.listWorkflows, a: "a workflow" },
 };
 

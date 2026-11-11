@@ -310,7 +310,7 @@ def delete_behind_the_api(agent: dict) -> None:
     from then can still be like this."""
     with SessionLocal() as db:
         db.execute(delete(AgentRun).where(AgentRun.agent_id == agent["id"]))
-        db.execute(update(Agent).where(Agent.id == agent["id"]).values(deleted_at=func.now()))
+        db.execute(update(Agent).where(Agent.id == agent["id"]).values(archived_at=func.now()))
         db.commit()
 
 
@@ -326,7 +326,8 @@ def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, buil
     decide(api, queued, flow)
 
     out = read(api, workflow, waiting["id"])
-    reason = "Agent Builder v2 can't run: it has been deleted"
+    # Archived, a run already going still runs its node, but the delete took the agent's runs.
+    reason = "Agent Builder has been deleted"
     assert (out["status"], out["error"]) == ("failed", f"build: {reason}")
     build = steps(out)["build"]
     assert (build["status"], build["error"]) == ("failed", reason)
@@ -575,9 +576,10 @@ def test_a_waiting_run_shows_which_of_its_pins_are_no_longer_current(api, builde
         },
     ]
 
+    # Archived (as deleting it does now), the agent still shows its current version.
     delete_behind_the_api(builder)
     [_, build] = read(api, outer, waiting["id"])["stale_pins"]
-    assert (build["path"], build["current_version"]) == (["review", "build"], None)
+    assert (build["path"], build["current_version"]) == (["review", "build"], 3)
     # And the run's own workflow, at the top.
     api.put(f"/api/workflows/{outer['id']}", json=workflow_body("Pipeline", []))
     [own, *_] = read(api, outer, waiting["id"])["stale_pins"]

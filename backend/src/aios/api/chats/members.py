@@ -76,9 +76,13 @@ def mentionable_out(member: ChatMember) -> MentionableOut:
     )
 
 
-def mentionables(chat: Chat) -> MentionablesOut:
+def mentionables(chat: Chat, *, archived: bool = False) -> MentionablesOut:
+    """The chat's members to offer for mentioning: not its archived agents, unless `archived`
+    (a mention of one is still taken, and fails at once: `aios.invocations.create`)."""
     by_kind: dict[ChatMemberKind, list[MentionableOut]] = {kind: [] for kind in ChatMemberKind}
     for member in live_members(chat):
+        if not archived and member.agent is not None and member.agent.archived_at is not None:
+            continue
         by_kind[member.kind].append(mentionable_out(member))
     return MentionablesOut(
         users=by_kind[ChatMemberKind.user],

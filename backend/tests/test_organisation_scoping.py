@@ -59,7 +59,7 @@ def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
         ok(api.delete(url), 204)
     db.expire_all()
     deleted = db.get(Agent, agent["id"])
-    assert deleted.deleted_at is not None and deleted.deleted_by == member.id
+    assert deleted.archived_at is not None and deleted.archived_by == member.id
 
 
 def test_a_member_works_on_a_skill_another_member_made(api, member, db):
@@ -80,7 +80,7 @@ def test_a_member_works_on_a_skill_another_member_made(api, member, db):
     with signed_in_as(member):
         ok(api.delete(url), 204)
     db.expire_all()
-    assert db.get(Skill, skill["id"]).deleted_by == member.id
+    assert db.get(Skill, skill["id"]).archived_by == member.id
 
 
 def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queued):  # noqa: F811
@@ -103,7 +103,7 @@ def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queue
         assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
         ok(api.delete(url), 204)
     db.expire_all()
-    assert db.get(Workflow, workflow["id"]).deleted_by == member.id
+    assert db.get(Workflow, workflow["id"]).archived_by == member.id
 
 
 def test_a_member_works_on_a_schedule_another_member_made(api, user, member):

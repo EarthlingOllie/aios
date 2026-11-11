@@ -219,17 +219,17 @@ KINDS = {
 def contents(db: Session, org: Organisation) -> list[tuple[str, int]]:
     """What's in the organisation besides its members and the defaults, as (kind, how many) for
     each kind in `KINDS` it has any of: agents but built-in ones (the documents assistant), and
-    workflows, skills, chats and schedules, and its store's documents and data tables. Deleted
-    agents, workflows and skills don't count: what a member deleted is no work to lose."""
+    workflows, skills, chats and schedules, and its store's documents and data tables. Archived
+    agents, workflows and skills don't count: what a member put away is no work to lose."""
     live = {
         "agent": select(func.count()).where(
-            Agent.organisation_id == org.id, Agent.deleted_at.is_(None), Agent.builtin.is_(None)
+            Agent.organisation_id == org.id, Agent.archived_at.is_(None), Agent.builtin.is_(None)
         ),
         "workflow": select(func.count()).where(
-            Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None)
+            Workflow.organisation_id == org.id, Workflow.archived_at.is_(None)
         ),
         "skill": select(func.count()).where(
-            Skill.organisation_id == org.id, Skill.deleted_at.is_(None)
+            Skill.organisation_id == org.id, Skill.archived_at.is_(None)
         ),
         "chat": select(func.count()).where(Chat.organisation_id == org.id),
         "schedule": select(func.count()).where(Trigger.organisation_id == org.id),

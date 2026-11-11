@@ -41,6 +41,7 @@ from aios.workflows import (
     GraphError,
     RunError,
     alive,
+    archived_in_graph,
     close_requests,
     fail_stopped_runs,
     load_graph,
@@ -50,7 +51,7 @@ from aios.workflows import (
 
 router = APIRouter(prefix="/api")
 
-WORKFLOW_NAME_INDEX = "uq_workflows_organisation_id_name_live"
+WORKFLOW_NAME_INDEX = "uq_workflows_organisation_id_name"
 
 
 class WorkflowNodeIn(BaseModel):
@@ -93,7 +94,8 @@ class WorkflowNodeOut(BaseModel):
     target_id: int
     name: str
     version: int
-    # The agent's or workflow's current version, or None if it has since been deleted.
+    # The agent's or workflow's current version, or None if the workflow has since been
+    # archived (an archived agent keeps showing its own).
     latest_version: int | None
     latest_version_id: int | None
 
@@ -150,15 +152,16 @@ class WorkflowOut(Provenance):
 
 
 def get_org_workflow(
-    db: Session, org: Organisation, workflow_id: int, *, deleted_ok: bool = False
+    db: Session, org: Organisation, workflow_id: int, *, archived_ok: bool = False
 ) -> Workflow:
-    """The organisation's workflow (live, unless `deleted_ok`); a 404 otherwise, as if it didn't
-    exist."""
+    """The organisation's workflow (not archived, unless `archived_ok`); a 404 otherwise, as if
+    it didn't exist. (Archived workflows are put away as deleted ones were, until workflows are
+    archived in their own right.)"""
     workflow = db.get(Workflow, workflow_id)
     if (
         workflow is None
         or workflow.organisation_id != org.id
-        or (workflow.deleted_at is not None and not deleted_ok)
+        or (workflow.archived_at is not None and not archived_ok)
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return workflow
@@ -335,7 +338,8 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
     else:
         pinned = node.subworkflow_version
         target = pinned.workflow
-    latest = target.current_version if target.deleted_at is None else None
+    gone = node.kind == WorkflowNodeKind.workflow and target.archived_at is not None
+    latest = None if gone else target.current_version
     return WorkflowNodeOut(
         key=node.key,
         kind=node.kind,
@@ -406,7 +410,7 @@ def workflows_using(db: Session, condition) -> list[str]:
         db.scalars(
             select(Workflow.name)
             .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
-            .where(Workflow.deleted_at.is_(None), condition)
+            .where(Workflow.archived_at.is_(None), condition)
             .distinct()
             .order_by(Workflow.name)
         )
@@ -421,7 +425,7 @@ def contained_workflows(db: Session, org: Organisation) -> dict[int, set[int]]:
         select(Workflow.id.label("root_id"), pinned.id.label("version_id"), pinned.workflow_id)
         .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
         .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
-        .where(Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None))
+        .where(Workflow.organisation_id == org.id, Workflow.archived_at.is_(None))
         .cte("reach", recursive=True)
     )
     reach = reach.union(
@@ -442,7 +446,7 @@ def list_workflows(org: CurrentOrganisation, db: DB):
             Workflow, WorkflowVersion.version, WorkflowVersion.id, node_count(WorkflowVersion.id)
         )
         .join(WorkflowVersion, WorkflowVersion.id == Workflow.current_version_id)
-        .where(Workflow.organisation_id == org.id, Workflow.deleted_at.is_(None))
+        .where(Workflow.organisation_id == org.id, Workflow.archived_at.is_(None))
         .order_by(Workflow.name)
     ).all()
     contained = contained_workflows(db, org)
@@ -547,10 +551,10 @@ def delete_workflow(workflow_id: DbId, user: CurrentUser, org: CurrentOrganisati
             status.HTTP_409_CONFLICT,
             f"Remove this workflow from these workflows first: {', '.join(used_by)}.",
         )
-    # Soft delete: older versions of other workflows may still pin this one's versions.
+    # Archived, not deleted: older versions of other workflows may still pin this one's versions.
     delete_triggers(db, Trigger.workflow_id == workflow.id)
-    workflow.deleted_at = func.now()
-    workflow.deleted_by = user.id
+    workflow.archived_at = func.now()
+    workflow.archived_by = user.id
     db.commit()
 
 
@@ -580,7 +584,7 @@ def list_workflow_versions(workflow_id: DbId, org: CurrentOrganisation, db: DB):
 def get_workflow_version_detail(workflow_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
     # Also once the workflow is deleted: older versions of other workflows, and their past runs,
     # still pin its versions, and a run's subworkflow is shown from the one it pinned.
-    workflow = get_org_workflow(db, org, workflow_id, deleted_ok=True)
+    workflow = get_org_workflow(db, org, workflow_id, archived_ok=True)
     return version_out(load_version(db, get_workflow_version(db, workflow, number).id))
 
 
@@ -688,7 +692,7 @@ class StalePin(BaseModel):
     kind: WorkflowNodeKind
     name: str
     pinned_version: int
-    # None once the agent or workflow has been deleted.
+    # None once the workflow has been archived.
     current_version: int | None
 
 
@@ -712,7 +716,7 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
         select(
             pinned_flow.version.label("pinned"),
             Workflow.name,
-            Workflow.deleted_at,
+            Workflow.archived_at.label("gone_at"),
             current_flow.version.label("current"),
         )
         .join(Workflow, Workflow.id == pinned_flow.workflow_id)
@@ -727,7 +731,8 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
             WorkflowNode.subworkflow_version_id,
             func.coalesce(pinned_agent.version, pinned_flow.version).label("pinned"),
             func.coalesce(Agent.name, Workflow.name).label("name"),
-            func.coalesce(Agent.deleted_at, Workflow.deleted_at).label("deleted_at"),
+            # An archived workflow is gone, as a deleted one was; an archived agent isn't.
+            Workflow.archived_at.label("gone_at"),
             func.coalesce(current_agent.version, current_flow.version).label("current"),
         )
         .outerjoin(pinned_agent, pinned_agent.id == WorkflowNode.agent_version_id)
@@ -745,9 +750,9 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
     stale: list[StalePin] = []
 
     def check(path: list[str], kind: WorkflowNodeKind, pin) -> None:
-        now = None if pin.deleted_at is not None else pin.current
+        now = None if pin.gone_at is not None else pin.current
         # Without a current version (only while one is being made), nothing to compare.
-        if now != pin.pinned and (now is not None or pin.deleted_at is not None):
+        if now != pin.pinned and (now is not None or pin.gone_at is not None):
             stale.append(
                 StalePin(
                     path=path,
@@ -891,8 +896,9 @@ def new_workflow_run(
     started by the member `created_by`; it runs for the workflow's organisation, not for them
     (`aios.workflows`), as do its agent nodes' runs, which it passes `created_by` on to.
 
-    Raises `HTTPException` if it can't run: 404 if it has been deleted, 422 if it has no nodes,
-    409 if an agent version in its graph can't run. Commit with `queue_workflow_run`; the share
+    Raises `HTTPException` if it can't run: 404 if it has been archived, 422 if it has no nodes,
+    409 if an agent or workflow in its graph, at any depth, is archived ("The agent <name> is
+    archived.") or an agent version in it can't run. Commit with `queue_workflow_run`; the share
     lock taken here keeps a concurrent delete from leaving a run on a workflow that's gone.
     Also how a schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
     """
@@ -902,6 +908,8 @@ def new_workflow_run(
     if not version.nodes:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "This workflow has no nodes")
     # Checked now, at every depth, so a version that can't run doesn't leave a run that fails.
+    if refusal := archived_in_graph(db, version.id):
+        raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     try:
         load_graph(db, version.id)
     except RunError as exc:

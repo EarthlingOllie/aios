@@ -21,6 +21,7 @@ from aios import checkpoints, invocations, tracing, ui_stream
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
+from aios.api.agents.common import refuse_if_archived
 from aios.api.agents.runs import build_version_tools, get_live_run, get_org_run
 from aios.api.schema_changes import waiting_on
 from aios.auth import CurrentOrganisation, CurrentUser
@@ -96,6 +97,10 @@ def load_chat_context(
         if org is None
         else get_org_run(db, org, agent_id, run_id)
     )
+    if org is not None:
+        # A new turn asked for by hand, which an archived agent doesn't start. What started the
+        # other turns checked when it started their runs, and they finish as already going.
+        refuse_if_archived(run.agent)
     version = run.agent_version
     tools = build_version_tools(version)
     # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token

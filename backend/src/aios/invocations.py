@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 from aios import checkpoints
 from aios.datastores.schema_changes import not_given
 from aios.models import (
+    Agent,
     AgentRun,
     AgentRunStatus,
     Chat,
@@ -96,7 +97,8 @@ def create(
 ) -> list[ChatInvocation]:
     """Queue an invocation of each agent or workflow (kind, id) the (just added) message
     mentions, each with its acknowledgement and card; in the caller's transaction. Nothing for a
-    message that isn't a user's."""
+    message that isn't a user's. An archived agent's fails at once ("The agent <name> is
+    archived"), before any handoff, so no model is called for it."""
     if message.author_kind != ChatAuthorKind.user:
         return []
     db.flush()
@@ -126,6 +128,8 @@ def create(
             )
         )
         db.flush()
+        if is_agent and (agent := db.get(Agent, target_id)).archived_at is not None:
+            fail_unstarted(db, invocation.id, f"The agent {agent.name} is archived")
         made.append(invocation)
     return made
 

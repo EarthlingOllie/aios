@@ -12,7 +12,12 @@
 
 Workflows and their runs are looked for within the agent's organisation, whichever member made
 them: a workflow can only run its own organisation's agents. Finished runs and older versions
-don't count: they keep pinning the agent's versions, which outlive it (it's soft-deleted).
+don't count: they keep pinning the agent's versions, which outlive it (it's archived, not
+deleted). Archived workflows don't count either: they start nothing.
+
+`used_by` is the read-only list the archive confirmation shows (`GET /api/agents/{id}/used-by`):
+the same workflows and schedules, the chats it's a member of, and the data tables it will leave
+read-only (none until tables have owners). Archiving is never refused over it.
 """
 
 import uuid
@@ -28,6 +33,9 @@ from aios.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    Chat,
+    ChatMember,
+    ChatVisibility,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Trigger,
@@ -256,7 +264,7 @@ def _workflows_running(agent: Agent):
         Workflow.id.label("root_id"),
         Workflow.current_version_id.label("version_id"),
         literal(True).label("top"),
-    ).where(Workflow.organisation_id == agent.organisation_id, Workflow.deleted_at.is_(None))
+    ).where(Workflow.organisation_id == agent.organisation_id, Workflow.archived_at.is_(None))
     return _running_the_agent(agent, roots).subquery()
 
 
@@ -344,4 +352,50 @@ def find(db: Session, agent: Agent) -> Dependents:
         workflow_runs=_workflow_runs(db, agent),
         workflows=_workflows(db, agent),
         triggers=[_trigger_out(t) for t in own],
+    )
+
+
+class UsedByChat(BaseModel):
+    id: int
+    name: str
+
+
+class UsedByTable(BaseModel):
+    """A data table the agent owns, which archiving it leaves read-only."""
+
+    name: str
+
+
+class UsedBy(BaseModel):
+    """What uses an agent, as its archive confirmation shows it."""
+
+    # The live workflows that run it at any depth, with their schedules.
+    workflows: list[DependentWorkflow]
+    # Its own schedules, which archiving it pauses.
+    triggers: list[DependentTrigger]
+    # The chats it's a member of.
+    chats: list[UsedByChat]
+    # The data tables it owns: none until tables have owners.
+    tables: list[UsedByTable]
+
+
+def used_by(db: Session, agent: Agent, user_id: int) -> UsedBy:
+    """What uses the agent, as the member `user_id` may see it: of its chats, the public ones
+    and the private ones they're in."""
+    own = db.scalars(select(Trigger).where(Trigger.agent_id == agent.id).order_by(Trigger.id))
+    theirs = select(ChatMember.chat_id).where(ChatMember.user_id == user_id)
+    chats = db.execute(
+        select(Chat.id, Chat.name)
+        .join(ChatMember, ChatMember.chat_id == Chat.id)
+        .where(
+            ChatMember.agent_id == agent.id,
+            or_(Chat.visibility == ChatVisibility.public, Chat.id.in_(theirs)),
+        )
+        .order_by(Chat.name, Chat.id)
+    ).all()
+    return UsedBy(
+        workflows=_workflows(db, agent),
+        triggers=[_trigger_out(t) for t in own],
+        chats=[UsedByChat(id=c.id, name=c.name) for c in chats],
+        tables=[],
     )

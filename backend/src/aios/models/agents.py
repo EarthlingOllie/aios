@@ -45,10 +45,10 @@ class Skill(Base):
     current_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("skill_versions.id", use_alter=True, name="fk_skills_current_version_id")
     )
-    # Soft delete: old agent versions pin skill versions, so those must outlive the skill.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Which member deleted it; null once that user is deleted.
-    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # When it was archived, and by which member (null once that user is deleted); both null
+    # while it isn't. Archived rather than deleted: old agent versions pin its versions.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -59,15 +59,9 @@ class Skill(Base):
     )
 
     __table_args__ = (
-        # Names are unique among the organisation's live skills, so a deleted skill's name
-        # can be reused.
-        Index(
-            "uq_skills_organisation_id_name_live",
-            "organisation_id",
-            "name",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
+        # Names are unique among the organisation's skills, archived ones included: an
+        # archived skill's name stays reserved.
+        Index("uq_skills_organisation_id_name", "organisation_id", "name", unique=True),
     )
 
 
@@ -130,10 +124,11 @@ class Agent(Base):
     # rather than by a member (`aios.assistant`), and found again by this. Null for the members'
     # own agents.
     builtin: Mapped[str | None] = mapped_column(String(32))
-    # Soft delete: workflow versions pin agent versions, so those must outlive the agent.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Which member deleted it; null once that user is deleted.
-    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # When it was archived, and by which member (null once that user is deleted); both null
+    # while it isn't. Archived rather than deleted: workflow versions pin its versions, and its
+    # runs are the members' history with it. An archived agent starts nothing new.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -147,22 +142,16 @@ class Agent(Base):
     )
 
     __table_args__ = (
-        # Names are unique among the organisation's live agents, so a deleted agent's name
-        # can be reused.
+        # Names are unique among the organisation's agents, archived ones included: an
+        # archived agent's name stays reserved, so unarchiving it never clashes.
+        Index("uq_agents_organisation_id_name", "organisation_id", "name", unique=True),
+        # One agent of each built-in kind per organisation.
         Index(
-            "uq_agents_organisation_id_name_live",
-            "organisation_id",
-            "name",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        # One live agent of each built-in kind per organisation.
-        Index(
-            "uq_agents_organisation_id_builtin_live",
+            "uq_agents_organisation_id_builtin",
             "organisation_id",
             "builtin",
             unique=True,
-            postgresql_where=text("builtin IS NOT NULL AND deleted_at IS NULL"),
+            postgresql_where=text("builtin IS NOT NULL"),
         ),
     )
 
