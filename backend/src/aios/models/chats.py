@@ -254,12 +254,10 @@ class ChatInvocation(Base):
     brief: Mapped[str | None] = mapped_column(Text)
     # The run it started; null until it has, and once that run has been deleted (the card says
     # so). Deleting the chat leaves the run.
-    agent_run_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="SET NULL"), unique=True
-    )
-    workflow_run_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflow_runs.id", ondelete="SET NULL"), unique=True
-    )
+    # By id in the chat's organisation's store (not foreign keys): cleared when the run is
+    # deleted (`aios.invocations.forget_runs`).
+    agent_run_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    workflow_run_id: Mapped[int | None] = mapped_column(Integer, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # When its run started (null if it never did), and when it finished.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

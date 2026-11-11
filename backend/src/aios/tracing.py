@@ -62,6 +62,13 @@ def trace_metadata(
     return out
 
 
+def run_session(organisation_id: int, run_id: int) -> str:
+    """The trace session of an agent run (Langfuse's session id): its organisation and its id,
+    since run ids are each store's own and repeat across organisations. (Traces from before runs
+    moved into the stores keep their `agent-run-<id>` sessions.)"""
+    return f"agent-run-{organisation_id}-{run_id}"
+
+
 def agent_version_metadata(version: AgentVersion) -> dict[str, Any]:
     """The agent version's part of a run's metadata: the same whether the run is a chat or a
     workflow's agent node, so filters on e.g. its skills or tools find both."""

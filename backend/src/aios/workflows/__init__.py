@@ -36,24 +36,30 @@ blocking call, a deadlock), and stops it if the loop frees up; a node awaiting a
 the loop free, so it isn't failed.
 
 Split into `validation` (the graph), `steps` (running its nodes) and `execution` (the run). Every
-name is re-exported here, where callers import it; `data_store_for`, `trace_metadata`,
+name is re-exported here, where callers import it; `_organisation`, `trace_metadata`,
 `_start_step`, `_finish_step`, `_beat`, `HEARTBEAT_SECONDS` and `STALE_AFTER` are read here at
 call time, so a test that replaces one here replaces it for every part.
 
-The workflow's graph (its versions, nodes and edges, and the agent versions they pin) is in the
-organisation's store; the run and its steps are on the platform.
+The workflow's graph (its versions, nodes and edges, and the agent versions they pin), the run,
+its steps and its agent nodes' runs are all in the organisation's store, and a run is named by
+its store and its id there (ids repeat across stores): its task carries both. What the platform
+keeps of a run (the chat invocation that started it, the schema change requests its nodes made,
+the run history export's outbox) is written once the store's change has committed
+(`_record_ended`).
 """
 
-from aios.datastores import data_store_for
 from aios.workflows.execution import (
     HEARTBEAT_SECONDS,
     NOT_ENDED,
     STALE_AFTER,
     WORKER_STOPPED,
     Claimed,
+    Ended,
     _beat,
     _claim,
     _end_runs,
+    _organisation,
+    _record_ended,
     alive,
     close_requests,
     execute_run,
@@ -90,6 +96,7 @@ from aios.workflows.validation import (
 __all__ = [
     "AgentNode",
     "Claimed",
+    "Ended",
     "Graph",
     "GraphError",
     "HEARTBEAT_SECONDS",
@@ -107,11 +114,12 @@ __all__ = [
     "_beat",
     "_claim",
     "_end_runs",
+    "_organisation",
+    "_record_ended",
     "_finish_step",
     "_start_step",
     "alive",
     "close_requests",
-    "data_store_for",
     "execute_run",
     "fail_run",
     "fail_stopped_runs",

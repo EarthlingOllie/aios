@@ -1,8 +1,9 @@
 # Stores
 
 Each organisation has a **store**: a Postgres database of its own, on the same instance as the
-platform database, which holds its agents, skills and workflows, its documents, the data tables
-its agents asked for, and, when it's switched on, a copy of its run history. In code and on screen it's a "data store"
+platform database, which holds its agents, skills and workflows, their runs and the runs'
+history, its documents, the data tables its agents asked for, and, when it's switched on, a copy
+of its run history. In code and on screen it's a "data store"
 (`aios.datastores`, the `data_stores` table, the "Data store" notices); screens show its
 contents as **Data**. See also [Accounts and organisations](accounts-and-organisations.md) and
 [Tools](tools.md), for the tools that read and write it.
@@ -27,7 +28,7 @@ Nothing in the app connects to Postgres as the master user (`aios`, RDS's or Com
 
 | Role | Attributes | Used by |
 | --- | --- | --- |
-| `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (the checkpointer's `langgraph`). It doesn't own the database, so it can't drop or reconfigure it. |
+| `aios_app` | `LOGIN`; no `CREATEDB` or `CREATEROLE` | the API, the workers and migrations (`DATABASE_URL`). It owns the platform schema (`public` and everything in it), so it can migrate it, and may create schemas (it did for the checkpointer's `langgraph`, which is in each store now). It doesn't own the database, so it can't drop or reconfigure it. |
 | `aios_provisioner` | `LOGIN CREATEDB CREATEROLE` | creating and migrating stores (`DATA_STORE_PROVISIONER_URL`). On AWS its secret is for the provisioning worker and the migrate-stores task only. |
 
 `python -m aios.db_roles` creates them as the master user (`DATABASE_ADMIN_URL`, which nothing
@@ -135,7 +136,8 @@ service on AWS; empty means directly). It may hand each transaction a different 
 connection, so store connections carry no session state: psycopg prepares no statements, nothing
 is set at connection startup (statement timeouts are the roles' defaults), and nothing takes a
 session advisory lock (a `query_data` statement that does is let go of before its transaction
-ends). The platform database, the provisioner and the checkpointer stay directly connected.
+ends). The runs' checkpointers connect through it too (`store_conninfo`). The platform database
+and the provisioner stay directly connected.
 Sizing: [Deploy](deploy.md#connection-pooler).
 
 Each process pools one connection per store and role, plus four more while busy. The pooler's
@@ -190,10 +192,9 @@ never deleted, so the versions pinned by other versions are always there.
 agents both have id 1. Every agents, skills and workflows endpoint works in the asking
 organisation's store (`aios.auth.CurrentStore`, a session on it for the request), so an id never
 reaches another organisation's row: it names that organisation's own, or nothing. What's still
-on the platform and names one of them (agent and workflow runs, schedules, chat members, chat
-messages' authors and chat invocations) keeps its id without a foreign key, beside the
-organisation it's in (`organisation_id` on runs, schedules and chats), and every lookup by it is
-within that organisation. Reading their names or version numbers for those goes to the store
+on the platform and names one of them (schedules, chat members, chat messages' authors and chat
+invocations) keeps its id without a foreign key, beside the organisation it's in
+(`organisation_id` on schedules and chats), and every lookup by it is within that organisation. Reading their names or version numbers for those goes to the store
 (`aios.stored`).
 
 **Writes across the two databases** follow the source of truth: the store commits first. Saving
@@ -207,11 +208,38 @@ a lock for its transaction only, and the chat that gets it is committed after.
 The platform's tables for them went in the same change (platform revision `0060`); nothing was
 copied across, and development data is rebuilt with `make seed`.
 
+### Runs
+
+Agent runs (`aios.agent_runs`, each holding its turn lease), the sandbox each one's Python runs
+in (`aios.sandbox_sessions`), workflow runs (`aios.workflow_runs`) and their steps
+(`aios.workflow_run_steps`) are in the store too (store revision `0010`), as is each run's
+history: the store's own checkpointer's tables, in its `langgraph` schema (see
+[Agents and skills](agents-and-skills.md#runs)). Runs name the agent or workflow and the version
+they ran by foreign key; who started them, the schedule that did and the schema change request a
+step waits on are platform ids, with no foreign key. The platform's tables for them, and its
+checkpointer schema, went in the same change (platform revision `0062`); nothing was copied.
+
+- **Named by store and id.** Run ids repeat across stores, so everything outside the store that
+  names a run carries the store too: worker task arguments (`run_workflow_task`,
+  `resume_agent_run_task`), the turn lease's Redis channels, a sandbox's session key, and the
+  platform rows that name one (schedules' last runs, chat invocations, schema change requests,
+  whose tool call is unique per store). Trace sessions are `agent-run-<organisation>-<id>`.
+- **Writes across the two databases.** The store is the run's source of truth and commits
+  first; what the platform records of it is written after, idempotently: a schedule's or
+  chat invocation's link to the run it started (committed before a workflow run is queued, so
+  the worker finds it), a workflow run's end (its invocation finished, its requests closed
+  out, its outbox row), a turn's end (its outbox row). Deleting a run deletes it, its steps,
+  sandbox session and thread in the store, then clears what on the platform named it
+  (`invocations.forget_runs`); deleting a schedule clears its id from its runs. A run's schema
+  change requests are recorded and cancelled under the run's lock on the platform
+  (`schema_changes.lock_run`), so none is recorded for a run that's gone.
+
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so
-out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror,
-for now (later: audit log details, secrets and credentials). The role keeps the table's other
+out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror
+and a run's sandbox's bearer token (`sandbox_sessions.secret`), for now (later: audit log
+details, other secrets and credentials). The role keeps the table's other
 columns. It's a few grant lines, applied every time a store is migrated (the default
 privileges would otherwise give a new table's every column).
 
@@ -297,15 +325,15 @@ beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hou
 
 On the Organisation page's Settings tab (`/organisation/settings`) any member can switch on
 `export_run_history` (on `data_stores`): a one-way copy of the organisation's runs (every
-member's and every schedule's, matched to the store by their agent's or workflow's
-organisation) into its store's `history` schema, keyed by the platform's ids and recording who
+member's and every schedule's, from the store's `aios` schema) into its `history` schema, keyed
+by the runs' ids and recording who
 started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in
 `history.agent_runs`, with `history.messages` (role, text, tool calls and usage, flattened from
 the run's checkpoint). Workflow runs go in `history.workflow_runs`, with
 `history.workflow_run_steps`: every step at every depth, with its path, kind, status, input,
 output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign key: the
-two are exported apart). Statuses are copied as text. The platform database stays the source of
-truth (`aios.datastores.history`):
+two are exported apart). Statuses are copied as text. The runs stay the source of truth
+(`aios.datastores.history`):
 
 - The `history` tables are the store tree's second line (branch label `history`, revisions
   `h0001`, ...), which a store gets only once the export is first switched on:

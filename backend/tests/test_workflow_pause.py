@@ -9,6 +9,7 @@ The queued tasks are run here by hand, in order, standing in for the workers."""
 
 import asyncio
 import threading
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -29,16 +30,9 @@ from test_workflows import (
 from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.datastores.models import Agent
+from aios.datastores.models import Agent, AgentRun, WorkflowRun
 from aios.db import SessionLocal
-from aios.models import (
-    AgentRun,
-    DataStore,
-    SchemaChangeRequest,
-    SchemaChangeStatus,
-    WorkflowRun,
-    WorkflowRunStatus,
-)
+from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus, WorkflowRunStatus
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
@@ -104,10 +98,10 @@ def start(api, queued: list, workflow: dict, script, text: str = "go") -> dict:
     ends or waits."""
     resp = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": text})
     assert resp.status_code == 201, resp.text
-    task, (run_id,) = queued.pop()
+    task, (store_id, run_id) = queued.pop()
     assert task is worker.run_workflow_task
     with use_model(model(script)):
-        asyncio.run(execute_run(run_id))
+        asyncio.run(execute_run(uuid.UUID(store_id), run_id))
     return read(api, workflow, run_id)
 
 
@@ -212,7 +206,7 @@ def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, sto
 
 
 def test_a_long_wait_isnt_failed_for_its_heartbeat_or_the_time_limit(
-    api, db, builder, store, queued
+    api, db, builder, store, queued, in_store
 ):
     """Waiting holds no worker, so it beats no heartbeat; and only running counts towards the
     run's time limit. How long it waited is recorded."""
@@ -222,7 +216,7 @@ def test_a_long_wait_isnt_failed_for_its_heartbeat_or_the_time_limit(
     assert waiting["waiting_since"] is not None
     limit = get_settings().workflow_run_time_limit
     # It ran for a minute, then waited far longer than the heartbeat's lease and the limit.
-    db.execute(
+    in_store.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == waiting["id"])
         .values(
@@ -250,14 +244,14 @@ def test_a_long_wait_isnt_failed_for_its_heartbeat_or_the_time_limit(
 
 
 def test_a_run_resumes_with_only_what_was_left_of_its_time_limit(
-    api, db, builder, store, queued, monkeypatch
+    api, db, builder, store, queued, monkeypatch, in_store
 ):
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     limit = get_settings().workflow_run_time_limit
     # It had run for all but a moment of its limit before it waited.
-    db.execute(
+    in_store.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == waiting["id"])
         .values(
@@ -310,20 +304,8 @@ def delete_behind_the_api(store_id, agent: dict) -> None:
     one now): soft-deleted, its runs gone. Data from then can still be like this."""
     with store_session(store_id) as store:
         store.execute(update(Agent).where(Agent.id == agent["id"]).values(archived_at=func.now()))
-        organisation_id = store_organisation(store_id)
+        store.execute(delete(AgentRun).where(AgentRun.agent_id == agent["id"]))
         store.commit()
-    with SessionLocal() as db:
-        db.execute(
-            delete(AgentRun).where(
-                AgentRun.organisation_id == organisation_id, AgentRun.agent_id == agent["id"]
-            )
-        )
-        db.commit()
-
-
-def store_organisation(store_id) -> int:
-    with SessionLocal() as db:
-        return db.get(DataStore, store_id).owner_organisation_id
 
 
 def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, builder, store, queued):
@@ -369,7 +351,7 @@ def conversation_of(api, step: dict) -> dict:
 
 
 def test_a_run_ending_while_its_request_is_applied_leaves_no_conversation_waiting(
-    api, builder, store, queued
+    api, builder, store, queued, in_store
 ):
     workflow = chain(api, builder)
     flow = Flow()
@@ -377,14 +359,12 @@ def test_a_run_ending_while_its_request_is_applied_leaves_no_conversation_waitin
     [request] = api.get("/api/schema-changes").json()
     api.post(f"/api/schema-changes/{request['id']}/approve")
     # Before it's applied, the run is resumed by another decision and ends: failed, say.
-    with SessionLocal() as db:
-        db.execute(
-            update(WorkflowRun)
-            .where(WorkflowRun.id == waiting["id"])
-            .values(status=WorkflowRunStatus.running)
-        )
-        db.commit()
-    workflows.fail_run(waiting["id"], "Something else broke")
+    in_store.execute(
+        update(WorkflowRun)
+        .where(WorkflowRun.id == waiting["id"])
+        .values(status=WorkflowRunStatus.running)
+    )
+    workflows.fail_run(store.id, waiting["id"], "Something else broke")
 
     with use_model(model(flow)):
         run_queued(queued)
@@ -637,7 +617,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
         db.add(orphan)
         db.commit()
         orphan_id = orphan.id
-    queued.append((worker.run_workflow_task, (waiting["id"],)))
+    queued.append((worker.run_workflow_task, (str(store.id), waiting["id"])))
 
     with use_model(model(flow)):
         run_queued(queued)
@@ -706,7 +686,7 @@ def test_reading_a_waiting_run_doesnt_load_its_agents_tools_and_takes_fixed_quer
     assert counts[0] == counts[1]
 
 
-def test_a_waiting_run_whose_store_cant_be_resolved_on_resume_fails(
+def test_a_waiting_run_whose_organisation_cant_be_resolved_on_resume_fails(
     api, builder, store, queued, monkeypatch
 ):
     """Rather than stay waiting for good: nothing else would resume or end it."""
@@ -718,7 +698,7 @@ def test_a_waiting_run_whose_store_cant_be_resolved_on_resume_fails(
     def unavailable(*args, **kwargs):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_for", unavailable)
+    monkeypatch.setattr(workflows, "_organisation", unavailable)
     decide(api, queued, flow, "reject")
 
     out = read(api, workflow, waiting["id"])

@@ -1,7 +1,11 @@
-"""One sandbox per agent run: started on first use, reused by later calls, replaced if it's gone."""
+"""One sandbox per agent run: started on first use, reused by later calls, replaced if it's gone.
+
+A run is named by its store and its id there (ids repeat across stores), and its sandbox is
+recorded beside it, in the store (`SandboxSession`)."""
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -15,8 +19,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.db import SessionLocal
-from aios.models import SandboxSession
+from aios.datastores.connections import store_session
+from aios.datastores.models import SandboxSession
 from aios.sandbox import proxy_token
 from aios.sandbox.backends import get_backend
 from aios.sandbox.base import (
@@ -44,9 +48,10 @@ class Outcome:
     restarted: bool
 
 
-def _load(run_id: int) -> tuple[SandboxHandle | None, bool]:
-    """The run's sandbox, and whether it replaced one that had gone (see `SandboxSession`)."""
-    with SessionLocal() as db:
+def _load(data_store_id: uuid.UUID, run_id: int) -> tuple[SandboxHandle | None, bool]:
+    """The store's run's sandbox, and whether it replaced one that had gone (see
+    `SandboxSession`)."""
+    with store_session(data_store_id) as db:
         row = db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run_id))
         if row is None:
             return None, False
@@ -54,7 +59,12 @@ def _load(run_id: int) -> tuple[SandboxHandle | None, bool]:
 
 
 def _save(
-    run_id: int, handle: SandboxHandle, *, replaced: bool, previous: SandboxHandle | None
+    data_store_id: uuid.UUID,
+    run_id: int,
+    handle: SandboxHandle,
+    *,
+    replaced: bool,
+    previous: SandboxHandle | None,
 ) -> bool:
     """Records `handle` as the run's sandbox if the run's row still holds `previous` (or, with
     None, has no row yet).
@@ -68,7 +78,7 @@ def _save(
         "secret": handle.secret,
         "replaced": replaced,
     }
-    with SessionLocal() as db:
+    with store_session(data_store_id) as db:
         if previous is None:
             statement = (
                 insert(SandboxSession)
@@ -89,8 +99,8 @@ def _save(
     return saved
 
 
-def _touch(run_id: int) -> None:
-    with SessionLocal() as db:
+def _touch(data_store_id: uuid.UUID, run_id: int) -> None:
+    with store_session(data_store_id) as db:
         db.execute(
             update(SandboxSession)
             .where(SandboxSession.agent_run_id == run_id)
@@ -127,13 +137,15 @@ async def _stop_quietly(backend: SandboxBackend, handle: SandboxHandle) -> None:
 
 
 def run_sandboxes(db: Session, run_ids: Select | list[int]) -> list[SandboxHandle]:
-    """The sandboxes of these runs, e.g. to stop them once the runs are deleted."""
+    """The sandboxes of these runs of the store (`db`, a session on it), e.g. to stop them once
+    the runs are deleted."""
     rows = db.scalars(select(SandboxSession).where(SandboxSession.agent_run_id.in_(run_ids)))
     return [SandboxHandle(row.ref, row.endpoint, row.secret) for row in rows]
 
 
 def worth_prewarming(db: Session, run_id: int, *, first_turn: bool) -> bool:
-    """Whether to start the run's sandbox when a turn starts, before the model asks for it.
+    """Whether to start the run's sandbox (the run of the store `db` is a session on) when a
+    turn starts, before the model asks for it.
 
     On the run's first turn, to hide the start-up time from its first call. Later, only while
     the run is using its sandbox: if it has never used one, or not for long enough that it has
@@ -165,20 +177,21 @@ class SessionManager:
         # processes (two replicas serving turns of the same run at once), a new sandbox is only
         # recorded if the run's row hasn't changed since it was read, and one that loses is
         # stopped (see `_start`).
-        self._locks: dict[int, asyncio.Lock] = {}
-        self._waiting: dict[int, int] = {}
+        self._locks: dict[tuple[uuid.UUID, int], asyncio.Lock] = {}
+        self._waiting: dict[tuple[uuid.UUID, int], int] = {}
 
     @asynccontextmanager
-    async def _lock(self, run_id: int) -> AsyncIterator[None]:
-        lock = self._locks.setdefault(run_id, asyncio.Lock())
-        self._waiting[run_id] = self._waiting.get(run_id, 0) + 1
+    async def _lock(self, data_store_id: uuid.UUID, run_id: int) -> AsyncIterator[None]:
+        key = (data_store_id, run_id)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        self._waiting[key] = self._waiting.get(key, 0) + 1
         try:
             async with lock:
                 yield
         finally:
-            self._waiting[run_id] -= 1
-            if not self._waiting[run_id]:
-                del self._waiting[run_id], self._locks[run_id]
+            self._waiting[key] -= 1
+            if not self._waiting[key]:
+                del self._waiting[key], self._locks[key]
 
     @staticmethod
     def _backend() -> SandboxBackend:
@@ -190,6 +203,7 @@ class SessionManager:
     async def _start(
         self,
         backend: SandboxBackend,
+        data_store_id: uuid.UUID,
         run_id: int,
         allowed_domains: list[str],
         *,
@@ -202,7 +216,8 @@ class SessionManager:
         if it started one at the same time and recorded it first.
         """
         settings = get_settings()
-        session_key = f"agent-run-{run_id}"
+        # Unique across stores, whose run ids repeat.
+        session_key = f"agent-run-{data_store_id.hex}-{run_id}"
         proxy_url = ""
         secret = settings.sandbox_proxy_secret.get_secret_value()
         # A backend whose sandboxes already have unrestricted network (the dev one) needs no
@@ -241,7 +256,9 @@ class SessionManager:
         async def record() -> bool:
             try:
                 saved = await to_thread.run_sync(
-                    lambda: _save(run_id, handle, replaced=replaced, previous=previous)
+                    lambda: _save(
+                        data_store_id, run_id, handle, replaced=replaced, previous=previous
+                    )
                 )
             except IntegrityError:
                 saved = False  # The run was deleted while its sandbox started.
@@ -256,7 +273,7 @@ class SessionManager:
         # Shielded: if this request is cancelled now, the new sandbox is still either recorded
         # for the run's next call or stopped, never left running with nothing pointing at it.
         if not await _shielded(record()):
-            current, current_replaced = await to_thread.run_sync(_load, run_id)
+            current, current_replaced = await to_thread.run_sync(_load, data_store_id, run_id)
             if current is None:
                 raise SandboxError("This run no longer exists.")
             log.info("another request started %s's sandbox first: %s", session_key, current.ref)
@@ -269,33 +286,45 @@ class SessionManager:
         return handle, replaced
 
     async def _ready(
-        self, backend: SandboxBackend, run_id: int, allowed_domains: list[str]
+        self,
+        backend: SandboxBackend,
+        data_store_id: uuid.UUID,
+        run_id: int,
+        allowed_domains: list[str],
     ) -> tuple[SandboxHandle, bool]:
         """The run's running sandbox, started if it has none or its last one has gone."""
-        handle, replaced = await to_thread.run_sync(_load, run_id)
+        handle, replaced = await to_thread.run_sync(_load, data_store_id, run_id)
         if handle is not None:
             if await backend.alive(handle):
                 return handle, replaced
             log.info("sandbox %s for run %s is gone; starting another", handle.ref, run_id)
             replaced = True
         return await self._start(
-            backend, run_id, allowed_domains, previous=handle, replaced=replaced
+            backend, data_store_id, run_id, allowed_domains, previous=handle, replaced=replaced
         )
 
-    async def ensure(self, *, run_id: int, allowed_domains: list[str]) -> None:
-        """Makes sure the run has a running sandbox, so it's ready for the next call."""
+    async def ensure(
+        self, *, data_store_id: uuid.UUID, run_id: int, allowed_domains: list[str]
+    ) -> None:
+        """Makes sure the store's run has a running sandbox, so it's ready for the next call."""
         backend = self._backend()
-        async with self._lock(run_id):
-            await self._ready(backend, run_id, allowed_domains)
+        async with self._lock(data_store_id, run_id):
+            await self._ready(backend, data_store_id, run_id, allowed_domains)
 
     async def run(
-        self, *, run_id: int, code: str, timeout: int, allowed_domains: list[str]
+        self,
+        *,
+        data_store_id: uuid.UUID,
+        run_id: int,
+        code: str,
+        timeout: int,
+        allowed_domains: list[str],
     ) -> Outcome:
         backend = self._backend()
-        async with self._lock(run_id):
+        async with self._lock(data_store_id, run_id):
             # Checked before the call, so a sandbox that has gone (e.g. stopped when idle) is
             # replaced without the code having run anywhere.
-            handle, replaced = await self._ready(backend, run_id, allowed_domains)
+            handle, replaced = await self._ready(backend, data_store_id, run_id, allowed_domains)
             try:
                 try:
                     result = await backend.execute(handle, code, timeout)
@@ -304,7 +333,12 @@ class SessionManager:
                     # the code didn't run: run it once in a new one.
                     log.info("sandbox %s for run %s stopped before a call", handle.ref, run_id)
                     handle, replaced = await self._start(
-                        backend, run_id, allowed_domains, previous=handle, replaced=True
+                        backend,
+                        data_store_id,
+                        run_id,
+                        allowed_domains,
+                        previous=handle,
+                        replaced=True,
                     )
                     result = await backend.execute(handle, code, timeout)
             except SandboxNotReached:
@@ -319,7 +353,7 @@ class SessionManager:
                     " memory or reached its time limit), so the code may have partly run. The"
                     " next call starts a new sandbox, without the files in /work."
                 ) from None
-            await to_thread.run_sync(_touch, run_id)
+            await to_thread.run_sync(_touch, data_store_id, run_id)
             return Outcome(result, replaced)
 
 

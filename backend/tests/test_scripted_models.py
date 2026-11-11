@@ -129,7 +129,7 @@ def test_a_chat_turn_runs_the_core_loop_on_its_scenario_with_no_provider_called(
 
 
 def test_a_turn_waiting_on_its_request_isnt_failed_as_stopped(
-    api, db, notes_agent, scripted, queued
+    api, db, notes_agent, scripted, queued, in_store
 ):
     chat = make_chat(api, "Notes")
     add(api, chat, "agent", notes_agent)
@@ -137,7 +137,7 @@ def test_a_turn_waiting_on_its_request_isnt_failed_as_stopped(
     [invocation] = messages(api, chat)["invocations"]
 
     # No process beats a run waiting for a person.
-    age(db, invocation["id"])
+    age(db, in_store, invocation["id"])
     chats_api.fail_stopped_turns(db)
 
     [invocation] = messages(api, chat)["invocations"]

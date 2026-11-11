@@ -54,11 +54,16 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
         conn.execute(
-            "DROP TABLE aios.workflow_edges, aios.workflow_nodes, aios.workflow_versions,"
+            "DROP TABLE aios.workflow_run_steps, aios.workflow_runs, aios.sandbox_sessions,"
+            " aios.agent_runs, aios.workflow_edges, aios.workflow_nodes, aios.workflow_versions,"
             " aios.workflows, aios.agent_version_tools, aios.agent_version_skills,"
             " aios.agent_versions, aios.agents, aios.skill_versions, aios.skills CASCADE"
         )
-        conn.execute("DROP TYPE aios.workflow_node_kind")
+        conn.execute(
+            "DROP TYPE aios.workflow_node_kind, aios.workflow_step_status,"
+            " aios.workflow_run_status, aios.agent_run_status"
+        )
+        conn.execute("DROP SCHEMA langgraph CASCADE")
         conn.execute("DROP TABLE aios.people")
         conn.execute("UPDATE aios.alembic_version SET version_num = '0007'")
     db.execute(update(type(store)).where(type(store).id == store_id).values(schema_revision="0007"))

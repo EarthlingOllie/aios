@@ -29,7 +29,7 @@ browser ──▶ ALB / nginx ──┬─ /api/* ──────────
                           └─ everything else ─▶ web (React SPA, static: /login and /register too)
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
-api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
+api, worker ──▶ Postgres 17 + pgvector: the platform database, as `aios_app`, and each organisation's store (runs and their history: LangGraph checkpoints, each store's `langgraph` schema)
 api, worker ──▶ S3 (RustFS locally): uploaded files, under each store's prefix
 browser ──download link (presigned, a minute)──▶ S3
 api, worker ──traces──▶ Langfuse (optional, self-hosted)

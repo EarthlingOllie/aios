@@ -95,9 +95,11 @@ def build(config: RequestSchemaChangeConfig) -> list[AgentTool]:
         runtime: ToolRuntime[ChatDeps],
     ) -> str:
         ctx, call_id = runtime.context, runtime.tool_call_id
-        if ctx.run_id is None:
+        if ctx.run_id is None or ctx.data_store_id is None:
             return json.dumps({"error": NO_RUN})
-        request = await to_thread.run_sync(schema_changes.find, ctx.run_id, call_id)
+        request = await to_thread.run_sync(
+            schema_changes.find, ctx.data_store_id, ctx.run_id, call_id
+        )
         if request is None:
             try:
                 change = SchemaChange.model_validate(

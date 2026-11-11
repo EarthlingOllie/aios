@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
-from conftest import build_user, delete_user, org_of, provisioned_user, user_store
+from conftest import build_user, delete_user, org_of, provisioned_user, store_of, user_store
 from sqlalchemy import func
 
 from aios import checkpoints, turn_lease, ui_stream
@@ -17,7 +17,7 @@ from aios.auth import current_organisation, current_user
 from aios.datastores.models import Agent
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Organisation, Role
+from aios.models import Role
 from aios.permissions import current_role
 from aios.testing.fake_model import ToolCall, model, replies, use_model
 from aios.tools import hybrid_search
@@ -394,7 +394,9 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     assert text_deltas(second) == "arr"
     assert seen["metadata"]["agent_version"] == 1
     assert seen["metadata"]["skill_versions"][0]["name"] == "Pirate"
-    assert seen["metadata"]["langfuse_session_id"] == f"agent-run-{run['id']}"
+    # Named by its organisation too: run ids are each store's own.
+    org_id = seen["metadata"]["organisation_id"]
+    assert seen["metadata"]["langfuse_session_id"] == f"agent-run-{org_id}-{run['id']}"
 
     detail = api.get(url).json()
     assert detail["title"] == "hello there"
@@ -504,7 +506,7 @@ def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
     with use_model(model(script)):
         assert asyncio.run(delete_mid_turn()).status_code == 204
 
-    assert checkpoints.history(run["id"]) == []
+    assert checkpoints.history(store_of(user), run["id"]) == []
 
 
 def on_event_loop() -> bool:
@@ -515,26 +517,33 @@ def on_event_loop() -> bool:
     return True
 
 
-def test_chat_releases_request_session_before_streaming(client, db, monkeypatch):
+def test_chat_releases_request_session_before_streaming(client, db, user, monkeypatch):
     """DB work runs off the event loop, and the request's session is closed before the stream."""
     events = []
-    checkpoints.delete_threads([1])
+    org = org_of(db, user)
+
+    def forget_run_1() -> None:
+        with user_store(user) as store:
+            checkpoints.delete_threads(store, [1])
+            store.commit()
+
+    forget_run_1()
 
     def fake_db():
         events.append("db opened")
         yield object()
         events.append("db closed")
 
-    def fake_load(db, agent_id, run_id, *, org=None):
+    def fake_load(db, data_store_id, agent_id, run_id, *, by_hand=False):
         events.append(("load on loop", on_event_loop()))
         return agents_api.ChatContext(
-            model=None, instructions="Hi.", metadata={}, data_store_id=uuid.uuid4()
+            data_store_id=data_store_id, model=None, instructions="Hi.", metadata={}
         )
 
-    def fake_start(run_id, prompt):
+    def fake_start(data_store_id, run_id, prompt):
         events.append(("title on loop", on_event_loop()))
 
-    def fake_end(run_id, *, failed, message_count=None):
+    def fake_end(data_store_id, run_id, *, failed, message_count=None):
         events.append(("count on loop", on_event_loop(), message_count))
 
     async def script(messages, info):
@@ -544,22 +553,25 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
     monkeypatch.setattr(agents_api, "_start_turn", fake_start)
     monkeypatch.setattr(agents_api, "_end_turn", fake_end)
-    # Run 1 is made up, like the rest of what the turn loads: so is its turn lease, which holds.
+    # Run 1 is made up, like the rest of what the turn loads (but its store, the user's): so is
+    # its turn lease, which holds.
     monkeypatch.setattr(
-        turn_lease, "try_acquire", lambda run_id: turn_lease.Lease(run_id, uuid.uuid4())
+        turn_lease,
+        "try_acquire",
+        lambda store_id, run_id: turn_lease.Lease(store_id, run_id, uuid.uuid4()),
     )
     monkeypatch.setattr(turn_lease, "holds", lambda lease: True)
     monkeypatch.setattr(checkpoints, "_FENCE", "SELECT %s::bigint, %s::uuid")
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
-    app.dependency_overrides[current_organisation] = lambda: Organisation(id=1, name="t")
+    app.dependency_overrides[current_organisation] = lambda: org
     app.dependency_overrides[current_role] = lambda: Role.admin
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):
-            resp = client.post("/api/o/1/agents/1/runs/1/chat", json=chat_body("hello"))
+            resp = client.post(f"/api/o/{org.id}/agents/1/runs/1/chat", json=chat_body("hello"))
     finally:
         app.dependency_overrides.clear()
-        checkpoints.delete_threads([1])
+        forget_run_1()
 
     assert resp.status_code == 200
     assert text_deltas(resp) == "arr"

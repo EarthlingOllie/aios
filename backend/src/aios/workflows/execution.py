@@ -6,8 +6,9 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
+import uuid
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from sqlalchemy import ColumnElement, and_, false, func, or_, select, update
@@ -18,15 +19,14 @@ from aios import invocations
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
 from aios.config import get_settings
-from aios.datastores import history, schema_changes, store_session
-from aios.datastores.models import Workflow, WorkflowVersion
+from aios.datastores import history, schema_changes, store_id_of, store_session
+from aios.datastores.models import Workflow, WorkflowRun, WorkflowRunStep, WorkflowVersion
 from aios.db import SessionLocal
 from aios.models import (
+    DataStore,
     SchemaChangeRequest,
     SchemaChangeStatus,
-    WorkflowRun,
     WorkflowRunStatus,
-    WorkflowRunStep,
     WorkflowStepStatus,
 )
 from aios.ui_stream import error_text
@@ -56,17 +56,18 @@ def alive() -> ColumnElement[bool]:
     )
 
 
-def fail_stopped_runs(db: Session, *where: ColumnElement[bool]) -> None:
-    """Fail the runs matching `where` that are running but not alive (see `alive`), and their
-    steps that were cut off; commits."""
-    _end_runs(
-        db,
+def fail_stopped_runs(store: Session, *where: ColumnElement[bool]) -> None:
+    """Fail the runs matching `where` (in the store `store` is a session on) that are running
+    but not alive (see `alive`), and their steps that were cut off; commits."""
+    ended = _end_runs(
+        store,
         [*where, WorkflowRun.status == WorkflowRunStatus.running, ~alive()],
         WorkflowRunStatus.failed,
         None,
         WORKER_STOPPED,
     )
-    db.commit()
+    store.commit()
+    _record_ended(ended)
 
 
 @dataclass(frozen=True)
@@ -80,9 +81,16 @@ class Claimed:
     time_left: float
 
 
-def _claim(run_id: int) -> Claimed | None:
-    """Mark a queued or waiting run running; return it. None if it's neither (deleted, ended,
-    or already running), or if it's failed because it couldn't start.
+def _organisation(data_store_id: uuid.UUID) -> int | None:
+    with SessionLocal() as db:
+        return db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+
+
+def _claim(data_store_id: uuid.UUID, run_id: int) -> Claimed | None:
+    """Mark the store's queued or waiting run running; return it. None if it's neither
+    (deleted, ended, or already running), or if it's failed because it couldn't start.
 
     A waiting run is queued again once a request it waits on is decided (`enqueue_resume`);
     claimed, it adds the time it waited to `waited_seconds` and carries on from the steps it
@@ -96,8 +104,8 @@ def _claim(run_id: int) -> Claimed | None:
     """
     waited = func.extract("epoch", func.now() - WorkflowRun.waiting_since)
     ran = func.extract("epoch", func.now() - WorkflowRun.started_at) - WorkflowRun.waited_seconds
-    with SessionLocal() as db:
-        row = db.execute(
+    with store_session(data_store_id) as store:
+        row = store.execute(
             update(WorkflowRun)
             .where(
                 WorkflowRun.id == run_id,
@@ -112,7 +120,6 @@ def _claim(run_id: int) -> Claimed | None:
             )
             # After the update: `ran` is its running time so far.
             .returning(
-                WorkflowRun.organisation_id,
                 WorkflowRun.workflow_version_id,
                 WorkflowRun.input,
                 WorkflowRun.created_by,
@@ -120,9 +127,9 @@ def _claim(run_id: int) -> Claimed | None:
             )
         ).one_or_none()
         if row is None:
-            fail_stopped_runs(db, WorkflowRun.id == run_id)
+            fail_stopped_runs(store, WorkflowRun.id == run_id)
             return None
-        organisation_id, version_id, text, created_by, ran_seconds = row
+        version_id, text, created_by, ran_seconds = row
         recorded = {
             tuple(step.path): RecordedStep(
                 id=step.id,
@@ -131,36 +138,39 @@ def _claim(run_id: int) -> Claimed | None:
                 output=step.output,
                 agent_run_id=step.agent_run_id,
             )
-            for step in db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id))
+            for step in store.scalars(
+                select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id)
+            )
         }
-        # In the claim's transaction: if the store can't be resolved, or its workflow read from
-        # it, the run isn't claimed...
+        # In the claim's transaction: if its workflow can't be read, or its organisation has
+        # gone, the run isn't claimed...
         try:
-            data_store_id = package.data_store_for(organisation_id, db)
-            with store_session(data_store_id, "ro") as store:
-                workflow_id, name, version = store.execute(
-                    select(Workflow.id, Workflow.name, WorkflowVersion.version)
-                    .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
-                    .where(WorkflowVersion.id == version_id)
-                ).one()
+            organisation_id = package._organisation(data_store_id)
+            if organisation_id is None:
+                raise RunError("The run's organisation has been deleted.")
+            workflow_id, name, version = store.execute(
+                select(Workflow.id, Workflow.name, WorkflowVersion.version)
+                .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
+                .where(WorkflowVersion.id == version_id)
+            ).one()
         except Exception as exc:
-            db.rollback()
+            store.rollback()
             error = exc
         else:
             error = None
-            db.commit()
+            store.commit()
     if error is not None:
         # ...and it's failed now, with the real error: nothing else would ever run or end it. A
         # waiting run (being resumed) is failed too, rather than left waiting for good.
-        log.exception("workflow run %s: couldn't resolve its data store", run_id, exc_info=error)
-        with SessionLocal() as db:
-            db.execute(
+        log.exception("workflow run %s: couldn't be claimed", run_id, exc_info=error)
+        with store_session(data_store_id) as store:
+            store.execute(
                 update(WorkflowRun)
                 .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.waiting)
                 .values(status=WorkflowRunStatus.running, waiting_since=None)
             )
-            db.commit()
-        fail_run(run_id, error_text(error))
+            store.commit()
+        fail_run(data_store_id, run_id, error_text(error))
         return None
     state = RunState(
         id=run_id,
@@ -176,77 +186,107 @@ def _claim(run_id: int) -> Claimed | None:
     return Claimed(state, version_id, text, time_left)
 
 
-def _decided_waits() -> ColumnElement[bool]:
-    """Whether a waiting step of the run (`WorkflowRun`) waits on a request that's been
-    decided but not yet given to it."""
-    request = SchemaChangeRequest
-    return (
-        select(WorkflowRunStep.id)
-        .join(
-            request,
-            or_(
-                request.id == WorkflowRunStep.waiting_on_request_id,
-                request.requested_by_run == WorkflowRunStep.agent_run_id,
-            ),
-        )
-        .where(
-            WorkflowRunStep.run_id == WorkflowRun.id,
+def _not_given(
+    data_store_id: uuid.UUID,
+    agent_run_ids: Iterable[int],
+    request_ids: Iterable[uuid.UUID],
+) -> list[ColumnElement[bool]]:
+    """The store's requests made by these agent runs (workflow nodes' conversations), or with
+    these ids, not yet given to the runs that made them."""
+    agent_run_ids, request_ids = list(agent_run_ids), list(request_ids)
+    return [
+        SchemaChangeRequest.data_store_id == data_store_id,
+        or_(
+            SchemaChangeRequest.requested_by_run.in_(agent_run_ids) if agent_run_ids else false(),
+            SchemaChangeRequest.id.in_(request_ids) if request_ids else false(),
+        ),
+        SchemaChangeRequest.resumed_at.is_(None),
+    ]
+
+
+def _waiting_steps(store: Session, run_id: int) -> tuple[list[int], list[uuid.UUID]]:
+    """The agent runs, and the requests, the run's waiting steps wait on."""
+    rows = store.execute(
+        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.waiting_on_request_id).where(
+            WorkflowRunStep.run_id == run_id,
             WorkflowRunStep.status == WorkflowStepStatus.waiting,
-            request.resumed_at.is_(None),
-            request.status.not_in([SchemaChangeStatus.pending, SchemaChangeStatus.approved]),
         )
-        .exists()
+    ).all()
+    return (
+        [r.agent_run_id for r in rows if r.agent_run_id is not None],
+        [r.waiting_on_request_id for r in rows if r.waiting_on_request_id is not None],
     )
 
 
-def workflow_run_waiting_on(db: Session, request: SchemaChangeRequest) -> int | None:
-    """The workflow run whose agent node made the request, if one did: the run to resume once
-    it's decided. Found by the step's agent run, or, if that's gone with its agent, by the
-    request the step waits on."""
+def _decided_waits(data_store_id: uuid.UUID, run_id: int) -> bool:
+    """Whether a waiting step of the store's run waits on a request that's been decided but
+    not yet given to it."""
+    with store_session(data_store_id, "ro") as store:
+        agent_run_ids, request_ids = _waiting_steps(store, run_id)
+    if not agent_run_ids and not request_ids:
+        return False
+    with SessionLocal() as db:
+        return (
+            db.scalar(
+                select(SchemaChangeRequest.id)
+                .where(
+                    *_not_given(data_store_id, agent_run_ids, request_ids),
+                    SchemaChangeRequest.status.not_in(
+                        [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
+                    ),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+
+def workflow_run_waiting_on(request: SchemaChangeRequest) -> int | None:
+    """The workflow run (in the request's store) whose agent node made the request, if one did:
+    the run to resume once it's decided. Found by the step's agent run, or, if the step has
+    lost it, by the request the step waits on."""
     by_run = (
         WorkflowRunStep.agent_run_id == request.requested_by_run
         if request.requested_by_run is not None
         else false()
     )
-    return db.scalar(
-        select(WorkflowRunStep.run_id)
-        .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
-        .limit(1)
-    )
+    with store_session(request.data_store_id, "ro") as store:
+        return store.scalar(
+            select(WorkflowRunStep.run_id)
+            .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
+            .limit(1)
+        )
 
 
-def _pause_run(run_id: int) -> None:
+def _pause_run(data_store_id: uuid.UUID, run_id: int) -> None:
     """A run whose nodes have all ended or wait: it waits, holding no worker.
 
     Queued again at once if a request it waits on was decided while it ran: that decision's
-    own queuing found it running, and left it. (One decided later finds it waiting: this
-    update holds the run's row until it commits, so that queuing's claim waits for it.)
+    own queuing found it running, and left it. (One decided once it's waiting finds it waiting,
+    and its queuing claims it.)
     """
-    with SessionLocal() as db:
-        paused = db.execute(
+    with store_session(data_store_id) as store:
+        paused = store.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
             .values(status=WorkflowRunStatus.waiting, waiting_since=func.now())
         )
-        decided = paused.rowcount > 0 and db.scalar(
-            select(_decided_waits()).where(WorkflowRun.id == run_id)
-        )
-        db.commit()
-    if decided:
+        store.commit()
+    if paused.rowcount > 0 and _decided_waits(data_store_id, run_id):
         from aios.worker import run_workflow_task
 
-        run_workflow_task.delay(run_id)
+        run_workflow_task.delay(str(data_store_id), run_id)
 
 
-def _beat(run_id: int) -> bool:
+def _beat(data_store_id: uuid.UUID, run_id: int) -> bool:
     """Refresh the run's heartbeat; False if it isn't running any more (ended or deleted)."""
-    with SessionLocal() as db:
-        beat = db.execute(
+    with store_session(data_store_id) as store:
+        beat = store.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.status == WorkflowRunStatus.running)
             .values(heartbeat_at=func.now())
         )
-        db.commit()
+        store.commit()
         return beat.rowcount > 0
 
 
@@ -267,7 +307,8 @@ class _Heartbeat:
     worker until Celery's hard time limit, see `aios.worker`, but the run has ended.)
     """
 
-    def __init__(self, run_id: int, run: asyncio.Task) -> None:
+    def __init__(self, data_store_id: uuid.UUID, run_id: int, run: asyncio.Task) -> None:
+        self.data_store_id = data_store_id
         self.run_id = run_id
         self.run = run
         self.loop = asyncio.get_running_loop()
@@ -291,7 +332,7 @@ class _Heartbeat:
             with contextlib.suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(self._progressed)
             try:
-                alive = package._beat(self.run_id)
+                alive = package._beat(self.data_store_id, self.run_id)
             except Exception:
                 # The run goes on; it only counts as stopped after several missed beats.
                 log.exception("workflow run %s: couldn't record its heartbeat", self.run_id)
@@ -314,7 +355,7 @@ class _Heartbeat:
             get_settings().workflow_run_no_progress_limit,
         )
         try:
-            fail_run(self.run_id, no_progress_error())
+            fail_run(self.data_store_id, self.run_id, no_progress_error())
         except Exception:
             # Without beats, it's failed as stopped once it's read (`fail_stopped_runs`).
             log.exception("workflow run %s: couldn't record that it's stuck", self.run_id)
@@ -343,45 +384,65 @@ def _load(data_store_id, version_id: int, strict: bool = True) -> Graph:
 NOT_ENDED = (WorkflowRunStatus.queued, WorkflowRunStatus.running, WorkflowRunStatus.waiting)
 
 
+@dataclass
+class Ended:
+    """Runs of a store that `_end_runs` has just ended there: what the platform records of
+    them once that's committed (`_record_ended`)."""
+
+    data_store_id: uuid.UUID
+    runs: list[WorkflowRun] = field(default_factory=list)
+    # Their steps' agent runs, and the requests their steps waited on.
+    agent_run_ids: list[int] = field(default_factory=list)
+    request_ids: list[uuid.UUID] = field(default_factory=list)
+
+
 def _end_runs(
-    db: Session,
+    store: Session,
     where: Sequence[ColumnElement[bool]],
     status: WorkflowRunStatus,
     output: str | None,
     error: str | None,
-) -> None:
-    """End the runs matching `where` that haven't ended, and fail their steps still running.
-    A waiting run is left be (it isn't the worker's to end)."""
+) -> Ended:
+    """End the store's runs matching `where` that haven't ended, and fail their steps still
+    running; in `store`'s transaction. A waiting run is left be (it isn't the worker's to end).
+    Once the caller has committed, `_record_ended` records the rest, on the platform."""
+    ended = Ended(store_id_of(store))
     going = [s for s in NOT_ENDED if s != WorkflowRunStatus.waiting]
     waited = func.coalesce(func.extract("epoch", func.now() - WorkflowRun.waiting_since), 0)
-    ended = db.scalars(
-        update(WorkflowRun)
-        .where(*where, WorkflowRun.status.in_(going))
-        .values(
-            status=status,
-            output=output,
-            error=error,
-            finished_at=func.now(),
-            waited_seconds=WorkflowRun.waited_seconds + waited,
-            waiting_since=None,
+    ended.runs = list(
+        store.scalars(
+            update(WorkflowRun)
+            .where(*where, WorkflowRun.status.in_(going))
+            .values(
+                status=status,
+                output=output,
+                error=error,
+                finished_at=func.now(),
+                waited_seconds=WorkflowRun.waited_seconds + waited,
+                waiting_since=None,
+            )
+            .returning(WorkflowRun)
         )
-        .returning(WorkflowRun.id)
-    ).all()
-    if not ended:
-        return
+    )
+    if not ended.runs:
+        return ended
+    ids = [run.id for run in ended.runs]
     # Before the steps forget the requests they wait on.
-    close_requests(db, ended)
-    # Those a chat started post their results back to it.
-    invocations.finish_workflow_runs(db, ended)
-    # However it ended (finished, failed, stopped), it goes in the run history export's outbox,
-    # with its own update: once its row is locked, as deleting it locks it first.
-    history.enqueue_workflow_runs(db, WorkflowRun.id.in_(ended))
+    for agent_run_id, request_id in store.execute(
+        select(WorkflowRunStep.agent_run_id, WorkflowRunStep.waiting_on_request_id).where(
+            WorkflowRunStep.run_id.in_(ids)
+        )
+    ):
+        if agent_run_id is not None:
+            ended.agent_run_ids.append(agent_run_id)
+        if request_id is not None:
+            ended.request_ids.append(request_id)
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
-    db.execute(
+    store.execute(
         update(WorkflowRunStep)
         .where(
-            WorkflowRunStep.run_id.in_(ended),
+            WorkflowRunStep.run_id.in_(ids),
             WorkflowRunStep.status.in_([WorkflowStepStatus.running, WorkflowStepStatus.waiting]),
         )
         .values(
@@ -391,40 +452,53 @@ def _end_runs(
             waiting_on_request_id=None,
         )
     )
+    return ended
 
 
-def close_requests(db: Session, workflow_run_ids) -> None:
-    """Close out the schema change requests these workflow runs' agent nodes made and haven't
-    been given: the runs have ended or are being deleted, so nothing will give them their
-    outcomes. Pending ones are cancelled, so they can't be approved, and their notifications
-    cleared (`schema_changes.cancel`); the others count as given, so the conversations don't
-    wait on them (one being applied still is). Found by the steps' agent runs, or, for one
-    whose agent run went with its agent, by the request the step waits on."""
-    steps = select(WorkflowRunStep).where(WorkflowRunStep.run_id.in_(workflow_run_ids)).subquery()
-    not_given = [
-        or_(
-            SchemaChangeRequest.requested_by_run.in_(
-                select(steps.c.agent_run_id).where(steps.c.agent_run_id.is_not(None))
-            ),
-            SchemaChangeRequest.id.in_(
-                select(steps.c.waiting_on_request_id).where(
-                    steps.c.waiting_on_request_id.is_not(None)
-                )
-            ),
-        ),
-        SchemaChangeRequest.resumed_at.is_(None),
-    ]
+def _record_ended(ended: Ended) -> None:
+    """What the platform records of runs that have ended in their store: the requests they made
+    are closed out, the invocations that started them finish, and they go in the run history
+    export's outbox. Commits."""
+    if not ended.runs:
+        return
+    with SessionLocal() as db:
+        close_requests(db, ended.data_store_id, ended.agent_run_ids, ended.request_ids)
+        # Those a chat started post their results back to it.
+        invocations.finish_workflow_runs(db, ended.data_store_id, ended.runs)
+        history.enqueue_workflow_runs(db, ended.data_store_id, [r.id for r in ended.runs])
+        db.commit()
+
+
+def close_requests(
+    db: Session,
+    data_store_id: uuid.UUID,
+    agent_run_ids: Iterable[int],
+    request_ids: Iterable[uuid.UUID],
+) -> None:
+    """Close out the store's schema change requests that workflow runs' agent nodes made (by
+    their steps' agent runs, `agent_run_ids`, or the requests their steps waited on,
+    `request_ids`) and haven't been given: the runs have ended or are being deleted, so nothing
+    will give them their outcomes. Pending ones are cancelled, so they can't be approved, and
+    their notifications cleared (`schema_changes.cancel`); the others count as given, so the
+    conversations don't wait on them (one being applied still is). In the caller's
+    transaction."""
+    not_given = _not_given(data_store_id, agent_run_ids, request_ids)
     schema_changes.cancel(db, *not_given)
     db.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
 
 
 def _finish_run(
-    run_id: int, status: WorkflowRunStatus, output: str | None, error: str | None
+    data_store_id: uuid.UUID,
+    run_id: int,
+    status: WorkflowRunStatus,
+    output: str | None,
+    error: str | None,
 ) -> None:
-    with SessionLocal() as db:
+    with store_session(data_store_id) as store:
         # A no-op if the run was deleted meanwhile, or has already finished.
-        _end_runs(db, [WorkflowRun.id == run_id], status, output, error)
-        db.commit()
+        ended = _end_runs(store, [WorkflowRun.id == run_id], status, output, error)
+        store.commit()
+    _record_ended(ended)
 
 
 def time_limit_error() -> str:
@@ -438,25 +512,25 @@ def no_progress_error() -> str:
     return f"The run made no progress for {took}: something held up its worker, so it was stopped."
 
 
-def fail_run(run_id: int, error: str) -> None:
-    """Fail a run that couldn't finish, e.g. one stopped for taking too long."""
-    _finish_run(run_id, WorkflowRunStatus.failed, None, error)
+def fail_run(data_store_id: uuid.UUID, run_id: int, error: str) -> None:
+    """Fail the store's run that couldn't finish, e.g. one stopped for taking too long."""
+    _finish_run(data_store_id, run_id, WorkflowRunStatus.failed, None, error)
 
 
-async def execute_run(run_id: int) -> None:
-    """Run a queued workflow run, or carry on a waiting one, to the end or until it waits,
-    recording its steps and then its result.
+async def execute_run(data_store_id: uuid.UUID, run_id: int) -> None:
+    """Run the store's queued workflow run, or carry on a waiting one, to the end or until it
+    waits, recording its steps and then its result.
 
     Called by the worker (`aios.worker.run_workflow_task`). Does nothing unless the run is
     queued or waiting, so a task delivered twice runs it once; a run left running by a worker
     that died is failed instead (see `_claim`). Its heartbeat is refreshed until it ends or
     waits, and stops it if it has ended elsewhere meanwhile.
     """
-    claimed = await asyncio.to_thread(_claim, run_id)
+    claimed = await asyncio.to_thread(_claim, data_store_id, run_id)
     if claimed is None:
         return
     run = asyncio.create_task(_execute(claimed))
-    heartbeat = _Heartbeat(run_id, run)
+    heartbeat = _Heartbeat(data_store_id, run_id, run)
     try:
         await run
     except asyncio.CancelledError:
@@ -477,6 +551,7 @@ def _failure(run: RunState, error: str) -> str:
 
 async def _execute(claimed: Claimed) -> None:
     run = claimed.state
+    store_id = run.data_store_id
     try:
         # Timed here rather than by Celery's soft limit, whose exception can land inside a node
         # and fail it like any other error. Only running counts: a run resuming has what's left.
@@ -488,20 +563,22 @@ async def _execute(claimed: Claimed) -> None:
             )
             output = await _run_graph(run, graph, (), claimed.input)
     except TimeoutError:
-        await asyncio.to_thread(fail_run, run.id, time_limit_error())
+        await asyncio.to_thread(fail_run, store_id, run.id, time_limit_error())
     except NodeWaiting:
         if run.error is None:
-            await asyncio.to_thread(_pause_run, run.id)
+            await asyncio.to_thread(_pause_run, store_id, run.id)
         else:
             # A node failed while another waits: the run fails, as it would have had the other
             # finished.
-            await asyncio.to_thread(fail_run, run.id, _failure(run, run.error))
+            await asyncio.to_thread(fail_run, store_id, run.id, _failure(run, run.error))
     except StepFailed as exc:
-        await asyncio.to_thread(fail_run, run.id, _failure(run, exc.error))
+        await asyncio.to_thread(fail_run, store_id, run.id, _failure(run, exc.error))
     except RunError as exc:
-        await asyncio.to_thread(fail_run, run.id, str(exc))
+        await asyncio.to_thread(fail_run, store_id, run.id, str(exc))
     except Exception as exc:
         log.exception("workflow run %s failed", run.id)
-        await asyncio.to_thread(fail_run, run.id, error_text(exc))
+        await asyncio.to_thread(fail_run, store_id, run.id, error_text(exc))
     else:
-        await asyncio.to_thread(_finish_run, run.id, WorkflowRunStatus.succeeded, output, None)
+        await asyncio.to_thread(
+            _finish_run, store_id, run.id, WorkflowRunStatus.succeeded, output, None
+        )

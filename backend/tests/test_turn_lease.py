@@ -10,15 +10,15 @@ import json
 import time
 
 import pytest
-from conftest import org_of
+from conftest import org_of, store_of, user_store
 from sqlalchemy import func, select, text, update
 from test_agents import chat_body, make_agent
 
 from aios import checkpoints, turn_lease
 from aios.api import agents as agents_api
 from aios.config import get_settings
+from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
-from aios.models import AgentRun
 from aios.testing.fake_model import model, use_model
 
 
@@ -40,13 +40,13 @@ async def consume(response) -> list[dict]:
     return chunks_of("".join([chunk async for chunk in response.body_iterator]))
 
 
-def history(run: dict) -> list[str]:
-    return [m.content for m in checkpoints.history(run["id"])]
+def history(user, run: dict) -> list[str]:
+    return [m.content for m in checkpoints.history(store_of(user), run["id"])]
 
 
-def lease_of(run: dict) -> tuple:
-    with SessionLocal() as db:
-        return db.execute(
+def lease_of(user, run: dict) -> tuple:
+    with user_store(user) as store:
+        return store.execute(
             select(AgentRun.lease_token, AgentRun.lease_until).where(AgentRun.id == run["id"])
         ).one()
 
@@ -57,10 +57,10 @@ ADVISORY_LOCKS = text(
 )
 
 
-def advisory_locks() -> int:
-    """Advisory locks held on the platform database, by any session."""
-    with SessionLocal() as db:
-        return db.scalar(ADVISORY_LOCKS)
+def advisory_locks(user) -> int:
+    """Advisory locks held on the platform database and the user's store, by any session."""
+    with SessionLocal() as db, user_store(user) as store:
+        return db.scalar(ADVISORY_LOCKS) + store.scalar(ADVISORY_LOCKS)
 
 
 def test_the_lease_is_free_after_a_turn_and_no_advisory_lock_is_taken(api, user):
@@ -68,8 +68,8 @@ def test_the_lease_is_free_after_a_turn_and_no_advisory_lock_is_taken(api, user)
     seen = {}
 
     async def script(messages, info):
-        seen["lease"] = await asyncio.to_thread(lease_of, run)
-        seen["advisory"] = await asyncio.to_thread(advisory_locks)
+        seen["lease"] = await asyncio.to_thread(lease_of, user, run)
+        seen["advisory"] = await asyncio.to_thread(advisory_locks, user)
         yield "hi"
 
     with use_model(model(script)):
@@ -79,15 +79,15 @@ def test_the_lease_is_free_after_a_turn_and_no_advisory_lock_is_taken(api, user)
     token, until = seen["lease"]
     assert token is not None and until is not None
     assert seen["advisory"] == 0
-    assert lease_of(run) == (None, None)
-    assert history(run) == ["hi", "hi"]
+    assert lease_of(user, run) == (None, None)
+    assert history(user, run) == ["hi", "hi"]
 
 
 def test_a_run_busy_past_the_wait_answers_409(api, user, monkeypatch):
     agent, run = new_run(api)
     monkeypatch.setattr(get_settings(), "turn_wait_seconds", 0.5)
     # Another turn (another replica's, say) holds the run.
-    assert turn_lease.try_acquire(run["id"]) is not None
+    assert turn_lease.try_acquire(store_of(user), run["id"]) is not None
 
     started = time.monotonic()
     resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
@@ -95,15 +95,15 @@ def test_a_run_busy_past_the_wait_answers_409(api, user, monkeypatch):
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"] == "This run is busy"
     assert time.monotonic() - started >= 0.5
-    assert history(run) == []
+    assert history(user, run) == []
 
 
 def test_a_waiting_turn_starts_as_soon_as_the_holder_releases(api, user):
     _, run = new_run(api)
 
     async def scenario() -> float:
-        holder = await turn_lease.acquire(run["id"])
-        waiter = asyncio.create_task(turn_lease.acquire(run["id"], wait=30))
+        holder = await turn_lease.acquire(store_of(user), run["id"])
+        waiter = asyncio.create_task(turn_lease.acquire(store_of(user), run["id"], wait=30))
         await asyncio.sleep(0.3)
         assert not waiter.done()
         released = time.monotonic()
@@ -119,31 +119,31 @@ def test_a_waiting_turn_starts_as_soon_as_the_holder_releases(api, user):
 
 def test_an_expired_lease_is_free_and_isnt_a_turn_underway(api, user):
     _, run = new_run(api)
-    stale = turn_lease.try_acquire(run["id"])
-    with SessionLocal() as db:
-        assert checkpoints.turns_underway(db, [run["id"]]) == {run["id"]}
-        db.execute(
+    stale = turn_lease.try_acquire(store_of(user), run["id"])
+    with user_store(user) as store:
+        assert checkpoints.turns_underway(store, [run["id"]]) == {run["id"]}
+        store.execute(
             update(AgentRun)
             .where(AgentRun.id == run["id"])
             .values(lease_until=func.now() - func.make_interval(0, 0, 0, 0, 0, 0, 1))
         )
-        db.commit()
-        assert checkpoints.turns_underway(db, [run["id"]]) == set()
+        store.commit()
+        assert checkpoints.turns_underway(store, [run["id"]]) == set()
 
-    taken = turn_lease.try_acquire(run["id"])
+    taken = turn_lease.try_acquire(store_of(user), run["id"])
     assert taken is not None and taken.token != stale.token
     assert turn_lease.refresh(stale) is False
 
 
-def expire(run: dict) -> None:
+def expire(user, run: dict) -> None:
     """The holder froze past its lease's expiry."""
-    with SessionLocal() as db:
-        db.execute(
+    with user_store(user) as store:
+        store.execute(
             update(AgentRun)
             .where(AgentRun.id == run["id"])
             .values(lease_until=func.now() - func.make_interval(0, 0, 0, 0, 0, 0, 1))
         )
-        db.commit()
+        store.commit()
 
 
 def test_a_holder_whose_lease_lapsed_cant_write_a_checkpoint(api, user):
@@ -152,8 +152,8 @@ def test_a_holder_whose_lease_lapsed_cant_write_a_checkpoint(api, user):
     taken = {}
 
     async def script(messages, info):
-        await asyncio.to_thread(expire, run)
-        taken["lease"] = await asyncio.to_thread(turn_lease.try_acquire, run["id"])
+        await asyncio.to_thread(expire, user, run)
+        taken["lease"] = await asyncio.to_thread(turn_lease.try_acquire, store_of(user), run["id"])
         yield "too late"
 
     with use_model(model(script)):
@@ -163,16 +163,16 @@ def test_a_holder_whose_lease_lapsed_cant_write_a_checkpoint(api, user):
     assert any(c["type"] == "error" for c in chunks_of(resp.text))
     # The user's message was checkpointed before the model was called, while it held the lease;
     # the reply, and the record of the unfinished turn, weren't.
-    assert history(run) == ["hi"]
+    assert history(user, run) == ["hi"]
     # The new holder's lease is untouched by the stale one's ending.
-    assert lease_of(run)[0] == taken["lease"].token
+    assert lease_of(user, run)[0] == taken["lease"].token
 
 
 def test_a_stale_holders_checkpoint_write_fails_and_stores_nothing(api, user):
     _, run = new_run(api)
 
     async def scenario() -> None:
-        async with checkpoints.turn(run["id"]) as saver:
+        async with checkpoints.turn(store_of(user), run["id"]) as saver:
             config = {
                 **checkpoints.thread_config(run["id"]),
                 "configurable": {
@@ -181,7 +181,7 @@ def test_a_stale_holders_checkpoint_write_fails_and_stores_nothing(api, user):
                     "checkpoint_id": "1",
                 },
             }
-            await asyncio.to_thread(expire, run)
+            await asyncio.to_thread(expire, user, run)
             with pytest.raises(turn_lease.LeaseLost):
                 await saver.aput_writes(config, [("messages", ["x"])], "task")
             count = await saver.conn.execute(
@@ -217,9 +217,9 @@ def test_stopping_a_turn_ends_it_within_a_second(api, user):
             )
         turn = asyncio.create_task(consume(response))
         await started.wait()
-        with SessionLocal() as db:
+        with user_store(user) as store:
             stopped_at = time.monotonic()
-            await asyncio.to_thread(checkpoints.stop_turns, db, [run["id"]])
+            await asyncio.to_thread(checkpoints.stop_turns, store, store_of(user), [run["id"]])
         chunks = await asyncio.wait_for(turn, timeout=5)
         seen["took"] = time.monotonic() - stopped_at
         return chunks
@@ -231,8 +231,8 @@ def test_stopping_a_turn_ends_it_within_a_second(api, user):
     errors = [c["errorText"] for c in chunks if c["type"] == "error"]
     assert errors == ["This turn was stopped."]
     assert "after the stop" not in json.dumps(chunks)
-    assert lease_of(run) == (None, None)
-    assert history(run)[0] == "hi"
+    assert lease_of(user, run) == (None, None)
+    assert history(user, run)[0] == "hi"
     out = api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").json()
     assert out["status"] == "failed"
 
@@ -245,7 +245,7 @@ def test_stopping_a_turn_signals_its_holder_and_leaves_its_connection_working(ap
         entered = asyncio.Event()
 
         async def holder() -> None:
-            async with checkpoints.turn(run["id"]) as saver:
+            async with checkpoints.turn(store_of(user), run["id"]) as saver:
                 entered.set()
                 try:
                     await asyncio.sleep(30)
@@ -257,9 +257,9 @@ def test_stopping_a_turn_signals_its_holder_and_leaves_its_connection_working(ap
 
         task = asyncio.create_task(holder())
         await entered.wait()
-        with SessionLocal() as db:
+        with user_store(user) as store:
             stopped_at = time.monotonic()
-            await asyncio.to_thread(checkpoints.stop_turns, db, [run["id"]])
+            await asyncio.to_thread(checkpoints.stop_turns, store, store_of(user), [run["id"]])
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5)
         return time.monotonic() - stopped_at
@@ -281,8 +281,8 @@ def test_with_redis_down_a_stopped_holders_next_write_fails_on_fencing(api, user
             )
         turn = asyncio.create_task(consume(response))
         await started.wait()
-        with SessionLocal() as db:
-            await asyncio.to_thread(checkpoints.stop_turns, db, [run["id"]])
+        with user_store(user) as store:
+            await asyncio.to_thread(checkpoints.stop_turns, store, store_of(user), [run["id"]])
         await asyncio.sleep(0.2)
         assert not turn.done(), "nothing told the holder"
         go_on.set()
@@ -293,11 +293,30 @@ def test_with_redis_down_a_stopped_holders_next_write_fails_on_fencing(api, user
 
     assert any(c["type"] == "error" for c in chunks)
     # Its reply was never stored.
-    assert history(run) == ["hi"]
+    assert history(user, run) == ["hi"]
 
 
-def test_the_checkpointer_setup_holds_its_lock_for_one_transaction(db, monkeypatch):
-    monkeypatch.setattr(checkpoints, "_ready", False)
-    asyncio.run(checkpoints.ensure_ready())
-    assert checkpoints._ready
-    assert advisory_locks() == 0
+def test_each_store_has_its_own_checkpointer_set_up_before_its_first_turn(db, user):
+    """Its tables are in the store's `langgraph` schema, at LangGraph's latest migration, found
+    by the read-write role's search path; the platform database has none."""
+    with user_store(user) as store:
+        assert store.scalar(text("SELECT max(v) FROM langgraph.checkpoint_migrations")) == (
+            len(checkpoints.MIGRATIONS) - 1
+        )
+        assert store.scalar(text("SELECT count(*) FROM checkpoints")) == 0
+        # Its record of its migrations is the owner's to write, as the tree's bookkeeping is.
+        with pytest.raises(Exception, match="permission denied"):
+            store.execute(text("DELETE FROM langgraph.checkpoint_migrations"))
+    assert db.scalar(text("SELECT to_regnamespace('langgraph')")) is None
+
+
+def test_setting_up_a_stores_checkpointer_again_changes_nothing(user):
+    from aios.datastores import provision
+    from aios.models import DataStore
+
+    with SessionLocal() as db:
+        names = provision.StoreNames.of(db.get_one(DataStore, store_of(user)))
+    with provision.as_owner(names) as conn, conn.transaction():
+        checkpoints.set_up_store(conn)
+        versions = conn.execute("SELECT count(*) FROM langgraph.checkpoint_migrations").fetchone()
+    assert versions[0] == len(checkpoints.MIGRATIONS)

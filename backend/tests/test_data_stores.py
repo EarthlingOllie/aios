@@ -32,16 +32,9 @@ from aios.datastores import (
     store_session,
 )
 from aios.datastores import connections as store_connections
-from aios.datastores.models import EMBEDDING_DIM, Document, DocumentStatus
+from aios.datastores.models import EMBEDDING_DIM, Document, DocumentStatus, WorkflowRun
 from aios.db import SessionLocal, engine
-from aios.models import (
-    Base,
-    DataStore,
-    DataStoreStatus,
-    User,
-    WorkflowRun,
-    WorkflowRunStatus,
-)
+from aios.models import Base, DataStore, DataStoreStatus, User, WorkflowRunStatus
 from aios.testing.fake_model import ToolCall, last_tool_results, model, use_model
 from aios.tools import hybrid_search
 from aios.ui_stream import error_text
@@ -310,31 +303,33 @@ def test_an_agent_run_searches_the_users_store(api, user, searches):
 
 
 def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypatch):
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
     agent = librarian(api)
     workflow = make_workflow(api, "Library", [agent_node("look", agent)])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
     with use_model(model(search_then_answer)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(store_of(user), started["id"]))
 
     assert searches == [{"data_store_id": store_of(user), "query": "fish", "limit": 3}]
 
 
-def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db, monkeypatch):
-    """Resolving the store is part of claiming the run, so if it fails the run is never left
-    `running` with no worker (a redelivery could never start it), nor `queued` with nothing to
-    run it: it's failed then and there, with the real error."""
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda run_id: None)
+def test_a_workflow_run_whose_organisation_cant_be_resolved_is_failed_unstarted(
+    api, db, monkeypatch, in_store
+):
+    """Resolving its organisation (whose run it is) is part of claiming the run, so if it fails
+    the run is never left `running` with no worker (a redelivery could never start it), nor
+    `queued` with nothing to run it: it's failed then and there, with the real error."""
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
     workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
 
     def unavailable(*args, **kwargs):
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
-    monkeypatch.setattr(workflows, "data_store_for", unavailable)
-    asyncio.run(execute_run(started["id"]))
+    monkeypatch.setattr(workflows, "_organisation", unavailable)
+    asyncio.run(execute_run(in_store.store_id, started["id"]))
 
-    run = db.get(WorkflowRun, started["id"])
+    run = in_store.get(WorkflowRun, started["id"])
     assert (run.status, run.started_at) == (WorkflowRunStatus.failed, None)
     assert run.error == error_text(OperationalError("SELECT", {}, Exception("connection lost")))
 
@@ -365,8 +360,9 @@ def test_loading_a_turn_resolves_its_store_on_the_turns_connection(api, user):
     connection while it holds the first (a burst of turns could otherwise exhaust the pool)."""
     agent = librarian(api)
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    store_id = store_of(user)
     with connections() as used, SessionLocal() as session:
-        ctx = agents_api.load_chat_context(session, agent["id"], run["id"])
+        ctx = agents_api.load_chat_context(session, store_id, agent["id"], run["id"])
 
     assert ctx.data_store_id == store_of(user)
     assert used["most"] == 1

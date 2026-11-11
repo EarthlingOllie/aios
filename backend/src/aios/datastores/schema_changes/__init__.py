@@ -38,6 +38,7 @@ from aios.datastores.models import EMBEDDING_DIM
 from aios.datastores.schema_changes.apply import (
     apply,
     find,
+    lock_run,
     outcome,
     propose,
     read_revision,
@@ -119,6 +120,7 @@ __all__ = [
     "expire",
     "expired_not_resumed",
     "find",
+    "lock_run",
     "not_given",
     "outcome",
     "propose",

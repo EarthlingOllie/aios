@@ -57,8 +57,8 @@ def migrate() -> None:
 
 
 def wipe(db: Session) -> None:
-    """Delete every store (its database, roles and files) and every row of the platform
-    database but its migration revision, and the agents' run history (`langgraph`)."""
+    """Delete every store (its database, roles and files: its runs and their history with it)
+    and every row of the platform database but its migration revision."""
     stores = db.scalars(select(DataStore.id).where(DataStore.status != DataStoreStatus.deleted))
     ids = list(stores)
     db.execute(
@@ -70,7 +70,7 @@ def wipe(db: Session) -> None:
     tables = db.scalars(
         text(
             "SELECT format('%I.%I', schemaname, tablename) FROM pg_tables"
-            " WHERE schemaname IN ('public', 'langgraph') AND tableowner = current_user"
+            " WHERE schemaname = 'public' AND tableowner = current_user"
             " AND tablename <> 'alembic_version'"
         )
     ).all()

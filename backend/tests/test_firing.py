@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from conftest import home_organisation
+from conftest import home_organisation, store_of, user_store
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent
@@ -14,10 +14,9 @@ from test_triggers import make_agent
 from aios import checkpoints, firing
 from aios.api.agents import new_agent_run
 from aios.config import get_settings
-from aios.datastores import organisation_store
-from aios.datastores.models import Agent
-from aios.db import SessionLocal
-from aios.models import AgentRun, AgentRunStatus
+from aios.datastores import organisation_store, store_id_of
+from aios.datastores.models import Agent, AgentRun
+from aios.models import AgentRunStatus
 from aios.testing.fake_model import model, replies, use_model
 
 
@@ -48,11 +47,11 @@ class Mention:
         org_id = home_organisation(db, self.user_id).id
         with organisation_store(org_id) as store:
             agent = store.get(Agent, self.agent_id)
-            run = new_agent_run(db, store, org_id, agent, created_by=self.user_id)
-            db.commit()
+            run = new_agent_run(store, agent, created_by=self.user_id)
             store.commit()
+            store_id = store_id_of(store)
         self.run_id = run.id
-        return firing.Turn(self.agent_id, run.id, self.message)
+        return firing.Turn(store_id, self.agent_id, run.id, self.message)
 
     def beat(self, db) -> None:
         self.beats += 1
@@ -61,9 +60,14 @@ class Mention:
         self.outcomes.append(error)
 
 
-def run_row(db, run_id: int) -> AgentRun:
-    db.expire_all()
-    return db.get(AgentRun, run_id)
+def run_row(user, run_id: int) -> AgentRun:
+    with user_store(user) as store:
+        return store.get(AgentRun, run_id)
+
+
+def runs_of(user, agent_id: int) -> list[AgentRun]:
+    with user_store(user) as store:
+        return store.scalars(select(AgentRun).where(AgentRun.agent_id == agent_id)).all()
 
 
 def test_a_cause_starts_a_run_runs_its_turn_and_records_the_outcome(api, user, db):
@@ -74,7 +78,7 @@ def test_a_cause_starts_a_run_runs_its_turn_and_records_the_outcome(api, user, d
         asyncio.run(firing.fire(mention))
 
     assert mention.outcomes == [None]
-    history = checkpoints.history(mention.run_id)
+    history = checkpoints.history(store_of(user), mention.run_id)
     assert [(m.type, m.text) for m in history] == [("human", "What's new?"), ("ai", "Nothing.")]
     shown = api.get(f"/api/agents/{agent['id']}/runs/{mention.run_id}").json()
     assert (shown["status"], shown["title"], shown["message_count"]) == (
@@ -97,7 +101,7 @@ def test_a_failed_turn_is_recorded_with_its_error(api, user, db):
         asyncio.run(firing.fire(mention))
 
     assert mention.outcomes == ["model overloaded"]
-    assert run_row(db, mention.run_id).status == AgentRunStatus.failed
+    assert run_row(user, mention.run_id).status == AgentRunStatus.failed
 
 
 def test_a_cause_that_cant_start_records_why_without_a_run(api, user, db):
@@ -105,7 +109,7 @@ def test_a_cause_that_cant_start_records_why_without_a_run(api, user, db):
     mention = Mention(user.id, agent["id"], "Go", cant_start="The chat has been deleted.")
     asyncio.run(firing.fire(mention))
     assert mention.outcomes == ["The chat has been deleted."]
-    assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+    assert runs_of(user, agent["id"]) == []
 
 
 def test_a_cause_that_cant_prepare_records_why_and_starts_nothing(api, user, db):
@@ -113,17 +117,18 @@ def test_a_cause_that_cant_prepare_records_why_and_starts_nothing(api, user, db)
     mention = Mention(user.id, agent["id"], "Go", cant_prepare="The handoff failed: overloaded")
     asyncio.run(firing.fire(mention))
     assert mention.outcomes == ["The handoff failed: overloaded"]
-    assert db.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
+    assert runs_of(user, agent["id"]) == []
 
 
-def age(db, run_id: int) -> None:
+def age(user, run_id: int) -> None:
     """Make the run's heartbeat older than a live process would let it get."""
-    db.execute(
-        update(AgentRun)
-        .where(AgentRun.id == run_id)
-        .values(heartbeat_at=func.now() - firing.STALE_AFTER - timedelta(seconds=1))
-    )
-    db.commit()
+    with user_store(user) as store:
+        store.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(heartbeat_at=func.now() - firing.STALE_AFTER - timedelta(seconds=1))
+        )
+        store.commit()
 
 
 def test_a_launched_fire_takes_a_slot_and_is_kept_alive_while_it_runs(api, user, db, monkeypatch):
@@ -137,8 +142,7 @@ def test_a_launched_fire_takes_a_slot_and_is_kept_alive_while_it_runs(api, user,
         yield "done"
 
     def other_replica_sweeps():
-        with SessionLocal() as s:
-            firing.fail_stalled(s)
+        firing.fail_stalled(store_of(user), [mention.run_id])
 
     async def go():
         nonlocal release
@@ -146,13 +150,13 @@ def test_a_launched_fire_takes_a_slot_and_is_kept_alive_while_it_runs(api, user,
         assert firing.free_slots() == 2
         task = firing.launch(mention, name="mention")
         assert firing.free_slots() == 1
-        while mention.run_id is None or run_row(db, mention.run_id).heartbeat_at is None:
+        while mention.run_id is None or run_row(user, mention.run_id).heartbeat_at is None:
             await asyncio.sleep(0.01)
         # Long enough without a beat that it would count as stopped; this process beats it.
-        await asyncio.to_thread(age, db, mention.run_id)
+        await asyncio.to_thread(age, user, mention.run_id)
         await firing.beat()
         await asyncio.to_thread(other_replica_sweeps)
-        assert (await asyncio.to_thread(run_row, db, mention.run_id)).status == (
+        assert (await asyncio.to_thread(run_row, user, mention.run_id)).status == (
             AgentRunStatus.running
         )
         release.set()
@@ -163,7 +167,7 @@ def test_a_launched_fire_takes_a_slot_and_is_kept_alive_while_it_runs(api, user,
         asyncio.run(go())
     assert mention.beats >= 1
     assert mention.outcomes == [None]
-    assert run_row(db, mention.run_id).status == AgentRunStatus.succeeded
+    assert run_row(user, mention.run_id).status == AgentRunStatus.succeeded
 
 
 def test_a_run_whose_process_died_is_failed_once_its_heartbeat_stops(api, user, db):
@@ -172,23 +176,23 @@ def test_a_run_whose_process_died_is_failed_once_its_heartbeat_stops(api, user, 
     # Three runs mid-turn: one whose process died, one still beating, and one bound to a request
     # (no heartbeat: it ends with the request).
     dead, alive, chatting = (api.post(runs_url).json()["id"] for _ in range(3))
-    db.execute(
-        update(AgentRun)
-        .where(AgentRun.id.in_([dead, alive, chatting]))
-        .values(status=AgentRunStatus.running, started_at=func.now())
-    )
-    db.execute(update(AgentRun).where(AgentRun.id == alive).values(heartbeat_at=func.now()))
-    db.commit()
-    age(db, dead)
+    with user_store(user) as store:
+        store.execute(
+            update(AgentRun)
+            .where(AgentRun.id.in_([dead, alive, chatting]))
+            .values(status=AgentRunStatus.running, started_at=func.now())
+        )
+        store.execute(update(AgentRun).where(AgentRun.id == alive).values(heartbeat_at=func.now()))
+        store.commit()
+    age(user, dead)
 
-    with SessionLocal() as s:
-        firing.fail_stalled(s)
+    firing.fail_stalled(store_of(user), [dead, alive, chatting])
 
-    stopped = run_row(db, dead)
+    stopped = run_row(user, dead)
     assert stopped.status == AgentRunStatus.failed
     assert stopped.finished_at is not None
-    assert run_row(db, alive).status == AgentRunStatus.running
-    assert run_row(db, chatting).status == AgentRunStatus.running
+    assert run_row(user, alive).status == AgentRunStatus.running
+    assert run_row(user, chatting).status == AgentRunStatus.running
     assert api.get(f"{runs_url}/{dead}").json()["status"] == "failed"
 
 
@@ -199,15 +203,14 @@ def test_a_chat_turn_on_a_fired_run_isnt_failed_as_stalled(api, user, db):
     mention = Mention(user.id, agent["id"], "Go")
     with use_model(replies("done")):
         asyncio.run(firing.fire(mention))
-    assert run_row(db, mention.run_id).heartbeat_at is not None
+    assert run_row(user, mention.run_id).heartbeat_at is not None
     # Hours later, the user picks the run up.
-    age(db, mention.run_id)
+    age(user, mention.run_id)
     seen = []
 
     async def script(messages, info):
-        with SessionLocal() as s:
-            firing.fail_stalled(s)
-        seen.append(run_row(db, mention.run_id).status)
+        firing.fail_stalled(store_of(user), [mention.run_id])
+        seen.append(run_row(user, mention.run_id).status)
         yield "still here"
 
     with use_model(model(script)):
@@ -216,4 +219,4 @@ def test_a_chat_turn_on_a_fired_run_isnt_failed_as_stalled(api, user, db):
         )
     assert resp.status_code == 200
     assert seen == [AgentRunStatus.running]
-    assert run_row(db, mention.run_id).status == AgentRunStatus.succeeded
+    assert run_row(user, mention.run_id).status == AgentRunStatus.succeeded

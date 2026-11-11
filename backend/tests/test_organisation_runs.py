@@ -106,7 +106,7 @@ def mention_workflow(api, chat: dict, workflow: dict, queued: list[int]) -> int:
         ),
         201,
     )
-    asyncio.run(execute_run(queued[-1]))
+    asyncio.run(execute_run(queued.store, queued[-1]))
     return queued[-1]
 
 
@@ -198,7 +198,7 @@ def test_workflow_runs_search_the_organisations_store_and_say_who_started_them(
         with signed_in_as(member):
             by_hand = ok(api.post(runs, json={"input": "find them"}), 201)
         assert by_hand["created_by"] == person(member)
-        asyncio.run(execute_run(by_hand["id"]))
+        asyncio.run(execute_run(queued.store, by_hand["id"]))
 
         chat = make_chat(api, "Board")
         add(api, chat, "workflow", wf)
@@ -206,7 +206,7 @@ def test_workflow_runs_search_the_organisations_store_and_say_who_started_them(
 
         fired = fire(api, db, "workflow", wf)
         scheduled = fired["last_workflow_run_id"]
-        asyncio.run(execute_run(scheduled))
+        asyncio.run(execute_run(queued.store, scheduled))
 
     assert found == [["minutes.md"]] * 3
     expected = {by_hand["id"]: person(member), mentioned: person(user), scheduled: None}
@@ -363,7 +363,18 @@ def test_traces_carry_the_organisation_and_who_started_the_run(
         }
 
         started = ok(api.post(f"/api/workflows/{wf['id']}/runs", json={"input": "x"}), 201)
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
         assert seen("workflow:Flow", workflow_run_id=started["id"]) == {
             (org, user.id, str(user.id))
         }
+
+    # Each run's trace session is named by its organisation as well as the run: run ids are
+    # each store's own, and repeat across organisations.
+    node_run = next(
+        m["agent_run_id"] for m in traced.calls if "workflow:Flow" in m["langfuse_tags"]
+    )
+    for run_id in (run["id"], fired["last_run_id"], invocation["agent_run_id"], node_run):
+        sessions = {
+            m.get("langfuse_session_id") for m in traced.calls if m.get("agent_run_id") == run_id
+        }
+        assert sessions == {f"agent-run-{org}-{run_id}"}

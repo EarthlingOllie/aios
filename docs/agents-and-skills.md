@@ -76,8 +76,9 @@ counted again at each step, as bills count it). The run list and the run page sh
 from before they were kept show "not tracked" rather than zero, and the run page's event log
 still totals the stored messages for them.
 
-- Each run is a LangGraph thread (`agent-run-<id>`) kept by the Postgres checkpointer, the
-  client sends only its new message, and the agent continues from the thread's latest
+- Each run is a LangGraph thread (`agent-run-<id>`) kept by its organisation's store's own
+  Postgres checkpointer, beside the run (runs, their sandbox sessions, workflow runs and their
+  steps are all in the store: see [Stores](stores.md#runs)), the client sends only its new message, and the agent continues from the thread's latest
   checkpoint. The user's message is checkpointed before the model is called; if a turn fails or
   is stopped, the reply's text so far (or an error result for each tool call that hadn't
   finished) is added to the thread, so the next turn sees what the user saw. Turns of the same
@@ -89,16 +90,20 @@ still totals the stored messages for them.
   checkpoint write first checks, in its own transaction, that its turn's lease still holds
   (`checkpoints.FencedSaver`), so a turn that lost it (frozen past its expiry, or stopped) can't
   write the run's history. No database session state is involved, so it works through the
-  connection pooler. `agent_runs` keeps a message count and title for listings, and the run's status,
-  times and counters, written by each turn.
-- **The checkpointer's tables are LangGraph's, not Alembic's.** They live in the `langgraph`
-  schema, created and migrated by `AsyncPostgresSaver.setup()` (in one transaction, under a lock
-  that lasts only as long as it) the first time a process runs a turn. Its connections set
-  nothing at startup and prepare no statements: the app's role finds the schema through its
-  default search path on the platform database (`"$user", public, langgraph`, migration 0057). Alembic only compares the `public` schema, so `alembic
-  check` doesn't see them. Deleting a run deletes its thread too (they aren't foreign
-  keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
-  `CREATE` on the database.
+  connection pooler. A run is named by its store and its id there (ids repeat across stores), so
+  are its lease's Redis channels, and its trace session is `agent-run-<organisation>-<id>`.
+  `agent_runs` keeps a message count and title for listings, and the run's status, times and
+  counters, written by each turn.
+- **The checkpointer's tables are LangGraph's, not Alembic's.** Each store has them in its
+  `langgraph` schema, made and migrated with LangGraph's own migrations by the store's owner
+  (`checkpoints.set_up_store`): by store revision 0010, before the store's first turn, and again
+  each time the store is migrated, so a newer LangGraph's reach every store. The checkpointer
+  connects to the store as its read-write role, through the pooler, setting nothing at startup
+  and preparing no statements: the role finds the schema through its default search path in
+  the store (`aios, extensions, langgraph`, set by the provisioner). The store tree's
+  autogenerate leaves the schema out. Deleting a run deletes its thread in the same
+  transaction (they aren't foreign keys, so this is done explicitly), after locking the run's
+  row, which a checkpoint write being made holds until it commits.
 
 Runs start by hand, from a chat mention (see [Chats](chats.md)), from a schedule (see
 [Triggers](triggers.md)) or as a workflow's agent node (see [Workflows](workflows.md)).

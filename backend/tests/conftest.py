@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import io
 import json
@@ -17,7 +16,7 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import checkpoints, organisations, ratelimits
+from aios import organisations, ratelimits
 from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
@@ -115,10 +114,6 @@ def db():
         if isinstance(exc.orig, errors.UndefinedTable):
             pytest.skip("database not migrated (`alembic upgrade head`)")
         raise
-    # Before any test holds a transaction open: on a fresh database the checkpointer's setup
-    # creates its indexes CONCURRENTLY, which waits for every older transaction in the
-    # database, so the first turn would otherwise wait for ever on a test's own open session.
-    asyncio.run(checkpoints.ensure_ready())
     with SessionLocal() as session:
         yield session
         session.rollback()
@@ -291,6 +286,64 @@ def user(db):
     u = provisioned_user(db, "test-user", first_name="Test", last_name="User")
     yield u
     delete_user(db, u)
+
+
+class Rows(list):
+    """Rows read from a store, as a session's results are used."""
+
+    def all(self) -> list:
+        return list(self)
+
+    def one(self):
+        (row,) = self
+        return row
+
+    def one_or_none(self):
+        return self.one() if self else None
+
+    def first(self):
+        return self[0] if self else None
+
+
+class StoreRows:
+    """Reads and writes on one store, each in a session of its own (so it never sees stale
+    rows), as tests once did on the platform database's session: where runs are now."""
+
+    def __init__(self, store_id: uuid.UUID) -> None:
+        self.store_id = store_id
+
+    def get(self, model, ident):
+        with store_session(self.store_id) as store:
+            return store.get(model, ident)
+
+    def scalars(self, statement) -> Rows:
+        with store_session(self.store_id) as store:
+            return Rows(store.scalars(statement).all())
+
+    def scalar(self, statement):
+        with store_session(self.store_id) as store:
+            return store.scalar(statement)
+
+    def rows(self, statement) -> Rows:
+        with store_session(self.store_id) as store:
+            return Rows(store.execute(statement).all())
+
+    def execute(self, statement) -> None:
+        """Run a write, and commit it."""
+        with store_session(self.store_id) as store:
+            store.execute(statement)
+            store.commit()
+
+
+def rows_of(user: User) -> StoreRows:
+    """Reads and writes on the user's organisation's store (`StoreRows`)."""
+    return StoreRows(store_of(user))
+
+
+@pytest.fixture
+def in_store(user) -> StoreRows:
+    """Reads and writes on the signed-in user's store (`StoreRows`), where runs are."""
+    return rows_of(user)
 
 
 @pytest.fixture(scope="session")

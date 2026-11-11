@@ -38,7 +38,8 @@ own is `ScheduleFiring`: what it claims, and where its heartbeat and outcome liv
   claiming and firing. So while a schedule is stored as running, the process firing it refreshes
   its heartbeat (`heartbeat_at`, set when it's claimed) every `HEARTBEAT_SECONDS`
   (`ScheduleFiring.beat`, with the run's own), and each tick, on any replica, fails those whose
-  heartbeat has stopped for `STALE_AFTER` (`fail_stalled`). A live replica keeps beating its own
+  heartbeat has stopped for `STALE_AFTER`, with their agent runs, in their organisations' stores,
+  if those are stalled too (`fail_stalled`). A live replica keeps beating its own
   fires, so others leave them be. Only the stored status counts: a workflow's schedule is stored
   as running only until its run is queued, and the worker looks after the run from there
   (`aios.workflows`).
@@ -57,11 +58,11 @@ from aios import cron, firing
 from aios.api import agents as agents_api
 from aios.api import chats as chats_api
 from aios.api import workflows as workflows_api
-from aios.datastores import organisation_store
+from aios.datastores import organisation_store, store_id_of
 from aios.datastores.models import Agent, Workflow
 from aios.db import SessionLocal
 from aios.firing import HEARTBEAT_SECONDS, STALE_AFTER, STOPPED, CantStart
-from aios.models import Trigger, TriggerStatus, TriggerTargetKind
+from aios.models import DataStore, Trigger, TriggerStatus, TriggerTargetKind
 
 log = logging.getLogger(__name__)
 
@@ -107,23 +108,42 @@ def claim_due(db, now: datetime, limit: int = BATCH) -> list[int]:
 
 def fail_stalled(db) -> None:
     """Fail the schedules stored as running whose heartbeat has stopped: the process firing
-    them has gone (see the module docstring). Commits."""
-    db.execute(
+    them has gone (see the module docstring); and their agent runs, in their stores, if still
+    marked running with a stale heartbeat (`firing.fail_stalled`). Commits."""
+    stalled = db.execute(
         update(Trigger)
         .where(
             Trigger.last_status == TriggerStatus.running,
             or_(Trigger.heartbeat_at.is_(None), Trigger.heartbeat_at < func.now() - STALE_AFTER),
         )
         .values(last_status=TriggerStatus.failed, last_error=STOPPED)
+        .returning(Trigger.organisation_id, Trigger.last_run_id)
+    ).all()
+    runs: dict[int, list[int]] = {}
+    for organisation_id, run_id in stalled:
+        if run_id is not None:
+            runs.setdefault(organisation_id, []).append(run_id)
+    stores = (
+        dict(
+            db.execute(
+                select(DataStore.owner_organisation_id, DataStore.id).where(
+                    DataStore.owner_organisation_id.in_(list(runs))
+                )
+            ).all()
+        )
+        if runs
+        else {}
     )
     db.commit()
+    for organisation_id, run_ids in runs.items():
+        if organisation_id in stores:
+            firing.fail_stalled(stores[organisation_id], run_ids)
 
 
 def _sweep() -> None:
     with SessionLocal() as db:
-        # The runs of fires whose process has gone, and the schedules: a schedule is running from
-        # when it's claimed, before it has a run.
-        firing.fail_stalled(db)
+        # The schedules whose process has gone, and their runs: a schedule is running from when
+        # it's claimed, before it has a run.
         fail_stalled(db)
         # And the chat mentions' turns.
         chats_api.fail_stopped_turns(db)
@@ -183,17 +203,17 @@ def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
         if agent is None:
             raise CantStart("The agent has been deleted.")
         try:
-            run = agents_api.new_agent_run(
-                db, store, organisation_id, agent, created_by=None, trigger_id=trigger.id
-            )
+            run = agents_api.new_agent_run(store, agent, created_by=None, trigger_id=trigger.id)
         except HTTPException as exc:
             raise CantStart(exc.detail) from exc
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
-        # Committed with the run, under the agent's share lock (see `new_agent_run`).
+        # The run first, in the store (ending the agent's share lock, `new_agent_run`), then the
+        # trigger's link to it, under the trigger's lock taken before.
+        store.commit()
         trigger.last_run_id = run.id
         db.commit()
-        store.commit()
-    return firing.Turn(agent_id, run.id, trigger.input)
+        data_store_id = store_id_of(store)
+    return firing.Turn(data_store_id, agent_id, run.id, trigger.input)
 
 
 def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
@@ -207,20 +227,17 @@ def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
         if workflow is None:
             raise CantStart("The workflow has been deleted.")
         run = workflows_api.new_workflow_run(
-            db,
-            store,
-            organisation_id,
-            workflow,
-            trigger.input,
-            created_by=None,
-            trigger_id=trigger.id,
+            store, workflow, trigger.input, created_by=None, trigger_id=trigger.id
         )
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
-        trigger.last_workflow_run_id = run.id
-        # Commits the link with the run; if queueing fails the run is deleted, and the link
-        # with it (SET NULL). Then the workflow's share lock in the store goes.
-        workflows_api.queue_workflow_run(db, run)
-        store.commit()
+
+        def link() -> None:
+            trigger.last_workflow_run_id = run.id
+            db.commit()
+
+        # Commits the run in the store (ending the workflow's share lock), then the trigger's
+        # link to it, and queues it; if queueing fails, the run is deleted, and the link with it.
+        workflows_api.queue_workflow_run(store, run, link)
 
 
 @dataclass(frozen=True)

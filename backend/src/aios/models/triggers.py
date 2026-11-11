@@ -15,10 +15,9 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from aios.models.base import Base
-from aios.models.workflows import WorkflowRun
 
 # Triggers start agents and workflows without a user in the loop. Each has a kind; the only one
 # so far is a schedule (a cron expression in a timezone). Kind-specific settings are columns that
@@ -79,23 +78,15 @@ class Trigger(Base):
     # While `last_status` is running, refreshed by the process firing it; one that stops being
     # refreshed has lost its process, and is failed (`aios.scheduler.fail_stalled`).
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_run_id: Mapped[int | None] = mapped_column(
-        ForeignKey(
-            "agent_runs.id", ondelete="SET NULL", use_alter=True, name="fk_triggers_last_run_id"
-        )
-    )
-    # The workflow run it last started; its status is the schedule's (`api.triggers.trigger_out`),
-    # since a worker runs it after the schedule has fired.
-    last_workflow_run_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflow_runs.id", ondelete="SET NULL")
-    )
+    # The agent run it last started, in its organisation's store, by id (not a foreign key);
+    # cleared when that run is deleted.
+    last_run_id: Mapped[int | None] = mapped_column(Integer)
+    # The workflow run it last started, the same way; its status is the schedule's
+    # (`api.triggers.trigger_out`), since a worker runs it after the schedule has fired.
+    last_workflow_run_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    last_workflow_run: Mapped[WorkflowRun | None] = relationship(
-        foreign_keys=[last_workflow_run_id]
     )
 
     __table_args__ = (

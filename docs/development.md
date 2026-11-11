@@ -12,7 +12,7 @@ browser ──▶ ALB / nginx ──┬─ /api/* ──────────
                           └─ everything else ─▶ web (React SPA, static: /login and /register too)
 api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
                          └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
-api, worker ──▶ Postgres 17 + pgvector, as `aios_app` (agent run history: LangGraph checkpoints, `langgraph` schema)
+api, worker ──▶ Postgres 17 + pgvector: the platform database, as `aios_app`, and each organisation's store (runs and their history: LangGraph checkpoints, each store's `langgraph` schema)
 api, worker ──▶ S3 (RustFS locally): uploaded files, under each store's prefix
 browser ──download link (presigned, a minute)──▶ S3
 api, worker ──traces──▶ Langfuse (optional, self-hosted)
@@ -85,7 +85,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     stored.py       names and version numbers of a store's agents and workflows, for the platform's rows that name them
     seed.py         `make seed`: rebuilds development data from scratch
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
-    checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
+    checkpoints.py  run history: each store's LangGraph Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
     llm.py          the chat model (LangChain "provider:model" names)
     tracing.py      Langfuse callbacks and trace metadata

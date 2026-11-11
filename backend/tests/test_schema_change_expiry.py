@@ -250,7 +250,8 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     deleted: list = []
     with SessionLocal() as asking:
-        # As `schema_changes.propose` records it, not yet committed.
+        # As `schema_changes.propose` records it, under the run's lock, not yet committed.
+        schema_changes.lock_run(asking, store.id, run["id"])
         asking.add(
             SchemaChangeRequest(
                 data_store_id=store.id,
