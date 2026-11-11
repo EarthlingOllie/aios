@@ -25,10 +25,10 @@ Nothing changes in behaviour, schema, routes or settings.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every existing import of a model name keeps working, through the package's re-exports.
-- [ ] The migration check reports no difference at every intermediate step and at the end.
-- [ ] Each domain lives in its own module, and the leftover module is gone.
-- [ ] No model module is over about 600 lines.
-- [ ] The whole backend suite and the browser tests pass unchanged.
+- [x] Every existing import of a model name keeps working, through the package's re-exports.
+- [x] The migration check reports no difference at every intermediate step and at the end.
+- [x] Each domain lives in its own module, and the leftover module is gone.
+- [x] No model module is over about 600 lines.
+- [x] The whole backend suite and the browser tests pass unchanged.
