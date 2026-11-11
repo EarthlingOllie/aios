@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 test("creates a chat and opens it", async ({ page }) => {
   const api = await fakeApi(page);
@@ -17,7 +17,7 @@ test("creates a chat and opens it", async ({ page }) => {
   const [chat] = [...api.chats.values()];
   await expect(page).toHaveURL(inOrg(`/chats/${chat.id}`));
   expect(api.writes).toEqual([
-    ["POST", "/api/chats", { name: "Design", description: "Where design happens", visibility: "public" }],
+    ["POST", orgApi("/chats"), { name: "Design", description: "Where design happens", visibility: "public" }],
   ]);
   // The header: name, visibility and description (the list shows the description too).
   const heading = page.getByRole("heading", { name: "Design", level: 2 });
@@ -49,7 +49,7 @@ test("the owner removes a member", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
   await members.getByRole("button", { name: "Remove Sam Jones" }).click();
   await expect(members.getByRole("listitem")).toHaveText([/Terry Tester.*owner/]);
-  expect(api.writes).toEqual([["DELETE", `/api/chats/${chat.id}/members/${member.id}`, null]]);
+  expect(api.writes).toEqual([["DELETE", orgApi(`/chats/${chat.id}/members/${member.id}`), null]]);
 });
 
 test("a member sees no owner actions", async ({ page }) => {

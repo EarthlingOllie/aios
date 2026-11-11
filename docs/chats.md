@@ -24,7 +24,7 @@ chat).
 
 Chat members are grouped by kind: users, **agents and workflows**, with the icons the
 navigation uses. The owner adds any member of the organisation, and any of its agents and
-workflows, whoever made them (`POST /api/chats/{id}/members` with `{kind, id}`; a user from
+workflows, whoever made them (`POST /api/o/{org}/chats/{id}/members` with `{kind, id}`; a user from
 outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow;
 a workflow since deleted is no longer a chat member; an archived agent still is, shown as
 archived, but isn't offered to mention, and a mention of it fails at once: see
@@ -36,8 +36,8 @@ chat owns it and is its first chat member (a role on their chat member row, not 
 data; one owner per chat); only the owner renames or describes it, changes its visibility, adds
 or removes chat members and deletes it (a 403 for other chat members). A public chat you aren't
 in can be read but not posted in until you **join** it, in one click
-(`POST /api/chats/{id}/join`); any chat member but the owner can **leave**
-(`POST /api/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for
+(`POST /api/o/{org}/chats/{id}/join`); any chat member but the owner can **leave**
+(`POST /api/o/{org}/chats/{id}/leave`), and the chat leaves their list (a private one is then a 404 for
 them). Leaving or being removed deletes nothing: whoever joins or is added later reads the
 history from the start. When a member leaves the organisation, see
 [Accounts and organisations](accounts-and-organisations.md#leaving) for what happens to the
@@ -51,7 +51,7 @@ Each new chat has the organisation's documents assistant as its first agent (see
 Each chat you're in shows an **unread count** in the list: the messages others posted since the
 last one you saw, tracked per chat and chat member by message id
 (`chat_members.last_read_message_id`). Reading the open chat to the bottom, with its tab
-visible, reports the newest message (`POST /api/chats/{id}/read` with `{message_id}`; it only
+visible, reports the newest message (`POST /api/o/{org}/chats/{id}/read` with `{message_id}`; it only
 moves forward) and clears the count; the list asks again every 5 seconds (30 while hidden).
 Joining counts what was already there as read; a chat member added by the owner has the history
 to read. Nothing is sent off-app.
@@ -60,7 +60,7 @@ to read. Nothing is sent off-app.
 
 Chat members post **messages** in markdown, shown with their author's name (a user's full name,
 "First Last") and initial (an agent's or workflow's icon). The open chat asks for what's new
-every second (`GET /api/chats/{id}/messages?after=N`, every 30 seconds while its tab is hidden,
+every second (`GET /api/o/{org}/chats/{id}/messages?after=N`, every 30 seconds while its tab is hidden,
 and at once when it's shown again), follows new messages when scrolled to the bottom and
 otherwise leaves the reader where they are; scrolling to the top loads the page before
 (`?before=N`, 50 at a time). Anyone a chat exists for can read it; only its chat members post (a
@@ -70,7 +70,7 @@ from the chat.
 
 ## Mentions
 
-Typing `@` in the composer offers the chat's chat members (`GET /api/chats/{id}/mentionable`),
+Typing `@` in the composer offers the chat's chat members (`GET /api/o/{org}/chats/{id}/mentionable`),
 grouped by kind so an agent and a workflow with the same name are told apart, and narrows them
 as you type: a user by their first or last name (`@ali` and `@smi` both find Alice Smith), an
 agent or workflow by its name, ignoring case. Picking one inserts a token, `@[name](kind:id)`,

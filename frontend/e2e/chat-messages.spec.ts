@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser, inOrg } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 import { setHidden } from "./visibility";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
@@ -32,7 +32,7 @@ test("posts a markdown message and shows it with its author", async ({ page }) =
   await expect(posted.locator("strong")).toHaveText("world");
   await expect(posted).toContainText("Terry Tester");
   await expect(composer(page)).toHaveValue("");
-  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/messages`, { body: "Hello, **world**", mentions: [] }]]);
+  expect(api.writes).toEqual([["POST", orgApi(`/chats/${chat.id}/messages`), { body: "Hello, **world**", mentions: [] }]]);
 });
 
 test("a message posted by someone else appears within a poll", async ({ page }) => {

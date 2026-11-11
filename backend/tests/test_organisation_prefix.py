@@ -10,6 +10,7 @@ import uuid
 import pytest
 from conftest import delete_user, join_organisation, make_user, org_of
 from fastapi.routing import APIRoute, iter_route_contexts
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from test_chats import signed_in_as
 
@@ -77,13 +78,54 @@ def test_there_are_prefixed_routes():
     assert len(PREFIXED) > 50
 
 
-def test_every_route_that_resolves_the_organisation_is_also_under_the_prefix():
-    scoped = {(m, c.path) for c in api_routes() for m in c.methods}
+# The routes that stay unscoped, each for the person rather than an organisation: signing in
+# (and the development picker, `/api/dev/*`, when it's on), their own profile, opening and
+# accepting invitations, their notifications (from every organisation they're in), the tool
+# library and the list of timezones.
+UNSCOPED = {
+    ("GET", "/api/auth/options"),
+    ("POST", "/api/auth/register"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/logout"),
+    ("GET", "/api/me"),
+    ("PATCH", "/api/me"),
+    ("PUT", "/api/me/email"),
+    ("PUT", "/api/me/password"),
+    ("GET", "/api/invites/{token}"),
+    ("POST", "/api/invites/{token}/accept"),
+    ("GET", "/api/notifications"),
+    ("POST", "/api/notifications/{notification_id}/read"),
+    ("GET", "/api/tools"),
+    ("GET", "/api/triggers/timezones"),
+}
+
+
+def test_only_the_listed_routes_stay_unscoped():
+    unscoped = {
+        (m, c.path)
+        for c in api_routes()
+        if c.path.startswith("/api/")
+        and not c.path.startswith(f"{PREFIX}/")
+        and not c.path.startswith("/api/dev/")
+        for m in c.methods
+    }
+    assert unscoped == UNSCOPED
+
+
+def test_no_unscoped_route_resolves_the_organisation():
     for c in api_routes():
-        unprefixed = c.path.startswith("/api/") and not c.path.startswith(f"{PREFIX}/")
-        if unprefixed and resolves(c.dependant, current_organisation):
-            for method in c.methods:
-                assert (method, PREFIX + c.path.removeprefix("/api")) in scoped
+        if not c.path.startswith(f"{PREFIX}/"):
+            assert not resolves(c.dependant, current_organisation), c.path
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "/api/agents"), ("GET", "/api/chats"), ("POST", "/api/triggers/preview")],
+)
+def test_an_unprefixed_scoped_route_is_gone(api, method, path):
+    # No transition routes: the path as it was before the prefix answers nothing. (A plain
+    # client: `api` would send it under the prefix.)
+    assert TestClient(app).request(method, path).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -121,7 +163,7 @@ def test_a_member_reaches_their_organisation_through_the_prefix(api, db, user):
     assert (resp.json()["id"], resp.json()["slug"]) == (org.id, org.slug)
     made = api.post(f"/api/o/{org.id}/skills", json={"name": "Prefixed", "content": "Do it."})
     assert made.status_code == 201, made.text
-    assert [s["name"] for s in api.get("/api/skills").json()] == ["Prefixed"]
+    assert [s["name"] for s in api.get(f"/api/o/{org.id}/skills").json()] == ["Prefixed"]
 
 
 def test_another_member_reaches_it_too(api, db, user):

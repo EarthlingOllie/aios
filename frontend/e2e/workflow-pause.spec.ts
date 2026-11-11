@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 
@@ -66,7 +66,7 @@ test("a waiting run shows its waiting node and the request, approved from the ru
   );
 
   await card.getByRole("button", { name: "Approve" }).click();
-  expect(api.writes).toContainEqual(["POST", `/api/schema-changes/${request.id}/approve`, null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${request.id}/approve`), null]);
   await expect(card).toContainText("Applying");
 
   // The worker applies it and the run carries on; the page follows it to the end.
@@ -89,7 +89,7 @@ test("rejecting from the run page sends the note", async ({ page }) => {
 
   expect(api.writes).toContainEqual([
     "POST",
-    `/api/schema-changes/${request.id}/reject`,
+    orgApi(`/schema-changes/${request.id}/reject`),
     { note: "Use a sheet" },
   ]);
   await expect(card).toContainText("Rejected: Use a sheet");

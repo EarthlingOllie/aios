@@ -1,5 +1,7 @@
 """The signed-in user's notifications (`aios.notifications`), which the SPA polls for its unread
-badge. Each user only ever sees, or marks, their own: anyone else's is a 404."""
+badge. Each user only ever sees, or marks, their own: anyone else's is a 404. They're the
+person's, from every organisation they're in (so not under the organisation prefix), each
+naming the organisation it's from, to open in it."""
 
 import uuid
 from collections.abc import Sequence
@@ -14,7 +16,7 @@ from sqlalchemy.orm import Session
 from aios.auth import CurrentUser
 from aios.datastores import schema_changes
 from aios.db import DB
-from aios.models import Notification
+from aios.models import Notification, Organisation
 from aios.notifications import SCHEMA_CHANGE_REQUEST
 
 router = APIRouter(prefix="/api")
@@ -23,8 +25,16 @@ router = APIRouter(prefix="/api")
 LIST_LIMIT = 50
 
 
+class NotificationOrganisationOut(BaseModel):
+    id: int
+    # What links in the browser name it by: opening the notification goes to `/o/<slug>/...`.
+    slug: str
+
+
 class NotificationOut(BaseModel):
     id: uuid.UUID
+    # The organisation it's from.
+    organisation: NotificationOrganisationOut
     kind: str
     # What it's about: for `schema_change_request`, `request_id` and `data_store_id`.
     ref: dict[str, Any]
@@ -53,9 +63,19 @@ def _titles(db: Session, notifications: Sequence[Notification]) -> dict[uuid.UUI
 
 def _out(db: Session, notifications: Sequence[Notification]) -> list[NotificationOut]:
     titles = _titles(db, notifications)
+    slugs = dict(
+        db.execute(
+            select(Organisation.id, Organisation.slug).where(
+                Organisation.id.in_({n.organisation_id for n in notifications})
+            )
+        ).all()
+    )
     return [
         NotificationOut(
             id=n.id,
+            organisation=NotificationOrganisationOut(
+                id=n.organisation_id, slug=slugs[n.organisation_id]
+            ),
             kind=n.kind,
             ref=n.ref,
             title=titles.get(n.id),

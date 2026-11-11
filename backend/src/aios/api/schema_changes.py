@@ -36,7 +36,13 @@ from aios.datastores.schema_changes import (
     restore_notifications,
 )
 from aios.db import DB
-from aios.models import AgentRun, DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import (
+    AgentRun,
+    DataStore,
+    Organisation,
+    SchemaChangeRequest,
+    SchemaChangeStatus,
+)
 
 log = logging.getLogger(__name__)
 
@@ -191,10 +197,18 @@ def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
     return [request_out(request, run, True) for request, run in rows]
 
 
-def _get(db: Session, user_id: int, request_id: uuid.UUID, *, lock: bool = False):
+def _get(
+    db: Session, user_id: int, org: Organisation, request_id: uuid.UUID, *, lock: bool = False
+):
+    """The request, if it's in the organisation's store and the user may decide it: a 404
+    otherwise, alike."""
     query = select(SchemaChangeRequest).where(SchemaChangeRequest.id == request_id)
     request = db.scalar(query.with_for_update() if lock else query)
-    if request is None or not can_approve(db, user_id, request.data_store):
+    if (
+        request is None
+        or request.data_store.owner_organisation_id != org.id
+        or not can_approve(db, user_id, request.data_store)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Schema change request not found")
     return request
 
@@ -206,13 +220,15 @@ def _out(db: Session, request: SchemaChangeRequest) -> SchemaChangeOut:
 
 
 @router.get("/schema-changes/{request_id}", response_model=SchemaChangeOut)
-def get_request(request_id: uuid.UUID, user: CurrentUser, db: DB):
-    return _out(db, _get(db, user.id, request_id))
+def get_request(request_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    return _out(db, _get(db, user.id, org, request_id))
 
 
-def _decide(db: Session, user_id: int, request_id: uuid.UUID, **values) -> SchemaChangeRequest:
+def _decide(
+    db: Session, user_id: int, org: Organisation, request_id: uuid.UUID, **values
+) -> SchemaChangeRequest:
     # Locked, so two decisions at once can't both pass the pending check.
-    request = _get(db, user_id, request_id, lock=True)
+    request = _get(db, user_id, org, request_id, lock=True)
     if request.status != SchemaChangeStatus.pending:
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"This request has already been {request.status.value}"
@@ -258,10 +274,10 @@ def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None])
 
 
 @router.get("/schema-changes/{request_id}/impact", response_model=ImpactOut)
-def get_impact(request_id: uuid.UUID, user: CurrentUser, db: DB):
+def get_impact(request_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """What the request's drops would remove from the store as it is now (row counts, the
     columns affected), for the member deciding it; nothing for one that drops nothing."""
-    request = _get(db, user.id, request_id)
+    request = _get(db, user.id, org, request_id)
     try:
         removes = dropped.impact(request.data_store_id, request.ops)
     except (DataStoreBehind, DataStoreBusy, DataStoreNotFound, DataStoreNotReady) as exc:
@@ -273,28 +289,36 @@ def get_impact(request_id: uuid.UUID, user: CurrentUser, db: DB):
 
 
 @router.post("/schema-changes/{request_id}/approve", response_model=SchemaChangeOut)
-def approve(request_id: uuid.UUID, user: CurrentUser, db: DB, body: Approval | None = None):
+def approve(
+    request_id: uuid.UUID,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    body: Approval | None = None,
+):
     from aios.worker import apply_schema_change_task
 
     # Typed by the member deciding it, so a drop is never approved by a stray click (its ops
     # never change).
-    required = confirmation_for(_get(db, user.id, request_id))
+    required = confirmation_for(_get(db, user.id, org, request_id))
     typed = ((body.confirm if body else None) or "").strip()
     if required is not None and typed != required:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"This request drops data: Type `{required}` to confirm.",
         )
-    request = _decide(db, user.id, request_id, status=SchemaChangeStatus.approved)
+    request = _decide(db, user.id, org, request_id, status=SchemaChangeStatus.approved)
     _queue(db, request, lambda: apply_schema_change_task.delay(str(request.id)))
     return _out(db, request)
 
 
 @router.post("/schema-changes/{request_id}/reject", response_model=SchemaChangeOut)
-def reject(request_id: uuid.UUID, body: Rejection, user: CurrentUser, db: DB):
+def reject(
+    request_id: uuid.UUID, body: Rejection, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
     from aios.worker import enqueue_resume
 
     note = (body.note or "").strip() or None
-    request = _decide(db, user.id, request_id, status=SchemaChangeStatus.rejected, note=note)
+    request = _decide(db, user.id, org, request_id, status=SchemaChangeStatus.rejected, note=note)
     _queue(db, request, lambda: enqueue_resume(request.id))
     return _out(db, request)

@@ -475,6 +475,9 @@ export type DroppedObject = {
 /** Something in the app for the signed-in user to see. */
 export type Notification = {
   id: string;
+  /** The organisation it's from (a person's notifications are from every organisation they're
+   * in): it opens there. */
+  organisation: { id: number; slug: string };
   /** What it's about: `schema_change_request` (a request waiting for a decision) for now. */
   kind: string;
   /** For a schema change request, `request_id` and `data_store_id`. */
@@ -944,6 +947,29 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   return res;
 }
 
+let organisationId: number | null = null;
+
+/**
+ * Open the page in an organisation (by its id, as the API names it): every organisation-scoped
+ * request from then on goes under its prefix (`organisationApi`). The organisation is the
+ * router's basename (`lib/organisation-path`), fixed for as long as the page is open, so two tabs
+ * on two organisations each send their own.
+ */
+export function openOrganisationApi(id: number): void {
+  organisationId = id;
+}
+
+/**
+ * The API's prefix for the organisation the page is open in, `/api/o/<id>`: what every
+ * organisation-scoped path starts with (`${organisationApi()}/agents`). Only the person's own
+ * routes are outside it: signing in, the profile, invitations, notifications, the tool library
+ * and the list of timezones.
+ */
+export function organisationApi(): string {
+  if (organisationId === null) throw new Error("No organisation is open on this page");
+  return `/api/o/${organisationId}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
   if (!res.ok) throw new ApiError(res.status, await res.text());
@@ -1000,16 +1026,16 @@ export const api = {
   /** Change the signed-in user's password. It signs out their other sessions, not this one. */
   changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
     request<void>("/api/me/password", json("PUT", body)),
-  getOrganisation: () => request<Organisation>("/api/organisation"),
+  getOrganisation: () => request<Organisation>(`${organisationApi()}/organisation`),
   /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
   renameOrganisation: (name: string) =>
-    request<Organisation>("/api/organisation", json("PUT", { name })),
+    request<Organisation>(`${organisationApi()}/organisation`, json("PUT", { name })),
   /** Invitation links: the creator only (a 403 otherwise). */
-  listInvites: () => request<Invite[]>("/api/organisation/invites"),
+  listInvites: () => request<Invite[]>(`${organisationApi()}/organisation/invites`),
   makeInvite: (expiresInDays: number) =>
-    request<NewInvite>("/api/organisation/invites", json("POST", { expires_in_days: expiresInDays })),
+    request<NewInvite>(`${organisationApi()}/organisation/invites`, json("POST", { expires_in_days: expiresInDays })),
   revokeInvite: (id: string) =>
-    request<void>(`/api/organisation/invites/${id}`, { method: "DELETE" }),
+    request<void>(`${organisationApi()}/organisation/invites/${id}`, { method: "DELETE" }),
   /** No sign-in needed; an expired or revoked link is a 404. */
   getInvitation: (token: string) =>
     request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
@@ -1020,161 +1046,161 @@ export const api = {
     request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
   /** A 409 for the last member, and for the creator while others remain; otherwise the new
    * personal organisation the user lands in. */
-  leaveOrganisation: () => request<Organisation>("/api/organisation/leave", { method: "POST" }),
+  leaveOrganisation: () => request<Organisation>(`${organisationApi()}/organisation/leave`, { method: "POST" }),
   getDataStore: () =>
-    request<{ status: DataStoreStatus; usage: DataStoreUsage }>("/api/data-store"),
-  getSettings: () => request<Settings>("/api/organisation/settings"),
+    request<{ status: DataStoreStatus; usage: DataStoreUsage }>(`${organisationApi()}/data-store`),
+  getSettings: () => request<Settings>(`${organisationApi()}/organisation/settings`),
   updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
-    request<Settings>("/api/organisation/settings", json("PUT", body)),
+    request<Settings>(`${organisationApi()}/organisation/settings`, json("PUT", body)),
   deleteExportedHistory: () =>
-    request<void>("/api/organisation/settings/exported-history", { method: "DELETE" }),
-  listDocuments: () => request<DocumentInfo[]>("/api/documents"),
-  deleteDocument: (id: number) => request<void>(`/api/documents/${id}`, { method: "DELETE" }),
+    request<void>(`${organisationApi()}/organisation/settings/exported-history`, { method: "DELETE" }),
+  listDocuments: () => request<DocumentInfo[]>(`${organisationApi()}/documents`),
+  deleteDocument: (id: number) => request<void>(`${organisationApi()}/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
     const body = new FormData();
     body.append("file", file);
-    return request<DocumentInfo>("/api/documents", { method: "POST", body });
+    return request<DocumentInfo>(`${organisationApi()}/documents`, { method: "POST", body });
   },
-  listSchemaChanges: () => request<SchemaChangeRequest[]>("/api/schema-changes"),
-  getSchemaChange: (id: string) => request<SchemaChangeRequest>(`/api/schema-changes/${id}`),
+  listSchemaChanges: () => request<SchemaChangeRequest[]>(`${organisationApi()}/schema-changes`),
+  getSchemaChange: (id: string) => request<SchemaChangeRequest>(`${organisationApi()}/schema-changes/${id}`),
   approveSchemaChange: (id: string, confirm?: string) =>
     request<SchemaChangeRequest>(
-      `/api/schema-changes/${id}/approve`,
+      `${organisationApi()}/schema-changes/${id}/approve`,
       // A request that drops anything takes its tables' names typed.
       confirm === undefined ? { method: "POST" } : json("POST", { confirm }),
     ),
   schemaChangeImpact: (id: string) =>
-    request<{ removes: Removal[] }>(`/api/schema-changes/${id}/impact`),
-  listDropped: () => request<DroppedObject[]>("/api/dropped"),
+    request<{ removes: Removal[] }>(`${organisationApi()}/schema-changes/${id}/impact`),
+  listDropped: () => request<DroppedObject[]>(`${organisationApi()}/dropped`),
   restoreDropped: (id: number) =>
-    request<DroppedObject>(`/api/dropped/${id}/restore`, { method: "POST" }),
+    request<DroppedObject>(`${organisationApi()}/dropped/${id}/restore`, { method: "POST" }),
   rejectSchemaChange: (id: string, note: string) =>
-    request<SchemaChangeRequest>(`/api/schema-changes/${id}/reject`, json("POST", { note })),
+    request<SchemaChangeRequest>(`${organisationApi()}/schema-changes/${id}/reject`, json("POST", { note })),
   listNotifications: () => request<NotificationList>("/api/notifications"),
   markNotificationRead: (id: string) =>
     request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
   search: (q: string, limit: number) =>
-    request<SearchHit[]>(`/api/search?${new URLSearchParams({ q, limit: String(limit) })}`),
+    request<SearchHit[]>(`${organisationApi()}/search?${new URLSearchParams({ q, limit: String(limit) })}`),
   listDataTables: () =>
-    request<{ tables: DataTable[]; truncated: boolean }>("/api/data/tables"),
+    request<{ tables: DataTable[]; truncated: boolean }>(`${organisationApi()}/data/tables`),
   getDataRows: (table: string, { offset, limit, sort, order }: DataRowsQuery) => {
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (sort) params.set("sort", sort);
     if (sort && order) params.set("order", order);
-    return request<DataRowsPage>(`/api/data/tables/${encodeURIComponent(table)}/rows?${params}`);
+    return request<DataRowsPage>(`${organisationApi()}/data/tables/${encodeURIComponent(table)}/rows?${params}`);
   },
   getDataValue: (table: string, row: string, column: string) =>
     request<{ value: string | null; truncated: boolean }>(
-      `/api/data/tables/${encodeURIComponent(table)}/value?${new URLSearchParams({ row, column })}`,
+      `${organisationApi()}/data/tables/${encodeURIComponent(table)}/value?${new URLSearchParams({ row, column })}`,
     ),
 
-  listSkills: () => request<SkillSummary[]>("/api/skills"),
-  getSkill: (id: number) => request<Skill>(`/api/skills/${id}`),
-  createSkill: (body: SkillInput) => request<Skill>("/api/skills", json("POST", body)),
+  listSkills: () => request<SkillSummary[]>(`${organisationApi()}/skills`),
+  getSkill: (id: number) => request<Skill>(`${organisationApi()}/skills/${id}`),
+  createSkill: (body: SkillInput) => request<Skill>(`${organisationApi()}/skills`, json("POST", body)),
   updateSkill: (id: number, body: SkillInput) =>
-    request<Skill>(`/api/skills/${id}`, json("PUT", body)),
-  deleteSkill: (id: number) => request<void>(`/api/skills/${id}`, { method: "DELETE" }),
+    request<Skill>(`${organisationApi()}/skills/${id}`, json("PUT", body)),
+  deleteSkill: (id: number) => request<void>(`${organisationApi()}/skills/${id}`, { method: "DELETE" }),
   listSkillVersions: (id: number) =>
-    request<SkillVersionSummary[]>(`/api/skills/${id}/versions`),
+    request<SkillVersionSummary[]>(`${organisationApi()}/skills/${id}/versions`),
   getSkillVersion: (id: number, version: number) =>
-    request<SkillVersion>(`/api/skills/${id}/versions/${version}`),
+    request<SkillVersion>(`${organisationApi()}/skills/${id}/versions/${version}`),
   restoreSkillVersion: (id: number, version: number) =>
-    request<Skill>(`/api/skills/${id}/versions/${version}/restore`, { method: "POST" }),
+    request<Skill>(`${organisationApi()}/skills/${id}/versions/${version}/restore`, { method: "POST" }),
   listTools: () => request<ToolInfo[]>("/api/tools"),
   /** The agents that aren't archived; with `archived`, the archived ones instead. */
   listAgents: (archived = false) =>
-    request<AgentSummary[]>(archived ? "/api/agents?archived=true" : "/api/agents"),
-  archiveAgent: (id: number) => request<Agent>(`/api/agents/${id}/archive`, { method: "POST" }),
+    request<AgentSummary[]>(archived ? `${organisationApi()}/agents?archived=true` : `${organisationApi()}/agents`),
+  archiveAgent: (id: number) => request<Agent>(`${organisationApi()}/agents/${id}/archive`, { method: "POST" }),
   unarchiveAgent: (id: number) =>
-    request<Agent>(`/api/agents/${id}/unarchive`, { method: "POST" }),
-  getAgentUsedBy: (id: number) => request<AgentUsedBy>(`/api/agents/${id}/used-by`),
-  getAgent: (id: number) => request<Agent>(`/api/agents/${id}`),
-  createAgent: (body: AgentInput) => request<Agent>("/api/agents", json("POST", body)),
+    request<Agent>(`${organisationApi()}/agents/${id}/unarchive`, { method: "POST" }),
+  getAgentUsedBy: (id: number) => request<AgentUsedBy>(`${organisationApi()}/agents/${id}/used-by`),
+  getAgent: (id: number) => request<Agent>(`${organisationApi()}/agents/${id}`),
+  createAgent: (body: AgentInput) => request<Agent>(`${organisationApi()}/agents`, json("POST", body)),
   updateAgent: (id: number, body: AgentInput) =>
-    request<Agent>(`/api/agents/${id}`, json("PUT", body)),
-  getAgentDependents: (id: number) => request<AgentDependents>(`/api/agents/${id}/dependents`),
+    request<Agent>(`${organisationApi()}/agents/${id}`, json("PUT", body)),
+  getAgentDependents: (id: number) => request<AgentDependents>(`${organisationApi()}/agents/${id}/dependents`),
   /** Refused (409, see `parseDeleteRefusal`) until what depends on it is resolved. */
   deleteAgent: (id: number, resolutions?: AgentDeleteResolutions) =>
     request<void>(
-      `/api/agents/${id}`,
+      `${organisationApi()}/agents/${id}`,
       resolutions ? json("DELETE", resolutions) : { method: "DELETE" },
     ),
   listAgentVersions: (id: number) =>
-    request<AgentVersionSummary[]>(`/api/agents/${id}/versions`),
+    request<AgentVersionSummary[]>(`${organisationApi()}/agents/${id}/versions`),
   getAgentVersion: (id: number, version: number) =>
-    request<AgentVersion>(`/api/agents/${id}/versions/${version}`),
+    request<AgentVersion>(`${organisationApi()}/agents/${id}/versions/${version}`),
   restoreAgentVersion: (id: number, version: number) =>
-    request<Agent>(`/api/agents/${id}/versions/${version}/restore`, { method: "POST" }),
-  listRuns: (agentId: number) => request<RunSummary[]>(`/api/agents/${agentId}/runs`),
+    request<Agent>(`${organisationApi()}/agents/${id}/versions/${version}/restore`, { method: "POST" }),
+  listRuns: (agentId: number) => request<RunSummary[]>(`${organisationApi()}/agents/${agentId}/runs`),
   getRun: (agentId: number, runId: number) =>
-    request<Run>(`/api/agents/${agentId}/runs/${runId}`),
+    request<Run>(`${organisationApi()}/agents/${agentId}/runs/${runId}`),
   createRun: (agentId: number) =>
-    request<RunSummary>(`/api/agents/${agentId}/runs`, { method: "POST" }),
+    request<RunSummary>(`${organisationApi()}/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
-    request<void>(`/api/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
-  listWorkflows: () => request<WorkflowSummary[]>("/api/workflows"),
-  getWorkflow: (id: number) => request<Workflow>(`/api/workflows/${id}`),
+    request<void>(`${organisationApi()}/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
+  listWorkflows: () => request<WorkflowSummary[]>(`${organisationApi()}/workflows`),
+  getWorkflow: (id: number) => request<Workflow>(`${organisationApi()}/workflows/${id}`),
   createWorkflow: (body: WorkflowInput) =>
-    request<Workflow>("/api/workflows", json("POST", body)),
+    request<Workflow>(`${organisationApi()}/workflows`, json("POST", body)),
   updateWorkflow: (id: number, body: WorkflowInput) =>
-    request<Workflow>(`/api/workflows/${id}`, json("PUT", body)),
-  deleteWorkflow: (id: number) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
+    request<Workflow>(`${organisationApi()}/workflows/${id}`, json("PUT", body)),
+  deleteWorkflow: (id: number) => request<void>(`${organisationApi()}/workflows/${id}`, { method: "DELETE" }),
   listWorkflowVersions: (id: number) =>
-    request<WorkflowVersionSummary[]>(`/api/workflows/${id}/versions`),
+    request<WorkflowVersionSummary[]>(`${organisationApi()}/workflows/${id}/versions`),
   // Also a deleted workflow's versions, which a past run's subworkflow node still pins.
   getWorkflowVersion: (id: number, version: number) =>
-    request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`),
+    request<WorkflowVersion>(`${organisationApi()}/workflows/${id}/versions/${version}`),
   restoreWorkflowVersion: (id: number, version: number) =>
-    request<Workflow>(`/api/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
-  listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`/api/workflows/${id}/runs`),
+    request<Workflow>(`${organisationApi()}/workflows/${id}/versions/${version}/restore`, { method: "POST" }),
+  listWorkflowRuns: (id: number) => request<WorkflowRunSummary[]>(`${organisationApi()}/workflows/${id}/runs`),
   getWorkflowRun: (id: number, runId: number) =>
-    request<WorkflowRunPage>(`/api/workflows/${id}/runs/${runId}`),
+    request<WorkflowRunPage>(`${organisationApi()}/workflows/${id}/runs/${runId}`),
   /** The version the run pinned for the workflow node at `path` (node keys, outermost first). */
   getRunSubworkflow: (id: number, runId: number, path: string[]) =>
     request<WorkflowVersion>(
-      `/api/workflows/${id}/runs/${runId}/subworkflow?${new URLSearchParams(path.map((key) => ["path", key]))}`,
+      `${organisationApi()}/workflows/${id}/runs/${runId}/subworkflow?${new URLSearchParams(path.map((key) => ["path", key]))}`,
     ),
   createWorkflowRun: (id: number, input: string) =>
-    request<WorkflowRunSummary>(`/api/workflows/${id}/runs`, json("POST", { input })),
+    request<WorkflowRunSummary>(`${organisationApi()}/workflows/${id}/runs`, json("POST", { input })),
   deleteWorkflowRun: (id: number, runId: number) =>
-    request<void>(`/api/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
+    request<void>(`${organisationApi()}/workflows/${id}/runs/${runId}`, { method: "DELETE" }),
 
   listTriggers: (target?: { kind: TriggerTargetKind; id: number }) =>
     request<Trigger[]>(
-      "/api/triggers" +
+      `${organisationApi()}/triggers` +
         (target ? `?${new URLSearchParams({ target_kind: target.kind, target_id: String(target.id) })}` : ""),
     ),
-  getTrigger: (id: number) => request<Trigger>(`/api/triggers/${id}`),
-  createTrigger: (body: TriggerInput) => request<Trigger>("/api/triggers", json("POST", body)),
+  getTrigger: (id: number) => request<Trigger>(`${organisationApi()}/triggers/${id}`),
+  createTrigger: (body: TriggerInput) => request<Trigger>(`${organisationApi()}/triggers`, json("POST", body)),
   updateTrigger: (id: number, body: TriggerInput) =>
-    request<Trigger>(`/api/triggers/${id}`, json("PUT", body)),
-  deleteTrigger: (id: number) => request<void>(`/api/triggers/${id}`, { method: "DELETE" }),
+    request<Trigger>(`${organisationApi()}/triggers/${id}`, json("PUT", body)),
+  deleteTrigger: (id: number) => request<void>(`${organisationApi()}/triggers/${id}`, { method: "DELETE" }),
   previewSchedule: (cron: string, timezone: string) =>
-    request<SchedulePreview>("/api/triggers/preview", json("POST", { cron, timezone })),
+    request<SchedulePreview>(`${organisationApi()}/triggers/preview`, json("POST", { cron, timezone })),
   listTimezones: () => request<string[]>("/api/triggers/timezones"),
 
-  listChats: () => request<ChatListed[]>("/api/chats"),
-  getChat: (id: number) => request<Chat>(`/api/chats/${id}`),
-  createChat: (body: ChatInput) => request<Chat>("/api/chats", json("POST", body)),
+  listChats: () => request<ChatListed[]>(`${organisationApi()}/chats`),
+  getChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}`),
+  createChat: (body: ChatInput) => request<Chat>(`${organisationApi()}/chats`, json("POST", body)),
   updateChat: (id: number, body: ChatInput) =>
-    request<Chat>(`/api/chats/${id}`, json("PUT", body)),
-  deleteChat: (id: number) => request<void>(`/api/chats/${id}`, { method: "DELETE" }),
+    request<Chat>(`${organisationApi()}/chats/${id}`, json("PUT", body)),
+  deleteChat: (id: number) => request<void>(`${organisationApi()}/chats/${id}`, { method: "DELETE" }),
   removeChatMember: (id: number, memberId: number) =>
-    request<void>(`/api/chats/${id}/members/${memberId}`, { method: "DELETE" }),
+    request<void>(`${organisationApi()}/chats/${id}/members/${memberId}`, { method: "DELETE" }),
   listChatMessages: (id: number, cursor: ChatMessagesCursor = {}) =>
     request<ChatMessages>(
-      `/api/chats/${id}/messages?${new URLSearchParams(
+      `${organisationApi()}/chats/${id}/messages?${new URLSearchParams(
         Object.entries(cursor).map(([k, v]) => [k, String(v)]),
       )}`,
     ),
   postChatMessage: (id: number, body: string, mentions: ChatMentionRef[] = []) =>
-    request<ChatMessages>(`/api/chats/${id}/messages`, json("POST", { body, mentions })),
-  listChatMentionable: (id: number) => request<ChatMentionables>(`/api/chats/${id}/mentionable`),
+    request<ChatMessages>(`${organisationApi()}/chats/${id}/messages`, json("POST", { body, mentions })),
+  listChatMentionable: (id: number) => request<ChatMentionables>(`${organisationApi()}/chats/${id}/mentionable`),
   addChatMember: (id: number, member: ChatMentionRef) =>
-    request<Chat>(`/api/chats/${id}/members`, json("POST", member)),
-  joinChat: (id: number) => request<Chat>(`/api/chats/${id}/join`, { method: "POST" }),
-  leaveChat: (id: number) => request<void>(`/api/chats/${id}/leave`, { method: "POST" }),
+    request<Chat>(`${organisationApi()}/chats/${id}/members`, json("POST", member)),
+  joinChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/join`, { method: "POST" }),
+  leaveChat: (id: number) => request<void>(`${organisationApi()}/chats/${id}/leave`, { method: "POST" }),
   /** Notes that the user has seen the chat's messages up to `messageId`, clearing their unread count. */
   markChatRead: (id: number, messageId: number) =>
-    request<void>(`/api/chats/${id}/read`, json("POST", { message_id: messageId })),
+    request<void>(`${organisationApi()}/chats/${id}/read`, json("POST", { message_id: messageId })),
 };

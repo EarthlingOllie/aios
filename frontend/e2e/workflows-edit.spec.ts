@@ -2,7 +2,7 @@
 /// <reference lib="dom" />
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
@@ -67,7 +67,7 @@ test("builds a new workflow from agents and workflows", async ({ page }) => {
   await expect(edge(page, "researcher", "review")).toBeAttached();
 
   const [method, path, body] = api.writes.at(-1)!;
-  expect([method, path]).toEqual(["POST", "/api/workflows"]);
+  expect([method, path]).toEqual(["POST", orgApi("/workflows")]);
   expect(body).toMatchObject({
     name: "Pipeline",
     description: "Research, then review",
@@ -478,7 +478,7 @@ test("won't save while a node's key is invalid", async ({ page }) => {
 test("says why there's nothing to add when agents fail to load", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.route("/api/agents", (route) =>
+  await page.route(orgApi("/agents"), (route) =>
     route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
   );
   await page.goto(inOrg(`/workflows/${report.id}/edit`));
@@ -781,12 +781,12 @@ test("shows the nodes when the graph changes just as they're first measured", as
   let loads = 0;
   let loadAgain!: () => void;
   const again = new Promise<void>((resolve) => (loadAgain = resolve));
-  await page.route(`**/api/workflows/${report.id}`, async (route) => {
+  await page.route(`**${orgApi(`/workflows/${report.id}`)}`, async (route) => {
     if (++loads === 2) await again;
     await route.fallback();
   });
   const lists = ["agents", "workflows"].map((list) =>
-    page.waitForResponse((r) => new URL(r.url()).pathname === `/api/${list}`),
+    page.waitForResponse((r) => new URL(r.url()).pathname === orgApi(`/${list}`)),
   );
   await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await Promise.all(lists);

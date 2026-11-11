@@ -471,7 +471,12 @@ def test_a_read_past_the_time_limit_is_stopped(api, store):
 def test_the_tables_api_takes_names_and_numbers_never_sql(client):
     """Each parameter is a name checked against the catalog, a number, or a direction."""
     schema = client.get("/openapi.json").json()
-    data_paths = {p: ops for p, ops in schema["paths"].items() if p.startswith("/api/data/")}
+    prefix = "/api/o/{organisation_id}"
+    data_paths = {
+        p.removeprefix(prefix): ops
+        for p, ops in schema["paths"].items()
+        if p.startswith(f"{prefix}/data/")
+    }
 
     params = {
         (op_name, param["name"])
@@ -481,9 +486,9 @@ def test_the_tables_api_takes_names_and_numbers_never_sql(client):
     }
 
     assert set(data_paths) == {
-        "/api/data/tables",
-        "/api/data/tables/{table}/rows",
-        "/api/data/tables/{table}/value",
+        "/data/tables",
+        "/data/tables/{table}/rows",
+        "/data/tables/{table}/value",
     }
     assert all(op == "get" for op, _ in params)
     assert {name for _, name in params} == {

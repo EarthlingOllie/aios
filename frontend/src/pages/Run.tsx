@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import {
   api,
   apiFetch,
+  organisationApi,
   describeError,
   type ContentBlock,
   type ModelMessage,
@@ -146,7 +147,7 @@ function RunChat({
   const [transport] = useState(
     () =>
       new DefaultChatTransport({
-        api: `/api/agents/${run.agent_id}/runs/${run.id}/chat`,
+        api: `${organisationApi()}/agents/${run.agent_id}/runs/${run.id}/chat`,
         fetch: apiFetch,
         // The server keeps the run's history; send only the new message.
         prepareSendMessagesRequest: ({ id, messages, trigger }) => ({

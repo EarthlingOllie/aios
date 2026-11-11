@@ -107,6 +107,32 @@ test("marking one read clears it from the badge and keeps it in the list", async
   expect(api.writes).toContainEqual(["POST", `/api/notifications/${notification.id}/read`, null]);
 });
 
+test("one from another organisation says which, and opens in it", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.otherMemberships = [{ id: 2, name: "Globex", slug: "globex", is_creator: false }];
+  api.addNotification({ organisation: { id: 2, slug: "globex" }, ref: { request_id: "r9" } });
+  await page.goto(inOrg("/agents"));
+
+  await bell(page).click();
+  const item = list(page).getByRole("link", { name: /A schema change is waiting for you/ });
+  await expect(item).toContainText("In Globex");
+  await item.click();
+
+  await expect(page).toHaveURL("/o/globex/data/changes?request=r9");
+});
+
+test("one from the organisation the page is in doesn't say which", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.otherMemberships = [{ id: 2, name: "Globex", slug: "globex", is_creator: false }];
+  api.addSchemaChange();
+  await page.goto(inOrg("/agents"));
+
+  await bell(page).click();
+  const item = list(page).getByRole("link", { name: /Create table data\.contacts/ });
+  await expect(item).toBeVisible();
+  await expect(item).not.toContainText("In ");
+});
+
 test("another user's notifications never show", async ({ page }) => {
   const api = await fakeApi(page);
   api.addNotification({ mine: false, ref: { request_id: "theirs" } });

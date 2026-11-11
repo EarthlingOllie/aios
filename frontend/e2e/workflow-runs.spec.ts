@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
@@ -108,7 +108,7 @@ test("a live run survives failed re-reads and keeps following", async ({ page })
 
   // A couple of re-reads fail (say, mid-deploy): what was shown stays, with a note.
   let failures = 2;
-  await page.route(`**/api/workflows/${report.id}/runs/${run.id}`, (route) =>
+  await page.route(`**${orgApi(`/workflows/${report.id}/runs/${run.id}`)}`, (route) =>
     failures-- > 0
       ? route.fulfill({
           status: 502,
@@ -350,7 +350,7 @@ test("lists a workflow's runs and deletes one", async ({ page }) => {
   // The workflows list shows nothing about runs, so deleting one leaves it be.
   const listReads: string[] = [];
   page.on("request", (r) => {
-    if (r.method() === "GET" && new URL(r.url()).pathname === "/api/workflows")
+    if (r.method() === "GET" && new URL(r.url()).pathname === orgApi("/workflows"))
       listReads.push(r.url());
   });
   page.once("dialog", (d) => d.accept());
@@ -365,7 +365,7 @@ test("still shows a run whose workflow fails to load, and says why", async ({ pa
   const { report } = seed(api);
   const run = api.addRun(report, { status: "succeeded", input: "Look into it", output: "Done" });
   // Registered after the fake API's route, so it's tried first; the run itself still loads.
-  await page.route(`**/api/workflows/${report.id}`, (route) =>
+  await page.route(`**${orgApi(`/workflows/${report.id}`)}`, (route) =>
     route.fulfill({
       status: 500,
       contentType: "application/json",
@@ -394,7 +394,7 @@ test("the runs list follows a live run until nothing is going", async ({ page })
 
   // A failed re-read doesn't stop it following the run.
   let failures = 2;
-  await page.route(`**/api/workflows/${report.id}/runs`, (route) =>
+  await page.route(`**${orgApi(`/workflows/${report.id}/runs`)}`, (route) =>
     failures-- > 0
       ? route.fulfill({
           status: 502,

@@ -5,7 +5,9 @@ import { Bell } from "lucide-react";
 import { formatDate, useLoad, usePoll, useVisible } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type Notification, type NotificationList } from "@/lib/api";
-import { badgeText, describeNotification } from "@/lib/notifications";
+import { useCurrentUser } from "@/lib/current-user";
+import { badgeText, describeNotification, notificationLink } from "@/lib/notifications";
+import { organisationInPath } from "@/lib/organisation-path";
 import { cn } from "@/lib/utils";
 
 /** How often the signed-in user's notifications are read again (ms). */
@@ -157,24 +159,35 @@ function NotificationItem({
   onMarkRead: () => void;
 }) {
   const view = describeNotification(notification);
+  // The organisation the page is open in (the router's basename): one from another opens there.
+  const here = organisationInPath(window.location.pathname);
+  const link = notificationLink(view, here);
+  const elsewhere = view.organisation !== here;
+  const from = useCurrentUser()?.organisations.find((o) => o.slug === view.organisation)?.name ?? view.organisation;
   const unread = !notification.read_at;
   const body = (
     <>
       {unread && <span className="sr-only">Unread: </span>}
       <span className={cn("block", unread ? "font-medium" : "text-muted-foreground")}>{view.heading}</span>
       {view.detail && <span className="text-muted-foreground block truncate text-xs">{view.detail}</span>}
+      {elsewhere && <span className="text-muted-foreground block truncate text-xs">In {from}</span>}
       <span className="text-muted-foreground block text-xs">{formatDate(notification.created_at)}</span>
     </>
   );
   return (
     <li className={cn("flex items-start gap-2 px-3 py-2", unread && "bg-accent/40")}>
       {unread && <span aria-hidden className="bg-primary mt-1.5 size-2 shrink-0 rounded-full" />}
-      {view.to ? (
-        <Link to={view.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
+      {link === null ? (
+        <div className="min-w-0 flex-1">{body}</div>
+      ) : link.reload ? (
+        // In another organisation: a new page load, as the organisation is the router's basename.
+        <a href={link.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
+          {body}
+        </a>
+      ) : (
+        <Link to={link.to} onClick={onNavigate} className="min-w-0 flex-1 hover:underline">
           {body}
         </Link>
-      ) : (
-        <div className="min-w-0 flex-1">{body}</div>
       )}
       {unread && (
         <Button variant="ghost" size="sm" className="h-auto shrink-0 px-2 py-1 text-xs" onClick={onMarkRead}>

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** Invitation links on the Organisation page, the invite page, and leaving the organisation. */
 
@@ -15,7 +15,7 @@ test("the creator makes a link, copies it once, and revokes it", async ({ page, 
 
   await links.getByRole("combobox", { name: "Lasts" }).selectOption("30");
   await links.getByRole("button", { name: "Make a link" }).click();
-  expect(api.writes).toEqual([["POST", "/api/organisation/invites", { expires_in_days: 30 }]]);
+  expect(api.writes).toEqual([["POST", orgApi("/organisation/invites"), { expires_in_days: 30 }]]);
   const made = links.getByRole("textbox", { name: "New link" });
   await expect(made).toHaveValue("http://localhost/invite/token-100");
   await expect(links.getByText("Copy it now: it won't be shown again.")).toBeVisible();
@@ -43,7 +43,7 @@ test("the creator makes a link, copies it once, and revokes it", async ({ page, 
   await expect(links.getByText("No open links.")).toBeVisible();
   expect(api.writes.at(-1)).toEqual([
     "DELETE",
-    "/api/organisation/invites/00000064-0000-4000-8000-000000000000",
+    orgApi("/organisation/invites/00000064-0000-4000-8000-000000000000"),
     null,
   ]);
 });
@@ -124,7 +124,7 @@ test("a member leaves, and lands in a personal organisation of their own", async
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Leave organisation" }).click();
-  expect(api.writes).toEqual([["POST", "/api/organisation/leave", null]]);
+  expect(api.writes).toEqual([["POST", orgApi("/organisation/leave"), null]]);
   await expect(page.getByRole("heading", { name: "tester" })).toBeVisible();
   await expect(page.getByText("Your personal organisation, created by you.")).toBeVisible();
   await expect(page.getByRole("link", { name: "tester" }).first()).toBeVisible();

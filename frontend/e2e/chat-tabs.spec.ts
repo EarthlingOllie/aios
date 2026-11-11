@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser, inOrg } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 
 /** The chat page splits into tabs: Chat (the room) and Members. */
 
@@ -132,7 +132,7 @@ test("a message still sending when switching to Members and back isn't offered t
   // The post waits until the test lets it through: a slow network.
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
-  await page.route(`**/api/chats/${chat.id}/messages`, async (route) => {
+  await page.route(`**${orgApi(`/chats/${chat.id}/messages`)}`, async (route) => {
     if (route.request().method() === "POST") await released;
     await route.fallback();
   });
@@ -156,7 +156,7 @@ test("a message still sending when switching to Members and back isn't offered t
 test("a message that fails to send is back in the composer, with why", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  await page.route(`**/api/chats/${chat.id}/messages`, (route) =>
+  await page.route(`**${orgApi(`/chats/${chat.id}/messages`)}`, (route) =>
     route.request().method() === "POST"
       ? route.fulfill({ status: 503, json: { detail: "Try again later." } })
       : route.fallback(),

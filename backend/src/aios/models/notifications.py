@@ -29,6 +29,11 @@ class Notification(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # The organisation it's from: a person's notifications from every organisation they're in
+    # are listed together, each opening in its own. It goes with its organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(64))
     ref: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

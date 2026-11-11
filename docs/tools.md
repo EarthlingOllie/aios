@@ -29,7 +29,7 @@ restoring and running all load them the same way, and refuse a value the model n
 Document search is a hybrid search (`aios.search`): pgvector HNSW (cosine) over Voyage
 embeddings, and Postgres full-text search (`tsvector`, GIN), fused with Reciprocal Rank Fusion
 (k=60). It runs in the store's own database as its read-only role. The **Search** page runs
-that hybrid search directly (`GET /api/search`), with no agent in between, and shows each
+that hybrid search directly (`GET /api/o/{org}/search`), with no agent in between, and shows each
 passage with how the semantic and keyword branches ranked it.
 
 ## Web search
@@ -84,10 +84,13 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
 - Any member of the store's organisation (`can_approve`, `resolve.approvers`) approves or
   rejects it (with an optional note) there or in the Data page's Changes section.
 - Each user who can decide a new request gets a notification (`aios.notifications`, the
-  `notifications` table: user, kind, a jsonb reference, created and read times), which the
-  navigation's bell polls for (`GET /api/notifications`, unread first with an unread count,
-  every 10s) and shows as an unread badge with a list; an item opens the request on the Data
-  page, and one can be marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding
+  `notifications` table: user, the organisation it's from, kind, a jsonb reference, created and
+  read times), which the navigation's bell polls for (`GET /api/notifications`, unread first
+  with an unread count, every 10s) and shows as an unread badge with a list. Notifications are
+  the person's, from every organisation they're in, so not under the organisation prefix: each
+  carries its organisation's id and slug, and one from another organisation says which and
+  opens in it (a new page load). An item opens the request on the Data page, and one can be
+  marked read (`POST /api/notifications/{id}/read`, idempotent). Deciding
   or cancelling the request marks its notifications read
   (`schema_changes.clear_notifications`). Users only ever see their own.
 - An approved request is applied on the provisioning worker (`aios.apply_schema_change`), as

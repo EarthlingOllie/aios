@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * The Organisation page splits into tabs, each a route: Members (`/organisation`), Invitations
@@ -72,5 +72,5 @@ test("renaming from another tab stays on it", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   await expect(page).toHaveURL(inOrg("/organisation/settings"));
   await expect(tab(page, "Settings")).toHaveAttribute("aria-selected", "true");
-  expect(api.writes).toEqual([["PUT", "/api/organisation", { name: "Acme" }]]);
+  expect(api.writes).toEqual([["PUT", orgApi("/organisation"), { name: "Acme" }]]);
 });

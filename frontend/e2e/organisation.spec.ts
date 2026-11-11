@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** The Organisation page: the organisation's name, creator and members, and renaming it. */
 
@@ -37,7 +37,7 @@ test("the creator renames it, and the shell follows", async ({ page }) => {
   await page.getByRole("button", { name: "Save" }).click();
 
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
-  expect(api.writes).toEqual([["PUT", "/api/organisation", { name: "Acme" }]]);
+  expect(api.writes).toEqual([["PUT", orgApi("/organisation"), { name: "Acme" }]]);
   await expect(page.getByRole("link", { name: "Acme" }).first()).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Name" })).toBeHidden();
 });

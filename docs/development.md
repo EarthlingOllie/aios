@@ -64,18 +64,18 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     organisations.py  organisations, which own what their members make: a personal one per
                     user on sign-up, the user's one membership, invitation links, joining and
                     leaving (handing over the chats a leaver owned)
-    api/documents.py upload/list/download/delete, GET /api/search
-    api/skills.py   CRUD /api/skills
-    api/agents/     CRUD /api/agents, versions, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+    api/documents.py upload/list/download/delete, GET /api/o/{org}/search
+    api/skills.py   CRUD /api/o/{org}/skills
+    api/agents/     CRUD /api/o/{org}/agents, versions, runs: /api/o/{org}/agents/{id}/runs[/{run_id}[/chat]]
                     (crud, versions, runs, chat: a run's chat stream)
-    api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
-    api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
-    api/chats/      CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
+    api/workflows.py CRUD /api/o/{org}/workflows, versions and restore, runs: /api/o/{org}/workflows/{id}/runs
+    api/triggers.py CRUD /api/o/{org}/triggers (schedules), schedule preview, timezones
+    api/chats/      CRUD /api/o/{org}/chats, members: /api/o/{org}/chats/{id}/members[/{member_id}], mentionable, messages
                     (crud, members, messages, invocations)
-    api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page), invitation
-                    links (/api/organisation/invites, /api/invites/{token}[/accept]), leaving
+    api/organisation.py GET /api/me, GET/PUT /api/o/{org}/organisation (the Organisation page), invitation
+                    links (/api/o/{org}/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it
-    api/settings.py GET/PUT /api/organisation/settings (the organisation's: the run history export)
+    api/settings.py GET/PUT /api/o/{org}/organisation/settings (the organisation's: the run history export)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back

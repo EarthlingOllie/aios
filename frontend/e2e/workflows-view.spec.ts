@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
@@ -226,7 +226,7 @@ async function holdRestores(page: Page) {
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
   const restores = { count: 0, release };
-  await page.route("**/api/workflows/*/versions/*/restore", async (route) => {
+  await page.route(`**${orgApi("/workflows/*/versions/*/restore")}`, async (route) => {
     restores.count++;
     await held;
     await route.fallback();
@@ -268,7 +268,7 @@ test("a failed restore can be retried", async ({ page }) => {
   const { report } = await seed(api);
   api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
   let failures = 1;
-  await page.route("**/api/workflows/*/versions/*/restore", (route) =>
+  await page.route(`**${orgApi("/workflows/*/versions/*/restore")}`, (route) =>
     failures-- > 0
       ? route.fulfill({
           status: 500,
@@ -289,7 +289,7 @@ test("a failed restore can be retried", async ({ page }) => {
 test("version history that fails to load says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
-  await page.route(`**/api/workflows/${report.id}/versions`, (route) =>
+  await page.route(`**${orgApi(`/workflows/${report.id}/versions`)}`, (route) =>
     route.fulfill({
       status: 500,
       contentType: "application/json",
@@ -304,7 +304,7 @@ test("a version page whose workflow fails to load says why", async ({ page }) =>
   const api = await fakeApi(page);
   const { report } = await seed(api);
   // Registered after the fake API's route, so it's tried first.
-  await page.route(`**/api/workflows/${report.id}`, (route) =>
+  await page.route(`**${orgApi(`/workflows/${report.id}`)}`, (route) =>
     route.fulfill({
       status: 500,
       contentType: "application/json",

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * The Agents list can be narrowed to the agents whose current version uses a skill, or has a
@@ -64,7 +64,7 @@ test("a link with a skill opens filtered, and an unknown skill or tool is as if 
   // Filtered even before the skills have loaded.
   let releaseSkills!: () => void;
   const skillsHeld = new Promise<void>((resolve) => (releaseSkills = resolve));
-  await page.route("**/api/skills", async (route) => {
+  await page.route(`**${orgApi("/skills")}`, async (route) => {
     await skillsHeld;
     await route.fallback();
   });

@@ -1,7 +1,7 @@
 # Workflows
 
 **Workflows** graph agents together, and can run other workflows as subgraphs
-(`/api/workflows`). Like agents, they belong to the organisation (see
+(`/api/o/{org}/workflows`). Like agents, they belong to the organisation (see
 [Accounts and organisations](accounts-and-organisations.md#what-the-organisation-owns)).
 
 ## The Workflows page
