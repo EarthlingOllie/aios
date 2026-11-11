@@ -1,14 +1,13 @@
 """Mentioning a workflow in a chat starts a run of it, followed by a card and posted back."""
 
-import asyncio
 from datetime import timedelta
 
 import pytest
-from conftest import store_of
+from conftest import QueuedRuns, capture_runs, drain_run, store_of
 from sqlalchemy import func, select, update
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member  # noqa: F401
-from test_workflow_runs import Queued, abandon, agents, echo
+from test_workflow_runs import ProcessDied, agents, echo, lapse_leases
 from test_workflows import agent_node, make_workflow
 
 from aios import workflows
@@ -16,20 +15,15 @@ from aios.api import chats
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
 from aios.datastores.models import ChatMessage, Invocation
-from aios.run_service import sweep
+from aios.run_service import STOPPED, sweep
 from aios.testing.fake_model import model, use_model
 from aios.tools import TOOLS
-from aios.workflows import execute_run
 
 
 @pytest.fixture
-def queued(monkeypatch, user) -> Queued:
-    """The runs mentions start, instead of sending them to the worker."""
-    ids = Queued(store_of(user))
-    monkeypatch.setattr(
-        workflows_api.run_workflow_task, "delay", lambda store_id, run_id: ids.append(run_id)
-    )
-    return ids
+def queued(monkeypatch, user) -> QueuedRuns:
+    """The runs mentions start, for the test to run (`drain_run`)."""
+    return capture_runs(monkeypatch, store_of(user))
 
 
 def mention(workflow: dict) -> dict:
@@ -97,7 +91,7 @@ def test_the_run_starts_with_the_message_and_the_poll_follows_it_to_its_result(a
     assert run["steps"] == []
 
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, run_id))
+        drain_run(queued.store, run_id)
 
     # The result is posted back as a message from the workflow, with the invocation's end.
     done = messages(api, chat, after=card["id"])
@@ -173,10 +167,10 @@ def test_a_run_that_cant_be_queued_fails_the_invocation(api, monkeypatch):
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", wf)
 
-    def broker_down(store_id, run_id):
-        raise ConnectionError("redis is down")
+    def queue_down(work):
+        raise ConnectionError("the platform database is down")
 
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", broker_down)
+    monkeypatch.setattr(workflows_api, "enqueue_run", queue_down)
     say(api, chat, "Go", wf)
     [invocation] = messages(api, chat)["invocations"]
     assert (invocation["status"], invocation["error"]) == (
@@ -199,7 +193,7 @@ def test_several_workflows_mentioned_each_start(api, queued):
     assert len(posted["invocations"]) == 2 and len(queued) == 2
     with use_model(echo()):
         for run_id in queued:
-            asyncio.run(execute_run(queued.store, run_id))
+            drain_run(queued.store, run_id)
     assert sorted(results(api, chat)) == [
         ("One", "first(Both of you)"),
         ("Two", "second(Both of you)"),
@@ -217,7 +211,7 @@ def test_mentions_in_a_workflows_result_start_nothing(api, queued):
         yield f"Again, @[Loop](workflow:{loop['id']})"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(queued.store, queued[0]))
+        drain_run(queued.store, queued[0])
     assert results(api, chat) == [("Loop", f"Again, @[Loop](workflow:{loop['id']})")]
     # One run, one invocation: the result's mention started nothing.
     assert len(queued) == 1
@@ -230,7 +224,7 @@ def test_a_failed_run_posts_its_error(api, queued):
     add(api, chat, "workflow", wf)
     say(api, chat, "Go", wf)
     with use_model(echo(fail={"first"})):
-        asyncio.run(execute_run(queued.store, queued[0]))
+        drain_run(queued.store, queued[0])
     [invocation] = messages(api, chat)["invocations"]
     assert (invocation["status"], invocation["error"]) == ("failed", "one: first broke")
     assert results(api, chat) == [("Digest", "The run failed: one: first broke")]
@@ -244,7 +238,7 @@ def test_a_card_whose_run_was_deleted_says_so(api, queued):
     say(api, chat, "Never ran", wf)
     finished, unstarted = queued
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, finished))
+        drain_run(queued.store, finished)
     for run_id in queued:
         resp = api.delete(f"/api/workflows/{wf['id']}/runs/{run_id}")
         assert resp.status_code == 204, resp.text
@@ -268,15 +262,23 @@ def test_a_card_whose_run_was_deleted_says_so(api, queued):
     )
 
 
-def test_a_run_whose_worker_died_fails_its_card_when_the_chat_is_read(api, queued):
+def test_a_run_whose_service_kept_stopping_fails_its_card(api, queued, monkeypatch):
     wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", wf)
     say(api, chat, "Go", wf)
-    abandon(queued.store, queued[0])
+
+    async def dies(*args):
+        raise ProcessDied
+
+    monkeypatch.setattr(workflows, "run_node", dies)
+    for _ in range(get_settings().queue_max_attempts + 1):
+        drain_run(queued.store, queued[0])
+        lapse_leases()
     [invocation] = messages(api, chat)["invocations"]
-    assert (invocation["status"], invocation["error"]) == ("failed", workflows.WORKER_STOPPED)
-    assert results(api, chat) == [("Digest", f"The run failed: {workflows.WORKER_STOPPED}")]
+    error = f"one: {STOPPED}"
+    assert (invocation["status"], invocation["error"]) == ("failed", error)
+    assert results(api, chat) == [("Digest", f"The run failed: {error}")]
 
 
 def test_a_lost_enqueue_is_repaired_by_the_requeue_sweep(
@@ -319,7 +321,7 @@ def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(
     add(api, chat, "workflow", wf)
     say(api, chat, "Go", wf)
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, queued[0]))
+        drain_run(queued.store, queued[0])
     assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
     assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
     assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
@@ -347,7 +349,7 @@ def test_a_run_going_in_a_private_chat_deleted_as_its_owner_leaves_goes_on_witho
     assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
 
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, queued[0]))
+        drain_run(queued.store, queued[0])
     [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
     assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
     assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0

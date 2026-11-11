@@ -9,7 +9,14 @@ from pathlib import Path
 import psycopg
 import pytest
 from celery.exceptions import Retry
-from conftest import add_document, delete_user, home_organisation, provisioned_user, store_of
+from conftest import (
+    add_document,
+    delete_user,
+    drain_run,
+    home_organisation,
+    provisioned_user,
+    store_of,
+)
 from psycopg import sql
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
@@ -38,7 +45,6 @@ from aios.models import Base, DataStore, DataStoreStatus, User, WorkflowRunStatu
 from aios.testing.fake_model import ToolCall, last_tool_results, model, use_model
 from aios.tools import hybrid_search
 from aios.ui_stream import error_text
-from aios.workflows import execute_run
 
 
 def test_an_organisation_becomes_a_store_of_its_own(user, new_user):
@@ -299,12 +305,12 @@ def test_an_agent_run_searches_the_users_store(api, user, searches):
 
 
 def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypatch):
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
+    monkeypatch.setattr(workflows_api, "enqueue_run", lambda work: None)
     agent = librarian(api)
     workflow = make_workflow(api, "Library", [agent_node("look", agent)])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
     with use_model(model(search_then_answer)):
-        asyncio.run(execute_run(store_of(user), started["id"]))
+        drain_run(store_of(user), started["id"])
 
     assert searches == [{"data_store_id": store_of(user), "query": "fish", "limit": 3}]
 
@@ -312,10 +318,10 @@ def test_a_workflow_run_searches_its_owners_store(api, user, searches, monkeypat
 def test_a_workflow_run_whose_organisation_cant_be_resolved_is_failed_unstarted(
     api, db, monkeypatch, in_store
 ):
-    """Resolving its organisation (whose run it is) is part of claiming the run, so if it fails
-    the run is never left `running` with no worker (a redelivery could never start it), nor
-    `queued` with nothing to run it: it's failed then and there, with the real error."""
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
+    """Resolving its organisation (whose run it is) is part of advancing the run, so if it fails
+    the run is never left `running` or `queued` with nothing to move it on: it's failed then and
+    there, with the real error."""
+    monkeypatch.setattr(workflows_api, "enqueue_run", lambda work: None)
     workflow = make_workflow(api, "Library", [agent_node("look", librarian(api))])
     started = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "fish?"}).json()
 
@@ -323,7 +329,7 @@ def test_a_workflow_run_whose_organisation_cant_be_resolved_is_failed_unstarted(
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
     monkeypatch.setattr(workflows, "_organisation", unavailable)
-    asyncio.run(execute_run(in_store.store_id, started["id"]))
+    drain_run(in_store.store_id, started["id"])
 
     run = in_store.get(WorkflowRun, started["id"])
     assert (run.status, run.started_at) == (WorkflowRunStatus.failed, None)

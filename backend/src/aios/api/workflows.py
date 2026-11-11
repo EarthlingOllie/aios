@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import Row, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
-from aios import audit, checkpoints, invocations, limits, used_by
+from aios import audit, checkpoints, invocations, limits, run_service, used_by
 from aios.api.agents.common import apply_guards, organisation_limits
 from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
@@ -39,7 +39,7 @@ from aios.datastores.models import (
     WorkflowRunStep,
     WorkflowVersion,
 )
-from aios.db import DB, DbId
+from aios.db import DB, DbId, SessionLocal
 from aios.limits import RunLimits
 from aios.models import (
     InvocableBy,
@@ -54,14 +54,13 @@ from aios.permissions import Action, CurrentRole, allow
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.tools import ToolOrganisation, unusable_tools
 from aios.versioning import NodeSpec, save_workflow_version
-from aios.worker import run_workflow_task
 from aios.workflows import (
     GraphError,
     RunError,
+    advance_work,
     alive,
     archived_in_graph,
     close_requests,
-    fail_stopped_runs,
     load_graph,
     reachable_versions,
     validate_graph,
@@ -1046,8 +1045,6 @@ def workflow_run_summary(
 def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     workflow = get_org_workflow(store, workflow_id)
     theirs = WorkflowRun.workflow_id == workflow.id
-    # Its worker died: shown failed rather than running for ever (see `get_workflow_run`).
-    fail_stopped_runs(store, theirs)
     rows = store.execute(
         workflow_run_summary_query()
         .where(theirs)
@@ -1069,11 +1066,14 @@ def create_workflow_run(
     org: CurrentOrganisation,
     db: DB,
     store: CurrentStore,
+    background: BackgroundTasks,
 ):
-    """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
+    """Start a run of the workflow's current version. The run service runs it, node by node
+    (`aios.workflows.advance`)."""
     workflow = get_org_workflow(store, workflow_id)
     run = new_workflow_run(store, org.id, workflow, body.input, created_by=user.id)
-    queue_workflow_run(store, run)
+    work = queue_workflow_run(store, run, org.id)
+    background.add_task(run_service.wake, work.lane)
     return workflow_run_summary(db, org.id, store, run.id)
 
 
@@ -1137,15 +1137,24 @@ def new_workflow_run(
     return run
 
 
-def queue_workflow_run(store: Session, run: WorkflowRun) -> None:
+def enqueue_run(work: run_service.Work) -> None:
+    """Enqueue a run's first advance on the run service, in the platform database."""
+    with SessionLocal() as db:
+        run_service.enqueue(db, [work])
+        db.commit()
+
+
+def queue_workflow_run(store: Session, run: WorkflowRun, organisation_id: int) -> run_service.Work:
     """Commit the run in its store (with whatever else is pending there: what started it, a
-    schedule's or a chat mention's link to it, before the worker can end the run and look for
-    it) and send it to the worker. If it can't be queued, delete the run (what links to it stops
-    naming it) and raise a 503."""
+    schedule's or a chat mention's link to it, before the run service can end the run and look
+    for it) and enqueue its first advance on the run service; the item, for the caller to wake
+    the run service for once it's done. If it can't be queued, delete the run (what links to it
+    stops naming it) and raise a 503."""
     store.commit()
     store_id = store_id_of(store)
+    work = advance_work(organisation_id, store_id, run.id)
     try:
-        run_workflow_task.delay(str(store_id), run.id)
+        enqueue_run(work)
     except Exception as exc:
         # Nothing would ever pick up a committed-but-unqueued run; drop it so the client can
         # simply retry without leaving one stuck in `queued`: with the invocation made for it (a
@@ -1161,6 +1170,7 @@ def queue_workflow_run(store: Session, run: WorkflowRun) -> None:
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Could not queue the run; please try again shortly.",
         ) from exc
+    return work
 
 
 class WorkflowRunPageOut(WorkflowRunOut):
@@ -1180,11 +1190,6 @@ def get_workflow_run(
 ):
     run = get_org_workflow_run(store, workflow_id, run_id)
     name = get_org_workflow(store, run.workflow_id).name
-    # A run whose worker died is failed when it's read: its task may never come round again to
-    # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
-    # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
-    # its heartbeat going stale (`aios.workflows.STALE_AFTER`).
-    fail_stopped_runs(store, WorkflowRun.id == run.id)
     out = workflow_run_out(db, org.id, store, run.id)
     return WorkflowRunPageOut(**out.model_dump(), workflow_name=name)
 
@@ -1274,12 +1279,12 @@ def delete_workflow_run(
 ) -> None:
     """Delete the run, and the agent runs its agent nodes held their conversations in."""
     run = get_org_workflow_run(store, workflow_id, run_id)
-    # Locked before its agent runs are read: a node starting meanwhile records its step and
-    # agent run in one transaction, which waits for this lock, so it's either seen here or
-    # fails once the run has gone (`aios.workflows._start_step`).
+    # Locked before its agent runs are read: an advance starting a node meanwhile records its
+    # step and agent run under this lock, so they're either seen here or never made once the
+    # run has gone (`aios.workflows.advance`).
     still_going = store.scalar(select(alive()).where(WorkflowRun.id == run.id).with_for_update())
-    # Its agent turns would carry on regardless. A queued run can go: the worker won't start a
-    # run that's gone (`_claim`); so can one whose worker died, whose heartbeat has stopped.
+    # Its agent turns would carry on regardless. A queued run can go: an advance finds nothing
+    # to start for a run that's gone; so can a waiting one, which holds nothing.
     if still_going:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "This run is still going; wait for it to finish."

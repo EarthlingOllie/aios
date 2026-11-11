@@ -33,7 +33,6 @@ from aios.models import (
     WorkflowRunStatus,
 )
 from aios.permissions import Action, allow
-from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
 
@@ -106,7 +105,6 @@ def last_workflow_runs(store: Session, triggers: Sequence[Trigger]) -> LastRuns:
     ids = [t.last_workflow_run_id for t in triggers if t.last_workflow_run_id is not None]
     if not ids:
         return {}
-    fail_stopped_runs(store, WorkflowRun.id.in_(ids))
     rows = store.execute(
         select(WorkflowRun.id, WorkflowRun.status, WorkflowRun.error).where(WorkflowRun.id.in_(ids))
     ).all()

@@ -16,9 +16,8 @@ and `/workspace/docs/` for how each part works (one page per domain, listed in
 | `redis`           | `redis:6379`                | Celery broker                                   |
 | `rustfs`          | `http://rustfs:9000`        | S3 stand-in for uploaded files (`rustfsadmin`)  |
 | `sandbox`         | `http://sandbox:8080`       | `run_python` runner (token `dev-sandbox-token`) |
-| `run-service`     | -                           | Agent turns, handoffs, schedules (work queue)   |
+| `run-service`     | -                           | Agent turns, workflow runs, schedules (queue)   |
 | `worker`          | -                           | Celery, ingest queue (Docling)                  |
-| `workflow-worker` | -                           | Celery, `workflows` queue                       |
 | `provisioning-worker` | -                       | Celery, `provisioning` queue: data stores       |
 
 One-shot setup services, whose logs explain a stack that didn't start: `db-roles`,
@@ -30,7 +29,7 @@ role. You don't have the provisioner's credentials (`DATA_STORE_PROVISIONER_URL`
 
 ## Looking at the stack
 
-- Logs: `docker compose logs --tail=200 api` (or `worker`, `workflow-worker`, `migrate`, ...),
+- Logs: `docker compose logs --tail=200 api` (or `worker`, `run-service`, `migrate`, ...),
   `docker compose ps`. Run these from `/workspace`.
 - Docker access is **read-only** (a socket proxy): logs, ps, inspect work; restart, exec, up
   and build don't. When a container needs restarting or rebuilding to pick up a change, say so

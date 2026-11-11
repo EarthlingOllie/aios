@@ -7,10 +7,10 @@ workflow starts no new run by hand, by schedule, by mention or nested in a live 
 runs already going finish; its schedules pause and stay paused after unarchiving.
 """
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import drain_run
 from test_chat_invocations import say
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member, outsider  # noqa: F401 (fixtures)
@@ -21,7 +21,6 @@ from test_workflows import agent_node, make_agent, make_workflow, workflow_node
 
 from aios.models import TriggerStatus
 from aios.testing.fake_model import model, use_handoff, use_model
-from aios.workflows import execute_run
 
 
 def archive(api, workflow: dict) -> dict:
@@ -126,7 +125,7 @@ def test_a_run_already_going_finishes(api, queued):  # noqa: F811
 
     archive(api, workflow)
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, started["id"]))
+        drain_run(queued.store, started["id"])
 
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"]) == ("succeeded", "build(it)")

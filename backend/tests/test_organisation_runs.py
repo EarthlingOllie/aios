@@ -11,7 +11,14 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import delete_user, join_organisation, make_user, provisioned_user, store_of
+from conftest import (
+    delete_user,
+    drain_run,
+    join_organisation,
+    make_user,
+    provisioned_user,
+    store_of,
+)
 from langchain_core.callbacks import BaseCallbackHandler
 from test_agents import agent_body, chat_body, make_agent
 from test_chats import add, make_chat, messages, signed_in_as
@@ -23,7 +30,6 @@ from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios import search, tracing
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
-from aios.workflows import execute_run
 
 SEARCH = {"key": "hybrid_search", "config": {}}
 
@@ -106,7 +112,7 @@ def mention_workflow(api, chat: dict, workflow: dict, queued: list[int]) -> int:
         ),
         201,
     )
-    asyncio.run(execute_run(queued.store, queued[-1]))
+    drain_run(queued.store, queued[-1])
     return queued[-1]
 
 
@@ -198,7 +204,7 @@ def test_workflow_runs_search_the_organisations_store_and_say_who_started_them(
         with signed_in_as(member):
             by_hand = ok(api.post(runs, json={"input": "find them"}), 201)
         assert by_hand["created_by"] == person(member)
-        asyncio.run(execute_run(queued.store, by_hand["id"]))
+        drain_run(queued.store, by_hand["id"])
 
         chat = make_chat(api, "Board")
         add(api, chat, "workflow", wf)
@@ -206,7 +212,7 @@ def test_workflow_runs_search_the_organisations_store_and_say_who_started_them(
 
         fired = fire(api, db, "workflow", wf)
         scheduled = fired["last_workflow_run_id"]
-        asyncio.run(execute_run(queued.store, scheduled))
+        drain_run(queued.store, scheduled)
 
     assert found == [["minutes.md"]] * 3
     expected = {by_hand["id"]: person(member), mentioned: person(user), scheduled: None}
@@ -363,7 +369,7 @@ def test_traces_carry_the_organisation_and_who_started_the_run(
         }
 
         started = ok(api.post(f"/api/workflows/{wf['id']}/runs", json={"input": "x"}), 201)
-        asyncio.run(execute_run(queued.store, started["id"]))
+        drain_run(queued.store, started["id"])
         assert seen("workflow:Flow", workflow_run_id=started["id"]) == {
             (org, user.id, str(user.id))
         }

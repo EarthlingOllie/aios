@@ -71,13 +71,20 @@ never blocked, by any member.
 
 - A **run** (`workflow_runs`, in the organisation's store with its steps and its agent nodes'
   runs: see [Stores](stores.md#runs)) is given one text input and pins the version that's
-  current when it starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the
-  `workflows` queue, given the run's store and its id there, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`),
-  refreshing its heartbeat (`heartbeat_at`) as it goes; a run whose heartbeat has stopped (its
-  worker died) is failed when it's next read or its task comes round again, and one whose
-  worker's event loop has made no progress for `WORKFLOW_RUN_NO_PROGRESS_LIMIT` (5 minutes;
-  stuck in a blocking call) is failed by the worker itself, while a node awaiting a slow model
-  or tool call isn't.
+  current when it starts. It goes node by node on the [run service](run-service.md), holding no
+  process while it waits on the model or on a decision (`aios.workflows.advance`):
+  - a **workflow advance** item, under the run's row lock, rebuilds the run's state from its
+    recorded steps, checks its time limit, records what has finished, starts the steps of the
+    nodes now ready and enqueues their items, and ends the run once nothing is ready and nothing
+    is running. One is queued per run at a time; one enqueued while another runs makes that one
+    run again once it's done, so no step finishing meanwhile is missed. Subworkflow nodes are
+    expanded within it;
+  - a **workflow node** item runs an agent node's turn, as a child invocation of the run's, and
+    enqueues an advance when it's done. Retried after its process died, it carries on the turn
+    from its last checkpoint rather than giving the agent its message again; one whose attempts
+    run out fails its step, and the run, with "The service stopped mid-run."
+  - The run's time limit, `WORKFLOW_RUN_TIME_LIMIT` (2 hours), counts active time only: time
+    spent waiting on a decision doesn't count (`waited_seconds`).
 - A node starts once all its predecessors have succeeded, so independent branches run at the
   same time; start nodes get the run's input, other nodes their predecessors' outputs in edge
   order, joined with a blank line. An agent node is a new agent run of its pinned version, given

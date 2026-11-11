@@ -107,7 +107,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_all" {
   ip_protocol       = "-1"
 }
 
-# Shared by api, worker, workflow-worker and web tasks.
+# Shared by api, run-service, worker and web tasks.
 resource "aws_security_group" "app" {
   name   = "${var.name}-app"
   vpc_id = aws_vpc.main.id

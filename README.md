@@ -27,8 +27,8 @@ The words used here and in the docs are the glossary's: [`CONTEXT.md`](CONTEXT.m
 ```
 browser ──▶ ALB / nginx ──┬─ /api/* ──────────▶ api (FastAPI + Uvicorn)
                           └─ everything else ─▶ web (React SPA, static: /login and /register too)
-api ──enqueue──▶ Redis ──┬─▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
-                         └─▶ workflow-worker (Celery, `workflows` queue: workflow runs; api image)
+api ──enqueue──▶ Redis ───▶ worker (Celery: Docling ▶ HybridChunker ▶ Voyage embeddings)
+api ──enqueue──▶ Postgres work queue ──▶ run-service (agent turns, workflow runs node by node; api image)
 api, worker ──▶ Postgres 17 + pgvector: the platform database, as `aios_app`, and each organisation's store (runs and their history: LangGraph checkpoints, each store's `langgraph` schema)
 api, worker ──▶ S3 (RustFS locally): uploaded files, under each store's prefix
 browser ──download link (presigned, a minute)──▶ S3
@@ -38,12 +38,12 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 The processes:
 
 - **api**: the HTTP API, and the agent chat turns of a run's page (streamed).
-- **run-service**: mentioned agents' turns, the handoff before every mention, and the
-  schedules, claimed fairly from a work queue (see [Run service](docs/run-service.md)).
+- **run-service**: mentioned agents' turns, the handoff before every mention, workflow runs
+  node by node, resuming runs once a schema change is decided, and the schedules, claimed
+  fairly from a work queue (see [Run service](docs/run-service.md),
+  [Workflows](docs/workflows.md)).
 - **web**: the React SPA, served as static files.
 - **worker**: document ingest (see [Stores](docs/stores.md)) and embedding the search index.
-- **workflow-worker**: workflow runs, and resuming runs once a schema change is decided (see
-  [Workflows](docs/workflows.md)).
 - **provisioning-worker**: creating, migrating, measuring and deleting each organisation's
   store, and applying schema changes (see [Stores](docs/stores.md)).
 - **sandbox**: where Run Python's code runs; on AWS, one Fargate task per agent run (see
@@ -93,7 +93,7 @@ uv run alembic upgrade head
 uv run python -m aios.datastores.provision migrate-all   # stores, after every upgrade
 uv run uvicorn aios.main:app --reload
 uv run celery -A aios.worker worker --loglevel=INFO   # separate shell
-uv run celery -A aios.worker worker -Q workflows --loglevel=INFO   # another, for workflow runs
+uv run python -m aios.run_service   # another: agent turns, workflow runs, schedules
 uv run celery -A aios.worker worker -Q provisioning -B --loglevel=INFO   # and stores (-B: their retries)
 
 cd frontend

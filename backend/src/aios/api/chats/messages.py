@@ -47,7 +47,6 @@ from aios.models import (
     WorkLane,
 )
 from aios.permissions import Action, CurrentRole, allow
-from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
 
@@ -301,22 +300,6 @@ def messages_out(
     )
 
 
-def catch_up(store: Session, chat_id: int) -> None:
-    """Bring the chat's unfinished invocations up to date before they're read: fail their runs
-    whose worker died, which posts their results back. Commits. (Work on the run service is
-    retried, and failed after a few attempts, there: `aios.run_service`.)"""
-    run_ids = store.scalars(
-        select(Invocation.workflow_run_id).where(
-            Invocation.chat_id == chat_id,
-            Invocation.status.in_(invocations.UNFINISHED),
-            Invocation.workflow_run_id.is_not(None),
-        )
-    ).all()
-    if run_ids:
-        fail_stopped_runs(store, WorkflowRun.id.in_(run_ids))
-    store.commit()
-
-
 def resolve_mentions(
     db: Session, store: Session, chat: Chat, mentions: list[MentionIn]
 ) -> list[MentionOut]:
@@ -355,7 +338,6 @@ def list_messages(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Give `after` or `before`, not both."
         )
     get_visible_chat(store, user.id, chat_id)
-    catch_up(store, chat_id)
     query = select(ChatMessage).where(ChatMessage.chat_id == chat_id)
     if after is not None:
         query = query.where(ChatMessage.id > after).order_by(ChatMessage.id)

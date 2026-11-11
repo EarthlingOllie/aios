@@ -1,8 +1,9 @@
 # Run service
 
 The **run service** (`aios.run_service`) runs agent work outside the web servers: mentioned
-agents' turns, the handoff before every mention (see [Chats](chats.md#the-handoff-brief)), and
-the schedules (see [Triggers](triggers.md)). It's its own service on the API image
+agents' turns, the handoff before every mention (see [Chats](chats.md#the-handoff-brief)),
+workflow runs node by node (see [Workflows](workflows.md#runs)), resuming runs once a schema
+change they asked for is decided, and the schedules (see [Triggers](triggers.md)). It's its own service on the API image
 (`python -m aios.run_service`; Compose's `run-service`, ECS's `run-service`), and each of its
 processes runs many items at once in one event loop. A run's page still runs its own chat turns
 in the API process.
@@ -11,12 +12,15 @@ in the API process.
 
 Work waits in a queue in the platform database (`work_items`, `aios.run_service.queue`). Each
 item records its organisation and store, its **lane** (`interactive`: people waiting in a chat,
-i.e. mentions; `background`: schedules), its **kind** (an invocation start, or an agent turn),
-a payload of store ids, when it became ready and was enqueued, its attempts and lease, and an
+i.e. mentions; `background`: schedules, workflow advances and nodes, resumes), its **kind** (an
+invocation start, an agent turn, a workflow advance, a workflow node, or a resume turn), a
+payload of store ids, when it became ready and was enqueued, its attempts and lease, and an
 optional deduplication key. Items are deleted when done: their outcome lives in the store.
 
 - **Enqueueing** happens after the store commits, and is idempotent by the deduplication key
-  (one start and one turn per invocation). Processes are woken through a Redis channel per lane,
+  (one start and one turn per invocation, one advance per workflow run, one item per workflow
+  step, one resume per agent run). An advance or resume enqueued while its key's item is running
+  marks that item to run once more when it's done (`work_items.again`), so it sees what changed. Processes are woken through a Redis channel per lane,
   with a poll every `RUN_SERVICE_IDLE_POLL_SECONDS` (5) as a fallback.
 - **The requeue sweep** (every 30 seconds, on every process) re-enqueues invocations left
   unstarted without an item for over `QUEUE_REQUEUE_AFTER_SECONDS` (60): a mention's from
@@ -49,7 +53,10 @@ to (`aios.run_service.work`):
 
 | Kind | What it does |
 | --- | --- |
-| Invocation start | A mention's: runs the handoff, then enqueues the agent's first turn, or starts the workflow's run and queues it for the workflow worker. A handoff already done isn't asked again; one that fails fails the invocation. |
+| Invocation start | A mention's: runs the handoff, then enqueues the agent's first turn, or starts the workflow's run and enqueues its first advance. A handoff already done isn't asked again; one that fails fails the invocation. |
+| Workflow advance | Moves a workflow run on under its row lock: rebuilds its state from its recorded steps, checks its active time against its limit, starts the nodes now ready (expanding subworkflows) and enqueues their items, resumes a waiting node whose request has been decided or has expired, and ends the run once nothing is ready or running. Its attempts running out fail the run. |
+| Workflow node | One agent node's turn, as a child invocation of the run's, then an advance. A turn an earlier attempt began carries on from its last checkpoint. Its attempts running out fail its step, and then the run. |
+| Resume turn | An agent run waiting on schema change requests, once one is decided or has expired: its waiting tool calls get their outcomes and the turn goes on. |
 | Agent turn | Starts the mentioned agent's run, if it hasn't one yet, and runs one turn of it under the run's turn lease, through the chat endpoint's turn code. A schedule's run was started when it fired. A turn an earlier attempt began carries on from the run's last checkpoint without giving the run its message again. The reply, or why it failed, goes back to the chat, or onto the schedule. |
 
 A turn whose run is held by another turn (past `TURN_WAIT_SECONDS`) is handed back to run again
@@ -61,7 +68,7 @@ A handler that raises unexpectedly is handed back after ten seconds, counting th
 With `SCHEDULER_ENABLED` (the default), every process ticks the scheduler every
 `SCHEDULER_INTERVAL_SECONDS` (15): it claims due schedules from the due index, skipping locked
 rows, moves them on, starts each one's run and invocation in the store, and enqueues the agent's
-turn in the background lane (a workflow's run is queued for the workflow worker). Each run of a
+turn in the background lane (a workflow's run gets its first advance there). Each run of a
 schedule fires exactly once across processes, and missed runs aren't caught up. See
 [Triggers](triggers.md#the-scheduler).
 

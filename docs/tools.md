@@ -118,16 +118,16 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
   the provisioner `SET ROLE` to the store's owner, in one transaction under
   `SCHEMA_CHANGE_LOCK_TIMEOUT` (5s), and appended to `aios.schema_history`, which bumps the
   store's data schema revision; if the revision moved on since the request was made, the spec
-  is checked again, and one that no longer applies is marked `stale`. Then the workflow worker
-  resumes the run (`aios.resume_agent_run`) with the outcome (applied, rejected with the note,
+  is checked again, and one that no longer applies is marked `stale`. Then the run service
+  resumes the run (a resume turn, or its workflow run's advance) with the outcome (applied, rejected with the note,
   failed with the error, or stale), which the tool call returns to the model, and the chat
   shows the rest of the turn.
 - In a workflow run, the agent node's step becomes `waiting` (with the request it waits on);
-  other branches carry on, and once nothing else can run the run becomes `waiting` and its task
-  returns, holding no worker. A waiting run isn't failed for its heartbeat, and its waiting
-  time (`waited_seconds`) doesn't count towards `WORKFLOW_RUN_TIME_LIMIT`. The decision queues
-  `aios.run_workflow` again: the worker claims the run from `waiting`, rebuilds its state from
-  the recorded steps, and resumes the waiting node on its own agent run's thread, on the
+  other branches carry on, and once nothing else can run the run becomes `waiting`, holding
+  nothing. Its waiting time (`waited_seconds`) doesn't count towards `WORKFLOW_RUN_TIME_LIMIT`.
+  The decision (or the request's expiry) enqueues an advance of the run on the run service,
+  which goes from waiting to running, rebuilds its state from the recorded steps, and resumes
+  the waiting node on its own agent run's thread, on the
   versions the run pinned (a pin that can no longer run fails its step with the reason). The
   run page shows the waiting node with the request's card, and the pins that are no longer
   current.

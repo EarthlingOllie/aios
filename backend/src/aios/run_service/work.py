@@ -1,11 +1,16 @@
 """What the run service does with each kind of item (`aios.models.WorkKind`).
 
 - **Invocation start**, a mention's: runs the handoff (`aios.handoff`), then enqueues the
-  agent's first turn, or starts the workflow's run and queues it for the worker.
+  agent's first turn, or starts the workflow's run and enqueues its first advance.
 - **Agent turn**: starts the mentioned agent's run, if it hasn't one yet, and runs one turn of
   it under the run's turn lease, through the turn code the chat endpoint uses
   (`aios.api.agents.turn_stream`); a schedule's run was started when the schedule fired
   (`aios.scheduler`). The reply, or why it failed, goes back to the chat, or onto the schedule.
+- **Workflow advance** and **workflow node**: a workflow run moving on node by node
+  (`aios.workflows.advance`). A node enqueues an advance when it's done.
+- **Resume turn**: a standalone agent run waiting on schema change requests, carried on once
+  one is decided (`aios.api.agents.resume_run`). A decision, or an expiry, enqueues it, or an
+  advance of the workflow run whose node made the request (`enqueue_resume`).
 
 Every handler can be run again for the same item: its process may have died part way, and the
 item is then claimed again (`aios.run_service.queue`). So each reads where its invocation got
@@ -26,7 +31,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import handoff, invocations, turn_lease, turns
+from aios import handoff, invocations, turn_lease, turns, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.datastores import store_id_of, store_session
@@ -35,9 +40,11 @@ from aios.datastores.models import (
     AgentRun,
     ChatMessage,
     Invocation,
+    SchemaChangeRequest,
     Trigger,
     Turn,
     Workflow,
+    WorkflowRunStep,
 )
 from aios.db import SessionLocal
 from aios.models import (
@@ -46,9 +53,11 @@ from aios.models import (
     InvocationStatus,
     TriggerStatus,
     TriggerTargetKind,
+    WorkflowStepStatus,
     WorkKind,
     WorkLane,
 )
+from aios.run_service import queue
 from aios.run_service.errors import STOPPED, CantStart
 from aios.run_service.queue import Claimed, Work
 
@@ -177,10 +186,10 @@ def _fail_unstarted(data_store_id: uuid.UUID, invocation_id: int, error: str) ->
 
 
 def _start_workflow_run(data_store_id: uuid.UUID, invocation_id: int) -> None:
-    """Start the mentioned workflow's run with the brief and the message as its input, and queue
-    it for the worker; the run then finishes the invocation (`aios.invocations`). Nothing if it
-    has a run already, or isn't briefing (it has finished). Raises `HTTPException` as starting
-    one by hand would, or `CantStart`."""
+    """Start the mentioned workflow's run with the brief and the message as its input, and
+    enqueue its first advance; the run then finishes the invocation (`aios.invocations`).
+    Nothing if it has a run already, or isn't briefing (it has finished). Raises `HTTPException`
+    as starting one by hand would, or `CantStart`."""
     organisation_id = _organisation(data_store_id)
     with store_session(data_store_id) as store:
         invocation = store.get(Invocation, invocation_id)
@@ -206,7 +215,7 @@ def _start_workflow_run(data_store_id: uuid.UUID, invocation_id: int) -> None:
         invocation.workflow_run_id = run.id
         # Commits the run with the invocation's link to it, and queues it; if it can't be
         # queued the run is deleted, and the link with it.
-        workflows_api.queue_workflow_run(store, run)
+        workflows_api.queue_workflow_run(store, run, organisation_id)
         invocations.mark_running(store, invocation_id)
         store.commit()
 
@@ -421,6 +430,34 @@ def _record(
     _record_schedule(data_store_id, schedule, error)
 
 
+def _fail_workflow(item: Claimed) -> list[Work]:
+    """Give up on a workflow advance or node, its attempts used up: the node's step fails (and
+    its turn), and the run advances to fail with it; an advance fails the run."""
+    store_id, run_id = item.data_store_id, item.payload["run_id"]
+    if item.kind == WorkKind.workflow_advance:
+        workflows.fail_run(store_id, run_id, STOPPED)
+        return []
+    with store_session(store_id) as store:
+        step = store.get(WorkflowRunStep, item.payload["step_id"])
+        if step is not None and step.agent_run_id is not None:
+            turns.fail_running(store, AgentRun.id == step.agent_run_id, error=STOPPED)
+        store.commit()
+    workflows._finish_step(
+        store_id, item.payload["step_id"], WorkflowStepStatus.failed, None, STOPPED
+    )
+    return [workflows.advance_work(item.organisation_id, store_id, run_id)]
+
+
+def _fail_resume(item: Claimed) -> None:
+    """Give up on resuming an agent run, its attempts used up: its turn still marked running
+    fails, and the chat whose mention started it is told."""
+    store_id, run_id = item.data_store_id, item.payload["run_id"]
+    with store_session(store_id) as store:
+        turns.fail_running(store, AgentRun.id == run_id, error=STOPPED)
+        invocations.finish_resumed(store, run_id, STOPPED)
+        store.commit()
+
+
 def _fail(item: Claimed) -> None:
     """Give up on the item, its attempts used up: fail its invocation, its run's turn still
     marked running, and its schedule's firing, with `STOPPED`."""
@@ -443,13 +480,101 @@ def _fail(item: Claimed) -> None:
         _record_schedule(store_id, schedule, STOPPED)
 
 
-async def fail(item: Claimed) -> None:
+async def fail(item: Claimed) -> Outcome:
+    """Give up on the item, its attempts used up (see each kind's)."""
+    if item.kind in (WorkKind.workflow_advance, WorkKind.workflow_node):
+        return Done(await run_in_threadpool(_fail_workflow, item))
+    if item.kind == WorkKind.resume_turn:
+        await run_in_threadpool(_fail_resume, item)
+        return Done()
     await run_in_threadpool(_fail, item)
+    return Done()
+
+
+async def workflow_advance(item: Claimed) -> Outcome:
+    """A workflow run's advance (`aios.workflows.advance`)."""
+    store_id, run_id = item.data_store_id, item.payload["run_id"]
+    then, ended = await run_in_threadpool(
+        workflows.advance_run, store_id, item.organisation_id, run_id
+    )
+    if ended is not None:
+        await run_in_threadpool(workflows._record_ended, ended)
+    return Done(then)
+
+
+async def workflow_node(item: Claimed) -> Outcome:
+    """An agent node's turn (`aios.workflows.run_node`); then its run advances."""
+    store_id, run_id = item.data_store_id, item.payload["run_id"]
+    moved = await workflows.run_node(
+        store_id, run_id, item.payload["step_id"], bool(item.payload.get("resume"))
+    )
+    return Done([workflows.advance_work(item.organisation_id, store_id, run_id)] if moved else [])
+
+
+def resume_key(data_store_id: uuid.UUID, run_id: int) -> str:
+    return f"resume-turn:{data_store_id}:{run_id}"
+
+
+def resume_work(organisation_id: int, data_store_id: uuid.UUID, run_id: int) -> Work:
+    """Resuming the store's agent run: one queued per run at a time, and one decided while it
+    runs makes it run again (the resume gives the run only the outcomes decided by then)."""
+    return Work(
+        organisation_id,
+        data_store_id,
+        WorkLane.background,
+        WorkKind.resume_turn,
+        {"run_id": run_id},
+        dedup_key=resume_key(data_store_id, run_id),
+        again_if_running=True,
+    )
+
+
+async def resume_turn(item: Claimed) -> Outcome:
+    """Carry on an agent run waiting on schema change requests, now some are decided. One that
+    couldn't get the run to itself raises, and is tried again."""
+    await agents_api.resume_run(item.data_store_id, item.payload["run_id"])
+    return Done()
+
+
+def resume_for(data_store_id: uuid.UUID, request_id: uuid.UUID) -> Work | None:
+    """What carries on the run that made a request of the store, if it's decided and the run (if
+    a run made it) hasn't been given the outcome yet: an advance of the workflow run whose agent
+    node made it, which resumes the node where it waited; or a resume of the agent run."""
+    with store_session(data_store_id, "ro") as store:
+        request = store.get(SchemaChangeRequest, request_id)
+        if request is None or not request.status.decided or request.resumed_at is not None:
+            return None
+        run_id = request.requested_by_run
+        workflow_run_id = workflows.workflow_run_waiting_on(store, request)
+    if workflow_run_id is None and run_id is None:
+        return None
+    try:
+        organisation_id = _organisation(data_store_id)
+    except CantStart:
+        return None
+    if workflow_run_id is not None:
+        return workflows.advance_work(organisation_id, data_store_id, workflow_run_id)
+    return resume_work(organisation_id, data_store_id, run_id)
+
+
+def enqueue_resume(data_store_id: uuid.UUID, request_id: uuid.UUID) -> None:
+    """Enqueue carrying on the run that made a request of the store, once it's decided or has
+    expired (`resume_for`), and wake the run service for it."""
+    work = resume_for(data_store_id, request_id)
+    if work is None:
+        return
+    with SessionLocal() as db:
+        queue.enqueue(db, [work])
+        db.commit()
+    queue.wake(work.lane)
 
 
 HANDLERS = {
     WorkKind.invocation_start: start_invocation,
     WorkKind.agent_turn: agent_turn,
+    WorkKind.workflow_advance: workflow_advance,
+    WorkKind.workflow_node: workflow_node,
+    WorkKind.resume_turn: resume_turn,
 }
 
 

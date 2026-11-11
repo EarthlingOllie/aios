@@ -136,12 +136,6 @@ variable "worker" {
   default     = { cpu = 2048, memory = 8192, count = 1, concurrency = 2 }
 }
 
-variable "workflow_worker" {
-  description = "Runs workflows (mostly waiting on the model), on their own queue so ingests don't wait behind them."
-  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
-  default     = { cpu = 512, memory = 2048, count = 1, concurrency = 2 }
-}
-
 variable "provisioning_worker" {
   description = "Creates and migrates data stores (the provisioning queue): small and mostly idle. Each runs the retry beat, so keep count at 1 (more only retries twice)."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })

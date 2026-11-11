@@ -177,6 +177,89 @@ def run_service(monkeypatch) -> RunService:
     return service
 
 
+def enqueue_advance(store_id: uuid.UUID, run_id: int) -> None:
+    """Enqueue an advance of the store's workflow run (`aios.workflows.advance`), as starting it
+    or a decision does: a no-op while one is queued."""
+    from aios import workflows
+
+    with SessionLocal() as db:
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == store_id)
+        )
+        run_service_package.enqueue(db, [workflows.advance_work(organisation_id, store_id, run_id)])
+        db.commit()
+
+
+async def run_workflow(store_id: uuid.UUID, run_id: int) -> None:
+    """Advance the store's workflow run on the run service, by its drain-once entry point, and
+    run everything that enqueues, until nothing ready is left: to the end, or until it waits."""
+    await asyncio.to_thread(enqueue_advance, store_id, run_id)
+    await executor.drain_once()
+
+
+def drain_run(store_id: uuid.UUID, run_id: int) -> None:
+    """`run_workflow`, here and now."""
+    asyncio.run(run_workflow(store_id, run_id))
+
+
+class QueuedRuns(list):
+    """The ids of the workflow runs the API (or a schedule, or a mention) enqueued, and the
+    store they're in (`store`)."""
+
+    def __init__(self, store: uuid.UUID | None) -> None:
+        super().__init__()
+        self.store = store
+
+
+def capture_runs(monkeypatch, store: uuid.UUID | None) -> QueuedRuns:
+    """Record each workflow run started, instead of enqueueing its first advance: the test runs
+    it when it chooses (`drain_run`), as the run service would."""
+    from aios.api import workflows as workflows_api
+
+    ids = QueuedRuns(store)
+
+    def recording(work) -> None:
+        if ids.store is None:
+            ids.store = work.data_store_id
+        assert work.data_store_id == ids.store
+        ids.append(work.payload["run_id"])
+
+    monkeypatch.setattr(workflows_api, "enqueue_run", recording)
+    return ids
+
+
+class ResumeTask:
+    """Stands in, in a test's list of queued tasks, for carrying on the run that made a decided
+    request (`aios.run_service.work.enqueue_resume`): run, it enqueues that on the run service
+    and drains the queue, as the run service would."""
+
+    def __init__(self) -> None:
+        from aios.run_service import work
+
+        self.enqueue = work.enqueue_resume
+
+    def run(self, data_store_id, request_id) -> None:
+        from aios.run_service import work
+
+        resume = work.resume_for(uuid.UUID(str(data_store_id)), uuid.UUID(str(request_id)))
+        if resume is not None:
+            with SessionLocal() as db:
+                run_service_package.enqueue(db, [resume])
+                db.commit()
+        asyncio.run(executor.drain_once())
+
+
+RESUME = ResumeTask()
+
+
+def capture_resumes(monkeypatch, tasks: list) -> None:
+    """Record each resume enqueued, as `(RESUME, (store id, request id))`, instead of enqueueing
+    it: the test runs it when it chooses."""
+    from aios.run_service import work
+
+    monkeypatch.setattr(work, "enqueue_resume", lambda *args: tasks.append((RESUME, args)))
+
+
 @pytest.fixture(autouse=True)
 def jev_classifier() -> Iterator[jev.FakeJev]:
     """Jev (`aios.jev`), as its fake: flags the commonest prompt injections, and a test can take
