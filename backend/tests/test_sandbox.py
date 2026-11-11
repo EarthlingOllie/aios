@@ -133,6 +133,18 @@ def test_egress_proxy_tunnels_to_allowed_hosts():
         (connect_request("api.example.com", token(), method="GET"), "405", "only HTTPS"),
         (b"\r\n\r\n", "405", "only HTTPS"),
     ],
+    # Named, not derived from the requests: the tokens in them are minted at collection, so a
+    # derived id would differ from one collection to the next, and the shards' (docs/testing.md).
+    ids=[
+        "no-token",
+        "forged-token",
+        "malformed-token",
+        "expired-token",
+        "other-host",
+        "port-80",
+        "not-connect",
+        "no-request-line",
+    ],
 )
 def test_egress_proxy_refusals(request_bytes, status, reason):
     head, _ = proxy_exchange(request_bytes)

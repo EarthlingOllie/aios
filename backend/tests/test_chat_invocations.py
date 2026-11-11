@@ -156,7 +156,10 @@ def test_a_start_thats_refused_fails_the_invocation_with_why(api, queued, monkey
     assert refused["started_at"] is None and refused["finished_at"]
     assert by_id[search_card["invocation_id"]]["status"] == "failed"
     assert "web_search" in by_id[search_card["invocation_id"]]["error"]
-    assert results(api, chat)[0] == ("Empty", "Couldn't start the run: This workflow has no nodes")
+    # Both are posted at once, so in either order.
+    posted_by = dict(results(api, chat))
+    assert posted_by["Empty"] == "Couldn't start the run: This workflow has no nodes"
+    assert posted_by["Search"].startswith("Couldn't start the run: ")
 
 
 def test_a_run_that_cant_be_queued_fails_the_invocation(api, monkeypatch):

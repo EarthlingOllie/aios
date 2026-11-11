@@ -194,7 +194,8 @@ pnpm dev                 # http://localhost:5173, proxies /api to :8000
   `DATABASE_ADMIN_URL`, from the environment or `.env`, and skip without it, and the documents
   tests need RustFS, at `DATA_STORE_FILES_ENDPOINT` with
   `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in `backend/.env.example`; every test also
-  needs Redis, at `REDIS_URL`, whose rate limits it resets.
+  needs Redis, at `REDIS_URL`, whose rate limits it resets. The tests run in random order, and
+  CI shards them: [Testing](testing.md) covers reproducing a seed and running one shard.
 - **Infrastructure**: `terraform test` in `infra/terraform` (it plans and applies against a
   mocked AWS, so needs no account).
 - **Frontend**: `pnpm build && pnpm test && pnpm test:e2e`. The browser tests (Playwright,

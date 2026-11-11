@@ -16,6 +16,7 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Development](development.md) | Prerequisites, the code layout, running the stack in Docker or locally, debugging with Claude Code, checks and tests, the dependency policy, changing models, and image size notes. |
 | [Deploy](deploy.md) | Deploying to AWS with Terraform and `infra/deploy.sh`, the database secrets, and sandboxes on Fargate. |
 | [Tracing](tracing.md) | Tracing agent runs and handoffs to Langfuse. |
+| [Testing](testing.md) | How the suites run: random order and reproducing a seed, the backend's shards and running one locally, refreshing the recorded durations, and CI's jobs and gates. |
 
 Also in `docs/`:
 
