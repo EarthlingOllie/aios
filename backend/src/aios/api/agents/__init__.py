@@ -15,6 +15,7 @@ from aios.api.agents import versions as _versions
 from aios.api.agents.chat import (
     WAITING,
     ChatContext,
+    Continue,
     Resume,
     ResumeFailed,
     RunWaiting,
@@ -108,6 +109,7 @@ __all__ = [
     "AgentVersionOut",
     "AgentVersionSummary",
     "ChatContext",
+    "Continue",
     "ChatDeps",
     "Resume",
     "ResumeFailed",

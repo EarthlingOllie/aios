@@ -1,20 +1,15 @@
 """Mentioning an agent in a chat runs a turn of it, followed by a card and posted back."""
 
 import asyncio
-from datetime import timedelta
 
 from conftest import store_of
-from sqlalchemy import func, update
 from test_agent_run_counters import searching_agent
 from test_chat_invocations import echo_agent, queued  # noqa: F401 (a fixture)
 from test_chats import add, make_chat, messages
 from test_triggers import make_agent
 from test_workflows import agent_node, make_workflow
 
-from aios import checkpoints, firing, scheduler
-from aios.config import get_settings
-from aios.datastores import store_session
-from aios.datastores.models import AgentRun, Invocation
+from aios import checkpoints
 from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
 from aios.tools import TOOLS
 
@@ -123,67 +118,21 @@ def test_a_failed_turn_posts_its_error_and_fails_the_card(api):
     assert replies_from(api, chat) == [("Bot", "The run failed: model overloaded")]
 
 
-def age(db, in_store, invocation_id: int) -> None:
-    """Make the invocation's and its run's heartbeats older than a live process lets them get."""
-    stale = func.now() - firing.STALE_AFTER - timedelta(seconds=1)
-    with store_session(in_store.store_id) as store:
-        run_id = store.scalar(
-            update(Invocation)
-            .where(Invocation.id == invocation_id)
-            .values(heartbeat_at=stale)
-            .returning(Invocation.agent_run_id)
-        )
-        store.execute(update(AgentRun).where(AgentRun.id == run_id).values(heartbeat_at=stale))
-        store.commit()
-
-
-def test_a_turn_whose_heartbeat_stops_is_failed_when_the_chat_is_read(api, db, in_store):
+def test_a_turn_waits_in_the_queue_until_the_run_service_claims_it(api, run_service):
     agent = make_agent(api, "Bot")
     chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
-    seen = []
-
-    async def script(msgs, info):
-        # Its process looks dead to a reader: nothing has beaten it for too long.
-        [invocation] = (await asyncio.to_thread(messages, api, chat))["invocations"]
-        await asyncio.to_thread(age, db, in_store, invocation["id"])
-        seen.append(await asyncio.to_thread(messages, api, chat))
-        yield "Too late."
-
-    with use_model(model(script)):
-        say(api, chat, "Go", ("agent", agent))
-
-    [stalled] = seen[0]["invocations"]
-    assert (stalled["status"], stalled["error"]) == ("failed", firing.STOPPED)
-    assert stalled["agent_run"]["status"] == "failed"
-    # The turn that carried on regardless posts nothing more: the card had already failed.
-    assert replies_from(api, chat) == [("Bot", f"The run failed: {firing.STOPPED}")]
-    [invocation] = messages(api, chat)["invocations"]
-    assert invocation["status"] == "failed"
-
-
-def test_a_turn_waits_for_a_free_slot_under_the_cap(api, monkeypatch):
-    agent = make_agent(api, "Bot")
-    chat = make_chat(api, "Design")
-    add(api, chat, "agent", agent)
-    # Every slot is taken by other fires.
-    monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 1)
-    monkeypatch.setattr(firing, "free_slots", lambda: 0)
+    # No run service process is up.
+    run_service.auto = False
 
     with use_model(replies("Hello.")):
         say(api, chat, "Go", ("agent", agent))
     [waiting] = messages(api, chat)["invocations"]
     assert (waiting["status"], waiting["agent_run_id"]) == ("queued", None)
 
-    # A slot frees up: the scheduler's next tick, on any replica, runs it.
-    monkeypatch.undo()
-
-    async def tick():
-        await scheduler.tick()
-        await asyncio.gather(*firing._in_flight)
-
+    # One comes up: it runs the handoff, then the turn.
     with use_model(replies("Hello.")):
-        asyncio.run(tick())
+        run_service.drain()
     assert replies_from(api, chat) == [("Bot", "Hello.")]
     assert messages(api, chat)["invocations"][0]["status"] == "succeeded"
 

@@ -16,6 +16,7 @@ and `/workspace/docs/` for how each part works (one page per domain, listed in
 | `redis`           | `redis:6379`                | Celery broker                                   |
 | `rustfs`          | `http://rustfs:9000`        | S3 stand-in for uploaded files (`rustfsadmin`)  |
 | `sandbox`         | `http://sandbox:8080`       | `run_python` runner (token `dev-sandbox-token`) |
+| `run-service`     | -                           | Agent turns, handoffs, schedules (work queue)   |
 | `worker`          | -                           | Celery, ingest queue (Docling)                  |
 | `workflow-worker` | -                           | Celery, `workflows` queue                       |
 | `provisioning-worker` | -                       | Celery, `provisioning` queue: data stores       |

@@ -12,7 +12,8 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Tools](tools.md) | The tool library: how tools are registered, web search, Run Python, the data tools, schema change requests, and the Search page. |
 | [Workflows](workflows.md) | Graphs of agents and workflows: the editor, versions, nesting, and how a workflow run is run. |
 | [Chats](chats.md) | Group conversations: chat members, visibility, unread counts, messages, mentions, invocations and the handoff brief. |
-| [Triggers](triggers.md) | Schedules, the scheduler, and the firing machinery that runs agent turns outside a request. |
+| [Triggers](triggers.md) | Schedules and the scheduler. |
+| [Run service](run-service.md) | The service that runs mentioned turns, handoffs and schedules: its fair work queue, leases, retries and the in-flight cap. |
 | [Development](development.md) | Prerequisites, the code layout, running the stack in Docker or locally, debugging with Claude Code, checks and tests, the dependency policy, changing models, and image size notes. |
 | [Deploy](deploy.md) | Deploying to AWS with Terraform and `infra/deploy.sh`, the database secrets, and sandboxes on Fargate. |
 | [Tracing](tracing.md) | Tracing agent runs and handoffs to Langfuse. |

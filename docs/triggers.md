@@ -38,31 +38,18 @@ schedule's run records its schedule rather than a member.
   deleted), once the store has committed it. The repair sweep (the provisioning worker's
   `aios.repair_stores`, with the people mirror's) rebuilds it from every ready store's triggers
   and logs what it fixed: rows added (lost), updated (stale) and removed.
-- Each API process runs the scheduler (`aios.scheduler`), polling every
-  `SCHEDULER_INTERVAL_SECONDS` (15). Due index rows are claimed with `FOR UPDATE SKIP LOCKED`;
-  for each, the trigger is re-read in its store under its row lock (skipped, and left due, while
-  an edit or a starting firing holds it) and moved on to its next run there, then its row moves
-  with it, so with any number of replicas each run fires once. A row that's out of date fires
-  nothing: the trigger decides, and the row is put right. Set `SCHEDULER_ENABLED=false` to keep a process from running them (or chat
-  turns: see below).
-- A process fires at most `SCHEDULER_MAX_CONCURRENT_RUNS` (5) schedules at once (an agent's turn
-  runs in the API process, next to the chats it serves), and claims no more than it has free
-  slots for. What it can't start stays due, for another replica or its next poll, so a burst
-  (many schedules sharing `0 9 * * *`) runs a little late rather than crowding out chat.
-- A turn still running when the process stops keeps what it got to, and its schedule records
-  that it failed. A process that dies can't record that, so while a schedule is running the
-  process firing it refreshes a heartbeat (every 30s), and any replica's tick fails a running
-  schedule whose heartbeat has stopped for 90s; replicas that are up keep beating their own, so
-  they're left be.
+- The scheduler runs on the run service (`aios.scheduler`, see [Run service](run-service.md)):
+  each of its processes polls every `SCHEDULER_INTERVAL_SECONDS` (15), unless
+  `SCHEDULER_ENABLED=false`. Due index rows are claimed with `FOR UPDATE SKIP LOCKED`; for each,
+  the trigger is re-read in its store under its row lock (skipped, and left due, while an edit
+  or a starting firing holds it) and moved on to its next run there, then its row moves with
+  it, so with any number of processes each run fires once. A row that's out of date fires
+  nothing: the trigger decides, and the row is put right.
+- Firing an agent's schedule starts its run and invocation in the store and enqueues the turn
+  in the run service's background lane, which people waiting in chat come before, under the
+  organisation's in-flight cap. The turn's outcome goes on the schedule. A turn whose process
+  dies is retried on another, and after three attempts the schedule records "The service
+  stopped mid-run."
+- A process that dies between claiming a schedule and starting its run can't record that, so
+  any process's tick fails a schedule claimed over 90 seconds ago that never started a run.
 
-## Firing
-
-The firing itself is shared machinery (`aios.firing`), for whatever causes a run outside a
-request: a schedule, and a mention of an agent in a chat (`aios.api.chats.TurnFiring`; see
-[Chats](chats.md#mentioning-an-agent)), which share its cap. It holds the cap, the heartbeat,
-the stall sweep, and "start a run and run one turn of it"; what's the cause's own (what it
-claims and how it starts the run, where its heartbeat and outcome live) is a small object the
-caller supplies (an `aios.firing.Cause`). While a fire runs, the process keeps a heartbeat on
-the run itself (`agent_runs.heartbeat_at`, in the store) as well as the cause's, so a run whose
-process died is failed on its own page too, and not only on its schedule or its chat card: a
-cause's sweep fails its runs whose heartbeat has stopped as well as its own rows.

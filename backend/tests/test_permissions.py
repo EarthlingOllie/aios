@@ -101,6 +101,7 @@ ROUTES = {
     ("POST", "/organisation/invites"): RUN_ORGANISATION,
     ("DELETE", "/organisation/invites/{invite_id}"): RUN_ORGANISATION,
     ("PUT", "/organisation/members/{user_id}/role"): RUN_ORGANISATION,
+    ("PUT", "/organisation/in-flight-cap"): RUN_ORGANISATION,
     ("POST", "/organisation/leave"): LEAVE,
     ("GET", "/schema-changes"): READ,
     ("GET", "/schema-changes/{request_id}"): READ,

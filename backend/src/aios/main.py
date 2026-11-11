@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import math
 from collections.abc import AsyncIterator
@@ -12,7 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
-from aios import auth, dev_auth, scheduler, tracing
+from aios import auth, dev_auth, tracing
 from aios.api import (
     agents,
     chats,
@@ -43,14 +42,9 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings = get_settings()
-    loop = None
-    if settings.scheduler_enabled:
-        loop = asyncio.create_task(scheduler.run_forever(settings.scheduler_interval_seconds))
+    # Web servers serve requests only: agent work, schedules among it, runs on the run service
+    # (`aios.run_service`).
     yield
-    if loop is not None:
-        loop.cancel()
-        await asyncio.gather(loop, return_exceptions=True)
     tracing.flush()
 
 

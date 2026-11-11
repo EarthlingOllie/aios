@@ -30,8 +30,8 @@ from aios.models import OrganisationMember, Role, ScheduleDue
 from aios.testing.fake_model import replies, use_model
 
 # What the platform database keeps: identity, organisations, memberships, invitations, the store
-# registry (with its credentials), notifications, and the schedule due index. Everything an
-# organisation makes is in its store.
+# registry (with its credentials), notifications, the schedule due index and the work queue.
+# Everything an organisation makes is in its store.
 PLATFORM_TABLES = {
     "alembic_version",
     "users",
@@ -44,6 +44,8 @@ PLATFORM_TABLES = {
     "schedule_due",
     # Platform-side audit entries on their way to their store's audit log (`aios.audit`).
     "audit_outbox",
+    # The run service's work queue (`aios.run_service`): store ids, deleted once done.
+    "work_items",
 }
 MOVED = (
     "triggers",

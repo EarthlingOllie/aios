@@ -8,7 +8,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each          = toset(["api", "worker", "workflow-worker", "provisioning-worker", "web", "migrate", "migrate-stores", "db-roles", "sandbox", "egress-proxy"])
+  for_each          = toset(["api", "run-service", "worker", "workflow-worker", "provisioning-worker", "web", "migrate", "migrate-stores", "db-roles", "sandbox", "egress-proxy"])
   name              = "/ecs/${var.name}/${each.key}"
   retention_in_days = 30
 }
@@ -113,10 +113,10 @@ resource "aws_iam_role" "worker" {
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
-# Runtime role for the api and workflow-worker containers. Its only permissions are for starting
-# and stopping sandboxes (sandbox.tf), for the run_python tool, and for uploaded files
-# (data_store_files.tf). Agent runs execute in the API
-# process, and a workflow's agent nodes in the workflow worker, so only those need them; the
+# Runtime role for the api, run-service and workflow-worker containers. Its only permissions are
+# for starting and stopping sandboxes (sandbox.tf), for the run_python tool, and for uploaded files
+# (data_store_files.tf). Agent runs execute on the run service (and, from a run's page, in the
+# API process), and a workflow's agent nodes in the workflow worker, so only those need them; the
 # ingest worker, which parses untrusted uploads, can't start or stop tasks. The sandbox and egress
 # proxy tasks have no task role at all.
 resource "aws_iam_role" "api" {
@@ -312,6 +312,38 @@ resource "aws_ecs_task_definition" "workflow_worker" {
   }])
 }
 
+# The run service (aios.run_service): mentioned agents' turns, the handoff before every mention,
+# and the schedules, claimed from the work queue in the platform database. API image. ECS sends
+# SIGTERM, and SIGKILL stopTimeout seconds later: it lets its items finish for up to
+# RUN_SERVICE_SHUTDOWN_GRACE_SECONDS (25) first, then hands the rest back to the queue.
+resource "aws_ecs_task_definition" "run_service" {
+  family                   = "${var.name}-run-service"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.run_service.cpu
+  memory                   = var.run_service.memory
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.api.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name        = "run-service"
+    image       = local.image.api
+    essential   = true
+    command     = ["python", "-m", "aios.run_service"]
+    stopTimeout = 30
+    environment = concat(local.backend_env, [
+      { name = "RUN_SERVICE_CONCURRENCY", value = tostring(var.run_service.concurrency) },
+    ])
+    secrets          = local.backend_secrets
+    logConfiguration = local.log_config["run-service"]
+  }])
+}
+
 # Creates and migrates data stores (the provisioning queue; see aios.worker), as the provisioner.
 # API image: it needs no Docling. Its task role has no permissions.
 resource "aws_ecs_task_definition" "provisioning_worker" {
@@ -391,6 +423,7 @@ locals {
   services = {
     api                 = { task = aws_ecs_task_definition.api.arn, count = var.api.count, port = 8000, tg = aws_lb_target_group.api.arn }
     web                 = { task = aws_ecs_task_definition.web.arn, count = var.web.count, port = 80, tg = aws_lb_target_group.web.arn }
+    run-service         = { task = aws_ecs_task_definition.run_service.arn, count = var.run_service.count, port = null, tg = null }
     worker              = { task = aws_ecs_task_definition.worker.arn, count = var.worker.count, port = null, tg = null }
     workflow-worker     = { task = aws_ecs_task_definition.workflow_worker.arn, count = var.workflow_worker.count, port = null, tg = null }
     provisioning-worker = { task = aws_ecs_task_definition.provisioning_worker.arn, count = var.provisioning_worker.count, port = null, tg = null }

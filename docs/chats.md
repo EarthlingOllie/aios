@@ -87,17 +87,17 @@ with mention as their cause). The post
 creates, in the message's own transaction, a queued invocation per workflow mentioned and the
 workflow's acknowledgement with a **run card** under it, and returns them with the message
 (`{messages, invocations}`), so the chat never shows a mention without its card. Just after the
-response, the run starts through the same helpers starting one by hand and schedules use (and
-the firing machinery, `aios.firing`: see [Triggers](triggers.md#firing)), with the message as
-its input (each mention as `@name`), started by the member who asked (the run's `created_by`);
+response, its start is enqueued on the [run service](run-service.md) in the interactive lane,
+which runs the handoff and then starts the run through the same helpers starting one by hand
+and schedules use, with the message as its input (each mention as `@name`), started by the member who asked (the run's `created_by`);
 the invocation records who asked, the run, and goes `running`.
 
 A start that's refused (no nodes, an agent that can't run, the queue down) fails the invocation
 with the reason. When the run ends (in the worker, found stopped, or deleted before it
 finished), its output or error is posted back as a message from the workflow, belonging to the
-invocation, and the invocation goes `succeeded` or `failed`, in one transaction. One whose start
-was lost with its process fails when the chat's next read finds it still queued (or briefing)
-after 90 seconds. A read's `invocations` are the state of each invocation its messages belong to
+invocation, and the invocation goes `succeeded` or `failed`, in one transaction. One whose enqueue was lost is put
+back by the run service's requeue sweep after a minute; one whose start keeps losing its process
+fails after three attempts with "The service stopped mid-run." A read's `invocations` are the state of each invocation its messages belong to
 and of every one in the chat still going, each with its run as the run's page shows it (graph,
 steps), so a chat's live cards cost its one poll a second. The card draws the run's graph still,
 at a fixed height, with each node's state, "n of m nodes done" and a status badge, and opens the
@@ -110,13 +110,11 @@ deletes its messages and invocations, not the runs.
 
 Mentioning an **agent** runs one turn of a new run of its current version, with the message as
 the user's, started by the member who asked; its acknowledgement and card come with the post in
-the same way. The turn runs in an API process through the firing machinery schedules use, under
-the same cap (`SCHEDULER_MAX_CONCURRENT_RUNS`): a process with a free slot claims it, just after
-the post or on a scheduler tick (until then it waits, queued, however long), and keeps its
-heartbeat while it runs. A turn whose heartbeat stops (its process killed, say, by a deploy)
-fails its card with "The service stopped mid-run." when the chat is next read or a tick sweeps,
-and a turn in flight as a process shuts down records the same. A process with
-`SCHEDULER_ENABLED=false` runs no chat turns either. A read's `invocations` carry each agent
+the same way. The turn runs on the [run service](run-service.md), in the interactive lane: it
+waits, queued, until a process claims it (people waiting in chat come first, and another
+organisation's burst doesn't hold it up), then the handoff runs, then the turn. A turn whose
+process dies (killed, say, by a deploy) is retried on another, carrying on from the run's last
+checkpoint; after three attempts its card fails with "The service stopped mid-run." A read's `invocations` carry each agent
 run's status, start and finish times, tool calls and tokens so far; the card shows a status
 badge, the time elapsed (ticking in the browser from the start time), the tool calls and tokens,
 and opens the run's page when clicked. When the turn ends, the agent's final reply is posted

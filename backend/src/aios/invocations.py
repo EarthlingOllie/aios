@@ -16,32 +16,27 @@ transaction, a queued invocation and the member's acknowledgement: a run card (`
 chat never shows a mention without its card. Only a user's message does this: what an agent or
 workflow posts (a result) starts nothing, whatever it mentions, so a chat can't loop.
 
-For a workflow, after the response, a background step starts the run
-(`aios.api.chats.InvocationFiring`). First the handoff (`aios.handoff`) briefs it: the invocation
-goes `briefing` (`begin_briefing`), and one model call writes the brief, kept on the invocation,
-and the ack, which replaces the acknowledgement's placeholder (`record_handoff`). Then the run
-starts through the helpers the UI and schedules use, with the brief and the message as its input
-(`run_input`), started by the member who mentioned it (`requested_by`). The invocation records
-the run, and goes `running` once it's queued (`mark_running`). A start that's refused, or a
-handoff that fails, fails it with the reason (`fail_unstarted`).
+Its start is then enqueued on the run service (`aios.run_service`). First the handoff
+(`aios.handoff`) briefs it: the invocation goes `briefing` (`begin_briefing`), and one model call
+writes the brief, kept on the invocation, and the ack, which replaces the acknowledgement's
+placeholder (`record_handoff`). Then the run starts through the helpers the UI and schedules use,
+with the brief and the message as its input (`run_input`), started by the member who mentioned
+it (`requested_by`). The invocation records the run, and goes `running` once it's started
+(`mark_running`). A start that's refused, or a handoff that fails, fails it with the reason
+(`fail_unstarted`).
 
 Every invocation ends the same way, in one transaction: it's marked succeeded or failed and its
 result is posted back as a message from the agent or workflow, belonging to the invocation
 (`_finish`), so whoever is following the card sees it end with the message. A workflow run ends
 in the worker or when it's found stopped (`aios.workflows._end_runs`, which calls
-`finish_workflow_runs`), or is deleted before it does (`fail_deleted_run`). An invocation that never
-got as far as starting, because its process stopped first, is failed when the chat is next read
-(`fail_stalled`).
+`finish_workflow_runs`), or is deleted before it does (`fail_deleted_run`). An invocation whose
+start keeps losing its process is failed by the run service after a few attempts.
 
-Mentioning an agent queues an invocation the same way, but its turn runs in an API process
-(`aios.api.chats.TurnFiring`), under the firing machinery's cap: it waits, queued, until a
-process with a free slot claims it (`claim_turns`), which beats it while the handoff and then the
-turn run (`beat`).
-When the turn ends its reply, or why it failed, is posted back (`finish_turn`); one whose
-heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`). A turn that ends
-waiting for a member to decide its schema change request leaves the invocation running, its card
-showing the run waiting, with no process beating it; the run's resume, once the request is
-decided, finishes it (`finish_resumed`).
+Mentioning an agent queues an invocation the same way; after the handoff the run service runs
+its turn (`aios.run_service.work`), which starts its run. When the turn ends its reply, or why
+it failed, is posted back (`finish_turn`). A turn that ends waiting for a member to decide its
+schema change request leaves the invocation running, its card showing the run waiting; the
+run's resume, once the request is decided, finishes it (`finish_resumed`).
 
 A run an invocation started is the organisation's, like any other: started by the member who
 mentioned it, executed for the organisation, and read by every member (`aios.api.agents`).
@@ -54,16 +49,14 @@ a run deleted clears the invocation's link to it by its foreign key.
 import re
 import uuid
 from collections.abc import Sequence
-from datetime import timedelta
 
-from sqlalchemy import func, select, true, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints, search_index
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
-    AgentRun,
     Chat,
     ChatMessage,
     Invocation,
@@ -84,9 +77,6 @@ from aios.models import (
 # The acknowledgement a run card carries until the handoff replaces it with what the member
 # understood (`aios.handoff`).
 ACKNOWLEDGEMENT = "Reading the chat…"
-# How long an invocation can wait to start before it counts as lost with its process: the start
-# runs straight after the message is posted and takes moments.
-START_WITHIN = timedelta(seconds=90)
 NEVER_STARTED = "The service stopped before the run could start."
 RUN_DELETED = "The run was deleted before it finished."
 NO_OUTPUT = "_The run finished with no output._"
@@ -233,9 +223,14 @@ def lock(store: Session, invocation_id: int) -> Invocation | None:
 
 def begin_briefing(store: Session, invocation_id: int) -> Invocation | None:
     """The queued invocation, locked and now briefing (`aios.handoff`); None if it isn't
-    queued. In the caller's transaction."""
+    queued. One left briefing with no brief (its handoff's process stopped part way) is
+    briefed again. In the caller's transaction."""
     invocation = lock(store, invocation_id)
-    if invocation is None or invocation.status != InvocationStatus.queued:
+    if invocation is None:
+        return None
+    if invocation.status == InvocationStatus.briefing and invocation.brief is None:
+        return invocation
+    if invocation.status != InvocationStatus.queued:
         return None
     invocation.status = InvocationStatus.briefing
     return invocation
@@ -358,57 +353,6 @@ def fail_deleted_run(store: Session, workflow_run_id: int) -> None:
         failed(store, invocation, RUN_DELETED)
 
 
-def fail_stalled(store: Session, chat_id: int) -> None:
-    """Fail the chat's workflow invocations that never started and never will: still queued or
-    briefing without a run long after they were made, their process gone. Commits. (An agent's
-    waits for a free slot, however long; see `claim_turns`.)"""
-    for invocation in store.scalars(
-        select(Invocation)
-        .where(
-            Invocation.chat_id == chat_id,
-            Invocation.target_kind == TriggerTargetKind.workflow,
-            Invocation.status.in_(NOT_STARTED),
-            Invocation.workflow_run_id.is_(None),
-            Invocation.agent_run_id.is_(None),
-            Invocation.created_at < func.now() - START_WITHIN,
-        )
-        .with_for_update(skip_locked=True)
-    ):
-        failed(store, invocation, NEVER_STARTED)
-    store.commit()
-
-
-def claim_turns(store: Session, limit: int) -> list[int]:
-    """Claim up to `limit` of the store's agent invocations waiting for a process to run their
-    turn, the oldest first, for this process to run: each gets its heartbeat, which the process
-    keeps while it runs the turn. Commits; returns their ids."""
-    claimed = store.scalars(
-        select(Invocation)
-        .where(
-            Invocation.target_kind == TriggerTargetKind.agent,
-            Invocation.status == InvocationStatus.queued,
-            Invocation.heartbeat_at.is_(None),
-        )
-        .order_by(Invocation.id)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-    ).all()
-    for invocation in claimed:
-        invocation.heartbeat_at = func.now()
-    store.commit()
-    return [i.id for i in claimed]
-
-
-def beat(store: Session, invocation_id: int) -> None:
-    """Refresh a claimed invocation's heartbeat while its turn runs; in the caller's
-    transaction. Not once it has finished."""
-    store.execute(
-        update(Invocation)
-        .where(Invocation.id == invocation_id, Invocation.status.in_(UNFINISHED))
-        .values(heartbeat_at=func.now())
-    )
-
-
 def last_reply(data_store_id: uuid.UUID, run_id: int) -> str:
     """The agent's final reply in the store's run: its last message, if that's the model's."""
     history = checkpoints.history(data_store_id, run_id)
@@ -466,31 +410,6 @@ def finish_resumed(store: Session, run_id: int, error: str | None) -> None:
     )
     if invocation_id is not None:
         finish_turn(store, invocation_id, error)
-
-
-def fail_stopped_turns(
-    store: Session, *, stale_after: timedelta, error: str, chat_id: int | None = None
-) -> None:
-    """Fail the store's unfinished agent invocations (the chat's, or all) whose heartbeat has
-    stopped for `stale_after`, their process gone, with `error`; and their runs, if still marked
-    running. In the caller's transaction."""
-    for invocation in store.scalars(
-        select(Invocation)
-        .where(
-            Invocation.target_kind == TriggerTargetKind.agent,
-            Invocation.status.in_(UNFINISHED),
-            Invocation.heartbeat_at < func.now() - stale_after,
-            # No process beats a run waiting for a member's decision.
-            ~waiting_on_a_request(Invocation.agent_run_id),
-            true() if chat_id is None else Invocation.chat_id == chat_id,
-        )
-        .with_for_update(skip_locked=True)
-    ):
-        if invocation.agent_run_id is not None:
-            from aios import turns
-
-            turns.fail_running(store, AgentRun.id == invocation.agent_run_id, error=error)
-        failed(store, invocation, error)
 
 
 def finish_quietly(store: Session, run_id: int, error: str | None) -> None:

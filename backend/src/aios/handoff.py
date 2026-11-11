@@ -1,11 +1,11 @@
 """The handoff: before a mention's run starts, brief it on the chat and say what was understood.
 
 A run started from a chat sees only its input, so the member mentioned would otherwise have to be
-told the context again. Before the run starts (`brief`, the first step of its firing), the
-invocation goes `briefing` and one structured call to the handoff model (`HANDOFF_MODEL`, by
-default the deployment's `LLM_MODEL`) reads a bounded window of the chat up to the mentioning
-message (`window`: the last `HANDOFF_WINDOW_MESSAGES` messages or about `HANDOFF_WINDOW_TOKENS`
-tokens of them, whichever is less) and returns `{ack, brief}`:
+told the context again. Before the run starts (`brief`, the first step of its start on the run
+service, `aios.run_service`), the invocation goes `briefing` and one structured call to the
+handoff model (`HANDOFF_MODEL`, by default the deployment's `LLM_MODEL`) reads a bounded window
+of the chat up to the mentioning message (`window`: the last `HANDOFF_WINDOW_MESSAGES` messages
+or about `HANDOFF_WINDOW_TOKENS` tokens of them, whichever is less) and returns `{ack, brief}`:
 
 - the ack, a line in the member's voice saying what it understood it's being asked to do, which
   replaces the placeholder in its acknowledgement so whoever asked can correct it early;
@@ -14,8 +14,8 @@ tokens of them, whichever is less) and returns `{ack, brief}`:
 
 It runs for agents and workflows alike, and is never skipped. A handoff that fails (the model
 errs, times out or answers with no `{ack, brief}`) fails the invocation with why, as a refused
-start does (`aios.firing.CantStart`). Each call is traced to Langfuse (`aios.tracing`), tagged
-`handoff`, with the invocation it was for, the organisation and the member who mentioned it.
+start does (`aios.run_service.CantStart`). Each call is traced to Langfuse (`aios.tracing`),
+tagged `handoff`, with the invocation it was for, the organisation and the member who mentioned it.
 """
 
 import asyncio
@@ -36,13 +36,13 @@ from aios.config import get_settings
 from aios.datastores import people, store_session
 from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
 from aios.db import SessionLocal
-from aios.firing import CantStart
 from aios.models import ChatAuthorKind, ChatMessageKind, DataStore
+from aios.run_service.errors import CantStart
 
 log = logging.getLogger(__name__)
 
-# How long the handoff's model call may take: well within the time a workflow invocation may
-# take to start before it counts as lost (`aios.invocations.START_WITHIN`).
+# How long the handoff's model call may take: well within its work item's lease
+# (`QUEUE_LEASE_SECONDS`, extended while it runs regardless).
 TIMEOUT_SECONDS = 60.0
 # About how many characters a token is, for the window's budget: an estimate, not a count.
 CHARS_PER_TOKEN = 4
