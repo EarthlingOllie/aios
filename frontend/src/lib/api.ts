@@ -43,13 +43,13 @@ export type Registration = {
  */
 export type Provenance = { created_by: User | null; updated_by: User | null };
 
-/** The organisation the signed-in user is in, as `/api/me` says it: what the shell shows. */
+/** An organisation, as the Organisation page and creating one answer it. */
 export type OrganisationSummary = {
   id: number;
   name: string;
   /** What links in the browser name it by (`/o/<slug>/`); a rename leaves it unchanged. */
   slug: string;
-  /** Made for one user on sign-up (or on leaving another organisation). */
+  /** Made for one user on sign-up, before a person could be in several organisations. */
   personal: boolean;
   /** Whether the signed-in user created it; the creator alone can rename it. */
   is_creator: boolean;
@@ -64,9 +64,10 @@ export type Membership = {
   is_creator: boolean;
 };
 
-/** The signed-in user (`GET /api/me`), with their organisation, and every organisation they're
- * in, the one joined most recently first. */
-export type Me = Account & { organisation: OrganisationSummary; organisations: Membership[] };
+/** The signed-in user (`GET /api/me`), with every organisation they're in, the one joined most
+ * recently first: none for a person who has neither created nor joined one, whom the app sends
+ * to the welcome page. */
+export type Me = Account & { organisations: Membership[] };
 
 export type OrganisationMember = {
   user: User;
@@ -98,13 +99,6 @@ export type NewInvite = Invite & { token: string; url: string };
 
 /** What the invite page shows of an open link, to anyone holding it. */
 export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
-
-/** What can be in an organisation, as a refused accept counts it. */
-export type ContentKind = "agent" | "workflow" | "skill" | "chat" | "schedule" | "document" | "table";
-
-/** Accepting refused (a 409) because the user's organisation has things in it, which accepting
- * would delete with it: the reason, and how many of each kind there are. */
-export type NotEmpty = { message: string; contents: { kind: ContentKind; count: number }[] };
 
 /** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
@@ -947,8 +941,8 @@ export function openOrganisationApi(id: number): void {
 /**
  * The API's prefix for the organisation the page is open in, `/api/o/<id>`: what every
  * organisation-scoped path starts with (`${organisationApi()}/agents`). Only the person's own
- * routes are outside it: signing in, the profile, invitations, notifications, the tool library
- * and the list of timezones.
+ * routes are outside it: signing in, the profile, creating an organisation, invitations,
+ * notifications, the tool library and the list of timezones.
  */
 export function organisationApi(): string {
   if (organisationId === null) throw new Error("No organisation is open on this page");
@@ -1024,14 +1018,16 @@ export const api = {
   /** No sign-in needed; an expired or revoked link is a 404. */
   getInvitation: (token: string) =>
     request<Invitation>(`/api/invites/${encodeURIComponent(token)}`),
-  /** A 409 says why the user can't join (they're in another organisation). */
-  /** From an empty personal organisation, deletes it; a 409 (`NotEmpty`'s detail when it has
-   * things in it) when the user can't. */
+  /** Adds a membership of the link's organisation, whatever else the user is in, and answers
+   * with it; the same again for one they're in already. */
   acceptInvitation: (token: string) =>
     request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
-  /** A 409 for the last member, and for the creator while others remain; otherwise the new
-   * personal organisation the user lands in. */
-  leaveOrganisation: () => request<Organisation>(`${organisationApi()}/organisation/leave`, { method: "POST" }),
+  /** A new organisation, with the user as its creator and only member, and its store being
+   * provisioned; a name another organisation has is a 409. */
+  createOrganisation: (name: string) => request<Organisation>("/api/organisations", json("POST", { name })),
+  /** A 409 for the last member, and for the creator while others remain; otherwise the user, as
+   * `me` answers, with the organisations they're still in. */
+  leaveOrganisation: () => request<Me>(`${organisationApi()}/organisation/leave`, { method: "POST" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>(`${organisationApi()}/data-store`),
   getSettings: () => request<Settings>(`${organisationApi()}/organisation/settings`),

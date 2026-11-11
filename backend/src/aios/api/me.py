@@ -1,4 +1,4 @@
-"""The signed-in user's own account, and which organisation they're in (`aios.organisations`)."""
+"""The signed-in user's own account, and which organisations they're in (`aios.organisations`)."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ValidationInfo, field_validator

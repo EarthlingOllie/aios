@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useSearchParams } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useSearchParams } from "react-router";
 import {
   Bot,
   Building2,
   CalendarClock,
+  Check,
+  ChevronsUpDown,
+  Plus,
   ChartLine,
   Database,
   LogOut,
@@ -18,15 +21,30 @@ import {
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, fullName, onSessionEnded, openOrganisationApi, type Me } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  describeError,
+  fullName,
+  onSessionEnded,
+  openOrganisationApi,
+  type Me,
+  type Membership,
+} from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
-import { CurrentUserContext, ReloadCurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
+import {
+  CurrentOrganisationContext,
+  CurrentUserContext,
+  ReloadCurrentUserContext,
+  SetCurrentUserContext,
+} from "@/lib/current-user";
 import {
   inOrganisation,
-  lastOrganisation,
   organisationBase,
   organisationToOpen,
+  recentOrganisations,
   rememberOrganisation,
+  WELCOME,
 } from "@/lib/organisation-path";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
@@ -53,6 +71,7 @@ import {
   SkillVersionPage,
 } from "@/pages/Skills";
 import { StubPage } from "@/pages/Stub";
+import { WelcomePage } from "@/pages/Welcome";
 import { WorkflowRunPage } from "@/pages/WorkflowRun";
 import {
   WorkflowDetail,
@@ -71,7 +90,9 @@ type AuthState =
 /**
  * `organisation` is the slug of the organisation the page was opened in (`/o/<slug>/...`, the
  * router's basename), or null for a page opened without one: signed in, that opens the same page
- * in the organisation used last (an old bookmark), unless it's an invitation link's.
+ * in the organisation used most recently (an old bookmark), unless it's an invitation link's or
+ * the welcome page. A person in no organisation is sent to the welcome page (`/welcome`), which
+ * creates one.
  */
 export default function App({ organisation = null }: { organisation?: string | null }) {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -110,21 +131,24 @@ export default function App({ organisation = null }: { organisation?: string | n
   const user = auth.status === "signed-in" ? auth.user : null;
   const membership = organisation === null ? undefined : user?.organisations.find((o) => o.slug === organisation);
   const member = membership !== undefined;
+  const onWelcome = location.pathname === WELCOME;
+  const onInvite = location.pathname.startsWith("/invite/");
   // Before any page asks: the API's prefix is the organisation's id (its slug is the link's). A
-  // page opened without one (an invitation link's) is shown in the one used last.
+  // page opened without one (an invitation link's) is shown in the one used most recently.
   const apiOrganisation =
     membership ??
     (user !== null && organisation === null
-      ? user.organisations.find((o) => o.slug === organisationToOpen(user.organisations, lastOrganisation()))
+      ? user.organisations.find((o) => o.slug === organisationToOpen(user.organisations, recentOrganisations()))
       : undefined);
   if (apiOrganisation !== undefined) openOrganisationApi(apiOrganisation.id);
   useEffect(() => {
     if (member && organisation !== null) rememberOrganisation(organisation);
   }, [member, organisation]);
-  // Signed in on a page opened without an organisation: the same page in the one used last.
+  // Signed in on a page opened without an organisation: the same page in the one used most
+  // recently (none for a person in none, who goes to the welcome page).
   const opening =
-    user !== null && organisation === null && !onSignedOutPage && !location.pathname.startsWith("/invite/")
-      ? organisationToOpen(user.organisations, lastOrganisation())
+    user !== null && organisation === null && !onSignedOutPage && !onInvite && !onWelcome
+      ? organisationToOpen(user.organisations, recentOrganisations())
       : null;
 
   if (auth.status === "loading") return null;
@@ -174,17 +198,34 @@ export default function App({ organisation = null }: { organisation?: string | n
     );
   }
 
+  // A fresh page load, so nothing of this user's is left in memory for whoever signs in next.
+  const signOut = () => api.logout().then(() => window.location.assign("/login"));
+
   // Signed in on the sign-in or registration page (just now, or by visiting it): on to where they
   // were headed.
   if (onSignedOutPage) return <AfterSignIn />;
+  if (organisation === null && onWelcome) return <WelcomePage me={auth.user} onSignOut={signOut} />;
+  if (organisation === null && !onInvite && opening === null) return <Navigate to={WELCOME} replace />;
   // A new page load, as the organisation is the router's basename.
   if (opening !== null) return <PageLoad to={inOrganisation(opening, location.pathname + location.search + location.hash)} />;
   // A link to an organisation the user isn't in, or that doesn't exist: alike, so a link can't
   // tell which.
   if (organisation !== null && !member) return <OrganisationNotFound user={auth.user} />;
+  if (apiOrganisation === undefined) {
+    // An invitation link's page for a person in no organisation: no shell, as signed out.
+    return (
+      <CurrentUserContext.Provider value={auth.user}>
+        <ReloadCurrentUserContext.Provider value={loadMe}>
+          <div className="h-svh">
+            <Routes>
+              <Route path="invite/:token" element={<InviteRoute />} />
+            </Routes>
+          </div>
+        </ReloadCurrentUserContext.Provider>
+      </CurrentUserContext.Provider>
+    );
+  }
 
-  // A fresh page load, so nothing of this user's is left in memory for whoever signs in next.
-  const signOut = () => api.logout().then(() => window.location.assign("/login"));
   return (
     <Routes>
       {/* Documents are held above every page, so the Chats section's panel and the Data page
@@ -194,11 +235,13 @@ export default function App({ organisation = null }: { organisation?: string | n
           <DocumentsProvider>
             <NotificationsProvider>
               <CurrentUserContext.Provider value={auth.user}>
-                <SetCurrentUserContext.Provider value={setUser}>
-                  <ReloadCurrentUserContext.Provider value={loadMe}>
-                    <Shell user={auth.user} onSignOut={signOut} />
-                  </ReloadCurrentUserContext.Provider>
-                </SetCurrentUserContext.Provider>
+                <CurrentOrganisationContext.Provider value={membership ?? null}>
+                  <SetCurrentUserContext.Provider value={setUser}>
+                    <ReloadCurrentUserContext.Provider value={loadMe}>
+                      <Shell user={auth.user} current={apiOrganisation} onSignOut={signOut} />
+                    </ReloadCurrentUserContext.Provider>
+                  </SetCurrentUserContext.Provider>
+                </CurrentOrganisationContext.Provider>
               </CurrentUserContext.Provider>
             </NotificationsProvider>
           </DocumentsProvider>
@@ -259,19 +302,24 @@ function PageLoad({ to }: { to: string }) {
 }
 
 function OrganisationNotFound({ user }: { user: Me }) {
-  const yours = organisationToOpen(user.organisations, lastOrganisation());
+  const yours = organisationToOpen(user.organisations, recentOrganisations());
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-3 p-4 text-center">
       <h1 className="text-lg font-medium">Organisation not found</h1>
       <p className="max-w-sm text-sm text-muted-foreground">
         This link is to an organisation that doesn't exist, or that you're not a member of.
       </p>
-      {yours !== null && (
-        // A new page load: the organisation is the router's basename.
-        <Button variant="outline" asChild>
-          <a href={`${organisationBase(yours)}/`}>Go to your organisation</a>
+      {/* New page loads: the organisation is the router's basename. */}
+      <div className="flex flex-wrap justify-center gap-2">
+        {yours !== null && (
+          <Button variant="outline" asChild>
+            <a href={`${organisationBase(yours)}/`}>Go to your organisation</a>
+          </Button>
+        )}
+        <Button variant={yours === null ? "outline" : "ghost"} asChild>
+          <a href={WELCOME}>Create an organisation</a>
         </Button>
-      )}
+      </div>
     </div>
   );
 }
@@ -308,7 +356,7 @@ const navItems: NavItem[] = [
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ];
 
-function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
+function Shell({ user, current, onSignOut }: { user: Me; current: Membership; onSignOut: () => void }) {
   // `/` too, which lands in the Chats section: the panel stays mounted through the redirect.
   const onLanding = useMatch("/") !== null;
   const onChats = useMatch("/chats/*") !== null || onLanding;
@@ -330,21 +378,9 @@ function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
         {label}
       </NavLink>
     ));
-  // Whose things every page shows: the user's organisation, which opens its page.
+  // Whose things every page shows: the organisation the page is open in, as the switcher.
   const organisation = (className: string) => (
-    <NavLink
-      to="/organisation"
-      className={({ isActive }) =>
-        cn(
-          "hover:bg-accent flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm",
-          isActive ? "bg-accent font-medium" : "text-muted-foreground",
-          className,
-        )
-      }
-    >
-      <Building2 className="size-4 shrink-0" />
-      <span className="truncate">{user.organisation.name}</span>
-    </NavLink>
+    <OrganisationSwitcher memberships={user.organisations} current={current} className={className} />
   );
 
   return (
@@ -367,11 +403,10 @@ function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
         )}
       </aside>
       <nav className="flex items-center gap-1 border-b px-2 py-1.5 md:hidden">
-        {/* Only the links scroll sideways, so Sign out stays in view however many there are. */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {nav("shrink-0")}
-          {organisation("shrink-0")}
-        </div>
+        {/* Outside the links, which scroll sideways (so Sign out stays in view however many there
+            are), so its menu isn't clipped by them. */}
+        {organisation("max-w-40 shrink-0")}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">{nav("shrink-0")}</div>
         <NotificationsMenu className="shrink-0" />
         <Button variant="ghost" size="icon" className="shrink-0" aria-label="Sign out" onClick={onSignOut}>
           <LogOut />
@@ -380,6 +415,96 @@ function Shell({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
       <main className="min-h-0">
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/**
+ * The shell's organisation: its name, opening a menu of every organisation the user is in (the
+ * one joined most recently first), with "Create an organisation" (the welcome page). The one the
+ * page is open in opens its Organisation page; another opens in its own link, a new page load
+ * (the organisation is the router's basename).
+ */
+function OrganisationSwitcher({
+  memberships,
+  current,
+  className,
+}: {
+  memberships: Membership[];
+  current: Membership;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const onOrganisationPage = useMatch("/organisation/*") !== null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const item = "hover:bg-accent flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm";
+  return (
+    <div ref={root} className={cn("relative min-w-0", className)}>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          item,
+          "w-full",
+          onOrganisationPage ? "bg-accent font-medium" : "text-muted-foreground",
+        )}
+      >
+        <Building2 className="size-4 shrink-0" />
+        <span className="flex-1 truncate text-left">{current.name}</span>
+        <ChevronsUpDown aria-hidden className="size-3.5 shrink-0 opacity-60" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Organisations"
+          className="bg-popover text-popover-foreground absolute top-full left-0 z-50 mt-1 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-0.5 rounded-md border p-1 shadow-md"
+        >
+          {memberships.map((m) =>
+            m.id === current.id ? (
+              <Link
+                key={m.id}
+                role="menuitem"
+                to="/organisation"
+                aria-current="true"
+                className={cn(item, "font-medium")}
+                onClick={() => setOpen(false)}
+              >
+                <Check aria-hidden className="size-4 shrink-0" />
+                <span className="truncate">{m.name}</span>
+              </Link>
+            ) : (
+              <a key={m.id} role="menuitem" href={`${organisationBase(m.slug)}/`} className={item}>
+                <span aria-hidden className="size-4 shrink-0" />
+                <span className="truncate">{m.name}</span>
+              </a>
+            ),
+          )}
+          <div role="separator" className="bg-border my-1 h-px" />
+          <a role="menuitem" href={WELCOME} className={cn(item, "text-muted-foreground")}>
+            <Plus aria-hidden className="size-4 shrink-0" />
+            Create an organisation
+          </a>
+        </div>
+      )}
     </div>
   );
 }

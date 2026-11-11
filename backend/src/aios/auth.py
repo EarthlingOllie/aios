@@ -7,10 +7,10 @@ just sends the cookie. Bumping a user's `session_version` signs out every sessio
 Hashing a password takes tens of milliseconds of CPU, so the endpoints that do are sync: FastAPI
 runs them in the threadpool.
 
-Starting a session puts the user in their organisation (`aios.organisations.ensure_membership`):
-registering makes them a personal one, or, from an invitation link's page (the link's token in
-the request), joins them to the link's organisation instead. A link that no longer opens is
-ignored, and the invite page they're sent back to says why.
+Signing up or in makes nothing: a person with no organisation lands on the welcome page, which
+creates one (`aios.api.organisation`). Registering from an invitation link's page (the link's
+token in the request) joins the link's organisation, and only that one. A link that no longer
+opens is ignored, and the invite page they're sent back to says why.
 """
 
 import uuid
@@ -34,9 +34,9 @@ from sqlalchemy.orm import Session
 
 from aios import organisations, ratelimits
 from aios.config import get_settings
-from aios.datastores import data_store_for, data_store_for_request
+from aios.datastores import data_store_for_request
 from aios.db import DB
-from aios.models import Organisation, OrganisationInvite, User
+from aios.models import Organisation, User
 from aios.passwords import hash_password, verify_password
 
 
@@ -129,7 +129,7 @@ class OrganisationSummaryOut(BaseModel):
     name: str
     # What a link in the browser names it by; never changed by a rename.
     slug: str
-    # Made for one user on sign-up (or on leaving another organisation).
+    # Made for one user on sign-up, before a person could be in several organisations.
     personal: bool
     # Whether the signed-in user is its creator, who alone may rename it.
     is_creator: bool
@@ -156,23 +156,17 @@ class MembershipOut(BaseModel):
 
 
 class MeOut(AccountOut):
-    """The signed-in user and the organisation they're in, as `GET /api/me` and signing in
-    answer (the shell shows both), with every organisation they're in (`organisations`, the
-    one joined most recently first): what links in the browser name one by (its slug), and
-    which to open a link without one in when none was used last."""
+    """The signed-in user, as `GET /api/me` and signing in answer, with every organisation they're
+    in (`organisations`, the one joined most recently first; empty for a person in none, whom the
+    app sends to the welcome page): what links in the browser name one by (its slug), and which
+    to open a link without one in when none was used last."""
 
-    organisation: OrganisationSummaryOut
     organisations: list[MembershipOut]
 
 
 def me_out(db: Session, user: User) -> MeOut:
-    org = organisations.membership_of(db, user.id)
-    if org is None:
-        # Starting a session and leaving each put a user in one (see `current_organisation`).
-        raise RuntimeError(f"user {user.id} is in no organisation")
     return MeOut(
         **account_out(user).model_dump(),
-        organisation=summary_out(org, user),
         organisations=[
             MembershipOut(id=o.id, name=o.name, slug=o.slug, is_creator=o.created_by == user.id)
             for o in organisations.memberships(db, user.id)
@@ -180,22 +174,15 @@ def me_out(db: Session, user: User) -> MeOut:
     )
 
 
-def start_session(
-    request: Request, db: Session, user: User, invite: OrganisationInvite | None = None
-) -> Organisation:
-    """Sign `user` in on this request: the one way a session starts. They're put in their
-    organisation if they're in none (`organisations.ensure_membership`: the open invitation
-    link's `invite`, else a new personal one), whose data store is made (and queued to be
-    provisioned) if it's missing, and `db` is committed. Then anything left in the session is
-    dropped, and the fresh one holds their id and current `session_version`. It blocks (on the
-    database), so call it from a sync endpoint. Answers the user's organisation."""
-    org = organisations.ensure_membership(db, user, invite)
-    data_store_for(org.id, db)
+def start_session(request: Request, db: Session, user: User) -> None:
+    """Sign `user` in on this request: the one way a session starts. `db` is committed, then
+    anything left in the session is dropped, and the fresh one holds their id and current
+    `session_version`. Nothing is made for them. It blocks (on the database), so call it from a
+    sync endpoint."""
     db.commit()
     request.session.clear()
     request.session["user_id"] = user.id
     request.session["session_version"] = user.session_version
-    return org
 
 
 # A request's session has ended (or never started). The SPA tells it apart from other 401s (a
@@ -273,7 +260,7 @@ class RegisterIn(BaseModel):
     password: NewPassword
     password_confirm: str
     # The token of the invitation link whose page they came from, if any: they join its
-    # organisation instead of getting a personal one, if it still opens.
+    # organisation, if it still opens.
     invite: str | None = Field(default=None, max_length=INVITE_TOKEN_MAX)
 
     @field_validator("password_confirm")
@@ -287,8 +274,8 @@ EMAIL_TAKEN = "An account with this email already exists"
 
 @router.post("/register", response_model=MeOut, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterIn, request: Request, db: DB):
-    """A new account, signed in, in a new personal organisation (or the one the invitation link
-    `invite` is for, if it still opens), with its data store queued to be provisioned."""
+    """A new account, signed in: in no organisation, or in the one the invitation link `invite`
+    is for, if it still opens."""
     settings = get_settings()
     ratelimits.throttle(
         "register-ip", settings.register_rate_limit_per_ip, ratelimits.client_ip(request)
@@ -309,7 +296,9 @@ def register(body: RegisterIn, request: Request, db: DB):
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from exc
     invite = organisations.open_invite(db, body.invite, lock=True) if body.invite else None
-    start_session(request, db, user, invite)
+    if invite is not None:
+        organisations.join(db, user, invite)
+    start_session(request, db, user)
     return me_out(db, user)
 
 

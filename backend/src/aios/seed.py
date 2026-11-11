@@ -88,7 +88,7 @@ def build(db: Session) -> None:
     )
     db.add(user)
     db.flush()
-    org = organisations.create_personal(db, user)
+    org = organisations.create(db, user, "Dev Team")
     db.commit()
     provision.provision(data_store_for(org.id))
 

@@ -5,10 +5,9 @@ import { Loader2 } from "lucide-react";
 import { useLoad } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { api, ApiError, describeError, type Me, type NotEmpty } from "@/lib/api";
+import { api, ApiError, describeError, type Me } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
-import { contentLink, notEmpty } from "@/lib/organisation";
-import { openInOrganisation } from "@/lib/organisation-path";
+import { inOrganisation, openInOrganisation } from "@/lib/organisation-path";
 
 /** The invite page in the shell, for a signed-in user. */
 export function InviteRoute() {
@@ -19,10 +18,9 @@ export function InviteRoute() {
 /**
  * An invitation link's page (`/invite/:token`), signed in or out: which organisation it's for,
  * and Accept, or, signed out, Register (which sends the token with the registration, joining the
- * new user) and Sign in, each coming back here. An expired or revoked link says so. Accepting from an empty personal
- * organisation deletes it; otherwise the page shows the API's reason: when the user's organisation
- * has things in it, linking to where each kind can be deleted, and when it's one they must leave
- * first, to where it's left (the Organisation page's Settings tab).
+ * new user) and Sign in, each coming back here. An expired or revoked link says so. Accepting
+ * adds the organisation to the ones the user is in, and opens it; a user already in it is told
+ * so, with a link to it.
  */
 export function InvitePage({ token, me }: { token: string; me: Me | null }) {
   const reloadMe = useReloadCurrentUser();
@@ -30,25 +28,19 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
     useCallback(() => api.getInvitation(token).catch(gone), [token]),
   );
   const [accepting, setAccepting] = useState(false);
-  const [refusal, setRefusal] = useState<string | NotEmpty>();
-  // A 409 with a plain reason: they're in an organisation they'd have to leave to join this one.
-  const [mustLeave, setMustLeave] = useState(false);
+  const [refusal, setRefusal] = useState<string>();
 
   async function onAccept() {
     setAccepting(true);
     setRefusal(undefined);
-    setMustLeave(false);
     try {
       const joined = await api.acceptInvitation(token);
       // Its page, at its own link.
       openInOrganisation(joined.slug, "/organisation");
     } catch (err) {
-      // The session may be behind (joined meanwhile, in another tab): once it catches up, a
-      // refusal for being in the invited organisation already shows as that, not as one to leave.
+      // The session may be behind (the link revoked meanwhile, say): read it again.
       reloadMe();
-      const contents = notEmpty(err);
-      setRefusal(contents ?? describeError(err));
-      setMustLeave(!contents && err instanceof ApiError && err.status === 409);
+      setRefusal(describeError(err));
       setAccepting(false);
     }
   }
@@ -96,54 +88,29 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
           </p>
         </>
       );
-    } else if (me.organisation.id === organisation.id) {
-      body = (
+    } else {
+      const joined = me.organisations.find((o) => o.id === organisation.id);
+      body = joined ? (
         <p className="text-muted-foreground text-sm">
-          You're already a member of {organisation.name}. See it on the{" "}
-          <Link to="/organisation" className="text-foreground underline underline-offset-4">
+          You're already a member of {organisation.name}. See it on its{" "}
+          {/* A new page load: the organisation is the router's basename. */}
+          <a
+            href={inOrganisation(joined.slug, "/organisation")}
+            className="text-foreground underline underline-offset-4"
+          >
             Organisation
-          </Link>{" "}
+          </a>{" "}
           page.
         </p>
-      );
-    } else {
-      body = (
+      ) : (
         <>
           <p className="text-muted-foreground text-sm">
             You've been invited to join {organisation.name}. Its members see everything in it.
+            {me.organisations.length > 0 && " You'll stay in your other organisations."}
           </p>
-          {typeof refusal === "object" && (
-            <div role="alert" className="border-destructive/50 rounded-md border px-3 py-2 text-sm">
-              <p className="text-destructive">{refusal.message}</p>
-              <ul aria-label="What's in it" className="mt-1 list-disc pl-5">
-                {refusal.contents.map(({ kind, count }) => {
-                  const { text, to } = contentLink(kind, count);
-                  return (
-                    <li key={kind}>
-                      <Link to={to} className="text-foreground underline underline-offset-4">
-                        {text}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-          {typeof refusal === "string" && (
+          {refusal && (
             <div role="alert" className="border-destructive/50 rounded-md border px-3 py-2 text-sm">
               <p className="text-destructive">{refusal}</p>
-              {mustLeave && (
-                <p className="text-muted-foreground mt-1">
-                  To join {organisation.name}, leave {me.organisation.name} first, in its{" "}
-                  <Link
-                    to="/organisation/settings"
-                    className="text-foreground underline underline-offset-4"
-                  >
-                    organisation settings
-                  </Link>
-                  .
-                </p>
-              )}
             </div>
           )}
           <Button className="w-full" disabled={accepting} onClick={onAccept}>

@@ -2,11 +2,11 @@ import { Link } from "react-router";
 
 import { Section } from "@/components/crud";
 import { ProfileSection } from "@/components/Profile";
-import { useCurrentUser } from "@/lib/current-user";
+import { useCurrentOrganisation } from "@/lib/current-user";
 
 /** The user's own settings: their profile, and where the organisation's are. */
 export function SettingsPage() {
-  const me = useCurrentUser();
+  const organisation = useCurrentOrganisation();
 
   return (
     <div className="h-full overflow-y-auto">
@@ -16,10 +16,10 @@ export function SettingsPage() {
           <p className="text-muted-foreground mt-1 text-sm">Manage your account.</p>
         </header>
         <ProfileSection />
-        {me && (
+        {organisation && (
           <Section title="Organisation">
             <p className="text-muted-foreground text-sm">
-              You're in <span className="text-foreground font-medium">{me.organisation.name}</span>.
+              You're in <span className="text-foreground font-medium">{organisation.name}</span>.
               Its name and members are on the{" "}
               <Link to="/organisation" className="text-foreground underline underline-offset-4">
                 Organisation

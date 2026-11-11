@@ -59,10 +59,10 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     auth.py         /api/auth/{options,register,login,logout}, start_session, current_user,
                     current_organisation
     passwords.py    Argon2id hashing and checking
-    api/me.py       /api/me: GET (with the user's organisation), PATCH (name), PUT email and
+    api/me.py       /api/me: GET (with the user's organisations), PATCH (name), PUT email and
                     password
-    organisations.py  organisations, which own what their members make: a personal one per
-                    user on sign-up, the user's one membership, invitation links, joining and
+    organisations.py  organisations, which own what their members make: creating one, a
+                    person's memberships (any number), invitation links, joining and
                     leaving (handing over the chats a leaver owned)
     api/documents.py upload/list/download/delete, GET /api/o/{org}/search
     api/skills.py   CRUD /api/o/{org}/skills
@@ -72,7 +72,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/triggers.py CRUD /api/o/{org}/triggers (schedules), schedule preview, timezones
     api/chats/      CRUD /api/o/{org}/chats, members: /api/o/{org}/chats/{id}/members[/{member_id}], mentionable, messages
                     (crud, members, messages, invocations)
-    api/organisation.py GET /api/me, GET/PUT /api/o/{org}/organisation (the Organisation page), invitation
+    api/organisation.py POST /api/organisations, GET/PUT /api/o/{org}/organisation (the Organisation page), invitation
                     links (/api/o/{org}/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it
     api/settings.py GET/PUT /api/o/{org}/organisation/settings (the organisation's: the run history export)

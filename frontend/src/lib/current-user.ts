@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { Me } from "@/lib/api";
+import type { Me, Membership } from "@/lib/api";
 
 /** The signed-in user, for the pages under the shell (null outside it, e.g. in isolation). */
 export const CurrentUserContext = createContext<Me | null>(null);
@@ -25,4 +25,12 @@ export const ReloadCurrentUserContext = createContext<() => void>(() => {});
 
 export function useReloadCurrentUser(): () => void {
   return useContext(ReloadCurrentUserContext);
+}
+
+/** The organisation the page is open in (`/o/<slug>/`), as `/api/me` lists it: null outside one
+ * (an invitation link's page, opened without it). */
+export const CurrentOrganisationContext = createContext<Membership | null>(null);
+
+export function useCurrentOrganisation(): Membership | null {
+  return useContext(CurrentOrganisationContext);
 }

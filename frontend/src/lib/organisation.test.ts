@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ApiError, type Organisation, type User } from "@/lib/api";
-import { contentLink, describeOrganisation, leaveRefusal, linkName, notEmpty } from "@/lib/organisation";
+import { type Organisation, type User } from "@/lib/api";
+import { describeOrganisation, leaveRefusal, linkName } from "@/lib/organisation";
 
 const me: User = { id: 1, name: "Terry Tester" };
 const sam: User = { id: 2, name: "Sam Jones" };
@@ -44,9 +44,9 @@ describe("describeOrganisation", () => {
 describe("leaveRefusal", () => {
   const member = (user: User) => ({ user, joined_at: "2026-10-14T08:00:00Z", invite_id: null });
 
-  it("refuses the last member", () => {
+  it("tells the last member to delete the organisation instead", () => {
     expect(leaveRefusal({ ...base, members: [member(me)] })).toBe(
-      "You're its only member, so you can't leave: an organisation can't be left empty.",
+      "You're its only member, so nobody would be left to see what's in it. Delete the organisation instead.",
     );
   });
 
@@ -65,29 +65,5 @@ describe("leaveRefusal", () => {
 describe("linkName", () => {
   it("names a link by the start of its id, the same wherever it's shown", () => {
     expect(linkName("3f2a9c1e-0000-4000-8000-000000000000")).toBe("link 3f2a9c1e");
-  });
-});
-
-describe("contentLink", () => {
-  it("counts each kind and links to where it's deleted", () => {
-    expect(contentLink("agent", 2)).toEqual({ text: "2 agents", to: "/agents" });
-    expect(contentLink("schedule", 1)).toEqual({ text: "1 schedule", to: "/scheduler" });
-    expect(contentLink("table", 3)).toEqual({ text: "3 data tables", to: "/data" });
-    expect(contentLink("document", 1)).toEqual({ text: "1 document", to: "/data" });
-  });
-});
-
-describe("notEmpty", () => {
-  const detail = { message: "You're a member of tester, which has things in it.", contents: [{ kind: "chat", count: 1 }] };
-
-  it("reads what's in the way from a refused accept", () => {
-    expect(notEmpty(new ApiError(409, JSON.stringify({ detail })))).toEqual(detail);
-  });
-
-  it("is null for a refusal that's only a reason, or another failure", () => {
-    expect(notEmpty(new ApiError(409, JSON.stringify({ detail: "You can be in only one." })))).toBeNull();
-    expect(notEmpty(new ApiError(404, JSON.stringify({ detail })))).toBeNull();
-    expect(notEmpty(new ApiError(409, "<html>"))).toBeNull();
-    expect(notEmpty(new Error("network"))).toBeNull();
   });
 });

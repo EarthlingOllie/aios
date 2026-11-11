@@ -1,4 +1,4 @@
-"""Organisations: every user is in one (`aios.organisations`), shown by `/api/me` and the
+"""Organisations (`aios.organisations`): creating them, as `/api/me` lists them, and the
 Organisation endpoints."""
 
 import importlib.util
@@ -9,20 +9,27 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from conftest import (
-    TEST_PASSWORD,
     build_user,
     delete_user,
     join_organisation,
+    org_of,
     register,
 )
-from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text, update
 from test_chats import signed_in_as
 
 from aios import organisations
 from aios.db import SessionLocal
-from aios.main import app
-from aios.models import Agent, Chat, ChatVisibility, Organisation, OrganisationMember, User
+from aios.models import (
+    Agent,
+    Chat,
+    ChatVisibility,
+    DataStore,
+    DataStoreStatus,
+    Organisation,
+    OrganisationMember,
+    User,
+)
 
 VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 
@@ -142,40 +149,56 @@ def registered(db, resp) -> User:
     return db.get(User, resp.json()["id"])
 
 
-def test_registering_makes_a_personal_organisation_and_signing_in_finds_it(client, db):
-    resp = register(client, "Newcomer")
-    newcomer = registered(db, resp)
+def test_creating_an_organisation_makes_the_person_its_creator_and_only_member(
+    client, db, provisioning
+):
+    """From the welcome page: a person in no organisation creates one, which opens straight
+    away, with its store queued to be provisioned at once."""
+    person = registered(db, register(client, "Founder"))
     try:
-        [org] = db.scalars(
-            select(Organisation)
-            .join(OrganisationMember)
-            .where(OrganisationMember.user_id == newcomer.id)
-        ).all()
-        assert (org.name, org.personal, org.created_by) == ("Newcomer Tester", True, newcomer.id)
-        assert [m.user_id for m in org.members] == [newcomer.id]
-
-        # Signing in again finds the same one.
-        signing_in = TestClient(app).post(
-            "/api/auth/login", json={"email": newcomer.email, "password": TEST_PASSWORD}
+        resp = client.post("/api/organisations", json={"name": "  Founders Ltd  "})
+        assert resp.status_code == 201, resp.text
+        org = resp.json()
+        assert (org["name"], org["slug"], org["is_creator"]) == (
+            "Founders Ltd",
+            "founders-ltd",
+            True,
         )
-        assert signing_in.json()["organisation"]["id"] == org.id
-        db.expire_all()
-        named = select(Organisation).where(Organisation.name.like("Newcomer Tester%"))
-        assert db.scalars(named).all() == [org]
-    finally:
-        delete_user(db, newcomer)
-
-
-def test_a_personal_organisation_named_after_a_taken_name_is_suffixed(client, db):
-    twins = [registered(db, register(client, "Twin")) for _ in range(2)]
-    try:
-        assert [organisations.membership_of(db, u.id).name for u in twins] == [
-            "Twin Tester",
-            "Twin Tester-2",
+        assert org["creator"] == {"id": person.id, "name": "Founder Tester"}
+        assert [m["user"]["id"] for m in org["members"]] == [person.id]
+        assert client.get("/api/me").json()["organisations"] == [
+            {"id": org["id"], "name": "Founders Ltd", "slug": "founders-ltd", "is_creator": True}
         ]
+        # It opens: its routes answer under its prefix.
+        assert client.get(f"/api/o/{org['id']}/organisation").json()["id"] == org["id"]
+        stores = db.scalars(
+            select(DataStore).where(DataStore.owner_organisation_id == org["id"])
+        ).all()
+        assert [s.status for s in stores] == [DataStoreStatus.provisioning]
+        assert provisioning == [stores[0].id]
     finally:
-        for u in twins:
-            delete_user(db, u)
+        delete_user(db, person)
+
+
+def test_a_member_creates_another_organisation_and_is_in_both(api, db, user):
+    resp = api.post("/api/organisations", json={"name": "Side Project"})
+    assert resp.status_code == 201, resp.text
+    listed = [o["name"] for o in api.get("/api/me").json()["organisations"]]
+    # The one joined most recently first.
+    assert listed == ["Side Project", "Test User"]
+
+
+def test_creating_an_organisation_with_a_taken_or_blank_name_is_refused(api, new_user, client):
+    other = new_user()
+    resp = api.post("/api/organisations", json={"name": other.full_name})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "An organisation with that name already exists."
+    assert api.post("/api/organisations", json={"name": " "}).status_code == 422
+    assert [o["name"] for o in api.get("/api/me").json()["organisations"]] == ["Test User"]
+
+
+def test_creating_an_organisation_needs_a_sign_in(client):
+    assert client.post("/api/organisations", json={"name": "Nobody's"}).status_code == 401
 
 
 def in_the_background(call) -> tuple[threading.Thread, dict]:
@@ -193,79 +216,6 @@ def in_the_background(call) -> tuple[threading.Thread, dict]:
     return thread, result
 
 
-def test_registering_while_a_rename_takes_the_name_lands_in_a_suffixed_one(client, db, user):
-    """The creator of another organisation renames it to the user's name as they register: the
-    name looked free to the registration, and is taken by the time it inserts."""
-    result: dict = {}
-    try:
-        with SessionLocal() as renaming:
-            # The rename, flushed but not committed: the registration waits on its name.
-            organisations.membership_of(renaming, user.id).name = "Dana Tester"
-            renaming.flush()
-            registering, result = in_the_background(lambda: register(client, "Dana"))
-            registering.join(timeout=0.5)
-            assert registering.is_alive(), "the registration should wait on the rename's name"
-            renaming.commit()
-        registering.join(timeout=10)
-
-        assert "error" not in result, result
-        dana = registered(db, result["value"])
-        org = organisations.membership_of(db, dana.id)
-        assert (org.name, org.personal, org.created_by) == ("Dana Tester-2", True, dana.id)
-    finally:
-        if "value" in result and result["value"].status_code == 201:
-            delete_user(db, db.get(User, result["value"].json()["id"]))
-
-
-def picking_names_at_most(monkeypatch, times: int) -> None:
-    """Fail `personal_name` past its `times`th call: a name it keeps picking that's taken
-    would otherwise loop `create_personal` for ever, hanging the test instead of failing it."""
-    pick, calls = organisations.personal_name, []
-
-    def limited(db, base):
-        calls.append(base)
-        assert len(calls) <= times, f"picked a name for {base!r} {len(calls)} times"
-        return pick(db, base)
-
-    monkeypatch.setattr(organisations, "personal_name", limited)
-
-
-def test_a_name_with_like_wildcards_or_a_backslash_is_suffixed_on_its_own_names_only(
-    client, db, monkeypatch
-):
-    """`_`, `%` and `\\` mean something to LIKE. A name with them still sees the names it could
-    take (itself, and itself suffixed) as taken, and only those: another name its wildcards
-    would match takes no suffix from it."""
-    name = "w_d%c\\ Tester"
-    others = ["wxdyc\\ Tester", "wxdyc\\ Tester-3", f"{name}-2"]
-    made: list[User] = []
-    try:
-        db.add_all(Organisation(name=n, slug=f"wildcards-{i}") for i, n in enumerate(others))
-        db.commit()
-        # One pick for each registration: no clash to pick again after.
-        picking_names_at_most(monkeypatch, 2)
-        made = [registered(db, register(client, "w_d%c\\")) for _ in range(2)]
-        names = [organisations.membership_of(db, u.id).name for u in made]
-        assert names == [name, f"{name}-3"]
-    finally:
-        for u in made:
-            delete_user(db, u)
-        db.execute(delete(Organisation).where(Organisation.name.in_(others)))
-        db.commit()
-
-
-def test_me_says_which_organisation_the_user_is_in(api, user):
-    me = api.get("/api/me").json()
-    assert (me["first_name"], me["last_name"]) == ("Test", "User")
-    assert me["organisation"] == {
-        "id": me["organisation"]["id"],
-        "name": "Test User",
-        "slug": "test-user",
-        "personal": True,
-        "is_creator": True,
-    }
-
-
 @pytest.fixture
 def member(db, user):
     """A second member of `user`'s organisation, who isn't its creator."""
@@ -279,7 +229,7 @@ def test_the_organisation_page_shows_the_name_creator_and_members_with_when_they
     api, user, member
 ):
     org = api.get("/api/organisation").json()
-    assert (org["name"], org["personal"], org["is_creator"]) == ("Test User", True, True)
+    assert (org["name"], org["is_creator"]) == ("Test User", True)
     assert org["creator"] == {"id": user.id, "name": "Test User"}
     assert [(m["user"], m["invite_id"]) for m in org["members"]] == [
         ({"id": user.id, "name": "Test User"}, None),
@@ -291,35 +241,32 @@ def test_the_organisation_page_shows_the_name_creator_and_members_with_when_they
     with signed_in_as(member):
         theirs = api.get("/api/organisation").json()
     assert theirs == {**org, "is_creator": False}
-    assert api.get("/api/me").json()["organisation"]["id"] == org["id"]
 
 
 def test_the_creator_renames_the_organisation(api, user):
     resp = api.put("/api/organisation", json={"name": "  Acme  "})
     assert resp.status_code == 200, resp.text
     assert resp.json()["name"] == "Acme"
-    # It stays personal: the flag says how it was made, not what it's called.
-    assert resp.json()["personal"] is True
-    assert api.get("/api/me").json()["organisation"]["name"] == "Acme"
+    assert [o["name"] for o in api.get("/api/me").json()["organisations"]] == ["Acme"]
     assert api.put("/api/organisation", json={"name": " "}).status_code == 422
 
 
-def test_renaming_to_a_name_a_sign_up_is_taking_is_refused(api, db, user):
-    """The creator renames to a name a new user's personal organisation is taking at the same
-    moment: the rename is the one refused, as for a name already taken."""
-    newcomer = build_user("acme")
+def test_renaming_to_a_name_a_new_organisation_is_taking_is_refused(api, db, user):
+    """The creator renames to a name a new organisation is taking at the same moment: the rename
+    is the one refused, as for a name already taken."""
+    founder = build_user("acme")
     try:
-        with SessionLocal() as signing_up:
-            # The sign-up, flushed but not committed: the rename waits on its name.
-            signing_up.add(newcomer)
-            signing_up.flush()
-            organisations.create_personal(signing_up, newcomer)
+        with SessionLocal() as creating:
+            # The creation, flushed but not committed: the rename waits on its name.
+            creating.add(founder)
+            creating.flush()
+            organisations.create(creating, founder, "Acme")
             renaming, result = in_the_background(
-                lambda: api.put("/api/organisation", json={"name": "acme Tester"})
+                lambda: api.put("/api/organisation", json={"name": "Acme"})
             )
             renaming.join(timeout=0.5)
-            assert renaming.is_alive(), "the rename should wait on the sign-up's name"
-            signing_up.commit()
+            assert renaming.is_alive(), "the rename should wait on the new organisation's name"
+            creating.commit()
         renaming.join(timeout=10)
 
         assert "error" not in result, result
@@ -327,8 +274,34 @@ def test_renaming_to_a_name_a_sign_up_is_taking_is_refused(api, db, user):
         assert result["value"].json()["detail"] == "An organisation with that name already exists."
         assert api.get("/api/organisation").json()["name"] == "Test User"
     finally:
-        if (newcomer := db.get(User, newcomer.id)) is not None:
-            delete_user(db, newcomer)
+        if (founder := db.get(User, founder.id)) is not None:
+            delete_user(db, founder)
+
+
+def test_two_organisations_made_at_once_whose_names_make_one_slug_get_distinct_ones(api, db, user):
+    """The slug the second found free is taken by the time it inserts: it picks again."""
+    founder = build_user("founder")
+    try:
+        with SessionLocal() as creating:
+            creating.add(founder)
+            creating.flush()
+            organisations.create(creating, founder, "Clash Co")
+            second, result = in_the_background(
+                lambda: api.post("/api/organisations", json={"name": "clash co!"})
+            )
+            second.join(timeout=0.5)
+            assert second.is_alive(), "the second should wait on the first's slug"
+            creating.commit()
+        second.join(timeout=10)
+
+        assert "error" not in result, result
+        assert result["value"].status_code == 201, result["value"].text
+        made = result["value"].json()
+        assert (made["name"], made["slug"]) == ("clash co!", "clash-co-2")
+    finally:
+        # The second is `user`'s, deleted with them.
+        if (founder := db.get(User, founder.id)) is not None:
+            delete_user(db, founder)
 
 
 def test_another_member_cant_rename_it(api, member):
@@ -352,22 +325,20 @@ def test_a_name_another_organisation_has_is_refused(api, new_user):
 # Slugs: what a link in the browser names an organisation by (the API uses the id).
 
 
-def test_organisations_whose_names_make_the_same_slug_get_distinct_ones(client, db):
+def created(api, name: str) -> dict:
+    resp = api.post("/api/organisations", json={"name": name})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_organisations_whose_names_make_the_same_slug_get_distinct_ones(api):
     """A slug is made from the name, and suffixed when another organisation has it."""
-    made = [
-        registered(db, register(client, first, last))
-        for first, last in (("Acme", "Tester"), ("ACME", "tester!"), ("Acme", "Tester"))
+    made = [created(api, name) for name in ("Acme Slugs", "ACME slugs!", "acme  slugs")]
+    assert [(o["name"], o["slug"]) for o in made] == [
+        ("Acme Slugs", "acme-slugs"),
+        ("ACME slugs!", "acme-slugs-2"),
+        ("acme  slugs", "acme-slugs-3"),
     ]
-    try:
-        orgs = [organisations.membership_of(db, u.id) for u in made]
-        assert [(o.name, o.slug) for o in orgs] == [
-            ("Acme Tester", "acme-tester"),
-            ("ACME tester!", "acme-tester-2"),
-            ("Acme Tester-2", "acme-tester-2-2"),
-        ]
-    finally:
-        for u in made:
-            delete_user(db, u)
 
 
 def test_a_second_organisation_named_acme_gets_its_own_slug(db):
@@ -384,26 +355,21 @@ def test_a_second_organisation_named_acme_gets_its_own_slug(db):
         db.rollback()
 
 
-def test_a_slug_is_made_of_plain_lower_case_words(client, db):
-    made = [
-        registered(db, register(client, first, last))
-        for first, last in (("Zoë", "Ångström"), ("日本", "語"), ("--", "__"))
-    ]
-    try:
-        slugs = [organisations.membership_of(db, u.id).slug for u in made]
-        assert slugs == ["zoe-angstrom", "organisation", "organisation-2"]
-    finally:
-        for u in made:
-            delete_user(db, u)
+def test_a_slug_is_made_of_plain_lower_case_words(api):
+    slugs = [created(api, name)["slug"] for name in ("Zoë Ångström", "日本語", "-- __")]
+    assert slugs[0] == "zoe-angstrom"
+    # Nothing left of the name: suffixed after any other organisation's like it.
+    assert all(s == "organisation" or s.startswith("organisation-") for s in slugs[1:])
+    assert slugs[1] != slugs[2]
 
 
 def test_renaming_an_organisation_leaves_its_slug_unchanged(api, user):
-    before = api.get("/api/me").json()["organisation"]
+    [before] = api.get("/api/me").json()["organisations"]
     assert before["slug"] == "test-user"
     resp = api.put("/api/organisation", json={"name": "Acme"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["slug"] == "test-user"
-    assert api.get("/api/me").json()["organisation"] == {**before, "name": "Acme"}
+    assert api.get("/api/me").json()["organisations"] == [{**before, "name": "Acme"}]
 
 
 def test_the_upgrade_gives_every_organisation_a_slug_oldest_first(db):
@@ -428,9 +394,8 @@ def test_the_upgrade_gives_every_organisation_a_slug_oldest_first(db):
     assert made[3] == "organisation" or made[3].startswith("organisation-")
 
 
-def test_me_lists_the_users_organisations_and_whether_they_created_each(api, user, member):
-    mine = api.get("/api/me").json()["organisation"]
-    expected = {"id": mine["id"], "name": "Test User", "slug": "test-user"}
+def test_me_lists_the_users_organisations_and_whether_they_created_each(api, db, user, member):
+    expected = {"id": org_of(db, user).id, "name": "Test User", "slug": "test-user"}
     assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": True}]
     with signed_in_as(member):
         assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": False}]

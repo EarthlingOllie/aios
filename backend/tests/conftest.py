@@ -41,7 +41,7 @@ from aios.testing import fake_model
 
 # The first segments of the API's unscoped paths (`aios.api.scoping`): what's the person's, not
 # any one organisation's. `o` is the organisation prefix itself.
-UNSCOPED = {"auth", "dev", "me", "invites", "notifications", "tools", "o"}
+UNSCOPED = {"auth", "dev", "me", "invites", "notifications", "tools", "organisations", "o"}
 
 
 def unscoped(path: str) -> bool:
@@ -50,12 +50,25 @@ def unscoped(path: str) -> bool:
     return rest.split("/", 1)[0].split("?", 1)[0] in UNSCOPED or rest == "triggers/timezones"
 
 
+def home_organisation(db, user_id: int) -> Organisation | None:
+    """The organisation tests act in for a user: the one they joined first (a test user's own,
+    made with them by `make_user`), whatever else they've joined since; None if they're in
+    none."""
+    return db.scalar(
+        select(Organisation)
+        .join(OrganisationMember)
+        .where(OrganisationMember.user_id == user_id)
+        .order_by(OrganisationMember.joined_at, Organisation.id)
+        .limit(1)
+    )
+
+
 class OrganisationClient(TestClient):
     """A client whose requests to an organisation's routes go under the organisation prefix, in
-    the organisation of whoever is signed in: `get("/api/agents")` asks for
-    `/api/o/<their organisation's id>/agents`, as the browser does in the organisation a page is
-    open in. A path already under the prefix (to name another organisation) is sent as it is,
-    and so is one of the unscoped routes'.
+    the home organisation (`home_organisation`) of whoever is signed in: `get("/api/agents")`
+    asks for `/api/o/<their organisation's id>/agents`, as the browser does in the organisation a
+    page is open in. A path already under the prefix (to name another organisation) is sent as
+    it is, and so is one of the unscoped routes'.
 
     Who's signed in is the user `current_user` is overridden with (the `api` fixture), else
     whoever `/api/me` says the client's session is; signed out, the path is sent as it is (no
@@ -72,7 +85,7 @@ class OrganisationClient(TestClient):
                 return None
             user_id = me.json()["id"]
         with SessionLocal() as db:
-            org = organisations.membership_of(db, user_id)
+            org = home_organisation(db, user_id)
             return None if org is None else org.id
 
     def request(self, method, url, *args, **kwargs):
@@ -134,15 +147,6 @@ def rate_limits() -> None:
 
 
 @pytest.fixture(autouse=True)
-def store_deletions(monkeypatch) -> list[uuid.UUID]:
-    """Data stores whose deletion sweep was queued (an empty organisation deleted on accepting
-    an invitation), instead of sending it to the broker."""
-    queued: list[uuid.UUID] = []
-    monkeypatch.setattr(organisations, "enqueue_store_deletion", queued.append)
-    return queued
-
-
-@pytest.fixture(autouse=True)
 def handoff_model() -> Iterator[None]:
     """The handoff step's model (`aios.handoff`), scripted rather than the provider's: it
     acknowledges with "On it." and briefs nothing (`fake_model.use_handoff` scripts another).
@@ -162,8 +166,8 @@ def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
 
 
 def delete_user(db, user: User) -> None:
-    """Delete the user's organisation (cascading to what it owns) with its store, the user, and
-    the store's database if it was provisioned."""
+    """Delete every organisation the user is in (cascading to what each owns) with its store,
+    the user, and the stores' databases if they were provisioned."""
     orgs = db.scalars(
         select(Organisation).join(OrganisationMember).where(OrganisationMember.user_id == user.id)
     ).all()
@@ -211,12 +215,16 @@ def build_user(handle: str | None = None, **values) -> User:
 
 
 def make_user(db, handle: str | None = None, **values) -> User:
-    """A new user (as `build_user`) in their personal organisation, as registering leaves them,
-    with no store yet. Delete them with `delete_user`."""
+    """A new user (as `build_user`) in an organisation of their own, named after them (with a
+    random suffix if another organisation has that name), as creating one on the welcome page
+    leaves them, with no store yet. Delete them with `delete_user`."""
     u = build_user(handle, **values)
     db.add(u)
     db.flush()
-    organisations.create_personal(db, u)
+    name = u.full_name
+    if db.scalar(select(Organisation.id).where(Organisation.name == name)) is not None:
+        name = f"{name}-{secrets.token_hex(4)}"
+    organisations.create(db, u, name)
     db.commit()
     return u
 
@@ -224,7 +232,7 @@ def make_user(db, handle: str | None = None, **values) -> User:
 def store_of(user: User) -> uuid.UUID:
     """The id of the user's organisation's data store, made (not provisioned) if it has none."""
     with SessionLocal() as db:
-        return data_store_for(organisations.membership_of(db, user.id).id)
+        return data_store_for(home_organisation(db, user.id).id)
 
 
 def join_organisation(db, of: User, handle: str | None = None, **values) -> User:
@@ -239,8 +247,9 @@ def join_organisation(db, of: User, handle: str | None = None, **values) -> User
 
 
 def org_of(db, user: User) -> Organisation:
-    """The user's organisation, for calling what takes one (as a request's would) directly."""
-    return organisations.membership_of(db, user.id)
+    """The user's organisation (`home_organisation`), for calling what takes one (as a request's
+    would) directly."""
+    return home_organisation(db, user.id)
 
 
 def made_by(db, user: User) -> dict:

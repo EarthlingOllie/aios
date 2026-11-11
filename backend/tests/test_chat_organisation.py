@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from conftest import delete_user, join_organisation
+from conftest import delete_user, home_organisation, join_organisation
 from sqlalchemy import delete, func, select, text, update
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
@@ -388,7 +388,7 @@ def leaving(leaver: User):
     owned locked) and committed as it ends."""
     with SessionLocal() as session:
         user = session.get_one(User, leaver.id)
-        org = organisations.membership_of(session, user.id)
+        org = home_organisation(session, user.id)
         assert organisations.leave_refusal(session, org, user) is None
         organisations.leave(session, org, user)
         session.flush()

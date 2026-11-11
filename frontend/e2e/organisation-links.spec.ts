@@ -20,7 +20,7 @@ test("the root opens the organisation's landing page", async ({ page }) => {
   await fakeApi(page);
   await page.goto("/");
   await expect(page).toHaveURL(new RegExp(`${inOrg("/")}(chats/new)?$`));
-  await expect(page.getByRole("link", { name: "tester" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "tester", exact: true }).first()).toBeVisible();
 });
 
 test("an old bookmark opens in the organisation used last", async ({ page }) => {
@@ -28,7 +28,7 @@ test("an old bookmark opens in the organisation used last", async ({ page }) => 
   // Globex was joined more recently, but tester was used last.
   api.otherMemberships = [globex];
   await page.goto(inOrg("/chats"));
-  await expect(page.getByRole("link", { name: "tester" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "tester", exact: true }).first()).toBeVisible();
   await page.goto("/agents");
   await expect(page).toHaveURL(inOrg("/agents"));
 });
@@ -52,7 +52,8 @@ test("the app's own links stay in the organisation", async ({ page }) => {
   await page.goto(inOrg("/agents"));
   await page.getByRole("link", { name: "Skills" }).first().click();
   await expect(page).toHaveURL(inOrg("/skills"));
-  await page.getByRole("link", { name: "tester" }).first().click();
+  await page.getByRole("button", { name: "tester", exact: true }).first().click();
+  await page.getByRole("menu", { name: "Organisations" }).getByRole("menuitem", { name: "tester" }).click();
   await expect(page).toHaveURL(inOrg("/organisation"));
 });
 

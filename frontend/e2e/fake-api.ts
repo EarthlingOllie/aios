@@ -504,6 +504,12 @@ export class FakeApi {
     created_at: "2026-10-14T08:00:00Z",
   };
   /**
+   * Whether `me` is a member of `organisation`: false for a person who has registered without an
+   * invitation, or left it, until they create or join one. While false, `/api/me` doesn't list
+   * it and its routes answer 404, as for any organisation they're not in.
+   */
+  member = true;
+  /**
    * Other organisations `me` is in, as `/api/me` lists them, before `organisation`: joined more
    * recently unless a test puts them after it (`joinedEarlier`). Only "me" sees them; every
    * other endpoint is `organisation`'s.
@@ -616,22 +622,6 @@ export class FakeApi {
   }
 
   /** The organisation as `GET /api/organisation` answers. */
-  /** What's in `me`'s organisation by kind, as a refused accept counts it (the fake has no skills
-   * or schedules): agents but the documents assistant, live workflows, chats, documents and data
-   * tables. */
-  private organisationContents() {
-    const counts = {
-      agent: [...this.agents.keys()].filter((id) => id !== this.assistantId).length,
-      workflow: [...this.workflows.values()].filter((w) => w.archived_at === null).length,
-      chat: [...this.chats.values()].filter((c) => c.organisation_id === this.organisation.id).length,
-      document: this.documents.length,
-      table: this.dataTables.length,
-    };
-    return Object.entries(counts)
-      .filter(([, count]) => count > 0)
-      .map(([kind, count]) => ({ kind, count }));
-  }
-
   private organisationOut() {
     return { ...this.organisationSummary(), ...this.organisation };
   }
@@ -642,23 +632,41 @@ export class FakeApi {
 
   /** The signed-in user as `/api/me` (and signing in) answers. */
   private meOut(account: Account) {
+    if (!this.member) return { ...accountOut(account), organisations: this.otherMemberships };
     const { id, name, slug, is_creator } = this.organisationSummary();
     const own = { id, name, slug, is_creator };
     const organisations = this.joinedEarlier ? [own, ...this.otherMemberships] : [...this.otherMemberships, own];
-    return { ...accountOut(account), organisation: this.organisationSummary(), organisations };
+    return { ...accountOut(account), organisations };
+  }
+
+  /**
+   * `me` enters `organisation` (made or joined just now): the one they were in, if any, stays
+   * theirs, listed after it as joined earlier.
+   */
+  private enter(organisation: OrganisationRow) {
+    if (this.member) {
+      const { id, name, slug, is_creator } = this.organisationSummary();
+      const earlier = { id, name, slug, is_creator };
+      this.otherMemberships = this.joinedEarlier ? [earlier, ...this.otherMemberships] : [...this.otherMemberships, earlier];
+    }
+    this.joinedEarlier = true;
+    this.organisation = organisation;
+    this.member = true;
   }
 
   /**
    * As registering does: the new account joins the organisation the invitation link `token` is
-   * for, if it opens (`invites` or `invitations`), else gets a personal one. Either becomes the
-   * fake's one `organisation`.
+   * for, if it opens (`invites` or `invitations`), which becomes the fake's `organisation`; else
+   * it's in none.
    */
   private joinOnRegistering(account: Account, token: string | undefined) {
     const now = new Date().toISOString();
     const own = token ? this.invites.find((i) => i.token === token) : undefined;
     const other = token ? this.invitations.get(token) : undefined;
+    this.otherMemberships = [];
     if (own) {
       this.organisation.members.push({ user: account, joined_at: now, invite_id: own.id });
+      this.member = true;
     } else if (other) {
       this.organisation = {
         ...other.organisation,
@@ -668,17 +676,9 @@ export class FakeApi {
         members: [{ user: account, joined_at: now, invite_id: null }],
         created_at: now,
       };
+      this.member = true;
     } else {
-      this.organisation = {
-        id: this.id(),
-        name: fullName(account),
-        slug: slugify(fullName(account)),
-        personal: true,
-        creator: account,
-        members: [{ user: account, joined_at: now, invite_id: null }],
-        created_at: now,
-      };
-      this.invites = [];
+      this.member = false;
     }
   }
 
@@ -1956,34 +1956,25 @@ export class FakeApi {
       if (!invitation) return fail(404, "This invitation link has expired or been revoked, or never existed.");
       if (!m[2] && method === "GET") return reply(200, invitation);
       if (this.signedInAs === null) return fail(401, "Not signed in");
+      // As the API: a membership is added, whatever else `me` is in; one they have already is
+      // answered alike, and nothing changes.
       if (invitation.organisation.id === this.organisation.id) {
-        return fail(409, `You're already a member of ${this.organisation.name}.`);
+        if (!this.member) {
+          this.organisation.members.push({ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null });
+          this.member = true;
+        }
+        return reply(200, this.organisationOut());
       }
-      // As the API: only from an empty personal organisation of `me`'s own, which goes.
-      if (!this.organisation.personal || this.organisation.members.length > 1) {
-        return fail(
-          409,
-          `You're a member of ${this.organisation.name}. You can be in only one organisation at a time.`,
-        );
-      }
-      const contents = this.organisationContents();
-      if (contents.length) {
-        const name = this.organisation.name;
-        return reply(409, {
-          detail: {
-            message: `You're a member of ${name}, which has things in it. Accepting would delete ${name}, so delete them first.`,
-            contents,
-          },
-        });
-      }
-      this.organisation = {
+      const already = this.otherMemberships.find((o) => o.id === invitation.organisation.id);
+      if (already) return reply(200, { ...already, personal: false, creator: null, members: [], created_at: "2026-10-01T08:00:00Z" });
+      this.enter({
         ...invitation.organisation,
         slug: slugify(invitation.organisation.name),
         personal: false,
         creator: null,
         members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
         created_at: "2026-10-01T08:00:00Z",
-      };
+      });
       return reply(200, this.organisationOut());
     }
     const account = this.accounts.find((a) => a.id === this.signedInAs);
@@ -2007,6 +1998,23 @@ export class FakeApi {
     }
 
     if (path === "/api/me") return reply(200, this.meOut(account));
+    if (path === "/api/organisations" && method === "POST") {
+      const name = String(body?.name ?? "").trim();
+      if (!name) return reply(422, { detail: [{ loc: ["body", "name"], msg: "String should match pattern '\\S'" }] });
+      if (this.organisationNamesTaken.has(name)) return fail(409, "An organisation with that name already exists.");
+      const now = new Date().toISOString();
+      this.enter({
+        id: this.id(),
+        name,
+        slug: slugify(name),
+        personal: false,
+        creator: this.me,
+        members: [{ user: this.me, joined_at: now, invite_id: null }],
+        created_at: now,
+      });
+      this.invites = [];
+      return reply(201, this.organisationOut());
+    }
     // Everything but the person's own (signing in, the profile, invitations, notifications, the
     // tool library and timezones) is an organisation's, under its prefix (`/api/o/<id>/...`), as
     // in the API: the fake's organisation answers (as it was before the prefix, from here on),
@@ -2015,7 +2023,7 @@ export class FakeApi {
     if (!unscoped) {
       const scoped = path.match(/^\/api\/o\/([^/]+)(\/.*)$/);
       if (!scoped) return fail(404, "Not Found");
-      if (scoped[1] !== String(this.organisation.id)) return fail(404, "Organisation not found");
+      if (!this.member || scoped[1] !== String(this.organisation.id)) return fail(404, "Organisation not found");
       path = `/api${scoped[2]}`;
     }
     if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
@@ -2047,23 +2055,15 @@ export class FakeApi {
     }
     if (path === "/api/organisation/leave" && method === "POST") {
       if (this.organisation.members.length <= 1) {
-        return fail(409, "You're its only member, so nobody would be left to see what's in it: an organisation can't be left empty.");
+        return fail(409, "You're its only member, so nobody would be left to see what's in it. Delete the organisation instead.");
       }
       if (this.organisation.creator?.id === this.me.id) {
         return fail(409, "You created this organisation, and only its creator can invite people into it, so you can't leave while others are still members.");
       }
-      const now = new Date().toISOString();
-      this.organisation = {
-        id: this.id(),
-        name: fullName(this.me),
-        slug: slugify(fullName(this.me)),
-        personal: true,
-        creator: this.me,
-        members: [{ user: this.me, joined_at: now, invite_id: null }],
-        created_at: now,
-      };
-      this.invites = [];
-      return reply(200, this.organisationOut());
+      // Only the membership goes: `me` is left in the others they're in, or in none.
+      this.organisation.members = this.organisation.members.filter((m) => m.user.id !== this.me.id);
+      this.member = false;
+      return reply(200, this.meOut(account));
     }
     if (path === "/api/organisation") {
       if (method === "PUT") {

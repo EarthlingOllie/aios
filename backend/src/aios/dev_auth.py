@@ -31,8 +31,7 @@ class DevSessionIn(BaseModel):
 
 @router.post("/session", response_model=MeOut)
 def sign_in_as(body: DevSessionIn, request: Request, db: DB):
-    """Sign in as the user, as a password sign-in would (their organisation's data store queued
-    if missing)."""
+    """Sign in as the user, as a password sign-in would."""
     user = db.get(User, body.user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such user")

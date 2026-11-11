@@ -93,6 +93,7 @@ UNSCOPED = {
     ("PUT", "/api/me/password"),
     ("GET", "/api/invites/{token}"),
     ("POST", "/api/invites/{token}/accept"),
+    ("POST", "/api/organisations"),
     ("GET", "/api/notifications"),
     ("POST", "/api/notifications/{notification_id}/read"),
     ("GET", "/api/tools"),

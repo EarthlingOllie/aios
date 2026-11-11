@@ -1,13 +1,12 @@
 import secrets
 
 import pytest
-from conftest import TEST_PASSWORD, delete_user, signed_in_client
+from conftest import TEST_PASSWORD, delete_user, home_organisation, signed_in_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from aios import organisations
 from aios.main import app
-from aios.models import DataStore, DataStoreStatus, User
+from aios.models import DataStore, Organisation, User
 
 
 def test_me_requires_session(client):
@@ -59,37 +58,25 @@ def test_registering_signs_the_new_user_in(client, registered):
         "first_name": "Alice",
         "last_name": "Smith",
         "email": email,
-        "organisation": me.json()["organisation"],
-        "organisations": me.json()["organisations"],
+        "organisations": [],
     }
 
 
-def test_registering_makes_the_new_user_a_personal_organisation_named_after_them(
-    client, registered
-):
-    email = new_email()
-    registered.append(email)
-
-    me = client.post("/api/auth/register", json=registration(email)).json()
-
-    org = me["organisation"]
-    # Suffixed if another test's "Alice Smith" is about.
-    assert org["name"] == "Alice Smith" or org["name"].startswith("Alice Smith-")
-    assert (org["personal"], org["is_creator"]) == (True, True)
-    members = client.get("/api/organisation").json()["members"]
-    assert [m["user"] for m in members] == [{"id": me["id"], "name": "Alice Smith"}]
-
-
-def test_registering_queues_the_new_users_data_store(client, db, registered, provisioning):
+def test_registering_without_an_invitation_makes_nothing(client, db, registered, provisioning):
+    """A new registrant is in no organisation, and no store is made or provisioned for them:
+    the app sends them to the welcome page."""
     email = new_email()
     registered.append(email)
 
     resp = client.post("/api/auth/register", json=registration(email))
 
-    org_id = resp.json()["organisation"]["id"]
-    stores = db.scalars(select(DataStore).where(DataStore.owner_organisation_id == org_id)).all()
-    assert [s.status for s in stores] == [DataStoreStatus.provisioning]
-    assert provisioning == [stores[0].id]
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["organisations"] == []
+    user_id = resp.json()["id"]
+    assert home_organisation(db, user_id) is None
+    made = db.scalars(select(Organisation).where(Organisation.created_by == user_id)).all()
+    assert made == []
+    assert provisioning == []
 
 
 def test_registering_trims_names_and_email_and_stores_the_email_normalised(client, db, registered):
@@ -180,15 +167,18 @@ def test_signing_in_with_the_email_in_any_case(db, user):
     assert client.get("/api/me").json()["email"] == user.email
 
 
-def test_signing_in_starts_the_organisations_data_store_if_it_has_none(db, new_user, provisioning):
+def test_signing_in_makes_nothing(db, new_user, provisioning):
+    """Signing in finds the person's organisations as they are: none is made, nor a store for
+    one that has none."""
     someone = new_user()
     client = TestClient(app)
 
-    client.post("/api/auth/login", json={"email": someone.email, "password": TEST_PASSWORD})
+    resp = client.post("/api/auth/login", json={"email": someone.email, "password": TEST_PASSWORD})
 
-    org = organisations.membership_of(db, someone.id)
-    store = db.scalar(select(DataStore).where(DataStore.owner_organisation_id == org.id))
-    assert provisioning == [store.id]
+    org = home_organisation(db, someone.id)
+    assert [o["id"] for o in resp.json()["organisations"]] == [org.id]
+    assert db.scalar(select(DataStore).where(DataStore.owner_organisation_id == org.id)) is None
+    assert provisioning == []
 
 
 @pytest.mark.parametrize(
