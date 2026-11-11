@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -21,13 +21,16 @@ from aios.api.provenance import (
     started_by,
 )
 from aios.api.skills import lock_live, unique_name
-from aios.api.triggers import disable_triggers
+from aios.api.triggers import disable_triggers, unindex
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import history, schema_changes, store_id_of
 from aios.datastores.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    Invocation,
+    SchemaChangeRequest,
+    Trigger,
     Workflow,
     WorkflowNode,
     WorkflowRun,
@@ -36,10 +39,7 @@ from aios.datastores.models import (
 )
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
-    ChatInvocation,
-    SchemaChangeRequest,
     SchemaChangeStatus,
-    Trigger,
     WorkflowNodeKind,
     WorkflowRunStatus,
     WorkflowStepStatus,
@@ -596,15 +596,10 @@ def archive_workflow(
     if workflow.archived_at is None:
         workflow.archived_at = func.now()
         workflow.archived_by = user.id
-        # The store first, as the source of truth; then its schedules, on the platform (see
-        # `aios.api.agents.archive_agent`).
+        # Its schedules are paused with it (see `aios.api.agents.archive_agent`).
+        paused = disable_triggers(store, Trigger.workflow_id == workflow.id, user.id)
         store.commit()
-        disable_triggers(
-            db,
-            (Trigger.organisation_id == org.id) & (Trigger.workflow_id == workflow.id),
-            user.id,
-        )
-        db.commit()
+        unindex(store, paused)
     return workflow_out(db, org.id, store, workflow)
 
 
@@ -633,7 +628,7 @@ def get_workflow_used_by(
 ):
     """What uses the workflow, for the archive confirmation to show: read-only, as archiving is
     never refused."""
-    return used_by.workflow(db, store, org.id, get_org_workflow(store, workflow_id), user.id)
+    return used_by.workflow(store, get_org_workflow(store, workflow_id), user.id)
 
 
 @router.get(
@@ -869,9 +864,7 @@ def stale_pins(db: Session, version_id: int) -> list[StalePin]:
     return stale
 
 
-def waiting_requests(
-    db: Session, data_store_id: uuid.UUID, steps: Sequence[WorkflowRunStep]
-) -> list[SchemaChangeRequest]:
+def waiting_requests(store: Session, steps: Sequence[WorkflowRunStep]) -> list[SchemaChangeRequest]:
     """The requests the waiting steps among `steps` (the store's) wait on, oldest first: those
     their agent runs made that they haven't been given, and each one's recorded request (its
     agent run may have gone)."""
@@ -881,10 +874,9 @@ def waiting_requests(
     if not waiting:
         return []
     return list(
-        db.scalars(
+        store.scalars(
             select(SchemaChangeRequest)
             .where(
-                SchemaChangeRequest.data_store_id == data_store_id,
                 or_(
                     SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
                     SchemaChangeRequest.id.in_(recorded),
@@ -942,11 +934,11 @@ def workflow_run_summary_query():
 
 
 def workflow_run_summaries(
-    db: Session, organisation_id: int, rows: Sequence[Row]
+    db: Session, organisation_id: int, store: Session, rows: Sequence[Row]
 ) -> list[WorkflowRunSummary]:
-    """Rows of `workflow_run_summary_query` for the organisation's runs as summaries: with the
-    chats that started them and who started each, from the platform."""
-    chats = run_chats(db, organisation_id, ChatInvocation.workflow_run_id, [r.id for r in rows])
+    """Rows of `workflow_run_summary_query` for the organisation's runs (in its store, `store`)
+    as summaries: with the chats that started them, and who started each."""
+    chats = run_chats(store, Invocation.workflow_run_id, [r.id for r in rows])
     return started_by(
         db,
         organisation_id,
@@ -966,7 +958,7 @@ def workflow_run_summary(
     db: Session, organisation_id: int, store: Session, run_id: int
 ) -> WorkflowRunSummary:
     row = store.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
-    return workflow_run_summaries(db, organisation_id, [row])[0]
+    return workflow_run_summaries(db, organisation_id, store, [row])[0]
 
 
 @router.get(
@@ -984,7 +976,7 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB, stor
         .where(theirs)
         .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
     ).all()
-    return workflow_run_summaries(db, org.id, rows)
+    return workflow_run_summaries(db, org.id, store, rows)
 
 
 @router.post(
@@ -1052,18 +1044,13 @@ def new_workflow_run(
     return run
 
 
-def queue_workflow_run(
-    store: Session, run: WorkflowRun, link: Callable[[], None] | None = None
-) -> None:
-    """Commit the run in its store (with whatever else is pending there) and send it to the
-    worker. `link`, if given, records on the platform what started the run (a schedule, a chat's
-    mention), and commits that, between the two: the run's source of truth first, and the link
-    before the worker can end the run and look for it. If it can't be queued, delete the run
-    (what links to it stops naming it) and raise a 503."""
+def queue_workflow_run(store: Session, run: WorkflowRun) -> None:
+    """Commit the run in its store (with whatever else is pending there: what started it, a
+    schedule's or a chat mention's link to it, before the worker can end the run and look for
+    it) and send it to the worker. If it can't be queued, delete the run (what links to it stops
+    naming it) and raise a 503."""
     store.commit()
     store_id = store_id_of(store)
-    if link is not None:
-        link()
     try:
         run_workflow_task.delay(str(store_id), run.id)
     except Exception as exc:
@@ -1072,7 +1059,6 @@ def queue_workflow_run(
         store.delete(run)
         store.commit()
         with SessionLocal() as db:
-            invocations.forget_runs(db, store_id, workflow_run_ids=[run.id])
             # A backfill since it was committed may have exported it: that copy goes too.
             history.enqueue_workflow_runs(db, store_id, [run.id], deleting=True)
             db.commit()
@@ -1120,7 +1106,7 @@ def workflow_run_out(
         .where(WorkflowRunStep.run_id == run_id)
         .order_by(WorkflowRunStep.id)
     ).all()
-    waits = waiting_requests(db, store_id_of(store), [step for step, _ in steps])
+    waits = waiting_requests(store, [step for step, _ in steps])
     steps_out = [
         WorkflowRunStepOut(
             id=step.id,
@@ -1211,24 +1197,23 @@ def delete_workflow_run(
     agent_run_ids = [s.agent_run_id for s in steps if s.agent_run_id is not None]
     request_ids = [s.waiting_on_request_id for s in steps if s.waiting_on_request_id is not None]
     sandboxes = run_sandboxes(store, agent_run_ids)
-    # Their conversations go with them.
-    store.execute(select(AgentRun.id).where(AgentRun.id.in_(agent_run_ids)).with_for_update())
+    # Their conversations go with them. Locked first: a request being recorded for one
+    # meanwhile is waited for (`schema_changes.lock_run`), and then seen.
+    schema_changes.lock_run(store, agent_run_ids)
+    # A pending request can't be approved any more.
+    cancelled = close_requests(store, agent_run_ids, request_ids)
+    # A chat that started it and is still following it is told it's gone.
+    invocations.fail_deleted_run(store, run.id)
     checkpoints.delete_threads(store, agent_run_ids)
     store.execute(delete(AgentRun).where(AgentRun.id.in_(agent_run_ids)))  # and their sessions
     store.delete(run)  # and its steps
     store.commit()
-    # Then what the platform says of them. A pending request can't be approved; one being
-    # recorded meanwhile is waited for (`schema_changes.lock_run`), and then seen.
-    for agent_run_id in sorted(agent_run_ids):
-        schema_changes.lock_run(db, store_id, agent_run_id)
-    close_requests(db, store_id, agent_run_ids, request_ids)
-    # A chat that started it and is still following it is told it's gone.
-    invocations.fail_deleted_run(db, store_id, run.id)
+    # Then what the platform says of them.
+    schema_changes.clear_notifications_of(cancelled)
     # Their exported copies go too, and its own (its agent runs' rows first, as the export
     # marks them).
     history.enqueue_runs(db, store_id, agent_run_ids, deleting=True)
     history.enqueue_workflow_runs(db, store_id, [run.id], deleting=True)
-    invocations.forget_runs(db, store_id, agent_run_ids=agent_run_ids, workflow_run_ids=[run.id])
     db.commit()
     if sandboxes:
         background.add_task(stop_sandboxes, sandboxes)

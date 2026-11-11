@@ -26,12 +26,11 @@ from aios.api.agents.runs import build_version_tools
 from aios.api.schema_changes import of_run, waiting_on
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import data_store_for, history, schema_changes, store_session
-from aios.datastores.models import Agent, AgentRun, AgentVersion
+from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
     AgentRunStatus,
     DataStore,
-    SchemaChangeRequest,
     SchemaChangeStatus,
 )
 from aios.permissions import Action, allow
@@ -276,13 +275,12 @@ def _cancel_requests(data_store_id: uuid.UUID, run_id: int, tool_call_ids: list[
     model has been told the calls didn't finish, so nothing waits on them any more."""
     if not tool_call_ids:
         return
-    with SessionLocal() as db:
-        schema_changes.cancel(
-            db,
-            *of_run(data_store_id, run_id),
-            SchemaChangeRequest.tool_call_id.in_(tool_call_ids),
+    with store_session(data_store_id) as store:
+        cancelled = schema_changes.cancel(
+            store, *of_run(run_id), SchemaChangeRequest.tool_call_id.in_(tool_call_ids)
         )
-        db.commit()
+        store.commit()
+    schema_changes.clear_notifications_of(cancelled)
 
 
 async def _record_turn(
@@ -359,11 +357,10 @@ class Resume:
 def _decided_requests(data_store_id: uuid.UUID, run_id: int) -> dict[str, dict[str, Any]]:
     """The store's run's decided requests it hasn't been given yet, with their outcomes, by
     id."""
-    with SessionLocal() as db:
-        requests = db.scalars(
+    with store_session(data_store_id, "ro") as store:
+        requests = store.scalars(
             select(SchemaChangeRequest).where(
-                *of_run(data_store_id, run_id),
-                SchemaChangeRequest.resumed_at.is_(None),
+                *of_run(run_id), SchemaChangeRequest.resumed_at.is_(None)
             )
         ).all()
         return {str(r.id): schema_changes.outcome(r) for r in requests if r.status.decided}
@@ -390,8 +387,8 @@ async def _resume_command(
 
 
 def _check_not_waiting(data_store_id: uuid.UUID, run_id: int) -> None:
-    with SessionLocal() as db:
-        if waiting_on(db, data_store_id, run_id):
+    with store_session(data_store_id, "ro") as store:
+        if waiting_on(store, run_id):
             raise RunWaiting
 
 
@@ -558,11 +555,11 @@ def _mark_resumed(
 ) -> None:
     """The store's run has been given these requests' outcomes (None: all its decided ones'):
     it takes new messages again, unless another still waits."""
-    with SessionLocal() as db:
-        db.execute(
+    with store_session(data_store_id) as store:
+        store.execute(
             update(SchemaChangeRequest)
             .where(
-                *of_run(data_store_id, run_id),
+                *of_run(run_id),
                 SchemaChangeRequest.resumed_at.is_(None),
                 SchemaChangeRequest.status.not_in(
                     [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
@@ -571,7 +568,7 @@ def _mark_resumed(
             )
             .values(resumed_at=func.now())
         )
-        db.commit()
+        store.commit()
 
 
 class ResumeFailed(RuntimeError):
@@ -615,9 +612,9 @@ async def resume_run(data_store_id: uuid.UUID, run_id: int) -> None:
 
 def _finish_invocation(data_store_id: uuid.UUID, run_id: int, error: str | None) -> None:
     """Post the resumed run's reply to the chat whose mention started it, if one did."""
-    with SessionLocal() as db:
-        invocations.finish_resumed(db, data_store_id, run_id, error)
-        db.commit()
+    with store_session(data_store_id) as store:
+        invocations.finish_resumed(store, run_id, error)
+        store.commit()
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat", dependencies=[allow(Action.post)])

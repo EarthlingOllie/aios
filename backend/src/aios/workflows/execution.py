@@ -20,11 +20,16 @@ from aios import invocations
 from aios import workflows as package
 from aios.config import get_settings
 from aios.datastores import history, schema_changes, store_id_of, store_session
-from aios.datastores.models import Workflow, WorkflowRun, WorkflowRunStep, WorkflowVersion
+from aios.datastores.models import (
+    SchemaChangeRequest,
+    Workflow,
+    WorkflowRun,
+    WorkflowRunStep,
+    WorkflowVersion,
+)
 from aios.db import SessionLocal
 from aios.models import (
     DataStore,
-    SchemaChangeRequest,
     SchemaChangeStatus,
     WorkflowRunStatus,
     WorkflowStepStatus,
@@ -187,15 +192,12 @@ def _claim(data_store_id: uuid.UUID, run_id: int) -> Claimed | None:
 
 
 def _not_given(
-    data_store_id: uuid.UUID,
-    agent_run_ids: Iterable[int],
-    request_ids: Iterable[uuid.UUID],
+    agent_run_ids: Iterable[int], request_ids: Iterable[uuid.UUID]
 ) -> list[ColumnElement[bool]]:
     """The store's requests made by these agent runs (workflow nodes' conversations), or with
     these ids, not yet given to the runs that made them."""
     agent_run_ids, request_ids = list(agent_run_ids), list(request_ids)
     return [
-        SchemaChangeRequest.data_store_id == data_store_id,
         or_(
             SchemaChangeRequest.requested_by_run.in_(agent_run_ids) if agent_run_ids else false(),
             SchemaChangeRequest.id.in_(request_ids) if request_ids else false(),
@@ -223,14 +225,13 @@ def _decided_waits(data_store_id: uuid.UUID, run_id: int) -> bool:
     not yet given to it."""
     with store_session(data_store_id, "ro") as store:
         agent_run_ids, request_ids = _waiting_steps(store, run_id)
-    if not agent_run_ids and not request_ids:
-        return False
-    with SessionLocal() as db:
+        if not agent_run_ids and not request_ids:
+            return False
         return (
-            db.scalar(
+            store.scalar(
                 select(SchemaChangeRequest.id)
                 .where(
-                    *_not_given(data_store_id, agent_run_ids, request_ids),
+                    *_not_given(agent_run_ids, request_ids),
                     SchemaChangeRequest.status.not_in(
                         [SchemaChangeStatus.pending, SchemaChangeStatus.approved]
                     ),
@@ -241,21 +242,20 @@ def _decided_waits(data_store_id: uuid.UUID, run_id: int) -> bool:
         )
 
 
-def workflow_run_waiting_on(request: SchemaChangeRequest) -> int | None:
-    """The workflow run (in the request's store) whose agent node made the request, if one did:
-    the run to resume once it's decided. Found by the step's agent run, or, if the step has
-    lost it, by the request the step waits on."""
+def workflow_run_waiting_on(store: Session, request: SchemaChangeRequest) -> int | None:
+    """The workflow run (in the request's store, `store`) whose agent node made the request, if
+    one did: the run to resume once it's decided. Found by the step's agent run, or, if the step
+    has lost it, by the request the step waits on."""
     by_run = (
         WorkflowRunStep.agent_run_id == request.requested_by_run
         if request.requested_by_run is not None
         else false()
     )
-    with store_session(request.data_store_id, "ro") as store:
-        return store.scalar(
-            select(WorkflowRunStep.run_id)
-            .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
-            .limit(1)
-        )
+    return store.scalar(
+        select(WorkflowRunStep.run_id)
+        .where(or_(by_run, WorkflowRunStep.waiting_on_request_id == request.id))
+        .limit(1)
+    )
 
 
 def _pause_run(data_store_id: uuid.UUID, run_id: int) -> None:
@@ -391,9 +391,8 @@ class Ended:
 
     data_store_id: uuid.UUID
     runs: list[WorkflowRun] = field(default_factory=list)
-    # Their steps' agent runs, and the requests their steps waited on.
-    agent_run_ids: list[int] = field(default_factory=list)
-    request_ids: list[uuid.UUID] = field(default_factory=list)
+    # The requests their agent nodes made that were cancelled with them, whose notifications go.
+    cancelled: list[uuid.UUID] = field(default_factory=list)
 
 
 def _end_runs(
@@ -404,8 +403,10 @@ def _end_runs(
     error: str | None,
 ) -> Ended:
     """End the store's runs matching `where` that haven't ended, and fail their steps still
-    running; in `store`'s transaction. A waiting run is left be (it isn't the worker's to end).
-    Once the caller has committed, `_record_ended` records the rest, on the platform."""
+    running, close out the requests their agent nodes made (`close_requests`), and finish the
+    invocations that started them, posting their results back to their chats; in `store`'s
+    transaction. A waiting run is left be (it isn't the worker's to end). Once the caller has
+    committed, `_record_ended` records the rest, on the platform."""
     ended = Ended(store_id_of(store))
     going = [s for s in NOT_ENDED if s != WorkflowRunStatus.waiting]
     waited = func.coalesce(func.extract("epoch", func.now() - WorkflowRun.waiting_since), 0)
@@ -428,15 +429,18 @@ def _end_runs(
         return ended
     ids = [run.id for run in ended.runs]
     # Before the steps forget the requests they wait on.
+    agent_run_ids: list[int] = []
+    request_ids: list[uuid.UUID] = []
     for agent_run_id, request_id in store.execute(
         select(WorkflowRunStep.agent_run_id, WorkflowRunStep.waiting_on_request_id).where(
             WorkflowRunStep.run_id.in_(ids)
         )
     ):
         if agent_run_id is not None:
-            ended.agent_run_ids.append(agent_run_id)
+            agent_run_ids.append(agent_run_id)
         if request_id is not None:
-            ended.request_ids.append(request_id)
+            request_ids.append(request_id)
+    ended.cancelled = close_requests(store, agent_run_ids, request_ids)
     # Steps whose nodes were stopped with the run, e.g. when it took too long or its worker died:
     # they never recorded their own end. And those waiting, when another node failed meanwhile.
     store.execute(
@@ -452,39 +456,37 @@ def _end_runs(
             waiting_on_request_id=None,
         )
     )
+    # Those a chat started post their results back to it.
+    invocations.finish_workflow_runs(store, ended.runs)
     return ended
 
 
 def _record_ended(ended: Ended) -> None:
-    """What the platform records of runs that have ended in their store: the requests they made
-    are closed out, the invocations that started them finish, and they go in the run history
+    """What the platform records of runs that have ended in their store, once that's committed:
+    the notifications of the requests cancelled with them go, and they go in the run history
     export's outbox. Commits."""
     if not ended.runs:
         return
+    schema_changes.clear_notifications_of(ended.cancelled)
     with SessionLocal() as db:
-        close_requests(db, ended.data_store_id, ended.agent_run_ids, ended.request_ids)
-        # Those a chat started post their results back to it.
-        invocations.finish_workflow_runs(db, ended.data_store_id, ended.runs)
         history.enqueue_workflow_runs(db, ended.data_store_id, [r.id for r in ended.runs])
         db.commit()
 
 
 def close_requests(
-    db: Session,
-    data_store_id: uuid.UUID,
-    agent_run_ids: Iterable[int],
-    request_ids: Iterable[uuid.UUID],
-) -> None:
+    store: Session, agent_run_ids: Iterable[int], request_ids: Iterable[uuid.UUID]
+) -> list[uuid.UUID]:
     """Close out the store's schema change requests that workflow runs' agent nodes made (by
     their steps' agent runs, `agent_run_ids`, or the requests their steps waited on,
     `request_ids`) and haven't been given: the runs have ended or are being deleted, so nothing
-    will give them their outcomes. Pending ones are cancelled, so they can't be approved, and
-    their notifications cleared (`schema_changes.cancel`); the others count as given, so the
-    conversations don't wait on them (one being applied still is). In the caller's
-    transaction."""
-    not_given = _not_given(data_store_id, agent_run_ids, request_ids)
-    schema_changes.cancel(db, *not_given)
-    db.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
+    will give them their outcomes. Pending ones are cancelled, so they can't be approved
+    (`schema_changes.cancel`: returns their ids, whose notifications to clear once this
+    commits); the others count as given, so the conversations don't wait on them (one being
+    applied still is). In the caller's transaction."""
+    not_given = _not_given(agent_run_ids, request_ids)
+    cancelled = schema_changes.cancel(store, *not_given)
+    store.execute(update(SchemaChangeRequest).where(*not_given).values(resumed_at=func.now()))
+    return cancelled
 
 
 def _finish_run(

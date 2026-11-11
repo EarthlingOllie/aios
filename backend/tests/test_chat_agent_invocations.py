@@ -13,8 +13,8 @@ from test_workflows import agent_node, make_workflow
 
 from aios import checkpoints, firing, scheduler
 from aios.config import get_settings
-from aios.datastores.models import AgentRun
-from aios.models import ChatInvocation
+from aios.datastores import store_session
+from aios.datastores.models import AgentRun, Invocation
 from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
 from aios.tools import TOOLS
 
@@ -126,14 +126,15 @@ def test_a_failed_turn_posts_its_error_and_fails_the_card(api):
 def age(db, in_store, invocation_id: int) -> None:
     """Make the invocation's and its run's heartbeats older than a live process lets them get."""
     stale = func.now() - firing.STALE_AFTER - timedelta(seconds=1)
-    run_id = db.scalar(
-        update(ChatInvocation)
-        .where(ChatInvocation.id == invocation_id)
-        .values(heartbeat_at=stale)
-        .returning(ChatInvocation.agent_run_id)
-    )
-    db.commit()
-    in_store.execute(update(AgentRun).where(AgentRun.id == run_id).values(heartbeat_at=stale))
+    with store_session(in_store.store_id) as store:
+        run_id = store.scalar(
+            update(Invocation)
+            .where(Invocation.id == invocation_id)
+            .values(heartbeat_at=stale)
+            .returning(Invocation.agent_run_id)
+        )
+        store.execute(update(AgentRun).where(AgentRun.id == run_id).values(heartbeat_at=stale))
+        store.commit()
 
 
 def test_a_turn_whose_heartbeat_stops_is_failed_when_the_chat_is_read(api, db, in_store):

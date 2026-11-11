@@ -1,5 +1,6 @@
 """What the chats API's parts share: the chat's schemas, loading, lookups and locks."""
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from fastapi import HTTPException, status
@@ -7,20 +8,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from aios.api.provenance import Provenance, UserOut, provenance
-from aios.datastores import organisation_store
-from aios.datastores.models import Agent, Workflow
+from aios.api.provenance import Provenance, UserOut, people, provenance
+from aios.datastores.models import Agent, Chat, ChatMember, Workflow
 from aios.db import DbId
 from aios.models import (
-    Chat,
-    ChatMember,
     ChatMemberKind,
     ChatMemberRole,
     ChatVisibility,
-    Organisation,
+    User,
 )
 
-CHAT_NAME_INDEX = "uq_chats_organisation_id_name"
+CHAT_NAME_INDEX = "uq_chats_name"
 # What an agent or workflow member is.
 TARGET_MODELS: dict[ChatMemberKind, type[Agent] | type[Workflow]] = {
     ChatMemberKind.agent: Agent,
@@ -28,9 +26,9 @@ TARGET_MODELS: dict[ChatMemberKind, type[Agent] | type[Workflow]] = {
 }
 # One row per (chat, user), (chat, agent) and (chat, workflow).
 MEMBER_CONSTRAINTS = {
-    ChatMemberKind.user: "chat_members_chat_id_user_id_key",
-    ChatMemberKind.agent: "chat_members_chat_id_agent_id_key",
-    ChatMemberKind.workflow: "chat_members_chat_id_workflow_id_key",
+    ChatMemberKind.user: "uq_chat_members_chat_id_user_id",
+    ChatMemberKind.agent: "uq_chat_members_chat_id_agent_id",
+    ChatMemberKind.workflow: "uq_chat_members_chat_id_workflow_id",
 }
 ALREADY_A_MEMBER = "Already a member of this chat."
 
@@ -94,32 +92,49 @@ class ChatOut(ChatSummary):
 
 # An agent or workflow member's name, and whether it's archived, by (kind, id).
 Targets = dict[tuple[ChatMemberKind, int], tuple[str, bool]]
+# The people who are members, by user id: chats are in the store, people on the platform.
+Users = dict[int, User]
 
 
-def chat_targets(chat: Chat) -> Targets:
-    """The chat's agent and workflow members as they are in its organisation's store (which
-    the members name them in, by id): their names, and whether each is archived."""
+def chat_targets(store: Session, chat: Chat) -> Targets:
+    """The chat's agent and workflow members as they are in its store: their names, and whether
+    each is archived."""
     found: Targets = {}
     wanted = {
         kind: [m.agent_id or m.workflow_id for m in chat.members if m.kind == kind]
         for kind in TARGET_MODELS
     }
-    if not any(wanted.values()):
-        return found
-    with organisation_store(chat.organisation_id, "ro") as store:
-        for kind, ids in wanted.items():
-            model = TARGET_MODELS[kind]
-            for i, name, archived_at in store.execute(
-                select(model.id, model.name, model.archived_at).where(model.id.in_(ids))
-            ):
-                found[kind, i] = (name, archived_at is not None)
+    for kind, ids in wanted.items():
+        if not ids:
+            continue
+        model = TARGET_MODELS[kind]
+        for i, name, archived_at in store.execute(
+            select(model.id, model.name, model.archived_at).where(model.id.in_(ids))
+        ):
+            found[kind, i] = (name, archived_at is not None)
     return found
 
 
-def member_out(member: ChatMember, targets: Targets) -> ChatMemberOut:
-    """The member, an agent or workflow one as `targets` (`chat_targets`) has it."""
+def users_by_id(db: Session, ids: Iterable[int | None]) -> Users:
+    """The platform's users with these ids (nulls skipped), by id: the chat's people."""
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    return {u.id: u for u in db.scalars(select(User).where(User.id.in_(wanted)))}
+
+
+def chat_users(db: Session, chat: Chat) -> Users:
+    """The chat's people members, from the platform."""
+    return users_by_id(db, [m.user_id for m in chat.members])
+
+
+def member_out(member: ChatMember, targets: Targets, users: Users) -> ChatMemberOut | None:
+    """The member, an agent or workflow one as `targets` (`chat_targets`) has it, a person as
+    `users` (`chat_users`) does: None for a person who no longer exists."""
     if member.kind == ChatMemberKind.user:
-        user = member.user
+        user = users.get(member.user_id)
+        if user is None:
+            return None
         return ChatMemberOut(
             id=member.id,
             kind=member.kind,
@@ -147,11 +162,13 @@ def ordered_members(chat: Chat) -> list[ChatMember]:
     return sorted(chat.members, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
 
 
-def members_out(chat: Chat) -> ChatMembersOut:
-    targets = chat_targets(chat)
+def members_out(db: Session, store: Session, chat: Chat) -> ChatMembersOut:
+    targets = chat_targets(store, chat)
+    users = chat_users(db, chat)
     by_kind: dict[ChatMemberKind, list[ChatMemberOut]] = {kind: [] for kind in ChatMemberKind}
     for member in ordered_members(chat):
-        by_kind[member.kind].append(member_out(member, targets))
+        if (out := member_out(member, targets, users)) is not None:
+            by_kind[member.kind].append(out)
     return ChatMembersOut(
         users=by_kind[ChatMemberKind.user],
         agents=by_kind[ChatMemberKind.agent],
@@ -161,13 +178,16 @@ def members_out(chat: Chat) -> ChatMembersOut:
 
 def chat_summary(
     db: Session,
+    organisation_id: int,
     chat: Chat,
     member_count: int,
     role: ChatMemberRole | None,
     known: dict[int, UserOut] | None = None,
 ) -> ChatSummary:
-    """The chat as the list shows it, to a user with this `role` in it (None: not a member);
-    who made and changed it from `known` when given (see `people`), else read now."""
+    """The organisation's chat as the list shows it, to a user with this `role` in it (None: not
+    a member); who made and changed it from `known` when given (see `people`), else read now."""
+    if known is None:
+        known = people(db, organisation_id, [chat.created_by, chat.updated_by])
     return ChatSummary(
         **provenance(db, chat, known),
         id=chat.id,
@@ -182,23 +202,26 @@ def chat_summary(
     )
 
 
-def chat_out(db: Session, chat: Chat, user_id: int) -> ChatOut:
+def chat_out(
+    db: Session, store: Session, organisation_id: int, chat: Chat, user_id: int
+) -> ChatOut:
+    """The organisation's chat (in its store, `store`), as the user sees it."""
     member = user_member(chat, user_id)
     return ChatOut(
         **chat_summary(
-            db, chat, len(ordered_members(chat)), member.role if member else None
+            db, organisation_id, chat, len(ordered_members(chat)), member.role if member else None
         ).model_dump(),
-        members=members_out(chat),
+        members=members_out(db, store, chat),
     )
 
 
-LOAD = (selectinload(Chat.members).selectinload(ChatMember.user),)
+LOAD = (selectinload(Chat.members),)
 
 
-def load(db: Session, chat_id: int) -> Chat:
-    """The chat fresh from the database, with its members and what they point at."""
-    db.expire_all()
-    return db.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one()
+def load(store: Session, chat_id: int) -> Chat:
+    """The chat fresh from its store, with its members."""
+    store.expire_all()
+    return store.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one()
 
 
 def member_key(member: ChatMember) -> tuple[ChatMemberKind, int | None]:
@@ -217,12 +240,10 @@ def is_member(chat: Chat, user_id: int) -> bool:
     return user_member(chat, user_id) is not None
 
 
-def get_visible_chat(db: Session, org: Organisation, user_id: int, chat_id: int) -> Chat:
-    """The chat, if it exists for the user: any public chat of their organisation, or a private
-    one of it they're in."""
-    chat = db.scalars(
-        select(Chat).where(Chat.id == chat_id, Chat.organisation_id == org.id).options(*LOAD)
-    ).one_or_none()
+def get_visible_chat(store: Session, user_id: int, chat_id: int) -> Chat:
+    """The chat, if it exists for the user: any public chat of their organisation's store, or a
+    private one of it they're in."""
+    chat = store.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one_or_none()
     if chat is None or (chat.visibility == ChatVisibility.private and not is_member(chat, user_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return chat
@@ -234,7 +255,7 @@ def is_owner(chat: Chat, user_id: int) -> bool:
     return member is not None and member.role == ChatMemberRole.owner
 
 
-def lock_chat(db: Session, chat: Chat) -> None:
+def lock_chat(store: Session, chat: Chat) -> None:
     """Lock the chat until commit, for a change to it or to what's in it; a 404 if it has been
     deleted since `get_visible_chat` read it: by its owner, or by its owner leaving the
     organisation with nobody else in it (`organisations.hand_over_chats`, which locks it first).
@@ -244,11 +265,11 @@ def lock_chat(db: Session, chat: Chat) -> None:
     `FOR NO KEY UPDATE`: the lock the change to `updated_at` each of them makes takes anyway, only
     sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share)."""
     locked = select(Chat.id).where(Chat.id == chat.id).with_for_update(key_share=True)
-    if db.scalar(locked) is None:
+    if store.scalar(locked) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
-def lock_owner(db: Session, chat: Chat) -> int | None:
+def lock_owner(store: Session, chat: Chat) -> int | None:
     """Lock the chat (`lock_chat`), and read who holds its owner role now (None: nobody), for a
     change to its members. The members `get_visible_chat` loaded can be out of date by then: the
     owner leaving the organisation deletes their member row and hands the chat on, or deletes it
@@ -256,8 +277,8 @@ def lock_owner(db: Session, chat: Chat) -> int | None:
     leaving decided on the owner it loaded would go in after that, leaving a member in a chat
     nobody owns. Under the lock it waits for the hand-over, or the hand-over waits for it and sees
     what it did."""
-    lock_chat(db, chat)
-    return db.scalar(
+    lock_chat(store, chat)
+    return store.scalar(
         select(ChatMember.user_id).where(
             ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
         )
@@ -267,17 +288,17 @@ def lock_owner(db: Session, chat: Chat) -> int | None:
 OWNER_ONLY = "Only the chat's owner can do that."
 
 
-def get_chat_if_owner(db: Session, org: Organisation, user_id: int, chat_id: int) -> Chat:
+def get_chat_if_owner(store: Session, user_id: int, chat_id: int) -> Chat:
     """The chat, for one of the owner's actions: a 403 for anyone else it's visible to."""
-    chat = get_visible_chat(db, org, user_id, chat_id)
+    chat = get_visible_chat(store, user_id, chat_id)
     if not is_owner(chat, user_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)
     return chat
 
 
-def still_owner(db: Session, chat: Chat, user_id: int) -> None:
+def still_owner(store: Session, chat: Chat, user_id: int) -> None:
     """A 403 unless the user still holds the chat's owner role, read under its lock
     (`lock_owner`), for an owner's change to its members: their leaving the organisation may
     have got in since `get_chat_if_owner`."""
-    if lock_owner(db, chat) != user_id:
+    if lock_owner(store, chat) != user_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)

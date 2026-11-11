@@ -7,39 +7,44 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from aios import invocations, stored
+from aios import invocations
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
 from aios.api import workflows as workflows_api
-from aios.api.chats.common import get_visible_chat, is_member, lock_chat, user_member
+from aios.api.chats.common import (
+    get_visible_chat,
+    is_member,
+    lock_chat,
+    user_member,
+    users_by_id,
+)
 from aios.api.chats.invocations import fail_stopped_turns, run_turns
 from aios.api.chats.members import mentionables
-from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import (
-    DataStoreBusy,
-    DataStoreNotFound,
-    DataStoreNotReady,
-    organisation_store,
-    store_id_of,
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores import store_id_of
+from aios.datastores.models import (
+    Agent,
+    AgentRun,
+    Chat,
+    ChatMember,
+    ChatMessage,
+    Invocation,
+    SchemaChangeRequest,
+    Workflow,
+    WorkflowRun,
 )
-from aios.datastores.models import Agent, AgentRun, Workflow, WorkflowRun
 from aios.datastores.schema_changes import not_given
 from aios.db import DB, DbId
 from aios.models import (
     AgentRunStatus,
-    Chat,
     ChatAuthorKind,
-    ChatInvocation,
-    ChatInvocationStatus,
-    ChatMember,
     ChatMemberKind,
-    ChatMessage,
     ChatMessageKind,
+    InvocationStatus,
     Role,
-    SchemaChangeRequest,
     TriggerTargetKind,
 )
 from aios.permissions import MENTIONS_NOT_YET, Action, CurrentRole, allow
@@ -122,7 +127,7 @@ class InvocationOut(BaseModel):
     target_kind: TriggerTargetKind
     # The agent's or workflow's id.
     target_id: int
-    status: ChatInvocationStatus
+    status: InvocationStatus
     # Why it failed: the run's error, or why it couldn't start.
     error: str | None
     # The acknowledgement's text as it is now: its placeholder until the handoff writes what the
@@ -151,40 +156,36 @@ class MessagesOut(BaseModel):
     invocations: list[InvocationOut]
 
 
-# The names of the agents and workflows that posted messages, by (kind, id).
+# The names of the people, agents and workflows that posted messages, by (kind, id).
 AuthorNames = dict[tuple[ChatAuthorKind, int], str]
 
 
-def author_names(db: Session, chat_id: int, messages: Sequence[ChatMessage]) -> AuthorNames:
-    """The names of the agents and workflows that posted these messages of the chat's, from its
-    organisation's store (the messages name them by their ids there)."""
-    agent_ids = {m.author_agent_id for m in messages if m.author_agent_id is not None}
-    workflow_ids = {m.author_workflow_id for m in messages if m.author_workflow_id is not None}
-    if not agent_ids and not workflow_ids:
-        return {}
-    organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
+def author_names(db: Session, store: Session, messages: Sequence[ChatMessage]) -> AuthorNames:
+    """The names of who posted these messages: people from the platform, agents and workflows
+    from the store (the messages name them by their ids there)."""
     names: AuthorNames = {}
     for kind, model, ids in (
-        (ChatAuthorKind.agent, Agent, agent_ids),
-        (ChatAuthorKind.workflow, Workflow, workflow_ids),
+        (ChatAuthorKind.agent, Agent, {m.author_agent_id for m in messages}),
+        (ChatAuthorKind.workflow, Workflow, {m.author_workflow_id for m in messages}),
     ):
-        for i, name in stored.names(organisation_id, model, ids).items():
-            names[kind, i] = name
+        ids.discard(None)
+        if ids:
+            for i, name in store.execute(select(model.id, model.name).where(model.id.in_(ids))):
+                names[kind, i] = name
+    for i, user in users_by_id(db, [m.author_user_id for m in messages]).items():
+        names[ChatAuthorKind.user, i] = user.full_name
     return names
 
 
 def author_out(message: ChatMessage, names: AuthorNames) -> MessageAuthorOut | None:
-    if message.author_user is not None:
-        user = message.author_user
-        return MessageAuthorOut(kind=ChatAuthorKind.user, id=user.id, name=user.full_name)
-    target_id = message.author_agent_id or message.author_workflow_id
-    if target_id is None:
+    """Who posted the message: None for a system message, or a person who no longer exists."""
+    author_id = message.author_user_id or message.author_agent_id or message.author_workflow_id
+    if author_id is None:
         return None
-    return MessageAuthorOut(
-        kind=message.author_kind,
-        id=target_id,
-        name=names.get((message.author_kind, target_id), ""),
-    )
+    name = names.get((message.author_kind, author_id))
+    if name is None and message.author_kind == ChatAuthorKind.user:
+        return None
+    return MessageAuthorOut(kind=message.author_kind, id=author_id, name=name or "")
 
 
 def message_out(message: ChatMessage, names: AuthorNames) -> MessageOut:
@@ -200,7 +201,7 @@ def message_out(message: ChatMessage, names: AuthorNames) -> MessageOut:
     )
 
 
-def invocation_out(invocation: ChatInvocation, acknowledgement: str) -> InvocationOut:
+def invocation_out(invocation: Invocation, acknowledgement: str) -> InvocationOut:
     """The invocation, with its acknowledgement's text, without its run (`with_runs` adds it)."""
     run_id = invocation.workflow_run_id or invocation.agent_run_id
     return InvocationOut(
@@ -225,7 +226,7 @@ def invocation_out(invocation: ChatInvocation, acknowledgement: str) -> Invocati
     )
 
 
-def agent_runs_live(db: Session, store: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
+def agent_runs_live(store: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
     """How each of these agent runs (in the store `store` is a session on) is going, by id;
     without a query when there are none."""
     if not run_ids:
@@ -242,11 +243,9 @@ def agent_runs_live(db: Session, store: Session, run_ids: list[int]) -> dict[int
         ).where(AgentRun.id.in_(run_ids))
     ).all()
     waiting = set(
-        db.scalars(
+        store.scalars(
             select(SchemaChangeRequest.requested_by_run).where(
-                SchemaChangeRequest.data_store_id == store_id_of(store),
-                SchemaChangeRequest.requested_by_run.in_(run_ids),
-                *not_given(),
+                SchemaChangeRequest.requested_by_run.in_(run_ids), *not_given()
             )
         )
     )
@@ -256,46 +255,41 @@ def agent_runs_live(db: Session, store: Session, run_ids: list[int]) -> dict[int
     }
 
 
-def with_runs(db: Session, chat_id: int, outs: list[InvocationOut]) -> list[InvocationOut]:
-    """The chat's invocations with their runs as the run page shows them, from its
-    organisation's store (without them while it can't be read). Read once the rest has been,
-    since reading a run expires the session's rows."""
-    agent_run_ids = [o.agent_run_id for o in outs if o.agent_run_id is not None]
-    if not agent_run_ids and not any(o.workflow_run_id is not None for o in outs):
-        return outs
-    organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
-    try:
-        with organisation_store(organisation_id, "ro") as store:
-            agent_runs = agent_runs_live(db, store, agent_run_ids)
-            for out in outs:
-                if out.agent_run_id is not None:
-                    out.agent_run = agent_runs.get(out.agent_run_id)
-                if out.workflow_run_id is not None and store.get(WorkflowRun, out.workflow_run_id):
-                    out.workflow_run = workflows_api.workflow_run_out(
-                        db, organisation_id, store, out.workflow_run_id
-                    )
-    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
-        pass
+def with_runs(
+    db: Session, store: Session, organisation_id: int, outs: list[InvocationOut]
+) -> list[InvocationOut]:
+    """The organisation's chat's invocations with their runs as the run page shows them, from
+    its store."""
+    agent_runs = agent_runs_live(store, [o.agent_run_id for o in outs if o.agent_run_id])
+    for out in outs:
+        if out.agent_run_id is not None:
+            out.agent_run = agent_runs.get(out.agent_run_id)
+        if out.workflow_run_id is not None and store.get(WorkflowRun, out.workflow_run_id):
+            out.workflow_run = workflows_api.workflow_run_out(
+                db, organisation_id, store, out.workflow_run_id
+            )
     return outs
 
 
-def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> MessagesOut:
+def messages_out(
+    db: Session, store: Session, organisation_id: int, chat_id: int, messages: list[ChatMessage]
+) -> MessagesOut:
     """The messages, and the invocations they belong to and those of the chat still going."""
-    names = author_names(db, chat_id, messages)
+    names = author_names(db, store, messages)
     out = [message_out(m, names) for m in messages]
-    found = db.scalars(
-        select(ChatInvocation)
+    found = store.scalars(
+        select(Invocation)
         .where(
-            ChatInvocation.chat_id == chat_id,
+            Invocation.chat_id == chat_id,
             or_(
-                ChatInvocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
-                ChatInvocation.status.in_(invocations.UNFINISHED),
+                Invocation.id.in_([m.invocation_id for m in out if m.invocation_id]),
+                Invocation.status.in_(invocations.UNFINISHED),
             ),
         )
-        .order_by(ChatInvocation.id)
+        .order_by(Invocation.id)
     ).all()
     acknowledgements = dict(
-        db.execute(
+        store.execute(
             select(ChatMessage.invocation_id, ChatMessage.body).where(
                 ChatMessage.invocation_id.in_([i.id for i in found]),
                 ChatMessage.kind == ChatMessageKind.run_card,
@@ -305,41 +299,37 @@ def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> Mess
     return MessagesOut(
         messages=out,
         invocations=with_runs(
-            db, chat_id, [invocation_out(i, acknowledgements[i.id]) for i in found]
+            db,
+            store,
+            organisation_id,
+            [invocation_out(i, acknowledgements[i.id]) for i in found],
         ),
     )
 
 
-def catch_up(db: Session, chat_id: int) -> None:
+def catch_up(store: Session, chat_id: int) -> None:
     """Bring the chat's unfinished invocations up to date before they're read: fail their runs
     whose worker died (which posts their results back), their agent turns whose process died,
     and those that never started. Commits."""
-    run_ids = db.scalars(
-        select(ChatInvocation.workflow_run_id).where(
-            ChatInvocation.chat_id == chat_id,
-            ChatInvocation.status.in_(invocations.UNFINISHED),
-            ChatInvocation.workflow_run_id.is_not(None),
+    run_ids = store.scalars(
+        select(Invocation.workflow_run_id).where(
+            Invocation.chat_id == chat_id,
+            Invocation.status.in_(invocations.UNFINISHED),
+            Invocation.workflow_run_id.is_not(None),
         )
     ).all()
     if run_ids:
-        organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
-        db.commit()
-        try:
-            with organisation_store(organisation_id) as store:
-                fail_stopped_runs(store, WorkflowRun.id.in_(run_ids))
-        except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
-            pass
-    fail_stopped_turns(db, chat_id)
-    invocations.fail_stalled(db, chat_id)
+        fail_stopped_runs(store, WorkflowRun.id.in_(run_ids))
+    fail_stopped_turns(store, chat_id)
+    invocations.fail_stalled(store, chat_id)
 
 
-MESSAGE_LOAD = (selectinload(ChatMessage.author_user),)
-
-
-def resolve_mentions(chat: Chat, mentions: list[MentionIn]) -> list[MentionOut]:
+def resolve_mentions(
+    db: Session, store: Session, chat: Chat, mentions: list[MentionIn]
+) -> list[MentionOut]:
     """The members a message mentions, each once in the order given, with their names: a 422 if
     any isn't a member of the chat. An archived agent still is."""
-    found = mentionables(chat, archived=True)
+    found = mentionables(db, store, chat, archived=True)
     members = {(m.kind, m.id): m for m in [*found.users, *found.agents, *found.workflows]}
     resolved: dict[tuple[ChatMemberKind, int], MentionOut] = {}
     for mention in mentions:
@@ -360,6 +350,7 @@ def list_messages(
     user: CurrentUser,
     org: CurrentOrganisation,
     db: DB,
+    store: CurrentStore,
     after: Annotated[int | None, Query(ge=0)] = None,
     before: Annotated[int | None, Query(ge=1)] = None,
 ):
@@ -370,19 +361,19 @@ def list_messages(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Give `after` or `before`, not both."
         )
-    get_visible_chat(db, org, user.id, chat_id)
-    catch_up(db, chat_id)
-    query = select(ChatMessage).where(ChatMessage.chat_id == chat_id).options(*MESSAGE_LOAD)
+    get_visible_chat(store, user.id, chat_id)
+    catch_up(store, chat_id)
+    query = select(ChatMessage).where(ChatMessage.chat_id == chat_id)
     if after is not None:
         query = query.where(ChatMessage.id > after).order_by(ChatMessage.id)
     else:
         if before is not None:
             query = query.where(ChatMessage.id < before)
         query = query.order_by(ChatMessage.id.desc())
-    rows = list(db.scalars(query.limit(package.MESSAGE_PAGE)))
+    rows = list(store.scalars(query.limit(package.MESSAGE_PAGE)))
     if after is None:
         rows.reverse()
-    return messages_out(db, chat_id, rows)
+    return messages_out(db, store, org.id, chat_id, rows)
 
 
 NOT_A_MEMBER_READING = "Only the chat's members keep track of what they've read in it."
@@ -399,19 +390,17 @@ class ReadIn(BaseModel):
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.post)],
 )
-def mark_read(
-    chat_id: DbId, body: ReadIn, user: CurrentUser, org: CurrentOrganisation, db: DB
-) -> None:
+def mark_read(chat_id: DbId, body: ReadIn, user: CurrentUser, store: CurrentStore) -> None:
     """Note that the user, a member, has seen the chat's messages up to `message_id`, which
     clears their unread count of those. Never back: a read of an earlier message (another tab's)
     leaves it, and never past the chat's newest message."""
-    chat = get_visible_chat(db, org, user.id, chat_id)
+    chat = get_visible_chat(store, user.id, chat_id)
     member = user_member(chat, user.id)
     if member is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER_READING)
-    seen = min(body.message_id, package.newest_message_id(db, chat.id) or 0)
+    seen = min(body.message_id, package.newest_message_id(store, chat.id) or 0)
     # In one statement, so two tabs reading at once leave the later of the two.
-    db.execute(
+    store.execute(
         update(ChatMember)
         .where(ChatMember.id == member.id)
         .values(
@@ -420,7 +409,7 @@ def mark_read(
             )
         )
     )
-    db.commit()
+    store.commit()
 
 
 @router.post(
@@ -436,6 +425,7 @@ def post_message(
     org: CurrentOrganisation,
     role: CurrentRole,
     db: DB,
+    store: CurrentStore,
     background: BackgroundTasks,
 ):
     """Post a markdown message to the chat as the user, who must be a member of it. Returns it,
@@ -446,12 +436,12 @@ def post_message(
         m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow) for m in body.mentions
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, MENTIONS_NOT_YET)
-    chat = get_visible_chat(db, org, user.id, chat_id)
+    chat = get_visible_chat(store, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
     # Its owner leaving the organisation may be deleting it (`lock_chat`).
-    lock_chat(db, chat)
-    mentions = resolve_mentions(chat, body.mentions)
+    lock_chat(store, chat)
+    mentions = resolve_mentions(db, store, chat, body.mentions)
     message = ChatMessage(
         chat_id=chat.id,
         author_kind=ChatAuthorKind.user,
@@ -460,9 +450,9 @@ def post_message(
         body=body.body,
         mentions=[m.model_dump(mode="json") for m in mentions],
     )
-    db.add(message)
+    store.add(message)
     started = invocations.create(
-        db,
+        store,
         message,
         [
             (TriggerTargetKind(m.kind.value), m.id)
@@ -472,18 +462,18 @@ def post_message(
     )
     # Posting is activity.
     chat.updated_at = func.now()
-    db.commit()
+    store.commit()
+    store_id = store_id_of(store)
     invocation_ids = [i.id for i in started]
     if invocation_ids:
         if workflow_ids := [i.id for i in started if i.target_kind == TriggerTargetKind.workflow]:
-            background.add_task(package.start_invocations, workflow_ids)
+            background.add_task(package.start_invocations, store_id, workflow_ids)
         if any(i.target_kind == TriggerTargetKind.agent for i in started):
-            background.add_task(run_turns)
-    db.expire_all()
-    posted = db.scalars(
+            background.add_task(run_turns, store_id)
+    store.expire_all()
+    posted = store.scalars(
         select(ChatMessage)
         .where(or_(ChatMessage.id == message.id, ChatMessage.invocation_id.in_(invocation_ids)))
-        .options(*MESSAGE_LOAD)
         .order_by(ChatMessage.id)
     ).all()
-    return messages_out(db, chat.id, list(posted))
+    return messages_out(db, store, org.id, chat.id, list(posted))

@@ -17,11 +17,12 @@ that drops anything takes the names of the tables it drops from, typed (`confirm
 The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
 
 1. `propose` checks a spec against the store's schema (read as its read-only role), compiles
-   it, and records a `SchemaChangeRequest` (platform database) at the store's current data
-   schema revision (`read_revision`: the latest `aios.schema_history` entry), and notifies
-   each user who can decide it (`aios.notifications`).
+   it, and records a `SchemaChangeRequest` (in the store, `aios.schema_change_requests`) at the
+   store's current data schema revision (`read_revision`: the latest `aios.schema_history`
+   entry), and then notifies each user who can decide it (`aios.notifications`, on the
+   platform, naming the request by its id and store).
 2. A member approves or rejects it (only users who pass `resolve.can_approve`), which clears
-   its notifications (`clear_notifications`).
+   its notifications once the store has the decision (`clear_notifications`).
 3. `apply`, on the provisioning worker (only it has the provisioner's credentials), runs an
    approved request's SQL as the store's owner, in one transaction under a `lock_timeout`
    (`SCHEMA_CHANGE_LOCK_TIMEOUT`), and appends it to `aios.schema_history`, which bumps the
@@ -52,8 +53,10 @@ from aios.datastores.schema_changes.compile import (
     confirmation,
 )
 from aios.datastores.schema_changes.expiry import (
+    StoredRequest,
     cancel,
     clear_notifications,
+    clear_notifications_of,
     expire,
     expired_not_resumed,
     not_given,
@@ -111,10 +114,12 @@ __all__ = [
     "SCHEMA",
     "SchemaChange",
     "StoreSchema",
+    "StoredRequest",
     "apply",
     "cancel",
     "check",
     "clear_notifications",
+    "clear_notifications_of",
     "compile_sql",
     "confirmation",
     "expire",

@@ -121,7 +121,6 @@ from aios.api.chats.members import (
     take_out,
 )
 from aios.api.chats.messages import (
-    MESSAGE_LOAD,
     MESSAGE_PAGE,
     NOT_A_MEMBER,
     NOT_A_MEMBER_READING,
@@ -168,7 +167,6 @@ __all__ = [
     "InvocationOut",
     "LOAD",
     "MEMBER_CONSTRAINTS",
-    "MESSAGE_LOAD",
     "MESSAGE_PAGE",
     "MemberIn",
     "MentionIn",

@@ -10,6 +10,7 @@ import threading
 from datetime import timedelta
 
 import pytest
+from conftest import signed_in_store
 from sqlalchemy import select, update
 from test_schema_change_requests import (  # noqa: F401
     CONTACTS,
@@ -24,15 +25,15 @@ from test_schema_change_requests import (  # noqa: F401
 
 from aios import worker
 from aios.config import get_settings
-from aios.datastores import schema_changes
-from aios.db import SessionLocal
-from aios.models import SchemaChangeRequest, SchemaChangeStatus
+from aios.datastores import schema_changes, store_session
+from aios.datastores.models import AgentRun, SchemaChangeRequest
+from aios.models import SchemaChangeStatus
 from aios.testing.fake_model import model, use_model
 
 
 def asked_ago(request: dict, age: timedelta) -> None:
     """Make the request as old as `age`."""
-    with SessionLocal() as db:
+    with store_session(signed_in_store()) as db:
         db.execute(
             update(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
@@ -132,7 +133,7 @@ def test_an_approval_made_as_it_expires_wins_and_is_applied_once(
     _, request = start(api, agent, script)
     asked_ago(request, expiry() + timedelta(minutes=1))
     expired: list = []
-    with SessionLocal() as deciding:
+    with store_session(signed_in_store()) as deciding:
         # As `_decide` does: lock it, and decide it, but not yet committed.
         row = deciding.scalar(
             select(SchemaChangeRequest)
@@ -150,7 +151,7 @@ def test_an_approval_made_as_it_expires_wins_and_is_applied_once(
 
     assert expired == []
     assert request_of(api, request)["status"] == "approved"
-    worker.apply_schema_change_task.run(request["id"])
+    worker.apply_schema_change_task.run(str(store.id), request["id"])
     with use_model(model(script)):
         run_queued(queued)
     assert request_of(api, request)["status"] == "applied"
@@ -185,7 +186,7 @@ def test_a_cancel_made_as_its_approved_leaves_the_approval(
 ):
     run, request = start(api, agent, Script(CONTACTS))
     cancelled: list = []
-    with SessionLocal() as deciding:
+    with store_session(signed_in_store()) as deciding:
         row = deciding.scalar(
             select(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
@@ -195,7 +196,7 @@ def test_a_cancel_made_as_its_approved_leaves_the_approval(
         deciding.flush()
 
         def cancel() -> None:
-            with SessionLocal() as db:
+            with store_session(signed_in_store()) as db:
                 cancelled.extend(
                     schema_changes.cancel(db, SchemaChangeRequest.requested_by_run == run["id"])
                 )
@@ -221,7 +222,7 @@ def test_an_expired_request_nothing_can_resume_isnt_queued_again_and_again(
     """E.g. one left pending by a chat run deleted before deleting cancelled requests."""
     _, request = start(api, agent, Script(CONTACTS))
     asked_ago(request, expiry() + timedelta(minutes=1))
-    with SessionLocal() as db:
+    with store_session(signed_in_store()) as db:
         db.execute(
             update(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
@@ -229,7 +230,9 @@ def test_an_expired_request_nothing_can_resume_isnt_queued_again_and_again(
         )
         db.commit()
     looked_at: list = []
-    monkeypatch.setattr(worker, "enqueue_resume", looked_at.append)
+    monkeypatch.setattr(
+        worker, "enqueue_resume", lambda store_id, request_id: looked_at.append(request_id)
+    )
 
     expire(queued)
     expire(queued)
@@ -249,12 +252,16 @@ def test_a_request_made_as_its_chat_run_is_deleted_is_still_cancelled(
     """The turn's request is recorded while the delete runs: the delete waits for it."""
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     deleted: list = []
-    with SessionLocal() as asking:
-        # As `schema_changes.propose` records it, under the run's lock, not yet committed.
-        schema_changes.lock_run(asking, store.id, run["id"])
+    with store_session(store.id) as asking:
+        # As `schema_changes.propose` records it, holding its run's key share, not yet
+        # committed.
+        asking.execute(
+            select(AgentRun.id)
+            .where(AgentRun.id == run["id"])
+            .with_for_update(read=True, key_share=True)
+        )
         asking.add(
             SchemaChangeRequest(
-                data_store_id=store.id,
                 ops=[CONTACTS],
                 sql="SELECT 1",
                 summary="Create table data.contacts",

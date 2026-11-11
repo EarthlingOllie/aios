@@ -15,14 +15,12 @@ from conftest import (
     org_of,
     register,
 )
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, select, text
 from test_chats import signed_in_as
 
 from aios import organisations
 from aios.db import SessionLocal
 from aios.models import (
-    Chat,
-    ChatVisibility,
     DataStore,
     DataStoreStatus,
     Organisation,
@@ -41,12 +39,24 @@ def revision(name: str):
     return module
 
 
+def before_the_chats_moved(db) -> None:
+    """Put schedules, chats and schema change requests back in the platform database, empty, as
+    they were before they moved to the stores (revision 0063's downgrade), in this test's
+    transaction only, unless they're back already."""
+    if db.scalar(text("SELECT to_regclass('chats')")) is not None:
+        return
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0063_triggers_chats_requests_to_store").downgrade()
+
+
 def before_the_store(db) -> None:
-    """Put runs, and then agents, skills and workflows, back in the platform database, empty, as
-    they were before they moved to the stores (revisions 0062's and 0060's downgrades), in this
-    test's transaction only, unless they're back already."""
+    """Put schedules, chats and requests, runs, and then agents, skills and workflows, back in
+    the platform database, empty, as they were before they moved to the stores (revisions
+    0063's, 0062's and 0060's downgrades), in this test's transaction only, unless they're back
+    already."""
     if db.scalar(text("SELECT to_regclass('agents')")) is not None:
         return
+    before_the_chats_moved(db)
     with Operations.context(MigrationContext.configure(db.connection())):
         if db.scalar(text("SELECT to_regclass('agent_runs')")) is None:
             revision("0062_runs_to_store").downgrade()
@@ -114,20 +124,22 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
         ),
         {"org": made[1].id, "by": second},
     ).scalar_one()
-    chat = Chat(
-        organisation_id=made[0].id,
-        created_by=first,
-        name="design-0030",
-        visibility=ChatVisibility.private,
-    )
-    db.add(chat)
-    db.flush()
+    chat_id = db.execute(
+        text(
+            "INSERT INTO chats (organisation_id, created_by, name, visibility)"
+            " VALUES (:org, :by, 'design-0030', 'private') RETURNING id"
+        ),
+        {"org": made[0].id, "by": first},
+    ).scalar_one()
     before_the_contract(db)
     db.execute(
         text("UPDATE agents SET organisation_id = NULL, created_by = NULL WHERE id = :id"),
         {"id": agent_id},
     )
-    db.execute(update(Chat).where(Chat.id == chat.id).values(organisation_id=None, created_by=None))
+    db.execute(
+        text("UPDATE chats SET organisation_id = NULL, created_by = NULL WHERE id = :id"),
+        {"id": chat_id},
+    )
     db.execute(delete(Organisation).where(Organisation.id.in_([o.id for o in made])))
 
     backfill_before_slugs(db)
@@ -153,7 +165,9 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
         ),
         {"id": agent_id},
     ).one()
-    db.refresh(chat)
+    chat = db.execute(
+        text("SELECT organisation_id, created_by FROM chats WHERE id = :id"), {"id": chat_id}
+    ).one()
     assert (agent.organisation_id, agent.created_by) == (organisation_of(second).id, second)
     assert (chat.organisation_id, chat.created_by) == (organisation_of(first).id, first)
     # Nothing else is claimed: who last changed or deleted it isn't known.

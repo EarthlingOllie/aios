@@ -13,7 +13,7 @@ Running turns in a process that also serves requests needs:
   done). What it can't start is left for another replica or a later try.
 - A heartbeat: a process that dies (killed, OOM, a deploy) can't record how its fires went. So
   while a fire runs, the process refreshes its run's heartbeat (`agent_runs.heartbeat_at`, in
-  the run's store) and the cause's own (on the platform) every `HEARTBEAT_SECONDS` (`beat`).
+  the run's store) and the cause's own (in the same store) every `HEARTBEAT_SECONDS` (`beat`).
   Each cause sweeps its own rows whose heartbeat has stopped for `STALE_AFTER`, and fails their
   runs too if still marked running with a stale heartbeat (`fail_stalled`): runs are in each
   organisation's store, and a cause names its run.
@@ -78,7 +78,7 @@ class Cause(Protocol):
         """Whatever the cause does before its run starts, in the fire's slot (a chat mention's
         handoff, `aios.handoff`). Raises `CantStart` to record why the run can't start."""
 
-    def start(self, db: Session) -> Turn | None:
+    def start(self) -> Turn | None:
         """Start the run and commit it, checking whatever the cause claimed is still its to
         run: the turn to run here, or None if there's nothing to run in this process (the
         cause started its run elsewhere), which is recorded as having gone fine.
@@ -86,11 +86,11 @@ class Cause(Protocol):
         Raises `CantStart` to record why it couldn't, or `HTTPException` as starting a run by
         hand would, whose detail is recorded."""
 
-    def beat(self, db: Session) -> None:
-        """Refresh the cause's own heartbeat, if it keeps one. Committed by the caller."""
+    def beat(self) -> None:
+        """Refresh the cause's own heartbeat, if it keeps one, and commit it."""
 
-    def record(self, db: Session, error: str | None) -> None:
-        """Record how the fire went: None if it succeeded. Committed by the caller."""
+    def record(self, error: str | None) -> None:
+        """Record how the fire went (None if it succeeded), and commit it."""
 
 
 @dataclass
@@ -113,24 +113,32 @@ def free_slots() -> int:
     return get_settings().scheduler_max_concurrent_runs - in_flight
 
 
+def fail_stalled_in(store: Session, run_ids: list[int]) -> None:
+    """Fail those of these runs (of the store `store` is a session on) stored as running whose
+    heartbeat has stopped: the process firing them has gone (see the module docstring); for a
+    cause sweeping its own rows. A run with no heartbeat is a request's, left to it (a null
+    heartbeat is never stale). In the caller's transaction."""
+    if not run_ids:
+        return
+    store.execute(
+        update(AgentRun)
+        .where(
+            AgentRun.id.in_(run_ids),
+            AgentRun.status == AgentRunStatus.running,
+            AgentRun.heartbeat_at < func.now() - STALE_AFTER,
+        )
+        .values(status=AgentRunStatus.failed, finished_at=func.now(), updated_at=func.now())
+    )
+
+
 def fail_stalled(data_store_id: uuid.UUID, run_ids: list[int]) -> None:
-    """Fail those of these runs of the store stored as running whose heartbeat has stopped: the
-    process firing them has gone (see the module docstring); for a cause sweeping its own rows.
-    A run with no heartbeat is a request's, left to it (a null heartbeat is never stale). A
-    store that can't be reached now is left for the next sweep."""
+    """`fail_stalled_in` the store, committed. A store that can't be reached now is left for
+    the next sweep."""
     if not run_ids:
         return
     try:
         with store_session(data_store_id) as store:
-            store.execute(
-                update(AgentRun)
-                .where(
-                    AgentRun.id.in_(run_ids),
-                    AgentRun.status == AgentRunStatus.running,
-                    AgentRun.heartbeat_at < func.now() - STALE_AFTER,
-                )
-                .values(status=AgentRunStatus.failed, finished_at=func.now(), updated_at=func.now())
-            )
+            fail_stalled_in(store, run_ids)
             store.commit()
     except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
         log.warning("couldn't fail the stalled runs of data store %s: %s", data_store_id, exc)
@@ -154,10 +162,8 @@ def _beat(flights: list[Fire]) -> None:
                 .values(heartbeat_at=func.now())
             )
             store.commit()
-    with SessionLocal() as db:
-        for flight in flights:
-            flight.cause.beat(db)
-        db.commit()
+    for flight in flights:
+        flight.cause.beat()
 
 
 async def beat() -> None:
@@ -179,10 +185,10 @@ async def beat_forever(interval: float) -> None:
 
 def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
     """Start the cause's run, and the turn: its run marked running, with its heartbeat."""
+    turn = flight.cause.start()
+    if turn is None:
+        return None
     with SessionLocal() as db:
-        turn = flight.cause.start(db)
-        if turn is None:
-            return None
         ctx = agents_api.load_chat_context(db, turn.data_store_id, turn.agent_id, turn.run_id)
     agents_api._start_turn(
         turn.data_store_id, turn.run_id, turn.title or turn.message, heartbeat=True
@@ -192,9 +198,7 @@ def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
 
 
 def _record(cause: Cause, error: str | None) -> None:
-    with SessionLocal() as db:
-        cause.record(db, error)
-        db.commit()
+    cause.record(error)
 
 
 async def _fire(flight: Fire) -> None:

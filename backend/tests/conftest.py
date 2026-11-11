@@ -219,6 +219,12 @@ def store_of(user: User) -> uuid.UUID:
         return data_store_for(home_organisation(db, user.id).id)
 
 
+def signed_in_store() -> uuid.UUID:
+    """The id of the store of the organisation the `api` fixture's user acts in (whoever
+    `current_user` is overridden with now)."""
+    return store_of(app.dependency_overrides[current_user]())
+
+
 def user_store(user: User, role: str = "rw"):
     """A session on the user's organisation's store (`store_session`), where its agents, skills
     and workflows are; the store must be ready (`provisioned_user`)."""
@@ -334,6 +340,13 @@ class StoreRows:
         with store_session(self.store_id) as store:
             store.execute(statement)
             store.commit()
+
+    def add(self, *rows):
+        """Add these rows, and commit them; returns the first, ids and all."""
+        with store_session(self.store_id) as store:
+            store.add_all(rows)
+            store.commit()
+        return rows[0]
 
 
 def rows_of(user: User) -> StoreRows:

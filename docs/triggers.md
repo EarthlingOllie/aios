@@ -32,10 +32,18 @@ schedule's run records its schedule rather than a member.
 
 ## The scheduler
 
+- Schedules are in each organisation's store (`aios.triggers`). The platform keeps a thin index
+  of what's due (`schedule_due`: store, trigger, organisation and next run time; `aios.schedules`),
+  written whenever a schedule is saved (created, edited, paused, archived with its target,
+  deleted), once the store has committed it. The repair sweep (the provisioning worker's
+  `aios.repair_stores`, with the people mirror's) rebuilds it from every ready store's triggers
+  and logs what it fixed: rows added (lost), updated (stale) and removed.
 - Each API process runs the scheduler (`aios.scheduler`), polling every
-  `SCHEDULER_INTERVAL_SECONDS` (15). Due schedules are claimed with `FOR UPDATE SKIP LOCKED`
-  and moved on to their next run in the same transaction, so with any number of replicas each
-  run fires once. Set `SCHEDULER_ENABLED=false` to keep a process from running them (or chat
+  `SCHEDULER_INTERVAL_SECONDS` (15). Due index rows are claimed with `FOR UPDATE SKIP LOCKED`;
+  for each, the trigger is re-read in its store under its row lock (skipped, and left due, while
+  an edit or a starting firing holds it) and moved on to its next run there, then its row moves
+  with it, so with any number of replicas each run fires once. A row that's out of date fires
+  nothing: the trigger decides, and the row is put right. Set `SCHEDULER_ENABLED=false` to keep a process from running them (or chat
   turns: see below).
 - A process fires at most `SCHEDULER_MAX_CONCURRENT_RUNS` (5) schedules at once (an agent's turn
   runs in the API process, next to the chats it serves), and claims no more than it has free

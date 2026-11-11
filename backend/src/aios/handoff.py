@@ -20,6 +20,7 @@ start does (`aios.firing.CantStart`). Each call is traced to Langfuse (`aios.tra
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,14 +29,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from aios import invocations, llm, stored, tracing
+from aios import invocations, llm, tracing
 from aios.config import get_settings
-from aios.datastores.models import Agent, Workflow
+from aios.datastores import people, store_session
+from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
 from aios.db import SessionLocal
 from aios.firing import CantStart
-from aios.models import ChatAuthorKind, ChatInvocation, ChatMessage, ChatMessageKind
+from aios.models import ChatAuthorKind, ChatMessageKind, DataStore
 
 log = logging.getLogger(__name__)
 
@@ -80,24 +82,18 @@ class Request:
     metadata: dict[str, Any]
 
 
-# The names of the agents and workflows that posted messages, by (kind, id).
+# The names of the people, agents and workflows that posted messages, by (kind, id).
 Names = dict[tuple[ChatAuthorKind, int], str]
 
 
 def author_name(message: ChatMessage, names: Names) -> str:
-    """Who posted the message, as the transcript names them; an agent or workflow by its name in
-    `names` (from the organisation's store)."""
+    """Who posted the message, as the transcript names them, by its name in `names` (a person
+    through the people mirror, an agent or workflow from the organisation's store)."""
     if message.author_kind == ChatAuthorKind.system:
         return "system"
-    if message.author_user is not None:
-        name = message.author_user.full_name
-    elif (
-        author := names.get(
-            (message.author_kind, message.author_agent_id or message.author_workflow_id)
-        )
-    ) is not None:
-        name = author
-    else:
+    author_id = message.author_user_id or message.author_agent_id or message.author_workflow_id
+    name = names.get((message.author_kind, author_id)) if author_id is not None else None
+    if name is None:
         return f"a deleted {message.author_kind}"
     return f"{name} ({message.author_kind})"
 
@@ -110,34 +106,39 @@ def line(message: ChatMessage, names: Names, limit: int | None = None) -> str:
     return f"[{author_name(message, names)}]: {text}"
 
 
-def _names(organisation_id: int, messages: list[ChatMessage]) -> Names:
+def _names(store: Session, organisation_id: int, messages: list[ChatMessage]) -> Names:
     names: Names = {}
     for kind, model in ((ChatAuthorKind.agent, Agent), (ChatAuthorKind.workflow, Workflow)):
-        ids = [m.author_agent_id or m.author_workflow_id for m in messages if m.author_kind == kind]
-        for i, name in stored.names(organisation_id, model, ids).items():
-            names[kind, i] = name
+        ids = {m.author_agent_id or m.author_workflow_id for m in messages if m.author_kind == kind}
+        if ids:
+            for i, name in store.execute(select(model.id, model.name).where(model.id.in_(ids))):
+                names[kind, i] = name
+    user_ids = [m.author_user_id for m in messages if m.author_user_id is not None]
+    if user_ids:
+        with SessionLocal() as db:
+            for i, person in people.resolve(db, organisation_id, user_ids).items():
+                names[ChatAuthorKind.user, i] = person.name
     return names
 
 
-def window(db: Session, invocation: ChatInvocation) -> list[str]:
+def window(store: Session, organisation_id: int, invocation: Invocation) -> list[str]:
     """The chat up to the mentioning message as transcript lines, oldest first: its last
     `handoff_window_messages` messages (the run cards' acknowledgements aside), or as many of
     those as fit in about `handoff_window_tokens` tokens, whichever is fewer. The mentioning
     message is always the last, cut to fit if it alone is over the budget."""
     settings = get_settings()
-    rows = db.scalars(
+    rows = store.scalars(
         select(ChatMessage)
         .where(
             ChatMessage.chat_id == invocation.chat_id,
             ChatMessage.id <= invocation.message_id,
             ChatMessage.kind == ChatMessageKind.text,
         )
-        .options(selectinload(ChatMessage.author_user))
         .order_by(ChatMessage.id.desc())
         .limit(settings.handoff_window_messages)
     ).all()
     budget = settings.handoff_window_tokens * CHARS_PER_TOKEN
-    names = _names(invocations.organisation_of(db, invocation), list(rows))
+    names = _names(store, organisation_id, list(rows))
     mentioning, *earlier = rows
     lines = [line(mentioning, names, limit=budget)]
     budget -= len(lines[0])
@@ -151,19 +152,26 @@ def window(db: Session, invocation: ChatInvocation) -> list[str]:
     return lines
 
 
-def _begin(invocation_id: int) -> Request | None:
-    """Mark the invocation briefing, and gather what its handoff is sent; None if it isn't
-    queued any more (it has finished since)."""
+def _organisation(data_store_id: uuid.UUID) -> int | None:
     with SessionLocal() as db:
-        invocation = invocations.begin_briefing(db, invocation_id)
+        return db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+
+
+def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
+    """Mark the store's invocation briefing, and gather what its handoff is sent; None if it
+    isn't queued any more (it has finished since)."""
+    organisation_id = _organisation(data_store_id)
+    with store_session(data_store_id) as store:
+        invocation = invocations.begin_briefing(store, invocation_id)
         if invocation is None:
             return None
-        organisation_id = invocations.organisation_of(db, invocation)
         is_agent = invocation.agent_id is not None
         target_id = invocation.agent_id if is_agent else invocation.workflow_id
-        target = stored.names(organisation_id, Agent if is_agent else Workflow, [target_id])
-        name = target.get(target_id, "")
-        *earlier, mentioning = window(db, invocation)
+        model = Agent if is_agent else Workflow
+        name = store.scalar(select(model.name).where(model.id == target_id)) or ""
+        *earlier, mentioning = window(store, organisation_id, invocation)
         chat = "\n\n".join(
             [
                 "The chat so far, oldest first:",
@@ -176,8 +184,8 @@ def _begin(invocation_id: int) -> Request | None:
             system=SYSTEM_PROMPT.format(kind=invocation.target_kind.value, name=name),
             chat=chat,
             metadata=tracing.trace_metadata(
-                # A chat's handoffs, together.
-                session_id=f"chat-{invocation.chat_id}",
+                # A chat's handoffs, together (chat ids are each store's own).
+                session_id=f"chat-{organisation_id}-{invocation.chat_id}",
                 # As the run's own trace will say: the organisation it runs for, and who asked.
                 organisation_id=organisation_id,
                 created_by=invocation.requested_by,
@@ -191,7 +199,7 @@ def _begin(invocation_id: int) -> Request | None:
                 target_name=name,
             ),
         )
-        db.commit()
+        store.commit()
         return request
 
 
@@ -203,18 +211,18 @@ async def _ask(request: Request) -> Handoff | None:
     )
 
 
-def _record(invocation_id: int, handoff: Handoff) -> None:
-    with SessionLocal() as db:
+def _record(data_store_id: uuid.UUID, invocation_id: int, handoff: Handoff) -> None:
+    with store_session(data_store_id) as store:
         invocations.record_handoff(
-            db, invocation_id, ack=handoff.ack.strip(), brief=handoff.brief.strip()
+            store, invocation_id, ack=handoff.ack.strip(), brief=handoff.brief.strip()
         )
-        db.commit()
+        store.commit()
 
 
-async def brief(invocation_id: int) -> None:
-    """Run the queued invocation's handoff: it goes `briefing`, and its brief and ack are
-    written. Nothing for one that has finished. Raises `CantStart` if the handoff fails."""
-    request = await run_in_threadpool(_begin, invocation_id)
+async def brief(data_store_id: uuid.UUID, invocation_id: int) -> None:
+    """Run the store's queued invocation's handoff: it goes `briefing`, and its brief and ack
+    are written. Nothing for one that has finished. Raises `CantStart` if the handoff fails."""
+    request = await run_in_threadpool(_begin, data_store_id, invocation_id)
     if request is None:
         return
     try:
@@ -224,4 +232,4 @@ async def brief(invocation_id: int) -> None:
         raise CantStart(f"The handoff failed: {str(exc) or type(exc).__name__}") from exc
     if handoff is None:
         raise CantStart("The handoff failed: the model gave no brief.")
-    await run_in_threadpool(_record, invocation_id, handoff)
+    await run_in_threadpool(_record, data_store_id, invocation_id, handoff)

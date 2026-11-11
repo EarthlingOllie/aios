@@ -31,9 +31,12 @@ def notify(
     )
 
 
-def mark_read_about(db: Session, kind: str, ref: dict[str, Any]) -> None:
-    """Mark every unread notification of `kind` whose reference contains `ref` read, for every
-    user: what it's about no longer needs them. In the caller's transaction."""
+def mark_read_about(
+    db: Session, kind: str, ref: dict[str, Any], at: datetime | None = None
+) -> None:
+    """Mark every unread notification of `kind` whose reference contains `ref` read (as of
+    `at`, else now), for every user: what it's about no longer needs them. In the caller's
+    transaction."""
     db.execute(
         update(Notification)
         .where(
@@ -41,14 +44,13 @@ def mark_read_about(db: Session, kind: str, ref: dict[str, Any]) -> None:
             Notification.ref.contains(ref),
             Notification.read_at.is_(None),
         )
-        .values(read_at=func.now())
+        .values(read_at=func.now() if at is None else at)
     )
 
 
 def mark_unread_about(db: Session, kind: str, ref: dict[str, Any], read_at: datetime) -> None:
-    """Undo `mark_read_about` run in a transaction whose `now()` was `read_at`: the
-    notifications it marked read (and only those) are unread again. In the caller's
-    transaction."""
+    """Undo `mark_read_about` that marked them read as of `read_at`: the notifications it
+    marked read (and only those) are unread again. In the caller's transaction."""
     db.execute(
         update(Notification)
         .where(

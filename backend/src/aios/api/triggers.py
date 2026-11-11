@@ -4,8 +4,10 @@ Schedules are the only kind so far. Each targets one agent (a new run of its cur
 starting with the trigger's `input` as the user's message) or one workflow (a new run of its
 current version, with `input` as the run's input). `aios.scheduler` fires them.
 
-A trigger is its organisation's, like its target: every member sees, changes and deletes every
-one, and each says which member made it and which last changed it.
+A trigger is its organisation's, like its target, and is in its store beside it: every member
+sees, changes and deletes every one, and each says which member made it and which last changed
+it. Once the store has committed a change, the platform's schedule due index is written
+(`aios.schedules`), which is how the scheduler finds what's due.
 """
 
 from collections.abc import Sequence
@@ -17,21 +19,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from aios import cron, stored
-from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
+from aios import cron, schedules
+from aios.api.provenance import Provenance, UserOut, built_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores import (
-    DataStoreBusy,
-    DataStoreNotFound,
-    DataStoreNotReady,
-    organisation_store,
-)
-from aios.datastores.models import Agent, AgentRun, Workflow, WorkflowRun
+from aios.datastores import store_id_of
+from aios.datastores.models import Agent, Trigger, Workflow, WorkflowRun
 from aios.db import DB, DbId
 from aios.models import (
-    Organisation,
-    Trigger,
     TriggerKind,
     TriggerStatus,
     TriggerTargetKind,
@@ -104,24 +99,17 @@ RUN_STATUS = {
 LastRuns = dict[int, tuple[WorkflowRunStatus, str | None]]
 
 
-def last_workflow_runs(organisation_id: int, triggers: Sequence[Trigger]) -> LastRuns:
-    """How the workflow runs these triggers of the organisation's last started are going, from
-    its store. Those whose worker died are failed first, so they aren't shown running for ever
-    (as `api.workflows.get_workflow_run` does). None while the store can't be read: the
-    triggers then show their own outcomes."""
+def last_workflow_runs(store: Session, triggers: Sequence[Trigger]) -> LastRuns:
+    """How the workflow runs these triggers last started are going, from their store. Those
+    whose worker died are failed first, so they aren't shown running for ever (as
+    `api.workflows.get_workflow_run` does)."""
     ids = [t.last_workflow_run_id for t in triggers if t.last_workflow_run_id is not None]
     if not ids:
         return {}
-    try:
-        with organisation_store(organisation_id) as store:
-            fail_stopped_runs(store, WorkflowRun.id.in_(ids))
-            rows = store.execute(
-                select(WorkflowRun.id, WorkflowRun.status, WorkflowRun.error).where(
-                    WorkflowRun.id.in_(ids)
-                )
-            ).all()
-    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
-        return {}
+    fail_stopped_runs(store, WorkflowRun.id.in_(ids))
+    rows = store.execute(
+        select(WorkflowRun.id, WorkflowRun.status, WorkflowRun.error).where(WorkflowRun.id.in_(ids))
+    ).all()
     return {run_id: (status, error) for run_id, status, error in rows}
 
 
@@ -143,31 +131,36 @@ def target_id(trigger: Trigger) -> int:
 
 
 def target_names(
-    organisation_id: int, triggers: Sequence[Trigger]
+    store: Session, triggers: Sequence[Trigger]
 ) -> dict[tuple[TriggerTargetKind, int], str]:
-    """The names of the organisation's triggers' targets, from its store, by (kind, id)."""
+    """The names of these triggers' targets, from their store, by (kind, id)."""
     found: dict[tuple[TriggerTargetKind, int], str] = {}
     for kind, model in ((TriggerTargetKind.agent, Agent), (TriggerTargetKind.workflow, Workflow)):
-        ids = [target_id(t) for t in triggers if t.target_kind == kind]
-        for i, name in stored.names(organisation_id, model, ids).items():
-            found[kind, i] = name
+        ids = {target_id(t) for t in triggers if t.target_kind == kind}
+        if ids:
+            for i, name in store.execute(select(model.id, model.name).where(model.id.in_(ids))):
+                found[kind, i] = name
     return found
 
 
 def trigger_out(
     db: Session,
+    store: Session,
+    organisation_id: int,
     trigger: Trigger,
     known: dict[int, UserOut] | None = None,
     names: dict[tuple[TriggerTargetKind, int], str] | None = None,
     runs: LastRuns | None = None,
 ) -> TriggerOut:
-    """The trigger, with who made and last changed it from `known` (`provenance.people`), its
-    target's name from `names` (`target_names`) and its last workflow run from `runs`
-    (`last_workflow_runs`), else read now."""
+    """The organisation's trigger (in its store, `store`), with who made and last changed it
+    from `known` (`provenance.people`), its target's name from `names` (`target_names`) and its
+    last workflow run from `runs` (`last_workflow_runs`), else read now."""
+    if known is None:
+        known = people(db, organisation_id, [trigger.created_by, trigger.updated_by])
     if names is None:
-        names = target_names(trigger.organisation_id, [trigger])
+        names = target_names(store, [trigger])
     if runs is None:
-        runs = last_workflow_runs(trigger.organisation_id, [trigger])
+        runs = last_workflow_runs(store, [trigger])
     last_status, last_error = last_outcome(trigger, runs)
     return TriggerOut(
         id=trigger.id,
@@ -192,10 +185,15 @@ def trigger_out(
     )
 
 
-def get_org_trigger(db: Session, org: Organisation, trigger_id: int) -> Trigger:
-    """The organisation's trigger; a 404 otherwise, as if it didn't exist."""
-    trigger = db.get(Trigger, trigger_id)
-    if trigger is None or trigger.organisation_id != org.id:
+def get_org_trigger(store: Session, trigger_id: int, *, lock: bool = False) -> Trigger:
+    """The trigger, from the organisation's store; a 404 otherwise. With `lock`, locked until
+    the store's transaction ends, for a change to it: the scheduler holds the lock while it
+    claims or starts a firing of it (`aios.scheduler`)."""
+    query = select(Trigger).where(Trigger.id == trigger_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    trigger = store.scalars(query).one_or_none()
+    if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return trigger
 
@@ -210,10 +208,10 @@ def checked_schedule(expr: str, tz: str) -> tuple[str, str]:
     return expr, tz
 
 
-def apply(db: Session, store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
+def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     """Set the trigger from the request (made by `user_id`), checked, and schedule its next run.
-    Its target must be one of the organisation's: in its store, `store`, whose share lock on the
-    target is held until the caller ends `store`'s transaction, after committing `db`'s."""
+    Its target must be one of the organisation's, in its store, `store`, whose share lock on the
+    target is held until the caller ends `store`'s transaction."""
     expr, tz = checked_schedule(body.cron, body.timezone)
     if not body.input.strip():
         raise HTTPException(
@@ -230,9 +228,9 @@ def apply(db: Session, store: Session, user_id: int, trigger: Trigger, body: Tri
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.target_kind.value}"
         )
     # An archived target starts nothing, so its schedules can be changed only while paused.
-    # Share-locked until the store's transaction ends, after the trigger is committed, so a
-    # concurrent archive of the target (which pauses its triggers) either waits and then pauses
-    # this one, or wins and is seen here.
+    # Share-locked until the store's transaction ends, with the trigger's, so a concurrent
+    # archive of the target (which pauses its triggers) either waits and then pauses this one,
+    # or wins and is seen here.
     if not lock_live(store, model, [target.id], read=True) and body.enabled:
         store.refresh(target)
         raise HTTPException(
@@ -250,7 +248,7 @@ def apply(db: Session, store: Session, user_id: int, trigger: Trigger, body: Tri
     trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
 
 
-def cancel_unstarted_firing(db: Session, *where) -> None:
+def cancel_unstarted_firing(store: Session, *where) -> None:
     """Drop the firing of each trigger matching `where` if it has been claimed but hasn't
     started its run, as it's edited: that firing was for the old settings, and pausing must stop it.
 
@@ -259,7 +257,7 @@ def cancel_unstarted_firing(db: Session, *where) -> None:
     has started its run is left to finish and record how it went. The scheduler holds the
     trigger's row lock while it starts the run, so this waits for that and then re-checks.
     """
-    db.execute(
+    store.execute(
         update(Trigger)
         .where(
             *where,
@@ -272,28 +270,46 @@ def cancel_unstarted_firing(db: Session, *where) -> None:
     )
 
 
-def load(db: Session, trigger_id: int) -> Trigger:
-    db.expire_all()
-    return db.scalars(select(Trigger).where(Trigger.id == trigger_id)).one()
+def load(store: Session, trigger_id: int) -> Trigger:
+    store.expire_all()
+    return store.scalars(select(Trigger).where(Trigger.id == trigger_id)).one()
 
 
-def disable_triggers(db: Session, condition, user_id: int) -> None:
-    """Turn off the triggers matching `condition`, as pausing each would (and as the member
-    `user_id` changing them): none fires again until it's turned back on, and a firing claimed
-    but not started is dropped. Lock their targets first (see `aios.scheduler._claimed`)."""
-    db.execute(
-        update(Trigger)
-        .where(condition)
-        .values(enabled=False, next_run_at=None, updated_by=user_id)
-        .execution_options(synchronize_session=False)
+def disable_triggers(store: Session, condition, user_id: int) -> list[int]:
+    """Turn off the store's triggers matching `condition`, as pausing each would (and as the
+    member `user_id` changing them): none fires again until it's turned back on, and a firing
+    claimed but not started is dropped. Lock their targets first (see
+    `aios.scheduler._claimed`). Returns their ids, to take out of the due index once the store
+    has committed (`unindex`)."""
+    ids = list(
+        store.scalars(
+            update(Trigger)
+            .where(condition)
+            .values(enabled=False, next_run_at=None, updated_by=user_id)
+            .returning(Trigger.id)
+            .execution_options(synchronize_session=False)
+        )
     )
-    cancel_unstarted_firing(db, condition)
+    cancel_unstarted_firing(store, condition)
+    return ids
+
+
+def reindex(store: Session, triggers: Sequence[Trigger]) -> None:
+    """Write these triggers' rows of the due index as the store has just committed them."""
+    schedules.index(store_id_of(store), [(t.id, schedules.due_at(t)) for t in triggers])
+
+
+def unindex(store: Session, trigger_ids: Sequence[int]) -> None:
+    """Take these triggers (disabled or deleted, committed in the store) out of the due
+    index."""
+    schedules.index(store_id_of(store), [(i, None) for i in trigger_ids])
 
 
 @router.get("/triggers", response_model=list[TriggerOut], dependencies=[allow(Action.read)])
 def list_triggers(
     org: CurrentOrganisation,
     db: DB,
+    store: CurrentStore,
     target_kind: TriggerTargetKind | None = None,
     target_id: DbId | None = None,
 ):
@@ -304,20 +320,16 @@ def list_triggers(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Filter by both target_kind and target_id, or neither",
         )
-    query = (
-        select(Trigger)
-        .where(Trigger.organisation_id == org.id)
-        .order_by(Trigger.next_run_at.asc().nulls_last(), Trigger.id)
-    )
+    query = select(Trigger).order_by(Trigger.next_run_at.asc().nulls_last(), Trigger.id)
     if target_kind == TriggerTargetKind.agent:
         query = query.where(Trigger.agent_id == target_id)
     elif target_kind == TriggerTargetKind.workflow:
         query = query.where(Trigger.workflow_id == target_id)
-    triggers = db.scalars(query).all()
+    triggers = store.scalars(query).all()
     known = people(db, org.id, [i for t in triggers for i in (t.created_by, t.updated_by)])
-    names = target_names(org.id, triggers)
-    runs = last_workflow_runs(org.id, triggers)
-    return [trigger_out(db, t, known, names, runs) for t in triggers]
+    names = target_names(store, triggers)
+    runs = last_workflow_runs(store, triggers)
+    return [trigger_out(db, store, org.id, t, known, names, runs) for t in triggers]
 
 
 @router.post(
@@ -329,12 +341,12 @@ def list_triggers(
 def create_trigger(
     body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
-    trigger = Trigger(**made_by(org.id, user.id))
-    apply(db, store, user.id, trigger, body)
-    db.add(trigger)
-    db.commit()
+    trigger = Trigger(**built_by(user.id))
+    apply(store, user.id, trigger, body)
+    store.add(trigger)
     store.commit()
-    return trigger_out(db, load(db, trigger.id))
+    reindex(store, [trigger])
+    return trigger_out(db, store, org.id, load(store, trigger.id))
 
 
 @router.post("/triggers/preview", response_model=PreviewOut, dependencies=[allow(Action.read)])
@@ -353,8 +365,8 @@ def list_timezones(user: CurrentUser):
 
 
 @router.get("/triggers/{trigger_id}", response_model=TriggerOut, dependencies=[allow(Action.read)])
-def get_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB):
-    return trigger_out(db, load(db, get_org_trigger(db, org, trigger_id).id))
+def get_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    return trigger_out(db, store, org.id, get_org_trigger(store, trigger_id))
 
 
 @router.put("/triggers/{trigger_id}", response_model=TriggerOut, dependencies=[allow(Action.build)])
@@ -368,12 +380,15 @@ def update_trigger(
 ):
     """Replace the trigger's settings; its next run is worked out again from now. A firing that
     hasn't started its run yet is dropped (see `cancel_unstarted_firing`)."""
-    trigger = get_org_trigger(db, org, trigger_id)
-    apply(db, store, user.id, trigger, body)
-    cancel_unstarted_firing(db, Trigger.id == trigger.id)
-    db.commit()
+    # Its target's lock (`apply`), then its own (writing it), as the scheduler takes them
+    # (`aios.scheduler._claimed`).
+    trigger = get_org_trigger(store, trigger_id)
+    apply(store, user.id, trigger, body)
+    store.flush()
+    cancel_unstarted_firing(store, Trigger.id == trigger.id)
     store.commit()
-    return trigger_out(db, load(db, trigger.id))
+    reindex(store, [trigger])
+    return trigger_out(db, store, org.id, load(store, trigger.id))
 
 
 @router.delete(
@@ -381,17 +396,9 @@ def update_trigger(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.build)],
 )
-def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore) -> None:
-    db.delete(get_org_trigger(db, org, trigger_id))
-    db.commit()
-    # The runs it started (in the store, naming it by id) no longer name it; not a change to an
-    # agent run itself, so its `updated_at` stays (listings sort by it).
-    store.execute(
-        update(AgentRun)
-        .where(AgentRun.trigger_id == trigger_id)
-        .values(trigger_id=None, updated_at=AgentRun.updated_at)
-    )
-    store.execute(
-        update(WorkflowRun).where(WorkflowRun.trigger_id == trigger_id).values(trigger_id=None)
-    )
+def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, store: CurrentStore) -> None:
+    """Delete the trigger. The runs it started stay, no longer naming it (their foreign key
+    clears it, leaving their `updated_at`, which listings sort by)."""
+    store.delete(get_org_trigger(store, trigger_id, lock=True))
     store.commit()
+    unindex(store, [trigger_id])

@@ -16,6 +16,7 @@ from aios.api.agents import new_agent_run
 from aios.config import get_settings
 from aios.datastores import organisation_store, store_id_of
 from aios.datastores.models import Agent, AgentRun
+from aios.db import SessionLocal
 from aios.models import AgentRunStatus
 from aios.testing.fake_model import model, replies, use_model
 
@@ -40,11 +41,12 @@ class Mention:
             raise firing.CantStart(self.cant_prepare)
         self.prepared = True
 
-    def start(self, db) -> firing.Turn:
+    def start(self) -> firing.Turn:
         assert self.prepared
         if self.cant_start:
             raise firing.CantStart(self.cant_start)
-        org_id = home_organisation(db, self.user_id).id
+        with SessionLocal() as db:
+            org_id = home_organisation(db, self.user_id).id
         with organisation_store(org_id) as store:
             agent = store.get(Agent, self.agent_id)
             run = new_agent_run(store, org_id, agent, created_by=self.user_id)
@@ -53,10 +55,10 @@ class Mention:
         self.run_id = run.id
         return firing.Turn(store_id, self.agent_id, run.id, self.message)
 
-    def beat(self, db) -> None:
+    def beat(self) -> None:
         self.beats += 1
 
-    def record(self, db, error: str | None) -> None:
+    def record(self, error: str | None) -> None:
         self.outcomes.append(error)
 
 

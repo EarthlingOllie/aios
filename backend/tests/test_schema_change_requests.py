@@ -10,7 +10,7 @@ import contextlib
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import org_of, store_of
+from conftest import delete_user, org_of, provisioned_user, store_of
 from psycopg import OperationalError
 from sqlalchemy import event
 from test_agents import agent_body, chat_body, make_agent
@@ -20,9 +20,9 @@ from aios import checkpoints, ui_stream, worker
 from aios.api import agents as agents_api
 from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
-from aios.datastores import can_approve, schema_changes
+from aios.datastores import can_approve, schema_changes, store_session
 from aios.datastores.schema_changes import SchemaChange
-from aios.db import SessionLocal, engine
+from aios.db import engine
 from aios.main import app
 from aios.models import DataStore, User
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
@@ -306,7 +306,9 @@ def test_the_list_reads_the_store_once_however_many_requests_it_has(api, store):
     finally:
         event.remove(engine, "before_cursor_execute", record)
 
-    assert len([s for s in statements if "FROM data_stores" in s]) <= 2
+    # The store's own lookups (finding and opening it), and its row for who may decide: never
+    # once per request.
+    assert len([s for s in statements if "FROM data_stores" in s]) <= 3
 
 
 def test_a_request_is_decided_once(api, agent, queued):
@@ -319,19 +321,23 @@ def test_a_request_is_decided_once(api, agent, queued):
     assert [task for task, _ in queued] == [worker.apply_schema_change_task]
 
 
-def test_only_members_of_the_stores_organisation_can_decide(api, user, agent, db, new_user, queued):
+def test_only_members_of_the_stores_organisation_can_decide(api, user, agent, db, queued):
     _, request = start(api, agent, Script(CONTACTS))
-    other: User = new_user()
-    app.dependency_overrides[current_user] = lambda: other
+    other: User = provisioned_user(db, "other")
+    try:
+        app.dependency_overrides[current_user] = lambda: other
 
-    for decision in ("approve", "reject"):
-        r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
-        assert r.status_code == 404
-    assert api.get(f"/api/schema-changes/{request['id']}").status_code == 404
-    assert api.get("/api/schema-changes").json() == []
-    assert queued == []
-    store = db.get(DataStore, request["data_store_id"])
-    assert (can_approve(db, other.id, store), can_approve(db, user.id, store)) == (False, True)
+        for decision in ("approve", "reject"):
+            r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+            assert r.status_code == 404
+        assert api.get(f"/api/schema-changes/{request['id']}").status_code == 404
+        assert api.get("/api/schema-changes").json() == []
+        assert queued == []
+        store = db.get(DataStore, request["data_store_id"])
+        assert (can_approve(db, other.id, store), can_approve(db, user.id, store)) == (False, True)
+    finally:
+        app.dependency_overrides[current_user] = lambda: user
+        delete_user(db, other)
 
 
 def run_of(api, agent: dict, run: dict) -> dict:
@@ -354,8 +360,8 @@ def test_a_resume_that_cant_start_keeps_the_run_waiting_and_is_tried_again(
         if not waiting_between:
             waiting_between.append(None)
             raise OperationalError("the database is down")
-        with SessionLocal() as db:
-            waiting_between.append(waiting_on(db, data_store_id, run_id))
+        with store_session(data_store_id) as store:
+            waiting_between.append(waiting_on(store, run_id))
         async with turn(data_store_id, run_id, lease) as saver:
             yield saver
 

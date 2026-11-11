@@ -56,12 +56,15 @@ class NotificationList(BaseModel):
 
 
 def _titles(db: Session, notifications: Sequence[Notification]) -> dict[uuid.UUID, str]:
-    """Each notification's title, by its id: looked up for all of a kind at once."""
-    request_ids = {
-        n.id: n.ref.get("request_id") for n in notifications if n.kind == SCHEMA_CHANGE_REQUEST
+    """Each notification's title, by its id: looked up for all of a kind at once (a schema
+    change request's in its store, which the notification names)."""
+    requests = {
+        n.id: (n.ref.get("data_store_id"), n.ref.get("request_id"))
+        for n in notifications
+        if n.kind == SCHEMA_CHANGE_REQUEST
     }
-    summaries = schema_changes.summaries(db, set(request_ids.values()))
-    titles = {n: summaries[r] for n, r in request_ids.items() if r in summaries}
+    summaries = schema_changes.summaries(set(requests.values()))
+    titles = {n: summaries[r] for n, (_, r) in requests.items() if r in summaries}
     for n in notifications:
         if n.kind in DELETION_TITLES:
             titles[n.id] = DELETION_TITLES[n.kind].format(name=n.ref.get("organisation_name"))
