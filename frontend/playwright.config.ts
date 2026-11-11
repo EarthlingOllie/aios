@@ -10,7 +10,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+  // In CI each shard (`--shard=i/n`) writes a blob report (blob-report/); the frontend gate merges
+  // them into one HTML report.
+  reporter: process.env.CI ? [["list"], ["blob"]] : "list",
   use: {
     baseURL: `http://localhost:${port}`,
     trace: "retain-on-failure",

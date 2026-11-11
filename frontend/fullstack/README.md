@@ -23,4 +23,5 @@ the dev stack first, or give one a different project name (`docker compose -p ..
   test here that tells it, rather than a new harness. The backend tests script the same model
   (`aios.testing.fake_model`).
 - A step that never comes (a worker stopped, say) fails the test within its timeout
-  (`playwright.fullstack.config.ts`). CI keeps the report and the stack's logs on failure.
+  (`playwright.fullstack.config.ts`). CI runs the tests in shards (default 1), each on its own
+  machine with its own stack, and keeps the merged report and each failing shard's stack logs.

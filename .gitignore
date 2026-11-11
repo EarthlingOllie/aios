@@ -26,6 +26,9 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/test-results-fullstack/
 frontend/playwright-report-fullstack/
+frontend/all-blob-reports*/
+frontend/blob-report/
+frontend/blob-report-fullstack/
 
 # Redis snapshots from local redis-server runs
 dump.rdb

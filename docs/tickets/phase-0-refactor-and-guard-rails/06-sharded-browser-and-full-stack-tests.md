@@ -11,12 +11,14 @@ a developer still gets one report.
 
 **Blocked by:** [04: Full-stack test, with the scripted model as a selectable provider](04-full-stack-test.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The build and unit tests run once, in their own job.
+- [x] The build and unit tests run once, in their own job.
 - [ ] The browser tests run in N shards, and the slowest takes close to total time divided by N,
-  plus setup.
-- [ ] A failing shard fails its gate, and the merged HTML report is downloadable.
-- [ ] Full-stack shards each bring up their own stack and share nothing. The default count is 1.
-- [ ] Each shard count is a one-line change.
-- [ ] The testing docs page explains running one browser test shard locally.
+  plus setup. (CI-only to confirm. Locally, 3 shards of the 329 tests took 208s, 177s and 170s.)
+- [ ] A failing shard fails its gate, and the merged HTML report is downloadable. (CI-only to
+  confirm. Locally, a deliberately failing shard exited 1 and its blob merged into one HTML
+  report; `merge-reports` itself exits 0, so the gate checks the shards' result.)
+- [x] Full-stack shards each bring up their own stack and share nothing. The default count is 1.
+- [x] Each shard count is a one-line change.
+- [x] The testing docs page explains running one browser test shard locally.

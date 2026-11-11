@@ -202,6 +202,16 @@ pnpm dev                 # http://localhost:5173, proxies /api to :8000
   `frontend/e2e/`) run the app against an in-memory fake of the API (`e2e/fake-api.ts`), so
   they need no backend. Run `pnpm exec playwright install chromium` once first, or point
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at a Chromium you already have.
+- **Browser test shards**: CI splits the browser tests across machines (the `browser` job in
+  `.github/workflows/ci.yml`) and the full-stack test likewise (`fullstack-shard`); each shard
+  count is the `shard:` line of its job's matrix (3 and 1). To run one shard locally, as CI does,
+  from `frontend/`: `pnpm test:e2e --shard=2/3` (shard 2 of 3), or `pnpm test:fullstack
+  --shard=1/1` against a running full-stack stack (`frontend/fullstack/README.md`). With `CI` set,
+  each shard writes a blob report (`blob-report/`, or `blob-report-fullstack/`); the gate jobs
+  (`frontend-gate`, `fullstack`) merge every shard's into one HTML report, uploaded as the
+  `playwright-report` or `fullstack-report` artifact when a shard fails, and fail if any shard
+  did. To merge locally, copy each shard's blob into one folder and run
+  `pnpm exec playwright merge-reports --reporter html <folder>`.
 
 ## Dependency policy
 
