@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
 from aios import cron
@@ -164,15 +164,17 @@ def apply(db: Session, org: Organisation, user_id: int, trigger: Trigger, body: 
         )
     model = Agent if body.target_kind == TriggerTargetKind.agent else Workflow
     target = db.get(model, body.target_id)
-    # Share-locked until commit, so a concurrent delete of the target (which deletes its
-    # triggers) either waits and then sees this one, or wins and is seen here.
-    if (
-        target is None
-        or target.organisation_id != org.id
-        or not lock_live(db, model, [target.id], read=True)
-    ):
+    if target is None or target.organisation_id != org.id:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.target_kind.value}"
+        )
+    # An archived target starts nothing, so its schedules can be changed only while paused.
+    # Share-locked until commit, so a concurrent archive of the target (which pauses its
+    # triggers) either waits and then pauses this one, or wins and is seen here.
+    if not lock_live(db, model, [target.id], read=True) and body.enabled:
+        db.refresh(target)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"The {body.target_kind.value} {target.name} is archived."
         )
     trigger.kind = body.kind
     trigger.target_kind = body.target_kind
@@ -238,12 +240,6 @@ def disable_triggers(db: Session, condition, user_id: int) -> None:
         .execution_options(synchronize_session=False)
     )
     cancel_unstarted_firing(db, condition)
-
-
-def delete_triggers(db: Session, condition) -> None:
-    """Delete the triggers matching `condition`, e.g. as their agent or workflow is deleted (it's
-    only soft-deleted, so they wouldn't cascade)."""
-    db.execute(delete(Trigger).where(condition))
 
 
 @router.get("/triggers", response_model=list[TriggerOut])

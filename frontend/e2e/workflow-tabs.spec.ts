@@ -41,7 +41,7 @@ test("opens on the Graph tab, with the title and actions above the tabs", async 
   await expect(panel(page).getByRole("button", { name: "Run" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Edit" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Delete workflow" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
 });
 
 test("switches tabs on click, keeps the tab in the URL, and shows counts", async ({ page }) => {

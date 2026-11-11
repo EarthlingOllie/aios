@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { Pencil, Trash2 } from "lucide-react";
+import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
+import { Archive, ArchiveRestore, Pencil } from "lucide-react";
 
 import {
   DetailPage,
@@ -14,6 +14,7 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
+import { SkillArchiveDialog } from "@/components/ArchiveDialog";
 import { MarkdownView } from "@/components/Markdown";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { Tabs } from "@/components/tabs";
@@ -43,16 +44,20 @@ import {
   type ListSort,
 } from "@/lib/list-filter";
 import { plural } from "@/lib/utils";
+import { ArchivedBadge } from "@/pages/Agents";
 
 const SKILL_FILTERS: ListFilterGroup<SkillSummary>[] = [
   {
     param: "filter",
     label: "Show",
     all: "All",
-    // Used: an agent's current version uses some version of it, so it can't be deleted.
+    // Used: an agent's current version uses some version of it.
     options: [
       { key: "used", label: "Used", test: (skill) => skill.agent_count > 0 },
       { key: "unused", label: "Unused", test: (skill) => skill.agent_count === 0 },
+      // The list is loaded from the archived skills for this one (`SkillsSection`); the others
+      // narrow the default list, which leaves archived skills out.
+      { key: "archived", label: "Archived", test: (skill) => skill.archived_at !== null },
     ],
   },
 ];
@@ -60,7 +65,11 @@ const SKILL_FILTERS: ListFilterGroup<SkillSummary>[] = [
 const SKILL_SORTS: ListSort<SkillSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function SkillsSection() {
-  const { data, error, reload } = useLoad(api.listSkills);
+  const [params] = useSearchParams();
+  const archived = params.get("filter") === "archived";
+  const { data, error, reload } = useLoad(
+    useCallback(() => api.listSkills(archived), [archived]),
+  );
   return (
     <MasterDetail
       title="Skills"
@@ -81,6 +90,7 @@ export function SkillsSection() {
           <>
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate font-medium">{skill.name}</span>
+              {skill.archived_at && <ArchivedBadge />}
               <VersionBadge version={skill.version} />
             </div>
             {about && <div className="text-muted-foreground truncate text-xs">{about}</div>}
@@ -117,25 +127,33 @@ function SkillContent({ version }: { version: SkillVersion }) {
 
 export function SkillDetail() {
   const id = Number(useParams().skillId);
-  const navigate = useNavigate();
   const listHref = useListHref();
   const { reloadList } = useOutletContext<ListContext>();
-  const { data: skill, error } = useLoad(useCallback(() => api.getSkill(id), [id]));
+  const { data: skill, error, reload } = useLoad(useCallback(() => api.getSkill(id), [id]));
   const versions = useLoad(useCallback(() => api.listSkillVersions(id), [id]));
-  const [deleteError, setDeleteError] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
+  const [archiving, setArchiving] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!skill) return null;
   const current = skill.current_version;
 
-  async function onDelete() {
-    if (!window.confirm(`Delete the skill “${skill!.name}”?`)) return;
+  const onArchived = async () => {
+    setArchiving(false);
+    await Promise.all([reload(), reloadList()]);
+  };
+
+  async function onUnarchive() {
+    setBusy(true);
+    setActionError(undefined);
     try {
-      await api.deleteSkill(id);
-      await reloadList();
-      navigate(listHref("/skills"));
+      await api.unarchiveSkill(id);
+      await Promise.all([reload(), reloadList()]);
     } catch (err) {
-      setDeleteError(describeError(err));
+      setActionError(describeError(err));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -144,6 +162,7 @@ export function SkillDetail() {
       title={
         <span className="flex items-center gap-2">
           {skill.name} <VersionBadge version={current.version} />
+          {skill.archived_at && <ArchivedBadge />}
         </span>
       }
       subtitle={
@@ -160,14 +179,35 @@ export function SkillDetail() {
               Edit
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={onDelete}>
-            <Trash2 />
-            Delete
-          </Button>
+          {skill.archived_at ? (
+            <Button variant="outline" size="sm" onClick={onUnarchive} disabled={busy}>
+              <ArchiveRestore />
+              Unarchive
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
+              <Archive />
+              Archive
+            </Button>
+          )}
         </>
       }
     >
-      <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(undefined)} />
+      <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {skill.archived_at && (
+        <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
+          This skill is archived{skill.archived_by ? ` by ${skill.archived_by.name}` : ""} on{" "}
+          {formatDate(skill.archived_at)}. It can't be added to an agent until it's unarchived;
+          agents that use it keep running with it.
+        </p>
+      )}
+      {archiving && (
+        <SkillArchiveDialog
+          item={skill}
+          onClose={() => setArchiving(false)}
+          onArchived={onArchived}
+        />
+      )}
       <Tabs
         label="Skill details"
         tabs={[

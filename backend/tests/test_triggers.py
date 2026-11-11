@@ -110,7 +110,7 @@ def test_unknown_kinds_are_rejected(api):
     assert api.post("/api/triggers", json=schedule("skill", agent["id"])).status_code == 422
 
 
-def test_targets_must_be_the_users_live_agents_or_workflows(api, client, db):
+def test_targets_must_be_the_users_agents_or_workflows_and_not_archived(api, client, db):
     agent = make_agent(api, "Mine")
     workflow = make_workflow(api, "Mine too")
     # A workflow id as an agent, and the other way round.
@@ -119,9 +119,20 @@ def test_targets_must_be_the_users_live_agents_or_workflows(api, client, db):
         resp = api.post("/api/triggers", json=schedule(kind, target))
         assert resp.status_code == 422, resp.text
         assert resp.json()["detail"] == f"Unknown {kind}"
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
+    assert api.post(f"/api/agents/{agent['id']}/archive").status_code == 200
     resp = api.post("/api/triggers", json=schedule("agent", agent["id"]))
-    assert resp.status_code == 422
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "The agent Mine is archived."
+    # A paused one can be made, or changed, as long as it stays paused.
+    paused = make_trigger(api, schedule("agent", agent["id"], enabled=False))
+    url = f"/api/triggers/{paused['id']}"
+    assert (
+        api.put(
+            url, json=schedule("agent", agent["id"], enabled=False, cron="0 8 * * *")
+        ).status_code
+        == 200
+    )
+    assert api.put(url, json=schedule("agent", agent["id"])).status_code == 409
 
     other = make_user(db, "other")
     try:
@@ -200,16 +211,17 @@ def test_delete(api):
     assert api.delete(f"/api/triggers/{t['id']}").status_code == 404
 
 
-def test_deleting_the_target_deletes_its_triggers(api):
+def test_archiving_the_target_pauses_its_triggers_and_keeps_them(api):
     agent = make_agent(api, "Bot")
     workflow = make_workflow(api, "Flow")
     ta = make_trigger(api, schedule("agent", agent["id"]))
     tw = make_trigger(api, schedule("workflow", workflow["id"]))
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
-    assert api.delete(f"/api/workflows/{workflow['id']}").status_code == 204
-    assert api.get(f"/api/triggers/{ta['id']}").status_code == 404
-    assert api.get(f"/api/triggers/{tw['id']}").status_code == 404
-    assert api.get("/api/triggers").json() == []
+    assert api.post(f"/api/agents/{agent['id']}/archive").status_code == 200
+    assert api.post(f"/api/workflows/{workflow['id']}/archive").status_code == 200
+    for t in (ta, tw):
+        shown = api.get(f"/api/triggers/{t['id']}").json()
+        assert (shown["enabled"], shown["next_run_at"]) == (False, None)
+    assert len(api.get("/api/triggers").json()) == 2
 
 
 def test_other_users_cannot_see_or_change_triggers(api, client, db):

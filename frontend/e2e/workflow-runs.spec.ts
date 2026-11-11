@@ -315,7 +315,7 @@ test("opens a subworkflow's graph with its own steps", async ({ page }) => {
   await expect(node(page, "research")).toBeVisible();
 });
 
-test("opens a subworkflow that has since been deleted", async ({ page }) => {
+test("opens a subworkflow that has since been archived", async ({ page }) => {
   const api = await fakeApi(page);
   const { review, report } = seed(api);
   const run = api.addRun(report, {
@@ -326,7 +326,7 @@ test("opens a subworkflow that has since been deleted", async ({ page }) => {
     ],
   });
   // As if Report had since dropped it: the run still pins the version it ran.
-  review.deleted = true;
+  review.archived_at = "2026-11-10T09:00:00Z";
   await page.goto(inOrg(`/workflows/${report.id}/runs/${run.id}`));
   await node(page, "review").click();
   await inspector(page).getByRole("button", { name: "Open subworkflow" }).click();

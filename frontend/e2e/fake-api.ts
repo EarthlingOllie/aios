@@ -57,6 +57,9 @@ type SkillRow = {
   usedBy: { agent: AgentRow; version: number }[];
   /** When it was last changed, if a test sets it; NOW otherwise. */
   updated_at?: string;
+  /** When it was archived, and by whom: both null while it isn't. */
+  archived_at: string | null;
+  archived_by: ChatUser | null;
 };
 /** What a run records about how it went; all null for a run from before it was kept. */
 export type AgentRunCounters = {
@@ -164,7 +167,9 @@ type WorkflowRow = {
   description: string;
   layout: Record<string, Position>;
   versions: number[];
-  deleted: boolean;
+  /** When it was archived, and by whom: both null while it isn't. */
+  archived_at: string | null;
+  archived_by: ChatUser | null;
   created_at: string;
   updated_at: string;
   /** The members who made it and last changed it (`me` unless a test says otherwise). */
@@ -226,7 +231,7 @@ export type StalePinRow = {
   pinned_version: number;
   current_version: number | null;
 };
-type DependentTriggerRow = {
+type UsedByTriggerRow = {
   id: number;
   enabled: boolean;
   cron: string;
@@ -235,36 +240,10 @@ type DependentTriggerRow = {
   next_run_at: string | null;
 };
 
-type DependentRequestRow = { id: string; summary: string; status: "pending" };
-
-/** What depends on an agent, as GET /api/agents/{id}/dependents answers. */
-export type AgentDependentsRow = {
-  agent_runs: {
-    id: number;
-    title: string | null;
-    waiting: boolean;
-    running: boolean;
-    trigger_id: number | null;
-    updated_at: string;
-    requests: DependentRequestRow[];
-  }[];
-  workflow_runs: {
-    id: number;
-    workflow_id: number;
-    workflow_name: string;
-    status: RunStatus;
-    created_at: string;
-    waiting_nodes: string[];
-    requests: DependentRequestRow[];
-  }[];
-  workflows: {
-    id: number;
-    name: string;
-    version: number;
-    direct: boolean;
-    triggers: DependentTriggerRow[];
-  }[];
-  triggers: DependentTriggerRow[];
+/** The workflows and schedules `GET /api/agents/{id}/used-by` lists for an agent. */
+export type AgentUsedByRow = {
+  workflows: { id: number; name: string; version: number; direct: boolean; triggers: UsedByTriggerRow[] }[];
+  triggers: UsedByTriggerRow[];
 };
 
 export type RunRow = {
@@ -316,7 +295,7 @@ export type ChatMemberRow =
       /** The last message they've seen (`POST /api/chats/{id}/read`); null for none yet. */
       last_read: number | null;
     }
-  /** An agent or workflow of `agents` or `workflows`, by id; gone once it's deleted. */
+  /** An agent or workflow of `agents` or `workflows`, by id. */
   | { id: number; kind: Kind; target_id: number; added_at: string };
 type ChatUserMemberRow = Extract<ChatMemberRow, { kind: "user" }>;
 export type ChatMention = { kind: "user" | Kind; id: number; name: string };
@@ -484,7 +463,8 @@ export class FakeApi {
    * refused until each listed run is named to cancel and each workflow to deactivate; a test
    * "edits" a workflow by taking it off the list.
    */
-  agentDependents = new Map<number, AgentDependentsRow>();
+  /** What uses each agent, as its archive confirmation lists it (none unless a test says). */
+  agentUsedBy = new Map<number, AgentUsedByRow>();
   /**
    * Who can sign in. The first is signed in from the start, so a test needn't sign in unless it's
    * about signing in.
@@ -642,7 +622,7 @@ export class FakeApi {
   private organisationContents() {
     const counts = {
       agent: [...this.agents.keys()].filter((id) => id !== this.assistantId).length,
-      workflow: [...this.workflows.values()].filter((w) => !w.deleted).length,
+      workflow: [...this.workflows.values()].filter((w) => w.archived_at === null).length,
       chat: [...this.chats.values()].filter((c) => c.organisation_id === this.organisation.id).length,
       document: this.documents.length,
       table: this.dataTables.length,
@@ -888,7 +868,14 @@ export class FakeApi {
    * and `description` (by default "Use when writing <name>.").
    */
   addSkill(name: string, versions = 1, description = `Use when writing ${name.toLowerCase()}.`): SkillRow {
-    const skill: SkillRow = { id: this.id(), name, versions: [], usedBy: [] };
+    const skill: SkillRow = {
+      id: this.id(),
+      name,
+      versions: [],
+      usedBy: [],
+      archived_at: null,
+      archived_by: null,
+    };
     for (let n = 1; n <= versions; n++) {
       skill.versions.push({
         id: this.id(),
@@ -926,13 +913,20 @@ export class FakeApi {
       created_at: NOW,
       updated_at: NOW,
       current_version: { ...current, created_at: NOW },
-      agents: skill.usedBy.map(({ agent, version }) => ({
-        agent_id: agent.id,
-        agent_name: agent.name,
-        agent_version: agent.versions.length,
-        skill_version: version,
-      })),
+      archived_at: skill.archived_at,
+      archived_by: skill.archived_by,
+      agents: this.skillUsage(skill),
     };
+  }
+
+  /** The agents whose current version uses the skill, as the API lists them. */
+  private skillUsage(skill: SkillRow) {
+    return skill.usedBy.map(({ agent, version }) => ({
+      agent_id: agent.id,
+      agent_name: agent.name,
+      agent_version: agent.versions.length,
+      skill_version: version,
+    }));
   }
 
   /** Adds an enabled daily schedule of the agent or workflow. */
@@ -1116,7 +1110,8 @@ export class FakeApi {
       description: "",
       layout,
       versions: [],
-      deleted: false,
+      archived_at: null,
+      archived_by: null,
       created_at: NOW,
       updated_at: NOW,
       created_by: this.me,
@@ -1340,9 +1335,9 @@ export class FakeApi {
       [],
       { kind: "run_card", invocation_id: invocation.id },
     );
-    // An archived agent's fails at once, as the API's does: no handoff, no run.
-    if ("archived_at" in target && target.archived_at !== null) {
-      const error = `The agent ${target.name} is archived`;
+    // An archived agent's or workflow's fails at once, as the API's does: no handoff, no run.
+    if (target.archived_at !== null) {
+      const error = `The ${kind} ${target.name} is archived`;
       this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
     }
     return invocation;
@@ -1568,7 +1563,24 @@ export class FakeApi {
       base_prompt: agent.base_prompt,
       model: null,
       instructions: agent.base_prompt,
-      skills: [],
+      skills: [...this.skills.values()].flatMap((skill) =>
+        skill.usedBy
+          .filter((use) => use.agent === agent)
+          .map(({ version }) => {
+            const pinned = skill.versions[version - 1];
+            const latest = skill.archived_at === null ? skill.versions.at(-1)! : null;
+            return {
+              skill_id: skill.id,
+              skill_version_id: pinned.id,
+              name: pinned.name,
+              description: pinned.description,
+              version,
+              latest_version: latest?.version ?? null,
+              latest_version_id: latest?.id ?? null,
+              archived: skill.archived_at !== null,
+            };
+          }),
+      ),
       tools: [],
     };
   }
@@ -1608,8 +1620,8 @@ export class FakeApi {
       target_id: target.id,
       name: target.name,
       version: pinned.version,
-      latest_version: target.deleted ? null : target.versions.length,
-      latest_version_id: target.deleted ? null : target.versions.at(-1)!,
+      latest_version: target.versions.length,
+      latest_version_id: target.versions.at(-1)!,
     };
   }
 
@@ -1634,6 +1646,8 @@ export class FakeApi {
       updated_at: workflow.updated_at,
       created_by: workflow.created_by,
       updated_by: workflow.updated_by,
+      archived_at: workflow.archived_at,
+      archived_by: workflow.archived_by,
       current_version: this.versionOut(this.current(workflow)),
       layout: workflow.layout,
     };
@@ -1655,11 +1669,9 @@ export class FakeApi {
     };
   }
 
-  /** The agent or workflow a member is, unless it's been deleted. */
+  /** The agent or workflow a member is. */
   private chatTarget(kind: Kind, id: number) {
-    if (kind === "agent") return this.agents.get(id);
-    const workflow = this.workflows.get(id);
-    return workflow && !workflow.deleted ? workflow : undefined;
+    return kind === "agent" ? this.agents.get(id) : this.workflows.get(id);
   }
 
   /** Whether `me` holds the chat's owner role, on their member row. */
@@ -1667,7 +1679,7 @@ export class FakeApi {
     return chat.members.some((m) => m.kind === "user" && m.role === "owner" && m.user.id === this.me.id);
   }
 
-  /** The chat's members as the API shows them, less deleted agents and workflows: owner first. */
+  /** The chat's members as the API shows them: owner first. */
   private liveMembers(chat: ChatRow): ChatMemberOut[] {
     return chat.members
       .flatMap((m): ChatMemberOut[] => {
@@ -1678,7 +1690,7 @@ export class FakeApi {
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
-        const archived = "archived_at" in target && target.archived_at !== null;
+        const archived = target.archived_at !== null;
         return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at, archived }];
       })
       .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
@@ -1689,7 +1701,8 @@ export class FakeApi {
   }
 
   /** Who can be mentioned in a chat, as `GET /api/chats/{id}/mentionable` groups them: not its
-   * archived agents, unless `archived` (posting takes a mention of one, which fails at once). */
+   * archived agents and workflows, unless `archived` (posting takes a mention of one, which fails
+   * at once). */
   private mentionable(chat: ChatRow, archived = false) {
     const users = new Map(chat.members.flatMap((m) => (m.kind === "user" ? [[m.user.id, m.user]] : [])));
     return byKind(
@@ -1813,24 +1826,14 @@ export class FakeApi {
     return found;
   }
 
-  private live() {
+  /** The workflows, by name: those that aren't archived, or with `archived` those that are. */
+  private live(archived = false) {
     return [...this.workflows.values()]
-      .filter((w) => !w.deleted)
+      .filter((w) => (w.archived_at !== null) === archived)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   // --- Routing ---------------------------------------------------------------------------------
-
-  private dependentsOf(agentId: number): AgentDependentsRow {
-    return (
-      this.agentDependents.get(agentId) ?? {
-        agent_runs: [],
-        workflow_runs: [],
-        workflows: [],
-        triggers: [],
-      }
-    );
-  }
 
   /** `/api/auth/*` and `/api/dev/*`, as the API checks what it's sent: [status, body]. */
   private auth(method: string, path: string, body: Record<string, string> | null): [number, unknown] {
@@ -2263,9 +2266,10 @@ export class FakeApi {
     }
     if (path === "/api/tools") return reply(200, this.tools);
     if (path === "/api/skills" && method === "GET") {
+      const archived = url.searchParams.get("archived") === "true";
       return reply(
         200,
-        [...this.skills.values()].map((s) => ({
+        [...this.skills.values()].filter((s) => (s.archived_at !== null) === archived).map((s) => ({
           id: s.id,
           name: s.name,
           description: s.versions.at(-1)!.description,
@@ -2275,8 +2279,29 @@ export class FakeApi {
           agent_count: new Set(
             s.usedBy.filter(({ agent }) => this.agents.has(agent.id)).map(({ agent }) => agent.id),
           ).size,
+          created_by: this.me,
+          updated_by: this.me,
+          archived_at: s.archived_at,
+          archived_by: s.archived_by,
         })),
       );
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)\/(archive|unarchive)$/)) && method === "POST") {
+      const skill = this.skills.get(Number(m[1]));
+      if (!skill) return fail(404, "Not Found");
+      if (m[2] === "unarchive") {
+        skill.archived_at = null;
+        skill.archived_by = null;
+      } else if (skill.archived_at === null) {
+        skill.archived_at = new Date().toISOString();
+        skill.archived_by = this.me;
+      }
+      return reply(200, this.skillOut(skill));
+    }
+    if ((m = path.match(/^\/api\/skills\/(\d+)\/used-by$/)) && method === "GET") {
+      const skill = this.skills.get(Number(m[1]));
+      if (!skill) return fail(404, "Not Found");
+      return reply(200, { agents: this.skillUsage(skill) });
     }
     if ((m = path.match(/^\/api\/skills\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const skill = this.skills.get(Number(m[1]));
@@ -2347,7 +2372,7 @@ export class FakeApi {
     if ((m = path.match(/^\/api\/agents\/(\d+)\/used-by$/)) && method === "GET") {
       const agent = this.agents.get(Number(m[1]));
       if (!agent) return fail(404, "Not Found");
-      const { workflows, triggers } = this.dependentsOf(agent.id);
+      const { workflows, triggers } = this.agentUsedBy.get(agent.id) ?? { workflows: [], triggers: [] };
       const chats = [...this.chats.values()]
         .filter((c) => c.members.some((x) => x.kind === "agent" && x.target_id === agent.id))
         .map((c) => ({ id: c.id, name: c.name }));
@@ -2358,31 +2383,6 @@ export class FakeApi {
       if (!run || run.agent_id !== Number(m[1])) return fail(404, "Not Found");
       this.agentRuns.delete(run.id);
       return reply(204);
-    }
-    if ((m = path.match(/^\/api\/agents\/(\d+)$/)) && method === "DELETE") {
-      const agent = this.agents.get(Number(m[1]));
-      if (!agent) return fail(404, "Not Found");
-      const dependents = this.dependentsOf(agent.id);
-      const asked = (body ?? {}) as Partial<Record<string, number[]>>;
-      const named = (key: string, id: number) => (asked[key] ?? []).includes(id);
-      const left = [
-        ...dependents.agent_runs.filter((r) => !named("cancel_agent_runs", r.id)),
-        ...dependents.workflow_runs.filter((r) => !named("cancel_workflow_runs", r.id)),
-        ...dependents.workflows.filter((w) => !named("deactivate_workflows", w.id)),
-      ];
-      if (left.length) {
-        return reply(409, {
-          detail: { message: "This agent is still in use: resolve what depends on it.", dependents },
-        });
-      }
-      this.agents.delete(agent.id);
-      this.agentDependents.delete(agent.id);
-      for (const run of this.agentRunsOf(agent)) this.agentRuns.delete(run.id);
-      return reply(204);
-    }
-    if ((m = path.match(/^\/api\/agents\/(\d+)\/dependents$/)) && method === "GET") {
-      if (!this.agents.has(Number(m[1]))) return fail(404, "Not Found");
-      return reply(200, this.dependentsOf(Number(m[1])));
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/versions\/(\d+)\/restore$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));
@@ -2468,7 +2468,7 @@ export class FakeApi {
     if (path === "/api/workflows" && method === "GET") {
       return reply(
         200,
-        this.live().map((w) => ({
+        this.live(url.searchParams.get("archived") === "true").map((w) => ({
           id: w.id,
           name: w.name,
           description: w.description,
@@ -2478,6 +2478,8 @@ export class FakeApi {
           updated_at: w.updated_at,
           created_by: w.created_by,
           updated_by: w.updated_by,
+          archived_at: w.archived_at,
+          archived_by: w.archived_by,
           contains: [...this.contains(this.current(w))],
         })),
       );
@@ -2486,7 +2488,7 @@ export class FakeApi {
       // The server checks the graph first; the name only clashes when the save commits.
       const error = this.check(body);
       if (error) return fail(422, error);
-      if (this.live().some((w) => w.name === body.name)) {
+      if ([...this.workflows.values()].some((w) => w.name === body.name)) {
         return fail(409, "The organisation already has a workflow with that name");
       }
       const workflow: WorkflowRow = {
@@ -2495,7 +2497,8 @@ export class FakeApi {
         description: body.description ?? "",
         layout: {},
         versions: [],
-        deleted: false,
+        archived_at: null,
+        archived_by: null,
         created_at: NOW,
         updated_at: NOW,
         created_by: this.me,
@@ -2509,9 +2512,7 @@ export class FakeApi {
     if ((m = path.match(/^\/api\/workflows\/(\d+)(\/.*)?$/))) {
       const workflow = this.workflows.get(Number(m[1]));
       const rest = m[2] ?? "";
-      // A deleted workflow's versions stay readable: runs and other versions still pin them.
-      const pinned = method === "GET" && /^\/versions\/\d+$/.test(rest);
-      if (!workflow || (workflow.deleted && !pinned)) return fail(404, "Not Found");
+      if (!workflow) return fail(404, "Not Found");
       if (rest === "" && method === "GET") return reply(200, this.workflowOut(workflow));
       if (rest === "" && method === "PUT") {
         // In the server's order: the version, then the graph, then (as the save commits) the name.
@@ -2524,7 +2525,7 @@ export class FakeApi {
         }
         const error = this.check(body, workflow);
         if (error) return fail(422, error);
-        if (this.live().some((w) => w.name === body.name && w !== workflow)) {
+        if ([...this.workflows.values()].some((w) => w.name === body.name && w !== workflow)) {
           return fail(409, "The organisation already has a workflow with that name");
         }
         workflow.name = body.name;
@@ -2534,22 +2535,45 @@ export class FakeApi {
         this.saveVersion(workflow, body.nodes, body.edges, body.note ?? null);
         return reply(200, this.workflowOut(workflow));
       }
-      if (rest === "" && method === "DELETE") {
-        const users = this.live().filter((w) =>
-          this.current(w).nodes.some(
-            (n) =>
-              n.kind === "workflow" &&
-              this.workflowVersions.get(n.version_id)!.workflow_id === workflow.id,
-          ),
-        );
-        if (users.length) {
-          return fail(
-            409,
-            `Remove this workflow from these workflows first: ${users.map((w) => w.name).join(", ")}.`,
-          );
+      if ((rest === "/archive" || rest === "/unarchive") && method === "POST") {
+        if (rest === "/unarchive") {
+          workflow.archived_at = null;
+          workflow.archived_by = null;
+        } else if (workflow.archived_at === null) {
+          workflow.archived_at = new Date().toISOString();
+          workflow.archived_by = this.me;
+          for (const t of this.schedules) {
+            if (t.target_kind === "workflow" && t.target_id === workflow.id) t.enabled = false;
+          }
         }
-        workflow.deleted = true;
-        return reply(204);
+        return reply(200, this.workflowOut(workflow));
+      }
+      if (rest === "/used-by" && method === "GET") {
+        const nests = this.live().filter((w) => this.contains(this.current(w)).has(workflow.id));
+        return reply(200, {
+          workflows: nests.map((w) => ({
+            id: w.id,
+            name: w.name,
+            version: w.versions.length,
+            direct: this.current(w).nodes.some(
+              (n) => n.kind === "workflow" && this.workflowVersions.get(n.version_id)!.workflow_id === workflow.id,
+            ),
+            triggers: [],
+          })),
+          triggers: this.schedules
+            .filter((t) => t.target_kind === "workflow" && t.target_id === workflow.id)
+            .map(({ id, enabled, cron, description, timezone, next_run_at }) => ({
+              id,
+              enabled,
+              cron,
+              description,
+              timezone,
+              next_run_at,
+            })),
+          chats: [...this.chats.values()]
+            .filter((c) => c.members.some((x) => x.kind === "workflow" && x.target_id === workflow.id))
+            .map((c) => ({ id: c.id, name: c.name })),
+        });
       }
       if (rest === "/runs" && method === "GET") {
         return reply(

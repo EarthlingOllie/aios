@@ -19,7 +19,7 @@ from aios.api.agents.common import (
 )
 from aios.api.agents.runs import build_version_tools
 from aios.api.provenance import UserOut, people
-from aios.api.skills import lock_live_skills
+from aios.api.skills import lock_skills
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
@@ -90,8 +90,7 @@ def restore_agent_version(
     # Kept as stored, like an unchanged save, but only if a run could still load them.
     build_version_tools(old, "That version can't be restored")
     tools = [(t.tool_key, t.config) for t in old.tools]
-    skill_ids = {sv.skill_id for sv in old.skills}
-    if lock_live_skills(db, skill_ids) != skill_ids:
+    if any(s.archived_at is not None for s in lock_skills(db, {sv.skill_id for sv in old.skills})):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been archived."
         )

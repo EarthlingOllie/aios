@@ -371,7 +371,7 @@ async function listPeople(): Promise<{ id: number; name: string }[]> {
 const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
   user: { list: listPeople, a: "a member" },
   agent: { list: () => api.listAgents(), a: "an agent" },
-  workflow: { list: api.listWorkflows, a: "a workflow" },
+  workflow: { list: () => api.listWorkflows(), a: "a workflow" },
 };
 
 /** The owner's picker for adding one of the organisation's members, agents or workflows that

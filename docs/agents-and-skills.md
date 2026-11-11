@@ -11,10 +11,11 @@ Agents, skills and the runs of agents belong to the organisation (see
 The Agents and Skills lists each have a search box: every word typed must appear in an item's
 name or description, ignoring case and accents, and the list shows how many of its items match
 ("3 of 12"). The search is kept in the URL (`/agents?q=web`), so a reload, a shared link or Back
-keeps it, and opening, editing, creating or deleting an item, or its versions and runs, leaves
-the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once, and
-Unused; Skills: All, Used, i.e. by some live agent's current version, and Unused, each saying
-"Used by 3 agents") and a sort menu (by name, the default, by most recently updated, and for
+keeps it, and opening, editing, creating or archiving an item, or its versions and runs, leaves
+the list as it was. Under it, filter buttons (Agents: All, Used, i.e. run at least once,
+Unused and Archived; Skills: All, Used, i.e. by some live agent's current version, Unused, each
+saying "Used by 3 agents", and Archived; Workflows: All, Empty and Archived; Archived lists the
+archived items, which the others leave out) and a sort menu (by name, the default, by most recently updated, and for
 agents by most runs) narrow and order the list, combined with the search and kept in the URL too
 (`?filter=used&sort=runs`); **Clear filters** resets them all. The Agents list also has an
 **Any skill** and an **Any tool** select, for the agents whose current version uses that skill
@@ -37,9 +38,8 @@ the model's behaviour:
 - A run is pinned to the agent version it started on, so editing an agent mid-conversation
   doesn't change it.
 - Restoring an old version creates a new one with that config; numbers only go up.
-- Deleting a skill archives it (old agent versions still reference its versions): it's hidden
-  as a deleted one was, its name stays reserved, and it can't be deleted while the current
-  version of an agent that isn't archived uses it.
+- Skills are archived, never deleted (old agent versions still pin their versions): see
+  [Archiving a skill](#archiving-a-skill).
 - A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
   by (the agents whose current version uses it, with a count) and Versions (with a count). The
   open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
@@ -53,8 +53,10 @@ the model's behaviour:
   are unique among all the organisation's rows, archived ones included, so an archived item's
   name stays reserved and unarchiving it never clashes: creating one with an archived agent's
   name answers 409 "The organisation already has an agent called <name> (archived)."
-- Saves, archives and deletes lock the rows involved (skills, then agents, then workflows, each
-  by id), so an archive can't race a save that starts using what it archives.
+- Saves and archives lock the rows involved (skills, then agents, then workflows, each by id),
+  so an archive can't race a save that starts using what it archives. No route deletes an
+  agent, skill or workflow; deleting a single run still works (see
+  [Deleting a run](#deleting-a-run)).
 
 **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
 description and instructions in a `<skill>` block). That's simple and works well for a handful
@@ -92,7 +94,7 @@ still totals the stored messages for them.
   that lasts only as long as it) the first time a process runs a turn. Its connections set
   nothing at startup and prepare no statements: the app's role finds the schema through its
   default search path on the platform database (`"$user", public, langgraph`, migration 0057). Alembic only compares the `public` schema, so `alembic
-  check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
+  check` doesn't see them. Deleting a run deletes its thread too (they aren't foreign
   keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
   `CREATE` on the database.
 
@@ -116,8 +118,9 @@ agent.
 ## Archiving an agent
 
 A member archives an agent from its page in one confirmation, instead of deleting it: nothing is
-lost, and nothing new starts on it. Any member may archive and unarchive, as any member may
-delete; phase 1's roles later give this to editors and admins.
+lost, and nothing new starts on it. Any member may archive and unarchive; phase 1's roles later
+give this to editors and admins. Workflows and skills are archived on the same terms
+([Archiving a workflow](workflows.md#archiving-a-workflow), [Archiving a skill](#archiving-a-skill)).
 
 - `POST /api/o/{org}/agents/{id}/archive` sets `archived_at` and `archived_by` (who archived it) and
   pauses its schedules. It's never refused, whatever uses it, and archiving an archived agent
@@ -125,10 +128,9 @@ delete; phase 1's roles later give this to editors and admins.
   until someone resumes them, so unarchiving doesn't set off a burst of runs. Both answer the
   agent, which carries its archived fields everywhere (`archived_at`, `archived_by`).
 - `GET /api/o/{org}/agents/{id}/used-by` is what the confirmation shows, read-only
-  (`aios.dependents.used_by`): the live workflows that run it at any depth (with their
-  schedules), its own schedules, the chats it's in (those the member may see) and the data
-  tables it will leave read-only, which stays empty until tables have owners. The workflows and
-  schedules are what the old delete found as dependents.
+  (`aios.used_by.agent`): the live workflows that run it at any depth (with their schedules),
+  its own schedules, the chats it's in (those the member may see) and the data tables it will
+  leave read-only, which stays empty until tables have owners.
 - An archived agent starts no new turns. Each start path refuses with 409 "The agent <name> is
   archived.": a run or a turn started by hand (`POST .../runs`, `POST .../runs/{id}/chat`), a
   schedule firing (recorded on the schedule as its error), and a workflow run whose pinned graph
@@ -146,46 +148,34 @@ delete; phase 1's roles later give this to editors and admins.
 `make seed` rebuilds development data (see [Development](development.md#seed-data)), so nothing
 was kept for agents, skills or workflows deleted before archiving existed.
 
-## Deleting an agent
+## Archiving a skill
 
-Until it's removed, deleting an agent archives it and still deletes its runs, their threads and sandboxes. An agent is deleted only
-once what depends on it is resolved (`aios.dependents`).
+A member archives a skill from its page, in one confirmation that lists, read-only, the agents
+whose current version uses it (`GET /api/o/{org}/skills/{id}/used-by`). It's always allowed,
+even while agents use it.
 
-`GET /api/o/{org}/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
-have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
-version runs it at any depth, the live workflows whose current version runs it (directly, or
-through a nested workflow's pinned version) with their schedules, and its own schedules.
-`DELETE /api/o/{org}/agents/{id}` answers 409 with that list (`detail.dependents`, and a
-`detail.message`) until its body resolves each: `cancel_agent_runs` and
-`cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
-deactivate; any other workflow must first be edited to stop running the agent (the agent's
-page links to its editor). Runs are named one by one, so a workflow run that starts, or a chat
-that starts waiting, after the user looked refuses the delete rather than being cancelled
-unseen. Finished runs and older versions don't count, and a workflow run whose worker died is
-failed first, as reading it would.
+- `POST /api/o/{org}/skills/{id}/archive` and `/unarchive` set and clear `archived_at` and
+  `archived_by`, and answer the skill. Archiving an archived skill changes nothing.
+- Agent versions that pin it keep running with it: their instructions were rendered when they
+  were saved.
+- It can't be added to a new agent version: a save that would make a new version including it
+  (creating an agent with it, or changing an agent that keeps it) answers 409 "The skill <name>
+  is archived." A save that makes no new version, like a rename, goes through; so does one that
+  removes the skill. Restoring an old version that pins it is refused too.
+- An agent whose current version uses it says so: each skill on the agent carries `archived`,
+  and the agent's page shows a notice naming them and marks each archived. The edit form keeps
+  it attached, marked, until it's removed.
+- `GET /api/o/{org}/skills` leaves archived skills out; `?archived=true` lists only them, which
+  the Skills list's Archived filter shows. The skill's page shows an archived badge and notice,
+  and Unarchive in place of Archive.
 
-- Cancelling a workflow run fails it (`aios.workflows.cancel_runs`), closes out its requests
-  (pending ones cancelled, their notifications cleared) and starts no more of its nodes; a
-  worker running it stops at its next beat. A chat run is deleted with the agent, as before,
-  cancelling its requests.
-- Any turn still underway on the agent's runs (a chat's, a schedule's, a cancelled workflow
-  run's node) is stopped (`checkpoints.stop_turns`): its lease is cleared and a stop signal is
-  published, which the process holding it acts on by cancelling the turn, so a model or tool
-  call underway ends at once. If the signal doesn't arrive (Redis down), the turn fails at its
-  next write, on fencing. No connection is ended: through the pooler that would break another
-  turn's. A turn that only takes its run's lease after the run has gone finds it gone and does
-  nothing, so no thread is left behind. Deleting one run stops its turn the same way.
-- **Deactivating** a workflow turns off its schedules (as pausing each would, dropping a firing
-  claimed but not started), and with the agent gone no run of it can start, by hand or by
-  schedule: starting one is refused as running a deleted agent. It stays, to be edited
-  (removing the node, or taking a nested workflow's newer version) or deleted; its schedules
-  can be turned back on once it runs.
-- It all happens in one transaction, with the agent and the workflows that run it locked, so a
-  run being started is either seen (and refuses the delete) or waits and then can't start.
+## Deleting a run
 
-On the agent's page, Delete opens a dialog that loads the list: with nothing in it, a simple
-confirm; otherwise each run (with the node it waits at and its requests), workflow and schedule
-links to where it's seen or managed, in a new tab, with a "Cancel these runs" box and
-Deactivate or Edit workflow for each workflow. Delete stays disabled until each has a
-resolution, and the list is checked again when the window regains focus (or on "Check again"),
-so a workflow edited meanwhile leaves it.
+Deleting a run (`DELETE /api/o/{org}/agents/{id}/runs/{run_id}`) deletes its conversation, its
+thread and its sandbox, and cancels its pending schema change requests. A turn still underway on
+it is stopped (`checkpoints.stop_turns`): its lease is cleared and a stop signal is published,
+which the process holding it acts on by cancelling the turn, so a model or tool call underway
+ends at once. If the signal doesn't arrive (Redis down), the turn fails at its next write, on
+fencing. No connection is ended: through the pooler that would break another turn's. A turn
+that only takes its run's lease after the run has gone finds it gone and does nothing, so no
+thread is left behind.

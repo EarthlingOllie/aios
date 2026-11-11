@@ -130,15 +130,15 @@ def test_accepting_from_an_empty_personal_organisation_deletes_it_and_its_store(
     names = provision.StoreNames.of(store_row(db, store_id))
     old = organisations.membership_of(db, joiner.id).id
     with signed_in_as(joiner):
-        # Things made and deleted again: what's left is the defaults, and deleted rows. The
-        # documents assistant a new chat made, and a deleted agent pinning a deleted skill's
+        # Things made and put away again: what's left is the defaults, and archived rows. The
+        # documents assistant a new chat made, and an archived agent pinning an archived skill's
         # version (which one cascading delete of the organisation would trip over).
         chat = make_chat(api, "scratch")
         assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
         skill = make_skill(api, "Notes")
         agent = make_agent(api, "Pinner", skills=[skill])
-        assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
-        assert api.delete(f"/api/skills/{skill['id']}").status_code == 204
+        assert api.post(f"/api/agents/{agent['id']}/archive").status_code == 200
+        assert api.post(f"/api/skills/{skill['id']}/archive").status_code == 200
 
         resp = accept(api, link)
         assert resp.status_code == 200, resp.text

@@ -19,11 +19,11 @@ from aios.api.chats.common import (
     get_chat_if_owner,
     get_visible_chat,
     is_member,
-    live_members,
     load,
     lock_owner,
     member_key,
     member_out,
+    ordered_members,
     still_owner,
     user_member,
 )
@@ -77,11 +77,12 @@ def mentionable_out(member: ChatMember) -> MentionableOut:
 
 
 def mentionables(chat: Chat, *, archived: bool = False) -> MentionablesOut:
-    """The chat's members to offer for mentioning: not its archived agents, unless `archived`
-    (a mention of one is still taken, and fails at once: `aios.invocations.create`)."""
+    """The chat's members to offer for mentioning: not its archived agents and workflows, unless
+    `archived` (a mention of one is still taken, and fails at once: `aios.invocations.create`)."""
     by_kind: dict[ChatMemberKind, list[MentionableOut]] = {kind: [] for kind in ChatMemberKind}
-    for member in live_members(chat):
-        if not archived and member.agent is not None and member.agent.archived_at is not None:
+    for member in ordered_members(chat):
+        target = member.agent or member.workflow
+        if not archived and target is not None and target.archived_at is not None:
             continue
         by_kind[member.kind].append(mentionable_out(member))
     return MentionablesOut(
@@ -115,7 +116,8 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
     else:
         model = TARGET_MODELS[body.kind]
         target = db.get(model, body.id)
-        # Locked until commit, so a concurrent delete either waits for the add or wins it.
+        # Not an archived one. Locked until commit, so a concurrent archive either waits for the
+        # add or wins it.
         if (
             target is None
             or target.organisation_id != org.id
@@ -123,8 +125,8 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
         ):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.kind}")
         member = ChatMember(kind=body.kind, added_by=user.id, **{f"{body.kind}_id": target.id})
-    # After the agent or workflow is locked, as deleting one locks it before the chats it posts
-    # into (finishing their runs' invocations), so the two can't wait on each other.
+    # After the agent or workflow is locked, the order everything that locks both takes, so the
+    # two can't wait on each other.
     still_owner(db, chat, user.id)
     if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)

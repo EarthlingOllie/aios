@@ -26,8 +26,8 @@ Chat members are grouped by kind: users, **agents and workflows**, with the icon
 navigation uses. The owner adds any member of the organisation, and any of its agents and
 workflows, whoever made them (`POST /api/o/{org}/chats/{id}/members` with `{kind, id}`; a user from
 outside it is a 404, as one who doesn't exist is; one row per chat and user, agent or workflow;
-a workflow since deleted is no longer a chat member; an archived agent still is, shown as
-archived, but isn't offered to mention, and a mention of it fails at once: see
+an archived agent or workflow still is, shown as archived, but isn't offered to mention, and a
+mention of it fails at once: see
 [Agents and skills](agents-and-skills.md#archiving-an-agent)).
 
 A chat is **public** or **private**: a private chat doesn't exist for anyone who isn't a chat

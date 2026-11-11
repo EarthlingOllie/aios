@@ -23,9 +23,7 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
   const chat = api.addChat("Design");
   api.addChatTarget(chat, "agent", agent);
   api.addSchedule("agent", agent);
-  api.agentDependents.set(agent.id, {
-    agent_runs: [],
-    workflow_runs: [],
+  api.agentUsedBy.set(agent.id, {
     workflows: [{ id: 51, name: "Nightly build", version: 3, direct: false, triggers: [] }],
     triggers: [
       { id: 81, enabled: true, cron: "0 * * * *", description: "Every hour", timezone: "UTC", next_run_at: null },

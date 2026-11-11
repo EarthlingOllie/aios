@@ -181,9 +181,9 @@ def test_one_sandbox_per_run(api, backend, db, monkeypatch):
     db.expire_all()
     assert db.scalar(select(SandboxSession).where(SandboxSession.agent_run_id == run["id"])) is None
     assert backend.stopped == ["sandbox-1"]
-    # Deleting the agent stops its other runs' sandboxes.
-    api.delete(f"/api/agents/{agent['id']}")
-    assert backend.stopped == ["sandbox-1", "sandbox-2"]
+    # Archiving the agent leaves its other runs' sandboxes be: nothing is thrown away.
+    api.post(f"/api/agents/{agent['id']}/archive")
+    assert backend.stopped == ["sandbox-1"]
 
 
 def test_a_sandbox_that_has_gone_is_replaced(api, backend, monkeypatch):

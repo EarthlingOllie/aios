@@ -45,14 +45,6 @@ def workflow_body(name: str, nodes=(), edges=(), **extra) -> dict:
     }
 
 
-def in_use_by(refusal) -> list[str]:
-    """The workflows an agent's refused delete says still run it (in its message too)."""
-    detail = refusal.json()["detail"]
-    names = [w["name"] for w in detail["dependents"]["workflows"]]
-    assert ", ".join(names) in detail["message"]
-    return names
-
-
 def test_validate_graph():
     validate_graph(["a", "b", "c"], [("a", "b"), ("a", "c"), ("b", "c")])
     with pytest.raises(GraphError, match="only once"):
@@ -185,29 +177,15 @@ def test_workflows_nest_as_subgraphs(api):
     assert resp.status_code == 422
     assert "itself" in resp.json()["detail"]
 
-    # Nor can a workflow or agent that a live workflow's current version runs be deleted.
-    resp = api.delete(f"/api/workflows/{inner['id']}")
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "Remove this workflow from these workflows first: outer."
-    resp = api.delete(f"/api/agents/{agent['id']}")
-    assert resp.status_code == 409
-    assert in_use_by(resp) == ["inner", "outer"]
-
-    # A deleted workflow no longer counts as running anything, though its versions still pin
-    # them. Deleting it first frees inner, and then inner frees the agent.
-    assert api.delete(f"/api/workflows/{outer['id']}").status_code == 204
-    resp = api.delete(f"/api/agents/{agent['id']}")
-    assert in_use_by(resp) == ["inner"]
-    assert api.delete(f"/api/workflows/{inner['id']}").status_code == 204
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
-    assert api.get("/api/workflows").json() == []
-    for url in (f"/api/workflows/{outer['id']}", f"/api/workflows/{outer['id']}/versions"):
-        assert api.get(url).status_code == 404
-    # Its versions are still there to read, though: past runs pin them, and a run's
-    # subworkflow is opened from the version it ran.
+    # Archived, a workflow still reads, with its versions: past runs pin them, and a run's
+    # subworkflow is opened from the version it ran. One nesting it still shows it as it is.
+    assert api.post(f"/api/workflows/{inner['id']}/archive").status_code == 200
+    assert api.get(f"/api/workflows/{inner['id']}").status_code == 200
     old = api.get(f"/api/workflows/{inner['id']}/versions/1").json()
     assert [n["key"] for n in old["nodes"]] == ["only"]
-    assert api.delete(f"/api/workflows/{outer['id']}").status_code == 404
+    node = api.get(f"/api/workflows/{outer['id']}").json()["current_version"]["nodes"][1]
+    assert (node["name"], node["latest_version"]) == ("inner", 1)
+    assert [w["name"] for w in api.get("/api/workflows").json()] == ["outer"]
 
 
 def test_a_workflow_cant_contain_itself_through_other_workflows(api):
@@ -310,7 +288,7 @@ def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
         f"/api/workflows/{workflow['id']}/versions/{huge}",
     ]:
         assert api.get(url).status_code == 422, url
-    assert api.delete(f"/api/workflows/{huge}").status_code == 422
+    assert api.post(f"/api/workflows/{huge}/archive").status_code == 422
     assert api.post(f"/api/workflows/{workflow['id']}/versions/{huge}/restore").status_code == 422
     assert api.get(f"/api/workflows/{huge - 1}").status_code == 404
 
@@ -388,7 +366,7 @@ def test_workflow_responses_take_a_fixed_number_of_queries(api):
     assert query_counts(3) == query_counts(30)
 
 
-def test_only_current_versions_block_deletion(api):
+def test_archived_targets_cant_be_saved_or_restored_into_a_workflow(api):
     researcher = make_agent(api, "Researcher")
     writer = make_agent(api, "Writer")
     report = make_workflow(
@@ -403,36 +381,28 @@ def test_only_current_versions_block_deletion(api):
         [agent_node("first", researcher), workflow_node("then", report)],
         [("first", "then")],
     )
-    resp = api.delete(f"/api/agents/{researcher['id']}")
-    assert resp.status_code == 409
-    assert in_use_by(resp) == ["Outer", "Research report"]
-
-    # Take the researcher out of both workflows' current versions, and the report out of
-    # Outer's: only their history uses them now.
-    report_url, outer_url = f"/api/workflows/{report['id']}", f"/api/workflows/{outer['id']}"
-    resp = api.put(report_url, json=workflow_body("Research report", [agent_node("w", writer)]))
-    assert resp.json()["current_version"]["version"] == 2
+    outer_url = f"/api/workflows/{outer['id']}"
     resp = api.put(outer_url, json=workflow_body("Outer", [agent_node("w", writer)]))
     assert resp.json()["current_version"]["version"] == 2
-    assert api.delete(f"/api/agents/{researcher['id']}").status_code == 204
-    assert api.delete(report_url).status_code == 204
+    # Archiving is never refused, though the report's current version runs the researcher.
+    assert api.post(f"/api/agents/{researcher['id']}/archive").status_code == 200
+    assert api.post(f"/api/workflows/{report['id']}/archive").status_code == 200
 
-    # History stays readable: the old nodes show what they ran. Deleting the agent archived it,
-    # so it keeps its latest version; the deleted workflow has none.
+    # History stays readable: the old nodes show what they ran, and archived things keep their
+    # latest version.
     old = api.get(f"{outer_url}/versions/1").json()["nodes"]
     assert [(n["name"], n["version"], n["latest_version"]) for n in old] == [
         ("Researcher", 1, 1),
-        ("Research report", 1, None),
+        ("Research report", 1, 1),
     ]
-    assert api.get(f"/api/agents/{researcher['id']}").json()["archived_at"] is not None
     assert [a["name"] for a in api.get("/api/agents").json()] == ["Writer"]
     assert [w["name"] for w in api.get("/api/workflows").json()] == ["Outer"]
 
-    # But it can't be restored, nor can a deleted agent's or workflow's versions be saved.
+    # But it can't be restored, nor can an archived agent's or workflow's versions be saved.
     resp = api.post(f"{outer_url}/versions/1/restore")
     assert resp.status_code == 409
     assert resp.json()["detail"] == (
-        "That version runs an agent and a workflow that has since been deleted."
+        "That version runs an agent and a workflow that has since been archived."
     )
     assert api.get(outer_url).json()["current_version"]["version"] == 2
     for node, message in (
@@ -463,7 +433,8 @@ def test_restoring_a_version_whose_targets_are_live_still_works(api):
     assert resp.status_code == 200
     assert resp.json()["current_version"]["nodes"][0]["name"] == "Solo"
     # And now the agent is in use again.
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 409
+    used = api.get(f"/api/agents/{agent['id']}/used-by").json()
+    assert [w["name"] for w in used["workflows"]] == ["Flow"]
 
 
 def test_unique_name_only_maps_the_name_index(db, user):
@@ -510,8 +481,8 @@ def held_save(session, user, workflow_id: int, nodes: list[dict]):
     )
 
 
-def deletable(api, kind: str) -> tuple[dict, dict]:
-    """An agent, or a workflow, to delete; and a node that runs it."""
+def archivable(api, kind: str) -> tuple[dict, dict]:
+    """An agent, or a workflow, to archive; and a node that runs it."""
     agent = make_agent(api, "Racy")
     if kind == "agent":
         return agent, agent_node("t", agent)
@@ -520,36 +491,32 @@ def deletable(api, kind: str) -> tuple[dict, dict]:
 
 
 @pytest.mark.parametrize("kind", ["agent", "workflow"])
-def test_delete_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
-    target, node = deletable(api, kind)
+def test_archive_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
+    target, node = archivable(api, kind)
     flow = make_workflow(api, "Flow")
     url = f"/api/{kind}s/{target['id']}"
 
     with SessionLocal() as session:
         save = held_save(session, user, flow["id"], [node])
-        deleter, result = run_in_thread(lambda: api.delete(url))
-        assert deleter.is_alive(), "delete should block on the row lock"
+        archiver, result = run_in_thread(lambda: api.post(f"{url}/archive"))
+        assert archiver.is_alive(), "archive should block on the row lock"
         save()
         session.commit()
 
-    deleter.join(timeout=10)
-    # The delete saw the save once it got the lock, so the workflow never runs a deleted target.
-    assert result["resp"].status_code == 409
-    if kind == "agent":
-        assert in_use_by(result["resp"]) == ["Flow"]
-    else:
-        assert result["resp"].json()["detail"].endswith(": Flow.")
-    assert api.get(url).status_code == 200
+    archiver.join(timeout=10)
+    # Never refused: the save went first, so the archive lists it as what uses the target.
+    assert result["resp"].status_code == 200
+    assert [w["name"] for w in api.get(f"{url}/used-by").json()["workflows"]] == ["Flow"]
 
 
 @pytest.mark.parametrize("kind", ["agent", "workflow"])
-def test_save_waits_for_an_in_flight_delete_of_what_it_runs(api, kind):
-    target, node = deletable(api, kind)
+def test_save_waits_for_an_in_flight_archive_of_what_it_runs(api, kind):
+    target, node = archivable(api, kind)
     flow = make_workflow(api, "Flow")
     model = Agent if kind == "agent" else Workflow
 
     with SessionLocal() as session:
-        # A delete that has locked the row and found it unused, but not committed yet.
+        # An archive that has locked the row, but not committed yet.
         assert lock_live(session, model, [target["id"]])
         session.get(model, target["id"]).archived_at = func.now()
         saver, result = run_in_thread(
@@ -559,7 +526,7 @@ def test_save_waits_for_an_in_flight_delete_of_what_it_runs(api, kind):
         session.commit()
 
     saver.join(timeout=10)
-    # A clean refusal, not a foreign key error at commit or a pin of a deleted target.
+    # A clean refusal, not a pin of an archived target.
     assert result["resp"].status_code == 422
     assert result["resp"].json()["detail"] == f"Unknown {kind} version"
     assert api.get(f"/api/workflows/{flow['id']}").json()["current_version"]["nodes"] == []
@@ -701,9 +668,9 @@ def test_a_stale_save_is_refused_as_stale_even_if_its_graph_is_now_invalid(api):
     sub = make_workflow(api, "stale-sub", [agent_node("a", a)])
     wf = make_workflow(api, "stale-outer", [workflow_node("s", sub)])
     url = f"/api/workflows/{wf['id']}"
-    # Another tab drops the subworkflow and deletes it while this one is still editing v1.
+    # Another tab drops the subworkflow and archives it while this one is still editing v1.
     api.put(url, json=workflow_body("stale-outer", [agent_node("a", a)], base_version=1))
-    assert api.delete(f"/api/workflows/{sub['id']}").status_code == 204
+    assert api.post(f"/api/workflows/{sub['id']}/archive").status_code == 200
 
     nodes = [workflow_node("s", sub), agent_node("a", a)]
     resp = api.put(url, json=workflow_body("stale-outer", nodes, base_version=1))

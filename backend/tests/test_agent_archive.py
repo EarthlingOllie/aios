@@ -20,8 +20,7 @@ from test_triggers import make_trigger, schedule
 from test_workflow_runs import echo, queued, start, steps  # noqa: F401 (a fixture)
 from test_workflows import agent_node, make_agent, make_workflow, workflow_node
 
-from aios import dependents
-from aios.models import Agent, Trigger, TriggerStatus
+from aios.models import Trigger, TriggerStatus
 from aios.testing.fake_model import model, replies, use_handoff, use_model
 from aios.workflows import execute_run
 
@@ -238,9 +237,8 @@ def test_it_shows_as_archived_among_chat_members_and_isnt_mentionable(api):
     assert mentionable() == ["Reviewer", "Other"]
 
 
-def test_used_by_lists_what_the_old_delete_found_and_archiving_is_never_refused(
+def test_used_by_lists_what_uses_it_and_archiving_is_never_refused(
     api,
-    db,
     queued,  # noqa: F811
 ):
     agent = make_agent(api, "Builder", base_prompt="build")
@@ -251,7 +249,7 @@ def test_used_by_lists_what_the_old_delete_found_and_archiving_is_never_refused(
     nightly = make_trigger(api, schedule("workflow", outer["id"]))
     chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
-    # Runs still going: what the old delete refused over.
+    # Runs still going don't hold it up.
     start(api, direct, "x")
     api.post(f"/api/agents/{agent['id']}/runs")
 
@@ -259,14 +257,13 @@ def test_used_by_lists_what_the_old_delete_found_and_archiving_is_never_refused(
 
     assert resp.status_code == 200, resp.text
     used = resp.json()
-    old = dependents.find(db, db.get(Agent, agent["id"]))
     assert [(w["id"], w["name"], w["direct"]) for w in used["workflows"]] == [
-        (w.id, w.name, w.direct) for w in old.workflows
+        (direct["id"], "Direct", True),
+        (outer["id"], "Outer", False),
     ]
-    assert [w["name"] for w in used["workflows"]] == ["Direct", "Outer"]
     by_workflow = {w["name"]: [t["id"] for t in w["triggers"]] for w in used["workflows"]}
     assert by_workflow == {"Direct": [], "Outer": [nightly["id"]]}
-    assert [t["id"] for t in used["triggers"]] == [t.id for t in old.triggers] == [own["id"]]
+    assert [t["id"] for t in used["triggers"]] == [own["id"]]
     assert [(c["id"], c["name"]) for c in used["chats"]] == [(chat["id"], "Design")]
     assert used["tables"] == []
 

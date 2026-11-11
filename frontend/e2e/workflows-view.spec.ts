@@ -103,20 +103,6 @@ test("clicking a node shows what it runs", async ({ page }) => {
   await expect(page).not.toHaveURL(inOrg(`/workflows/${report.id}`));
 });
 
-test("a node whose target was deleted names it without a link", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { report, review } = await seed(api);
-  review.deleted = true;
-  await page.goto(inOrg(`/workflows/${report.id}`));
-
-  await node(page, "review").click();
-  const panel = inspector(page);
-  await expect(panel).toContainText("Review");
-  await expect(panel).toContainText("deleted");
-  // Its page is gone, so there's nothing to link to.
-  await expect(panel.getByRole("link", { name: "Review" })).toHaveCount(0);
-});
-
 test("clicking an edge shows what passes along it", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
@@ -315,37 +301,3 @@ test("a version page whose workflow fails to load says why", async ({ page }) =>
   await expect(page.getByText("Workflow store unavailable")).toBeVisible();
 });
 
-test("deleting a workflow that another runs is refused with the reason", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { review } = await seed(api);
-  await page.goto(inOrg(`/workflows/${review.id}`));
-  page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "Delete workflow" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "Remove this workflow from these workflows first: Report.",
-  );
-});
-
-test("a refused delete's reason doesn't follow you to another workflow", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { review, report } = await seed(api);
-  await page.goto(inOrg(`/workflows/${review.id}`));
-  page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "Delete workflow" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-
-  await page.getByRole("link", { name: /Report/ }).click();
-  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
-  await expect(page.getByRole("heading", { name: "Report" })).toBeVisible();
-  await expect(page.getByRole("alert")).toHaveCount(0);
-});
-
-test("deleting a workflow returns to the list", async ({ page }) => {
-  const api = await fakeApi(page);
-  const { report } = await seed(api);
-  await page.goto(inOrg(`/workflows/${report.id}`));
-  page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "Delete workflow" }).click();
-  await expect(page).toHaveURL(inOrg("/workflows"));
-  await expect(page.getByRole("link", { name: /Report/ })).toHaveCount(0);
-});

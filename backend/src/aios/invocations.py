@@ -57,6 +57,7 @@ from aios.models import (
     ChatMessageKind,
     SchemaChangeRequest,
     TriggerTargetKind,
+    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
 )
@@ -97,8 +98,8 @@ def create(
 ) -> list[ChatInvocation]:
     """Queue an invocation of each agent or workflow (kind, id) the (just added) message
     mentions, each with its acknowledgement and card; in the caller's transaction. Nothing for a
-    message that isn't a user's. An archived agent's fails at once ("The agent <name> is
-    archived"), before any handoff, so no model is called for it."""
+    message that isn't a user's. An archived agent's or workflow's fails at once ("The agent
+    <name> is archived"), before any handoff, so no model is called for it."""
     if message.author_kind != ChatAuthorKind.user:
         return []
     db.flush()
@@ -128,8 +129,9 @@ def create(
             )
         )
         db.flush()
-        if is_agent and (agent := db.get(Agent, target_id)).archived_at is not None:
-            fail_unstarted(db, invocation.id, f"The agent {agent.name} is archived")
+        target = db.get(Agent if is_agent else Workflow, target_id)
+        if target.archived_at is not None:
+            fail_unstarted(db, invocation.id, f"The {kind.value} {target.name} is archived")
         made.append(invocation)
     return made
 

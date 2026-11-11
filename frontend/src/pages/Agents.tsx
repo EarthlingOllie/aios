@@ -24,8 +24,7 @@ import {
   useLoad,
   type ListContext,
 } from "@/components/crud";
-import { AgentArchiveDialog } from "@/components/AgentArchiveDialog";
-import { AgentDeleteDialog } from "@/components/AgentDeleteDialog";
+import { AgentArchiveDialog } from "@/components/ArchiveDialog";
 import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { Badge } from "@/components/ui/badge";
@@ -128,7 +127,7 @@ function agentFilters(
   ];
 }
 
-/** The badge an archived agent carries, in the list and on its page. */
+/** The badge an archived agent, skill or workflow carries, in its list and on its page. */
 export function ArchivedBadge() {
   return <Badge variant="secondary">archived</Badge>;
 }
@@ -201,7 +200,7 @@ function SkillRow({ skill, action }: { skill: AgentSkill; action?: React.ReactNo
         <span className="flex items-center gap-2">
           <span className="text-sm font-medium">{skill.name}</span>
           <VersionBadge version={skill.version} />
-          {skill.latest_version === null && <Badge variant="secondary">deleted</Badge>}
+          {skill.archived && <Badge variant="secondary">archived</Badge>}
         </span>
         {skill.description && (
           <span className="text-muted-foreground block truncate text-xs">{skill.description}</span>
@@ -209,6 +208,21 @@ function SkillRow({ skill, action }: { skill: AgentSkill; action?: React.ReactNo
       </Link>
       {action}
     </li>
+  );
+}
+
+/** Says which skills the agent's current version uses that have since been archived: it keeps
+ * running with them, but a new version can't include them. */
+function ArchivedSkillsNotice({ skills }: { skills: AgentSkill[] }) {
+  const archived = skills.filter((s) => s.archived).map((s) => s.name);
+  if (!archived.length) return null;
+  const one = archived.length === 1;
+  return (
+    <p role="note" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-700 dark:bg-amber-950">
+      {one ? "The skill" : "The skills"} {archived.join(", ")} {one ? "is" : "are"} archived. This
+      agent keeps running with {one ? "it" : "them"}, but a change that makes a new version can't
+      include {one ? "it" : "them"}: remove {one ? "it" : "them"} first.
+    </p>
   );
 }
 
@@ -247,7 +261,6 @@ export function AgentDetail() {
   const catalog = useLoad(api.listTools);
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
@@ -266,11 +279,6 @@ export function AgentDetail() {
       setBusy(false);
     }
   }
-
-  const onDeleted = async () => {
-    await reloadList();
-    navigate(listHref("/agents"));
-  };
 
   const onArchived = async () => {
     setArchiving(false);
@@ -364,14 +372,6 @@ export function AgentDetail() {
               Archive
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setDeleting(true)}
-            aria-label="Delete agent"
-          >
-            <Trash2 />
-          </Button>
         </>
       }
     >
@@ -383,12 +383,10 @@ export function AgentDetail() {
           stay paused until someone resumes them.
         </p>
       )}
-      {deleting && (
-        <AgentDeleteDialog agent={a} onClose={() => setDeleting(false)} onDeleted={onDeleted} />
-      )}
+      <ArchivedSkillsNotice skills={current.skills} />
       {archiving && (
         <AgentArchiveDialog
-          agent={a}
+          item={a}
           onClose={() => setArchiving(false)}
           onArchived={onArchived}
         />
@@ -691,6 +689,9 @@ export function AgentForm() {
 
   if (!form) return error ? <Placeholder>{error}</Placeholder> : null;
   const set = (patch: Partial<FormState>) => setForm({ ...form, ...patch });
+  // Skills the current version uses that have since been archived: not in the list of skills to
+  // add, but still attached until removed.
+  const archivedPins = [...pinned.values()].filter((p) => p.archived);
   const toggleSkill = (skillId: number, on: boolean) =>
     set({
       skill_ids: on
@@ -777,7 +778,7 @@ export function AgentForm() {
         </Field>
         <fieldset className="flex flex-col gap-1.5">
           <legend className="mb-1.5 text-sm font-medium">Skills</legend>
-          {skills?.length === 0 && (
+          {skills?.length === 0 && !archivedPins.length && (
             <p className="text-muted-foreground text-sm">
               You have no skills yet.{" "}
               <Link to="/skills/new" className="underline">
@@ -786,9 +787,9 @@ export function AgentForm() {
               .
             </p>
           )}
-          {!!skills?.length && (
+          {(!!skills?.length || !!archivedPins.length) && (
             <ul className="divide-y rounded-md border">
-              {skills.map((skill) => {
+              {skills?.map((skill) => {
                 const pin = pinned.get(skill.id);
                 return (
                   <li key={skill.id}>
@@ -815,6 +816,21 @@ export function AgentForm() {
                   </li>
                 );
               })}
+              {archivedPins.map((pin) => (
+                <li key={pin.skill_id}>
+                  <label className="hover:bg-accent flex cursor-pointer items-start gap-3 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={form.skill_ids.includes(pin.skill_id)}
+                      onChange={(e) => toggleSkill(pin.skill_id, e.target.checked)}
+                    />
+                    <span className="min-w-0 flex-1 text-sm font-medium">{pin.name}</span>
+                    <VersionBadge version={pin.version} />
+                    <Badge variant="secondary">archived, remove to make a new version</Badge>
+                  </label>
+                </li>
+              ))}
             </ul>
           )}
         </fieldset>

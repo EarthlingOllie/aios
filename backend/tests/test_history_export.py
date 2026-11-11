@@ -263,7 +263,7 @@ def test_a_turn_stopped_during_tool_calls_exports_them_and_their_results(
     assert [c["id"] for c in rows[1][1]] == ["call-slow", "call-quick"]
 
 
-def test_deleting_a_run_or_its_agent_deletes_its_copy(api, user, store_id, history_tasks):
+def test_deleting_a_run_deletes_its_copy(api, user, store_id, history_tasks):
     agent = make_agent(api, "Bot")
     runs = [new_run(api, agent) for _ in range(2)]
     for run in runs:
@@ -281,11 +281,10 @@ def test_deleting_a_run_or_its_agent_deletes_its_copy(api, user, store_id, histo
         (runs[1]["id"],),
         (kept["id"],),
     ]
-
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
-    history.export(store_id)
-    assert stored(store_id, "SELECT id FROM history.agent_runs") == [(kept["id"],)]
-    assert stored(store_id, "SELECT DISTINCT agent_run_id FROM history.messages") == [(kept["id"],)]
+    assert stored(store_id, "SELECT DISTINCT agent_run_id FROM history.messages ORDER BY 1") == [
+        (runs[1]["id"],),
+        (kept["id"],),
+    ]
 
 
 def test_switching_it_off_stops_the_export_and_keeps_what_was_exported(
@@ -1069,7 +1068,7 @@ def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
     assert stored(store_id, "SELECT count(*) FROM history.workflow_runs") == [(0,)]
 
 
-def test_deleting_an_agent_unlinks_its_runs_from_the_exported_steps(
+def test_deleting_a_nodes_agent_run_unlinks_it_from_the_exported_steps(
     api, user, store_id, history_tasks, started
 ):
     switch(api, True)
@@ -1079,12 +1078,9 @@ def test_deleting_an_agent_unlinks_its_runs_from_the_exported_steps(
     history.export(store_id)
     critic = next(s for s in run["steps"] if s["path"] == ["review", "critic"])
 
-    # Once nothing current uses it, it can go, with its runs. The steps that held them stay
-    # without them, as on the platform.
-    (review,) = [w for w in api.get("/api/workflows").json() if w["name"] == "review"]
-    for gone in (f"workflows/{workflow['id']}", f"workflows/{review['id']}"):
-        assert api.delete(f"/api/{gone}").status_code == 204
-    assert api.delete(f"/api/agents/{critic['agent_id']}").status_code == 204
+    # The step that held it stays without it, as on the platform.
+    url = f"/api/agents/{critic['agent_id']}/runs/{critic['agent_run_id']}"
+    assert api.delete(url).status_code == 204
     history.export(store_id)
 
     assert stored(
