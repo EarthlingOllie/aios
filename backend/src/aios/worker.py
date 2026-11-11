@@ -42,6 +42,8 @@ celery_app.conf.update(
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
         "aios.delete_data_stores": {"queue": "provisioning"},
+        # Run by the provisioning worker's beat; it queues the stores' teardown there too.
+        "aios.delete_due_organisations": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
         "aios.measure_data_store_usage": {"queue": "provisioning"},
         "aios.apply_schema_change": {"queue": "provisioning"},
@@ -83,6 +85,12 @@ celery_app.conf.beat_schedule = {
         "task": "aios.delete_data_stores",
         "schedule": DELETE_STORES_EVERY,
         "options": {"expires": DELETE_STORES_EVERY},
+    },
+    # Organisations whose deletion's grace period is over (`aios.organisations.delete_due`).
+    "delete-due-organisations": {
+        "task": "aios.delete_due_organisations",
+        "schedule": settings.organisation_deletion_check_seconds,
+        "options": {"expires": settings.organisation_deletion_check_seconds},
     },
     "measure-data-store-usage": {
         "task": "aios.measure_data_store_usage",
@@ -210,6 +218,15 @@ def delete_data_stores_task(data_store_id: str | None = None) -> None:
     else:
         # Waiting for its provisioning, if that's still on it (it was deleted straight away).
         provision.delete_deleting([uuid.UUID(data_store_id)], wait=True)
+
+
+@celery_app.task(name="aios.delete_due_organisations")
+def delete_due_organisations_task() -> None:
+    """Delete the organisations whose deletion's grace period is over, recording each, and queue
+    their stores' teardown (`aios.organisations.delete_due`)."""
+    from aios import organisations
+
+    organisations.delete_due()
 
 
 @celery_app.task(

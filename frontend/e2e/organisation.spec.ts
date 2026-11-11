@@ -17,7 +17,7 @@ test("the shell names the organisation, and opens its page with the members", as
   await expect(page).toHaveURL(/\/organisation$/);
 
   await expect(page.getByRole("heading", { name: "tester" })).toBeVisible();
-  await expect(page.getByText("Your personal organisation, created by you.")).toBeVisible();
+  await expect(page.getByText("Created by you.")).toBeVisible();
   const members = page.getByRole("list", { name: "Members" }).getByRole("listitem");
   await expect(members).toHaveCount(2);
   await expect(members.nth(0)).toContainText("Tester");
@@ -43,25 +43,10 @@ test("the creator renames it, and the shell follows", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: "Name" })).toBeHidden();
 });
 
-test("a name another organisation has is refused, and the name stays", async ({ page }) => {
-  const api = await fakeApi(page);
-  api.organisationNamesTaken.add("Acme");
-  await page.goto(inOrg("/organisation"));
-  await page.getByRole("button", { name: "Rename" }).click();
-  await page.getByRole("textbox", { name: "Name" }).fill("Acme");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByRole("alert")).toHaveText("An organisation with that name already exists.");
-  await expect(page.getByRole("heading", { name: "tester" })).toBeVisible();
-  // Cancelling closes the form.
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("textbox", { name: "Name" })).toBeHidden();
-});
-
 test("another member sees who created it, and can't rename it", async ({ page }) => {
   const api = await fakeApi(page);
   const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
   api.organisation.name = "Acme";
-  api.organisation.personal = false;
   api.organisation.creator = sam;
   api.organisation.members.unshift({ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null });
   await page.goto(inOrg("/organisation"));

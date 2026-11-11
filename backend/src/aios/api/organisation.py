@@ -3,12 +3,16 @@
 `GET /api/me` (`aios.api.me`), which the shell's switcher lists.
 
 `POST /api/organisations` creates an organisation from a name, with the person as its creator and
-only member, and its store queued to be provisioned at once (a 409 for a name another
-organisation has). It's the welcome page's, and the switcher's "Create an organisation".
+only member, and its store queued to be provisioned at once. Names may repeat: the slug tells
+organisations apart. It's the welcome page's, and the switcher's "Create an organisation".
 
-`GET .../organisation` is the Organisation page: the name, the creator and the members with
-when each joined; `PUT` renames it, for the creator only (a 403 for another member), to a name
-no other organisation has (a 409 otherwise).
+`GET .../organisation` is the Organisation page: the name, the creator, the members with when
+each joined, and its deletion while one is scheduled; `PUT` renames it, for the creator only (a
+403 for another member).
+
+`POST .../organisation/deletion` schedules its deletion, for the creator only, who types its name
+(a 422 for another name, a 409 if it's scheduled already); `DELETE` cancels it (a 409 if none
+is scheduled). Both answer with the Organisation page (`aios.organisations`).
 
 Invitation links (`.../organisation/invites`) are the creator's too: making one (its token
 shown in the response, once), listing the open ones and revoking one are a 403 for any other
@@ -30,7 +34,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from aios import organisations
 from aios.api.provenance import UserOut, people
-from aios.api.skills import on_conflict
 from aios.auth import (
     CurrentOrganisation,
     CurrentUser,
@@ -46,9 +49,8 @@ from aios.models import Organisation, OrganisationInvite, OrganisationMember, Us
 
 router = APIRouter(prefix="/api")
 
-NAME_CONSTRAINT = "organisations_name_key"
-NAME_TAKEN = "An organisation with that name already exists."
 NOT_THE_CREATOR = "Only the organisation's creator can rename it."
+NOT_THE_DELETER = "Only the organisation's creator can delete it."
 NOT_THE_INVITER = "Only the organisation's creator can invite people into it."
 NO_SUCH_INVITE = "This invitation link has expired or been revoked, or never existed."
 
@@ -60,12 +62,29 @@ class MemberOut(BaseModel):
     invite_id: uuid.UUID | None
 
 
+class DeletionOut(BaseModel):
+    """An organisation's scheduled deletion."""
+
+    scheduled_at: datetime
+    # Null once their account is deleted.
+    scheduled_by: UserOut | None
+    # When the grace period ends and it's deleted, unless the creator cancels first.
+    deletes_at: datetime
+
+
 class OrganisationOut(OrganisationSummaryOut):
     # Null once the creator's account is deleted.
     creator: UserOut | None
     # In the order they joined.
     members: list[MemberOut]
     created_at: datetime
+    # Its deletion, while one is scheduled; else null.
+    deletion: DeletionOut | None
+
+
+class DeletionIn(BaseModel):
+    # The organisation's name, typed to confirm.
+    name: str
 
 
 class OrganisationIn(BaseModel):
@@ -91,6 +110,18 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
             for m in members
         ],
         created_at=org.created_at,
+        deletion=deletion_out(db, org),
+    )
+
+
+def deletion_out(db: Session, org: Organisation) -> DeletionOut | None:
+    if org.deletes_at is None:
+        return None
+    by = db.get(User, org.deletion_scheduled_by) if org.deletion_scheduled_by else None
+    return DeletionOut(
+        scheduled_at=org.deletion_scheduled_at,
+        scheduled_by=UserOut.model_validate(by, from_attributes=True) if by else None,
+        deletes_at=org.deletes_at,
     )
 
 
@@ -98,10 +129,9 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
 def create_organisation(body: OrganisationIn, user: CurrentUser, db: DB):
     """A new organisation, with the signed-in person as its creator and only member, and its
     store queued to be provisioned once this commits."""
-    with on_conflict(db, NAME_CONSTRAINT, NAME_TAKEN):
-        org = organisations.create(db, user, body.name.strip())
-        data_store_for(org.id, db)
-        db.commit()
+    org = organisations.create(db, user, body.name.strip())
+    data_store_for(org.id, db)
+    db.commit()
     return organisation_out(db, org, user)
 
 
@@ -115,8 +145,38 @@ def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrg
     if org.created_by != user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_CREATOR)
     org.name = body.name.strip()
-    with on_conflict(db, NAME_CONSTRAINT, NAME_TAKEN):
-        db.commit()
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+@router.post("/organisation/deletion", response_model=OrganisationOut)
+def schedule_deletion(body: DeletionIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    if org.created_by != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_DELETER)
+    try:
+        organisations.schedule_deletion(db, org, user, body.name.strip())
+    except organisations.DeletionRefused as refused:
+        db.rollback()
+        code = (
+            status.HTTP_422_UNPROCESSABLE_CONTENT
+            if str(refused) == organisations.NAME_MISMATCH
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(code, str(refused)) from None
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+@router.delete("/organisation/deletion", response_model=OrganisationOut)
+def cancel_deletion(user: CurrentUser, org: CurrentOrganisation, db: DB):
+    if org.created_by != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_DELETER)
+    try:
+        organisations.cancel_deletion(db, org)
+    except organisations.DeletionRefused as refused:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(refused)) from None
+    db.commit()
     return organisation_out(db, org, user)
 
 

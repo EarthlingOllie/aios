@@ -201,7 +201,13 @@ def test_registering_through_a_link_joins_only_that_organisation(api, db, user, 
             ours = org_of(db, user)
             assert memberships(db, joiner) == [ours.id]
             assert resp.json()["organisations"] == [
-                {"id": ours.id, "name": ours.name, "slug": ours.slug, "is_creator": False}
+                {
+                    "id": ours.id,
+                    "name": ours.name,
+                    "slug": ours.slug,
+                    "is_creator": False,
+                    "deletes_at": None,
+                }
             ]
             assert (
                 db.scalars(select(Organisation).where(Organisation.created_by == joiner.id)).all()

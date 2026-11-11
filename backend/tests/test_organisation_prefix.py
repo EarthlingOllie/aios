@@ -9,11 +9,13 @@ import uuid
 
 import pytest
 from conftest import delete_user, join_organisation, make_user, org_of
+from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from test_chats import signed_in_as
 
+from aios.api import scoping
 from aios.auth import current_organisation
 from aios.main import app
 from aios.models import Organisation
@@ -80,8 +82,9 @@ def test_there_are_prefixed_routes():
 
 # The routes that stay unscoped, each for the person rather than an organisation: signing in
 # (and the development picker, `/api/dev/*`, when it's on), their own profile, opening and
-# accepting invitations, their notifications (from every organisation they're in), the tool
-# library and the list of timezones.
+# accepting invitations, creating an organisation, their notifications (from every organisation
+# they're in), the tool library and the list of timezones. Listed here independently of the app's
+# own list (`aios.api.scoping.UNSCOPED`), which this checks.
 UNSCOPED = {
     ("GET", "/api/auth/options"),
     ("POST", "/api/auth/register"),
@@ -99,6 +102,26 @@ UNSCOPED = {
     ("GET", "/api/tools"),
     ("GET", "/api/triggers/timezones"),
 }
+DEV = {("GET", "/api/dev/users"), ("POST", "/api/dev/session")}
+
+
+def test_the_app_declares_exactly_these_routes_unscoped():
+    assert scoping.UNSCOPED == UNSCOPED | DEV
+
+
+def test_an_api_route_without_an_organisation_that_isnt_declared_unscoped_is_refused():
+    """A route added later that forgets the organisation can't be mounted unscoped by mistake:
+    the app refuses to start."""
+    stray = FastAPI()
+    router = APIRouter(prefix="/api")
+
+    @router.get("/stray")
+    def stray_route() -> dict:
+        return {}
+
+    stray.include_router(router)
+    with pytest.raises(scoping.UnscopedRoute, match=r"GET /api/stray"):
+        scoping.mount_organisation_prefix(stray)
 
 
 def test_only_the_listed_routes_stay_unscoped():

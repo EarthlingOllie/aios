@@ -1,13 +1,15 @@
 import { type Organisation, type User } from "@/lib/api";
 
-/** What the Organisation page says under the name: whose organisation it is and who made it. */
+/** What the Organisation page says under the name: who made it. */
 export function describeOrganisation(org: Organisation, me: Pick<User, "id"> | null): string {
   const creator = org.creator ? (org.creator.id === me?.id ? "you" : org.creator.name) : null;
-  if (org.personal) {
-    const whose = org.is_creator ? "Your personal organisation" : "A personal organisation";
-    return creator ? `${whose}, created by ${creator}.` : `${whose}.`;
-  }
   return creator ? `Created by ${creator}.` : "Its creator's account has been deleted.";
+}
+
+/** Whether what the creator typed confirms deleting the organisation: its name, exactly (as the
+ * API checks it, spaces around it aside). */
+export function confirmsDeletion(typed: string, name: string): boolean {
+  return typed.trim() === name;
 }
 
 /** Why the signed-in user can't leave the organisation, as the API refuses it, or null if they

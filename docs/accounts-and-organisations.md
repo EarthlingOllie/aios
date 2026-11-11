@@ -64,17 +64,17 @@ then run the setup steps again (`aios.db_roles`, `alembic upgrade head`: see
 
 A person is in any number of **organisations** (`aios.organisations`), each the group that owns
 what its members make, or in none. Signing up makes nothing: a person in no organisation lands on
-the **welcome page** (`/welcome`), which creates one (`POST /api/organisations`, a name; a 409
-for a name another organisation has) with them as its creator and only member, its store queued
+the **welcome page** (`/welcome`), which creates one (`POST /api/organisations`, a name, which
+another organisation may have too: the slug tells them apart) with them as its creator and only member, its store queued
 to be provisioned at once, and opens it; it also explains that an invitation link is the way into
 a colleague's. Memberships are a table, one row per person and organisation (revision 0058
 dropped the one-per-person index), and the request's organisation is resolved in one place
 (`aios.auth.current_organisation`, the `CurrentOrganisation` dependency). Before many
-organisations, registering made a **personal** one named after the user, and the upgrade did
-the same for every existing user and stamped everything they own (skills, agents, workflows,
-schedules, chats) with their organisation and with them as `created_by` (revisions 0029 and
-0030); the per-user ownership columns went in the same release (0048, which says why, as 0015
-did). Nothing makes a personal organisation now, and nothing treats one differently.
+organisations, registering made one named after the user, and the upgrade did the same for
+every existing user and stamped everything they own (skills, agents, workflows, schedules,
+chats) with their organisation and with them as `created_by` (revisions 0029 and 0030); the
+per-user ownership columns went in the same release (0048, which says why, as 0015 did).
+Revision 0059 dropped the flag that marked those organisations, and the uniqueness of names.
 
 ### Organisations in links
 
@@ -90,11 +90,12 @@ in the browser use the slug and the API uses the id:
   from the router, so a new route moves as soon as it takes the organisation; no unprefixed
   form is kept). `current_organisation` reads the id from the path and checks the user is a
   member: a 404, "Organisation not found", alike for an organisation they aren't in and one that
-  doesn't exist. Only what's the person's own stays unscoped: signing in (and the development
-  picker), their profile (`/api/me`), creating an organisation, opening and accepting
-  invitations, their notifications,
-  the tool library and the list of timezones. `tests/test_organisation_prefix.py` is generated
-  from the router: every prefixed route answers a non-member 404, and only those listed stay
+  doesn't exist. Only what's the person's own stays unscoped, and only what's listed in
+  `aios.api.scoping.UNSCOPED`: signing in (and the development picker), their profile
+  (`/api/me`), creating an organisation, opening and accepting invitations, their
+  notifications, the tool library and the list of timezones. Any other API route without the
+  organisation stops the app starting. `tests/test_organisation_prefix.py` is generated from
+  the router: every prefixed route answers a non-member 404, and only those listed stay
   unscoped. The backend tests' client sends an organisation's routes under the prefix, in the
   signed-in user's organisation (`OrganisationClient` in `tests/conftest.py`).
 - **Front end.** Every signed-in page is under `/o/<slug>/`, the router's basename for as long as
@@ -185,3 +186,29 @@ and a private one, which nobody could join, is deleted, as its owner deleting it
 The last member can't leave, and is told to delete the organisation instead; nor can the creator
 while others remain, since nobody else could invite, and there's no transfer until roles exist
 (each a 409, explained on the page).
+
+## Deleting an organisation
+
+Only the creator deletes an organisation (admins will, once phase 1 adds roles), from the
+Organisation page's Settings tab, by typing its name (`POST /api/o/{org}/organisation/deletion`,
+`{"name": ...}`: a 422 for another name, a 409 if it's scheduled already, a 403 for another
+member). It isn't deleted then: it's deleted after a **grace period**,
+`ORGANISATION_DELETION_GRACE_DAYS` (14 by default). Every member is notified
+("organisation deletion scheduled"), and a banner on every page shows the date (`deletes_at`
+on each organisation `/api/me` lists; the Organisation page's `deletion` says who scheduled it
+and when).
+
+During the grace period the organisation works as before, but its invitation links don't open
+(the invite page says the link has expired or been revoked; one made then doesn't open either).
+The creator can **cancel** (`DELETE .../organisation/deletion`, a 409 if none is scheduled):
+nothing is touched, the links open again until they expire, and every member is notified again.
+
+The provisioning worker's beat looks for organisations whose grace period is over every
+`ORGANISATION_DELETION_CHECK_SECONDS` (10 minutes by default; `aios.delete_due_organisations`,
+`aios.organisations.delete_due`). For each, in one transaction, it records the deletion in
+`organisation_deletions` (the name, slug, who scheduled it, when, when it went, and its store),
+detaches the store, which goes `deleting` for the existing teardown to drop with its files and
+roles (`aios.datastores.provision.delete_deleting`, queued at once and swept on its own
+schedule too), and deletes the organisation, cascading to everything in it. Members with no
+organisation left land on the welcome page; a link to the deleted one says it isn't found to
+anyone still in another.

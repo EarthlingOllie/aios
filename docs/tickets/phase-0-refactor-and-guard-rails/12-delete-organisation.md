@@ -27,21 +27,21 @@ This ticket also finishes the many-organisations work:
 
 **Blocked by:** [11: Many organisations: signing up makes nothing, join, switcher, leave](11-many-organisations.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Only the creator can schedule deletion, by typing the organisation's name. A wrong name
+- [x] Only the creator can schedule deletion, by typing the organisation's name. A wrong name
   answers 422, and scheduling twice answers 409.
-- [ ] Every member gets an "organisation deletion scheduled" notification, and a banner shows the
+- [x] Every member gets an "organisation deletion scheduled" notification, and a banner shows the
   date.
-- [ ] Cancelling within the grace period keeps everything and notifies members again.
-- [ ] The grace period comes from a setting, 14 days by default, and the check interval from
+- [x] Cancelling within the grace period keeps everything and notifies members again.
+- [x] The grace period comes from a setting, 14 days by default, and the check interval from
   another, 10 minutes by default.
-- [ ] Invitation links to an organisation scheduled for deletion stop opening.
-- [ ] After the grace period:
-  - [ ] the organisation is gone;
-  - [ ] a deletion record exists;
-  - [ ] the store reaches deleted through the existing teardown.
-- [ ] Members whose only organisation was deleted land on the welcome page.
-- [ ] No route without an organisation remains, other than those explicitly unscoped.
-- [ ] Two organisations can share a name, and "personal" appears nowhere in the API or screens.
-- [ ] The backend suite and full-stack test pass.
+- [x] Invitation links to an organisation scheduled for deletion stop opening.
+- [x] After the grace period:
+  - [x] the organisation is gone;
+  - [x] a deletion record exists;
+  - [x] the store reaches deleted through the existing teardown.
+- [x] Members whose only organisation was deleted land on the welcome page.
+- [x] No route without an organisation remains, other than those explicitly unscoped.
+- [x] Two organisations can share a name, and "personal" appears nowhere in the API or screens.
+- [x] The backend suite and full-stack test pass.

@@ -77,7 +77,15 @@ def test_picking_a_user_signs_in_as_them(dev_client, users, db, provisioning, ca
         "first_name": chosen.first_name,
         "last_name": chosen.last_name,
         "email": chosen.email,
-        "organisations": [{"id": org.id, "name": org.name, "slug": org.slug, "is_creator": True}],
+        "organisations": [
+            {
+                "id": org.id,
+                "name": org.name,
+                "slug": org.slug,
+                "is_creator": True,
+                "deletes_at": None,
+            }
+        ],
     }
     assert resp.status_code == 200
     assert resp.json() == expected

@@ -9,8 +9,8 @@ import { fakeApi, inOrg, orgApi } from "./fake-api";
  */
 
 const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
-const globex = { id: 2, name: "Globex", slug: "globex", is_creator: false };
-const initech = { id: 3, name: "Initech", slug: "initech", is_creator: true };
+const globex = { id: 2, name: "Globex", slug: "globex", is_creator: false, deletes_at: null };
+const initech = { id: 3, name: "Initech", slug: "initech", is_creator: true, deletes_at: null };
 
 async function register(page: Page) {
   await page.getByLabel("First name").fill("Nadia");
@@ -52,27 +52,24 @@ test("registering without an invitation lands on the welcome page, which creates
 test("a person in no organisation is sent to the welcome page from anywhere", async ({ page }) => {
   const api = await fakeApi(page);
   api.member = false;
+  // A link to an organisation too: one they were in has gone (deleted, say), and nothing else is
+  // theirs.
   for (const path of ["/", "/agents", inOrg("/agents")]) {
     await page.goto(path);
-    if (path.startsWith("/o/")) {
-      // A link to an organisation they're not in is not found, with the way to the welcome page.
-      await expect(page.getByRole("heading", { name: "Organisation not found" })).toBeVisible();
-      await page.getByRole("link", { name: "Create an organisation" }).click();
-    }
     await expect(page).toHaveURL("/welcome");
     await expect(page.getByRole("heading", { name: "Welcome to aios" })).toBeVisible();
   }
 });
 
-test("the welcome page says why a name can't be used", async ({ page }) => {
+test("the welcome page creates an organisation with a name another has", async ({ page }) => {
   const api = await fakeApi(page);
   api.member = false;
-  api.organisationNamesTaken.add("Acme");
+  api.otherMemberships = [];
   await page.goto("/welcome");
-  await page.getByLabel("Organisation name").fill("Acme");
+  await page.getByLabel("Organisation name").fill("tester");
   await page.getByRole("button", { name: "Create organisation" }).click();
-  await expect(page.getByRole("alert")).toContainText("An organisation with that name already exists.");
-  await expect(page).toHaveURL("/welcome");
+  await expect(page).toHaveURL(/\/o\/tester\//);
+  expect(api.writes.at(-1)).toEqual(["POST", "/api/organisations", { name: "tester" }]);
 });
 
 test("the switcher lists every organisation the person is in, and offers to create one", async ({ page }) => {

@@ -9,8 +9,9 @@ person and organisation; the request's organisation is resolved in one place,
 (`free_slug`), what links in the browser name it by, made when it's created and never changed by
 a rename.
 
-Only the creator renames an organisation and invites into it: a stopgap role until roles exist.
-Everything in an organisation is visible to every member.
+Only the creator renames an organisation, invites into it and deletes it: a stopgap role until
+roles exist. Everything in an organisation is visible to every member. Names may repeat; slugs
+don't.
 
 **Invitation links.** The creator makes a link (`make_invite`) carrying a random token; only the
 token's hash is stored, so the link is shown once, when it's made. It lasts a week unless the
@@ -29,9 +30,21 @@ made for them: they're left in the organisations they're still in, or in none. W
 stays in the organisation, and a chat they owned goes to its member added first
 (`hand_over_chats`); one with nobody left in it goes to whoever joins it next if it's public, and
 is deleted if it's private, as nobody could join it.
+
+**Deleting** is deliberate and slow. The creator schedules it (`schedule_deletion`) by typing the
+organisation's name; it's deleted `ORGANISATION_DELETION_GRACE_DAYS` (14 by default) later, and
+every member is notified, and again if the creator cancels it in the meantime
+(`cancel_deletion`). Until then the organisation works as before, but its invitation links don't
+open (`open_invite`). Once the grace period is over the sweep (`delete_due`, on the provisioning
+worker's beat every `ORGANISATION_DELETION_CHECK_SECONDS`) records the deletion
+(`OrganisationDeletion`), detaches the store, which goes `deleting` for the existing teardown to
+drop with its files and roles (`aios.datastores.provision.delete_deleting`), and deletes the
+organisation, cascading to everything in it. Members left in no organisation land on the welcome
+page.
 """
 
 import hashlib
+import logging
 import re
 import secrets
 import unicodedata
@@ -43,19 +56,27 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import notifications
+from aios.config import get_settings
 from aios.models import (
+    Agent,
     Chat,
     ChatMember,
     ChatMemberKind,
     ChatMemberRole,
     ChatVisibility,
     DataStore,
+    DataStoreStatus,
     Notification,
     Organisation,
+    OrganisationDeletion,
     OrganisationInvite,
     OrganisationMember,
+    Skill,
     User,
+    Workflow,
 )
+
+log = logging.getLogger(__name__)
 
 # The suffix between a slug and the number that makes it unique: `acme`, `acme-2`, ...
 SUFFIX = "-"
@@ -124,8 +145,7 @@ def create(db: Session, user: User, name: str) -> Organisation:
     The slug `free_slug` found can be taken before it's inserted, by another organisation made
     at the same moment, so the insert does nothing on a clash of the slug (waiting for the
     other's transaction if it's still open) and it's picked again, which sees the other's now
-    it's committed. A name another organisation has is a unique violation of the name
-    (`organisations_name_key`), for the caller to answer."""
+    it's committed. Names may repeat."""
     while True:
         org_id = db.scalar(
             insert(Organisation)
@@ -174,10 +194,19 @@ def is_open():
 
 
 def open_invite(db: Session, token: str, lock: bool = False) -> OrganisationInvite | None:
-    """The open link the token is for, if any (an expired or revoked one is none). `lock` holds
-    it against being revoked until the caller's transaction ends, for joining through it."""
-    query = select(OrganisationInvite).where(
-        OrganisationInvite.token_hash == hash_token(token), is_open()
+    """The open link the token is for, if any: an expired or revoked one is none, and so is one
+    into an organisation scheduled for deletion. `lock` holds the link against being revoked, and
+    its organisation against being scheduled for deletion, until the caller's transaction ends,
+    for joining through it: scheduling one that's being joined waits, and then tells the new
+    member too; joining one being scheduled waits, and then finds the link doesn't open."""
+    query = (
+        select(OrganisationInvite)
+        .join(Organisation, Organisation.id == OrganisationInvite.organisation_id)
+        .where(
+            OrganisationInvite.token_hash == hash_token(token),
+            is_open(),
+            Organisation.deletes_at.is_(None),
+        )
     )
     return db.scalar(query.with_for_update(read=True) if lock else query)
 
@@ -325,3 +354,161 @@ def _forget_requests(db: Session, user: User, store_id: uuid.UUID) -> None:
             Notification.ref.contains({"data_store_id": str(store_id)}),
         )
     )
+
+
+# Deleting an organisation.
+
+ORGANISATION_DELETION_SCHEDULED = "organisation_deletion_scheduled"
+ORGANISATION_DELETION_CANCELLED = "organisation_deletion_cancelled"
+
+NAME_MISMATCH = "That isn't the organisation's name."
+ALREADY_SCHEDULED = "The organisation is already scheduled for deletion."
+NOT_SCHEDULED = "The organisation isn't scheduled for deletion."
+
+
+class DeletionRefused(Exception):
+    """Why scheduling or cancelling a deletion was refused (one of the messages above)."""
+
+
+def _lock(db: Session, org: Organisation) -> Organisation:
+    """The organisation as it is now, locked until the caller's transaction ends."""
+    db.refresh(org, with_for_update=True)
+    return org
+
+
+def _members(db: Session, org: Organisation) -> list[int]:
+    return list(
+        db.scalars(
+            select(OrganisationMember.user_id).where(OrganisationMember.organisation_id == org.id)
+        )
+    )
+
+
+def _notify_members(db: Session, org: Organisation, kind: str, deletes_at) -> None:
+    ref = {
+        "organisation_name": org.name,
+        "deletes_at": deletes_at.isoformat() if deletes_at is not None else None,
+    }
+    notifications.notify(db, _members(db, org), org.id, kind, ref)
+
+
+def schedule_deletion(db: Session, org: Organisation, user: User, name: str) -> None:
+    """Schedule the organisation's deletion, by `user` (its creator), who typed `name`: it's
+    deleted once the grace period is over (`delete_due`), and every member is notified. Refused
+    (`DeletionRefused`) for a name other than the organisation's, and for one already
+    scheduled. Flushed, not committed."""
+    _lock(db, org)
+    if name != org.name:
+        raise DeletionRefused(NAME_MISMATCH)
+    if org.deletes_at is not None:
+        raise DeletionRefused(ALREADY_SCHEDULED)
+    grace = timedelta(days=get_settings().organisation_deletion_grace_days)
+    db.execute(
+        update(Organisation)
+        .where(Organisation.id == org.id)
+        .values(
+            deletion_scheduled_at=func.now(),
+            deletion_scheduled_by=user.id,
+            deletes_at=func.now() + grace,
+        )
+    )
+    db.refresh(org)
+    _notify_members(db, org, ORGANISATION_DELETION_SCHEDULED, org.deletes_at)
+    db.flush()
+
+
+def cancel_deletion(db: Session, org: Organisation) -> None:
+    """Cancel the organisation's scheduled deletion: nothing in it is touched, and every member
+    is notified again. Refused (`DeletionRefused`) when none is scheduled, or the sweep has it
+    under way. Flushed, not committed."""
+    _lock(db, org)
+    if org.deletes_at is None:
+        raise DeletionRefused(NOT_SCHEDULED)
+    org.deletion_scheduled_at = None
+    org.deletion_scheduled_by = None
+    org.deletes_at = None
+    _notify_members(db, org, ORGANISATION_DELETION_CANCELLED, None)
+    db.flush()
+
+
+def delete_due() -> list[int]:
+    """Delete every organisation whose grace period is over, each in its own transaction (one
+    that fails is logged and left for the next sweep), and queue the teardown of each one's store
+    (`enqueue_store_deletion`); returns the ids of those deleted. Run by the provisioning
+    worker's beat every `organisation_deletion_check_seconds`."""
+    from aios.db import SessionLocal
+
+    with SessionLocal() as db:
+        due = db.scalars(
+            select(Organisation.id)
+            .where(Organisation.deletes_at <= func.now())
+            .order_by(Organisation.deletes_at, Organisation.id)
+        ).all()
+    deleted = []
+    for org_id in due:
+        try:
+            with SessionLocal() as db:
+                store_id = _delete(db, org_id)
+                if store_id is False:
+                    continue
+                db.commit()
+        except Exception:
+            log.exception("Deleting organisation %s failed", org_id)
+            continue
+        deleted.append(org_id)
+        if store_id is not None:
+            try:
+                enqueue_store_deletion(store_id)
+            except Exception:
+                # The teardown's own sweep finds it (`aios.worker.DELETE_STORES_EVERY`).
+                log.exception("Couldn't queue deleting data store %s", store_id)
+    return deleted
+
+
+def _delete(db: Session, org_id: int) -> uuid.UUID | None | bool:
+    """Delete one organisation whose grace period is over, as `delete_due` says: its store's id
+    (None if it has none), or False if it isn't due any more (cancelled, or deleted by another
+    sweep, since it was found). Flushed, not committed."""
+    org = db.scalar(
+        select(Organisation)
+        .where(Organisation.id == org_id, Organisation.deletes_at <= func.now())
+        .with_for_update(skip_locked=True)
+    )
+    if org is None:
+        return False
+    store_id = db.scalar(
+        select(DataStore.id).where(DataStore.owner_organisation_id == org.id).with_for_update()
+    )
+    db.add(
+        OrganisationDeletion(
+            organisation_id=org.id,
+            name=org.name,
+            slug=org.slug,
+            scheduled_by=org.deletion_scheduled_by,
+            scheduled_at=org.deletion_scheduled_at,
+            data_store_id=store_id,
+        )
+    )
+    if store_id is not None:
+        # Detached and `deleting` together: a store with no organisation is on its way out.
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == store_id)
+            .values(status=DataStoreStatus.deleting, owner_organisation_id=None)
+        )
+    # What pins another's versions first (workflows pin agents', agents pin skills'): one
+    # cascading delete of them all can check a pin before it has deleted the pinning row.
+    for model in (Workflow, Agent, Skill):
+        db.execute(delete(model).where(model.organisation_id == org.id))
+    db.execute(delete(Organisation).where(Organisation.id == org.id))
+    db.flush()
+    db.expire_all()
+    return store_id
+
+
+def enqueue_store_deletion(store_id: uuid.UUID) -> None:
+    """Queue the store teardown for a store just put into `deleting`, so it's dropped now rather
+    than at the teardown sweep's next pass."""
+    from aios.worker import delete_data_stores_task
+
+    delete_data_stores_task.delay(str(store_id))

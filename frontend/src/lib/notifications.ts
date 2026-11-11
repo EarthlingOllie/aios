@@ -21,6 +21,22 @@ export function describeNotification(notification: Notification): NotificationVi
       organisation: notification.organisation.slug,
     };
   }
+  if (notification.kind === "organisation_deletion_scheduled") {
+    return {
+      heading: notification.title ?? "An organisation is scheduled for deletion.",
+      detail: "Its creator can cancel it until then.",
+      to: "/organisation/settings",
+      organisation: notification.organisation.slug,
+    };
+  }
+  if (notification.kind === "organisation_deletion_cancelled") {
+    return {
+      heading: notification.title ?? "An organisation will no longer be deleted.",
+      detail: null,
+      to: "/organisation",
+      organisation: notification.organisation.slug,
+    };
+  }
   return {
     heading: notification.title ?? "Notification",
     detail: null,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { type Organisation, type User } from "@/lib/api";
-import { describeOrganisation, leaveRefusal, linkName } from "@/lib/organisation";
+import { confirmsDeletion, describeOrganisation, leaveRefusal, linkName } from "@/lib/organisation";
 
 const me: User = { id: 1, name: "Terry Tester" };
 const sam: User = { id: 2, name: "Sam Jones" };
@@ -9,35 +9,38 @@ const base: Organisation = {
   id: 1,
   name: "Terry Tester",
   slug: "terry-tester",
-  personal: true,
   is_creator: true,
   creator: me,
   members: [],
   created_at: "2026-10-14T08:00:00Z",
+  deletion: null,
 };
 
 describe("describeOrganisation", () => {
-  it("calls the user's own personal organisation theirs", () => {
-    expect(describeOrganisation(base, me)).toBe("Your personal organisation, created by you.");
+  it("says the user created their own", () => {
+    expect(describeOrganisation(base, me)).toBe("Created by you.");
   });
 
-  it("names the creator of someone else's personal organisation", () => {
+  it("names the creator of someone else's", () => {
     const org = { ...base, is_creator: false, creator: sam };
-    expect(describeOrganisation(org, me)).toBe("A personal organisation, created by Sam Jones.");
-  });
-
-  it("names the creator of an organisation that isn't personal", () => {
-    const org = { ...base, personal: false, is_creator: false, creator: sam };
     expect(describeOrganisation(org, me)).toBe("Created by Sam Jones.");
   });
 
   it("says when the creator's account is gone", () => {
-    expect(describeOrganisation({ ...base, personal: false, creator: null }, me)).toBe(
-      "Its creator's account has been deleted.",
-    );
-    expect(describeOrganisation({ ...base, creator: null }, me)).toBe(
-      "Your personal organisation.",
-    );
+    expect(describeOrganisation({ ...base, creator: null }, me)).toBe("Its creator's account has been deleted.");
+  });
+});
+
+describe("confirmsDeletion", () => {
+  it("is the organisation's name exactly, around spaces aside", () => {
+    expect(confirmsDeletion("Terry Tester", base.name)).toBe(true);
+    expect(confirmsDeletion("  Terry Tester ", base.name)).toBe(true);
+  });
+
+  it("isn't anything else, however close", () => {
+    for (const typed of ["", "terry tester", "Terry", "Terry  Tester"]) {
+      expect(confirmsDeletion(typed, base.name)).toBe(false);
+    }
   });
 });
 
@@ -51,7 +54,7 @@ describe("leaveRefusal", () => {
   });
 
   it("refuses the creator while others remain", () => {
-    expect(leaveRefusal({ ...base, personal: false, members: [member(me), member(sam)] })).toBe(
+    expect(leaveRefusal({ ...base, members: [member(me), member(sam)] })).toBe(
       "You created it, and only its creator can invite people, so you can't leave while others are still members.",
     );
   });

@@ -49,9 +49,7 @@ export type OrganisationSummary = {
   name: string;
   /** What links in the browser name it by (`/o/<slug>/`); a rename leaves it unchanged. */
   slug: string;
-  /** Made for one user on sign-up, before a person could be in several organisations. */
-  personal: boolean;
-  /** Whether the signed-in user created it; the creator alone can rename it. */
+  /** Whether the signed-in user created it; the creator alone can rename and delete it. */
   is_creator: boolean;
 };
 
@@ -62,6 +60,8 @@ export type Membership = {
   slug: string;
   /** Whether the signed-in user created it. */
   is_creator: boolean;
+  /** When it's deleted, while its deletion is scheduled (every page shows a banner); else null. */
+  deletes_at: string | null;
 };
 
 /** The signed-in user (`GET /api/me`), with every organisation they're in, the one joined most
@@ -83,6 +83,16 @@ export type Organisation = OrganisationSummary & {
   /** In the order they joined. */
   members: OrganisationMember[];
   created_at: string;
+  /** Its deletion, while one is scheduled; else null. */
+  deletion: OrganisationDeletion | null;
+};
+
+/** An organisation's scheduled deletion: it's deleted at `deletes_at` unless the creator cancels. */
+export type OrganisationDeletion = {
+  scheduled_at: string;
+  /** Null once their account is deleted. */
+  scheduled_by: User | null;
+  deletes_at: string;
 };
 
 /** An open invitation link into the organisation, as its creator lists them. */
@@ -476,9 +486,11 @@ export type Notification = {
   /** The organisation it's from (a person's notifications are from every organisation they're
    * in): it opens there. */
   organisation: { id: number; slug: string };
-  /** What it's about: `schema_change_request` (a request waiting for a decision) for now. */
+  /** What it's about: `schema_change_request` (a request waiting for a decision),
+   * `organisation_deletion_scheduled` or `organisation_deletion_cancelled`. */
   kind: string;
-  /** For a schema change request, `request_id` and `data_store_id`. */
+  /** For a schema change request, `request_id` and `data_store_id`; for an organisation's
+   * deletion, `organisation_name` (and, scheduled, `deletes_at`). */
   ref: Record<string, string>;
   /** What it says, in a line; null when what it's about has gone. */
   title: string | null;
@@ -1006,7 +1018,7 @@ export const api = {
   changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
     request<void>("/api/me/password", json("PUT", body)),
   getOrganisation: () => request<Organisation>(`${organisationApi()}/organisation`),
-  /** The creator only (a 403 otherwise); a name another organisation has is a 409. */
+  /** The creator only (a 403 otherwise). Names may repeat. */
   renameOrganisation: (name: string) =>
     request<Organisation>(`${organisationApi()}/organisation`, json("PUT", { name })),
   /** Invitation links: the creator only (a 403 otherwise). */
@@ -1023,11 +1035,18 @@ export const api = {
   acceptInvitation: (token: string) =>
     request<Organisation>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
   /** A new organisation, with the user as its creator and only member, and its store being
-   * provisioned; a name another organisation has is a 409. */
+   * provisioned. Names may repeat: the slug tells organisations apart. */
   createOrganisation: (name: string) => request<Organisation>("/api/organisations", json("POST", { name })),
   /** A 409 for the last member, and for the creator while others remain; otherwise the user, as
    * `me` answers, with the organisations they're still in. */
   leaveOrganisation: () => request<Me>(`${organisationApi()}/organisation/leave`, { method: "POST" }),
+  /** The creator only (a 403 otherwise), typing the organisation's name (another is a 422); a 409
+   * if it's scheduled already. Every member is notified. */
+  scheduleOrganisationDeletion: (name: string) =>
+    request<Organisation>(`${organisationApi()}/organisation/deletion`, json("POST", { name })),
+  /** The creator only; a 409 if no deletion is scheduled. Every member is notified again. */
+  cancelOrganisationDeletion: () =>
+    request<Organisation>(`${organisationApi()}/organisation/deletion`, { method: "DELETE" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>(`${organisationApi()}/data-store`),
   getSettings: () => request<Settings>(`${organisationApi()}/organisation/settings`),

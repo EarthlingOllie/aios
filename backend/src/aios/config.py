@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # `schema_change_expiry_check_seconds` by the provisioning worker's beat.
     schema_change_request_expiry_days: float = Field(default=7, gt=0)
     schema_change_expiry_check_seconds: float = Field(default=60 * 60, gt=0)
+    # An organisation scheduled for deletion is deleted this many days later, unless its creator
+    # cancels (`aios.organisations`); the provisioning worker's beat looks for those whose grace
+    # period is over every `organisation_deletion_check_seconds`.
+    organisation_deletion_grace_days: float = Field(default=14, ge=0)
+    organisation_deletion_check_seconds: float = Field(default=10 * 60, gt=0)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

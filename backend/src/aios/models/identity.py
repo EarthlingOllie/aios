@@ -4,8 +4,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     String,
     Text,
@@ -45,17 +48,14 @@ class Organisation(Base):
 
     A person is in any number of organisations: ones they created, and ones they joined through
     an invitation link. Nothing in an organisation is private to one member. The creator is the
-    one member who may rename it and invite others: a stopgap until roles exist.
+    one member who may rename it, invite others and delete it: a stopgap until roles exist.
     """
 
     __tablename__ = "organisations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Unique among all organisations, for now.
-    name: Mapped[str] = mapped_column(String(255), unique=True)
-    # Made for one user on sign-up, before a person could be in several organisations: nothing
-    # makes one now, and nothing treats one differently.
-    personal: Mapped[bool] = mapped_column(server_default=text("false"))
+    # Two organisations may share a name: the slug tells them apart.
+    name: Mapped[str] = mapped_column(String(255))
     # What a link in the browser names it by (`/o/<slug>/...`; the API uses the id): made from
     # the name when it's created, suffixed on a clash (`aios.organisations.free_slug`), and
     # never changed by a rename, so a shared link keeps working.
@@ -66,6 +66,14 @@ class Organisation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    # Its deletion, while one is scheduled (`aios.organisations.schedule_deletion`): when and by
+    # whom it was scheduled, and when the grace period ends and the sweep deletes it. All null
+    # otherwise (never scheduled, or cancelled).
+    deletion_scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deletion_scheduled_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    deletes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     members: Mapped[list["OrganisationMember"]] = relationship(
@@ -73,6 +81,42 @@ class Organisation(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="OrganisationMember.joined_at",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(deletion_scheduled_at IS NULL) = (deletes_at IS NULL)",
+            name="ck_organisations_deletion_scheduled",
+        ),
+        # The sweep's: those whose grace period is over.
+        Index(
+            "ix_organisations_deletes_at",
+            "deletes_at",
+            postgresql_where=text("deletes_at IS NOT NULL"),
+        ),
+    )
+
+
+class OrganisationDeletion(Base):
+    """The record of an organisation the sweep deleted once its grace period was over
+    (`aios.organisations.delete_due`): what it was called, who scheduled it, when, and when it
+    went. Kept after the organisation and its store are gone; nothing references the organisation
+    (it no longer exists), and the store's row is kept as `deleted`."""
+
+    __tablename__ = "organisation_deletions"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # The deleted organisation's id: not a foreign key, as it's gone.
+    organisation_id: Mapped[int] = mapped_column(index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(255))
+    # Null once that user is deleted.
+    scheduled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The store detached from it for the teardown, if it had one.
+    data_store_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="SET NULL")
     )
 
 

@@ -317,11 +317,13 @@ export type OrganisationRow = {
   name: string;
   /** What links name it by (`/o/<slug>/`); a rename leaves it unchanged. */
   slug: string;
-  personal: boolean;
   creator: ChatUser | null;
   members: OrganisationMemberRow[];
   created_at: string;
+  /** Its scheduled deletion, if any (`POST /api/organisation/deletion`). */
+  deletion?: OrganisationDeletionRow | null;
 };
+export type OrganisationDeletionRow = { scheduled_at: string; scheduled_by: ChatUser | null; deletes_at: string };
 
 export type ChatRow = {
   id: number;
@@ -491,14 +493,13 @@ export class FakeApi {
     return this.accounts.find((a) => a.id === this.signedInAs) ?? this.accounts[0];
   }
   /**
-   * The organisation `me` is in, as `GET /api/organisation` answers: their personal one, which
-   * they created, with them as its first member. `me` is its creator while `creator` is them.
+   * The organisation `me` is in, as `GET /api/organisation` answers: one they created, with them
+   * as its first member. `me` is its creator while `creator` is them.
    */
   organisation: OrganisationRow = {
     id: ORGANISATION_ID,
     name: "tester",
     slug: ORGANISATION_SLUG,
-    personal: true,
     creator: this.me,
     members: [{ user: this.me, joined_at: "2026-10-14T08:00:00Z", invite_id: null }],
     created_at: "2026-10-14T08:00:00Z",
@@ -514,11 +515,11 @@ export class FakeApi {
    * recently unless a test puts them after it (`joinedEarlier`). Only "me" sees them; every
    * other endpoint is `organisation`'s.
    */
-  otherMemberships: { id: number; name: string; slug: string; is_creator: boolean }[] = [];
+  otherMemberships: { id: number; name: string; slug: string; is_creator: boolean; deletes_at?: string | null }[] = [];
   /** Whether `otherMemberships` were joined before `organisation` (listed after it). */
   joinedEarlier = false;
-  /** Names other organisations have: renaming to one answers 409, as the API does. */
-  organisationNamesTaken = new Set<string>();
+  /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
+  deletionGraceDays = 14;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
   invites: InviteRow[] = [];
   /**
@@ -623,7 +624,7 @@ export class FakeApi {
 
   /** The organisation as `GET /api/organisation` answers. */
   private organisationOut() {
-    return { ...this.organisationSummary(), ...this.organisation };
+    return { ...this.organisationSummary(), ...this.organisation, deletion: this.organisation.deletion ?? null };
   }
 
   private inviteOut({ token: _token, ...invite }: InviteRow) {
@@ -632,10 +633,11 @@ export class FakeApi {
 
   /** The signed-in user as `/api/me` (and signing in) answers. */
   private meOut(account: Account) {
-    if (!this.member) return { ...accountOut(account), organisations: this.otherMemberships };
+    const others = this.otherMemberships.map((o) => ({ ...o, deletes_at: o.deletes_at ?? null }));
+    if (!this.member) return { ...accountOut(account), organisations: others };
     const { id, name, slug, is_creator } = this.organisationSummary();
-    const own = { id, name, slug, is_creator };
-    const organisations = this.joinedEarlier ? [own, ...this.otherMemberships] : [...this.otherMemberships, own];
+    const own = { id, name, slug, is_creator, deletes_at: this.organisation.deletion?.deletes_at ?? null };
+    const organisations = this.joinedEarlier ? [own, ...others] : [...others, own];
     return { ...accountOut(account), organisations };
   }
 
@@ -646,7 +648,7 @@ export class FakeApi {
   private enter(organisation: OrganisationRow) {
     if (this.member) {
       const { id, name, slug, is_creator } = this.organisationSummary();
-      const earlier = { id, name, slug, is_creator };
+      const earlier = { id, name, slug, is_creator, deletes_at: this.organisation.deletion?.deletes_at ?? null };
       this.otherMemberships = this.joinedEarlier ? [earlier, ...this.otherMemberships] : [...this.otherMemberships, earlier];
     }
     this.joinedEarlier = true;
@@ -671,7 +673,6 @@ export class FakeApi {
       this.organisation = {
         ...other.organisation,
         slug: slugify(other.organisation.name),
-        personal: false,
         creator: null,
         members: [{ user: account, joined_at: now, invite_id: null }],
         created_at: now,
@@ -684,8 +685,8 @@ export class FakeApi {
 
   /** The organisation as `/api/me` carries it. */
   private organisationSummary() {
-    const { id, name, slug, personal, creator } = this.organisation;
-    return { id, name, slug, personal, is_creator: creator?.id === this.me.id };
+    const { id, name, slug, creator } = this.organisation;
+    return { id, name, slug, is_creator: creator?.id === this.me.id };
   }
 
   /**
@@ -1946,7 +1947,8 @@ export class FakeApi {
     }
     if ((m = path.match(/^\/api\/invites\/([^/]+)(\/accept)?$/))) {
       const token = decodeURIComponent(m[1]);
-      const own = this.invites.find((i) => i.token === token);
+      // As the API: an organisation scheduled for deletion's links don't open.
+      const own = this.organisation.deletion ? undefined : this.invites.find((i) => i.token === token);
       const invitation =
         this.invitations.get(token) ??
         (own && {
@@ -1966,11 +1968,10 @@ export class FakeApi {
         return reply(200, this.organisationOut());
       }
       const already = this.otherMemberships.find((o) => o.id === invitation.organisation.id);
-      if (already) return reply(200, { ...already, personal: false, creator: null, members: [], created_at: "2026-10-01T08:00:00Z" });
+      if (already) return reply(200, { ...already, creator: null, members: [], created_at: "2026-10-01T08:00:00Z", deletion: null });
       this.enter({
         ...invitation.organisation,
         slug: slugify(invitation.organisation.name),
-        personal: false,
         creator: null,
         members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
         created_at: "2026-10-01T08:00:00Z",
@@ -2001,13 +2002,11 @@ export class FakeApi {
     if (path === "/api/organisations" && method === "POST") {
       const name = String(body?.name ?? "").trim();
       if (!name) return reply(422, { detail: [{ loc: ["body", "name"], msg: "String should match pattern '\\S'" }] });
-      if (this.organisationNamesTaken.has(name)) return fail(409, "An organisation with that name already exists.");
       const now = new Date().toISOString();
       this.enter({
         id: this.id(),
         name,
         slug: slugify(name),
-        personal: false,
         creator: this.me,
         members: [{ user: this.me, joined_at: now, invite_id: null }],
         created_at: now,
@@ -2065,6 +2064,23 @@ export class FakeApi {
       this.member = false;
       return reply(200, this.meOut(account));
     }
+    if (path === "/api/organisation/deletion") {
+      if (this.organisation.creator?.id !== this.me.id) return fail(403, "Only the organisation's creator can delete it.");
+      if (method === "POST") {
+        if (String(body?.name ?? "").trim() !== this.organisation.name) return fail(422, "That isn't the organisation's name.");
+        if (this.organisation.deletion) return fail(409, "The organisation is already scheduled for deletion.");
+        const now = new Date();
+        this.organisation.deletion = {
+          scheduled_at: now.toISOString(),
+          scheduled_by: this.me,
+          deletes_at: new Date(now.getTime() + this.deletionGraceDays * 86_400_000).toISOString(),
+        };
+      } else if (method === "DELETE") {
+        if (!this.organisation.deletion) return fail(409, "The organisation isn't scheduled for deletion.");
+        this.organisation.deletion = null;
+      }
+      return reply(200, this.organisationOut());
+    }
     if (path === "/api/organisation") {
       if (method === "PUT") {
         if (this.organisation.creator?.id !== this.me.id) {
@@ -2072,9 +2088,6 @@ export class FakeApi {
         }
         const name = String(body?.name ?? "").trim();
         if (!name) return fail(422, "Invalid name");
-        if (this.organisationNamesTaken.has(name)) {
-          return fail(409, "An organisation with that name already exists.");
-        }
         this.organisation.name = name;
       }
       return reply(200, this.organisationOut());

@@ -14,6 +14,7 @@ opens is ignored, and the invite page they're sent back to says why.
 """
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -129,8 +130,6 @@ class OrganisationSummaryOut(BaseModel):
     name: str
     # What a link in the browser names it by; never changed by a rename.
     slug: str
-    # Made for one user on sign-up, before a person could be in several organisations.
-    personal: bool
     # Whether the signed-in user is its creator, who alone may rename it.
     is_creator: bool
 
@@ -140,7 +139,6 @@ def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
         id=org.id,
         name=org.name,
         slug=org.slug,
-        personal=org.personal,
         is_creator=org.created_by == user.id,
     )
 
@@ -153,6 +151,8 @@ class MembershipOut(BaseModel):
     slug: str
     # Whether the signed-in user is its creator.
     is_creator: bool
+    # When it's deleted, while its deletion is scheduled (the app shows a banner); else null.
+    deletes_at: datetime | None
 
 
 class MeOut(AccountOut):
@@ -168,7 +168,13 @@ def me_out(db: Session, user: User) -> MeOut:
     return MeOut(
         **account_out(user).model_dump(),
         organisations=[
-            MembershipOut(id=o.id, name=o.name, slug=o.slug, is_creator=o.created_by == user.id)
+            MembershipOut(
+                id=o.id,
+                name=o.name,
+                slug=o.slug,
+                is_creator=o.created_by == user.id,
+                deletes_at=o.deletes_at,
+            )
             for o in organisations.memberships(db, user.id)
         ],
     )

@@ -18,6 +18,7 @@ from aios.datastores import schema_changes
 from aios.db import DB
 from aios.models import Notification, Organisation
 from aios.notifications import SCHEMA_CHANGE_REQUEST
+from aios.organisations import ORGANISATION_DELETION_CANCELLED, ORGANISATION_DELETION_SCHEDULED
 
 router = APIRouter(prefix="/api")
 
@@ -36,7 +37,9 @@ class NotificationOut(BaseModel):
     # The organisation it's from.
     organisation: NotificationOrganisationOut
     kind: str
-    # What it's about: for `schema_change_request`, `request_id` and `data_store_id`.
+    # What it's about: for `schema_change_request`, `request_id` and `data_store_id`; for
+    # `organisation_deletion_scheduled` and `organisation_deletion_cancelled`,
+    # `organisation_name` and (scheduled only) `deletes_at`.
     ref: dict[str, Any]
     # What it says, in a line: for a schema change request, what it asks for. None when what
     # it's about has gone.
@@ -58,7 +61,18 @@ def _titles(db: Session, notifications: Sequence[Notification]) -> dict[uuid.UUI
         n.id: n.ref.get("request_id") for n in notifications if n.kind == SCHEMA_CHANGE_REQUEST
     }
     summaries = schema_changes.summaries(db, set(request_ids.values()))
-    return {n: summaries[r] for n, r in request_ids.items() if r in summaries}
+    titles = {n: summaries[r] for n, r in request_ids.items() if r in summaries}
+    for n in notifications:
+        if n.kind in DELETION_TITLES:
+            titles[n.id] = DELETION_TITLES[n.kind].format(name=n.ref.get("organisation_name"))
+    return titles
+
+
+# The titles of an organisation's deletion being scheduled and cancelled, from its name then.
+DELETION_TITLES = {
+    ORGANISATION_DELETION_SCHEDULED: "{name} is scheduled for deletion.",
+    ORGANISATION_DELETION_CANCELLED: "{name} will no longer be deleted.",
+}
 
 
 def _out(db: Session, notifications: Sequence[Notification]) -> list[NotificationOut]:

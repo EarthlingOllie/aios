@@ -9,9 +9,9 @@ import {
   rememberOrganisation,
 } from "@/lib/organisation-path";
 
-const acme = { id: 1, name: "Acme", slug: "acme", is_creator: true };
-const globex = { id: 2, name: "Globex", slug: "globex", is_creator: false };
-const initech = { id: 3, name: "Initech", slug: "initech", is_creator: false };
+const acme = { id: 1, name: "Acme", slug: "acme", is_creator: true, deletes_at: null };
+const globex = { id: 2, name: "Globex", slug: "globex", is_creator: false, deletes_at: null };
+const initech = { id: 3, name: "Initech", slug: "initech", is_creator: false, deletes_at: null };
 
 describe("organisationInPath", () => {
   it("reads the slug from an organisation-prefixed path", () => {

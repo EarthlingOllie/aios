@@ -32,6 +32,34 @@ describe("describeNotification", () => {
     );
   });
 
+  it("opens an organisation's scheduled deletion on its Organisation page's Settings tab", () => {
+    const scheduled = notification({
+      kind: "organisation_deletion_scheduled",
+      ref: { organisation_name: "Acme", deletes_at: "2026-10-31T09:00:00Z" },
+      title: "Acme is scheduled for deletion.",
+    });
+    expect(describeNotification(scheduled)).toEqual({
+      heading: "Acme is scheduled for deletion.",
+      detail: "Its creator can cancel it until then.",
+      to: "/organisation/settings",
+      organisation: "acme",
+    });
+  });
+
+  it("opens a cancelled deletion on the Organisation page too", () => {
+    const cancelled = notification({
+      kind: "organisation_deletion_cancelled",
+      ref: { organisation_name: "Acme" },
+      title: "Acme will no longer be deleted.",
+    });
+    expect(describeNotification(cancelled)).toEqual({
+      heading: "Acme will no longer be deleted.",
+      detail: null,
+      to: "/organisation",
+      organisation: "acme",
+    });
+  });
+
   it("still shows a kind it doesn't know, with nowhere to go", () => {
     expect(describeNotification(notification({ kind: "store_over_quota", title: "Over quota" }))).toEqual({
       heading: "Over quota",

@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { formatDate } from "@/components/crud";
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
@@ -209,7 +210,8 @@ export default function App({ organisation = null }: { organisation?: string | n
   // A new page load, as the organisation is the router's basename.
   if (opening !== null) return <PageLoad to={inOrganisation(opening, location.pathname + location.search + location.hash)} />;
   // A link to an organisation the user isn't in, or that doesn't exist: alike, so a link can't
-  // tell which.
+  // tell which. A person in none (the one they were in was deleted, say) lands on the welcome page.
+  if (organisation !== null && !member && auth.user.organisations.length === 0) return <PageLoad to={WELCOME} />;
   if (organisation !== null && !member) return <OrganisationNotFound user={auth.user} />;
   if (apiOrganisation === undefined) {
     // An invitation link's page for a person in no organisation: no shell, as signed out.
@@ -412,9 +414,36 @@ function Shell({ user, current, onSignOut }: { user: Me; current: Membership; on
           <LogOut />
         </Button>
       </nav>
-      <main className="min-h-0">
-        <Outlet />
-      </main>
+      {!current.deletes_at ? (
+        <main className="min-h-0">
+          <Outlet />
+        </main>
+      ) : (
+        <main className="flex min-h-0 flex-col">
+          <DeletionBanner name={current.name} deletesAt={current.deletes_at} />
+          <div className="min-h-0 flex-1">
+            <Outlet />
+          </div>
+        </main>
+      )}
+    </div>
+  );
+}
+
+/** On every page of an organisation scheduled for deletion: when it goes. */
+function DeletionBanner({ name, deletesAt }: { name: string; deletesAt: string }) {
+  return (
+    <div
+      role="status"
+      aria-label="Deletion scheduled"
+      className="border-destructive/30 bg-destructive/10 flex flex-wrap items-center gap-x-2 border-b px-4 py-2 text-sm"
+    >
+      <span>
+        {name} will be deleted on {formatDate(deletesAt)}, with everything in it.
+      </span>
+      <Link to="/organisation/settings" className="underline">
+        Organisation settings
+      </Link>
     </div>
   );
 }

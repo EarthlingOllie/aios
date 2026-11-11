@@ -7,6 +7,7 @@ import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DeleteSection } from "@/components/DeleteOrganisation";
 import { LeaveSection } from "@/components/LeaveOrganisation";
 import { InvitesSection } from "@/components/OrganisationInvites";
 import { api, describeError, type Me, type Organisation } from "@/lib/api";
@@ -17,7 +18,7 @@ import { landingPath, recentOrganisations } from "@/lib/organisation-path";
 /**
  * The user's organisation: its name (the creator renames it) above three tabs, as on the agent
  * page: its creator and members (`/organisation`), its invitation links (`/organisation/invitations`,
- * the creator's only), and its settings, the run history export and leaving it
+ * the creator's only), and its settings, the run history export, leaving it and deleting it
  * (`/organisation/settings`).
  */
 export function OrganisationPage() {
@@ -59,6 +60,15 @@ export function OrganisationPage() {
               // Into the organisation used most recently, or the welcome page if none is left: a
               // new page load, as the organisation is the router's basename.
               window.location.assign(landingPath(after.organisations, recentOrganisations()));
+            }}
+          />
+          <DeleteSection
+            key={`delete-${org.id}`}
+            org={org}
+            onChanged={async () => {
+              // The shell's banner shows the date too.
+              reloadMe();
+              await reload();
             }}
           />
         </>
@@ -155,7 +165,6 @@ function RenameForm({ name, onDone }: { name: string; onDone: (renamed: boolean)
         onChange={(e) => setValue(e.target.value)}
         autoFocus
       />
-      <p className="text-muted-foreground text-xs">Unique among organisations.</p>
       <div className="flex gap-2">
         <Button type="submit" size="sm" disabled={saving || !value.trim()}>
           Save

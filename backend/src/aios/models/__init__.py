@@ -34,6 +34,7 @@ from aios.models.chats import (
 )
 from aios.models.identity import (
     Organisation,
+    OrganisationDeletion,
     OrganisationInvite,
     OrganisationMember,
     User,
@@ -69,6 +70,7 @@ __all__ = [
     "Base",
     "User",
     "Organisation",
+    "OrganisationDeletion",
     "OrganisationInvite",
     "OrganisationMember",
     "DataStoreStatus",

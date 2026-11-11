@@ -6,9 +6,12 @@ Every route that resolves the request's organisation (its dependencies reach
 mounted under the prefix (`mount_organisation_prefix`), and only there: `/api/agents/{agent_id}`
 is `/api/o/{organisation_id}/agents/{agent_id}`. Nothing is listed by hand, so a route added
 later moves as soon as it takes the organisation. `current_organisation` reads the id from the
-path and checks the signed-in user is a member. What isn't any one organisation's (signing in,
-the person's profile and notifications, creating an organisation, invitations, the tool
-library, timezones) stays unscoped.
+path and checks the signed-in user is a member.
+
+What isn't any one organisation's (signing in, the person's profile and notifications, creating
+an organisation, invitations, the tool library, timezones) stays unscoped, and only what's
+listed in `UNSCOPED`: an API route that neither takes the organisation nor is listed there
+stops the app starting (`UnscopedRoute`), so none is left without an organisation by mistake.
 """
 
 from fastapi import FastAPI
@@ -19,6 +22,38 @@ from aios.auth import current_organisation
 
 API = "/api"
 ORGANISATION_PREFIX = f"{API}/o/{{organisation_id}}"
+
+# The API routes explicitly without an organisation, as (method, path): each is the person's, or
+# no one's, rather than any organisation's.
+UNSCOPED: set[tuple[str, str]] = {
+    # Signing in, and the development picker (`aios.dev_auth`) when it's on.
+    ("GET", "/api/auth/options"),
+    ("POST", "/api/auth/register"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/logout"),
+    ("GET", "/api/dev/users"),
+    ("POST", "/api/dev/session"),
+    # The person's profile, with every organisation they're in.
+    ("GET", "/api/me"),
+    ("PATCH", "/api/me"),
+    ("PUT", "/api/me/email"),
+    ("PUT", "/api/me/password"),
+    # An invitation link's page, and accepting it.
+    ("GET", "/api/invites/{token}"),
+    ("POST", "/api/invites/{token}/accept"),
+    # Creating an organisation (the welcome page's).
+    ("POST", "/api/organisations"),
+    # The person's notifications, from every organisation they're in.
+    ("GET", "/api/notifications"),
+    ("POST", "/api/notifications/{notification_id}/read"),
+    # The tool library and the timezones schedules can use: the same for everyone.
+    ("GET", "/api/tools"),
+    ("GET", "/api/triggers/timezones"),
+}
+
+
+class UnscopedRoute(RuntimeError):
+    """An API route that neither takes the organisation nor is listed in `UNSCOPED`."""
 
 
 def resolves_organisation(dependant: Dependant) -> bool:
@@ -65,10 +100,23 @@ def _copy(router: APIRouter, route, path: str) -> None:
     )
 
 
+def _check_unscoped(route) -> None:
+    """Refuse an API route without an organisation unless it's listed in `UNSCOPED`."""
+    if not route.path.startswith(f"{API}/"):
+        return
+    for method in sorted(route.methods):
+        if (method, route.path) not in UNSCOPED:
+            raise UnscopedRoute(
+                f"{method} {route.path} doesn't take the organisation, and isn't listed in "
+                "aios.api.scoping.UNSCOPED"
+            )
+
+
 def mount_organisation_prefix(app: FastAPI) -> None:
     """Move every organisation-scoped route of `app` under the prefix, as it is (the same
-    endpoint, dependencies and responses); every other route stays where it is. Call once, after
-    including every router."""
+    endpoint, dependencies and responses); every other route stays where it is, if it's outside
+    the API or listed in `UNSCOPED` (else `UnscopedRoute`). Call once, after including every
+    router."""
     routes = APIRouter()
     others = []
     for route in list(iter_route_contexts(app.router.routes)):
@@ -77,6 +125,7 @@ def mount_organisation_prefix(app: FastAPI) -> None:
         elif resolves_organisation(route.dependant):
             _copy(routes, route, prefixed(route.path))
         else:
+            _check_unscoped(route)
             _copy(routes, route, route.path)
     app.router.routes[:] = others
     app.include_router(routes)

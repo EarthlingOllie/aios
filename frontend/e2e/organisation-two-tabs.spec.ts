@@ -29,7 +29,7 @@ test("a message posted in each tab lands in that tab's organisation", async ({ c
 
   const second = await context.newPage();
   const theirs = await fakeApi(second);
-  theirs.organisation = { ...theirs.organisation, id: globex.id, name: globex.name, slug: globex.slug, personal: false };
+  theirs.organisation = { ...theirs.organisation, id: globex.id, name: globex.name, slug: globex.slug };
   theirs.otherMemberships = [tester];
   theirs.joinedEarlier = true;
   const sales = theirs.addChat("Sales");

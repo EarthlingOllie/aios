@@ -77,7 +77,7 @@ test("a member who isn't the creator sees no invitation controls", async ({ page
   api.organisation = {
     ...api.organisation,
     name: "Acme",
-    personal: false,
+    deletion: null,
     creator: sam,
     members: [{ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null }, ...api.organisation.members],
   };
@@ -117,7 +117,7 @@ test("a member leaves, and lands in the organisation they used most recently", a
   api.organisation = {
     ...api.organisation,
     name: "Acme",
-    personal: false,
+    deletion: null,
     creator: sam,
     members: [{ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null }, ...api.organisation.members],
   };

@@ -50,12 +50,15 @@ def before_the_contract(db) -> None:
 
 
 def backfill_before_slugs(db) -> None:
-    """Run revision 0030's data step as it ran, before organisations had slugs (revision 0055),
-    then give what it made slugs as 0055 does. In this test's transaction only."""
+    """Run revision 0030's data step as it ran, before organisations had slugs (revision 0055)
+    and while they had the personal flag and unique names (until revision 0059), then bring the
+    schema back to head. In this test's transaction only."""
     with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0059_organisation_deletion").downgrade()
         revision("0055_organisation_slugs").downgrade()
         revision("0030_personal_organisations").backfill(db.connection())
         revision("0055_organisation_slugs").upgrade()
+        revision("0059_organisation_deletion").upgrade()
 
 
 def before_native_auth(db) -> None:
@@ -83,9 +86,7 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     # the contract's downgrade makes theirs to own, and the organisation then undone.
     made = []
     for user_id in (first, second):
-        org = Organisation(
-            name=f"made-{user_id}", slug=f"made-{user_id}", personal=True, created_by=user_id
-        )
+        org = Organisation(name=f"made-{user_id}", slug=f"made-{user_id}", created_by=user_id)
         db.add(org)
         db.flush()
         db.add(OrganisationMember(organisation_id=org.id, user_id=user_id))
@@ -122,7 +123,7 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     assert names == ["sam", "sam-2", "sam-2-2"]
     for u in (first, second, third):
         org = organisation_of(u)
-        assert (org.personal, org.created_by) == (True, u)
+        assert org.created_by == u
         assert [m.user_id for m in org.members] == [u]
 
     db.refresh(agent)
@@ -167,7 +168,13 @@ def test_creating_an_organisation_makes_the_person_its_creator_and_only_member(
         assert org["creator"] == {"id": person.id, "name": "Founder Tester"}
         assert [m["user"]["id"] for m in org["members"]] == [person.id]
         assert client.get("/api/me").json()["organisations"] == [
-            {"id": org["id"], "name": "Founders Ltd", "slug": "founders-ltd", "is_creator": True}
+            {
+                "id": org["id"],
+                "name": "Founders Ltd",
+                "slug": "founders-ltd",
+                "is_creator": True,
+                "deletes_at": None,
+            }
         ]
         # It opens: its routes answer under its prefix.
         assert client.get(f"/api/o/{org['id']}/organisation").json()["id"] == org["id"]
@@ -188,13 +195,18 @@ def test_a_member_creates_another_organisation_and_is_in_both(api, db, user):
     assert listed == ["Side Project", "Test User"]
 
 
-def test_creating_an_organisation_with_a_taken_or_blank_name_is_refused(api, new_user, client):
+def test_creating_an_organisation_with_another_ones_name_is_fine_but_a_blank_one_isnt(
+    api, new_user, client
+):
     other = new_user()
     resp = api.post("/api/organisations", json={"name": other.full_name})
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "An organisation with that name already exists."
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["name"] == other.full_name
     assert api.post("/api/organisations", json={"name": " "}).status_code == 422
-    assert [o["name"] for o in api.get("/api/me").json()["organisations"]] == ["Test User"]
+    assert [o["name"] for o in api.get("/api/me").json()["organisations"]] == [
+        other.full_name,
+        "Test User",
+    ]
 
 
 def test_creating_an_organisation_needs_a_sign_in(client):
@@ -251,33 +263,6 @@ def test_the_creator_renames_the_organisation(api, user):
     assert api.put("/api/organisation", json={"name": " "}).status_code == 422
 
 
-def test_renaming_to_a_name_a_new_organisation_is_taking_is_refused(api, db, user):
-    """The creator renames to a name a new organisation is taking at the same moment: the rename
-    is the one refused, as for a name already taken."""
-    founder = build_user("acme")
-    try:
-        with SessionLocal() as creating:
-            # The creation, flushed but not committed: the rename waits on its name.
-            creating.add(founder)
-            creating.flush()
-            organisations.create(creating, founder, "Acme")
-            renaming, result = in_the_background(
-                lambda: api.put("/api/organisation", json={"name": "Acme"})
-            )
-            renaming.join(timeout=0.5)
-            assert renaming.is_alive(), "the rename should wait on the new organisation's name"
-            creating.commit()
-        renaming.join(timeout=10)
-
-        assert "error" not in result, result
-        assert result["value"].status_code == 409
-        assert result["value"].json()["detail"] == "An organisation with that name already exists."
-        assert api.get("/api/organisation").json()["name"] == "Test User"
-    finally:
-        if (founder := db.get(User, founder.id)) is not None:
-            delete_user(db, founder)
-
-
 def test_two_organisations_made_at_once_whose_names_make_one_slug_get_distinct_ones(api, db, user):
     """The slug the second found free is taken by the time it inserts: it picks again."""
     founder = build_user("founder")
@@ -312,14 +297,13 @@ def test_another_member_cant_rename_it(api, member):
     assert api.get("/api/organisation").json()["name"] == "Test User"
 
 
-def test_a_name_another_organisation_has_is_refused(api, new_user):
+def test_renaming_to_a_name_another_organisation_has_is_fine(api, new_user):
     other = new_user()
     resp = api.put("/api/organisation", json={"name": other.full_name})
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "An organisation with that name already exists."
-    assert api.get("/api/organisation").json()["name"] == "Test User"
-    # Its own name again is fine.
-    assert api.put("/api/organisation", json={"name": "Test User"}).status_code == 200
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == other.full_name
+    # Its slug is its own still.
+    assert resp.json()["slug"] == "test-user"
 
 
 # Slugs: what a link in the browser names an organisation by (the API uses the id).
@@ -395,7 +379,12 @@ def test_the_upgrade_gives_every_organisation_a_slug_oldest_first(db):
 
 
 def test_me_lists_the_users_organisations_and_whether_they_created_each(api, db, user, member):
-    expected = {"id": org_of(db, user).id, "name": "Test User", "slug": "test-user"}
+    expected = {
+        "id": org_of(db, user).id,
+        "name": "Test User",
+        "slug": "test-user",
+        "deletes_at": None,
+    }
     assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": True}]
     with signed_in_as(member):
         assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": False}]
