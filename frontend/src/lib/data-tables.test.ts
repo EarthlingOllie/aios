@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { nextSort, rowCountLabel, rowRangeLabel } from "@/lib/data-tables";
+import {
+  accessLabel,
+  nextSort,
+  ownerCandidates,
+  rowCountLabel,
+  rowRangeLabel,
+  shareCandidates,
+} from "@/lib/data-tables";
 
 describe("rowCountLabel", () => {
   it("counts rows, and says when the count is an estimate", () => {
@@ -35,5 +42,31 @@ describe("rowRangeLabel", () => {
     expect(rowRangeLabel(0, 50)).toBe("Rows 1–50");
     expect(rowRangeLabel(1000, 1)).toBe("Row 1,001");
     expect(rowRangeLabel(0, 0)).toBeNull();
+  });
+});
+
+describe("accessLabel", () => {
+  const scribe = { id: 1, name: "Scribe", archived: false };
+  it("names the owner, or says there's none, or that it's read-only", () => {
+    expect(accessLabel({ owner: null, shares: [] })).toBe("No owner");
+    expect(accessLabel({ owner: scribe, shares: [] })).toBe("Owned by Scribe");
+    expect(accessLabel({ owner: { ...scribe, archived: true }, shares: [] })).toBe(
+      "Read-only: its owner, Scribe, is archived",
+    );
+  });
+});
+
+describe("candidates", () => {
+  const agent = (id: number, name: string, archived = false) => ({ id, name, archived });
+  const agents = [agent(1, "Scribe"), agent(2, "Helper"), agent(3, "Heir"), agent(4, "Gone", true)];
+  const table = { owner: agent(1, "Scribe"), shares: [agent(2, "Helper")] };
+
+  it("offers as owner every live agent but the owner", () => {
+    expect(ownerCandidates(agents, table).map((a) => a.name)).toEqual(["Helper", "Heir"]);
+  });
+
+  it("offers to share with live agents that neither own it nor have it", () => {
+    expect(shareCandidates(agents, table).map((a) => a.name)).toEqual(["Heir"]);
+    expect(shareCandidates(agents, { owner: null, shares: [] })).toEqual([]);
   });
 });

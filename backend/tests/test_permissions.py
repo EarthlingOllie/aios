@@ -45,6 +45,7 @@ LEAVE = (EVERYONE, None)
 AUDIT = (ADMINS, "audit log")  # read the audit log
 USAGE = (ADMINS, "usage")  # read usage totals
 RELEASE = (ADMINS, "flagged")  # see flagged content, release it
+TABLES = (BUILDERS, "data tables")  # share, unshare, transfer (approval rules refine it)
 
 # Every route under the organisation prefix, by method and path after it, and its row.
 ROUTES = {
@@ -88,6 +89,9 @@ ROUTES = {
     ("GET", "/data/tables"): READ,
     ("GET", "/data/tables/{table:path}/rows"): READ,
     ("GET", "/data/tables/{table:path}/value"): READ,
+    ("PUT", "/data/tables/{table:path}/owner"): TABLES,
+    ("POST", "/data/tables/{table:path}/shares"): TABLES,
+    ("DELETE", "/data/tables/{table:path}/shares/{agent_id}"): TABLES,
     ("GET", "/documents"): READ,
     ("POST", "/documents"): DOCUMENTS,
     ("DELETE", "/documents/{document_id}"): DOCUMENTS,

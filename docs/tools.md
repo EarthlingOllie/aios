@@ -83,7 +83,9 @@ set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. B
 model their results are data, not instructions, and that the store is being set up until
 it's ready. `write_data` (`aios.tools.write_data`) writes the `data` tables, within the store's
 quota (see [Stores](stores.md#quotas)), as the store's writer role, which may write in `data`
-and nowhere else, and records each call in the audit log. Neither tool can read what's on the
+and nowhere else, and records each call in the audit log. It writes an owned table only for its
+owner and the agents it's shared with, and refuses others naming the owner (see
+[Stores](stores.md#table-ownership)). Neither tool can read what's on the
 deny list (people's emails in the people mirror, `aios.people`, and the audit log's details; see
 [Stores](stores.md#the-deny-list)): `describe_data` leaves the column out, and `query_data` is
 refused it.

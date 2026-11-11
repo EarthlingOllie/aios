@@ -277,6 +277,11 @@ def _restore_sql(pg: psycopg.Connection, item: Dropped) -> tuple[list[sql.Compos
                     "UPDATE aios.dropped_objects SET table_name = {}"
                     " WHERE table_name = {} AND column_name IS NOT NULL"
                 ).format(new, old),
+                # Its owner and shares (`aios.datastores.ownership`), which a share's foreign
+                # key carries along.
+                sql.SQL(
+                    "UPDATE aios.table_owners SET table_name = {} WHERE table_name = {}"
+                ).format(new, old),
             ],
             f"Restore table {SCHEMA}.{item.table}",
             item.table,
@@ -371,6 +376,8 @@ def _purge_sql(item: Dropped) -> tuple[list[sql.Composable], str, str | None]:
             [
                 sql.SQL("DROP TABLE {}").format(q(SCHEMA, item.dropped_name)),
                 sql.SQL("DELETE FROM aios.embedding_columns WHERE table_name = {}").format(name),
+                # Its owner and shares (`aios.datastores.ownership`).
+                sql.SQL("DELETE FROM aios.table_owners WHERE table_name = {}").format(name),
                 # With its own dropped columns.
                 sql.SQL(
                     "DELETE FROM aios.dropped_objects"

@@ -1,5 +1,11 @@
-"""The Data page's Tables: the organisation's store's own tables, and their rows. Read-only, and
-no SQL is accepted: tables and columns are named, and checked against the store's catalog."""
+"""The Data page's Tables: the organisation's store's own tables, their rows, and who may write
+them. No SQL is accepted: tables and columns are named, and checked against the store's catalog.
+
+Rows are read-only here. Each table's access (its owner and shares, `aios.datastores.ownership`)
+is listed with it, and editors and admins change it: assign, transfer or clear its owner, and
+share and unshare it. Each change answers with the table's access, audited; 403 for a role the
+approval rules don't allow, 404 for a table or agent there isn't, 409 for an archived agent, a
+duplicate share, or a share with the owner (or of a table with no owner)."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -8,10 +14,10 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
-from aios.auth import CurrentDataStore
+from aios.auth import CurrentDataStore, CurrentStore, CurrentUser
 from aios.config import get_settings
-from aios.datastores import tables
-from aios.permissions import Action, allow
+from aios.datastores import ownership, store_session, tables
+from aios.permissions import Action, CurrentRole, allow
 
 router = APIRouter(prefix="/api/data")
 
@@ -24,12 +30,41 @@ class ColumnOut(BaseModel):
     embedding: bool
 
 
-class TableOut(BaseModel):
+class AgentRefOut(BaseModel):
+    id: int
+    name: str
+    # Archived: a table it owns is read-only until it's transferred.
+    archived: bool
+
+
+class AccessOut(BaseModel):
+    # None: no owner, so any agent with `write_data` may write it.
+    owner: AgentRefOut | None
+    # The agents it's shared with, which may write it as its owner may.
+    shares: list[AgentRefOut]
+    # A change the database hasn't applied yet (never, until per-agent roles carry them).
+    pending: bool
+
+
+class TableAccessOut(AccessOut):
+    name: str
+
+
+class TableOut(AccessOut):
     name: str
     description: str | None
     columns: list[ColumnOut]
     row_count: int | None
     row_count_estimated: bool
+
+
+class OwnerIn(BaseModel):
+    # None clears it.
+    agent_id: int | None
+
+
+class ShareIn(BaseModel):
+    agent_id: int
 
 
 class TablesOut(BaseModel):
@@ -64,10 +99,83 @@ class RowsOut(BaseModel):
 def list_tables(store_id: CurrentDataStore):
     with _refusals():
         found, truncated = tables.list_tables(store_id)
+    with store_session(store_id, "ro") as store:
+        access = ownership.access(store, [t.name for t in found])
     return TablesOut(
-        tables=[TableOut.model_validate(t, from_attributes=True) for t in found],
+        tables=[
+            TableOut.model_validate(
+                t.listed()
+                | {"row_count": t.row_count, "row_count_estimated": t.row_count_estimated}
+                | _access(access[t.name])
+            )
+            for t in found
+        ],
         truncated=truncated,
     )
+
+
+def _access(access: ownership.Access) -> dict:
+    return {
+        "owner": None if access.owner is None else vars(access.owner),
+        "shares": [vars(a) for a in access.shares],
+        "pending": access.pending,
+    }
+
+
+@router.put(
+    "/tables/{table:path}/owner", response_model=TableAccessOut, dependencies=[allow(Action.tables)]
+)
+def set_owner(table: str, body: OwnerIn, user: CurrentUser, role: CurrentRole, store: CurrentStore):
+    """Assign, transfer or clear (`agent_id` null) the table's owner."""
+    with _access_refusals():
+        access = ownership.set_owner(store, table, body.agent_id, user.id, role)
+    store.commit()
+    return TableAccessOut(name=table, **_access(access))
+
+
+@router.post(
+    "/tables/{table:path}/shares",
+    response_model=TableAccessOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.tables)],
+)
+def share(table: str, body: ShareIn, user: CurrentUser, store: CurrentStore):
+    """Share the table with an agent: it may write it as its owner may."""
+    with _access_refusals():
+        access = ownership.share(store, table, body.agent_id, user.id)
+    store.commit()
+    return TableAccessOut(name=table, **_access(access))
+
+
+@router.delete(
+    "/tables/{table:path}/shares/{agent_id}",
+    response_model=TableAccessOut,
+    dependencies=[allow(Action.tables)],
+)
+def unshare(table: str, agent_id: int, user: CurrentUser, store: CurrentStore):
+    """Stop sharing the table with an agent."""
+    with _access_refusals():
+        access = ownership.unshare(store, table, agent_id, user.id)
+    store.commit()
+    return TableAccessOut(name=table, **_access(access))
+
+
+@contextmanager
+def _access_refusals() -> Iterator[None]:
+    try:
+        yield
+    except ownership.TableNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such table") from exc
+    except ownership.AgentNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such agent") from exc
+    except ownership.ShareNotFound as exc:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "The table isn't shared with that agent"
+        ) from exc
+    except ownership.Conflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ownership.NeedsRole as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
 
 @router.get("/tables/{table:path}/rows", response_model=RowsOut, dependencies=[allow(Action.read)])

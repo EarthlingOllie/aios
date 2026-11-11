@@ -1,4 +1,4 @@
-import type { DataTable } from "@/lib/api";
+import type { DataTable, TableAccess, TableAgent } from "@/lib/api";
 
 /** Rows of a table shown at once. */
 export const PAGE_SIZE = 50;
@@ -25,4 +25,29 @@ export function rowRangeLabel(offset: number, count: number): string | null {
   const first = (offset + 1).toLocaleString("en-US");
   const last = (offset + count).toLocaleString("en-US");
   return count === 1 ? `Row ${first}` : `Rows ${first}–${last}`;
+}
+
+/** Who may write a table, in a few words: its owner, "No owner" (any agent may), or read-only
+ * while its owner is archived. */
+export function accessLabel(table: Pick<TableAccess, "owner" | "shares">): string {
+  const { owner } = table;
+  if (owner === null) return "No owner";
+  if (owner.archived) return `Read-only: its owner, ${owner.name}, is archived`;
+  return `Owned by ${owner.name}`;
+}
+
+/** The agents a table can be given to: any that isn't archived, but its owner. */
+export function ownerCandidates<A extends TableAgent>(agents: A[], table: Pick<TableAccess, "owner">): A[] {
+  return agents.filter((a) => !a.archived && a.id !== table.owner?.id);
+}
+
+/** The agents a table can be shared with: any that isn't archived, owns it or has it already;
+ * none while it has no owner (any agent may write it then). */
+export function shareCandidates<A extends TableAgent>(
+  agents: A[],
+  table: Pick<TableAccess, "owner" | "shares">,
+): A[] {
+  if (table.owner === null) return [];
+  const shared = new Set(table.shares.map((a) => a.id));
+  return ownerCandidates(agents, table).filter((a) => !shared.has(a.id));
 }

@@ -29,6 +29,7 @@ from aios.datastores.schema_changes.spec import (
     DROPPED_PREFIX,
     SCHEMA,
     AddColumn,
+    CreateTable,
     DropColumn,
     DropTable,
     Invalid,
@@ -194,7 +195,7 @@ class _Stale(Exception):
 def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
     """Run the request's SQL on the store, as its owner, all or nothing; raises `_Stale` if the
     schema has moved on and no longer takes it."""
-    from aios.datastores import dropped
+    from aios.datastores import dropped, ownership
     from aios.datastores.provision import as_owner
 
     with as_owner(names) as conn, schema_transaction(conn):
@@ -216,6 +217,12 @@ def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
                     " approved isn't what it would take now"
                 )
         conn.execute(request.sql)  # several statements: sent whole, with no parameters
+        # Owners follow: a new table's is the agent that asked, a dropped one's goes with it.
+        for op in spec.ops:
+            if isinstance(op, CreateTable):
+                ownership.created(conn, op.name, request.requested_by_run)
+            elif isinstance(op, DropTable):
+                ownership.renamed(conn, op.table, op.dropped_as)
         for table in _access_changed(spec):
             if table_exists(conn, table):
                 dropped.grant_access(conn, names, table)

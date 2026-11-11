@@ -35,6 +35,9 @@ describe("refusal", () => {
     expect(refusal("participant", "build")).toBe(
       "Participants can't create, edit, archive or unarchive agents, skills, workflows and schedules. Ask an editor or an admin.",
     );
+    expect(refusal("participant", "tables")).toBe(
+      "Participants can't share, unshare or transfer data tables. Ask an editor or an admin.",
+    );
     expect(refusal("editor", "run_organisation")).toBe(
       "Editors can't change the organisation's roles, invitations, name or settings, or delete it. Ask an admin.",
     );
