@@ -12,7 +12,7 @@ from aios.api.agents.common import (
     agent_out,
     get_agent_version,
     get_org_agent,
-    lock_live_agent,
+    lock_agent,
     skill_count,
     tool_count,
     version_out,
@@ -74,9 +74,9 @@ def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
 def get_agent_version_detail(agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
-    # Also once the agent is deleted: workflow versions, and their past runs, still pin its
-    # versions, as they do a deleted workflow's.
-    agent = get_org_agent(db, org, agent_id, deleted_ok=True)
+    # Also once the agent is archived: workflow versions, and their past runs, still pin its
+    # versions.
+    agent = get_org_agent(db, org, agent_id)
     return version_out(get_agent_version(db, agent, number))
 
 
@@ -93,9 +93,9 @@ def restore_agent_version(
     skill_ids = {sv.skill_id for sv in old.skills}
     if lock_live_skills(db, skill_ids) != skill_ids:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, "That version uses a skill that has since been deleted."
+            status.HTTP_409_CONFLICT, "That version uses a skill that has since been archived."
         )
-    lock_live_agent(db, agent)
+    lock_agent(db, agent)
     agent.updated_by = user.id
     save_agent_version(
         db,

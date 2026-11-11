@@ -37,11 +37,13 @@ Workflows are versioned like agents (`workflows`, `workflow_versions`; see
 - A workflow can't contain itself, directly or through other workflows at any depth: none of the
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
-- Agents and workflows are soft-deleted: older workflow versions keep pinning their versions,
-  and stay readable (a node whose agent or workflow is gone shows no latest version). A
-  workflow can't be deleted while a live workflow's current version runs it; older versions
-  don't count, but restoring one that runs something since deleted is refused. Names are unique
-  among the organisation's live rows, so they can be reused. Deleting an agent that workflows
+- Agents and workflows are archived, never deleted: older workflow versions keep pinning their
+  versions, and stay readable (a node whose workflow has been archived shows no latest version;
+  an archived agent keeps showing its own). Deleting a workflow archives it, hidden as a deleted
+  one was; it can't be deleted while a live workflow's current version runs it; older versions
+  don't count, but restoring one that runs something since archived is refused. Names are
+  unique among all the organisation's rows, archived ones included, so an archived item's name
+  stays reserved. Deleting an agent that workflows
   run is covered in [Agents and skills](agents-and-skills.md#deleting-an-agent), with
   deactivating a workflow.
 
@@ -69,6 +71,7 @@ Workflows are versioned like agents (`workflows`, `workflow_versions`; see
 - An agent node whose agent requests a schema change waits for the decision, and the run waits
   with it once nothing else can run (see [Tools](tools.md#request-schema-changes)).
 - Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a
-  tool that has left the library, or an agent that has since been deleted), or if it has no
-  nodes. Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the
+  tool that has left the library), if an agent or workflow in it is archived ("The agent <name>
+  is archived."), or if it has no nodes. A run already going isn't checked again: an agent
+  archived since it started still runs its node. Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the
   database.

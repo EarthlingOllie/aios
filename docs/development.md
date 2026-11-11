@@ -81,7 +81,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
     workflows/      workflow graph validation, and running workflows (validation, execution, steps)
-    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
+    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it,
+                    and what uses it, shown before archiving it
+    seed.py         `make seed`: rebuilds development data from scratch
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
     ui_stream.py    Vercel AI SDK UI message stream <-> LangChain messages / LangGraph streams
@@ -184,6 +186,16 @@ cd frontend
 pnpm install
 pnpm dev                 # http://localhost:5173, proxies /api to :8000
 ```
+
+### Seed data
+
+aios isn't live, so a change to the schema keeps nothing for older rows: development data is
+rebuilt instead. `make seed` (from the repository root; `backend/src/aios/seed.py`) migrates the
+platform database to head, deletes every organisation's store (its database, roles and files)
+and every row, then makes one working organisation through the API's own handlers: the user
+`dev@example.com` (password `development only`) with a provisioned store, a skill, agents, a
+workflow nested in another, a schedule, a public chat, and an archived agent. It refuses unless
+`DEV_LOGIN_ENABLED` is on (pass `--force` otherwise), since it wipes the database.
 
 ## Checks and tests
 

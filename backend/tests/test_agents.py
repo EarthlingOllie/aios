@@ -243,7 +243,7 @@ def test_skill_list_counts_the_live_agents_using_each_skill(api):
     assert counts() == {"Pirate": 2, "Terse": 1, "Unused": 0}
 
 
-def test_skill_delete_blocked_while_in_use_then_soft(api):
+def test_skill_delete_blocked_while_in_use_then_archives_it(api):
     skill = make_skill(api, "Pirate", "Arr.")
     agent = make_agent(api, "Bot", skills=[skill])
     assert api.get(f"/api/skills/{skill['id']}").json()["agents"] == [
@@ -257,11 +257,11 @@ def test_skill_delete_blocked_while_in_use_then_soft(api):
     assert api.get(f"/api/skills/{skill['id']}").status_code == 404
     assert api.get("/api/skills").json() == []
 
-    # v1 still shows the deleted skill, but can't be restored; the name is free again.
+    # v1 still shows the archived skill, but can't be restored; the name stays reserved.
     old = api.get(f"{url}/versions/1").json()["skills"][0]
     assert (old["name"], old["latest_version"]) == ("Pirate", None)
     assert api.post(f"{url}/versions/1/restore").status_code == 409
-    make_skill(api, "Pirate")
+    assert api.post("/api/skills", json={"name": "Pirate"}).status_code == 409
 
     assert api.delete(url).status_code == 204
     assert api.get("/api/agents").json() == []
@@ -300,37 +300,38 @@ def test_skill_delete_waits_for_in_flight_attach(api, user):
     assert api.get(f"/api/skills/{skill['id']}").status_code == 200
 
 
-def test_agent_delete_is_soft_and_takes_its_runs(api, db):
+def test_agent_delete_archives_it_and_takes_its_runs(api, db):
     skill = make_skill(api, "Pirate", "Arr.")
     agent = make_agent(api, "Bot", skills=[skill])
     url = f"/api/agents/{agent['id']}"
     run = api.post(f"{url}/runs").json()
 
     assert api.delete(url).status_code == 204
-    for gone in (url, f"{url}/versions", f"{url}/runs/{run['id']}"):
-        assert api.get(gone).status_code == 404
-    # Its versions are still there to read, though, as a deleted workflow's are: older workflow
-    # versions, and their past runs, pin them.
+    assert api.get(f"{url}/runs/{run['id']}").status_code == 404
+    # It's archived: still there to read, with its versions (older workflow versions, and their
+    # past runs, pin them), and starting nothing new.
+    assert api.get(url).json()["archived_at"] is not None
     old = api.get(f"{url}/versions/1")
     assert old.status_code == 200
     assert old.json()["version"] == 1
     assert [s["skill_id"] for s in old.json()["skills"]] == [skill["id"]]
     assert api.get(f"{url}/versions/2").status_code == 404
-    assert api.put(url, json=agent_body(agent)).status_code == 404
-    assert api.post(f"{url}/runs").status_code == 404
-    assert api.delete(url).status_code == 404
+    assert api.post(f"{url}/runs").status_code == 409
     assert api.get("/api/agents").json() == []
     # The row and its versions stay (workflow versions may pin them); its runs don't.
     row = db.get(Agent, agent["id"])
-    assert row.deleted_at is not None and row.current_version.version == 1
+    assert row.archived_at is not None and row.current_version.version == 1
     assert db.get(AgentRun, run["id"]) is None
 
-    # A deleted agent doesn't hold on to the skills its current version used, nor its name.
+    # An archived agent doesn't hold on to the skills its current version used; its name stays
+    # reserved.
     assert api.delete(f"/api/skills/{skill['id']}").status_code == 204
-    assert make_agent(api, "Bot")["name"] == "Bot"
     resp = api.post("/api/agents", json={"name": "Bot"})
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "The organisation already has an agent with that name."
+    assert resp.json()["detail"] == "The organisation already has an agent called Bot (archived)."
+    make_agent(api, "Bot 2")
+    resp = api.post("/api/agents", json={"name": "Bot 2"})
+    assert resp.json()["detail"] == "The organisation already has an agent called Bot 2."
 
 
 def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
@@ -340,7 +341,7 @@ def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
     with SessionLocal() as session:
         # A delete that has locked the agent and found it unused, but not committed yet.
         assert lock_live(session, Agent, [agent["id"]])
-        session.get(Agent, agent["id"]).deleted_at = func.now()
+        session.get(Agent, agent["id"]).archived_at = func.now()
         starter = threading.Thread(
             target=lambda: result.update(resp=api.post(f"/api/agents/{agent['id']}/runs"))
         )
@@ -350,8 +351,8 @@ def test_starting_a_run_waits_for_an_in_flight_agent_delete(api):
         session.commit()
 
     starter.join(timeout=10)
-    # Not a run left behind on a deleted agent, which its delete would have missed.
-    assert result["resp"].status_code == 404
+    # Not a run left behind on an archived agent, which its delete would have missed.
+    assert result["resp"].status_code == 409
 
 
 def test_other_users_cannot_see_agents(api, client, db):

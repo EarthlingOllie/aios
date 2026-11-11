@@ -18,7 +18,6 @@ from aios import checkpoints, tracing
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
 from aios.agent import ChatDeps
-from aios.api.skills import lock_live
 from aios.db import SessionLocal
 from aios.models import (
     Agent,
@@ -95,8 +94,8 @@ def _start_step(
     run_id: int, created_by: int | None, path: tuple[str, ...], node: Node, text: str
 ) -> tuple[int, int | None]:
     """Record that a node has started; return its step's id and, for an agent node, the agent
-    run it's given (None if its agent has been deleted since the run started), started by
-    whoever started the workflow run (`created_by`).
+    run it's given, started by whoever started the workflow run (`created_by`). Its agent may
+    have been archived since the run started: a run already going still runs it.
 
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
@@ -104,10 +103,14 @@ def _start_step(
     node start once the run has ended without it (cancelled, say: `cancel_runs`): the run's row
     is share-locked, so an end being committed is waited for and then seen. The agent is locked
     first, as deleting it locks the agent and then ends its runs, so the two queue rather than
-    deadlock.
+    deadlock (and a run the delete ended starts no node).
     """
     with SessionLocal() as db:
-        live = node.agent is not None and lock_live(db, Agent, [node.agent.agent_id], read=True)
+        live = node.agent is not None
+        if live:
+            db.execute(
+                select(Agent.id).where(Agent.id == node.agent.agent_id).with_for_update(read=True)
+            )
         # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
         # worker went on), whose steps, and their exported copy, are final. Share-locked, so
         # ending it waits for this, or this for that.

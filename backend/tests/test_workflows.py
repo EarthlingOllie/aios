@@ -417,13 +417,14 @@ def test_only_current_versions_block_deletion(api):
     assert api.delete(f"/api/agents/{researcher['id']}").status_code == 204
     assert api.delete(report_url).status_code == 204
 
-    # History stays readable: the old nodes show what they ran, with no latest version.
+    # History stays readable: the old nodes show what they ran. Deleting the agent archived it,
+    # so it keeps its latest version; the deleted workflow has none.
     old = api.get(f"{outer_url}/versions/1").json()["nodes"]
     assert [(n["name"], n["version"], n["latest_version"]) for n in old] == [
-        ("Researcher", 1, None),
+        ("Researcher", 1, 1),
         ("Research report", 1, None),
     ]
-    assert api.get(f"/api/agents/{researcher['id']}").status_code == 404
+    assert api.get(f"/api/agents/{researcher['id']}").json()["archived_at"] is not None
     assert [a["name"] for a in api.get("/api/agents").json()] == ["Writer"]
     assert [w["name"] for w in api.get("/api/workflows").json()] == ["Outer"]
 
@@ -445,9 +446,9 @@ def test_only_current_versions_block_deletion(api):
         assert resp.status_code == 422
         assert resp.json()["detail"] == message
 
-    # The names are free again, but only among live rows: a live name still clashes.
-    make_agent(api, "Researcher")
-    make_workflow(api, "Research report")
+    # Their names stay reserved.
+    resp = api.post("/api/agents", json={"name": "Researcher", "base_prompt": "p"})
+    assert resp.status_code == 409
     resp = api.put(outer_url, json=workflow_body("Research report"))
     assert resp.status_code == 409
     assert resp.json()["detail"] == "The organisation already has a workflow with that name."
@@ -550,7 +551,7 @@ def test_save_waits_for_an_in_flight_delete_of_what_it_runs(api, kind):
     with SessionLocal() as session:
         # A delete that has locked the row and found it unused, but not committed yet.
         assert lock_live(session, model, [target["id"]])
-        session.get(model, target["id"]).deleted_at = func.now()
+        session.get(model, target["id"]).archived_at = func.now()
         saver, result = run_in_thread(
             lambda: api.put(f"/api/workflows/{flow['id']}", json=workflow_body("Flow", [node]))
         )

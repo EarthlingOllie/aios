@@ -1,5 +1,6 @@
-"""A workflow's graph: checked before it's saved (`validate_graph`), and loaded to run, with the
-agent versions it pins checked that they still can (`load_graph`)."""
+"""A workflow's graph: checked before it's saved (`validate_graph`), checked before a run of it
+starts that nothing in it is archived (`archived_in_graph`), and loaded to run, with the agent
+versions it pins checked that they still can (`load_graph`)."""
 
 import re
 from collections.abc import Sequence
@@ -11,7 +12,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from aios import tracing
 from aios.models import (
+    Agent,
     AgentVersion,
+    Workflow,
     WorkflowNode,
     WorkflowNodeKind,
     WorkflowVersion,
@@ -126,6 +129,40 @@ def reachable_versions(version_id: int):
     )
 
 
+def archived_in_graph(db: Session, version_id: int) -> str | None:
+    """Why a run of this workflow version can't start because of what it runs, at any depth: an
+    agent or workflow its graph pins is archived ("The agent <name> is archived."), the first
+    found by name; None if nothing is. Runs already going aren't checked again, so their nodes
+    still run."""
+    reach = reachable_versions(version_id)
+    nodes = (
+        select(WorkflowNode)
+        .where(WorkflowNode.workflow_version_id.in_(select(reach.c.id)))
+        .subquery()
+    )
+    agent = db.scalar(
+        select(Agent.name)
+        .join(AgentVersion, AgentVersion.agent_id == Agent.id)
+        .join(nodes, nodes.c.agent_version_id == AgentVersion.id)
+        .where(Agent.archived_at.is_not(None))
+        .order_by(Agent.name)
+        .limit(1)
+    )
+    if agent is not None:
+        return f"The agent {agent} is archived."
+    workflow = db.scalar(
+        select(Workflow.name)
+        .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
+        .join(nodes, nodes.c.subworkflow_version_id == WorkflowVersion.id)
+        .where(Workflow.archived_at.is_not(None))
+        .order_by(Workflow.name)
+        .limit(1)
+    )
+    if workflow is not None:
+        return f"The workflow {workflow} is archived."
+    return None
+
+
 def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
     """Load a workflow version and every version it runs, at any depth, with what `load_graph`
     reads, in a fixed number of queries however many nodes, agents and levels it has.
@@ -156,11 +193,12 @@ def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
 def load_graph(db: Session, version_id: int, *, strict: bool = True) -> Graph:
     """A workflow version and every version it runs, at any depth, ready to run.
 
-    Raises `RunError` if an agent version can't run: its agent has been deleted (an older version
-    of a subworkflow can still pin it), or one of its tools can't be built from its stored
-    settings (see `aios.tools.build_tool`). Not `strict` (a run resuming, whose nodes that have
-    run needn't run again), such a node is loaded with the reason instead (`Node.error`), and
-    fails if it runs. A version pinned by several nodes is loaded once.
+    Raises `RunError` if an agent version can't run: one of its tools can't be built from its
+    stored settings (see `aios.tools.build_tool`). An archived agent's still can: what stops a
+    run starting on one is `archived_in_graph`, and one already going runs its node. Not
+    `strict` (a run resuming, whose nodes that have run needn't run again), such a node is
+    loaded with the reason instead (`Node.error`), and fails if it runs. A version pinned by
+    several nodes is loaded once.
     """
     return _build_graph(prefetch_graph(db, version_id), version_id, {}, strict)
 
@@ -180,10 +218,6 @@ def _build_graph(
         pinned = node.agent_version
         agent = pinned.agent
         try:
-            if agent.deleted_at is not None:
-                raise RunError(
-                    f"Agent {agent.name} v{pinned.version} can't run: it has been deleted"
-                )
             try:
                 tools = version_tools(pinned)
             except ToolError as exc:

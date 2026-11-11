@@ -82,13 +82,19 @@ def test_an_agent_of_the_same_name_doesnt_stop_the_assistant_joining(api):
     assert assistant["name"] == f"{NAME} 2"
 
 
-def test_a_deleted_assistant_is_made_again_for_the_next_chat(api):
+def test_an_archived_assistant_joins_the_next_chat_archived_until_unarchived(api):
     first = assistant_of(make_chat(api, "Design"))
-    assert api.delete(f"/api/agents/{first['target_id']}").status_code == 204
+    assert api.post(f"/api/agents/{first['target_id']}/archive").status_code == 200
 
     second = assistant_of(make_chat(api, "Planning"))
-    assert second["target_id"] != first["target_id"]
-    assert second["name"] == NAME
+    assert (second["target_id"], second["name"], second["archived"]) == (
+        first["target_id"],
+        NAME,
+        True,
+    )
+
+    assert api.post(f"/api/agents/{first['target_id']}/unarchive").status_code == 200
+    assert assistant_of(make_chat(api, "Review"))["archived"] is False
 
 
 def test_mentioning_the_assistant_searches_the_chat_owners_documents_and_posts_the_reply(

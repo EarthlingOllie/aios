@@ -24,7 +24,7 @@ from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
 
-SKILL_NAME_INDEX = "uq_skills_organisation_id_name_live"
+SKILL_NAME_INDEX = "uq_skills_organisation_id_name"
 
 
 class SkillIn(BaseModel):
@@ -42,7 +42,7 @@ class SkillSummary(Provenance):
     version: int
     version_id: int
     updated_at: datetime
-    # How many live agents use some version of it (see `skill_uses`).
+    # How many agents that aren't archived use some version of it (see `skill_uses`).
     agent_count: int
 
 
@@ -62,7 +62,7 @@ class SkillVersionOut(SkillVersionSummary):
 
 
 class SkillUsage(BaseModel):
-    """A live agent whose current version uses some version of this skill."""
+    """An agent (not archived) whose current version uses some version of this skill."""
 
     agent_id: int
     agent_name: str
@@ -80,9 +80,11 @@ class SkillOut(Provenance):
 
 
 def get_org_skill(db: Session, org: Organisation, skill_id: int) -> Skill:
-    """The organisation's live skill; a 404 otherwise, as if it didn't exist."""
+    """The organisation's skill that isn't archived; a 404 otherwise, as if it didn't exist.
+    (Archived skills are put away as deleted ones were, until skills are archived in their own
+    right.)"""
     skill = db.get(Skill, skill_id)
-    if skill is None or skill.organisation_id != org.id or skill.deleted_at is not None:
+    if skill is None or skill.organisation_id != org.id or skill.archived_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return skill
 
@@ -94,23 +96,24 @@ def lock_live(
     *,
     read: bool = False,
 ) -> set[int]:
-    """Row-lock these skills, agents or workflows (in id order) and return the ids still live.
+    """Row-lock these skills, agents or workflows (in id order) and return the ids of those
+    that aren't archived ("live").
 
     Saving something that depends on a row (an agent attaching a skill, a workflow running an
-    agent or another workflow) and deleting that row both take this lock, so a delete can't slip
-    in between the save's liveness check and its commit: it either waits for the save (and then
-    sees the usage) or wins, and the save sees the row is gone. A row deleted while we waited for
-    its lock isn't returned: the lock's re-check reads the committed `deleted_at`.
+    agent or another workflow) and archiving that row both take this lock, so an archive can't
+    slip in between the save's check and its commit: it either waits for the save or wins, and
+    the save sees the row is archived. A row archived while we waited for its lock isn't
+    returned: the lock's re-check reads the committed `archived_at`.
 
     `read` takes a share lock instead, for something that only needs the row to stay live (e.g.
-    starting a run). Locks are FOR UPDATE otherwise, so a delete and a save taking the same row
-    wait for each other.
+    starting a run). Locks are FOR UPDATE otherwise, so an archive and a save taking the same
+    row wait for each other.
 
     Lock order, to avoid deadlocks: skills, then agents, then workflows, each in ascending id.
     An agent save locks its skills, then the agent row (here, then again in save_agent_version);
     a workflow save locks the agents it runs, then the workflows it runs together with itself
-    (`aios.api.workflows.lock_graph`), then its own row again in save_workflow_version. A delete
-    locks only the row it deletes. Nothing locks in the other order.
+    (`aios.api.workflows.lock_graph`), then its own row again in save_workflow_version. An
+    archive locks only the row it archives. Nothing locks in the other order.
     """
     ids = sorted(set(ids))
     if not ids:
@@ -118,7 +121,7 @@ def lock_live(
     return set(
         db.scalars(
             select(model.id)
-            .where(model.id.in_(ids), model.deleted_at.is_(None))
+            .where(model.id.in_(ids), model.archived_at.is_(None))
             .order_by(model.id)
             .with_for_update(read=read)
         )
@@ -126,7 +129,7 @@ def lock_live(
 
 
 def lock_live_skills(db: Session, skill_ids: Iterable[int]) -> set[int]:
-    """Row-lock these skills and return the ids still live (see `lock_live`)."""
+    """Row-lock these skills and return the ids not archived (see `lock_live`)."""
     return lock_live(db, Skill, skill_ids)
 
 
@@ -157,7 +160,7 @@ def on_conflict(db: Session, constraint: str, detail: str) -> Iterator[None]:
 
 @contextmanager
 def unique_name(db: Session, what: str, index: str, detail: str | None = None) -> Iterator[None]:
-    """Turn a violation of the live-name unique index `index` inside the block into a 409.
+    """Turn a violation of the name unique index `index` inside the block into a 409.
 
     The 409 says the organisation already has `what` with that name, unless `detail` says
     otherwise (names unique among everyone's, say).
@@ -167,16 +170,17 @@ def unique_name(db: Session, what: str, index: str, detail: str | None = None) -
 
 
 def skill_uses(*columns) -> Select:
-    """`columns` over each use of a skill by a live agent's current version: one row per agent
-    and skill version it pins, joining `Agent`, its current `AgentVersion` and that
-    `SkillVersion`. A skill with such a use is in use, and can't be deleted."""
+    """`columns` over each use of a skill by the current version of an agent that isn't
+    archived: one row per agent and skill version it pins, joining `Agent`, its current
+    `AgentVersion` and that `SkillVersion`. A skill with such a use is in use, and can't be
+    deleted."""
     return (
         select(*columns)
         .select_from(Agent)
         .join(AgentVersion, AgentVersion.id == Agent.current_version_id)
         .join(agent_version_skills, agent_version_skills.c.agent_version_id == AgentVersion.id)
         .join(SkillVersion, SkillVersion.id == agent_version_skills.c.skill_version_id)
-        .where(Agent.deleted_at.is_(None))
+        .where(Agent.archived_at.is_(None))
     )
 
 
@@ -216,6 +220,7 @@ def skill_out(db: Session, skill: Skill) -> SkillOut:
 
 @router.get("/skills", response_model=list[SkillSummary])
 def list_skills(org: CurrentOrganisation, db: DB):
+    """The organisation's skills that aren't archived, by name."""
     uses = (
         skill_uses(SkillVersion.skill_id, func.count(Agent.id.distinct()).label("agents"))
         # Agents pin only their organisation's skills, so this keeps the count to its rows.
@@ -227,7 +232,7 @@ def list_skills(org: CurrentOrganisation, db: DB):
         select(Skill, SkillVersion, func.coalesce(uses.c.agents, 0))
         .join(SkillVersion, SkillVersion.id == Skill.current_version_id)
         .outerjoin(uses, uses.c.skill_id == Skill.id)
-        .where(Skill.organisation_id == org.id, Skill.deleted_at.is_(None))
+        .where(Skill.organisation_id == org.id, Skill.archived_at.is_(None))
         .order_by(Skill.name)
     ).all()
     known = people(db, [i for skill, _, _ in rows for i in (skill.created_by, skill.updated_by)])
@@ -300,9 +305,10 @@ def delete_skill(skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"Remove this skill from these agents first: {names}."
         )
-    # Soft delete: older agent versions may still pin this skill's versions.
-    skill.deleted_at = func.now()
-    skill.deleted_by = user.id
+    # Archived, not deleted: older agent versions may still pin this skill's versions.
+    if skill.archived_at is None:
+        skill.archived_at = func.now()
+        skill.archived_by = user.id
     db.commit()
 
 

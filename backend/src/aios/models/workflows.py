@@ -58,10 +58,10 @@ class Workflow(Base):
     # Where the editor draws each node, by node key: {"key": {"x": 0, "y": 0}}. Presentation
     # only, like the name, so it isn't versioned; nodes without a position are laid out for you.
     layout: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
-    # Soft delete: other workflows' versions pin its versions, so those must outlive it.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Which member deleted it; null once that user is deleted.
-    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # When it was archived, and by which member (null once that user is deleted); both null
+    # while it isn't. Archived rather than deleted: other workflows' versions pin its versions.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -72,15 +72,9 @@ class Workflow(Base):
     )
 
     __table_args__ = (
-        # Names are unique among the organisation's live workflows, so a deleted workflow's name
-        # can be reused.
-        Index(
-            "uq_workflows_organisation_id_name_live",
-            "organisation_id",
-            "name",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
+        # Names are unique among the organisation's workflows, archived ones included: an
+        # archived workflow's name stays reserved.
+        Index("uq_workflows_organisation_id_name", "organisation_id", "name", unique=True),
     )
 
 
@@ -126,10 +120,10 @@ class WorkflowNode(Base):
         Enum(WorkflowNodeKind, name="workflow_node_kind")
     )
     # Exactly one of these is set, matching `kind`. No ON DELETE: agents and workflows are
-    # soft-deleted, so the versions a node pins are never deleted by the API. Only deleting an
-    # organisation removes them, cascading to its agents and workflows alike, so the check is
-    # deferred to commit: by then the nodes pinning them have gone too, whatever order the
-    # cascades ran in.
+    # archived, never deleted, so the versions a node pins are never deleted by the API. Only
+    # deleting an organisation removes them, cascading to its agents and workflows alike, so
+    # the check is deferred to commit: by then the nodes pinning them have gone too, whatever
+    # order the cascades ran in.
     agent_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_versions.id", deferrable=True, initially="DEFERRED"), index=True
     )

@@ -37,8 +37,9 @@ the model's behaviour:
 - A run is pinned to the agent version it started on, so editing an agent mid-conversation
   doesn't change it.
 - Restoring an old version creates a new one with that config; numbers only go up.
-- Skills are soft-deleted (old agent versions still reference their versions), and can't be
-  deleted while an agent's current version uses them.
+- Deleting a skill archives it (old agent versions still reference its versions): it's hidden
+  as a deleted one was, its name stays reserved, and it can't be deleted while the current
+  version of an agent that isn't archived uses it.
 - A skill's page has tabs, like the agent's: Content (when to use it and its instructions), Used
   by (the agents whose current version uses it, with a count) and Versions (with a count). The
   open tab is in the URL (`/skills/12/versions`); a version's page links back to Versions,
@@ -47,11 +48,13 @@ the model's behaviour:
   `agent_id`, `agent_version`, `agent_version_id`, the skill versions and the tools with their
   settings as trace metadata, and the run's thread id, `agent-run-<id>`, as the Langfuse
   session.
-- Agents are soft-deleted too (older workflow versions keep pinning their versions: see
-  [Workflows](workflows.md#versions)). Names are unique among the organisation's live rows, so
-  they can be reused.
-- Saves and deletes lock the rows involved (skills, then agents, then workflows, each by id), so
-  a delete can't race a save that starts using what it deletes.
+- Agents are archived, never deleted (older workflow versions keep pinning their versions: see
+  [Workflows](workflows.md#versions), and their runs are the members' history with them). Names
+  are unique among all the organisation's rows, archived ones included, so an archived item's
+  name stays reserved and unarchiving it never clashes: creating one with an archived agent's
+  name answers 409 "The organisation already has an agent called <name> (archived)."
+- Saves, archives and deletes lock the rows involved (skills, then agents, then workflows, each
+  by id), so an archive can't race a save that starts using what it archives.
 
 **Skills are inlined into the agent's instructions** (base prompt, then each pinned skill's
 description and instructions in a `<skill>` block). That's simple and works well for a handful
@@ -97,13 +100,46 @@ to ground its answers in the results, citing sources. It calls the hybrid search
 plus full-text, fused with Reciprocal Rank Fusion: see [Tools](tools.md#search)) over the
 organisation's documents. It's mentioned and answers like any agent chat member
 (acknowledgement, brief, card and reply: see [Chats](chats.md)). It's listed with the
-organisation's other agents, where it can be edited like one; deleted, a fresh one joins the
-next chat. Chats made before it existed don't get it, but their owner can add it like any
+organisation's other agents, where it can be edited like one, or archived (it stays the
+organisation's one assistant, and new chats still get it). Chats made before it existed don't get it, but their owner can add it like any
 agent.
+
+## Archiving an agent
+
+A member archives an agent from its page in one confirmation, instead of deleting it: nothing is
+lost, and nothing new starts on it. Any member may archive and unarchive, as any member may
+delete; phase 1's roles later give this to editors and admins.
+
+- `POST /api/agents/{id}/archive` sets `archived_at` and `archived_by` (who archived it) and
+  pauses its schedules. It's never refused, whatever uses it, and archiving an archived agent
+  changes nothing. `POST /api/agents/{id}/unarchive` clears both; its schedules stay paused
+  until someone resumes them, so unarchiving doesn't set off a burst of runs. Both answer the
+  agent, which carries its archived fields everywhere (`archived_at`, `archived_by`).
+- `GET /api/agents/{id}/used-by` is what the confirmation shows, read-only
+  (`aios.dependents.used_by`): the live workflows that run it at any depth (with their
+  schedules), its own schedules, the chats it's in (those the member may see) and the data
+  tables it will leave read-only, which stays empty until tables have owners. The workflows and
+  schedules are what the old delete found as dependents.
+- An archived agent starts no new turns. Each start path refuses with 409 "The agent <name> is
+  archived.": a run or a turn started by hand (`POST .../runs`, `POST .../runs/{id}/chat`), a
+  schedule firing (recorded on the schedule as its error), and a workflow run whose pinned graph
+  runs it at any depth (`aios.workflows.archived_in_graph`, which also refuses an archived
+  nested workflow). A mention posts the message, and its invocation fails at once with "The
+  agent <name> is archived", before the handoff, so no model is called.
+- Turns and runs already going aren't checked again: a turn underway finishes, and a workflow
+  run already past its start runs the agent's node.
+- In a chat it stays a member, shown as archived (`archived` on the member), and drops out of
+  mention suggestions (`GET /api/chats/{id}/mentionable`). Unarchiving restores both.
+- `GET /api/agents` leaves archived agents out; `?archived=true` lists only them, which the
+  Agents list's Archived filter shows. The agent's page shows an archived badge and notice, and
+  Unarchive in place of New run.
+
+`make seed` rebuilds development data (see [Development](development.md#seed-data)), so nothing
+was kept for agents, skills or workflows deleted before archiving existed.
 
 ## Deleting an agent
 
-Deleting an agent still deletes its runs, their threads and sandboxes. An agent is deleted only
+Until it's removed, deleting an agent archives it and still deletes its runs, their threads and sandboxes. An agent is deleted only
 once what depends on it is resolved (`aios.dependents`).
 
 `GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or

@@ -543,6 +543,8 @@ def test_a_run_that_cant_be_queued_isnt_left_behind(api, monkeypatch):
 
 
 def test_an_agent_deleted_since_a_subworkflow_version_pinned_it_cant_run(api, queued):
+    # Deleting an agent archives it (until the delete endpoint goes), so the run is refused as
+    # one that runs an archived agent.
     a = agents(api, "retired")
     inner = make_workflow(api, "inner", [agent_node("old", a["retired"])])
     outer = make_workflow(api, "outer", [workflow_node("inner", inner)])
@@ -556,7 +558,7 @@ def test_an_agent_deleted_since_a_subworkflow_version_pinned_it_cant_run(api, qu
     resp = api.post(f"/api/workflows/{outer['id']}/runs", json={"input": "x"})
     assert (resp.status_code, resp.json()["detail"]) == (
         409,
-        "Agent retired v1 can't run: it has been deleted",
+        "The agent retired is archived.",
     )
     assert queued == []
 

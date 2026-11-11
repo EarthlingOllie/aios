@@ -59,6 +59,9 @@ class ChatMemberOut(BaseModel):
     # A user's full name ("First Last").
     name: str
     added_at: datetime
+    # Whether it's an archived agent: still a member, shown as archived, but not offered to
+    # mention (`GET /api/chats/{id}/mentionable`).
+    archived: bool = False
 
 
 class ChatMembersOut(BaseModel):
@@ -108,18 +111,15 @@ def member_out(member: ChatMember) -> ChatMemberOut:
         target_id=target.id,
         name=target.name,
         added_at=member.added_at,
+        archived=target.archived_at is not None,
     )
 
 
 def live_members(chat: Chat) -> list[ChatMember]:
-    """The chat's members, less any agent or workflow since deleted (they're soft-deleted, and
-    their member rows stay): the owner first, the rest as they were added (ids go up with time)."""
-    live = [
-        m
-        for m in chat.members
-        if (m.agent is None or m.agent.deleted_at is None)
-        and (m.workflow is None or m.workflow.deleted_at is None)
-    ]
+    """The chat's members, less any workflow since archived (put away as a deleted one was; its
+    member row stays): the owner first, the rest as they were added (ids go up with time). An
+    archived agent stays a member, shown as archived."""
+    live = [m for m in chat.members if m.workflow is None or m.workflow.archived_at is None]
     return sorted(live, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
 
 

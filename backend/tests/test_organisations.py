@@ -112,7 +112,7 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     assert (agent.organisation_id, agent.created_by) == (organisation_of(second).id, second)
     assert (chat.organisation_id, chat.created_by) == (organisation_of(first).id, first)
     # Nothing else is claimed: who last changed or deleted it isn't known.
-    assert (agent.updated_by, agent.deleted_by) == (None, None)
+    assert (agent.updated_by, agent.archived_by) == (None, None)
 
     # Run again (a user already in an organisation), it makes no second one.
     revision("0030_personal_organisations").backfill(db.connection())

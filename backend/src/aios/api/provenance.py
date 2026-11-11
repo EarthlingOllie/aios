@@ -2,13 +2,14 @@
 
 Everything in an organisation is every member's, so each agent, skill, workflow and schedule
 says which member made it (`created_by`) and which last changed it (`updated_by`), and each
-version which member saved it; a soft-deleted one keeps who deleted it (`deleted_by`, not
-reported: a deleted row isn't served). Each is a user id on the row, null once that user is
-deleted, and reported as the user (`UserOut`), read for a whole list in one query
-(`people`). Each run says which member started it the same way (`started_by`).
+version which member saved it; an archived agent says which member archived it
+(`archived_by`). Each is a user id on the row, null once that user is deleted, and reported as
+the user (`UserOut`), read for a whole list in one query (`people`). Each run says which
+member started it the same way (`started_by`).
 """
 
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 
 from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import Row, select
@@ -29,6 +30,20 @@ class Provenance(BaseModel):
 
     created_by: UserOut | None
     updated_by: UserOut | None
+
+
+class Archived(BaseModel):
+    """When it was archived and by which member: both null while it isn't (the member also null
+    once that user is deleted)."""
+
+    archived_at: datetime | None = None
+    archived_by: UserOut | None = None
+
+
+def archived(row, known: dict[int, UserOut]) -> dict:
+    """`archived_at` and `archived_by` of an agent, skill or workflow, with the member from
+    `known` (see `provenance.people`, which should have been given `row.archived_by`)."""
+    return {"archived_at": row.archived_at, "archived_by": known.get(row.archived_by)}
 
 
 def made_by(org_id: int, user_id: int) -> dict:

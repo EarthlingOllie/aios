@@ -9,8 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
 from sqlalchemy.orm import Session, object_session
 
-from aios.api.provenance import Provenance, UserOut, people, provenance
-from aios.api.skills import lock_live, lock_live_skills
+from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
+from aios.api.skills import lock_live_skills
 from aios.db import DbId
 from aios.models import (
     Agent,
@@ -28,7 +28,7 @@ from aios.tools import (
     validate_tool,
 )
 
-AGENT_NAME_INDEX = "uq_agents_organisation_id_name_live"
+AGENT_NAME_INDEX = "uq_agents_organisation_id_name"
 
 
 class AgentToolIn(BaseModel):
@@ -56,7 +56,7 @@ class AgentSkillOut(BaseModel):
     name: str
     description: str
     version: int
-    # The skill's current version, or None if the skill has since been deleted.
+    # The skill's current version, or None if the skill has since been archived.
     latest_version: int | None
     latest_version_id: int | None
 
@@ -84,7 +84,7 @@ class AgentVersionOut(BaseModel):
     tools: list[AgentToolOut]
 
 
-class AgentSummary(Provenance):
+class AgentSummary(Provenance, Archived):
     id: int
     name: str
     description: str
@@ -100,7 +100,7 @@ class AgentSummary(Provenance):
     updated_at: datetime
 
 
-class AgentOut(Provenance):
+class AgentOut(Provenance, Archived):
     id: int
     name: str
     description: str
@@ -109,25 +109,42 @@ class AgentOut(Provenance):
     current_version: AgentVersionOut
 
 
-def get_org_agent(
-    db: Session, org: Organisation, agent_id: int, *, deleted_ok: bool = False
-) -> Agent:
-    """The organisation's agent (live, unless `deleted_ok`); a 404 otherwise, as if it didn't
-    exist."""
+def get_org_agent(db: Session, org: Organisation, agent_id: int) -> Agent:
+    """The organisation's agent, archived or not; a 404 otherwise, as if it didn't exist."""
     agent = db.get(Agent, agent_id)
-    if (
-        agent is None
-        or agent.organisation_id != org.id
-        or (agent.deleted_at is not None and not deleted_ok)
-    ):
+    if agent is None or agent.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
 
 
+def archived_refusal(kind: str, name: str) -> str:
+    """Why nothing new can start on an archived agent or workflow."""
+    return f"The {kind} {name} is archived."
+
+
+def refuse_if_archived(agent: Agent) -> None:
+    """A 409 if the agent is archived: it starts no new turns."""
+    if agent.archived_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, archived_refusal("agent", agent.name))
+
+
+def lock_agent(db: Session, agent: Agent, *, read: bool = False) -> None:
+    """Row-lock the agent until commit (see `lock_live`), refreshing it, archived or not."""
+    db.execute(
+        select(Agent.id)
+        .where(Agent.id == agent.id)
+        .with_for_update(read=read)
+        .execution_options(populate_existing=True)
+    )
+    db.refresh(agent)
+
+
 def lock_live_agent(db: Session, agent: Agent, *, read: bool = False) -> None:
-    """Row-lock the agent until commit (see `lock_live`); a 404 if it was deleted meanwhile."""
-    if not lock_live(db, Agent, [agent.id], read=read):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    """Row-lock the agent until commit (see `lock_live`); a 409 if it's archived, for something
+    new to start on it. Archiving takes the lock too, so it waits for a start in flight, which
+    then counts as already going."""
+    lock_agent(db, agent, read=read)
+    refuse_if_archived(agent)
 
 
 def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
@@ -151,7 +168,7 @@ def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> li
             .where(
                 SkillVersion.id.in_(ids),
                 Skill.organisation_id == org.id,
-                Skill.deleted_at.is_(None),
+                Skill.archived_at.is_(None),
             )
         )
     }
@@ -162,8 +179,8 @@ def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> li
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each skill can be attached only once"
         )
-    # Lock the skills until commit and re-check they're live, so a concurrent delete either
-    # waits for this save (and then sees the usage) or wins and we reject the attach.
+    # Lock the skills until commit and re-check they aren't archived, so a concurrent archive
+    # either waits for this save or wins and we reject the attach.
     skill_ids = {v.skill_id for v in versions}
     if lock_live_skills(db, skill_ids) != skill_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill version")
@@ -216,7 +233,7 @@ def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) 
     skills = []
     for sv in version.skills:
         skill = sv.skill
-        latest = skill.current_version if skill.deleted_at is None else None
+        latest = skill.current_version if skill.archived_at is None else None
         skills.append(
             AgentSkillOut(
                 skill_id=skill.id,
@@ -244,7 +261,7 @@ def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) 
 
 def agent_out(db: Session, agent: Agent) -> AgentOut:
     version = agent.current_version
-    known = people(db, [agent.created_by, agent.updated_by, version.created_by])
+    known = people(db, [agent.created_by, agent.updated_by, agent.archived_by, version.created_by])
     return AgentOut(
         id=agent.id,
         name=agent.name,
@@ -253,6 +270,7 @@ def agent_out(db: Session, agent: Agent) -> AgentOut:
         updated_at=agent.updated_at,
         current_version=version_out(version, known),
         **provenance(db, agent, known),
+        **archived(agent, known),
     )
 
 

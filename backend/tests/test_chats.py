@@ -444,23 +444,26 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
         assert api.get(f"/api/chats/{private['id']}/mentionable").status_code == 404
 
 
-def test_a_deleted_agent_or_workflow_is_no_longer_a_member(api):
+def test_a_deleted_workflow_is_no_longer_a_member_and_a_deleted_agent_shows_archived(api):
     chat = make_chat(api, "Design")
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
     add(api, chat, "agent", agent)
     add(api, chat, "workflow", workflow)
+    # Deleting an agent archives it (until the delete endpoint goes): it stays a member.
     assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
     assert api.delete(f"/api/workflows/{workflow['id']}").status_code == 204
-    # Only the documents assistant is left of its agents.
     mentionable = api.get(f"/api/chats/{chat['id']}/mentionable").json()
     assert [a["name"] for a in mentionable["agents"]] == ["Documents assistant"]
     assert mentionable["workflows"] == []
     got = api.get(f"/api/chats/{chat['id']}").json()
-    assert [a["name"] for a in got["members"]["agents"]] == ["Documents assistant"]
+    assert [(a["name"], a["archived"]) for a in got["members"]["agents"]] == [
+        ("Documents assistant", False),
+        ("Review", True),
+    ]
     assert got["members"]["workflows"] == []
-    assert got["member_count"] == 2
-    assert api.get("/api/chats").json()[0]["member_count"] == 2
+    assert got["member_count"] == 3
+    assert api.get("/api/chats").json()[0]["member_count"] == 3
 
 
 def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):
@@ -579,9 +582,9 @@ def test_a_mention_of_a_non_member_is_refused(api, other):
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
     add(api, chat, "agent", agent)
-    gone = make_agent(api, "Gone")
-    add(api, chat, "agent", gone)
-    assert api.delete(f"/api/agents/{gone['id']}").status_code == 204
+    gone = make_workflow(api, "Gone")
+    add(api, chat, "workflow", gone)
+    assert api.delete(f"/api/workflows/{gone['id']}").status_code == 204
     for mention in (
         # Exists, but isn't in the chat.
         {"kind": "workflow", "id": workflow["id"]},
@@ -589,7 +592,7 @@ def test_a_mention_of_a_non_member_is_refused(api, other):
         # The agent's id, as another kind.
         {"kind": "workflow", "id": agent["id"]},
         # Was a member, but has since been deleted.
-        {"kind": "agent", "id": gone["id"]},
+        {"kind": "workflow", "id": gone["id"]},
     ):
         resp = api.post(
             f"/api/chats/{chat['id']}/messages", json={"body": "Hi", "mentions": [mention]}
