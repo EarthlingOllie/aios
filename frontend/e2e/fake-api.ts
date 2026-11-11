@@ -98,6 +98,21 @@ type AgentRunRow = AgentRunCounters & {
   turns: TurnRow[];
 };
 
+/** Something an agent remembered, as its Memory tab lists it (`aios.api.agents.memories`). */
+export type MemoryRow = {
+  id: number;
+  agent_id: number;
+  content: string;
+  agent_run_id: number | null;
+  run_title: string | null;
+  turn_id: number | null;
+  chat_id: number | null;
+  chat_name: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: ChatUser | null;
+};
+
 export type TurnRow = {
   id: number;
   invocation_id: number | null;
@@ -608,6 +623,8 @@ export class FakeApi {
   workflowVersions = new Map<number, WorkflowVersionRow>();
   runs = new Map<number, RunRow>();
   agentRuns = new Map<number, AgentRunRow>();
+  /** Agents' memories, by id (`addMemory`). */
+  memories = new Map<number, MemoryRow>();
   /**
    * What depends on each agent, by agent id (none if unset). As on the server, deleting one is
    * refused until each listed run is named to cancel and each workflow to deactivate; a test
@@ -1473,6 +1490,26 @@ export class FakeApi {
     };
     this.agentRuns.set(run.id, run);
     return run;
+  }
+
+  /** Adds something the agent remembered, learned in a run with no chat unless `fields` say. */
+  addMemory(agent: AgentRow, content: string, fields: Partial<MemoryRow> = {}): MemoryRow {
+    const memory: MemoryRow = {
+      id: this.id(),
+      agent_id: agent.id,
+      content,
+      agent_run_id: null,
+      run_title: null,
+      turn_id: null,
+      chat_id: null,
+      chat_name: null,
+      created_at: NOW,
+      updated_at: NOW,
+      updated_by: null,
+      ...fields,
+    };
+    this.memories.set(memory.id, memory);
+    return memory;
   }
 
   /** Adds a turn to the run, on its version; it doesn't change the run's own counters. */
@@ -2999,6 +3036,34 @@ export class FakeApi {
         .map((c) => ({ id: c.id, name: c.name }));
       const tables = this.dataTables.filter((t) => t.owner === agent.id).map((t) => ({ name: t.name }));
       return reply(200, { workflows, triggers, chats, tables });
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/memories$/)) && method === "GET") {
+      const agentId = Number(m[1]);
+      if (!this.agents.has(agentId)) return fail(404, "Not Found");
+      const listed = [...this.memories.values()]
+        .filter((x) => x.agent_id === agentId)
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
+        .map(({ agent_id: _, ...rest }) => ({ ...rest, verdict: "derived" }));
+      return reply(200, listed);
+    }
+    if ((m = path.match(/^\/api\/agents\/(\d+)\/memories\/(\d+)$/)) && (method === "PATCH" || method === "DELETE")) {
+      const refusal = this.refuseUnlessBuilder();
+      if (refusal) return fail(403, refusal);
+      const memory = this.memories.get(Number(m[2]));
+      if (!memory || memory.agent_id !== Number(m[1])) return fail(404, "Not Found");
+      if (method === "DELETE") {
+        this.memories.delete(memory.id);
+        this.addAuditEntry({ action: "memory.deleted", target_kind: "memory", target_id: String(memory.id) });
+        return reply(204);
+      }
+      const content = String(body?.content ?? "").trim();
+      if (!content) return fail(422, "There's nothing to remember: the text is blank.");
+      memory.content = content;
+      memory.updated_at = new Date().toISOString();
+      memory.updated_by = this.me;
+      this.addAuditEntry({ action: "memory.edited", target_kind: "memory", target_id: String(memory.id) });
+      const { agent_id: _, ...rest } = memory;
+      return reply(200, { ...rest, verdict: "derived" });
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/runs\/(\d+)$/)) && method === "DELETE") {
       const run = this.agentRuns.get(Number(m[2]));

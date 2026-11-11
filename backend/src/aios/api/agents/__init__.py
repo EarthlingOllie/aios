@@ -1,5 +1,5 @@
-"""The agents API: agents (`crud`), their versions (`versions`), their runs (`runs`) and a run's
-chat stream (`chat`), mounted as one router.
+"""The agents API: agents (`crud`), their versions (`versions`), their runs (`runs`), a run's
+chat stream (`chat`) and their memories (`memories`), mounted as one router.
 
 Every name is re-exported here, where callers import it. The turn's hooks (`load_chat_context`,
 `_start_turn`, `_end_turn`, `_record_turn` and `ChatDeps`) are read here at call time, so a test
@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from aios.agent import ChatDeps
 from aios.api.agents import chat as _chat
 from aios.api.agents import crud as _crud
+from aios.api.agents import memories as _memories
 from aios.api.agents import runs as _runs
 from aios.api.agents import versions as _versions
 from aios.api.agents.chat import (
@@ -96,6 +97,7 @@ router.include_router(_crud.router)
 router.include_router(_versions.router)
 router.include_router(_runs.router)
 router.include_router(_chat.router)
+router.include_router(_memories.router)
 
 __all__ = [
     "AGENT_NAME_INDEX",

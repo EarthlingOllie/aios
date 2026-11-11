@@ -1323,26 +1323,74 @@ class Chunk(StoreBase):
     )
 
 
+class Memory(StoreBase):
+    """What an agent chose to remember across its runs (`aios.memory`): private to the agent
+    (only it recalls it, through search), visible to people on its Memory tab. Not tied to the
+    conversation it was learned in: where it was learned is kept for people to see, and is
+    cleared, not the memory, when that run or chat goes (retention never prunes memories)."""
+
+    __tablename__ = "memories"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), comment="The agent whose memory it is."
+    )
+    content: Mapped[str] = mapped_column(Text, comment="What it remembers.")
+    normalised: Mapped[str] = mapped_column(
+        Text,
+        comment="Its content in lower case with whitespace collapsed: the same fact once.",
+    )
+    # Where it was learned: the run and turn that wrote it, and the chat that run was in.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), comment="The run that wrote it."
+    )
+    turn_id: Mapped[int | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), comment="The turn that wrote it."
+    )
+    chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id", ondelete="SET NULL"), comment="The chat it was learned in."
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was first learned."
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="When it was last remembered again or edited.",
+    )
+    updated_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The person who last edited it (aios.people.id); null: the agent."
+    )
+
+    __table_args__ = (
+        Index("uq_memories_agent_id_normalised", "agent_id", "normalised", unique=True),
+        {"comment": "Agents' memories: what each chose to remember across its runs"},
+    )
+
+
 class SearchItemKind(enum.StrEnum):
     document_chunk = "document_chunk"
     chat_message = "chat_message"
     run_message = "run_message"
     brief = "brief"
+    memory = "memory"
 
 
 class SearchItem(StoreBase):
     """One item of the search index (`aios.search_index`): a document's chunk, a chat message, a
-    user's or assistant's message of a run, or a handoff's brief. Written in the same transaction
-    as its source row, and deleted with it (a foreign key per kind, of which exactly the kind's
-    is set). Embedded in the background (`aios.search_index.embed_pending`): until then it's
-    found by keyword. No visibility: everyone in the organisation can find every item."""
+    user's or assistant's message of a run, a handoff's brief, or an agent's memory. Written in
+    the same transaction as its source row, and deleted with it (a foreign key per kind, of
+    which exactly the kind's is set). Embedded in the background
+    (`aios.search_index.embed_pending`): until then it's found by keyword. No visibility:
+    everyone in the organisation can find every item but memories, which only their own agent
+    finds (`aios.search.Filters`)."""
 
     __tablename__ = "search_items"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     kind: Mapped[SearchItemKind] = mapped_column(
         Enum(SearchItemKind, name="search_item_kind"),
-        comment="document_chunk, chat_message, run_message or brief.",
+        comment="document_chunk, chat_message, run_message, brief or memory.",
     )
     # Its source row: the one matching its kind.
     chunk_id: Mapped[int | None] = mapped_column(
@@ -1359,6 +1407,9 @@ class SearchItem(StoreBase):
     )
     invocation_id: Mapped[int | None] = mapped_column(
         ForeignKey("invocations.id", ondelete="CASCADE"), comment="A brief's invocation."
+    )
+    memory_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("memories.id", ondelete="CASCADE"), comment="A memory's memory."
     )
     # Extra reference data: a chunk's headings and pages, a run message's role.
     ref: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"), default=dict)
@@ -1396,13 +1447,15 @@ class SearchItem(StoreBase):
             "(kind = 'document_chunk') = (chunk_id IS NOT NULL)"
             " AND (kind = 'chat_message') = (message_id IS NOT NULL)"
             " AND (kind = 'run_message') = (turn_id IS NOT NULL AND position IS NOT NULL)"
-            " AND (kind = 'brief') = (invocation_id IS NOT NULL)",
+            " AND (kind = 'brief') = (invocation_id IS NOT NULL)"
+            " AND (kind::text = 'memory') = (memory_id IS NOT NULL)",
             name="ck_search_items_source",
         ),
         UniqueConstraint("chunk_id", name="uq_search_items_chunk_id"),
         UniqueConstraint("message_id", name="uq_search_items_message_id"),
         UniqueConstraint("turn_id", "position", name="uq_search_items_turn_id_position"),
         UniqueConstraint("invocation_id", name="uq_search_items_invocation_id"),
+        UniqueConstraint("memory_id", name="uq_search_items_memory_id"),
         Index(
             "ix_search_items_embedding_hnsw",
             "embedding",

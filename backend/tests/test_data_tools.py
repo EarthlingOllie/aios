@@ -112,6 +112,7 @@ STORE_TABLES = {
         "documents",
         "embedding_columns",
         "invocations",
+        "memories",
         "people",
         "sandbox_sessions",
         "schema_change_requests",

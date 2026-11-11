@@ -6,15 +6,15 @@
 
 **Blocked by:** [Phase 1 · 06: Unified search across documents, chats and runs](../phase-1-foundation/06-unified-search.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md), [Phase 1 · 15: Jev: classify untrusted content](../phase-1-foundation/15-jev-classification.md), [Phase 2 · 10: Export and import agents and workflows](../phase-2-organisation-experience/10-export-and-import.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `remember` stores a memory. Storing the same text again (ignoring case and whitespace) refreshes the existing memory instead of duplicating it.
-- [ ] `remember` classifies the text with Jev first. Flagged text, or text Jev can't check, is refused and the agent gets an error; nothing is stored. A stored memory has the verdict `derived`.
-- [ ] Recalled memories reach the model wrapped as untrusted.
-- [ ] `remember` refuses over the length limit, or at the per-agent cap, with a clear message. `forget` deletes one of the agent's own memories.
-- [ ] Recall through search returns only the calling agent's memories. A memory learned in one chat, or in a run with no conversation, is recalled in another chat.
-- [ ] The Memory tab lists memories with where each was learned.
-- [ ] Editors and admins edit or delete any memory; other roles can't.
-- [ ] Edits and deletions are recorded in the audit log.
-- [ ] Memories survive archiving and unarchiving, are never pruned by retention, and are left out of exports.
-- [ ] An agent version without `remember` still recalls its existing memories.
+- [x] `remember` stores a memory. Storing the same text again (ignoring case and whitespace) refreshes the existing memory instead of duplicating it.
+- [x] `remember` classifies the text with Jev first. Flagged text, or text Jev can't check, is refused and the agent gets an error; nothing is stored. A stored memory has the verdict `derived`.
+- [x] Recalled memories reach the model wrapped as untrusted.
+- [x] `remember` refuses over the length limit, or at the per-agent cap, with a clear message. `forget` deletes one of the agent's own memories.
+- [x] Recall through search returns only the calling agent's memories. A memory learned in one chat, or in a run with no conversation, is recalled in another chat.
+- [x] The Memory tab lists memories with where each was learned.
+- [x] Editors and admins edit or delete any memory; other roles can't.
+- [x] Edits and deletions are recorded in the audit log.
+- [x] Memories survive archiving and unarchiving, are never pruned by retention, and are left out of exports.
+- [x] An agent version without `remember` still recalls its existing memories.

@@ -3,7 +3,8 @@
 A **tool** is a capability from the tool library that an agent version may use, with its
 settings: web search; search, the hybrid search over everything in the agent's organisation
 (see [Stores](stores.md#the-search-index)), with document search and run history search, the
-same search fixed to documents or to past runs; Run Python; and the data tools. `GET /api/tools`
+same search fixed to documents or to past runs; Remember and Forget, an agent's memory; Run
+Python; and the data tools. `GET /api/tools`
 (`aios.api.tools`) lists the library, with each tool's settings schema. See
 [Agents and skills](agents-and-skills.md) for how agents are given them.
 
@@ -36,16 +37,39 @@ and every item when the query can't be embedded, are found by keyword alone.
   `run_message`, `brief`), a time range (`since`, `until`), a chat, an agent and a result count.
   Its settings are the most results (8 by default, up to 50) and the kinds the agent may find.
   The run searching is left out. Each result has its kind, text and time, with where it's from.
+  It also recalls the agent's own memories (kind `memory`, each with its `memory_id`), whatever
+  its settings: never another agent's.
 - **Document search** (`hybrid_search`, the agent's `search_documents`) and **Run history
   search** (`history_search`, `search_history`) are the same search fixed to their kind, with the
   result shapes they always had: a passage's source, headings and text; a past run's message with
   its run's id, agent, title, when it started and its role (the run searching left out).
 
 The **Search** page runs the search directly (`GET /api/o/{org}/search?q=&limit=&kind=`), with no
-agent in between, over the whole organisation (everyone in it can find everything): each result
+agent in between, over the whole organisation (everyone in it can find everything but agents'
+memories, which are on each agent's Memory tab): each result
 is labelled with its kind and linked to its source (the Data page's documents, the chat, the
 run), can be filtered by kind, and shows how the semantic and keyword branches ranked it behind
 "Show ranking".
+
+## Memory: Remember and Forget
+
+An agent remembers facts across runs (`aios.memory`, the store's `aios.memories`):
+
+- **Remember** (`remember`): Jev checks the text first; flagged text, or text Jev can't check,
+  is refused and nothing is stored. Then it's kept, with the verdict `derived`, with the run,
+  turn and chat it was learned in. The same text again (ignoring case and whitespace) refreshes
+  that memory. Refused over `MEMORY_MAX_CHARS` (2,000 characters) or at
+  `MEMORY_MAX_PER_AGENT` (5,000) memories, saying so.
+- **Forget** (`forget`): deletes one of the agent's own memories by its `memory_id`.
+- **Recall** is the search tool: each memory is a search item of kind `memory`, found only by
+  its own agent, wherever it works (it's indexed with no run or chat), and wrapped as untrusted
+  like every tool result. An agent version without Remember still recalls its memories.
+
+The agent's **Memory** tab (`GET /api/o/{org}/agents/{id}/memories`) lists them with where each
+was learned; editors and admins edit (`PATCH`) and delete (`DELETE .../memories/{memory_id}`)
+them, each recorded in the audit log (`memory.edited`, `memory.deleted`; an agent's `forget` is
+`memory.forgotten`). Memories survive archiving, are never pruned by retention (pruning a run or
+chat only clears where a memory was learned), and are left out of exports.
 
 ## Web search
 

@@ -310,6 +310,25 @@ export type DataRowsQuery = {
 
 /** What the search index holds: a document's passage, a chat message, a past run's message
  * (what the user or the assistant said), or the brief a handoff gave a run. */
+/**
+ * Something an agent remembered (its `remember` tool), as its Memory tab lists it: with where it
+ * was learned (the run and turn that wrote it, and that run's chat, each null if there wasn't
+ * one or it has since been pruned) and who last edited it (null: the agent wrote it as it is).
+ */
+export type AgentMemory = {
+  id: number;
+  content: string;
+  verdict: "derived";
+  agent_run_id: number | null;
+  run_title: string | null;
+  turn_id: number | null;
+  chat_id: number | null;
+  chat_name: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: User | null;
+};
+
 export type SearchKind = "document_chunk" | "chat_message" | "run_message" | "brief";
 
 /** An item found by the unified hybrid (semantic + keyword) search, labelled with its kind and
@@ -1466,6 +1485,15 @@ export const api = {
     request<RunSummary>(`${organisationApi()}/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`${organisationApi()}/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
+  listMemories: (agentId: number) =>
+    request<AgentMemory[]>(`${organisationApi()}/agents/${agentId}/memories`),
+  editMemory: (agentId: number, memoryId: number, content: string) =>
+    request<AgentMemory>(
+      `${organisationApi()}/agents/${agentId}/memories/${memoryId}`,
+      json("PATCH", { content }),
+    ),
+  deleteMemory: (agentId: number, memoryId: number) =>
+    request<void>(`${organisationApi()}/agents/${agentId}/memories/${memoryId}`, { method: "DELETE" }),
   /** The workflows that aren't archived; with `archived`, the archived ones instead. */
   listWorkflows: (archived = false) =>
     request<WorkflowSummary[]>(`${organisationApi()}/workflows${archived ? "?archived=true" : ""}`),

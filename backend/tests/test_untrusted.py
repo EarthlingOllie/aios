@@ -132,6 +132,8 @@ def test_every_trusted_tool_is_one_of_the_platforms_own():
         "search_history",
         "write_data",
         "request_schema_change",
+        "remember",
+        "forget",
     } == tool_checks.TRUSTED
 
 

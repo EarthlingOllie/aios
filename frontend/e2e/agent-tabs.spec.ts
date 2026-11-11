@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, inOrg } from "./fake-api";
 
-/** The agent page splits its detail into tabs: Context, Runs and Versions. */
+/** The agent page splits its detail into tabs: Context, Runs, Memory, Versions and Schedule. */
 
 const tab = (page: Page, name: string | RegExp) => page.getByRole("tab", { name });
 const panel = (page: Page) => page.getByRole("tabpanel");
