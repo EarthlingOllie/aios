@@ -31,18 +31,18 @@ Deleting individual runs stays.
 
 **Blocked by:** [07: Archive agents](07-archive-agents.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] For an archived workflow, starting it by hand, by schedule, by mention, and starting a live
+- [x] For an archived workflow, starting it by hand, by schedule, by mention, and starting a live
   workflow that nests it are each refused with "archived".
-- [ ] An archived workflow's schedules pause, and runs already going finish.
-- [ ] An agent whose current version uses an archived skill still runs, while saving a new agent
+- [x] An archived workflow's schedules pause, and runs already going finish.
+- [x] An agent whose current version uses an archived skill still runs, while saving a new agent
   version that includes the skill is refused.
-- [ ] The agent page shows a notice for a skill it uses that's archived.
-- [ ] "Used by" lists for workflows and skills are shown read-only, and archiving is never
+- [x] The agent page shows a notice for a skill it uses that's archived.
+- [x] "Used by" lists for workflows and skills are shown read-only, and archiving is never
   blocked.
-- [ ] The Workflows and Skills lists have an Archived filter, and their default lists hide
+- [x] The Workflows and Skills lists have an Archived filter, and their default lists hide
   archived items.
-- [ ] No route deletes an agent, skill or workflow. Deleting a single run still works.
-- [ ] The dependents tests and the agent delete browser spec are removed, and the backend suite
+- [x] No route deletes an agent, skill or workflow. Deleting a single run still works.
+- [x] The dependents tests and the agent delete browser spec are removed, and the backend suite
   and full-stack test pass.

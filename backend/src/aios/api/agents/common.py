@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
 from sqlalchemy.orm import Session, object_session
 
 from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
-from aios.api.skills import lock_live_skills
+from aios.api.skills import lock_skills
 from aios.db import DbId
 from aios.models import (
     Agent,
@@ -56,9 +56,13 @@ class AgentSkillOut(BaseModel):
     name: str
     description: str
     version: int
-    # The skill's current version, or None if the skill has since been archived.
+    # The skill's current version, or None if the skill has since been archived (it can't be
+    # added to a new version, so there's nothing to update to).
     latest_version: int | None
     latest_version_id: int | None
+    # Whether the skill has since been archived: versions pinning it still run, but a new
+    # version can't include it.
+    archived: bool
 
 
 class AgentToolOut(BaseModel):
@@ -159,17 +163,16 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
 
 
 def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> list[SkillVersion]:
-    """The requested versions of the organisation's live skills, in request order."""
+    """The requested versions of the organisation's skills, in request order, archived or not:
+    an agent may keep pinning an archived skill as long as it makes no new version with it
+    (`refuse_archived_skills`). Their skills are locked until commit, so a concurrent archive
+    either waits for the save or wins and is seen by it."""
     found = {
         v.id: v
         for v in db.scalars(
             select(SkillVersion)
             .join(Skill, Skill.id == SkillVersion.skill_id)
-            .where(
-                SkillVersion.id.in_(ids),
-                Skill.organisation_id == org.id,
-                Skill.archived_at.is_(None),
-            )
+            .where(SkillVersion.id.in_(ids), Skill.organisation_id == org.id)
         )
     }
     versions = [found[i] for i in ids if i in found]
@@ -179,12 +182,18 @@ def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> li
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each skill can be attached only once"
         )
-    # Lock the skills until commit and re-check they aren't archived, so a concurrent archive
-    # either waits for this save or wins and we reject the attach.
-    skill_ids = {v.skill_id for v in versions}
-    if lock_live_skills(db, skill_ids) != skill_ids:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill version")
+    lock_skills(db, {v.skill_id for v in versions})
     return versions
+
+
+def refuse_archived_skills(skills: list[SkillVersion]) -> None:
+    """A 409 if any of these (locked, `resolve_skill_versions`) skill versions' skill is
+    archived, naming the first: for a new agent version, which can't include one."""
+    for version in skills:
+        if version.skill.archived_at is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"The skill {version.skill.name} is archived."
+            )
 
 
 def resolve_tools(
@@ -243,6 +252,7 @@ def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) 
                 version=sv.version,
                 latest_version=latest.version if latest else None,
                 latest_version_id=latest.id if latest else None,
+                archived=skill.archived_at is not None,
             )
         )
     return AgentVersionOut(

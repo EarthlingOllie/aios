@@ -114,12 +114,11 @@ agent's reason and the exact SQL, and the run takes no new messages until it's d
   provisioning worker's beat (`aios.expire_schema_change_requests`, every
   `SCHEMA_CHANGE_EXPIRY_CHECK_SECONDS`, an hour) marks it `expired`, which counts as a
   rejection, and the chat or workflow run that asked resumes with it.
-- Deleting a chat run, an agent with a waiting chat, or a waiting workflow run marks its
-  pending request `cancelled` instead, and nothing resumes (`schema_changes.cancel`). An agent
-  whose workflow node waits can only be deleted by cancelling that workflow run, which cancels
-  the request the same way (see
-  [deleting an agent](agents-and-skills.md#deleting-an-agent)). Either way the request's
-  notifications are marked read, nothing is applied, and the Data page's history shows it.
+- Deleting a chat run, or a workflow run that waits, marks its pending request `cancelled`
+  instead, and nothing resumes (`schema_changes.cancel`; see
+  [deleting a run](agents-and-skills.md#deleting-a-run)). The request's notifications are marked
+  read, nothing is applied, and the Data page's history shows it. Archiving an agent cancels
+  nothing: a run waiting on it goes on when the request is decided.
 
 Drops don't delete anything straight away: see
 [Stores](stores.md#dropped-tables-and-columns).

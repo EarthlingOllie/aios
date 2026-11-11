@@ -373,13 +373,13 @@ def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsi
         member = {"kind": "agent", "id": agent["id"]}
         resp = api.post(f"/api/chats/{chat['id']}/members", json=member)
         assert resp.status_code == 403
-    # And only the organisation's agents and workflows, that haven't been deleted.
+    # And only the organisation's agents and workflows, that aren't archived.
     with signed_in_as(outsider):
         theirs = make_agent(api, "Theirs")
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": theirs["id"]})
     assert resp.status_code == 422 and resp.json()["detail"] == "Unknown agent"
     gone = make_workflow(api, "Gone")
-    assert api.delete(f"/api/workflows/{gone['id']}").status_code == 204
+    assert api.post(f"/api/workflows/{gone['id']}/archive").status_code == 200
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "workflow", "id": gone["id"]})
     assert resp.status_code == 422 and resp.json()["detail"] == "Unknown workflow"
     assert api.get("/api/chats").json()[0]["member_count"] == 4
@@ -444,15 +444,14 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
         assert api.get(f"/api/chats/{private['id']}/mentionable").status_code == 404
 
 
-def test_a_deleted_workflow_is_no_longer_a_member_and_a_deleted_agent_shows_archived(api):
+def test_an_archived_agent_or_workflow_stays_a_member_shown_archived(api):
     chat = make_chat(api, "Design")
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
     add(api, chat, "agent", agent)
     add(api, chat, "workflow", workflow)
-    # Deleting an agent archives it (until the delete endpoint goes): it stays a member.
-    assert api.delete(f"/api/agents/{agent['id']}").status_code == 204
-    assert api.delete(f"/api/workflows/{workflow['id']}").status_code == 204
+    assert api.post(f"/api/agents/{agent['id']}/archive").status_code == 200
+    assert api.post(f"/api/workflows/{workflow['id']}/archive").status_code == 200
     mentionable = api.get(f"/api/chats/{chat['id']}/mentionable").json()
     assert [a["name"] for a in mentionable["agents"]] == ["Documents assistant"]
     assert mentionable["workflows"] == []
@@ -461,9 +460,9 @@ def test_a_deleted_workflow_is_no_longer_a_member_and_a_deleted_agent_shows_arch
         ("Documents assistant", False),
         ("Review", True),
     ]
-    assert got["members"]["workflows"] == []
-    assert got["member_count"] == 3
-    assert api.get("/api/chats").json()[0]["member_count"] == 3
+    assert [(w["name"], w["archived"]) for w in got["members"]["workflows"]] == [("Digest", True)]
+    assert got["member_count"] == 4
+    assert api.get("/api/chats").json()[0]["member_count"] == 4
 
 
 def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):
@@ -582,17 +581,18 @@ def test_a_mention_of_a_non_member_is_refused(api, other):
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
     add(api, chat, "agent", agent)
-    gone = make_workflow(api, "Gone")
-    add(api, chat, "workflow", gone)
-    assert api.delete(f"/api/workflows/{gone['id']}").status_code == 204
+    removed = make_workflow(api, "Removed")
+    add(api, chat, "workflow", removed)
+    member_id = api.get(f"/api/chats/{chat['id']}").json()["members"]["workflows"][0]["id"]
+    assert api.delete(f"/api/chats/{chat['id']}/members/{member_id}").status_code == 204
     for mention in (
         # Exists, but isn't in the chat.
         {"kind": "workflow", "id": workflow["id"]},
         {"kind": "user", "id": other.id},
         # The agent's id, as another kind.
         {"kind": "workflow", "id": agent["id"]},
-        # Was a member, but has since been deleted.
-        {"kind": "workflow", "id": gone["id"]},
+        # Was a member, but has since been removed.
+        {"kind": "workflow", "id": removed["id"]},
     ):
         resp = api.post(
             f"/api/chats/{chat['id']}/messages", json={"body": "Hi", "mentions": [mention]}

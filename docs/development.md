@@ -81,8 +81,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
     workflows/      workflow graph validation, and running workflows (validation, execution, steps)
-    dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it,
-                    and what uses it, shown before archiving it
+    used_by.py      what uses an agent or workflow (workflows, schedules, chats), shown before archiving it
     seed.py         `make seed`: rebuilds development data from scratch
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run

@@ -38,14 +38,33 @@ Workflows are versioned like agents (`workflows`, `workflow_versions`; see
   versions a new version pins, nor any they pin in turn, may belong to it. Nodes can only pin
   versions that already exist, so nesting is always finite.
 - Agents and workflows are archived, never deleted: older workflow versions keep pinning their
-  versions, and stay readable (a node whose workflow has been archived shows no latest version;
-  an archived agent keeps showing its own). Deleting a workflow archives it, hidden as a deleted
-  one was; it can't be deleted while a live workflow's current version runs it; older versions
-  don't count, but restoring one that runs something since archived is refused. Names are
-  unique among all the organisation's rows, archived ones included, so an archived item's name
-  stays reserved. Deleting an agent that workflows
-  run is covered in [Agents and skills](agents-and-skills.md#deleting-an-agent), with
-  deactivating a workflow.
+  versions, and stay readable, an archived agent or workflow still showing its latest version.
+  A new version can't pin an archived agent or workflow ("Unknown agent version"), and restoring
+  one that runs something since archived is refused. Names are unique among all the
+  organisation's rows, archived ones included, so an archived item's name stays reserved.
+  Archiving an agent is covered in
+  [Agents and skills](agents-and-skills.md#archiving-an-agent).
+
+## Archiving a workflow
+
+A workflow is archived on the same terms as an agent: from its page, in one confirmation that's
+never blocked, by any member.
+
+- `POST /api/o/{org}/workflows/{id}/archive` sets `archived_at` and `archived_by` and pauses its
+  schedules; `/unarchive` clears both and leaves the schedules paused. Both answer the workflow,
+  which carries its archived fields everywhere.
+- `GET /api/o/{org}/workflows/{id}/used-by` is what the confirmation shows, read-only
+  (`aios.used_by.workflow`): the live workflows whose current version nests it at any depth
+  (with their schedules), its own schedules, and the chats it's in.
+- It starts nothing new. Each start path refuses with 409 "The workflow <name> is archived.": a
+  run by hand, a schedule firing (recorded on the schedule), and a run of a live workflow that
+  nests it at any depth (`aios.workflows.archived_in_graph`). A mention posts the message, and
+  its invocation fails at once with "The workflow <name> is archived", before the handoff.
+- Runs already going finish, and its runs, versions and page stay readable.
+- In a chat it stays a member, shown as archived, and drops out of mention suggestions.
+- `GET /api/o/{org}/workflows` leaves archived workflows out; `?archived=true` lists only them,
+  which the Workflows list's Archived filter shows. Its page shows an archived badge and notice,
+  and Unarchive in place of Run. Its graph can still be edited.
 
 ## Runs
 
@@ -73,5 +92,5 @@ Workflows are versioned like agents (`workflows`, `workflow_versions`; see
 - Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a
   tool that has left the library), if an agent or workflow in it is archived ("The agent <name>
   is archived."), or if it has no nodes. A run already going isn't checked again: an agent
-  archived since it started still runs its node. Deleting a run deletes its agent runs; deleting the workflow leaves its runs in the
-  database.
+  archived since it started still runs its node. Deleting a run deletes its agent runs;
+  archiving the workflow leaves its runs.

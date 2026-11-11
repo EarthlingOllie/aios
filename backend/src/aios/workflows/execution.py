@@ -344,12 +344,10 @@ def _end_runs(
     status: WorkflowRunStatus,
     output: str | None,
     error: str | None,
-    *,
-    waiting_too: bool = False,
 ) -> None:
     """End the runs matching `where` that haven't ended, and fail their steps still running.
-    A waiting run is left be (it isn't the worker's to end) unless `waiting_too`."""
-    going = [s for s in NOT_ENDED if waiting_too or s != WorkflowRunStatus.waiting]
+    A waiting run is left be (it isn't the worker's to end)."""
+    going = [s for s in NOT_ENDED if s != WorkflowRunStatus.waiting]
     waited = func.coalesce(func.extract("epoch", func.now() - WorkflowRun.waiting_since), 0)
     ended = db.scalars(
         update(WorkflowRun)
@@ -387,22 +385,6 @@ def _end_runs(
             finished_at=func.now(),
             waiting_on_request_id=None,
         )
-    )
-
-
-def cancel_runs(db: Session, run_ids: Sequence[int], error: str) -> None:
-    """Stop these runs, however far they've got: queued, running or waiting. Each fails with
-    `error`, its steps still going fail, and its requests are closed out (`close_requests`), so
-    nothing resumes it. A worker running one finds it ended at its next beat and stops it
-    (`_Heartbeat`), and starts no step after (`_start_step` needs the run). In the caller's
-    transaction."""
-    _end_runs(
-        db,
-        [WorkflowRun.id.in_(run_ids)],
-        WorkflowRunStatus.failed,
-        None,
-        error,
-        waiting_too=True,
     )
 
 

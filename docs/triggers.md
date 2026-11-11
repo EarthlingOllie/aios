@@ -24,10 +24,11 @@ schedule's run records its schedule rather than a member.
 - Pausing or editing a schedule that has just been claimed, before its run has started, drops
   that firing (it was for the old settings); the trigger row is locked while the run is created,
   so an edit racing it either drops it or waits and lets the started run finish.
-- Deleting an agent or a workflow deletes its schedules. Archiving an agent pauses them, and
-  unarchiving leaves them paused; a schedule firing for an archived agent fails with "The agent
-  <name> is archived.". Cron parsing is `cronsim`'s, wrapped in
-  `aios.cron`.
+- Archiving an agent or a workflow pauses its schedules, and unarchiving leaves them paused; a
+  schedule firing for an archived one fails with "The agent <name> is archived." (or "The
+  workflow <name> is archived."). A schedule for an archived agent or workflow can only be made
+  or changed while paused: turning one on answers 409 with the same. Cron parsing is
+  `cronsim`'s, wrapped in `aios.cron`.
 
 ## The scheduler
 

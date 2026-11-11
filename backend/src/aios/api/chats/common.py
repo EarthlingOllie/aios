@@ -59,8 +59,8 @@ class ChatMemberOut(BaseModel):
     # A user's full name ("First Last").
     name: str
     added_at: datetime
-    # Whether it's an archived agent: still a member, shown as archived, but not offered to
-    # mention (`GET /api/chats/{id}/mentionable`).
+    # Whether it's an archived agent or workflow: still a member, shown as archived, but not
+    # offered to mention (`GET /api/chats/{id}/mentionable`).
     archived: bool = False
 
 
@@ -115,17 +115,15 @@ def member_out(member: ChatMember) -> ChatMemberOut:
     )
 
 
-def live_members(chat: Chat) -> list[ChatMember]:
-    """The chat's members, less any workflow since archived (put away as a deleted one was; its
-    member row stays): the owner first, the rest as they were added (ids go up with time). An
-    archived agent stays a member, shown as archived."""
-    live = [m for m in chat.members if m.workflow is None or m.workflow.archived_at is None]
-    return sorted(live, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
+def ordered_members(chat: Chat) -> list[ChatMember]:
+    """The chat's members: the owner first, the rest as they were added (ids go up with time).
+    An archived agent or workflow stays a member, shown as archived."""
+    return sorted(chat.members, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
 
 
 def members_out(chat: Chat) -> ChatMembersOut:
     by_kind: dict[ChatMemberKind, list[ChatMemberOut]] = {kind: [] for kind in ChatMemberKind}
-    for member in live_members(chat):
+    for member in ordered_members(chat):
         by_kind[member.kind].append(member_out(member))
     return ChatMembersOut(
         users=by_kind[ChatMemberKind.user],
@@ -161,7 +159,7 @@ def chat_out(db: Session, chat: Chat, user_id: int) -> ChatOut:
     member = user_member(chat, user_id)
     return ChatOut(
         **chat_summary(
-            db, chat, len(live_members(chat)), member.role if member else None
+            db, chat, len(ordered_members(chat)), member.role if member else None
         ).model_dump(),
         members=members_out(chat),
     )

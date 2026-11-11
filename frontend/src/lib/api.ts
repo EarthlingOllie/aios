@@ -206,7 +206,7 @@ export type SearchHit = {
   lexical_rank: number | null;
 };
 
-export type SkillSummary = Provenance & {
+export type SkillSummary = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -233,14 +233,14 @@ export type SkillVersion = SkillVersionSummary & {
   content: string;
 };
 
-export type Skill = Provenance & {
+export type Skill = Provenance & Archived & {
   id: number;
   name: string;
   created_at: string;
   updated_at: string;
   current_version: SkillVersion;
   /** Agents whose current version uses some version of this skill. */
-  agents: { agent_id: number; agent_name: string; agent_version: number; skill_version: number }[];
+  agents: SkillUsage[];
 };
 
 export type SkillInput = { name: string; description: string; content: string; note?: string };
@@ -251,9 +251,13 @@ export type AgentSkill = {
   name: string;
   description: string;
   version: number;
-  /** The skill's current version; null if the skill has been deleted. */
+  /** The skill's current version; null if the skill has been archived (there's nothing to
+   * update to: a new agent version can't include it). */
   latest_version: number | null;
   latest_version_id: number | null;
+  /** The skill has since been archived: versions pinning it still run, but a new version can't
+   * include it. */
+  archived: boolean;
 };
 
 /** A JSON schema property, as Pydantic emits them for tool settings. */
@@ -314,7 +318,7 @@ export type AgentVersion = {
   tools: AgentTool[];
 };
 
-/** When an agent was archived and by whom: both null while it isn't. */
+/** When an agent, skill or workflow was archived and by whom: both null while it isn't. */
 export type Archived = {
   archived_at: string | null;
   archived_by: User | null;
@@ -550,7 +554,7 @@ export type WorkflowVersion = {
   edges: WorkflowEdge[];
 };
 
-export type WorkflowSummary = Provenance & {
+export type WorkflowSummary = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -562,7 +566,7 @@ export type WorkflowSummary = Provenance & {
   contains: number[];
 };
 
-export type Workflow = Provenance & {
+export type Workflow = Provenance & Archived & {
   id: number;
   name: string;
   description: string;
@@ -704,8 +708,8 @@ export type TriggerInput = {
 
 export type SchedulePreview = { description: string; next_runs: string[] };
 
-/** A schedule that would start runs of an agent, or of a workflow that runs it. */
-export type DependentTrigger = {
+/** A schedule that starts runs of something an archive confirmation lists. */
+export type UsedByTrigger = {
   id: number;
   enabled: boolean;
   cron: string;
@@ -714,62 +718,43 @@ export type DependentTrigger = {
   next_run_at: string | null;
 };
 
-/** A schema change request a run that depends on an agent waits on. */
-export type DependentRequest = { id: string; summary: string; status: SchemaChangeStatus };
-
-/** What depends on an agent: what deleting it would cut off (GET /api/agents/{id}/dependents). */
-export type AgentDependents = {
-  /** Its chat runs still going: waiting on a schema change request, or with a turn underway. */
-  agent_runs: {
-    id: number;
-    title: string | null;
-    waiting: boolean;
-    running: boolean;
-    trigger_id: number | null;
-    updated_at: string;
-    requests: DependentRequest[];
-  }[];
-  /** Workflow runs still going (queued, running or waiting) that run it, at any depth. */
-  workflow_runs: {
-    id: number;
-    workflow_id: number;
-    workflow_name: string;
-    status: WorkflowRunStatus;
-    created_at: string;
-    /** Its agent nodes waiting on a request, by path ("review/critic"). */
-    waiting_nodes: string[];
-    requests: DependentRequest[];
-  }[];
-  /** Live workflows whose current version runs it, directly or through a nested workflow. */
-  workflows: {
-    id: number;
-    name: string;
-    version: number;
-    direct: boolean;
-    triggers: DependentTrigger[];
-  }[];
-  /** Its own schedules, deleted with it. */
-  triggers: DependentTrigger[];
+/** A live workflow whose current version runs an agent or nests a workflow, at any depth. */
+export type UsedByWorkflow = {
+  id: number;
+  name: string;
+  version: number;
+  /** Whether one of its own nodes does, rather than a nested workflow's. */
+  direct: boolean;
+  /** Its schedules. */
+  triggers: UsedByTrigger[];
 };
 
 /** What uses an agent, as its archive confirmation shows it (GET /api/agents/{id}/used-by). */
 export type AgentUsedBy = {
   /** Live workflows that run it at any depth, with their schedules. */
-  workflows: AgentDependents["workflows"];
+  workflows: UsedByWorkflow[];
   /** Its own schedules, which archiving pauses. */
-  triggers: DependentTrigger[];
+  triggers: UsedByTrigger[];
   /** The chats it's a member of. */
   chats: { id: number; name: string }[];
   /** The data tables it will leave read-only: none until tables have owners. */
   tables: { name: string }[];
 };
 
-/** How to resolve what depends on an agent as it's deleted (DELETE /api/agents/{id}). */
-export type AgentDeleteResolutions = {
-  cancel_agent_runs: number[];
-  cancel_workflow_runs: number[];
-  deactivate_workflows: number[];
+/** What uses a workflow, as its archive confirmation shows it (GET /api/workflows/{id}/used-by). */
+export type WorkflowUsedBy = Omit<AgentUsedBy, "tables">;
+
+/** An agent whose current version uses some version of a skill. */
+export type SkillUsage = {
+  agent_id: number;
+  agent_name: string;
+  agent_version: number;
+  skill_version: number;
 };
+
+/** What uses a skill, as its archive confirmation shows it (GET /api/skills/{id}/used-by). */
+export type SkillUsedBy = { agents: SkillUsage[] };
+
 export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
 /** The kinds of member that aren't users: the organisation's agents and workflows. */
@@ -787,7 +772,7 @@ export type ChatMember = {
   /** A user's full name ("First Last"). */
   name: string;
   added_at: string;
-  /** An archived agent: still a member, but not offered to mention. */
+  /** An archived agent or workflow: still a member, but not offered to mention. */
   archived: boolean;
 };
 
@@ -1094,12 +1079,17 @@ export const api = {
       `${organisationApi()}/data/tables/${encodeURIComponent(table)}/value?${new URLSearchParams({ row, column })}`,
     ),
 
-  listSkills: () => request<SkillSummary[]>(`${organisationApi()}/skills`),
+  /** The skills that aren't archived; with `archived`, the archived ones instead. */
+  listSkills: (archived = false) =>
+    request<SkillSummary[]>(`${organisationApi()}/skills${archived ? "?archived=true" : ""}`),
   getSkill: (id: number) => request<Skill>(`${organisationApi()}/skills/${id}`),
   createSkill: (body: SkillInput) => request<Skill>(`${organisationApi()}/skills`, json("POST", body)),
   updateSkill: (id: number, body: SkillInput) =>
     request<Skill>(`${organisationApi()}/skills/${id}`, json("PUT", body)),
-  deleteSkill: (id: number) => request<void>(`${organisationApi()}/skills/${id}`, { method: "DELETE" }),
+  archiveSkill: (id: number) => request<Skill>(`${organisationApi()}/skills/${id}/archive`, { method: "POST" }),
+  unarchiveSkill: (id: number) =>
+    request<Skill>(`${organisationApi()}/skills/${id}/unarchive`, { method: "POST" }),
+  getSkillUsedBy: (id: number) => request<SkillUsedBy>(`${organisationApi()}/skills/${id}/used-by`),
   listSkillVersions: (id: number) =>
     request<SkillVersionSummary[]>(`${organisationApi()}/skills/${id}/versions`),
   getSkillVersion: (id: number, version: number) =>
@@ -1118,13 +1108,6 @@ export const api = {
   createAgent: (body: AgentInput) => request<Agent>(`${organisationApi()}/agents`, json("POST", body)),
   updateAgent: (id: number, body: AgentInput) =>
     request<Agent>(`${organisationApi()}/agents/${id}`, json("PUT", body)),
-  getAgentDependents: (id: number) => request<AgentDependents>(`${organisationApi()}/agents/${id}/dependents`),
-  /** Refused (409, see `parseDeleteRefusal`) until what depends on it is resolved. */
-  deleteAgent: (id: number, resolutions?: AgentDeleteResolutions) =>
-    request<void>(
-      `${organisationApi()}/agents/${id}`,
-      resolutions ? json("DELETE", resolutions) : { method: "DELETE" },
-    ),
   listAgentVersions: (id: number) =>
     request<AgentVersionSummary[]>(`${organisationApi()}/agents/${id}/versions`),
   getAgentVersion: (id: number, version: number) =>
@@ -1138,16 +1121,23 @@ export const api = {
     request<RunSummary>(`${organisationApi()}/agents/${agentId}/runs`, { method: "POST" }),
   deleteRun: (agentId: number, runId: number) =>
     request<void>(`${organisationApi()}/agents/${agentId}/runs/${runId}`, { method: "DELETE" }),
-  listWorkflows: () => request<WorkflowSummary[]>(`${organisationApi()}/workflows`),
+  /** The workflows that aren't archived; with `archived`, the archived ones instead. */
+  listWorkflows: (archived = false) =>
+    request<WorkflowSummary[]>(`${organisationApi()}/workflows${archived ? "?archived=true" : ""}`),
   getWorkflow: (id: number) => request<Workflow>(`${organisationApi()}/workflows/${id}`),
   createWorkflow: (body: WorkflowInput) =>
     request<Workflow>(`${organisationApi()}/workflows`, json("POST", body)),
   updateWorkflow: (id: number, body: WorkflowInput) =>
     request<Workflow>(`${organisationApi()}/workflows/${id}`, json("PUT", body)),
-  deleteWorkflow: (id: number) => request<void>(`${organisationApi()}/workflows/${id}`, { method: "DELETE" }),
+  archiveWorkflow: (id: number) =>
+    request<Workflow>(`${organisationApi()}/workflows/${id}/archive`, { method: "POST" }),
+  unarchiveWorkflow: (id: number) =>
+    request<Workflow>(`${organisationApi()}/workflows/${id}/unarchive`, { method: "POST" }),
+  getWorkflowUsedBy: (id: number) =>
+    request<WorkflowUsedBy>(`${organisationApi()}/workflows/${id}/used-by`),
   listWorkflowVersions: (id: number) =>
     request<WorkflowVersionSummary[]>(`${organisationApi()}/workflows/${id}/versions`),
-  // Also a deleted workflow's versions, which a past run's subworkflow node still pins.
+  // Also an archived workflow's versions, which a past run's subworkflow node still pins.
   getWorkflowVersion: (id: number, version: number) =>
     request<WorkflowVersion>(`${organisationApi()}/workflows/${id}/versions/${version}`),
   restoreWorkflowVersion: (id: number, version: number) =>

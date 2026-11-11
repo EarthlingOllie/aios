@@ -1,14 +1,15 @@
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
+from aios.api.provenance import Archived, Provenance, UserOut, archived, made_by, people, provenance
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
@@ -35,7 +36,7 @@ class SkillIn(BaseModel):
     note: str | None = None
 
 
-class SkillSummary(Provenance):
+class SkillSummary(Provenance, Archived):
     id: int
     name: str
     description: str
@@ -70,21 +71,27 @@ class SkillUsage(BaseModel):
     skill_version: int
 
 
-class SkillOut(Provenance):
+class SkillOut(Provenance, Archived):
     id: int
     name: str
     created_at: datetime
     updated_at: datetime
     current_version: SkillVersionOut
+    # What uses it (as `GET .../used-by` lists it).
+    agents: list[SkillUsage]
+
+
+class SkillUsedBy(BaseModel):
+    """What uses a skill, as its archive confirmation shows it: the agents whose current version
+    uses some version of it, which keep running on it once it's archived."""
+
     agents: list[SkillUsage]
 
 
 def get_org_skill(db: Session, org: Organisation, skill_id: int) -> Skill:
-    """The organisation's skill that isn't archived; a 404 otherwise, as if it didn't exist.
-    (Archived skills are put away as deleted ones were, until skills are archived in their own
-    right.)"""
+    """The organisation's skill, archived or not; a 404 otherwise, as if it didn't exist."""
     skill = db.get(Skill, skill_id)
-    if skill is None or skill.organisation_id != org.id or skill.archived_at is not None:
+    if skill is None or skill.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return skill
 
@@ -128,9 +135,21 @@ def lock_live(
     )
 
 
-def lock_live_skills(db: Session, skill_ids: Iterable[int]) -> set[int]:
-    """Row-lock these skills and return the ids not archived (see `lock_live`)."""
-    return lock_live(db, Skill, skill_ids)
+def lock_skills(db: Session, skill_ids: Iterable[int]) -> list[Skill]:
+    """Row-lock these skills, archived or not, in id order (see `lock_live`), refreshing them,
+    so whether each is archived is as committed."""
+    ids = sorted(set(skill_ids))
+    if not ids:
+        return []
+    return list(
+        db.scalars(
+            select(Skill)
+            .where(Skill.id.in_(ids))
+            .order_by(Skill.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
 
 
 def get_skill_version(db: Session, skill: Skill, number: int) -> SkillVersion:
@@ -172,8 +191,7 @@ def unique_name(db: Session, what: str, index: str, detail: str | None = None) -
 def skill_uses(*columns) -> Select:
     """`columns` over each use of a skill by the current version of an agent that isn't
     archived: one row per agent and skill version it pins, joining `Agent`, its current
-    `AgentVersion` and that `SkillVersion`. A skill with such a use is in use, and can't be
-    deleted."""
+    `AgentVersion` and that `SkillVersion`: what uses the skill."""
     return (
         select(*columns)
         .select_from(Agent)
@@ -206,7 +224,7 @@ def version_summary(
 
 def skill_out(db: Session, skill: Skill) -> SkillOut:
     version = skill.current_version
-    known = people(db, [skill.created_by, skill.updated_by, version.created_by])
+    known = people(db, [skill.created_by, skill.updated_by, skill.archived_by, version.created_by])
     return SkillOut(
         id=skill.id,
         name=skill.name,
@@ -215,12 +233,18 @@ def skill_out(db: Session, skill: Skill) -> SkillOut:
         current_version=version_summary(version, known, SkillVersionOut),
         agents=skill_usage(db, skill.id),
         **provenance(db, skill, known),
+        **archived(skill, known),
     )
 
 
 @router.get("/skills", response_model=list[SkillSummary])
-def list_skills(org: CurrentOrganisation, db: DB):
-    """The organisation's skills that aren't archived, by name."""
+def list_skills(
+    org: CurrentOrganisation,
+    db: DB,
+    archived_only: Annotated[bool, Query(alias="archived")] = False,
+):
+    """The organisation's skills that aren't archived, by name; with `archived`, the archived
+    ones instead."""
     uses = (
         skill_uses(SkillVersion.skill_id, func.count(Agent.id.distinct()).label("agents"))
         # Agents pin only their organisation's skills, so this keeps the count to its rows.
@@ -232,10 +256,13 @@ def list_skills(org: CurrentOrganisation, db: DB):
         select(Skill, SkillVersion, func.coalesce(uses.c.agents, 0))
         .join(SkillVersion, SkillVersion.id == Skill.current_version_id)
         .outerjoin(uses, uses.c.skill_id == Skill.id)
-        .where(Skill.organisation_id == org.id, Skill.archived_at.is_(None))
+        .where(
+            Skill.organisation_id == org.id,
+            Skill.archived_at.is_not(None) if archived_only else Skill.archived_at.is_(None),
+        )
         .order_by(Skill.name)
     ).all()
-    known = people(db, [i for skill, _, _ in rows for i in (skill.created_by, skill.updated_by)])
+    known = people(db, [i for s, _, _ in rows for i in (s.created_by, s.updated_by, s.archived_by)])
     return [
         SkillSummary(
             id=skill.id,
@@ -246,6 +273,7 @@ def list_skills(org: CurrentOrganisation, db: DB):
             updated_at=skill.updated_at,
             agent_count=agents,
             **provenance(db, skill, known),
+            **archived(skill, known),
         )
         for skill, v, agents in rows
     ]
@@ -293,23 +321,38 @@ def update_skill(
     return skill_out(db, skill)
 
 
-@router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_skill(skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
+@router.post("/skills/{skill_id}/archive", response_model=SkillOut)
+def archive_skill(skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Archive the skill: it can't be added to a new agent version. Never refused, even while
+    agents use it (`GET .../used-by`): the versions that pin it keep running on it. Archiving
+    an archived skill changes nothing."""
     skill = get_org_skill(db, org, skill_id)
-    # Hold the row lock across the usage check and the delete; agent saves take it too.
-    if not lock_live_skills(db, [skill.id]):
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    usage = skill_usage(db, skill.id)
-    if usage:
-        names = ", ".join(u.agent_name for u in usage)
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Remove this skill from these agents first: {names}."
-        )
-    # Archived, not deleted: older agent versions may still pin this skill's versions.
+    # Agent saves lock the skills they attach (`resolve_skill_versions`), so one in flight is
+    # waited for, or sees this archive.
+    lock_skills(db, [skill.id])
     if skill.archived_at is None:
         skill.archived_at = func.now()
         skill.archived_by = user.id
+        db.commit()
+    return skill_out(db, skill)
+
+
+@router.post("/skills/{skill_id}/unarchive", response_model=SkillOut)
+def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB):
+    """Bring the skill back: agent versions can include it again."""
+    skill = get_org_skill(db, org, skill_id)
+    lock_skills(db, [skill.id])
+    skill.archived_at = None
+    skill.archived_by = None
     db.commit()
+    return skill_out(db, skill)
+
+
+@router.get("/skills/{skill_id}/used-by", response_model=SkillUsedBy)
+def get_skill_used_by(skill_id: DbId, org: CurrentOrganisation, db: DB):
+    """What uses the skill, for the archive confirmation to show: read-only, as archiving is
+    never refused."""
+    return SkillUsedBy(agents=skill_usage(db, get_org_skill(db, org, skill_id).id))
 
 
 @router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])

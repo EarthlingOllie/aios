@@ -100,10 +100,8 @@ def _start_step(
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
     agent run, or wins and this fails (a `RunError`), leaving no agent run behind. Nor does a
-    node start once the run has ended without it (cancelled, say: `cancel_runs`): the run's row
-    is share-locked, so an end being committed is waited for and then seen. The agent is locked
-    first, as deleting it locks the agent and then ends its runs, so the two queue rather than
-    deadlock (and a run the delete ended starts no node).
+    node start once the run has ended without it: the run's row is share-locked, so an end being
+    committed is waited for and then seen.
     """
     with SessionLocal() as db:
         live = node.agent is not None

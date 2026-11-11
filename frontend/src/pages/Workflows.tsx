@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useBlocker, useNavigate, useOutletContext, useParams } from "react-router";
-import { MessagesSquare, Pencil, Play, Trash2 } from "lucide-react";
+import {
+  Link,
+  useBlocker,
+  useNavigate,
+  useOutletContext,
+  useParams,
+  useSearchParams,
+} from "react-router";
+import { Archive, ArchiveRestore, MessagesSquare, Pencil, Play } from "lucide-react";
 
 import {
   DetailPage,
@@ -15,6 +22,7 @@ import {
   usePoll,
   type ListContext,
 } from "@/components/crud";
+import { WorkflowArchiveDialog } from "@/components/ArchiveDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,20 +52,30 @@ import {
   type ListSort,
 } from "@/lib/list-filter";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
+import { ArchivedBadge } from "@/pages/Agents";
 
 const WORKFLOW_FILTERS: ListFilterGroup<WorkflowSummary>[] = [
   {
     param: "filter",
     label: "Show",
     all: "All",
-    options: [{ key: "empty", label: "Empty", test: (workflow) => workflow.node_count === 0 }],
+    options: [
+      { key: "empty", label: "Empty", test: (workflow) => workflow.node_count === 0 },
+      // The list is loaded from the archived workflows for this one (`WorkflowsSection`); the
+      // others narrow the default list, which leaves archived workflows out.
+      { key: "archived", label: "Archived", test: (workflow) => workflow.archived_at !== null },
+    ],
   },
 ];
 
 const WORKFLOW_SORTS: ListSort<WorkflowSummary>[] = [NAME_SORT, UPDATED_SORT];
 
 export function WorkflowsSection() {
-  const { data, error, reload } = useLoad(api.listWorkflows);
+  const [params] = useSearchParams();
+  const archived = params.get("filter") === "archived";
+  const { data, error, reload } = useLoad(
+    useCallback(() => api.listWorkflows(archived), [archived]),
+  );
   return (
     <MasterDetail
       title="Workflows"
@@ -73,6 +91,7 @@ export function WorkflowsSection() {
         <>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate font-medium">{workflow.name}</span>
+            {workflow.archived_at && <ArchivedBadge />}
             <VersionBadge version={workflow.version} />
           </div>
           <div className="text-muted-foreground truncate text-xs">
@@ -152,6 +171,7 @@ function WorkflowDetailView({ id }: { id: number }) {
   // The input for a new run, while the form for one is open.
   const [runInput, setRunInput] = useState<string>();
   const [starting, setStarting] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   // Keep the list's statuses current while any run is still going, as the run page does (less
   // often while those left only wait for the user).
@@ -168,13 +188,17 @@ function WorkflowDetailView({ id }: { id: number }) {
   const w = workflow.data;
   const current = w.current_version;
 
-  const onDelete = async () => {
-    if (!window.confirm(`Delete the workflow “${w.name}” and its versions?`)) return;
+  const onArchived = async () => {
+    setArchiving(false);
+    setRunInput(undefined);
+    await Promise.all([workflow.reload(), reloadList()]);
+  };
+
+  const onUnarchive = async () => {
     setActionError(undefined);
     try {
-      await api.deleteWorkflow(id);
-      await reloadList();
-      navigate(listHref("/workflows"));
+      await api.unarchiveWorkflow(id);
+      await Promise.all([workflow.reload(), reloadList()]);
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -200,6 +224,7 @@ function WorkflowDetailView({ id }: { id: number }) {
       title={
         <span className="flex items-center gap-2">
           {w.name} <VersionBadge version={current.version} />
+          {w.archived_at && <ArchivedBadge />}
         </span>
       }
       subtitle={
@@ -210,27 +235,51 @@ function WorkflowDetailView({ id }: { id: number }) {
       }
       actions={
         <>
-          <Button
-            size="sm"
-            onClick={() => setRunInput(runInput === undefined ? "" : undefined)}
-            disabled={current.nodes.length === 0}
-          >
-            <Play />
-            Run
-          </Button>
+          {w.archived_at ? (
+            <Button size="sm" onClick={onUnarchive}>
+              <ArchiveRestore />
+              Unarchive
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => setRunInput(runInput === undefined ? "" : undefined)}
+              disabled={current.nodes.length === 0}
+            >
+              <Play />
+              Run
+            </Button>
+          )}
           <Button asChild variant="outline" size="sm">
             <Link to={listHref(`/workflows/${id}/edit`)}>
               <Pencil />
               Edit
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={onDelete} aria-label="Delete workflow">
-            <Trash2 />
-          </Button>
+          {!w.archived_at && (
+            <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
+              <Archive />
+              Archive
+            </Button>
+          )}
         </>
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      {w.archived_at && (
+        <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
+          This workflow is archived{w.archived_by ? ` by ${w.archived_by.name}` : ""} on{" "}
+          {formatDate(w.archived_at)}. It starts nothing new until it's unarchived, nor does a
+          workflow that nests it; its schedules stay paused until someone resumes them.
+        </p>
+      )}
+      {archiving && (
+        <WorkflowArchiveDialog
+          item={w}
+          onClose={() => setArchiving(false)}
+          onArchived={onArchived}
+        />
+      )}
       {runInput !== undefined && (
         <form className="flex flex-col gap-2 rounded-md border p-4" onSubmit={onStartRun}>
           <label htmlFor="run-input" className="text-sm font-medium">

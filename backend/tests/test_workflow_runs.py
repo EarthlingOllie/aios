@@ -463,22 +463,21 @@ def test_deleting_a_run_deletes_its_agent_runs(api, db, queued, monkeypatch):
     assert api.get(f"/api/agents/{a['one']['id']}/runs").json() == []
 
 
-def test_deleting_a_workflow_or_agent_leaves_the_runs(api, db, queued):
-    a = agents(api, "gone")
-    wf = make_workflow(api, "flow", [agent_node("gone", a["gone"])])
+def test_archiving_a_workflow_or_agent_leaves_the_runs(api, queued):
+    a = agents(api, "retired")
+    wf = make_workflow(api, "flow", [agent_node("retired", a["retired"])])
     out = run(api, queued, wf)
 
-    # Soft-deleting the workflow keeps its runs; its agent can then go, taking its agent runs
-    # with it, and the step stays without one.
-    assert api.delete(f"/api/workflows/{wf['id']}").status_code == 204
-    assert api.delete(f"/api/agents/{a['gone']['id']}").status_code == 204
-    db.expire_all()
-    run_row = db.get(WorkflowRun, out["id"])
-    assert run_row is not None
-    step = db.get(WorkflowRunStep, out["steps"][0]["id"])
-    assert (step.output, step.agent_run_id) == ("gone(x)", None)
-    # The workflow itself is gone from the API.
-    assert api.get(f"/api/workflows/{wf['id']}/runs").status_code == 404
+    # Archiving the workflow and its agent throws nothing away: the run, its step and the
+    # step's agent run all still read.
+    assert api.post(f"/api/workflows/{wf['id']}/archive").status_code == 200
+    assert api.post(f"/api/agents/{a['retired']['id']}/archive").status_code == 200
+    [listed] = api.get(f"/api/workflows/{wf['id']}/runs").json()
+    assert listed["id"] == out["id"]
+    [step] = api.get(f"/api/workflows/{wf['id']}/runs/{out['id']}").json()["steps"]
+    assert step["output"] == "retired(x)"
+    agent_run = api.get(f"/api/agents/{a['retired']['id']}/runs/{step['agent_run_id']}")
+    assert agent_run.status_code == 200
 
 
 def test_a_workflow_that_cant_run_isnt_started(api, queued, monkeypatch):
@@ -542,18 +541,13 @@ def test_a_run_that_cant_be_queued_isnt_left_behind(api, monkeypatch):
     assert api.get(f"/api/workflows/{wf['id']}/runs").json() == []
 
 
-def test_an_agent_deleted_since_a_subworkflow_version_pinned_it_cant_run(api, queued):
-    # Deleting an agent archives it (until the delete endpoint goes), so the run is refused as
-    # one that runs an archived agent.
+def test_an_agent_archived_since_a_subworkflow_version_pinned_it_cant_run(api, queued):
     a = agents(api, "retired")
     inner = make_workflow(api, "inner", [agent_node("old", a["retired"])])
     outer = make_workflow(api, "outer", [workflow_node("inner", inner)])
-    # Outer keeps inner v1, which runs the agent: it can only be deleted with outer deactivated.
+    # Outer keeps inner v1, which runs the agent, though inner no longer does.
     api.put(f"/api/workflows/{inner['id']}", json=workflow_body("inner", []))
-    url = f"/api/agents/{a['retired']['id']}"
-    assert api.delete(url).status_code == 409
-    resolved = {"deactivate_workflows": [outer["id"]]}
-    assert api.request("DELETE", url, json=resolved).status_code == 204
+    assert api.post(f"/api/agents/{a['retired']['id']}/archive").status_code == 200
 
     resp = api.post(f"/api/workflows/{outer['id']}/runs", json={"input": "x"})
     assert (resp.status_code, resp.json()["detail"]) == (

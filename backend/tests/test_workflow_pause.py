@@ -305,9 +305,8 @@ def test_editing_the_agent_while_the_run_waits_doesnt_change_what_it_resumes_on(
 
 
 def delete_behind_the_api(agent: dict) -> None:
-    """Delete the agent as deleting one did before it checked what depends on it (now a run
-    waiting on it refuses the delete until it's cancelled): soft-deleted, its runs gone. Data
-    from then can still be like this."""
+    """Delete the agent as deleting one did before agents were archived instead (no route deletes
+    one now): soft-deleted, its runs gone. Data from then can still be like this."""
     with SessionLocal() as db:
         db.execute(delete(AgentRun).where(AgentRun.agent_id == agent["id"]))
         db.execute(update(Agent).where(Agent.id == agent["id"]).values(archived_at=func.now()))
@@ -319,14 +318,12 @@ def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, buil
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
-    # The run depends on it, so the API refuses (see `test_agent_dependents`).
-    assert api.delete(f"/api/agents/{builder['id']}").status_code == 409
     delete_behind_the_api(builder)
 
     decide(api, queued, flow)
 
     out = read(api, workflow, waiting["id"])
-    # Archived, a run already going still runs its node, but the delete took the agent's runs.
+    # A run already going still runs an archived agent's node, but the delete took its runs.
     reason = "Agent Builder has been deleted"
     assert (out["status"], out["error"]) == ("failed", f"build: {reason}")
     build = steps(out)["build"]
@@ -556,7 +553,7 @@ def test_a_waiting_run_shows_which_of_its_pins_are_no_longer_current(api, builde
     api.put(f"/api/agents/{builder['id']}", json=agent_body(builder, base_prompt="builder-v2"))
     api.put(f"/api/workflows/{inner['id']}", json=workflow_body("Builders", []))
     after = make_agent(api, "Gone", base_prompt="gone")
-    api.delete(f"/api/agents/{after['id']}")  # not pinned: not shown
+    api.post(f"/api/agents/{after['id']}/archive")  # not pinned: not shown
 
     out = read(api, outer, waiting["id"])
     assert out["stale_pins"] == [
@@ -576,9 +573,11 @@ def test_a_waiting_run_shows_which_of_its_pins_are_no_longer_current(api, builde
         },
     ]
 
-    # Archived (as deleting it does now), the agent still shows its current version.
-    delete_behind_the_api(builder)
-    [_, build] = read(api, outer, waiting["id"])["stale_pins"]
+    # Archived, the agent and the workflow still show their current versions.
+    api.post(f"/api/agents/{builder['id']}/archive")
+    api.post(f"/api/workflows/{inner['id']}/archive")
+    [review, build] = read(api, outer, waiting["id"])["stale_pins"]
+    assert (review["path"], review["current_version"]) == (["review"], 2)
     assert (build["path"], build["current_version"]) == (["review", "build"], 3)
     # And the run's own workflow, at the top.
     api.put(f"/api/workflows/{outer['id']}", json=workflow_body("Pipeline", []))

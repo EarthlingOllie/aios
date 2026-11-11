@@ -109,7 +109,7 @@ test("the search is in the URL: applied on load, updated as you type, and restor
   await expect(links(page, "Agents")).toHaveText([/Alpha/]);
 });
 
-test("New and deleting an agent keep the search; another agent opens on its first tab", async ({
+test("New and archiving an agent keep the search; another agent opens on its first tab", async ({
   page,
 }) => {
   const api = await fakeApi(page);
@@ -129,9 +129,9 @@ test("New and deleting an agent keep the search; another agent opens on its firs
   await expect(links(page, "Agents")).toHaveCount(2);
 
   await list(page, "Agents").getByRole("link", { name: /Researcher one/ }).click();
-  await page.getByRole("button", { name: "Delete agent" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete agent" }).click();
-  await expect(page).toHaveURL(inOrg("/agents?q=research"));
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Archive agent" }).click();
+  await expect(page).toHaveURL(inOrg(`/agents/${first.id}?q=research`));
   await expect(links(page, "Agents")).toHaveText([/Researcher two/]);
   await expect(search(page, "agents")).toHaveValue("research");
 });

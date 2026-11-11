@@ -1,13 +1,13 @@
-"""Agents: listing, creating, reading, updating, archiving and deleting them."""
+"""Agents: listing, creating, reading, updating and archiving them. None is ever deleted:
+older workflow versions may pin its versions, and its runs are the members' history with it."""
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
-from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from fastapi import APIRouter, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, dependents
+from aios import used_by
 from aios.api.agents.common import (
     AGENT_NAME_INDEX,
     AgentIn,
@@ -16,31 +16,19 @@ from aios.api.agents.common import (
     agent_out,
     get_org_agent,
     lock_agent,
+    refuse_archived_skills,
     resolve_skill_versions,
     resolve_tools,
     skill_ids,
     tool_keys,
 )
-from aios.api.agents.runs import cancel_chat_requests
 from aios.api.provenance import archived, made_by, people, provenance
-from aios.api.skills import lock_live, unique_name
-from aios.api.triggers import delete_triggers, disable_triggers
+from aios.api.skills import unique_name
+from aios.api.triggers import disable_triggers
 from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import history
 from aios.db import DB, DbId
-from aios.models import (
-    Agent,
-    AgentRun,
-    AgentVersion,
-    Trigger,
-    Workflow,
-)
-from aios.sandbox.sessions import (
-    run_sandboxes,
-    stop_sandboxes,
-)
+from aios.models import Agent, AgentRun, AgentVersion, Trigger
 from aios.versioning import save_agent_version
-from aios.workflows import cancel_runs
 
 router = APIRouter(prefix="/api")
 
@@ -97,6 +85,7 @@ def list_agents(
 def create_agent(body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     tools = resolve_tools(body.tools)
     skills = resolve_skill_versions(db, org, body.skill_version_ids)
+    refuse_archived_skills(skills)
     agent = Agent(**made_by(org.id, user.id), name=body.name, description=body.description)
     clash = name_clash(db, org.id, body.name)
     db.add(agent)
@@ -140,8 +129,9 @@ def update_agent(
     agent.name = body.name
     agent.description = body.description
     agent.updated_by = user.id
+    before = agent.current_version_id
     with unique_name(db, "an agent", AGENT_NAME_INDEX, clash):
-        save_agent_version(
+        version = save_agent_version(
             db,
             agent,
             base_prompt=body.base_prompt,
@@ -151,6 +141,9 @@ def update_agent(
             user_id=user.id,
             model=agent.current_version.model,
         )
+        # Keeping an archived skill is fine; making a new version with it isn't.
+        if version.id != before:
+            refuse_archived_skills(skills)
         db.commit()
     return agent_out(db, agent)
 
@@ -183,99 +176,8 @@ def unarchive_agent(agent_id: DbId, org: CurrentOrganisation, db: DB):
     return agent_out(db, agent)
 
 
-@router.get("/agents/{agent_id}/used-by", response_model=dependents.UsedBy)
+@router.get("/agents/{agent_id}/used-by", response_model=used_by.AgentUsedBy)
 def get_agent_used_by(agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """What uses the agent, for the archive confirmation to show: read-only, as archiving is
     never refused."""
-    return dependents.used_by(db, get_org_agent(db, org, agent_id), user.id)
-
-
-@router.get("/agents/{agent_id}/dependents", response_model=dependents.Dependents)
-def get_agent_dependents(agent_id: DbId, org: CurrentOrganisation, db: DB):
-    """What depends on the agent: what deleting it would cut off, and so has to be resolved
-    first (see `delete_agent`)."""
-    agent = get_org_agent(db, org, agent_id)
-    dependents.fail_stopped_runs(db, agent)
-    return dependents.find(db, agent)
-
-
-class AgentDeleteIn(BaseModel):
-    """How to resolve what depends on the agent (`GET /api/agents/{id}/dependents`), as the user
-    chose. Runs are named one by one, so one that starts after the user looked isn't cancelled
-    unseen: the delete is refused, listing it."""
-
-    # Chat runs to stop (they're deleted with the agent, and their requests cancelled).
-    cancel_agent_runs: list[DbId] = []
-    # Workflow runs to stop: they fail, and their requests are cancelled.
-    cancel_workflow_runs: list[DbId] = []
-    # Workflows to deactivate: their schedules are turned off. Any other workflow that runs the
-    # agent must be edited to stop running it first.
-    deactivate_workflows: list[DbId] = []
-
-
-@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(
-    agent_id: DbId,
-    user: CurrentUser,
-    org: CurrentOrganisation,
-    db: DB,
-    background: BackgroundTasks,
-    body: AgentDeleteIn | None = None,
-) -> None:
-    """Delete the agent once what depends on it is resolved: the runs still going are named in
-    `cancel_*`, and each workflow that runs it is deactivated or has been edited. Otherwise a
-    409 whose detail has a `message` and the `dependents`. All in one transaction: refused,
-    nothing changes."""
-    body = body or AgentDeleteIn()
-    agent = get_org_agent(db, org, agent_id)
-    dependents.fail_stopped_runs(db, agent)  # commits; before anything is locked
-    # Hold the row lock across the check and the delete; workflow saves that run the agent take
-    # it too (`aios.api.workflows.lock_graph`), and so does starting a chat run.
-    lock_agent(db, agent)
-    # Starting a run of a workflow share-locks the workflow (`new_workflow_run`), so with the
-    # workflows that run the agent locked, a run being started is waited for and then seen,
-    # and one started after waits for this, and then can't (it would run a deleted agent).
-    # Until none is found that isn't locked: a save waited for meanwhile may nest one in another.
-    locked: set[int] = set()
-    while unlocked := dependents.workflow_ids(db, agent) - locked:
-        lock_live(db, Workflow, unlocked)
-        locked |= unlocked
-    found = dependents.find(db, agent)
-    refusal = dependents.unresolved(
-        found,
-        cancel_agent_runs=set(body.cancel_agent_runs),
-        cancel_workflow_runs=set(body.cancel_workflow_runs),
-        deactivate_workflows=set(body.deactivate_workflows),
-    )
-    if refusal is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            {"message": refusal, "dependents": found.model_dump(mode="json")},
-        )
-    # Before the agent runs go: found by their steps, their requests are cancelled.
-    cancel_runs(
-        db,
-        [r.id for r in found.workflow_runs],
-        f"Cancelled: the agent {agent.name} was deleted.",
-    )
-    disable_triggers(db, Trigger.workflow_id.in_([w.id for w in found.workflows]), user.id)
-    # Archived, not deleted: older workflow versions may still pin its versions, so the agent
-    # and its versions stay. Its runs are the members' conversations with it, and go now.
-    run_ids = list(db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent.id)))
-    sandboxes = run_sandboxes(db, run_ids)
-    cancel_chat_requests(db, run_ids)
-    history.enqueue_runs(db, AgentRun.agent_id == agent.id, deleting=True)  # their copies go too
-    db.execute(delete(AgentRun).where(AgentRun.agent_id == agent.id))  # and their sessions
-    delete_triggers(db, Trigger.agent_id == agent.id)
-    if agent.archived_at is None:
-        agent.archived_at = func.now()
-        agent.archived_by = user.id
-    db.commit()
-    # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
-    # rather than carrying on with tool calls for runs that are gone.
-    checkpoints.stop_turns(db, run_ids)
-    # Their checkpoints aren't tied to the runs, so they don't cascade.
-    background.add_task(checkpoints.delete_threads, run_ids)
-    # Their session rows went with the runs; the sandboxes would run on until they time out.
-    if sandboxes:
-        background.add_task(stop_sandboxes, sandboxes)
+    return used_by.agent(db, get_org_agent(db, org, agent_id), user.id)

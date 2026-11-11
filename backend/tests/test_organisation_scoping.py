@@ -54,12 +54,12 @@ def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
         run = ok(api.post(f"{url}/runs"), 201)
         assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
         assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
-        assert ok(api.get(f"{url}/dependents"))["workflows"] == []
+        assert ok(api.get(f"{url}/used-by"))["workflows"] == []
         ok(api.delete(f"{url}/runs/{run['id']}"), 204)
-        ok(api.delete(url), 204)
+        ok(api.post(f"{url}/archive"))
     db.expire_all()
-    deleted = db.get(Agent, agent["id"])
-    assert deleted.archived_at is not None and deleted.archived_by == member.id
+    archived = db.get(Agent, agent["id"])
+    assert archived.archived_at is not None and archived.archived_by == member.id
 
 
 def test_a_member_works_on_a_skill_another_member_made(api, member, db):
@@ -75,10 +75,9 @@ def test_a_member_works_on_a_skill_another_member_made(api, member, db):
         assert ok(api.post(f"{url}/versions/1/restore"))["current_version"]["version"] == 3
         # An agent of the member's can use it.
         make_agent(api, "Kind", skills=[ok(api.get(url))])
-    agent = ok(api.get("/api/agents"))[0]
-    ok(api.delete(f"/api/agents/{agent['id']}"), 204)
     with signed_in_as(member):
-        ok(api.delete(url), 204)
+        assert [a["agent_name"] for a in ok(api.get(f"{url}/used-by"))["agents"]] == ["Kind"]
+        ok(api.post(f"{url}/archive"))
     db.expire_all()
     assert db.get(Skill, skill["id"]).archived_by == member.id
 
@@ -101,7 +100,8 @@ def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queue
         assert queued == [run["id"]]
         assert [r["id"] for r in ok(api.get(f"{url}/runs"))] == [run["id"]]
         assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
-        ok(api.delete(url), 204)
+        assert ok(api.get(f"{url}/used-by"))["workflows"] == []
+        ok(api.post(f"{url}/archive"))
     db.expire_all()
     assert db.get(Workflow, workflow["id"]).archived_by == member.id
 
@@ -139,10 +139,10 @@ def test_another_organisation_cant_reach_any_of_it(api, outsider, queued):  # no
         for path in ("/api/agents", "/api/skills", "/api/workflows", "/api/triggers"):
             assert ok(api.get(path)) == []
         reads = [
-            *(a, f"{a}/versions", f"{a}/versions/1", f"{a}/runs", f"{a}/dependents"),
+            *(a, f"{a}/versions", f"{a}/versions/1", f"{a}/runs", f"{a}/used-by"),
             f"{a}/runs/{agent_run['id']}",
-            *(s, f"{s}/versions", f"{s}/versions/1"),
-            *(w, f"{w}/versions", f"{w}/versions/1", f"{w}/runs"),
+            *(s, f"{s}/versions", f"{s}/versions/1", f"{s}/used-by"),
+            *(w, f"{w}/versions", f"{w}/versions/1", f"{w}/runs", f"{w}/used-by"),
             f"{w}/runs/{workflow_run['id']}",
             t,
         ]
@@ -160,9 +160,7 @@ def test_another_organisation_cant_reach_any_of_it(api, outsider, queued):  # no
             api.post(f"{w}/runs", json={"input": "x"}),
             api.delete(f"{a}/runs/{agent_run['id']}"),
             api.delete(t),
-            api.delete(w),
-            api.delete(a),
-            api.delete(s),
+            *(api.post(f"{x}/{action}") for x in (a, s, w) for action in ("archive", "unarchive")),
         ]
         assert [r.status_code for r in writes] == [404] * len(writes)
         # Nor can they build on it: the targets are unknown to them.
@@ -223,20 +221,18 @@ def test_each_says_who_made_and_last_changed_it(api, user, member):
     assert (listed["created_by"], listed["updated_by"]) == (me, me)
 
 
-def test_deleting_an_agent_finds_the_workflows_and_schedules_any_member_made(api, member):
+def test_archiving_an_agent_finds_the_workflows_and_schedules_any_member_made(api, member):
     agent = make_agent(api, "Builder")
     with signed_in_as(member):
         workflow = make_workflow(api, "Builds", [agent_node("build", agent)])
         daily = ok(api.post("/api/triggers", json=schedule("workflow", workflow["id"])), 201)
-    found = ok(api.get(f"/api/agents/{agent['id']}/dependents"))
+        own = ok(api.post("/api/triggers", json=schedule("agent", agent["id"])), 201)
+    found = ok(api.get(f"/api/agents/{agent['id']}/used-by"))
     [listed] = found["workflows"]
     assert listed["id"] == workflow["id"]
     assert [t["id"] for t in listed["triggers"]] == [daily["id"]]
-    refused = api.delete(f"/api/agents/{agent['id']}")
-    assert refused.status_code == 409
-    resolved = {"deactivate_workflows": [workflow["id"]]}
-    ok(api.request("DELETE", f"/api/agents/{agent['id']}", json=resolved), 204)
+    ok(api.post(f"/api/agents/{agent['id']}/archive"))
     with signed_in_as(member):
-        paused = ok(api.get(f"/api/triggers/{daily['id']}"))
-    # Paused by whoever deleted the agent.
+        paused = ok(api.get(f"/api/triggers/{own['id']}"))
+    # Paused by whoever archived the agent.
     assert (paused["enabled"], paused["updated_by"]["name"]) == (False, "Test User")

@@ -28,7 +28,6 @@ from aios.models import (
     ChatMemberRole,
     ChatMessage,
     ChatVisibility,
-    Workflow,
 )
 
 router = APIRouter(prefix="/api")
@@ -46,11 +45,7 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
     (`is_member` false), the most recently active first."""
     mine = aliased(ChatMember)
     member_count = (
-        select(func.count(ChatMember.id))
-        # Not counting workflows since archived (see `live_members`).
-        .outerjoin(Workflow, Workflow.id == ChatMember.workflow_id)
-        .where(ChatMember.chat_id == Chat.id, Workflow.archived_at.is_(None))
-        .scalar_subquery()
+        select(func.count(ChatMember.id)).where(ChatMember.chat_id == Chat.id).scalar_subquery()
     )
     unread = case(
         (mine.id.is_(None), None),

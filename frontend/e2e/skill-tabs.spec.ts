@@ -23,7 +23,7 @@ test("opens on the Content tab, with when to use the skill and its instructions"
   await expect(panel(page).getByText("Release notes instructions, v1.")).toBeVisible();
   // The title and actions stay above the tabs.
   await expect(page.getByRole("link", { name: "Edit" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
   // The other tabs' content isn't shown.
   await expect(page.getByRole("link", { name: /Writer/ })).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/skills/${skill.id}$`));

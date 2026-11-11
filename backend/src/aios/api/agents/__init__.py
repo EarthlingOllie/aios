@@ -46,6 +46,7 @@ from aios.api.agents.common import (
     get_org_agent,
     lock_agent,
     lock_live_agent,
+    refuse_archived_skills,
     refuse_if_archived,
     resolve_skill_versions,
     resolve_tools,
@@ -57,12 +58,9 @@ from aios.api.agents.common import (
     version_out,
 )
 from aios.api.agents.crud import (
-    AgentDeleteIn,
     archive_agent,
     create_agent,
-    delete_agent,
     get_agent,
-    get_agent_dependents,
     get_agent_used_by,
     list_agents,
     unarchive_agent,
@@ -99,7 +97,6 @@ router.include_router(_chat.router)
 
 __all__ = [
     "AGENT_NAME_INDEX",
-    "AgentDeleteIn",
     "AgentIn",
     "AgentOut",
     "AgentSkillOut",
@@ -127,10 +124,8 @@ __all__ = [
     "archive_agent",
     "create_agent",
     "create_run",
-    "delete_agent",
     "delete_run",
     "get_agent",
-    "get_agent_dependents",
     "get_agent_used_by",
     "get_agent_version",
     "get_agent_version_detail",
@@ -144,6 +139,7 @@ __all__ = [
     "load_chat_context",
     "lock_agent",
     "lock_live_agent",
+    "refuse_archived_skills",
     "refuse_if_archived",
     "model_responses",
     "new_agent_run",
