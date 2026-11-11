@@ -300,7 +300,9 @@ read it (`provision.APPEND_ONLY`). Its details are on the deny list.
 
 - **Store-side actions** record their entry in the store transaction that acts: configuration
   changes, archiving and unarchiving (agents, skills, workflows, schedules, sources), version
-  restores, approval decisions, approval rule changes, restores asked for, and each
+  restores, exports and imports (`agent.exported`, `workflow.exported`, and an `*.imported`
+  entry, with the file's name, for each skill, agent and workflow an import makes; a dry run
+  records nothing), approval decisions, approval rule changes, restores asked for, and each
   `write_data` call (its table, operation, row count, run and agent).
 - **Platform-side actions** (role changes, joining and leaving, invitation links, renames,
   settings, deletion scheduled or cancelled) write an outbox row on the platform

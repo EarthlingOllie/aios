@@ -40,6 +40,8 @@ type AgentRow = {
   /** When it was archived, and by whom: both null while it isn't. */
   archived_at: string | null;
   archived_by: ChatUser | null;
+  /** Why its versions can't run (an import's missing tool, say); null or unset if they can. */
+  unrunnable?: string | null;
 };
 type SkillVersionRow = {
   id: number;
@@ -759,6 +761,11 @@ export class FakeApi {
     return `${role === "editor" ? "Editors" : "Participants"} can't ${FakeApi.ADMINS_ONLY}. Ask an admin.`;
   }
 
+  private refuseUnlessBuilder(): string | null {
+    if (this.roleOf(this.me.id) !== "participant") return null;
+    return "Participants can't create, edit, archive or unarchive agents, skills, workflows and schedules. Ask an editor or an admin.";
+  }
+
   private approvalRulesOut() {
     return Object.entries(DEFAULT_RULES).map(([kind, default_role]) => ({
       kind,
@@ -1001,6 +1008,16 @@ export class FakeApi {
         : { status: "failed", chunk_count: 0, error: outcome.error },
     );
   }
+
+  /**
+   * What the next import (`POST /api/imports`) of any file makes: an agent per item of kind
+   * agent (by its imported name, unrunnable if it says so), the others listed only. Unset, an
+   * import is a 422, as for a file that isn't an export.
+   */
+  nextImport: { kind: "skill" | "agent" | "workflow"; name: string; imported_name?: string; unrunnable?: string }[] | null =
+    null;
+  /** The files imported (`dry_run` false) or previewed, by name, in order. */
+  imports: { filename: string; dryRun: boolean }[] = [];
 
   addAgent(name: string, versions = 1, description = ""): AgentRow {
     const agent: AgentRow = {
@@ -1786,6 +1803,7 @@ export class FakeApi {
           }),
       ),
       tools: [],
+      unrunnable: agent.unrunnable ?? null,
     };
   }
 
@@ -1838,6 +1856,7 @@ export class FakeApi {
       created_by: this.me,
       nodes: version.nodes.map((n) => this.nodeOut(n)),
       edges: version.edges,
+      unrunnable: null,
     };
   }
 
@@ -2648,6 +2667,33 @@ export class FakeApi {
           archived_by: a.archived_by,
         })),
       );
+    }
+    if (path === "/api/imports" && method === "POST") {
+      const refused = this.refuseUnlessBuilder();
+      if (refused) return fail(403, refused);
+      const filename = /filename="([^"]+)"/.exec(request.postData() ?? "")?.[1] ?? "upload";
+      const dryRun = url.searchParams.get("dry_run") === "true";
+      this.imports.push({ filename, dryRun });
+      if (!this.nextImport) return fail(422, "That file isn't an export: format: Field required");
+      const items = this.nextImport.map((i, n) => {
+        const name = i.imported_name ?? i.name;
+        let id: number | null = null;
+        if (!dryRun && i.kind === "agent") {
+          const agent = this.addAgent(name);
+          agent.unrunnable = i.unrunnable ?? null;
+          id = agent.id;
+        }
+        return {
+          kind: i.kind,
+          ref: `${i.kind}-${n + 1}`,
+          name: i.name,
+          imported_name: name,
+          renamed: name !== i.name,
+          unrunnable: i.unrunnable ?? null,
+          id,
+        };
+      });
+      return reply(200, { dry_run: dryRun, root: items.at(-1), items });
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/(archive|unarchive)$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));

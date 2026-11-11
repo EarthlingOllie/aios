@@ -85,7 +85,9 @@ def get_agent_version_detail(
     # versions.
     agent = get_org_agent(store, agent_id)
     version = get_agent_version(store, agent, number)
-    return version_out(version, people(db, org.id, [version.created_by]))
+    return version_out(
+        version, people(db, org.id, [version.created_by]), ToolOrganisation(org.id, store)
+    )
 
 
 @router.post(

@@ -24,6 +24,7 @@ import {
   type ListContext,
 } from "@/components/crud";
 import { WorkflowArchiveDialog } from "@/components/ArchiveDialog";
+import { ExportLink, ImportButton, UnrunnableNotice } from "@/components/ImportDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -84,6 +85,7 @@ export function WorkflowsSection() {
     <MasterDetail
       title="Workflows"
       newRefusal={newRefusal}
+      actions={<ImportButton onImported={reload} />}
       basePath="/workflows"
       items={data}
       error={error}
@@ -258,6 +260,7 @@ function WorkflowDetailView({ id }: { id: number }) {
               Run
             </Button>
           )}
+          {!buildRefusal && <ExportLink href={api.workflowExportUrl(id)} />}
           {!buildRefusal && (
             <Button asChild variant="outline" size="sm">
               <Link to={listHref(`/workflows/${id}/edit`)}>
@@ -277,6 +280,7 @@ function WorkflowDetailView({ id }: { id: number }) {
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       <RoleNote refusal={buildRefusal} />
+      <UnrunnableNotice reason={current.unrunnable} />
       {w.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
           This workflow is archived{w.archived_by ? ` by ${personName(w.archived_by)}` : ""} on{" "}

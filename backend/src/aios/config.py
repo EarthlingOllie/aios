@@ -157,6 +157,8 @@ class Settings(BaseSettings):
     chunk_max_tokens: int = 512
 
     max_upload_bytes: int = 50 * 1024 * 1024
+    # The largest file an import takes (`aios.api.exports`); a larger one is a 413.
+    export_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
     # Per-attempt budget for converting and chunking one document (Celery soft time limit).
     ingest_time_limit: int = 30 * 60
     # Budget for a whole workflow run, every node at every depth (`aios.workflows.execute_run`).

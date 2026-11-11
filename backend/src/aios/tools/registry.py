@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,6 +99,20 @@ def check_stored_tool(
     the organisation, can't be used in it (`ToolSpec.check`)."""
     spec, parsed = _parse(key, config, stored=True)
     _check(spec, parsed, org)
+
+
+def unusable_tools(
+    tools: Iterable[tuple[str, dict[str, Any]]], org: ToolOrganisation | None = None
+) -> str | None:
+    """Why stored tools, as (key, settings) pairs, can't all be built (`check_stored_tool`), one
+    reason per tool that can't, or None if they can."""
+    reasons = []
+    for key, config in tools:
+        try:
+            check_stored_tool(key, config, org)
+        except ToolError as exc:
+            reasons.append(str(exc))
+    return "; ".join(reasons) or None
 
 
 def stored_settings(key: str, config: dict[str, Any]) -> BaseModel:

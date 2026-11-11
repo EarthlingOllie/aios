@@ -28,6 +28,7 @@ import {
 import { AgentArchiveDialog } from "@/components/ArchiveDialog";
 import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
+import { ExportLink, ImportButton, UnrunnableNotice } from "@/components/ImportDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -154,6 +155,7 @@ export function AgentsSection() {
     <MasterDetail
       title="Agents"
       newRefusal={newRefusal}
+      actions={<ImportButton onImported={reload} />}
       basePath="/agents"
       items={data}
       error={error}
@@ -368,6 +370,7 @@ export function AgentDetail() {
               New run
             </Button>
           )}
+          {!buildRefusal && <ExportLink href={api.agentExportUrl(id)} />}
           {!buildRefusal && (
             <Button asChild variant="outline" size="sm">
               <Link to={listHref(`/agents/${id}/edit`)}>
@@ -387,6 +390,7 @@ export function AgentDetail() {
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
       <RoleNote refusal={buildRefusal} />
+      <UnrunnableNotice reason={current.unrunnable} />
       {a.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
           This agent is archived{a.archived_by ? ` by ${personName(a.archived_by)}` : ""} on{" "}

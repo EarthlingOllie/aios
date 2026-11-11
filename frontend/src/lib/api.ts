@@ -348,6 +348,8 @@ export type AgentVersion = {
   instructions: string;
   skills: AgentSkill[];
   tools: AgentTool[];
+  /** Why this version can't run here (a tool it needs is missing, say), or null if it can. */
+  unrunnable: string | null;
 };
 
 /** When an agent, skill or workflow was archived and by whom: both null while it isn't. */
@@ -671,6 +673,30 @@ export type WorkflowVersion = {
   created_by: User | null;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  /** Why a run of this version can't start (an agent it runs can't), or null if it can. */
+  unrunnable: string | null;
+};
+
+/** One thing an import makes, or a dry run says it would. */
+export type ImportedItem = {
+  kind: "skill" | "agent" | "workflow";
+  /** Its reference in the file. */
+  ref: string;
+  /** Its name in the file, and the name it's made with. */
+  name: string;
+  imported_name: string;
+  renamed: boolean;
+  /** Why its version can't run here, if it can't. */
+  unrunnable: string | null;
+  /** Its id once made; null on a dry run. */
+  id: number | null;
+};
+
+export type ImportResult = {
+  dry_run: boolean;
+  /** The agent or workflow the file is of. */
+  root: ImportedItem;
+  items: ImportedItem[];
 };
 
 export type WorkflowSummary = Provenance & Archived & {
@@ -1258,6 +1284,20 @@ export const api = {
   archiveAgent: (id: number) => request<Agent>(`${organisationApi()}/agents/${id}/archive`, { method: "POST" }),
   unarchiveAgent: (id: number) =>
     request<Agent>(`${organisationApi()}/agents/${id}/unarchive`, { method: "POST" }),
+  /** Where an agent version's export downloads from (its current version by default). */
+  agentExportUrl: (id: number, version?: number) =>
+    `${organisationApi()}/agents/${id}/export${version === undefined ? "" : `?version=${version}`}`,
+  /** Where a workflow version's export downloads from (its current version by default). */
+  workflowExportUrl: (id: number, version?: number) =>
+    `${organisationApi()}/workflows/${id}/export${version === undefined ? "" : `?version=${version}`}`,
+  importFile: (file: File, dryRun: boolean) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<ImportResult>(
+      `${organisationApi()}/imports${dryRun ? "?dry_run=true" : ""}`,
+      { method: "POST", body },
+    );
+  },
   getAgentUsedBy: (id: number) => request<AgentUsedBy>(`${organisationApi()}/agents/${id}/used-by`),
   getAgent: (id: number) => request<Agent>(`${organisationApi()}/agents/${id}`),
   createAgent: (body: AgentInput) => request<Agent>(`${organisationApi()}/agents`, json("POST", body)),
