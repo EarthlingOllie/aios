@@ -17,16 +17,16 @@ The test runs as its own CI job. Later tickets add scenarios here rather than bu
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] With scripted models enabled, an API test runs a chat turn on a named scenario with no
+- [x] With scripted models enabled, an API test runs a chat turn on a named scenario with no
   calls to model, embedding or tracing providers.
-- [ ] With the setting off, naming a scripted model fails the turn as an unknown provider, and
+- [x] With the setting off, naming a scripted model fails the turn as an unknown provider, and
   nothing real is called.
-- [ ] The API refuses to start with scripted models enabled while secure cookies are on.
-- [ ] The backend tests' scripted model comes from the shared home, and the backend suite
+- [x] The API refuses to start with scripted models enabled while secure cookies are on.
+- [x] The backend tests' scripted model comes from the shared home, and the backend suite
   passes.
-- [ ] A Compose profile brings up the whole stack with no outbound calls.
-- [ ] The core-loop test passes in CI.
-- [ ] The core-loop test fails within its timeout when the provisioning worker is stopped.
-- [ ] On failure, CI keeps the test report and the stack's logs.
+- [x] A Compose profile brings up the whole stack with no outbound calls.
+- [ ] The core-loop test passes in CI. (Passes locally; awaits the first CI run.)
+- [x] The core-loop test fails within its timeout when the provisioning worker is stopped.
+- [ ] On failure, CI keeps the test report and the stack's logs. (Wired in ci.yml; awaits the first CI run.)

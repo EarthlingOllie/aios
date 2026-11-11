@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     # acknowledgement, over the chat's last `handoff_window_messages` messages or about
     # `handoff_window_tokens` tokens of them, whichever is less.
     handoff_model: str = ""
+    # For the full-stack test only: `LLM_MODEL` and `HANDOFF_MODEL` may name a scripted model,
+    # `scripted:<scenario>` (`aios.testing.scenarios`), and embeddings are a deterministic fake,
+    # so nothing calls a provider. Off, a scripted model is an unknown provider. The API refuses
+    # to start with it on while `COOKIE_SECURE` is (a production-like configuration).
+    scripted_models_enabled: bool = False
     handoff_window_messages: int = Field(default=30, ge=1)
     handoff_window_tokens: int = Field(default=8_000, ge=1)
 

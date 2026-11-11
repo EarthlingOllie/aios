@@ -1,4 +1,6 @@
-"""A scripted chat model for tests, standing in for the provider's."""
+"""A scripted chat model, standing in for the provider's: the backend tests script it per test
+(`use_model`, `use_handoff`), and a running app can name a scenario of it as its model
+(`aios.testing.scenarios`, with scripted models enabled)."""
 
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -14,8 +16,6 @@ from langchain_core.messages import AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
-
-from aios import handoff, llm
 
 
 @dataclass
@@ -40,6 +40,8 @@ class Info:
     # LangChain tools by name, and provider-run (server) tools as their definitions.
     tools: dict[str, BaseTool]
     server_tools: list[dict[str, Any]]
+    # The schemas it was asked for a structured output in (e.g. the handoff's `Handoff`), by name.
+    schemas: frozenset[str] = frozenset()
 
 
 # Called with the messages the model is sent; yields text deltas, tool calls and usage.
@@ -69,6 +71,7 @@ class FakeChatModel(BaseChatModel):
         info = Info(
             tools={t.name: t for t in self.bound if isinstance(t, BaseTool)},
             server_tools=[t for t in self.bound if isinstance(t, dict)],
+            schemas=frozenset(t.__name__ for t in self.bound if isinstance(t, type)),
         )
         index = 0
         async for item in self.script(messages, info):
@@ -113,6 +116,8 @@ def replies(text: str) -> FakeChatModel:
 @contextmanager
 def use_model(fake: FakeChatModel) -> Iterator[FakeChatModel]:
     """Runs agents on `fake` instead of the configured model."""
+    from aios import llm
+
     with mock.patch.object(llm, "chat_model", lambda name=None: fake):
         yield fake
 
@@ -129,6 +134,8 @@ def briefs(ack: str = "On it.", brief: str = "") -> FakeChatModel:
 @contextmanager
 def use_handoff(fake: FakeChatModel) -> Iterator[FakeChatModel]:
     """Runs the handoff step on `fake` instead of `briefs()`, which every test has by default."""
+    from aios import handoff
+
     with mock.patch.object(handoff, "model", lambda: fake):
         yield fake
 

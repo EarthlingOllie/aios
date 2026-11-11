@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import psycopg
 import pytest
 from conftest import build_user, delete_user, make_user, org_of
-from fake_model import ToolCall, model, replies, use_model
 from sqlalchemy import func
 
 from aios import checkpoints, ui_stream
@@ -18,6 +17,7 @@ from aios.auth import current_organisation, current_user
 from aios.db import SessionLocal, get_db
 from aios.main import app
 from aios.models import Agent, AgentRun, Organisation
+from aios.testing.fake_model import ToolCall, model, replies, use_model
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
 

@@ -9,7 +9,6 @@ import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-import fake_model
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
@@ -38,6 +37,7 @@ from aios.models import (
 )
 from aios.passwords import hash_password
 from aios.sandbox import runner
+from aios.testing import fake_model
 
 
 @pytest.fixture

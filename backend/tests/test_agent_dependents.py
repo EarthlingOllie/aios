@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
-from fake_model import model, use_model
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, update
 from test_data_tools import as_owner
@@ -37,6 +36,7 @@ from aios.api import agents as agents_api
 from aios.api.skills import lock_live
 from aios.db import SessionLocal
 from aios.models import Agent, Workflow, WorkflowRun, WorkflowRunStatus
+from aios.testing.fake_model import model, use_model
 
 
 def dependents(api, agent: dict) -> dict:  # noqa: F811

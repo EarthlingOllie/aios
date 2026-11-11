@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
-from fake_model import model, replies, use_model
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
@@ -23,6 +22,7 @@ from aios.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
+from aios.testing.fake_model import model, replies, use_model
 from aios.worker import run_workflow_task
 from aios.workflows import execute_run
 

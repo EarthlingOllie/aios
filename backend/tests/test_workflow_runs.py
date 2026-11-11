@@ -6,7 +6,6 @@ from datetime import timedelta
 import pytest
 import test_agents
 from conftest import delete_user, make_user, store_of
-from fake_model import ToolCall, last_tool_results, model, replies, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
@@ -25,6 +24,7 @@ from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
+from aios.testing.fake_model import ToolCall, last_tool_results, model, replies, use_model
 from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 

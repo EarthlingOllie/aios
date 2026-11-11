@@ -10,7 +10,6 @@ import psycopg
 import pytest
 from celery.exceptions import Retry
 from conftest import add_document, delete_user, provisioned_user, store_of
-from fake_model import ToolCall, last_tool_results, model, use_model
 from psycopg import sql
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
@@ -43,6 +42,7 @@ from aios.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
+from aios.testing.fake_model import ToolCall, last_tool_results, model, use_model
 from aios.tools import hybrid_search
 from aios.ui_stream import error_text
 from aios.workflows import execute_run

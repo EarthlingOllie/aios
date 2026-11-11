@@ -9,7 +9,6 @@ import math
 import psycopg
 import pytest
 from conftest import add_document, store_of
-from fake_model import ToolCall
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
@@ -20,6 +19,7 @@ from aios.config import get_settings, libpq_conninfo
 from aios.datastores import store_not_ready
 from aios.datastores.connections import dispose_engines
 from aios.models import DataStore, DataStoreStatus
+from aios.testing.fake_model import ToolCall
 from aios.tools import build_tool, write_data
 
 TOOLS = [

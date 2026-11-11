@@ -1678,6 +1678,9 @@ export class FakeApi {
               tool_call_count: run.tool_call_count,
               input_tokens: run.input_tokens,
               output_tokens: run.output_tokens,
+              waiting: this.schemaChanges.some(
+                (r) => r.run_id === run.id && !r.resumed_at && r.status !== "cancelled",
+              ),
             }
           : null,
       };

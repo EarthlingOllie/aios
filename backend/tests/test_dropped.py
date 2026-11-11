@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import pytest
 from conftest import store_of
-from fake_model import ToolCall, model, use_model
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
@@ -20,6 +19,7 @@ from aios.datastores import dropped, schema_changes
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.testing.fake_model import ToolCall, model, use_model
 from aios.tools import build_tool
 
 TOOLS = [

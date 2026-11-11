@@ -865,7 +865,10 @@ export type ChatInvocation = {
 export type ChatAgentRun = Pick<
   RunSummary,
   "id" | "status" | "started_at" | "finished_at" | "tool_call_count" | "input_tokens" | "output_tokens"
->;
+> & {
+  /** Whether its turn ended waiting for a member to decide its schema change request. */
+  waiting: boolean;
+};
 
 /**
  * Messages of a chat, oldest first, and the state of each invocation they belong to and of every

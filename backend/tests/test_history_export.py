@@ -9,7 +9,6 @@ import uuid
 import pytest
 import test_workflow_runs as workflow_runs
 from conftest import delete_user, make_user, org_of, store_of
-from fake_model import model, replies, use_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text, update
 from test_agents import chat_body, make_agent, stop_during_searches
@@ -30,6 +29,7 @@ from aios.datastores import (
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, DataStore, HistoryExport, WorkflowRun
+from aios.testing.fake_model import model, replies, use_model
 from aios.workflows import execute_run
 
 

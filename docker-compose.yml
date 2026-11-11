@@ -1,6 +1,9 @@
 # Full stack locally: http://localhost:8080
 #   cp .env.example .env   # fill in the API keys
 #   docker compose up --build
+# The full-stack test's stack (profile `fullstack`, no API keys, no outbound calls), on :8090:
+#   docker compose --profile fullstack up --build --wait fullstack
+#   (see frontend/fullstack/README.md)
 name: aios
 
 x-backend: &backend
@@ -23,6 +26,28 @@ x-backend: &backend
       condition: service_healthy
     redis:
       condition: service_healthy
+
+# The full-stack test's API and workers (profile `fullstack`): the api image on the scripted model
+# (`aios.testing.scenarios`) with fake embeddings, and no keys, so nothing calls a provider (nor
+# Langfuse). Ignores .env, so a key there can't reach them.
+x-fullstack: &fullstack
+  profiles: [fullstack]
+  image: aios-api:local
+  pull_policy: never
+  environment: &fullstack-env
+    <<: *backend-env
+    PUBLIC_URL: http://localhost:8090
+    SCRIPTED_MODELS_ENABLED: "true"
+    LLM_MODEL: scripted:core-loop
+    EMBEDDING_MODEL: scripted:fake
+    # Each test registers its own account, from the one address.
+    REGISTER_RATE_LIMIT_PER_IP: 1000/hour
+    LOGIN_RATE_LIMIT_PER_IP: 1000/hour
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    files-bucket:
+      condition: service_completed_successfully
 
 services:
   db:
@@ -219,6 +244,68 @@ services:
       - ./frontend/nginx.compose.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on: [api]
     ports: ["8080:80"]
+
+  # ---------- The full-stack test's stack: `docker compose --profile fullstack up --wait fullstack`
+  # Everything a chat turn and an approval need, with the shared db, redis, rustfs, roles,
+  # bucket, migrations (platform and stores) and provisioning worker above. The test drives it
+  # through fullstack-web, on :8090 (frontend/playwright.fullstack.config.ts).
+  fullstack-api:
+    <<: *fullstack
+    build:
+      context: ./backend
+      target: api
+    environment:
+      <<: *fullstack-env
+      TRUSTED_PROXY_COUNT: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"]
+      interval: 2s
+      retries: 60
+
+  # The ingest worker's queue (documents and the run history's exports). On the api image, which
+  # has no Docling: the core loop ingests no documents, and the history needs none.
+  fullstack-worker:
+    <<: *fullstack
+    command: ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=1"]
+
+  fullstack-workflow-worker:
+    <<: *fullstack
+    command:
+      ["celery", "-A", "aios.worker", "worker", "-Q", "workflows", "--loglevel=INFO", "--concurrency=2"]
+
+  fullstack-web:
+    profiles: [fullstack]
+    image: aios-fullstack-web:local
+    build: ./frontend
+    volumes:
+      - ./frontend/nginx.fullstack.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      fullstack-api:
+        condition: service_healthy
+    ports: ["8090:80"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost/"]
+      interval: 2s
+      retries: 30
+
+  # The whole stack, up and ready: what `up --wait fullstack` waits for. Does nothing itself.
+  fullstack:
+    profiles: [fullstack]
+    image: aios-api:local
+    pull_policy: never
+    command: ["sleep", "infinity"]
+    init: true
+    depends_on:
+      fullstack-web:
+        condition: service_healthy
+      fullstack-worker:
+        condition: service_started
+      fullstack-workflow-worker:
+        condition: service_started
+      provisioning-worker:
+        condition: service_started
+      migrate-stores:
+        condition: service_completed_successfully
 
   # Claude Code on the stack's network, for debugging with full context (README, "Debug with
   # Claude Code"). Opt-in: docker compose --profile debug run --rm claude

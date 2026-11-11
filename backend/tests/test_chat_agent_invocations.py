@@ -3,7 +3,6 @@
 import asyncio
 from datetime import timedelta
 
-from fake_model import ToolCall, Usage, model, replies, use_model
 from sqlalchemy import func, update
 from test_agent_run_counters import searching_agent
 from test_chat_invocations import echo_agent, queued  # noqa: F401 (a fixture)
@@ -14,6 +13,7 @@ from test_workflows import agent_node, make_workflow
 from aios import checkpoints, firing, scheduler
 from aios.config import get_settings
 from aios.models import AgentRun, ChatInvocation
+from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
 from aios.tools import TOOLS
 
 

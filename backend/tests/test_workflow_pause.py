@@ -13,7 +13,6 @@ from datetime import timedelta
 
 import pytest
 from conftest import store_of
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from sqlalchemy import delete, func, update
 from test_agents import agent_body
 from test_data_tools import provisioned
@@ -39,6 +38,7 @@ from aios.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
+from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
 

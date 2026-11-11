@@ -2,7 +2,6 @@
 
 import asyncio
 
-from fake_model import ToolCall, briefs, model, replies, use_handoff, use_model
 from langchain_core.callbacks import BaseCallbackHandler
 from test_chat_agent_invocations import replies_from, say
 from test_chat_invocations import echo_agent, queued  # noqa: F401 (a fixture)
@@ -16,6 +15,7 @@ from aios.config import get_settings
 
 # The handoff's model as the app gets it: tests run it on `fake_model.briefs` by default.
 from aios.handoff import model as real_handoff_model
+from aios.testing.fake_model import ToolCall, briefs, model, replies, use_handoff, use_model
 
 
 def handoff_script(seen: list, api, chat: dict, ack: str, brief: str):

@@ -1,10 +1,10 @@
-from fake_model import replies, use_model
 from langfuse.langchain import CallbackHandler
 from pydantic import SecretStr
 from test_agents import chat_body, make_agent, text_deltas
 
 from aios import tracing
 from aios.config import get_settings
+from aios.testing.fake_model import replies, use_model
 
 
 def test_no_tracing_without_keys():

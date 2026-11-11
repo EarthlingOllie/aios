@@ -6,7 +6,6 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 from pydantic import ValidationError
 from sqlalchemy import select
 from test_agents import agent_body, chat_body, make_agent, spy_run
@@ -22,6 +21,14 @@ from aios.sandbox.base import (
     SandboxHandle,
     SandboxNotReached,
     SessionSpec,
+)
+from aios.testing.fake_model import (
+    ToolCall,
+    last_tool_results,
+    model,
+    replies,
+    tool_output,
+    use_model,
 )
 from aios.tools import TOOLS
 from aios.tools.run_python import RunPythonConfig

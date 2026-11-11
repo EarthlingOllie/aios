@@ -27,7 +27,10 @@ Mentioning an agent queues an invocation the same way, but its turn runs in an A
 process with a free slot claims it (`claim_turns`), which beats it while the handoff and then the
 turn run (`beat`).
 When the turn ends its reply, or why it failed, is posted back (`finish_turn`); one whose
-heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`).
+heartbeat has stopped lost its process, and is failed (`fail_stopped_turns`). A turn that ends
+waiting for a member to decide its schema change request leaves the invocation running, its card
+showing the run waiting, with no process beating it; the run's resume, once the request is
+decided, finishes it (`finish_resumed`).
 
 A run an invocation started is the organisation's, like any other: started by the member who
 mentioned it, executed for the organisation, and read by every member (`aios.api.agents`).
@@ -41,6 +44,7 @@ from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
+from aios.datastores.schema_changes import not_given
 from aios.models import (
     AgentRun,
     AgentRunStatus,
@@ -50,6 +54,7 @@ from aios.models import (
     ChatInvocationStatus,
     ChatMessage,
     ChatMessageKind,
+    SchemaChangeRequest,
     TriggerTargetKind,
     WorkflowRun,
     WorkflowRunStatus,
@@ -334,8 +339,33 @@ def finish_turn(db: Session, invocation_id: int, error: str | None) -> None:
         failed(db, invocation, RUN_DELETED)
     elif error is not None:
         failed(db, invocation, error)
-    else:
+    elif not db.scalar(select(waiting_on_a_request(invocation.agent_run_id))):
         _finish(db, invocation, ChatInvocationStatus.succeeded, last_reply(invocation.agent_run_id))
+    # Otherwise it waits, running, for the run's resume to finish it (`finish_resumed`).
+
+
+def waiting_on_a_request(run_id):
+    """Whether the agent run (an id, or a column of one) waits on a schema change request: not
+    yet resumed with its outcome."""
+    return (
+        select(SchemaChangeRequest.id)
+        .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
+        .exists()
+    )
+
+
+def finish_resumed(db: Session, run_id: int, error: str | None) -> None:
+    """Finish the agent invocation whose run waited on a schema change request, now the run has
+    been resumed (`error` None if it went fine), as `finish_turn` does: unless it waits on
+    another. In the caller's transaction; nothing for a run no invocation is waiting on."""
+    invocation_id = db.scalar(
+        select(ChatInvocation.id).where(
+            ChatInvocation.agent_run_id == run_id,
+            ChatInvocation.status == ChatInvocationStatus.running,
+        )
+    )
+    if invocation_id is not None:
+        finish_turn(db, invocation_id, error)
 
 
 def fail_stopped_turns(
@@ -350,6 +380,8 @@ def fail_stopped_turns(
             ChatInvocation.target_kind == TriggerTargetKind.agent,
             ChatInvocation.status.in_(UNFINISHED),
             ChatInvocation.heartbeat_at < func.now() - stale_after,
+            # No process beats a run waiting for a member's decision.
+            ~waiting_on_a_request(ChatInvocation.agent_run_id),
             true() if chat_id is None else ChatInvocation.chat_id == chat_id,
         )
         .with_for_update(skip_locked=True)
