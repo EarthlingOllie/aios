@@ -98,9 +98,12 @@ timestamp, a random token).
 | `checks` | Ruff's lint and formatting, and `alembic check` (the models match the migrations), once. |
 | `backend / shard N` | One group of the backend suite, from `backend-tests.yml`; the shards only run tests. |
 | `backend-gate` | Passes only if every backend shard passed. |
-| `frontend` | The frontend's build, unit tests and browser tests. |
-| `fullstack` | The core loop against the real stack: `frontend/fullstack/README.md`. |
+| `frontend` | The frontend's build and unit tests, once. |
+| `browser (N)` | One shard of the browser tests (`frontend/e2e/`). |
+| `frontend-gate` | Passes only if the build, the unit tests and every browser shard passed; merges the shards' reports. |
+| `fullstack-shard (N)` | One shard of the core loop against the real stack: `frontend/fullstack/README.md`. |
+| `fullstack` | Passes only if every full-stack shard passed; merges the shards' reports. |
 | `terraform` | Formatting, validation and `terraform test`. |
 
-Branch protection requires `checks`, `backend-gate`, the frontend's, `fullstack` and `terraform`.
+Branch protection requires `checks`, `backend-gate`, `frontend-gate`, `fullstack` and `terraform`.
 Requiring the gate rather than each shard keeps that list the same when the shard count changes.
