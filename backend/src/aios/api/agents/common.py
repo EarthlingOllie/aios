@@ -7,7 +7,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
 from aios.api.skills import lock_skills
@@ -24,6 +24,7 @@ from aios.tools import (
     ToolError,
     ToolOrganisation,
     check_stored_tool,
+    unusable_tools,
     validate_tool,
 )
 
@@ -85,6 +86,9 @@ class AgentVersionOut(BaseModel):
     instructions: str
     skills: list[AgentSkillOut]
     tools: list[AgentToolOut]
+    # Why the version can't run in the organisation (a tool it needs is missing from the
+    # library, say, as an imported version's may be), or None if it can.
+    unrunnable: str | None = None
 
 
 class AgentSummary(Provenance, Archived):
@@ -229,8 +233,18 @@ def tool_out(tool: AgentVersionTool) -> AgentToolOut:
     )
 
 
-def version_out(version: AgentVersion, known: dict[int, UserOut]) -> AgentVersionOut:
-    """The version, with who saved it from `known` (`provenance.people`)."""
+def unrunnable(version: AgentVersion, org: ToolOrganisation) -> str | None:
+    """Why the version can't run in `org`: a tool it has can't be built there (missing from the
+    library, or its stored settings refused); None if it can."""
+    reason = unusable_tools([(t.tool_key, t.config) for t in version.tools], org)
+    return f"This version can't run: {reason}" if reason else None
+
+
+def version_out(
+    version: AgentVersion, known: dict[int, UserOut], org: ToolOrganisation | None = None
+) -> AgentVersionOut:
+    """The version, with who saved it from `known` (`provenance.people`), and, given the
+    organisation it's in, whether it can run there."""
     skills = []
     for sv in version.skills:
         skill = sv.skill
@@ -258,12 +272,14 @@ def version_out(version: AgentVersion, known: dict[int, UserOut]) -> AgentVersio
         instructions=version.instructions,
         skills=skills,
         tools=[tool_out(t) for t in version.tools],
+        unrunnable=None if org is None else unrunnable(version, org),
     )
 
 
 def agent_out(db: Session, org_id: int, agent: Agent) -> AgentOut:
     """The agent (in the organisation `org_id`'s store), with who made, changed and archived it
-    read through the platform session `db`."""
+    read through the platform session `db`, and whether its current version can run."""
+    store = object_session(agent)
     version = agent.current_version
     known = people(
         db,
@@ -276,7 +292,7 @@ def agent_out(db: Session, org_id: int, agent: Agent) -> AgentOut:
         description=agent.description,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
-        current_version=version_out(version, known),
+        current_version=version_out(version, known, ToolOrganisation(org_id, store)),
         **provenance(db, agent, known),
         **archived(agent, known),
     )

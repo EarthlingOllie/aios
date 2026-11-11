@@ -28,6 +28,7 @@ from aios.tools.registry import (
     check_stored_tool,
     register,
     stored_settings,
+    unusable_tools,
     validate_tool,
 )
 
@@ -41,5 +42,6 @@ __all__ = [
     "check_stored_tool",
     "register",
     "stored_settings",
+    "unusable_tools",
     "validate_tool",
 ]

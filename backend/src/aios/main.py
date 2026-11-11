@@ -18,6 +18,7 @@ from aios.api import (
     data,
     documents,
     dropped,
+    exports,
     me,
     notifications,
     organisation,
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(tools.router)
     app.include_router(workflows.router)
+    app.include_router(exports.router)
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
     app.include_router(audit_api.router)

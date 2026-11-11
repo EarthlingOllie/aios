@@ -14,14 +14,14 @@
 
 **Blocked by:** [Phase 1 · 03: Agents, skills and workflows move to the store](../phase-1-foundation/03-move-agents-skills-workflows.md), [Phase 1 · 08: Audit log and approval rules](../phase-1-foundation/08-audit-log-and-approval-rules.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Editors and admins can export and import. Participants get a 403.
-- [ ] An exported file holds what the spec lists and nothing else, and an exported organisation assistant imports as an ordinary agent.
-- [ ] A round trip between two organisations works, and editing either side never changes the other.
-- [ ] Clashing names get "(imported)", then "(imported 2)". Skills are never matched to existing ones by name.
-- [ ] An agent used twice in a workflow is exported once and created once, with both nodes pointing at it. Nested workflows import in full.
-- [ ] An imported version needing a missing tool or connector says so on its page and refuses to start.
-- [ ] A dry run reports what would be created, renamed and left unrunnable, and writes nothing.
-- [ ] A file that isn't an export gets a 422, a file that's too large gets a 413, and nothing is created.
-- [ ] Exports and imports are recorded in the audit log.
+- [x] Editors and admins can export and import. Participants get a 403.
+- [x] An exported file holds what the spec lists and nothing else, and an exported organisation assistant imports as an ordinary agent.
+- [x] A round trip between two organisations works, and editing either side never changes the other.
+- [x] Clashing names get "(imported)", then "(imported 2)". Skills are never matched to existing ones by name.
+- [x] An agent used twice in a workflow is exported once and created once, with both nodes pointing at it. Nested workflows import in full.
+- [x] An imported version needing a missing tool or connector says so on its page and refuses to start.
+- [x] A dry run reports what would be created, renamed and left unrunnable, and writes nothing.
+- [x] A file that isn't an export gets a 422, a file that's too large gets a 413, and nothing is created.
+- [x] Exports and imports are recorded in the audit log.

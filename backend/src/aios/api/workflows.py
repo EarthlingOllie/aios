@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import Row, delete, func, or_, select
-from sqlalchemy.orm import Session, aliased, selectinload
+from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
 from aios import audit, checkpoints, invocations, used_by
 from aios.api.agents.runs import InvocationRecordOut, run_chats
@@ -28,6 +28,7 @@ from aios.datastores.models import (
     Agent,
     AgentRun,
     AgentVersion,
+    AgentVersionTool,
     Invocation,
     SchemaChangeRequest,
     Trigger,
@@ -48,6 +49,7 @@ from aios.models import (
 )
 from aios.permissions import Action, allow
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
+from aios.tools import ToolOrganisation, unusable_tools
 from aios.versioning import NodeSpec, save_workflow_version
 from aios.worker import run_workflow_task
 from aios.workflows import (
@@ -136,6 +138,9 @@ class WorkflowVersionOut(BaseModel):
     created_by: UserOut | None
     nodes: list[WorkflowNodeOut]
     edges: list[WorkflowEdgeOut]
+    # Why a run of the version can't start: an agent it runs, at any depth, can't run in the
+    # organisation (a tool it needs is missing, as an imported version's may be); None if not.
+    unrunnable: str | None = None
 
 
 class WorkflowSummary(Provenance, Archived):
@@ -373,9 +378,36 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
     )
 
 
-def version_out(db: Session, org_id: int, version: WorkflowVersion) -> WorkflowVersionOut:
+def unrunnable(store: Session, version: WorkflowVersion, org: ToolOrganisation) -> str | None:
+    """Why a run of the version can't start in `org` because of an agent it runs, at any depth,
+    whose tools can't be built there (as `load_graph` would refuse it), the first by name; None
+    if none. One query, however many nodes and levels."""
+    reach = reachable_versions(version.id)
+    rows = store.execute(
+        select(Agent.name, AgentVersion.version, AgentVersionTool.tool_key, AgentVersionTool.config)
+        .select_from(WorkflowNode)
+        .join(AgentVersion, AgentVersion.id == WorkflowNode.agent_version_id)
+        .join(Agent, Agent.id == AgentVersion.agent_id)
+        .join(AgentVersionTool, AgentVersionTool.agent_version_id == AgentVersion.id)
+        .where(WorkflowNode.workflow_version_id.in_(select(reach.c.id)))
+        .order_by(Agent.name, AgentVersion.version, AgentVersionTool.position)
+    ).all()
+    tools: dict[tuple[str, int], dict[str, dict]] = {}
+    for name, number, key, config in rows:
+        tools.setdefault((name, number), {})[key] = config
+    for (name, number), pinned in tools.items():
+        if why := unusable_tools(pinned.items(), org):
+            return f"This version can't run: Agent {name} v{number} can't run: {why}"
+    return None
+
+
+def version_out(
+    db: Session, org_id: int, version: WorkflowVersion, *, runnable: bool = True
+) -> WorkflowVersionOut:
     """The version (in the organisation `org_id`'s store), with who saved it read through the
-    platform session `db`."""
+    platform session `db`, and, with `runnable`, whether a run of it can start (not for a run's
+    page, which polls a run already going and needn't read its agents' tools)."""
+    store = object_session(version)
     saved_by = people(db, org_id, [version.created_by]).get(version.created_by)
     return WorkflowVersionOut(
         id=version.id,
@@ -385,6 +417,9 @@ def version_out(db: Session, org_id: int, version: WorkflowVersion) -> WorkflowV
         created_by=saved_by,
         nodes=[node_out(n) for n in version.nodes],
         edges=[WorkflowEdgeOut(source=e.source, target=e.target) for e in version.edges],
+        unrunnable=unrunnable(store, version, ToolOrganisation(org_id, store))
+        if runnable
+        else None,
     )
 
 
@@ -1163,7 +1198,7 @@ def workflow_run_out(
     invocation = invocations.of_workflow_run(store, run_id)
     return WorkflowRunOut(
         **summary.model_dump(),
-        version=version_out(db, organisation_id, version),
+        version=version_out(db, organisation_id, version, runnable=False),
         steps=steps_out,
         stale_pins=stale,
         invocation=None if invocation is None else InvocationRecordOut.model_validate(invocation),
@@ -1193,7 +1228,7 @@ def get_run_subworkflow(
         if node is None or node.kind != WorkflowNodeKind.workflow:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
         version_id = node.subworkflow_version_id
-    return version_out(db, org.id, load_version(store, version_id))
+    return version_out(db, org.id, load_version(store, version_id), runnable=False)
 
 
 @router.delete(
