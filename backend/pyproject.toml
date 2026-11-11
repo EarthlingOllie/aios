@@ -33,7 +33,7 @@ dependencies = [
 ingest = ["docling==2.132.0", "torch==2.14.1", "torchvision==0.29.1"]
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.16.10"]
+dev = ["pytest==9.1.1", "pytest-randomly==5.0.0", "pytest-split==0.11.0", "ruff==0.16.10"]
 
 [build-system]
 requires = ["hatchling==1.32.4"]
@@ -65,3 +65,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest-randomly runs the tests in random order; pytest-split shards them (`--splits N --group
+# I`), balanced on .test_durations. least_duration picks each shard's tests by id and duration
+# alone, so it doesn't depend on the order: docs/testing.md.
+addopts = ["--splitting-algorithm=least_duration"]

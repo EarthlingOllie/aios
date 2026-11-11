@@ -15,21 +15,25 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Three consecutive CI runs with different seeds pass.
-- [ ] No test relies on another test's data, or counts every user, organisation or store.
-- [ ] The slowest backend shard takes close to total time divided by N, plus setup.
-- [ ] A new test file with no recorded duration still runs, in some shard.
-- [ ] Lint, formatting and the migration check run once, in their own job, and shards don't
+- [ ] Three consecutive CI runs with different seeds pass. (Local sharded runs with three
+  seeds pass, after fixing the one order-dependent test the first found, but for failures of
+  this machine's environment; awaits CI.)
+- [x] No test relies on another test's data, or counts every user, organisation or store.
+- [ ] The slowest backend shard takes close to total time divided by N, plus setup. (Locally the
+  four shards finish within 7% of each other; awaits CI.)
+- [x] A new test file with no recorded duration still runs, in some shard.
+- [x] Lint, formatting and the migration check run once, in their own job, and shards don't
   repeat them.
 - [ ] A failing shard fails the gate. Branch protection requires the checks job, the backend
   gate, the frontend gate, the full-stack job and the Terraform job, as the spec sets out
-  (ticket 06 adds the frontend gate and the full-stack shards).
-- [ ] Changing the shard count is a one-line change.
-- [ ] New test dependencies are pinned exactly, per the dependency policy.
-- [ ] The testing docs page explains:
-  - [ ] running one shard locally;
-  - [ ] reproducing a seed;
-  - [ ] running in file order;
-  - [ ] refreshing durations.
+  (ticket 06 adds the frontend gate and the full-stack shards). (`backend-gate` is wired in
+  ci.yml; branch protection is a repository setting, and awaits an admin and the first CI run.)
+- [x] Changing the shard count is a one-line change.
+- [x] New test dependencies are pinned exactly, per the dependency policy.
+- [x] The testing docs page explains:
+  - [x] running one shard locally;
+  - [x] reproducing a seed;
+  - [x] running in file order;
+  - [x] refreshing durations.

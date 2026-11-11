@@ -1,0 +1,56 @@
+name: Test durations
+
+# Refreshes backend/.test_durations, which balances the backend shards, and proposes it as a pull
+# request: weekly, or by hand (Actions > Test durations > Run workflow). docs/testing.md.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The suite, sharded as in CI, recording each test's duration. Any number of shards will do:
+  # a test's duration doesn't depend on which shard ran it.
+  backend:
+    uses: ./.github/workflows/backend-tests.yml
+    with:
+      shards: 4
+      store-durations: true
+
+  propose:
+    needs: backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: durations-*
+          merge-multiple: true
+          path: durations
+      # Only the tests that ran, so tests that are gone drop out; to the millisecond, so the
+      # diff stays readable.
+      - name: Merge the shards' durations
+        run: |
+          jq -s 'add | with_entries(.value |= (. * 1000 | round / 1000))' durations/*.json \
+            | jq -S --indent 4 . > backend/.test_durations
+      - name: Propose them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet backend/.test_durations; then
+            echo "The durations haven't changed."
+            exit 0
+          fi
+          branch=test-durations/${{ github.run_id }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Refresh the backend's test durations"
+          git push origin "$branch"
+          gh pr create --head "$branch" --title "Refresh the backend's test durations" \
+            --body "From run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Balances the backend shards: docs/testing.md."

@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  backend:
+  # Lint, formatting and the migration check, once: the backend shards only run tests.
+  checks:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,31 +22,10 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U aios" --health-interval 2s --health-retries 30
-      # The auth endpoints' rate limits (aios.ratelimits), which every test resets.
-      redis:
-        image: redis:8-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
-      # Stands in for S3, as in Compose: uploaded files (aios.datastores.files).
-      rustfs:
-        image: rustfs/rustfs:1.0.1
-        env:
-          RUSTFS_ACCESS_KEY: rustfsadmin
-          RUSTFS_SECRET_KEY: rustfsadmin
-        ports: ["9000:9000"]
-        options: >-
-          --health-cmd "curl -fs http://localhost:9000/health" --health-interval 2s
-          --health-retries 30
-    # As deployed: the master user (`aios`) only creates the roles; migrations and tests run as
-    # the app's role. The master user's DSN also lets tests/test_db_roles.py run.
     env:
       DATABASE_URL: postgresql+psycopg://aios_app:aios_app@localhost:5432/aios
       DATA_STORE_PROVISIONER_URL: postgresql+psycopg://aios_provisioner:aios_provisioner@localhost:5432/aios
       DATABASE_ADMIN_URL: postgresql+psycopg://aios:aios@localhost:5432/aios
-      DATA_STORE_FILES_ENDPOINT: http://localhost:9000
-      DATA_STORE_FILES_ACCESS_KEY: rustfsadmin
-      DATA_STORE_FILES_SECRET_KEY: rustfsadmin
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
@@ -57,7 +37,20 @@ jobs:
       - run: uv run python -m aios.db_roles
       - run: uv run alembic upgrade head
       - run: uv run alembic check
-      - run: uv run pytest
+
+  # The backend suite, sharded: backend-tests.yml, docs/testing.md.
+  backend:
+    uses: ./.github/workflows/backend-tests.yml
+    with:
+      shards: 4 # the number of backend shards
+
+  # The backend's one required check: passes only if every shard passed.
+  backend-gate:
+    needs: backend
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.backend.result }}" = success
 
   frontend:
     runs-on: ubuntu-latest
