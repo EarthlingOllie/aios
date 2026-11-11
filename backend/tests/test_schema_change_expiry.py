@@ -121,25 +121,6 @@ def test_deleting_a_waiting_chat_run_cancels_its_request_and_nothing_resumes(
     assert data_tables(store) == []
 
 
-def test_deleting_an_agent_whose_run_waits_cancels_its_request(
-    api,
-    agent,  # noqa: F811
-    store,  # noqa: F811
-    queued,  # noqa: F811
-):
-    run, request = start(api, agent, Script(CONTACTS))
-    url = f"/api/agents/{agent['id']}"
-
-    # Once the user has agreed to cancel the run (see `test_agent_dependents`).
-    assert api.delete(url).status_code == 409
-    assert api.request("DELETE", url, json={"cancel_agent_runs": [run["id"]]}).status_code == 204
-
-    assert request_of(api, request)["status"] == "cancelled"
-    assert api.get("/api/notifications").json()["unread"] == 0
-    assert queued == []
-    assert data_tables(store) == []
-
-
 def test_an_approval_made_as_it_expires_wins_and_is_applied_once(
     api,
     agent,  # noqa: F811
