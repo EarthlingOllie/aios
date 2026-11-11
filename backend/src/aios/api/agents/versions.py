@@ -26,6 +26,7 @@ from aios.datastores.models import AgentVersion
 from aios.db import DB, DbId
 from aios.models import AgentRun
 from aios.permissions import Action, allow
+from aios.tools import ToolOrganisation
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -104,7 +105,7 @@ def restore_agent_version(
     agent = get_org_agent(store, agent_id)
     old = get_agent_version(store, agent, number)
     # Kept as stored, like an unchanged save, but only if a run could still load them.
-    build_version_tools(old, "That version can't be restored")
+    build_version_tools(old, ToolOrganisation(org.id, store), "That version can't be restored")
     tools = [(t.tool_key, t.config) for t in old.tools]
     skill_ids = {sv.skill_id for sv in old.skills}
     if any(s.archived_at is not None for s in lock_skills(store, skill_ids)):

@@ -334,9 +334,9 @@ class _Heartbeat:
         await asyncio.to_thread(self.thread.join)
 
 
-def _load(data_store_id, version_id: int, strict: bool = True) -> Graph:
+def _load(data_store_id, organisation_id: int, version_id: int, strict: bool = True) -> Graph:
     with store_session(data_store_id, "ro") as store:
-        return load_graph(store, version_id, strict=strict)
+        return load_graph(store, version_id, organisation_id, strict=strict)
 
 
 # A run that hasn't ended: what a worker ends itself, and a run waiting for a decision.
@@ -484,7 +484,11 @@ async def _execute(claimed: Claimed) -> None:
             # Loaded again rather than trusted from when the run was started: e.g. a tool may
             # have left the library since. A run resuming fails only at a node that runs again.
             graph = await asyncio.to_thread(
-                _load, run.data_store_id, claimed.version_id, not run.recorded
+                _load,
+                run.data_store_id,
+                run.organisation_id,
+                claimed.version_id,
+                not run.recorded,
             )
             output = await _run_graph(run, graph, (), claimed.input)
     except TimeoutError:

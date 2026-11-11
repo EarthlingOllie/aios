@@ -29,6 +29,7 @@ from aios.main import app
 from aios.models import DataStore, Organisation, OrganisationMember, User
 from aios.passwords import hash_password
 from aios.sandbox import runner
+from aios.sources import uploads_source_id
 from aios.testing import fake_model
 
 # The first segments of the API's unscoped paths (`aios.api.scoping`): what's the person's, not
@@ -311,7 +312,14 @@ def add_document(store_id: uuid.UUID, data: bytes = b"# Hi", **values) -> int:
     """A document in the store, with its file in S3, as an upload leaves it; returns its id."""
     with store_session(store_id, "rw") as store:
         doc = Document(
-            **{"filename": "a.md", "s3_key": "", "size_bytes": len(data), "sha256": "", **values}
+            **{
+                "filename": "a.md",
+                "s3_key": "",
+                "size_bytes": len(data),
+                "sha256": "",
+                "source_id": uploads_source_id(store),
+                **values,
+            }
         )
         store.add(doc)
         store.flush()

@@ -8,8 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { Download, FileText, Loader2, Trash2, Upload, X } from "lucide-react";
+import { useSearchParams } from "react-router";
 
-import { formatDate, RoleNote, usePoll } from "@/components/crud";
+import { formatDate, RoleNote, selectClass, useLoad, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
@@ -27,6 +28,7 @@ import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-sto
 import { formatBytes } from "@/lib/format-bytes";
 import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
+import { documentsFrom } from "@/lib/sources";
 import { cn } from "@/lib/utils";
 
 const statusVariant = {
@@ -376,14 +378,40 @@ export function Documents() {
 }
 
 /**
- * The Data page's Documents: every document in the organisation's store with its ingest status
- * (and why one failed), chunk count, size, and when and by whom it was uploaded, to download or
- * delete. Uploads from the Chats section's panel land
- * in the same list.
+ * Which source's documents the Documents tab shows, kept in the URL as `?source=<id>` (all of
+ * them without it), and the sources to choose from: every source the store has, so one with no
+ * documents yet can be chosen too.
+ */
+function useSourceFilter(ready: boolean) {
+  const [params, setParams] = useSearchParams();
+  const raw = params.get("source");
+  const chosen = raw && /^\d+$/.test(raw) ? Number(raw) : undefined;
+  const sources = useLoad(
+    useCallback(() => (ready ? api.listSources() : Promise.resolve([])), [ready]),
+  );
+  const choose = (id: number | undefined) =>
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p);
+        if (id === undefined) next.delete("source");
+        else next.set("source", String(id));
+        return next;
+      },
+      { replace: true },
+    );
+  return { chosen, sources: sources.data ?? [], choose };
+}
+
+/**
+ * The Data page's Documents: every document in the organisation's store with the source it
+ * belongs to, its ingest status (and why one failed), chunk count, size, and when and by whom it
+ * was uploaded, to download or delete; filtered by source. Uploads from the Chats section's
+ * panel land in the same list.
  */
 export function DocumentsSection() {
   const { storeStatus, storeError, documents } = useDocumentsList();
-  const { docs } = documents;
+  const filter = useSourceFilter(storeStatus === "ready");
+  const docs = documents.docs && documentsFrom(documents.docs, filter.chosen);
   const refusal = useRefusal("documents");
 
   const onDelete = (doc: DocumentInfo) => {
@@ -406,11 +434,29 @@ export function DocumentsSection() {
         documents={documents}
         className="px-3 py-2"
       />
+      {filter.sources.length > 0 && (
+        <select
+          aria-label="Source"
+          value={filter.chosen ?? ""}
+          onChange={(e) => filter.choose(e.target.value ? Number(e.target.value) : undefined)}
+          className={cn(selectClass, "w-auto self-start")}
+        >
+          <option value="">All sources</option>
+          {filter.sources.map((source) => (
+            <option key={source.id} value={source.id}>
+              {source.name}
+            </option>
+          ))}
+        </select>
+      )}
       {documents.loading && <DocumentsLoading />}
       {isEmpty(documents) && (
         <p className="text-muted-foreground text-sm">
           No documents yet. Upload PDFs, Office files, web pages, text or images to search them.
         </p>
+      )}
+      {docs && docs.length === 0 && filter.chosen !== undefined && (
+        <p className="text-muted-foreground text-sm">No documents from this source.</p>
       )}
       {docs && docs.length > 0 && (
         <ul className="divide-y rounded-md border" aria-label="Documents">
@@ -420,6 +466,8 @@ export function DocumentsSection() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm">{doc.filename}</p>
                 <p className="text-muted-foreground text-xs">
+                  <span title="Source">{doc.source.name}</span>
+                  {" · "}
                   Uploaded {formatDate(doc.created_at)}
                   {doc.uploaded_by && ` by ${personName(doc.uploaded_by)}`}
                   {doc.status === "ready" &&

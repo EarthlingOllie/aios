@@ -35,6 +35,7 @@ from aios.sandbox.sessions import (
 from aios.tools import (
     AgentTool,
     ToolError,
+    ToolOrganisation,
 )
 
 router = APIRouter(prefix="/api")
@@ -150,11 +151,12 @@ def run_summary(db: Session, run_id: int) -> RunSummary:
 
 
 def build_version_tools(
-    version: AgentVersion, refusal: str = "This agent version can't be run"
+    version: AgentVersion, org: ToolOrganisation, refusal: str = "This agent version can't be run"
 ) -> list[AgentTool]:
-    """The version's tools, built from their stored settings; a 409 if one can't be."""
+    """The version's tools, built from their stored settings to run in `org`; a 409 if one
+    can't be."""
     try:
-        return version_tools(version)
+        return version_tools(version, org)
     except ToolError as exc:
         # E.g. the tool has since left the library, or its settings model now rejects a value.
         raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
@@ -195,7 +197,7 @@ def new_agent_run(
     """
     lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
-    build_version_tools(agent.current_version)
+    build_version_tools(agent.current_version, ToolOrganisation(organisation_id, store))
     # Pin the version: later edits to the agent don't change this conversation.
     run = AgentRun(
         organisation_id=organisation_id,

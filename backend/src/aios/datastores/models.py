@@ -446,6 +446,66 @@ class WorkflowEdge(StoreBase):
     )
 
 
+class SourceKind(enum.StrEnum):
+    upload = "upload"
+    url = "url"
+    webhook = "webhook"
+    email = "email"
+    connector = "connector"
+
+
+class SourceStatus(enum.StrEnum):
+    active = "active"
+    paused = "paused"
+    failing = "failing"
+    needs_reauth = "needs_reauth"
+    removing = "removing"
+
+
+# The one source every store has, which every uploaded document belongs to (`aios.sources`).
+UPLOADS_NAME = "Uploads"
+
+
+class Source(StoreBase):
+    """Something that brings content into the store (`aios.sources`). Every store has exactly
+    one upload source, Uploads, made with the store (the store tree's 0010): every uploaded
+    document belongs to it, and it can't be paused or removed. Its settings never hold secrets."""
+
+    __tablename__ = "sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[SourceKind] = mapped_column(Enum(SourceKind, name="source_kind"))
+    name: Mapped[str] = mapped_column(String(255))
+    settings: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"))
+    status: Mapped[SourceStatus] = mapped_column(
+        Enum(SourceStatus, name="source_status"), server_default=SourceStatus.active.value
+    )
+    # How often it syncs, in seconds; null for Uploads, which doesn't.
+    interval_seconds: Mapped[int | None] = mapped_column(Integer)
+    # Where its last committed sync got to, as its kind's adapter writes it.
+    cursor: Mapped[str | None] = mapped_column(Text)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Syncs failed in a row.
+    failure_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    # The member who added it, by platform user id; null for Uploads.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        # Exactly one Uploads: the migration makes it, and no second can be added.
+        Index(
+            "uq_sources_upload",
+            "kind",
+            unique=True,
+            postgresql_where=sql_text("kind = 'upload'"),
+        ),
+        {"comment": "What brings content into the store: Uploads, and later synced sources"},
+    )
+
+
 class DocumentStatus(enum.StrEnum):
     pending = "pending"
     processing = "processing"
@@ -473,14 +533,19 @@ class Document(StoreBase):
     # The member who uploaded it, by platform user id (a store has no users table, so no
     # foreign key); null for documents from before it was recorded.
     uploaded_by: Mapped[int | None] = mapped_column(Integer)
+    # The source it belongs to: Uploads for an upload. Required.
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    source: Mapped[Source] = relationship()
     chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="Chunk.ordinal",
     )
+
+    __table_args__ = (Index("ix_documents_source_id", "source_id"),)
 
 
 class Chunk(StoreBase):

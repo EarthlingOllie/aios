@@ -177,6 +177,14 @@ type WorkflowRow = {
   updated_by: ChatUser | null;
 };
 
+/** A source: what brings content into the store. The store starts with Uploads. */
+export type SourceRow = {
+  id: number;
+  kind: "upload" | "url" | "webhook" | "email" | "connector";
+  name: string;
+  status: "active" | "paused" | "failing" | "needs_reauth" | "removing";
+  created_at: string;
+};
 export type DocumentRow = {
   id: number;
   filename: string;
@@ -186,6 +194,8 @@ export type DocumentRow = {
   size_bytes: number;
   /** The member who uploaded it; null for one from before uploads were recorded. */
   uploaded_by: ChatUser | null;
+  /** The source it belongs to: Uploads unless it's set. */
+  source: Pick<SourceRow, "id" | "kind" | "name">;
   created_at: string;
 };
 export type TableColumnRow = {
@@ -592,6 +602,10 @@ export class FakeApi {
   };
   /** Times "delete exported history" was asked for. */
   exportedHistoryDeletes = 0;
+  /** The organisation's sources: Uploads, made with the store, and any `addSource` adds. */
+  sources: SourceRow[] = [
+    { id: 1, kind: "upload", name: "Uploads", status: "active", created_at: NOW },
+  ];
   /** The organisation's documents, newest first. */
   documents: DocumentRow[] = [];
   /** How many times the app asked for the list of documents. */
@@ -837,7 +851,20 @@ export class FakeApi {
   }
 
   /** Adds a document, as if uploaded earlier. */
+  /** Adds a source other than Uploads, as later kinds of source will. */
+  addSource(name: string, kind: SourceRow["kind"] = "url"): SourceRow {
+    const source: SourceRow = { id: this.id(), kind, name, status: "active", created_at: NOW };
+    this.sources.push(source);
+    return source;
+  }
+
+  private sourceOut(source: SourceRow) {
+    const document_count = this.documents.filter((d) => d.source.id === source.id).length;
+    return { ...source, document_count };
+  }
+
   addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
+    const { id, kind, name } = this.sources[0];
     const doc: DocumentRow = {
       id: this.id(),
       filename,
@@ -848,6 +875,7 @@ export class FakeApi {
       uploaded_by: null,
       created_at: NOW,
       ...fields,
+      source: fields.source ? { id: fields.source.id, kind: fields.source.kind, name: fields.source.name } : { id, kind, name },
     };
     this.documents.unshift(doc);
     return doc;
@@ -2197,6 +2225,8 @@ export class FakeApi {
     if (
       path === "/api/documents" ||
       path.startsWith("/api/documents/") ||
+      path === "/api/sources" ||
+      path.startsWith("/api/sources/") ||
       path === "/api/search" ||
       path.startsWith("/api/data/")
     ) {
@@ -2233,6 +2263,25 @@ export class FakeApi {
               lexical_rank: i + 1,
             })),
         );
+      }
+      if (path === "/api/sources" && method === "GET") {
+        return reply(200, this.sources.map((s) => this.sourceOut(s)));
+      }
+      if ((m = path.match(/^\/api\/sources\/(\d+)$/))) {
+        const source = this.sources.find((s) => s.id === Number(m![1]));
+        if (!source) return fail(404, "Not Found");
+        if (method === "GET") return reply(200, this.sourceOut(source));
+        if (this.roleOf(this.me.id) !== "admin") {
+          const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
+          return fail(403, `${who} can't add, change, pause or remove sources. Ask an admin.`);
+        }
+        if (source.kind === "upload") {
+          return fail(
+            409,
+            "Uploads can't be paused or removed: it's where every uploaded document goes, so uploading is always on.",
+          );
+        }
+        return fail(404, "Not Found");
       }
       if ((m = path.match(/^\/api\/documents\/(\d+)$/)) && method === "DELETE") {
         const before = this.documents.length;

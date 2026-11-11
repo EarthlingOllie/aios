@@ -41,6 +41,7 @@ DOCUMENTS = (BUILDERS, "documents")
 DECIDE = (BUILDERS, "schema change")  # decide schema changes (approval rules refine it)
 RUN_ORGANISATION = (ADMINS, "organisation")  # roles, invitations, name, settings, deletion
 RESTORE = (ADMINS, "restore")  # restores need an admin
+SOURCES = (ADMINS, "sources")  # add, change, pause or remove sources
 LEAVE = (EVERYONE, None)
 
 # Every route under the organisation prefix, by method and path after it, and its row.
@@ -82,6 +83,10 @@ ROUTES = {
     ("DELETE", "/documents/{document_id}"): DOCUMENTS,
     ("GET", "/documents/{document_id}/download"): READ,
     ("GET", "/search"): READ,
+    ("GET", "/sources"): READ,
+    ("GET", "/sources/{source_id}"): READ,
+    ("PATCH", "/sources/{source_id}"): SOURCES,
+    ("DELETE", "/sources/{source_id}"): SOURCES,
     ("GET", "/dropped"): READ,
     ("POST", "/dropped/{dropped_id}/restore"): RESTORE,
     ("GET", "/organisation"): READ,

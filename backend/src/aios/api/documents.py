@@ -14,11 +14,12 @@ from aios.api.organisation import UserOut, users_out
 from aios.auth import CurrentDataStore, CurrentUser
 from aios.config import get_settings
 from aios.datastores import files, quota, store_session
-from aios.datastores.models import Chunk, Document, DocumentStatus
+from aios.datastores.models import Chunk, Document, DocumentStatus, Source, SourceKind
 from aios.db import DbId
 from aios.models import DataStoreStatus
 from aios.permissions import Action, allow
 from aios.search import hybrid_search
+from aios.sources import uploads_source_id
 from aios.worker import ingest_document_task
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,14 @@ router = APIRouter(prefix="/api")
 # Where documents' ids come from (an upload takes its id before its row is inserted): the id
 # column's own sequence, as Postgres knows it.
 DOCUMENT_IDS = func.pg_get_serial_sequence(Document.__table__.fullname, "id")
+
+
+class DocumentSourceOut(BaseModel):
+    """The source a document belongs to (`aios.sources`): Uploads for an upload."""
+
+    id: int
+    kind: SourceKind
+    name: str
 
 
 class DocumentOut(BaseModel):
@@ -40,6 +49,7 @@ class DocumentOut(BaseModel):
     # The member who uploaded it; null for documents from before it was recorded, and once
     # their account is gone.
     uploaded_by: UserOut | None
+    source: DocumentSourceOut
     created_at: datetime
 
 
@@ -79,17 +89,22 @@ def data_store(store_id: CurrentDataStore):
 
 
 @router.get("/documents", response_model=list[DocumentOut], dependencies=[allow(Action.read)])
-def list_documents(store_id: CurrentDataStore):
-    """The organisation's documents, newest first, with who uploaded each."""
+def list_documents(store_id: CurrentDataStore, source_id: DbId | None = None):
+    """The organisation's documents, newest first, with who uploaded each and the source each
+    belongs to; only `source_id`'s, if given."""
+    query = (
+        select(Document, func.count(Chunk.id), Source)
+        .join(Source, Document.source_id == Source.id)
+        .outerjoin(Chunk)
+        .group_by(Document.id, Source.id)
+        .order_by(Document.created_at.desc())
+    )
+    if source_id is not None:
+        query = query.where(Document.source_id == source_id)
     with store_session(store_id, "ro") as db:
-        rows = db.execute(
-            select(Document, func.count(Chunk.id))
-            .outerjoin(Chunk)
-            .group_by(Document.id)
-            .order_by(Document.created_at.desc())
-        ).all()
+        rows = db.execute(query).all()
     # Once the store's session is done: the request's own was closed when the store was found.
-    by = users_out(store_id, {d.uploaded_by for d, _ in rows if d.uploaded_by is not None})
+    by = users_out(store_id, {d.uploaded_by for d, _, _ in rows if d.uploaded_by is not None})
     return [
         DocumentOut(
             id=d.id,
@@ -99,10 +114,15 @@ def list_documents(store_id: CurrentDataStore):
             chunk_count=n,
             size_bytes=d.size_bytes,
             uploaded_by=by.get(d.uploaded_by) if d.uploaded_by is not None else None,
+            source=_source_out(s),
             created_at=d.created_at,
         )
-        for d, n in rows
+        for d, n, s in rows
     ]
+
+
+def _source_out(source: Source) -> DocumentSourceOut:
+    return DocumentSourceOut(id=source.id, kind=source.kind, name=source.name)
 
 
 @router.post(
@@ -125,6 +145,8 @@ def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataSt
         # The document's id first, since its file's key holds it. Committed, so no transaction
         # is left open through the upload.
         doc_id = db.scalar(select(func.nextval(DOCUMENT_IDS)))
+        # Every upload belongs to the store's Uploads.
+        uploads = _source_out(db.get_one(Source, uploads_source_id(db)))
         db.commit()
         key = files.document_key(store_id, doc_id)
         try:
@@ -149,6 +171,7 @@ def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataSt
                 size_bytes=stored.size_bytes,
                 sha256=stored.sha256,
                 uploaded_by=user.id,
+                source_id=uploads.id,
             )
             db.add(doc)
             db.flush()
@@ -180,6 +203,7 @@ def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataSt
         chunk_count=0,
         size_bytes=doc.size_bytes,
         uploaded_by=UserOut.model_validate(user, from_attributes=True),
+        source=uploads,
         created_at=doc.created_at,
     )
 

@@ -1034,7 +1034,7 @@ def new_workflow_run(
     if refusal := archived_in_graph(store, version.id):
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     try:
-        load_graph(store, version.id)
+        load_graph(store, version.id, organisation_id)
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # Pin the version: later edits to the workflow don't change this run.

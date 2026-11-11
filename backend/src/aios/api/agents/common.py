@@ -22,6 +22,7 @@ from aios.db import DbId
 from aios.tools import (
     TOOLS,
     ToolError,
+    ToolOrganisation,
     check_stored_tool,
     validate_tool,
 )
@@ -189,9 +190,10 @@ def refuse_archived_skills(skills: list[SkillVersion]) -> None:
 
 
 def resolve_tools(
-    tools: list[AgentToolIn], current: AgentVersion | None = None
+    tools: list[AgentToolIn], org: ToolOrganisation, current: AgentVersion | None = None
 ) -> list[tuple[str, dict[str, Any]]]:
-    """The requested tools as (key, settings) pairs, in request order.
+    """The requested tools as (key, settings) pairs, in request order, for a version saved in
+    `org`: settings a tool's organisation-aware check refuses there are a 422 (`ToolSpec.check`).
 
     Settings sent back exactly as `current` stores them are kept as stored, so a later change to
     the tool's settings model doesn't turn a rename into a new version. They're still checked
@@ -207,10 +209,10 @@ def resolve_tools(
     try:
         for t in tools:
             if t.key in stored and stored[t.key] == t.config:
-                check_stored_tool(t.key, t.config)
+                check_stored_tool(t.key, t.config, org)
                 resolved.append((t.key, t.config))
             else:
-                resolved.append((t.key, validate_tool(t.key, t.config)))
+                resolved.append((t.key, validate_tool(t.key, t.config, org)))
     except ToolError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return resolved

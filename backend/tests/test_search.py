@@ -14,6 +14,7 @@ from aios.main import app
 from aios.models import Role
 from aios.permissions import current_role
 from aios.search import hybrid_search, hybrid_search_with_vector
+from aios.sources import uploads_source_id
 
 DIM = 1024
 
@@ -42,6 +43,7 @@ def add_chunks(
         for i, (t, vec) in enumerate(chunks)
     ]
     with store_session(store_id, "rw") as store:
+        doc.source_id = uploads_source_id(store)
         store.add(doc)
         store.commit()
 

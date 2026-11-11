@@ -30,6 +30,7 @@ from aios.datastores.models import Agent, AgentVersion
 from aios.db import DB, DbId
 from aios.models import AgentRun, Trigger
 from aios.permissions import Action, allow
+from aios.tools import ToolOrganisation
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -101,7 +102,7 @@ def list_agents(
 def create_agent(
     body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
-    tools = resolve_tools(body.tools)
+    tools = resolve_tools(body.tools, ToolOrganisation(org.id, store))
     skills = resolve_skill_versions(store, body.skill_version_ids)
     refuse_archived_skills(skills)
     agent = Agent(**built_by(user.id), name=body.name, description=body.description)
@@ -145,7 +146,7 @@ def update_agent(
 ):
     """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
     agent = get_org_agent(store, agent_id)
-    tools = resolve_tools(body.tools, agent.current_version)
+    tools = resolve_tools(body.tools, ToolOrganisation(org.id, store), agent.current_version)
     skills = resolve_skill_versions(store, body.skill_version_ids)
     lock_agent(store, agent)
     clash = name_clash(store, body.name)

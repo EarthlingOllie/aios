@@ -153,6 +153,23 @@ export type Settings = {
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
+/** What brings content into the store. Every store has exactly one `upload` source, Uploads. */
+export type SourceKind = "upload" | "url" | "webhook" | "email" | "connector";
+export type SourceStatus = "active" | "paused" | "failing" | "needs_reauth" | "removing";
+
+export type Source = {
+  id: number;
+  kind: SourceKind;
+  name: string;
+  status: SourceStatus;
+  /** The documents it has brought in. */
+  document_count: number;
+  created_at: string;
+};
+
+/** The source a document belongs to: Uploads for an upload. */
+export type DocumentSource = Pick<Source, "id" | "kind" | "name">;
+
 export type DocumentInfo = {
   id: number;
   filename: string;
@@ -162,6 +179,7 @@ export type DocumentInfo = {
   size_bytes: number;
   /** The member who uploaded it; null for documents from before it was recorded. */
   uploaded_by: User | null;
+  source: DocumentSource;
   created_at: string;
 };
 
@@ -1074,6 +1092,8 @@ export const api = {
   deleteExportedHistory: () =>
     request<void>(`${organisationApi()}/organisation/settings/exported-history`, { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>(`${organisationApi()}/documents`),
+  /** Every member may read them; only admins change them, and never Uploads (a 409). */
+  listSources: () => request<Source[]>(`${organisationApi()}/sources`),
   deleteDocument: (id: number) => request<void>(`${organisationApi()}/documents/${id}`, { method: "DELETE" }),
   uploadDocument: (file: File) => {
     const body = new FormData();
