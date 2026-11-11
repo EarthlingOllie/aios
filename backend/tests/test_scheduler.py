@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
-from conftest import user_store
+from conftest import home_organisation, user_store
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
@@ -776,6 +776,7 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db, user, 
     t = make_trigger(api, body)
     now = datetime.now(UTC)
     claim(db, t["id"], now)
+    org_id = home_organisation(db, user.id).id
 
     async def go():
         with SessionLocal() as s, user_store(user) as store:
@@ -783,7 +784,7 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db, user, 
             # trigger row locked, until the run (in the store) and then the link to it are
             # committed.
             agent_row = store.get(Agent, agent["id"])
-            run = new_agent_run(store, agent_row, created_by=None, trigger_id=t["id"])
+            run = new_agent_run(store, org_id, agent_row, created_by=None, trigger_id=t["id"])
             trigger = s.scalars(
                 select(Trigger).where(Trigger.id == t["id"]).with_for_update()
             ).one()

@@ -18,6 +18,7 @@ from aios.config import get_settings
 from aios.datastores import files, store_engine, store_session
 from aios.datastores.models import Document, DocumentStatus
 from aios.main import app
+from aios.sources import uploads_source_id
 
 PDF = b"%PDF-1.7 not really, but bytes all the same \x00\xff\xfe"
 
@@ -401,6 +402,7 @@ def test_another_stores_document_is_a_404(api, db, user, queued):
                 s3_key=files.document_key(store_of(other), 1),
                 size_bytes=1,
                 sha256="0" * 64,
+                source_id=uploads_source_id(store),
             )
             store.add(doc)
             store.commit()

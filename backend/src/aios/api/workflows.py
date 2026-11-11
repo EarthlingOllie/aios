@@ -1003,23 +1003,24 @@ def create_workflow_run(
 ):
     """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
     workflow = get_org_workflow(store, workflow_id)
-    run = new_workflow_run(store, workflow, body.input, created_by=user.id)
+    run = new_workflow_run(store, org.id, workflow, body.input, created_by=user.id)
     queue_workflow_run(store, run)
     return workflow_run_summary(db, org.id, store, run.id)
 
 
 def new_workflow_run(
     store: Session,
+    organisation_id: int,
     workflow: Workflow,
     input: str,
     *,
     created_by: int | None,
     trigger_id: int | None = None,
 ) -> WorkflowRun:
-    """Add (and flush, not commit) a run of the workflow's current version to the
-    organisation's store (`store`, where the workflow is), given `input`, started by the member
-    `created_by`; it runs for the workflow's organisation, not for them (`aios.workflows`), as
-    do its agent nodes' runs, which it passes `created_by` on to.
+    """Add (and flush, not commit) a run of the workflow's current version to the store of the
+    organisation `organisation_id` (`store`, where the workflow is), given `input`, started by
+    the member `created_by`; it runs for the workflow's organisation, not for them
+    (`aios.workflows`), as do its agent nodes' runs, which it passes `created_by` on to.
 
     Raises `HTTPException` if it can't run: 409 if it, or an agent or workflow in its graph at
     any depth, is archived ("The workflow <name> is archived.") or an agent version in it can't
@@ -1035,7 +1036,7 @@ def new_workflow_run(
     if refusal := archived_in_graph(store, version.id):
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     try:
-        load_graph(store, version.id)
+        load_graph(store, version.id, organisation_id)
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # Pin the version: later edits to the workflow don't change this run.

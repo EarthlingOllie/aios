@@ -33,6 +33,7 @@ from aios.sandbox.sessions import (
 from aios.tools import (
     AgentTool,
     ToolError,
+    ToolOrganisation,
 )
 
 router = APIRouter(prefix="/api")
@@ -155,11 +156,12 @@ def run_summary(db: Session, organisation_id: int, store: Session, run_id: int) 
 
 
 def build_version_tools(
-    version: AgentVersion, refusal: str = "This agent version can't be run"
+    version: AgentVersion, org: ToolOrganisation, refusal: str = "This agent version can't be run"
 ) -> list[AgentTool]:
-    """The version's tools, built from their stored settings; a 409 if one can't be."""
+    """The version's tools, built from their stored settings to run in `org`; a 409 if one
+    can't be."""
     try:
-        return version_tools(version)
+        return version_tools(version, org)
     except ToolError as exc:
         # E.g. the tool has since left the library, or its settings model now rejects a value.
         raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
@@ -180,15 +182,16 @@ def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentSt
 
 def new_agent_run(
     store: Session,
+    organisation_id: int,
     agent: Agent,
     *,
     created_by: int | None,
     trigger_id: int | None = None,
 ) -> AgentRun:
-    """Add (and flush, not commit) a run of the agent's current version to the organisation's
-    store (`store`, where the agent is), started by the member `created_by`: who asked for it
-    by hand or in a chat. It runs for the agent's organisation, not for them
-    (`load_chat_context`).
+    """Add (and flush, not commit) a run of the agent's current version to the store of the
+    organisation `organisation_id` (`store`, where the agent is), started by the member
+    `created_by`: who asked for it by hand or in a chat. It runs for the agent's organisation,
+    not for them (`load_chat_context`), and its tools are checked against it (`ToolSpec.check`).
 
     Raises `HTTPException` if it can't run: 409 if the agent is archived ("The agent <name> is
     archived.") or its version can't be built. The caller commits `store`; the share lock taken
@@ -197,7 +200,7 @@ def new_agent_run(
     """
     lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
-    build_version_tools(agent.current_version)
+    build_version_tools(agent.current_version, ToolOrganisation(organisation_id, store))
     # Pin the version: later edits to the agent don't change this conversation.
     run = AgentRun(
         agent_id=agent.id,
@@ -220,7 +223,7 @@ def create_run(
     agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
     agent = get_org_agent(store, agent_id)
-    run = new_agent_run(store, agent, created_by=user.id)
+    run = new_agent_run(store, org.id, agent, created_by=user.id)
     store.commit()
     return run_summary(db, org.id, store, run.id)
 

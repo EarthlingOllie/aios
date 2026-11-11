@@ -110,6 +110,7 @@ STORE_TABLES = {
         "schema_history",
         "skill_versions",
         "skills",
+        "sources",
         "workflow_edges",
         "workflow_nodes",
         "workflow_run_steps",

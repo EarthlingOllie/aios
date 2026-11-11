@@ -53,6 +53,9 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("ALTER TABLE aios.documents DROP COLUMN source_id")
+        conn.execute("DROP TABLE aios.sources")
+        conn.execute("DROP TYPE aios.source_kind, aios.source_status")
         conn.execute(
             "DROP TABLE aios.workflow_run_steps, aios.workflow_runs, aios.sandbox_sessions,"
             " aios.agent_runs, aios.workflow_edges, aios.workflow_nodes, aios.workflow_versions,"

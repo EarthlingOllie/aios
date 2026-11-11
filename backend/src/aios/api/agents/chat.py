@@ -43,6 +43,7 @@ from aios.sandbox.sessions import (
 )
 from aios.tools import (
     AgentTool,
+    ToolOrganisation,
     stored_settings,
 )
 
@@ -115,7 +116,7 @@ def load_chat_context(
             # What started the other turns checked when it started their runs, and they finish
             # as already going.
             refuse_if_archived(agent)
-        tools = build_version_tools(version)
+        tools = build_version_tools(version, ToolOrganisation(organisation_id, store))
         # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
         # token carries the domains the tool expects.
         sandbox_domains = next(

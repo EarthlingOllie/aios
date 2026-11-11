@@ -47,7 +47,7 @@ class Mention:
         org_id = home_organisation(db, self.user_id).id
         with organisation_store(org_id) as store:
             agent = store.get(Agent, self.agent_id)
-            run = new_agent_run(store, agent, created_by=self.user_id)
+            run = new_agent_run(store, org_id, agent, created_by=self.user_id)
             store.commit()
             store_id = store_id_of(store)
         self.run_id = run.id

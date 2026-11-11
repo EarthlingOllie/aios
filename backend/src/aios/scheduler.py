@@ -203,7 +203,9 @@ def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
         if agent is None:
             raise CantStart("The agent has been deleted.")
         try:
-            run = agents_api.new_agent_run(store, agent, created_by=None, trigger_id=trigger.id)
+            run = agents_api.new_agent_run(
+                store, organisation_id, agent, created_by=None, trigger_id=trigger.id
+            )
         except HTTPException as exc:
             raise CantStart(exc.detail) from exc
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
@@ -227,7 +229,7 @@ def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
         if workflow is None:
             raise CantStart("The workflow has been deleted.")
         run = workflows_api.new_workflow_run(
-            store, workflow, trigger.input, created_by=None, trigger_id=trigger.id
+            store, organisation_id, workflow, trigger.input, created_by=None, trigger_id=trigger.id
         )
         trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
 

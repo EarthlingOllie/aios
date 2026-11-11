@@ -234,6 +234,15 @@ checkpointer schema, went in the same change (platform revision `0062`); nothing
   change requests are recorded and cancelled under the run's lock on the platform
   (`schema_changes.lock_run`), so none is recorded for a run that's gone.
 
+### Sources
+
+What brings content into the store is a source (the store's `aios.sources`, store revision
+`0011`; module `aios.sources`): its kind, name, settings (never secrets), status and sync
+bookkeeping. Every store has exactly one upload source, Uploads, made by that revision (so with
+the store, and with `make seed` for development stores); a partial unique index keeps it the
+only one. Every document belongs to a source (`documents.source_id`, required): uploads to
+Uploads. Uploads can't be paused, changed or removed (409).
+
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so

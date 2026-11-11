@@ -5,6 +5,7 @@ import { DocumentsSection, useDataStore } from "@/components/Documents";
 import { TablesSection } from "@/components/Tables";
 import { DroppedSection } from "@/components/Dropped";
 import { ChangesSection } from "@/components/SchemaChanges";
+import { SourcesSection } from "@/components/Sources";
 import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { DataStoreStatus, DataStoreUsage } from "@/lib/api";
@@ -26,7 +27,7 @@ const statusVariant = {
 /**
  * What's in the organisation's data store. Each section is a tab with its own URL (`/data` for the
  * Overview, `/data/tables`, `/data/changes`, `/data/dropped`,
- * `/data/documents`), so other pages and notifications can link straight to one.
+ * `/data/documents`, `/data/sources`), so other pages and notifications can link straight to one.
  */
 export function DataPage() {
   // Held above the routes, so switching tabs (or pages) doesn't ask again or drop an upload.
@@ -54,6 +55,7 @@ export function DataPage() {
             { id: "changes", label: "Changes", content: <ChangesSection /> },
             { id: "dropped", label: "Dropped", content: <DroppedSection /> },
             { id: "documents", label: "Documents", content: <DocumentsSection /> },
+            { id: "sources", label: "Sources", content: <SourcesSection /> },
           ]}
         />
       </div>

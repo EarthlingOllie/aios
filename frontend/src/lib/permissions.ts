@@ -5,7 +5,15 @@ import type { Role } from "@/lib/api";
  * hide or disable what the signed-in member's role can't do, and say why (`refusal`). The API
  * enforces the same table, so this is only how the screen shows it.
  */
-export type Action = "read" | "post" | "build" | "documents" | "decide" | "restore" | "run_organisation";
+export type Action =
+  | "read"
+  | "post"
+  | "build"
+  | "documents"
+  | "decide"
+  | "restore"
+  | "sources"
+  | "run_organisation";
 
 const EVERYONE: Role[] = ["admin", "editor", "participant"];
 const BUILDERS: Role[] = ["admin", "editor"];
@@ -21,6 +29,7 @@ const TABLE: Record<Action, { roles: Role[]; does: string }> = {
   documents: { roles: BUILDERS, does: "upload or delete documents" },
   decide: { roles: BUILDERS, does: "approve or reject schema change requests" },
   restore: { roles: ADMINS, does: "restore dropped tables and columns" },
+  sources: { roles: ADMINS, does: "add, change, pause or remove sources" },
   run_organisation: {
     roles: ADMINS,
     does: "change the organisation's roles, invitations, name or settings, or delete it",

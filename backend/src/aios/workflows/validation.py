@@ -14,7 +14,7 @@ from aios import tracing
 from aios.datastores.models import Agent, AgentVersion, Workflow, WorkflowNode, WorkflowVersion
 from aios.models import WorkflowNodeKind
 from aios.runner import version_tools
-from aios.tools import AgentTool, ToolError
+from aios.tools import AgentTool, ToolError, ToolOrganisation
 
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -184,8 +184,9 @@ def prefetch_graph(db: Session, version_id: int) -> dict[int, WorkflowVersion]:
     return {version.id: version for version in versions}
 
 
-def load_graph(db: Session, version_id: int, *, strict: bool = True) -> Graph:
-    """A workflow version and every version it runs, at any depth, ready to run.
+def load_graph(db: Session, version_id: int, organisation_id: int, *, strict: bool = True) -> Graph:
+    """A workflow version and every version it runs, at any depth, ready to run in the
+    organisation `organisation_id`, whose store `db` is on.
 
     Raises `RunError` if an agent version can't run: one of its tools can't be built from its
     stored settings (see `aios.tools.build_tool`). An archived agent's still can: what stops a
@@ -194,11 +195,16 @@ def load_graph(db: Session, version_id: int, *, strict: bool = True) -> Graph:
     loaded with the reason instead (`Node.error`), and fails if it runs. A version pinned by
     several nodes is loaded once.
     """
-    return _build_graph(prefetch_graph(db, version_id), version_id, {}, strict)
+    org = ToolOrganisation(organisation_id, db)
+    return _build_graph(prefetch_graph(db, version_id), version_id, {}, strict, org)
 
 
 def _build_graph(
-    versions: dict[int, WorkflowVersion], version_id: int, loaded: dict[int, Graph], strict: bool
+    versions: dict[int, WorkflowVersion],
+    version_id: int,
+    loaded: dict[int, Graph],
+    strict: bool,
+    org: ToolOrganisation,
 ) -> Graph:
     if version_id in loaded:
         return loaded[version_id]
@@ -206,14 +212,14 @@ def _build_graph(
     nodes = []
     for node in version.nodes:
         if node.kind == WorkflowNodeKind.workflow:
-            graph = _build_graph(versions, node.subworkflow_version_id, loaded, strict)
+            graph = _build_graph(versions, node.subworkflow_version_id, loaded, strict, org)
             nodes.append(Node(node.key, node.kind, graph=graph))
             continue
         pinned = node.agent_version
         agent = pinned.agent
         try:
             try:
-                tools = version_tools(pinned)
+                tools = version_tools(pinned, org)
             except ToolError as exc:
                 raise RunError(f"Agent {agent.name} v{pinned.version} can't run: {exc}") from exc
         except RunError as exc:

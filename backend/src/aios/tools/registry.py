@@ -4,10 +4,20 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import Session
 
 # What a tool gives a run: LangChain tools the agent calls, or provider-run (server) tools, given
 # to the model as their provider's tool definition (see `aios.runner.server_tools`).
 AgentTool = BaseTool | dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolOrganisation:
+    """The organisation an agent version is saved, restored or run in, for a tool's
+    organisation-aware check (`ToolSpec.check`): its id, and a session on its store."""
+
+    organisation_id: int
+    store: Session
 
 
 @dataclass(frozen=True)
@@ -22,6 +32,11 @@ class ToolSpec[C: BaseModel]:
     config_model: type[C]
     # Builds what the run is given.
     build: Callable[[C], list[AgentTool]]
+    # Settings that name something of an organisation's (a connector, say) are checked against
+    # the organisation the version is saved, restored or run in: answers why they can't be used
+    # there (they belong to another organisation, say), or None if they can. Tools whose
+    # settings are the same everywhere have none.
+    check: Callable[[C, ToolOrganisation], str | None] | None = None
 
 
 TOOLS: dict[str, ToolSpec] = {}
@@ -60,15 +75,30 @@ def _describe(error: dict[str, Any]) -> str:
     return f"{field}: {message}" if field else message
 
 
-def validate_tool(key: str, config: dict[str, Any]) -> dict[str, Any]:
-    """New settings, checked strictly, with defaults filled in: the canonical form that's stored."""
-    _, parsed = _parse(key, config)
+def _check(spec: ToolSpec, parsed: BaseModel, org: ToolOrganisation | None) -> None:
+    if org is None or spec.check is None:
+        return
+    if reason := spec.check(parsed, org):
+        raise ToolError(f"{spec.name} can't be used: {reason}")
+
+
+def validate_tool(
+    key: str, config: dict[str, Any], org: ToolOrganisation | None = None
+) -> dict[str, Any]:
+    """New settings, checked strictly, with defaults filled in: the canonical form that's stored.
+    Given the organisation they're saved in, also checked against it (`ToolSpec.check`)."""
+    spec, parsed = _parse(key, config)
+    _check(spec, parsed, org)
     return parsed.model_dump(mode="json")
 
 
-def check_stored_tool(key: str, config: dict[str, Any]) -> None:
-    """Raises `ToolError` if stored settings can no longer be built (see `build_tool`)."""
-    _parse(key, config, stored=True)
+def check_stored_tool(
+    key: str, config: dict[str, Any], org: ToolOrganisation | None = None
+) -> None:
+    """Raises `ToolError` if stored settings can no longer be built (see `build_tool`), or, given
+    the organisation, can't be used in it (`ToolSpec.check`)."""
+    spec, parsed = _parse(key, config, stored=True)
+    _check(spec, parsed, org)
 
 
 def stored_settings(key: str, config: dict[str, Any]) -> BaseModel:
@@ -76,7 +106,12 @@ def stored_settings(key: str, config: dict[str, Any]) -> BaseModel:
     return _parse(key, config, stored=True)[1]
 
 
-def build_tool(key: str, config: dict[str, Any]) -> list[AgentTool]:
-    """Builds a tool from stored settings, which may predate its current settings model."""
+def build_tool(
+    key: str, config: dict[str, Any], org: ToolOrganisation | None = None
+) -> list[AgentTool]:
+    """Builds a tool from stored settings, which may predate its current settings model. Given
+    the organisation it runs in, refuses (`ToolError`) settings that can't be used in it
+    (`ToolSpec.check`)."""
     spec, parsed = _parse(key, config, stored=True)
+    _check(spec, parsed, org)
     return spec.build(parsed)

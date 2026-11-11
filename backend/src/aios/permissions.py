@@ -30,6 +30,7 @@ class Action(enum.StrEnum):
     documents = "upload or delete documents"
     decide = "approve or reject schema change requests"
     restore = "restore dropped tables and columns"
+    sources = "add, change, pause or remove sources"
     run_organisation = (
         "change the organisation's roles, invitations, name or settings, or delete it"
     )
@@ -50,6 +51,7 @@ TABLE: dict[Action, frozenset[Role]] = {
     # editors decide, as they did.
     Action.decide: BUILDERS,
     Action.restore: ADMINS,
+    Action.sources: ADMINS,
     Action.run_organisation: ADMINS,
     Action.leave: EVERYONE,
 }

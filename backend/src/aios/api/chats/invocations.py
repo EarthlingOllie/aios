@@ -45,6 +45,7 @@ class InvocationFiring:
                 raise firing.CantStart("The workflow has been deleted.")
             run = workflows_api.new_workflow_run(
                 store,
+                organisation_id,
                 workflow,
                 invocations.run_input(invocation.brief, message.body),
                 created_by=invocation.requested_by,
@@ -97,7 +98,9 @@ class TurnFiring:
             if agent is None:
                 raise firing.CantStart("The agent has been deleted.")
             # The agent's share lock (in the store) first, then the invocation's.
-            run = agents_api.new_agent_run(store, agent, created_by=invocation.requested_by)
+            run = agents_api.new_agent_run(
+                store, organisation_id, agent, created_by=invocation.requested_by
+            )
             invocation = invocations.lock(db, self.invocation_id)
             if invocation is None or invocation.status != ChatInvocationStatus.briefing:
                 db.rollback()
