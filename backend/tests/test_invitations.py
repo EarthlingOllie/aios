@@ -390,7 +390,7 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
     # Making a chat makes its documents assistant, in the organisation's store.
     elsewhere = provisioned_user(db, "elsewhere")
     try:
-        ours = make_chat(api, "ours", visibility="public")
+        ours = make_chat(api, "ours")
         with signed_in_as(elsewhere):
             theirs = make_chat(api, "theirs")
         store_id = store_of(user)
@@ -425,9 +425,7 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
         db.commit()
         with signed_in_as(member):
             assert api.post(f"/api/chats/{ours['id']}/join").status_code == 200
-        rows_of(elsewhere).add(
-            ChatMember(chat_id=theirs["id"], kind="user", user_id=member.id, role="member")
-        )
+        rows_of(elsewhere).add(ChatMember(chat_id=theirs["id"], kind="user", user_id=member.id))
 
         with signed_in_as(member):
             resp = api.post("/api/organisation/leave")

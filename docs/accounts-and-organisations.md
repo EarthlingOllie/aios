@@ -184,9 +184,9 @@ A member **leaves** from the Organisation page's Settings tab (`/organisation/se
 new chat of theirs at the same moment is a 404, not a way back into one), their unread
 notifications about its schema change requests go, and nothing else: no organisation is made
 for them. The page lands them in the organisation they used most recently of those they're still
-in, or on the welcome page if none remain. What they made stays, and a chat they owned goes to its
-chat member added first (with nobody left in it, a public one goes to whoever joins it next,
-and a private one, which nobody could join, is deleted, as its owner deleting it would be).
+in, or on the welcome page if none remain. What they made stays, and so do the chats they were
+in, open to the organisation as before: nothing is handed over (a post of theirs at the same
+moment is a 404 too).
 The last member can't leave, and is told to delete the organisation instead; nor can the creator
 while others remain, since nobody else could invite, and there's no transfer until roles exist
 (each a 409, explained on the page).

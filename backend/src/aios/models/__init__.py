@@ -20,9 +20,7 @@ from aios.models.base import (
 from aios.models.chats import (
     ChatAuthorKind,
     ChatMemberKind,
-    ChatMemberRole,
     ChatMessageKind,
-    ChatVisibility,
     InvocationCause,
     InvocationStatus,
 )
@@ -88,9 +86,7 @@ __all__ = [
     "WorkLane",
     "SchemaChangeStatus",
     "Notification",
-    "ChatVisibility",
     "ChatMemberKind",
-    "ChatMemberRole",
     "ChatAuthorKind",
     "ChatMessageKind",
     "InvocationCause",

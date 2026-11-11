@@ -118,12 +118,12 @@ test("a hidden tab asks less often, and catches up as soon as it's shown", async
   await expect(message(page, "While you were away")).toBeVisible();
 });
 
-test("someone not in a public chat reads it but can't post", async ({ page }) => {
+test("someone not in a chat reads it, and is told posting joins it", async ({ page }) => {
   const api = await fakeApi(page);
-  const chat = api.addChat("Open", { visibility: "public", owner: sam });
+  const chat = api.addChat("Open", { owner: sam });
   api.addChatMessage(chat, "Welcome", sam);
   await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(message(page, "Welcome")).toBeVisible();
-  await expect(composer(page)).toHaveCount(0);
-  await expect(page.getByText("Join the chat to post in it.")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
+  await expect(page.getByText("Everyone in the organisation can read this chat. Posting in it joins it.")).toBeVisible();
 });

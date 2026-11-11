@@ -6,13 +6,14 @@ import type { Page, Route } from "@playwright/test";
  * the server's rules (a changed graph is a new version, the layout isn't versioned, nodes pin
  * versions that must exist, a workflow can't contain itself, a save based on an older version
  * is refused), plus schedules' preview and timezones, and chats with their members (a chat of
- * another organisation is a 404, as a private chat is for a non-member; a public one is listed,
- * readable and joined by any member of the organisation, and left by any member but its owner
- * (the role on their member row); the owner's actions are a 403 for anyone else; names are unique within the organisation), each
- * saying who made it and last changed it, and each with an
- * unread count of others' messages since the last one read (`chatReads`), and messages
- * (read a page at a time by id, `after` or `before` a cursor; only members post; a mention of
- * anyone who isn't a member is a 422). Mentioning a workflow or an agent starts a scripted
+ * another organisation is a 404; every chat is open: listed, read and joined by anyone in the
+ * organisation, and left by anyone in it; its members' actions are a 403 for anyone who hasn't
+ * joined; names are unique within the organisation), each saying who made it and last changed
+ * it, and each with an unread count of others' messages since the last one read (`chatReads`),
+ * and messages (read a page at a time by id, `after` or `before` a cursor; posting joins; a
+ * mention of a person who isn't a member is a 422, and of an agent or workflow the chat doesn't
+ * include a 422 naming it; Jev checks each post first: `jevFlags` flags it, a 422 with the
+ * reason, and with `jevUp` false it's a 503 to try again). Mentioning a workflow or an agent starts a scripted
  * invocation: its acknowledgement and card are posted with the message, and each read of the
  * chat's messages moves it on (`advanceInvocations`): briefing, then the handoff's ack and brief
  * (`handoffs`, by member id) and its run, until the run ends and the result is posted back. An
@@ -381,12 +382,10 @@ function newPasswordInvalid(field: string, password: string, confirmation: unkno
 /** A user as chats show them (an `Account` is one). */
 // `former_member`: they've left the organisation (the API says so from its store's people mirror).
 export type ChatUser = Pick<Account, "id" | "first_name" | "last_name"> & { former_member?: boolean };
-type ChatVisibility = "public" | "private";
 export type ChatMemberRow =
   | {
       id: number;
       kind: "user";
-      role: "owner" | "member";
       user: ChatUser;
       added_at: string;
       /** The last message they've seen (`POST /api/chats/{id}/read`); null for none yet. */
@@ -399,7 +398,6 @@ export type ChatMention = { kind: "user" | Kind; id: number; name: string };
 type ChatMemberOut = {
   id: number;
   kind: "user" | Kind;
-  role: "owner" | "member" | null;
   target_id: number;
   name: string;
   added_at: string;
@@ -479,7 +477,6 @@ export type ChatRow = {
   updated_by: ChatUser | null;
   name: string;
   description: string;
-  visibility: ChatVisibility;
   members: ChatMemberRow[];
   /** Oldest first. */
   messages: ChatMessageRow[];
@@ -766,6 +763,8 @@ export class FakeApi {
   auditEntries: AuditEntryRow[] = [];
   /** Whether Jev answered its last health check (null: not known), as GET /jev-status answers. */
   jevUp: boolean | null = true;
+  /** What Jev flags in a posted chat message: the commonest injection phrasing, as its fake does. */
+  jevFlags = /ignore\s+(all\s+)?(the\s+)?(previous|prior|above|your)\s+(instructions|rules)/i;
   /** The approval rules, by kind: each kind's least role, as an admin set it. */
   approvalRules: Record<string, Role> = { ...DEFAULT_RULES };
   /** Dropped tables and columns in the organisation's store, newest first. */
@@ -1646,17 +1645,16 @@ export class FakeApi {
   }
 
   /**
-   * Adds a chat, private, of `organisation` and owned by `me` unless said otherwise; the owner is
-   * its first member, and made it.
+   * Adds a chat of `organisation`, made by `me` unless said otherwise (`owner`: who made it), who
+   * is its first member.
    */
   addChat(
     name: string,
     {
       description = "",
-      visibility = "private" as ChatVisibility,
       owner = this.me,
       organisation_id = this.organisation.id,
-    }: { description?: string; visibility?: ChatVisibility; owner?: ChatUser; organisation_id?: number } = {},
+    }: { description?: string; owner?: ChatUser; organisation_id?: number } = {},
   ): ChatRow {
     const chat: ChatRow = {
       id: this.id(),
@@ -1665,13 +1663,12 @@ export class FakeApi {
       updated_by: owner,
       name,
       description,
-      visibility,
       members: [],
       messages: [],
       created_at: NOW,
       updated_at: NOW,
     };
-    chat.members.push({ id: this.id(), kind: "user", role: "owner", user: owner, added_at: NOW, last_read: null });
+    chat.members.push({ id: this.id(), kind: "user", user: owner, added_at: NOW, last_read: null });
     this.chats.set(chat.id, chat);
     return chat;
   }
@@ -1873,9 +1870,9 @@ export class FakeApi {
     }
   }
 
-  /** Adds a user to a chat, as the owner would. */
+  /** Adds a user to a chat, as joining (or a member adding them) would. */
   addChatMember(chat: ChatRow, user: ChatUser): ChatUserMemberRow {
-    const member: ChatUserMemberRow = { id: this.id(), kind: "user", role: "member", user, added_at: NOW, last_read: null };
+    const member: ChatUserMemberRow = { id: this.id(), kind: "user", user, added_at: NOW, last_read: null };
     chat.members.push(member);
     return member;
   }
@@ -1894,7 +1891,7 @@ export class FakeApi {
     return invocation;
   }
 
-  /** Adds an agent or a workflow to a chat, as the owner would. */
+  /** Adds an agent or a workflow to a chat, as a member would. */
   addChatTarget(chat: ChatRow, kind: Kind, target: { id: number }): ChatMemberRow {
     const member: ChatMemberRow = { id: this.id(), kind, target_id: target.id, added_at: NOW };
     chat.members.push(member);
@@ -2072,8 +2069,6 @@ export class FakeApi {
       id: chat.id,
       name: chat.name,
       description: chat.description,
-      visibility: chat.visibility,
-      is_owner: this.ownsChat(chat),
       is_member: this.inChat(chat),
       member_count: this.liveMembers(chat).length,
       created_by: chat.created_by,
@@ -2088,26 +2083,21 @@ export class FakeApi {
     return kind === "agent" ? this.agents.get(id) : this.workflows.get(id);
   }
 
-  /** Whether `me` holds the chat's owner role, on their member row. */
-  private ownsChat(chat: ChatRow): boolean {
-    return chat.members.some((m) => m.kind === "user" && m.role === "owner" && m.user.id === this.me.id);
-  }
-
-  /** The chat's members as the API shows them: owner first. */
+  /** The chat's members as the API shows them, in the order they were added. */
   private liveMembers(chat: ChatRow): ChatMemberOut[] {
     return chat.members
       .flatMap((m): ChatMemberOut[] => {
         const { id, kind, added_at } = m;
         if (kind === "user") {
-          const { user, role } = m;
-          return [{ id, kind, role, target_id: user.id, name: fullName(user), added_at, archived: false }];
+          const { user } = m;
+          return [{ id, kind, target_id: user.id, name: fullName(user), added_at, archived: false }];
         }
         const target = this.chatTarget(kind, m.target_id);
         if (!target) return [];
         const archived = target.archived_at !== null;
-        return [{ id, kind, role: null, target_id: target.id, name: target.name, added_at, archived }];
+        return [{ id, kind, target_id: target.id, name: target.name, added_at, archived }];
       })
-      .sort((a, b) => Number(a.role !== "owner") - Number(b.role !== "owner") || a.id - b.id);
+      .sort((a, b) => a.id - b.id);
   }
 
   chatOut(chat: ChatRow) {
@@ -3280,8 +3270,7 @@ export class FakeApi {
       return reply(
         200,
         this.organisationChats()
-          // Mine, and the public ones I'm not in, for me to find.
-          .filter((c) => this.inChat(c) || c.visibility === "public")
+          // Every chat, joined or not.
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
           .map((c) => ({ ...this.chatSummary(c), unread_count: this.unreadCount(c) })),
       );
@@ -3290,10 +3279,7 @@ export class FakeApi {
       if (this.organisationChats().some((c) => c.name === body.name)) {
         return fail(409, CHAT_NAME_TAKEN);
       }
-      const chat = this.addChat(body.name, {
-        description: body.description ?? "",
-        visibility: body.visibility ?? "private",
-      });
+      const chat = this.addChat(body.name, { description: body.description ?? "" });
       // A new chat's first agent is the organisation's documents assistant.
       this.addChatTarget(chat, "agent", this.documentsAssistant());
       return reply(201, this.chatOut(chat));
@@ -3301,14 +3287,8 @@ export class FakeApi {
     if ((m = path.match(/^\/api\/chats\/(\d+)(\/.*)?$/))) {
       const chat = this.chats.get(Number(m[1]));
       const rest = m[2] ?? "";
-      // Another organisation's chat doesn't exist here; nor a private one for a non-member.
-      if (
-        !chat ||
-        chat.organisation_id !== this.organisation.id ||
-        (chat.visibility === "private" && !this.inChat(chat))
-      ) {
-        return fail(404, "Not Found");
-      }
+      // Another organisation's chat doesn't exist here.
+      if (!chat || chat.organisation_id !== this.organisation.id) return fail(404, "Not Found");
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
       if (rest === "/messages" && method === "GET") {
         this.messageReads.push(url.search);
@@ -3325,7 +3305,7 @@ export class FakeApi {
       if (rest === "/leave" && method === "POST") {
         const mine = this.myMembership(chat);
         if (!mine) return fail(409, "Not a member of this chat.");
-        if (mine.role === "owner") return fail(422, "The owner can't leave the chat.");
+        // Anyone, the last person too: the chat stays.
         chat.members = chat.members.filter((x) => x !== mine);
         return reply(204);
       }
@@ -3338,14 +3318,26 @@ export class FakeApi {
         return reply(204);
       }
       if (rest === "/messages" && method === "POST") {
-        if (!this.inChat(chat)) return fail(403, "Only the chat's members can post in it.");
         const members = Object.values(this.mentionable(chat, true)).flat();
         const mentions: ChatMention[] = [];
+        const missing: ChatMention[] = [];
         for (const { kind, id } of (body.mentions ?? []) as ChatMention[]) {
           const member = members.find((x) => x.kind === kind && x.id === id);
-          if (!member) return fail(422, "Only the chat's members can be mentioned in it.");
+          if (!member) {
+            if (kind === "user") return fail(422, "Only the chat's members can be mentioned in it.");
+            const target = this.chatTarget(kind, id);
+            if (!target) return fail(422, `Unknown ${kind}`);
+            if (!missing.some((x) => x.kind === kind && x.id === id)) missing.push({ kind, id, name: target.name });
+            continue;
+          }
           const twice = mentions.some((x) => x.kind === kind && x.id === id);
           if (!twice) mentions.push({ kind, id, name: member.name });
+        }
+        if (missing.length) {
+          const names = missing.map((x) => `${x.name} (${x.kind})`).join(" or ");
+          return reply(422, {
+            detail: { message: `This chat doesn't include ${names}. Add it to this chat to mention it.`, missing },
+          });
         }
         // The mention guards, in the API's order: the count, each mention's invocable-by, the rate.
         const targets = mentions.filter((x) => x.kind !== "user");
@@ -3376,7 +3368,19 @@ export class FakeApi {
             }),
           });
         }
+        // Jev checks the message before anything is written.
+        if (this.jevUp === false) return fail(503, "Couldn't check this message, try again.");
+        if (this.jevFlags.test(body.body)) {
+          return reply(422, {
+            detail: {
+              message: "Jev flagged this message as a likely prompt injection, so it wasn't posted.",
+              reason: "Jev judged this a likely prompt injection (probability 0.97).",
+            },
+          });
+        }
         this.mentionsMade += allowed;
+        // Posting joins.
+        if (!this.inChat(chat)) this.addChatMember(chat, this.me).last_read = chat.messages.at(-1)?.id ?? null;
         const message = this.addChatMessage(chat, body.body, this.me, mentions);
         const invoked = targets.map((x) =>
           this.invoke(
@@ -3396,7 +3400,7 @@ export class FakeApi {
           ),
         );
       }
-      if (!this.ownsChat(chat)) return fail(403, "Only the chat's owner can do that.");
+      if (!this.inChat(chat)) return fail(403, "Only the chat's members can do that: join it first.");
       if (rest === "" && method === "PUT") {
         if (this.organisationChats().some((c) => c.name === body.name && c !== chat)) {
           return fail(409, CHAT_NAME_TAKEN);
@@ -3405,7 +3409,6 @@ export class FakeApi {
           updated_by: this.me,
           name: body.name,
           description: body.description ?? "",
-          visibility: body.visibility ?? "private",
         });
         return reply(200, this.chatOut(chat));
       }
@@ -3437,9 +3440,6 @@ export class FakeApi {
       if ((m = rest.match(/^\/members\/(\d+)$/)) && method === "DELETE") {
         const member = chat.members.find((x) => x.id === Number(m![1]));
         if (!member) return fail(404, "Not Found");
-        if (member.kind === "user" && member.role === "owner") {
-          return fail(422, "The owner can't be removed from the chat.");
-        }
         chat.members = chat.members.filter((x) => x !== member);
         return reply(204);
       }

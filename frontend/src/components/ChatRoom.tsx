@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { ChatComposer, MEMBER_KIND } from "@/components/ChatComposer";
-import { ErrorBanner, formatDate, POLL_MS, usePoll, useVisible } from "@/components/crud";
+import { ErrorBanner, formatDate, POLL_MS, useLoad, usePoll, useVisible } from "@/components/crud";
 import { MarkdownView } from "@/components/Markdown";
 import { RunCard } from "@/components/RunCard";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
   describeError,
   type ChatMemberKind,
   type ChatInvocation,
+  type ChatMention,
   type ChatMessage,
   type ChatMessageAuthor,
   type ChatMessages,
@@ -35,14 +36,20 @@ import {
   mergeInvocations,
   mergeMessages,
   newlyRead,
+  postRefusal,
   type Invocations,
+  type PostRefusal,
 } from "@/lib/chat-messages";
 import { useCurrentUser } from "@/lib/current-user";
 import { mentionAt, mentionsIn, remarkMentions } from "@/lib/mentions";
 import { cn } from "@/lib/utils";
+import { composerJevNotice } from "@/lib/verdicts";
 
 /** How often an open chat asks for what's new while its tab is hidden (ms). */
 export const CHAT_HIDDEN_POLL_MS = 30_000;
+
+/** How often the composer asks again whether Jev is up, while the page is visible (ms). */
+const JEV_POLL_MS = 60_000;
 
 /** Within this many pixels of the top, scrolling up loads the page of history before. */
 const LOAD_OLDER_WITHIN = 48;
@@ -91,23 +98,35 @@ type ScrollIntent = { to: "bottom" } | { to: "keep"; scrollTop: number; scrollHe
  * which brings the state of every invocation still going. Whenever the reader is at the bottom of
  * the visible chat, `onRead` hears of the newest message, once each. The composer's unsent text is
  * held by the caller (`draft`), so it outlives the room, e.g. while another tab is open.
+ *
+ * Anyone in the organisation reads the chat and posts in it; posting joins them. A refused post
+ * stays in the composer, with why: Jev flagged it, Jev couldn't check it (try again), or it
+ * mentions an agent or workflow the chat doesn't include, with **Add it to this chat**
+ * (`onInclude`), which adds it and sends the message. While Jev is down the composer says so.
  */
 export function ChatRoom({
   chatId,
-  canPost,
+  joined,
   mentionable,
+  offered,
   onPosted,
+  onInclude,
   onRead,
   draft,
   onDraftChange,
 }: {
   chatId: number;
-  /** Members post; anyone else may only read. */
-  canPost: boolean;
+  /** Whether the reader has joined the chat; posting joins them if not. */
+  joined: boolean;
   /** Who can be mentioned: the chat's members, as `GET /api/chats/{id}/mentionable` lists them. */
   mentionable?: ChatMentionables;
+  /** Who `@` offers: the members, and the organisation's agents and workflows not in the chat
+   * (`composerMentionables`); `mentionable` when not given. */
+  offered?: ChatMentionables;
   /** After a message is posted, e.g. to re-sort the list of chats. */
-  onPosted?: () => void;
+  onPosted?: () => unknown;
+  /** **Add it to this chat**: add these agents and workflows, before the message is sent again. */
+  onInclude?: (missing: ChatMention[]) => Promise<unknown>;
   /**
    * The reader has seen the messages up to this one (only for a member, who keeps a place). If it
    * fails, the same message is reported again the next time the reader is seen at the bottom.
@@ -124,12 +143,17 @@ export function ChatRoom({
   // Set at once, unlike the state: scroll events come faster than renders.
   const loadingOlderNow = useRef(false);
   const [error, setError] = useState<string>();
+  // Why the last post was refused; its text is back in the composer.
+  const [refusal, setRefusal] = useState<PostRefusal>();
   const [posting, setPosting] = useState(false);
+  const { data: jev, reload: reloadJev } = useLoad(api.jevStatus);
   const list = useRef<HTMLDivElement>(null);
   // What's shown, as of the last read: polls take their cursor from it.
   const shown = useRef<ChatMessage[]>([]);
   const intent = useRef<ScrollIntent>(null);
   const visible = useVisible();
+  usePoll(visible, reloadJev, JEV_POLL_MS);
+  const jevDown = composerJevNotice(jev?.up ?? null);
   // The newest message `onRead` has heard of.
   const reported = useRef(0);
 
@@ -228,29 +252,49 @@ export function ChatRoom({
     if (messages !== undefined) noteRead();
   }, [messages, visible, noteRead]);
 
-  async function onSubmit() {
-    const body = draft;
-    if (!body.trim() || posting) return;
+  async function send(body: string) {
     setPosting(true);
     setError(undefined);
+    setRefusal(undefined);
     // What's being sent leaves the composer at once: the draft outlives this room (and `posting`),
     // so left in place it could be sent again from the room shown on coming back to the chat.
     onDraftChange("");
     try {
-      // Only the members the composer offered are mentions; any other token is plain text.
-      const mentions = mentionable ? mentionsIn(body, mentionable) : [];
-      // The message, and the acknowledgement and card of each workflow it mentions.
+      // Only those the composer offered are mentions; any other token is plain text.
+      const from = offered ?? mentionable;
+      const mentions = from ? mentionsIn(body, from) : [];
+      // The message, and the acknowledgement and card of each agent or workflow it mentions.
       const posted = await api.postChatMessage(chatId, body, mentions);
       // One's own message always scrolls into view.
       show(posted, { to: "bottom" });
       onPosted?.();
     } catch (err) {
-      setError(describeError(err));
+      setRefusal(postRefusal(err));
       // Not sent: back in the composer to try again, unless something else was typed since.
       onDraftChange((current) => current || body);
     } finally {
       setPosting(false);
     }
+  }
+
+  async function onSubmit() {
+    if (!draft.trim() || posting) return;
+    await send(draft);
+  }
+
+  /** **Add it to this chat**: add what the refused message needs, then send it as it was. */
+  async function include(missing: ChatMention[]) {
+    if (!onInclude || posting) return;
+    setPosting(true);
+    try {
+      await onInclude(missing);
+    } catch (err) {
+      setPosting(false);
+      setRefusal({ message: describeError(err), missing });
+      return;
+    }
+    setPosting(false);
+    await send(draft);
   }
 
   return (
@@ -283,21 +327,44 @@ export function ChatRoom({
           />
         ))}
       </div>
-      {canPost ? (
-        <ChatComposer
-          id={`chat-${chatId}-composer`}
-          placeholder="Write a message"
-          value={draft}
-          onChange={onDraftChange}
-          busy={false}
-          disabled={posting}
-          onStop={() => undefined}
-          onSubmit={onSubmit}
-          mentionable={mentionable}
-        />
-      ) : (
-        <p className="text-muted-foreground text-sm">Join the chat to post in it.</p>
+      {refusal && (
+        <div
+          role="alert"
+          aria-label="Message not posted"
+          className="border-destructive/30 bg-destructive/10 flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+        >
+          <span className="min-w-0 flex-1">{refusal.message}</span>
+          {refusal.missing.length > 0 && onInclude && (
+            <Button size="sm" variant="outline" disabled={posting} onClick={() => include(refusal.missing)}>
+              Add it to this chat
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setRefusal(undefined)}>
+            Dismiss
+          </Button>
+        </div>
       )}
+      {jevDown && (
+        <p role="status" aria-label="Messages can't be checked" className="text-destructive text-sm">
+          {jevDown}
+        </p>
+      )}
+      {!joined && (
+        <p className="text-muted-foreground text-sm">
+          Everyone in the organisation can read this chat. Posting in it joins it.
+        </p>
+      )}
+      <ChatComposer
+        id={`chat-${chatId}-composer`}
+        placeholder="Write a message"
+        value={draft}
+        onChange={onDraftChange}
+        busy={false}
+        disabled={posting}
+        onStop={() => undefined}
+        onSubmit={onSubmit}
+        mentionable={offered ?? mentionable}
+      />
     </div>
   );
 }

@@ -227,7 +227,8 @@ invocations (`aios.invocations`: chat invocations became the store's general inv
 a cause, so far always a mention) and schema change requests (`aios.schema_change_requests`)
 followed (store revision `0012`, platform revision `0063`, which drops the platform's tables;
 nothing was copied, and development data is rebuilt with `make seed`). Chats moved as they
-were, owner and visibility included. Beside the runs they name, they do so by foreign key: a
+were, owner and visibility included (both dropped by store revision `0019`, when every chat
+became open; it also gave chat messages their Jev verdict). Beside the runs they name, they do so by foreign key: a
 run deleted clears a schedule's last run, an invocation's run and a request's run; a schedule
 deleted clears its runs' `trigger_id`; a waiting step names its request.
 

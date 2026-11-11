@@ -17,16 +17,53 @@
 
 **Blocked by:** [Phase 1 · 05: Triggers, chats, invocations and schema change requests move](../phase-1-foundation/05-move-triggers-chats-approvals.md), [Phase 1 · 10: An invocation for every run, and turns as records](../phase-1-foundation/10-invocations-and-turns.md), [Phase 1 · 15: Jev: classify untrusted content](../phase-1-foundation/15-jev-classification.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A member who hasn't joined a chat can list it and read its messages, chat members and run cards.
-- [ ] Posting in a chat you haven't joined joins you, and the chat then counts unread for you.
-- [ ] A message mentioning an agent or workflow the chat doesn't include gets a 422 naming it, and nothing is stored. **Add it to this chat** adds it and sends the message.
-- [ ] With Jev's fake flagging a message, the post gets a 422 with the reason, and nothing is stored, indexed, notified or streamed.
-- [ ] With Jev's fake failing or slower than the timeout, the post gets a 503 saying to try again, and nothing is stored.
-- [ ] A message that passes carries the verdict `clean`, and so does its search item.
-- [ ] With the scripted model, a mentioned agent receives people's messages and briefs inside untrusted blocks.
-- [ ] While the Jev health check reports Jev down, the composer shows the notice.
-- [ ] Two chats can't share a name (409).
-- [ ] No code reads visibility or the chat member role, and the columns and their types are gone.
-- [ ] Browser tests cover reading without joining, **Add it to this chat**, a refused message kept in the composer, and the Jev-down notice.
+Owner-only actions became any chat member's here, since the role they hung on is dropped
+(renaming, describing, adding and removing chat members, deleting); ticket 02 narrows them to its
+rules (nobody removes a person, no delete, archiving). Leaving the organisation no longer hands
+chats over, for the same reason.
+
+- [x] A member who hasn't joined a chat can list it and read its messages, chat members and run cards.
+  (`GET /chats` lists every chat with `is_member`; reads need no membership (`get_visible_chat`).
+  `test_open_chats.py::test_a_member_who_hasnt_joined_lists_and_reads_any_chat`,
+  `test_chat_joining.py`, `e2e/chat-joining.spec.ts`.)
+- [x] Posting in a chat you haven't joined joins you, and the chat then counts unread for you.
+  (`post_message` joins the poster in the message's transaction (`members.join`, insert on
+  conflict do nothing, under the chat's lock), with what was there counted as read.
+  `test_posting_in_a_chat_you_havent_joined_joins_you`, `e2e/chat-joining.spec.ts`.)
+- [x] A message mentioning an agent or workflow the chat doesn't include gets a 422 naming it, and nothing is stored. **Add it to this chat** adds it and sends the message.
+  (`resolve_mentions`: `detail: {message, missing: [{kind, id, name}]}`; the composer offers the
+  organisation's other agents and workflows after the chat's (`composerMentionables`), and the
+  room's refusal has **Add it to this chat** (joins first if need be, adds each, resends).
+  `test_mentioning_an_agent_the_chat_doesnt_include_is_refused_naming_it`,
+  `e2e/open-chats.spec.ts`.)
+- [x] With Jev's fake flagging a message, the post gets a 422 with the reason, and nothing is stored, indexed, notified or streamed.
+  (`check_with_jev` after the permission and mention checks, before any write: `detail:
+  {message, reason}`. Nothing posts notifications or streams yet; no message, membership,
+  invocation or search item is written. `test_a_message_jev_flags_is_refused_...`.)
+- [x] With Jev's fake failing or slower than the timeout, the post gets a 503 saying to try again, and nothing is stored.
+  (`JEV_CHAT_TIMEOUT_SECONDS`, 3 by default. `test_a_message_jev_cant_check_in_time_...[down]`,
+  `[slow]`.)
+- [x] A message that passes carries the verdict `clean`, and so does its search item.
+  (Store revision 0019 adds `chat_messages.verdict` (`derived` by default, for agents' and
+  workflows' posts); `index_chat_message` copies it.
+  `test_a_message_that_passes_is_stored_clean_and_so_is_its_search_item`.)
+- [x] With the scripted model, a mentioned agent receives people's messages and briefs inside untrusted blocks.
+  (`invocations.run_input` wraps the message (source "chat message") as well as the brief; the
+  handoff wraps the mentioning message as well as the chat before it.
+  `test_a_mentioned_agent_gets_peoples_messages_and_the_brief_in_untrusted_blocks`,
+  `test_untrusted.py`, `test_chat_handoff.py`.)
+- [x] While the Jev health check reports Jev down, the composer shows the notice.
+  (`ChatRoom` reads `GET /jev-status`; `composerJevNotice`. `verdicts.test.ts`,
+  `e2e/open-chats.spec.ts`.)
+- [x] Two chats can't share a name (409).
+  (`test_names_are_unique_among_the_organisations_chats`,
+  `test_chat_names_are_unique_within_the_organisation`.)
+- [x] No code reads visibility or the chat member role, and the columns and their types are gone.
+  (Store revision 0019 drops `chats.visibility`, `chat_members.role`, their check and one-owner
+  index, and the `chat_visibility` and `chat_member_role` types; `ChatVisibility` and
+  `ChatMemberRole` are gone, and so are the screens' visibility field, Private filter and owner
+  badge. `test_provisioning.py`'s model/migration comparison.)
+- [x] Browser tests cover reading without joining, **Add it to this chat**, a refused message kept in the composer, and the Jev-down notice.
+  (`e2e/chat-joining.spec.ts`, `e2e/open-chats.spec.ts`.)

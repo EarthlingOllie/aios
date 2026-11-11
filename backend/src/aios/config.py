@@ -226,6 +226,9 @@ class Settings(BaseSettings):
     jev_model: str = "jev-latest"
     # A check gives up after this long (seconds), and the content counts as unchecked.
     jev_timeout_seconds: float = Field(default=3, gt=0)
+    # A person's chat message is refused, to try again, if Jev hasn't checked it after this long
+    # (seconds): posting never hangs on Jev.
+    jev_chat_timeout_seconds: float = Field(default=3, gt=0)
     # Content is flagged when Jev's probability that it's a prompt injection reaches this.
     jev_threshold: float = Field(default=0.5, gt=0, le=1)
     # Bumped by hand when what we ask Jev changes in a way stored verdicts shouldn't outlive:

@@ -50,7 +50,7 @@ test("switches to Members, keeps the tab in the URL, and a deep link opens it", 
   await expect(tab(page, /Members/)).toHaveAttribute("aria-selected", "true");
   await expect(page).toHaveURL(/\/members$/);
   await expect(panel(page).getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([
-    /Tester.*owner/,
+    /Tester/,
     /Sam/,
   ]);
   // The room is unmounted while Members is open.

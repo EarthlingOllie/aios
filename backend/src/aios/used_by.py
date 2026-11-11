@@ -22,7 +22,7 @@ the member asking sees the public ones and the private ones they're in.
 from datetime import datetime
 
 from pydantic import BaseModel
-from sqlalchemy import ColumnElement, Select, false, literal, or_, select
+from sqlalchemy import ColumnElement, Select, false, literal, select
 from sqlalchemy.orm import Session
 
 from aios import cron
@@ -37,7 +37,6 @@ from aios.datastores.models import (
     WorkflowNode,
     WorkflowVersion,
 )
-from aios.models import ChatVisibility
 
 
 class UsedByTrigger(BaseModel):
@@ -164,16 +163,12 @@ def _triggers(store: Session, *where: ColumnElement[bool]) -> list[UsedByTrigger
 
 
 def _chats(store: Session, member: ColumnElement, user_id: int) -> list[UsedByChat]:
-    """The store's chats with a member matching `member`, as the member `user_id` may see
-    them."""
-    theirs = select(ChatMember.chat_id).where(ChatMember.user_id == user_id)
+    """The store's chats with a member matching `member`: every one, as chats are open to the
+    whole organisation (`user_id` is who's asking)."""
     rows = store.execute(
         select(Chat.id, Chat.name)
         .join(ChatMember, ChatMember.chat_id == Chat.id)
-        .where(
-            member,
-            or_(Chat.visibility == ChatVisibility.public, Chat.id.in_(theirs)),
-        )
+        .where(member)
         .order_by(Chat.name, Chat.id)
     ).all()
     return [UsedByChat(id=c.id, name=c.name) for c in rows]

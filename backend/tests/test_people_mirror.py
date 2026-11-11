@@ -53,6 +53,7 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("ALTER TABLE aios.chat_messages DROP COLUMN verdict")
         conn.execute("DROP TABLE aios.table_shares, aios.table_owners")
         conn.execute("DROP TABLE aios.usage CASCADE")
         conn.execute("DROP TYPE aios.usage_kind, aios.usage_purpose")
@@ -77,8 +78,8 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
         )
         conn.execute(
             "DROP TYPE aios.schema_change_status, aios.invocation_status, aios.invocation_cause,"
-            " aios.chat_message_kind, aios.chat_author_kind, aios.chat_member_role,"
-            " aios.chat_member_kind, aios.chat_visibility, aios.trigger_status,"
+            " aios.chat_message_kind, aios.chat_author_kind,"
+            " aios.chat_member_kind, aios.trigger_status,"
             " aios.trigger_target_kind, aios.trigger_kind"
         )
         conn.execute("ALTER TABLE aios.documents DROP COLUMN source_id")

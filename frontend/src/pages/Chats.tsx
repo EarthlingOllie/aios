@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from "react-router";
-import { LogIn, LogOut, Lock, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
+import { LogIn, LogOut, Pencil, Plus, Trash2, UserMinus } from "lucide-react";
 
 import { MEMBER_KIND } from "@/components/ChatComposer";
 import { ChatAvatar, ChatRoom } from "@/components/ChatRoom";
@@ -33,19 +33,15 @@ import {
   type ChatListed,
   type ChatMember,
   type ChatMemberKind,
-  type ChatVisibility,
+  type ChatMention,
 } from "@/lib/api";
 import { chatDrafts } from "@/lib/chat-drafts";
 import { landingPath, unreadBadge } from "@/lib/chat-messages";
+import { composerMentionables } from "@/lib/mentions";
 import { useCurrentUser } from "@/lib/current-user";
 import { nameAndDescription, type ListFilterGroup } from "@/lib/list-filter";
 import { cn } from "@/lib/utils";
 import { plural } from "@/lib/utils";
-
-const VISIBILITY: Record<ChatVisibility, { label: string; hint: string }> = {
-  public: { label: "Public", hint: "Every member of the organisation can find and join it." },
-  private: { label: "Private", hint: "Only its members can see it." },
-};
 
 /** How often the chat list asks again, for what's new elsewhere (ms); every 30s while hidden. */
 export const CHAT_LIST_POLL_MS = 5 * POLL_MS;
@@ -61,7 +57,6 @@ const CHAT_FILTERS: ListFilterGroup<ChatListed>[] = [
       { key: "joined", label: "Joined", test: (chat) => chat.is_member },
       { key: "not-joined", label: "Not joined", test: (chat) => !chat.is_member },
       { key: "unread", label: "Unread", test: (chat) => (chat.unread_count ?? 0) > 0 },
-      { key: "private", label: "Private", test: (chat) => chat.visibility === "private" },
     ],
   },
 ];
@@ -77,7 +72,7 @@ export function ChatsSection() {
       basePath="/chats"
       items={data}
       error={error}
-      empty="No chats yet. A chat is a group conversation; create one and add members."
+      empty="No chats yet. A chat is a conversation everyone in the organisation can read; create one and add agents."
       reloadList={reload}
       search={nameAndDescription}
       filters={CHAT_FILTERS}
@@ -86,7 +81,7 @@ export function ChatsSection() {
   );
 }
 
-/** A chat in the list: its name, privacy, members (or that it's not joined) and unread count. */
+/** A chat in the list: its name, members (or that it's not joined) and unread count. */
 function ChatListItem({ chat }: { chat: ChatListed }) {
   const unread = unreadBadge(chat.unread_count);
   return (
@@ -95,9 +90,6 @@ function ChatListItem({ chat }: { chat: ChatListed }) {
         <span className={cn("min-w-0 flex-1 truncate font-medium", !chat.is_member && "text-muted-foreground")}>
           {chat.name}
         </span>
-        {chat.visibility === "private" && (
-          <Lock className="text-muted-foreground size-3.5 shrink-0" role="img" aria-label="Private" />
-        )}
         {chat.is_member ? (
           <span className="text-muted-foreground shrink-0 text-xs">{plural(chat.member_count, "member")}</span>
         ) : (
@@ -141,6 +133,9 @@ export function ChatDetail() {
   const { data: mentionable, reload: reloadMentionable } = useLoad(
     useCallback(() => api.listChatMentionable(id), [id]),
   );
+  // The organisation's agents and workflows, which the composer offers too: a mention of one the
+  // chat doesn't include is refused, with **Add it to this chat**.
+  const { data: targets } = useLoad(listTargets);
   const reload = useCallback(
     () => Promise.all([reloadChat(), reloadMentionable()]),
     [reloadChat, reloadMentionable],
@@ -193,10 +188,8 @@ export function ChatDetail() {
     if (!window.confirm(`Leave the chat “${chat!.name}”?`)) return;
     try {
       await api.leaveChat(id);
-      await reloadList();
-      // A private chat is gone for them once they've left; a public one is still there to read.
-      if (chat!.visibility === "private") navigate(listHref("/chats"));
-      else await reload();
+      // Still there to read, and to join again.
+      await Promise.all([reload(), reloadList()]);
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -211,6 +204,13 @@ export function ChatDetail() {
     }
   }
 
+  /** **Add it to this chat**: joins them first if need be (only members add), then adds each. */
+  async function onInclude(missing: ChatMention[]) {
+    if (!chat!.is_member) await api.joinChat(id);
+    for (const target of missing) await api.addChatMember(id, { kind: target.kind, id: target.id });
+    await Promise.all([reload(), reloadList()]);
+  }
+
   async function onRemove(member: ChatMember) {
     if (!window.confirm(`Remove ${member.name} from the chat?`)) return;
     try {
@@ -223,12 +223,7 @@ export function ChatDetail() {
 
   return (
     <DetailPage
-      title={
-        <span className="flex items-center gap-2">
-          {chat.name}
-          <Badge variant="secondary">{VISIBILITY[chat.visibility].label}</Badge>
-        </span>
-      }
+      title={chat.name}
       subtitle={
         <>
           {chat.description && <p className="text-foreground whitespace-pre-wrap">{chat.description}</p>}
@@ -239,7 +234,7 @@ export function ChatDetail() {
         </>
       }
       actions={
-        chat.is_owner ? (
+        chat.is_member ? (
           <>
             <Button asChild variant="outline" size="sm">
               <Link to={listHref(`/chats/${id}/edit`)}>
@@ -251,12 +246,11 @@ export function ChatDetail() {
               <Trash2 />
               Delete
             </Button>
+            <Button variant="outline" size="sm" onClick={onLeave}>
+              <LogOut />
+              Leave
+            </Button>
           </>
-        ) : chat.is_member ? (
-          <Button variant="outline" size="sm" onClick={onLeave}>
-            <LogOut />
-            Leave
-          </Button>
         ) : (
           <Button size="sm" onClick={onJoin}>
             <LogIn />
@@ -276,9 +270,12 @@ export function ChatDetail() {
               <ChatRoom
                 key={chat.id}
                 chatId={chat.id}
-                canPost={chat.is_member}
+                joined={chat.is_member}
                 mentionable={mentionable}
-                onPosted={reloadList}
+                offered={composerMentionables(mentionable, targets)}
+                // Posting in a chat they haven't joined joins them.
+                onPosted={chat.is_member ? reloadList : () => Promise.all([reload(), reloadList()])}
+                onInclude={onInclude}
                 onRead={chat.is_member ? onRead : undefined}
                 draft={draft}
                 onDraftChange={setDraft}
@@ -292,8 +289,8 @@ export function ChatDetail() {
             content: (
               <MembersPanel
                 chat={chat}
-                onAdd={chat.is_owner ? onAdd : undefined}
-                onRemove={chat.is_owner ? onRemove : undefined}
+                onAdd={chat.is_member ? onAdd : undefined}
+                onRemove={chat.is_member ? onRemove : undefined}
               />
             ),
           },
@@ -309,9 +306,9 @@ function MembersPanel({
   onRemove,
 }: {
   chat: Chat;
-  /** Set for the owner, who can add the organisation's members, agents and workflows. */
+  /** Set for its members, who can add the organisation's members, agents and workflows. */
   onAdd?: (kind: ChatMemberKind, id: number) => Promise<void>;
-  /** Set for the owner, who can remove any member but themselves. */
+  /** Set for its members, who can remove a member. */
   onRemove?: (member: ChatMember) => void;
 }) {
   const groups: { title: string; members: ChatMember[]; empty: string; add?: ChatMemberKind }[] = [
@@ -337,9 +334,8 @@ function MembersPanel({
                     alt={member.kind === "user" ? "" : MEMBER_KIND[member.kind].label}
                   />
                   <span className="min-w-0 flex-1 truncate">{member.name}</span>
-                  {member.role === "owner" && <Badge variant="secondary">owner</Badge>}
                   {member.archived && <Badge variant="secondary">archived</Badge>}
-                  {onRemove && member.role !== "owner" && (
+                  {onRemove && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -368,13 +364,22 @@ async function listPeople(): Promise<{ id: number; name: string }[]> {
   return members.map(({ user }) => ({ id: user.id, name: user.name }));
 }
 
+/** The organisation's agents and workflows (not archived), as the composer offers them. */
+async function listTargets(): Promise<(ChatMention & { kind: "agent" | "workflow" })[]> {
+  const [agents, workflows] = await Promise.all([api.listAgents(), api.listWorkflows()]);
+  return [
+    ...agents.map((a) => ({ kind: "agent" as const, id: a.id, name: a.name })),
+    ...workflows.map((w) => ({ kind: "workflow" as const, id: w.id, name: w.name })),
+  ];
+}
+
 const ADDABLE: Record<ChatMemberKind, { list: () => Promise<{ id: number; name: string }[]>; a: string }> = {
   user: { list: listPeople, a: "a member" },
   agent: { list: () => api.listAgents(), a: "an agent" },
   workflow: { list: () => api.listWorkflows(), a: "a workflow" },
 };
 
-/** The owner's picker for adding one of the organisation's members, agents or workflows that
+/** A member's picker for adding one of the organisation's members, agents or workflows that
  * isn't in the chat yet. */
 function AddMember({
   kind,
@@ -428,7 +433,7 @@ function AddMember({
   );
 }
 
-const emptyChat: ChatInput = { name: "", description: "", visibility: "private" };
+const emptyChat: ChatInput = { name: "", description: "" };
 
 export function ChatForm() {
   const params = useParams();
@@ -445,7 +450,7 @@ export function ChatForm() {
     if (id === undefined) setForm(emptyChat);
     else
       api.getChat(id).then(
-        ({ name, description, visibility }) => setForm({ name, description, visibility }),
+        ({ name, description }) => setForm({ name, description }),
         (err) => setError(describeError(err)),
       );
   }, [id]);
@@ -490,20 +495,6 @@ export function ChatForm() {
             onChange={(e) => set({ description: e.target.value })}
             placeholder="What the chat is for"
           />
-        </Field>
-        <Field label="Visibility" htmlFor="chat-visibility" hint={VISIBILITY[form.visibility].hint}>
-          <select
-            id="chat-visibility"
-            className={selectClass}
-            value={form.visibility}
-            onChange={(e) => set({ visibility: e.target.value as ChatVisibility })}
-          >
-            {(Object.keys(VISIBILITY) as ChatVisibility[]).map((v) => (
-              <option key={v} value={v}>
-                {VISIBILITY[v].label}
-              </option>
-            ))}
-          </select>
         </Field>
         <div className="flex gap-2">
           <Button type="submit" disabled={saving || !form.name.trim()}>

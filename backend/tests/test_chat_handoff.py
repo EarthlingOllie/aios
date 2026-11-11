@@ -68,7 +68,8 @@ def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api, u
     # The run was told the brief (wrapped as untrusted: it's derived from the chat), a blank
     # line, then the message.
     history = checkpoints.history(store_of(user), invocation["agent_run_id"])
-    assert history[0].text == f"{jev.wrap(brief, 'brief')}\n\n@Bot check them"
+    message = jev.wrap("@Bot check them", "chat message")
+    assert history[0].text == f"{jev.wrap(brief, 'brief')}\n\n{message}"
     # Named after what was asked, not the brief.
     [run] = api.get(f"/api/agents/{agent['id']}/runs").json()
     assert run["title"] == "@Bot check them"
@@ -88,7 +89,8 @@ def test_a_workflows_run_is_told_the_brief_then_the_message(api, queued):  # noq
     assert invocation["acknowledgement"] == "I'll sum up the week."
     assert card_of(api, chat)["body"] == "I'll sum up the week."
     run = invocation["workflow_run"]
-    assert run["input"] == f"{jev.wrap('The release is on Friday.', 'brief')}\n\n@Digest sum it up"
+    brief = jev.wrap("The release is on Friday.", "brief")
+    assert run["input"] == f"{brief}\n\n{jev.wrap('@Digest sum it up', 'chat message')}"
 
 
 def failing_handoff():

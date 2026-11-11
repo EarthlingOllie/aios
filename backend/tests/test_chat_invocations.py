@@ -11,7 +11,7 @@ from test_organisation_scoping import member  # noqa: F401
 from test_workflow_runs import Queued, abandon, agents, echo
 from test_workflows import agent_node, make_workflow
 
-from aios import workflows
+from aios import jev, workflows
 from aios.api import chats
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
@@ -91,7 +91,8 @@ def test_the_run_starts_with_the_message_and_the_poll_follows_it_to_its_result(a
     assert (invocation["status"], invocation["workflow_run_id"]) == ("running", run_id)
     assert invocation["started_at"] and not invocation["finished_at"]
     run = invocation["workflow_run"]
-    assert (run["id"], run["status"], run["input"]) == (run_id, "queued", "@Digest sum it up")
+    given = jev.wrap("@Digest sum it up", "chat message")
+    assert (run["id"], run["status"], run["input"]) == (run_id, "queued", given)
     # The card draws its graph.
     assert [n["key"] for n in run["version"]["nodes"]] == ["one"]
     assert run["steps"] == []
@@ -107,7 +108,7 @@ def test_the_run_starts_with_the_message_and_the_poll_follows_it_to_its_result(a
         "workflow",
         "Digest",
     )
-    assert result["body"] == "first(@Digest sum it up)"
+    assert result["body"] == f"first({given})"
     assert result["invocation_id"] == invocation["id"]
     [finished] = done["invocations"]
     assert (finished["id"], finished["status"], finished["error"]) == (
@@ -200,9 +201,10 @@ def test_several_workflows_mentioned_each_start(api, queued):
     with use_model(echo()):
         for run_id in queued:
             asyncio.run(execute_run(queued.store, run_id))
+    given = jev.wrap("Both of you", "chat message")
     assert sorted(results(api, chat)) == [
-        ("One", "first(Both of you)"),
-        ("Two", "second(Both of you)"),
+        ("One", f"first({given})"),
+        ("Two", f"second({given})"),
     ]
     assert {i["status"] for i in messages(api, chat)["invocations"]} == {"succeeded"}
 
@@ -327,22 +329,21 @@ def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(
     assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
 
 
-def test_a_run_going_in_a_private_chat_deleted_as_its_owner_leaves_goes_on_without_it(
+def test_a_run_going_in_a_chat_that_is_deleted_goes_on_without_it(
     api,
     in_store,
     user,
     member,  # noqa: F811
     queued,
 ):
-    """A private chat its owner leaves with nobody else in it is deleted
-    (`organisations.hand_over_chats`) as its owner deleting it is: with its messages and
-    invocations, and a run one started, not yet finished, goes on and finishes without it."""
+    """A chat deleted goes with its messages and invocations, and a run one started, not yet
+    finished, goes on and finishes without it."""
     with signed_in_as(member):
         wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
-        chat = make_chat(api, "Mine", visibility="private")
+        chat = make_chat(api, "Mine")
         add(api, chat, "workflow", wf)
         say(api, chat, "Go", wf)
-        assert api.post("/api/organisation/leave").status_code == 200
+        assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
     assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
     assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
 

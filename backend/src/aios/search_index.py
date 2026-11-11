@@ -12,8 +12,9 @@ source is a foreign key that cascades):
 - the handoff indexes its brief (`index_brief`).
 
 **Verdicts.** Each item carries its source's Jev verdict (`aios.verdicts`): a chunk its
-document's, and the rest `derived` (what agents wrote, and people's chat messages until phase 2
-checks them at posting). Search finds only clean, released and derived items.
+document's, a chat message its message's (`clean` for a person's, which Jev checks as it's
+posted), and the rest `derived` (what agents wrote). Search finds only clean, released and
+derived items.
 
 **Embedding** is deferred: an item is written without one, and found by keyword until the
 store's sweep (`embed_pending`, the `aios.embed_search_items` task, on a schedule) embeds it,
@@ -116,7 +117,8 @@ def index_chunks(store: Session, document_id: int, verdict: Verdict | None = Non
 
 
 def index_chat_message(store: Session, message: ChatMessage) -> None:
-    """Index a chat message with text (not a run's card, which follows its run). Flushes it."""
+    """Index a chat message with text (not a run's card, which follows its run), with its
+    verdict. Flushes it."""
     if message.kind != ChatMessageKind.text or not message.body.strip():
         return
     store.flush()
@@ -129,7 +131,9 @@ def index_chat_message(store: Session, message: ChatMessage) -> None:
         agent_id=message.author_agent_id,
         author_user_id=message.author_user_id,
         text=message.body,
-        verdict=Verdict.derived,
+        # The message's own: clean for a person's (Jev checked it as it was posted), derived
+        # for what agents and workflows post.
+        verdict=message.verdict or Verdict.derived,
     )
 
 

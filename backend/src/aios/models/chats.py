@@ -7,20 +7,10 @@ Chats, chat members, messages and invocations are in each organisation's store
 import enum
 
 
-class ChatVisibility(enum.StrEnum):
-    public = "public"
-    private = "private"
-
-
 class ChatMemberKind(enum.StrEnum):
     user = "user"
     agent = "agent"
     workflow = "workflow"
-
-
-class ChatMemberRole(enum.StrEnum):
-    owner = "owner"
-    member = "member"
 
 
 class ChatAuthorKind(enum.StrEnum):

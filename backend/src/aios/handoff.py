@@ -177,8 +177,9 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
         model = Agent if is_agent else Workflow
         name = store.scalar(select(model.name).where(model.id == target_id)) or ""
         *earlier, mentioning = window(store, organisation_id, invocation)
-        # What was said before is untrusted (people's messages and what agents derived), so
-        # it comes in an untrusted block (`aios.jev.wrap`).
+        # What was said before, and the mentioning message, are untrusted (people's messages
+        # and what agents derived), so each comes in an untrusted block (`aios.jev.wrap`),
+        # whatever Jev said of them.
         chat = "\n\n".join(
             [
                 "The chat so far, oldest first:",
@@ -186,7 +187,7 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
                 if earlier
                 else "(nothing before the message)",
                 f"The message mentioning {name}:",
-                mentioning,
+                jev.wrap(mentioning, invocations.CHAT_MESSAGE),
             ]
         )
         request = Request(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatInvocation, ChatListed, ChatMessage } from "@/lib/api";
+import { ApiError, type ChatInvocation, type ChatListed, type ChatMessage } from "@/lib/api";
 import {
   bodyShown,
   afterCursor,
@@ -12,6 +12,7 @@ import {
   mergeMessages,
   MESSAGE_PAGE,
   newlyRead,
+  postRefusal,
   unreadBadge,
 } from "@/lib/chat-messages";
 
@@ -190,8 +191,6 @@ describe("landingPath", () => {
     id,
     name: `chat ${id}`,
     description: "",
-    visibility: "public",
-    is_owner: is_member,
     is_member,
     member_count: 2,
     created_at: "2026-10-18T09:00:00Z",
@@ -202,12 +201,46 @@ describe("landingPath", () => {
   });
 
   it("is the most recently active chat the user is in", () => {
-    // The list comes most recently active first; a public chat they haven't joined is passed over.
+    // The list comes most recently active first; a chat they haven't joined is passed over.
     expect(landingPath([chat(3, false), chat(2, true), chat(1, true)])).toBe("/chats/2");
   });
 
   it("is the new-chat form when they're in none", () => {
     expect(landingPath([])).toBe("/chats/new");
     expect(landingPath([chat(3, false)])).toBe("/chats/new");
+  });
+});
+
+describe("postRefusal", () => {
+  const refused = (status: number, detail: unknown) => new ApiError(status, JSON.stringify({ detail }));
+
+  it("names the agents and workflows the chat doesn't include, to offer adding them", () => {
+    const missing = [{ kind: "agent", id: 4, name: "Scout" }];
+    expect(
+      postRefusal(refused(422, { message: "This chat doesn't include Scout (agent).", missing })),
+    ).toEqual({ message: "This chat doesn't include Scout (agent).", missing });
+  });
+
+  it("says why Jev flagged a message", () => {
+    expect(
+      postRefusal(
+        refused(422, {
+          message: "Jev flagged this message as a likely prompt injection, so it wasn't posted.",
+          reason: "Jev judged this a likely prompt injection (probability 0.97).",
+        }),
+      ),
+    ).toEqual({
+      message:
+        "Jev flagged this message as a likely prompt injection, so it wasn't posted. Jev judged this a likely prompt injection (probability 0.97).",
+      missing: [],
+    });
+  });
+
+  it("passes on any other refusal as it's described", () => {
+    expect(postRefusal(refused(503, "Couldn't check this message, try again."))).toEqual({
+      message: "Couldn't check this message, try again.",
+      missing: [],
+    });
+    expect(postRefusal(new Error("boom"))).toEqual({ message: "network error", missing: [] });
   });
 });

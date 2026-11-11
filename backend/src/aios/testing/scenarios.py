@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Callable
 
 from langchain_core.messages import BaseMessage
 
+from aios import jev
 from aios.testing.fake_model import (
     FakeChatModel,
     Info,
@@ -42,10 +43,11 @@ SAVED = "Saved."
 
 
 def human_text(messages: list[BaseMessage]) -> str:
-    """The last message the model was given from the person (or the run's input)."""
+    """The last message the model was given from the person (or the run's input), out of the
+    untrusted block a chat message comes in (`aios.invocations.run_input`)."""
     for message in reversed(messages):
         if message.type == "human":
-            return message.text
+            return jev.unwrap(message.text)
     return ""
 
 

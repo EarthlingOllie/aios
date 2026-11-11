@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { jevNotice, verdictView } from "@/lib/verdicts";
+import { composerJevNotice, jevNotice, verdictView } from "@/lib/verdicts";
 
 describe("verdictView", () => {
   it("says a document Jev passed is checked and searchable", () => {
@@ -47,5 +47,18 @@ describe("jevNotice", () => {
     expect(jevNotice(false)).toBe(
       "Jev, the prompt-injection check, is down. New documents wait to be checked before they're searchable, and agents' code and data tools return errors until it's back.",
     );
+  });
+});
+
+describe("composerJevNotice", () => {
+  it("says messages can't be checked, so can't be posted, while Jev is down", () => {
+    expect(composerJevNotice(false)).toBe(
+      "Messages can't be checked right now: Jev, the prompt-injection check, is down, so posting won't work until it's back.",
+    );
+  });
+
+  it("says nothing while Jev is up, or its health isn't known", () => {
+    expect(composerJevNotice(true)).toBeNull();
+    expect(composerJevNotice(null)).toBeNull();
   });
 });

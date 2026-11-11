@@ -55,7 +55,7 @@ def test_a_message_mentioning_six_agents_answers_422_and_writes_nothing(api, db,
 
 def test_people_mentioned_dont_count_towards_the_cap(api, db, user, monkeypatch):
     monkeypatch.setattr(get_settings(), "mentions_per_message", 1)
-    chat = make_chat(api, "Ops", visibility="public")
+    chat = make_chat(api, "Ops")
     agent = make_agent(api, "Bot")
     add(api, chat, "agent", agent)
     colleague = join_organisation(db, user, "colleague")
@@ -75,7 +75,7 @@ def test_a_mention_refused_by_invocable_by_posts_with_a_refused_card_and_calls_n
     resp = api.put(f"/api/agents/{guarded['id']}", json=agent_body(guarded, invocable_by="editors"))
     assert (resp.status_code, resp.json()["invocable_by"]) == (200, "editors")
     open_to_all = make_agent(api, "Helper")
-    chat = make_chat(api, "Ops", visibility="public")
+    chat = make_chat(api, "Ops")
     add(api, chat, "agent", guarded)
     add(api, chat, "agent", open_to_all)
     handoffs: list = []
@@ -104,7 +104,7 @@ def test_a_mention_refused_by_invocable_by_posts_with_a_refused_card_and_calls_n
 def test_admins_only_targets_refuse_editors_too(api, db, user):
     agent = make_agent(api, "Vault")
     api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, invocable_by="admins"))
-    chat = make_chat(api, "Ops", visibility="public")
+    chat = make_chat(api, "Ops")
     add(api, chat, "agent", agent)
     editor = join_organisation(db, user, "editor")
     with signed_in_as(editor):
@@ -144,7 +144,7 @@ def test_refused_mentions_dont_count_towards_the_rate_limit(api, participant, mo
     guarded = make_agent(api, "Payroll")
     api.put(f"/api/agents/{guarded['id']}", json=agent_body(guarded, invocable_by="admins"))
     helper = make_agent(api, "Helper")
-    chat = make_chat(api, "Ops", visibility="public")
+    chat = make_chat(api, "Ops")
     add(api, chat, "agent", guarded)
     add(api, chat, "agent", helper)
     with signed_in_as(participant):
@@ -158,7 +158,7 @@ def test_refused_mentions_dont_count_towards_the_rate_limit(api, participant, mo
 
 def test_a_participant_mentions_an_agent_and_it_runs(api, participant):
     agent = make_agent(api, "Helper")
-    chat = make_chat(api, "Ops", visibility="public")
+    chat = make_chat(api, "Ops")
     add(api, chat, "agent", agent)
     with signed_in_as(participant):
         assert api.post(f"/api/chats/{chat['id']}/join").is_success

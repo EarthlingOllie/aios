@@ -173,7 +173,7 @@ def test_a_mentions_run_searches_the_organisations_store_and_was_started_by_who_
     api, user, member, shared_document
 ):
     agent = librarian(api)
-    chat = make_chat(api, "Board", visibility="public")
+    chat = make_chat(api, "Board")
     add(api, chat, "agent", agent)
     fake, found = searches()
     with signed_in_as(member):
@@ -331,7 +331,7 @@ def test_traces_carry_the_organisation_and_who_started_the_run(
     org = org_of(db, user).id
     agent = make_agent(api, "Bot")
     wf = make_workflow(api, "Flow", [agent_node("a", agent)])
-    chat = make_chat(api, "Design", visibility="public")
+    chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
     fake, _ = searches()
 

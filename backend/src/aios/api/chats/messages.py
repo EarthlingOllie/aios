@@ -1,5 +1,6 @@
 """A chat's messages: reading them, keeping track of what's been read, and posting."""
 
+import asyncio
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated
@@ -9,20 +10,22 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import guards, invocations, run_service, search_index, turns
+from aios import guards, invocations, jev, organisations, run_service, search_index, turns
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
 from aios.api import workflows as workflows_api
 from aios.api.chats.common import (
+    TARGET_MODELS,
     get_visible_chat,
     is_member,
     lock_chat,
     user_member,
     users_by_id,
 )
-from aios.api.chats.members import mentionables
+from aios.api.chats.members import join, mentionables
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.config import get_settings
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -54,8 +57,12 @@ router = APIRouter(prefix="/api")
 
 # How many messages a read returns at most: the latest page, a page of history, or what's new.
 MESSAGE_PAGE = 50
-NOT_A_MEMBER = "Only the chat's members can post in it."
 NOT_MENTIONABLE = "Only the chat's members can be mentioned in it."
+NOT_INCLUDED = "This chat doesn't include {names}. Add it to this chat to mention it."
+FLAGGED = "Jev flagged this message as a likely prompt injection, so it wasn't posted."
+UNCHECKED = "Couldn't check this message, try again."
+# The source Jev is told a person's chat message comes from.
+SOURCE = "chat message"
 
 
 class MentionIn(BaseModel):
@@ -320,19 +327,61 @@ def catch_up(store: Session, chat_id: int) -> None:
 def resolve_mentions(
     db: Session, store: Session, chat: Chat, mentions: list[MentionIn]
 ) -> list[MentionOut]:
-    """The members a message mentions, each once in the order given, with their names: a 422 if
-    any isn't a member of the chat. An archived agent still is."""
+    """The members a message mentions, each once in the order given, with their names. A 422 for
+    a person who isn't a member, and one naming each agent or workflow the chat doesn't include
+    (`detail.missing`: kind, id and name), for the screen to offer to add. An archived agent is
+    still included."""
     found = mentionables(db, store, chat, archived=True)
     members = {(m.kind, m.id): m for m in [*found.users, *found.agents, *found.workflows]}
     resolved: dict[tuple[ChatMemberKind, int], MentionOut] = {}
+    missing: dict[tuple[ChatMemberKind, int], MentionOut] = {}
     for mention in mentions:
         member = members.get((mention.kind, mention.id))
-        if member is None:
+        if member is not None:
+            resolved.setdefault(
+                (member.kind, member.id),
+                MentionOut(kind=member.kind, id=member.id, name=member.name),
+            )
+            continue
+        if mention.kind == ChatMemberKind.user:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, NOT_MENTIONABLE)
-        resolved.setdefault(
-            (member.kind, member.id), MentionOut(kind=member.kind, id=member.id, name=member.name)
+        model = TARGET_MODELS[mention.kind]
+        target = store.get(model, mention.id)
+        if target is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {mention.kind.value}"
+            )
+        missing.setdefault(
+            (mention.kind, mention.id),
+            MentionOut(kind=mention.kind, id=target.id, name=target.name),
+        )
+    if missing:
+        names = " or ".join(f"{m.name} ({m.kind.value})" for m in missing.values())
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {
+                "message": NOT_INCLUDED.format(names=names),
+                "missing": [m.model_dump(mode="json") for m in missing.values()],
+            },
         )
     return list(resolved.values())
+
+
+def check_with_jev(body: str) -> None:
+    """Jev's check of a person's message (`aios.jev`), before anything of it is written: a 422
+    with Jev's reason if it's flagged, a 503 to try again if Jev can't check it within
+    `jev_chat_timeout_seconds`. Run in the request's worker thread, outside any event loop."""
+    try:
+        judgement = asyncio.run(
+            jev.check(body, SOURCE, timeout=get_settings().jev_chat_timeout_seconds)
+        )
+    except jev.JevUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, UNCHECKED) from None
+    if judgement.flagged:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"message": FLAGGED, "reason": judgement.reason or ""},
+        )
 
 
 @router.get(
@@ -421,14 +470,17 @@ def post_message(
     store: CurrentStore,
     background: BackgroundTasks,
 ):
-    """Post a markdown message to the chat as the user, who must be a member of it. Returns it,
-    and for each agent or workflow it mentions its acknowledgement with a card and its queued
-    invocation, whose run starts after the response.
+    """Post a markdown message to the chat as the user, joining them to it if they haven't
+    (in the same transaction). Returns it, and for each agent or workflow it mentions its
+    acknowledgement with a card and its queued invocation, whose run starts after the response.
 
-    The mention guards (`aios.guards`) come first, in order: more agents and workflows than a
-    message may mention is a 422; a mention the poster may not make (its target's invocable-by)
-    is posted refused, its card saying why; past the poster's mention rate, a 429 with when to
-    try again. Neither a 422 nor a 429 writes anything."""
+    The one path every person's message goes through. In order, before anything is written:
+    the mention guards (`aios.guards`): more agents and workflows than a message may mention is
+    a 422; a mention of an agent or workflow the chat doesn't include is a 422 naming it; a
+    mention the poster may not make (its target's invocable-by) is posted refused, its card
+    saying why; past the poster's mention rate, a 429 with when to try again. Then Jev
+    (`check_with_jev`): flagged is a 422 with the reason, unchecked a 503. None of those writes
+    anything: no message, membership, invocation or search item."""
     targets = list(
         dict.fromkeys(
             (TriggerTargetKind(m.kind.value), m.id)
@@ -438,14 +490,22 @@ def post_message(
     )
     guards.check_count(targets)
     chat = get_visible_chat(store, user.id, chat_id)
-    if not is_member(chat, user.id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
-    # Its owner leaving the organisation may be deleting it (`lock_chat`).
-    lock_chat(store, chat)
     mentions = resolve_mentions(db, store, chat, body.mentions)
     refused = guards.refusals(store, role, targets)
     guards.check_rate(org.id, user.id, len([t for t in targets if t not in refused]))
     guards.check_budget()
+    check_with_jev(body.body)
+    # Held until the store has committed the message (and the poster's joining by it): one
+    # leaving the organisation as they post waits, and is a 404 (`organisations.holds_member`).
+    # Before the chat's lock, as leaving takes the organisation's before the chats'.
+    if not organisations.holds_member(db, org, user.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not is_member(chat, user.id):
+        # Locks the chat, as posting does anyway.
+        join(store, chat, user.id)
+    else:
+        # A member deleting it meanwhile (`lock_chat`).
+        lock_chat(store, chat)
     message = ChatMessage(
         chat_id=chat.id,
         author_kind=ChatAuthorKind.user,
@@ -453,6 +513,7 @@ def post_message(
         kind=ChatMessageKind.text,
         body=body.body,
         mentions=[m.model_dump(mode="json") for m in mentions],
+        verdict=jev.Verdict.clean,
     )
     store.add(message)
     search_index.index_chat_message(store, message)
@@ -469,6 +530,7 @@ def post_message(
     # Posting is activity.
     chat.updated_at = func.now()
     store.commit()
+    db.commit()
     store_id = store_id_of(store)
     invocation_ids = [i.id for i in started]
     if queued := [i.id for i in started if i.status == InvocationStatus.queued]:

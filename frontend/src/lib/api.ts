@@ -1015,18 +1015,15 @@ export type SkillUsage = {
 /** What uses a skill, as its archive confirmation shows it (GET /api/skills/{id}/used-by). */
 export type SkillUsedBy = { agents: SkillUsage[] };
 
-export type ChatVisibility = "public" | "private";
 export type ChatMemberKind = "user" | "agent" | "workflow";
 /** The kinds of member that aren't users: the organisation's agents and workflows. */
 export type ChatTargetKind = Exclude<ChatMemberKind, "user">;
 
-/** Someone in a chat: a user (with a role), an agent or a workflow. */
+/** Someone in a chat: a user, an agent or a workflow. */
 export type ChatMember = {
   /** The membership's id, which removing the member takes. */
   id: number;
   kind: ChatMemberKind;
-  /** Users only: the chat's owner, or an ordinary member. */
-  role: "owner" | "member" | null;
   /** The user's, agent's or workflow's id. */
   target_id: number;
   /** A user's full name ("First Last"). */
@@ -1036,18 +1033,13 @@ export type ChatMember = {
   archived: boolean;
 };
 
-/** Who made it and last changed it: the chat's owner role is separate (`is_owner`). */
+/** An open chat: everyone in the organisation can find and read it, and posting joins it. */
 export type ChatSummary = Provenance & {
   id: number;
   name: string;
   description: string;
-  /** Public: every member of the organisation can find it. Private: it doesn't exist for anyone
-   * who isn't in it. */
-  visibility: ChatVisibility;
-  /** Whether the signed-in user is its owner (the role on their member row): only the owner
-   * edits, deletes or removes members. */
-  is_owner: boolean;
-  /** Whether the signed-in user is in it, and so can post: anyone can read a public chat. */
+  /** Whether the signed-in user has joined it: its members change it and its agents and
+   * workflows, and count what's unread. */
   is_member: boolean;
   member_count: number;
   created_at: string;
@@ -1055,18 +1047,18 @@ export type ChatSummary = Provenance & {
   updated_at: string;
 };
 
-/** A chat as the list shows it: those the user is in, and the public ones they could join. */
+/** A chat as the list shows it: every chat of the organisation, joined or not. */
 export type ChatListed = ChatSummary & {
   /** Others' messages since the last one the user read; null for a chat they're not in. */
   unread_count: number | null;
 };
 
 export type Chat = ChatSummary & {
-  /** Grouped by kind; the owner first, then in the order they were added. */
+  /** Grouped by kind, in the order they were added. */
   members: { users: ChatMember[]; agents: ChatMember[]; workflows: ChatMember[] };
 };
 
-export type ChatInput = { name: string; description: string; visibility: ChatVisibility };
+export type ChatInput = { name: string; description: string };
 
 /** A member a message mentions: a user, an agent or a workflow, by id within its kind. */
 export type ChatMentionRef = { kind: ChatMemberKind; id: number };
@@ -1242,6 +1234,8 @@ export function describeError(err: unknown): string {
     try {
       const detail = JSON.parse(err.message)?.detail;
       if (typeof detail === "string") return detail;
+      // A refusal that says more than why (a chat post's, `postRefusal`).
+      if (typeof detail?.message === "string") return detail.message;
     } catch {
       // not JSON
     }

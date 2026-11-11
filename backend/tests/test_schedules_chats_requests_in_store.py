@@ -234,7 +234,7 @@ def test_schedules_with_the_same_id_in_two_stores_each_fire_in_their_own(api, db
 
 
 def test_a_chats_messages_members_and_unread_counts_are_in_the_store(api, db, user):
-    chat = make_chat(api, "Design", visibility="public")
+    chat = make_chat(api, "Design")
     post(api, chat, "Hello")
     with user_store(user) as store:
         assert store.scalar(text("SELECT count(*) FROM aios.chats")) == 1

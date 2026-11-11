@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatMention } from "./api";
 import {
+  composerMentionables,
   filterMentionable,
   insertMention,
   mentionAt,
@@ -168,5 +169,31 @@ describe("remarkMentions", () => {
     expect(render("[docs](https://example.com) and [Review](agent:7)", [{ kind: "agent", id: 7, name: "Review" }])).toBe(
       '<p><a href="https://example.com">docs</a> and <a href="">Review</a></p>',
     );
+  });
+});
+
+describe("composerMentionables", () => {
+  const person = { kind: "user" as const, id: 1, name: "Ann Lee", first_name: "Ann", last_name: "Lee" };
+  const included = { kind: "agent" as const, id: 2, name: "Bot", first_name: null, last_name: null };
+
+  it("adds the organisation's agents and workflows the chat doesn't include, after its own", () => {
+    const chat = { users: [person], agents: [included], workflows: [] };
+    expect(
+      composerMentionables(chat, [
+        { kind: "agent", id: 2, name: "Bot" },
+        { kind: "agent", id: 3, name: "Scout" },
+        { kind: "workflow", id: 2, name: "Digest" },
+      ]),
+    ).toEqual({
+      users: [person],
+      agents: [included, { kind: "agent", id: 3, name: "Scout", first_name: null, last_name: null }],
+      workflows: [{ kind: "workflow", id: 2, name: "Digest", first_name: null, last_name: null }],
+    });
+  });
+
+  it("is the chat's own until the organisation's have loaded", () => {
+    const chat = { users: [person], agents: [included], workflows: [] };
+    expect(composerMentionables(chat, undefined)).toBe(chat);
+    expect(composerMentionables(undefined, [])).toBeUndefined();
   });
 });

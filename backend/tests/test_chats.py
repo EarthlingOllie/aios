@@ -44,20 +44,19 @@ def signed_in_as(user: User):
         app.dependency_overrides[current_user] = previous
 
 
-def test_create_makes_the_creator_the_owner_and_first_member(api, user):
-    chat = make_chat(api, "Design", description="Where design happens", visibility="private")
+def test_create_makes_the_creator_its_first_member(api, user):
+    chat = make_chat(api, "Design", description="Where design happens")
     assert chat["name"] == "Design"
     assert chat["description"] == "Where design happens"
-    assert chat["visibility"] == "private"
-    assert chat["is_owner"] is True
+    assert "visibility" not in chat and "is_owner" not in chat
     assert chat["is_member"] is True
-    # The owner, and their documents assistant (see test_chat_documents_assistant.py).
+    # The creator, and their documents assistant (see test_chat_documents_assistant.py).
     assert chat["member_count"] == 2
     assert [a["name"] for a in chat["members"]["agents"]] == ["Documents assistant"]
     assert chat["members"]["workflows"] == []
     [member] = chat["members"]["users"]
     assert member["kind"] == "user"
-    assert member["role"] == "owner"
+    assert "role" not in member
     assert member["target_id"] == user.id
     assert member["name"] == "Test User"
     assert "login" not in member and "avatar_url" not in member
@@ -76,7 +75,7 @@ def test_names_are_unique_among_the_organisations_chats(api, other):
 
 
 def test_read(api):
-    chat = make_chat(api, "Design", description="Pixels", visibility="public")
+    chat = make_chat(api, "Design", description="Pixels")
     assert api.get(f"/api/chats/{chat['id']}").json() == chat
     assert api.get(f"/api/chats/{chat['id'] + 1000}").status_code == 404
 
@@ -87,14 +86,14 @@ def add_user(api, chat: dict, user: User) -> dict:
     return resp.json()
 
 
-def test_the_owner_adds_a_user_as_a_member(api, user, other):
+def test_a_member_adds_a_user_as_a_member(api, user, other):
     chat = make_chat(api, "Design")
     updated = add_user(api, chat, other)
     assert updated["member_count"] == 3
-    owner, member = updated["members"]["users"]
-    assert owner["target_id"] == user.id and owner["role"] == "owner"
-    assert member["target_id"] == other.id and member["role"] == "member"
-    assert member["name"] == "Other Person"
+    first, added = updated["members"]["users"]
+    assert first["target_id"] == user.id
+    assert added["target_id"] == other.id
+    assert added["name"] == "Other Person"
 
     # Once only.
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
@@ -106,52 +105,51 @@ def test_the_owner_adds_a_user_as_a_member(api, user, other):
         resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": 99_999})
         assert resp.status_code == 422, kind
 
-    # Only the owner adds members.
+
+def test_someone_who_hasnt_joined_cant_add_to_a_chat(api, user, other):
+    chat = make_chat(api, "Design")
     with signed_in_as(other):
-        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": user.id})
+        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": other.id})
         assert resp.status_code == 403
+        assert resp.json()["detail"] == chats.NOT_JOINED
 
 
-def test_list_is_the_chats_im_in_most_recently_active_first(api, user, other):
-    mine = make_chat(api, "Mine", visibility="public")
+def test_list_is_every_chat_most_recently_active_first(api, user, other):
+    mine = make_chat(api, "Mine")
     with signed_in_as(other):
-        theirs_with_me = make_chat(api, "Theirs with me", visibility="private")
-        make_chat(api, "Theirs private", visibility="private")
+        theirs_with_me = make_chat(api, "Theirs with me")
+        make_chat(api, "Theirs")
         add_user(api, theirs_with_me, user)
     listed = api.get("/api/chats").json()
-    assert [c["name"] for c in listed] == ["Theirs with me", "Mine"]
-    assert [c["visibility"] for c in listed] == ["private", "public"]
-    assert [c["is_owner"] for c in listed] == [False, True]
+    assert [c["name"] for c in listed] == ["Theirs with me", "Theirs", "Mine"]
+    assert [c["is_member"] for c in listed] == [True, False, True]
     assert listed[0]["member_count"] == 3
     assert "members" not in listed[0]
 
     # Changing a chat makes it the most recently active.
-    resp = api.put(
-        f"/api/chats/{mine['id']}",
-        json={"name": "Mine", "description": "Now described", "visibility": "public"},
-    )
+    resp = api.put(f"/api/chats/{mine['id']}", json={"name": "Mine", "description": "Described"})
     assert resp.status_code == 200, resp.text
-    assert [c["name"] for c in api.get("/api/chats").json()] == ["Mine", "Theirs with me"]
+    assert [c["name"] for c in api.get("/api/chats").json()][0] == "Mine"
 
 
-def test_only_the_owner_changes_or_deletes_a_chat(api, user, other):
-    chat = make_chat(api, "Design", visibility="private")
-    add_user(api, chat, other)
-    body = {"name": "Product design", "description": "Pixels", "visibility": "public"}
+def test_only_its_members_change_or_delete_a_chat(api, user, other):
+    chat = make_chat(api, "Design")
+    body = {"name": "Product design", "description": "Pixels"}
     with signed_in_as(other):
-        # A member sees it, but can't change or delete it.
+        # Anyone reads it, but someone who hasn't joined can't change or delete it.
         assert api.get(f"/api/chats/{chat['id']}").status_code == 200
         resp = api.put(f"/api/chats/{chat['id']}", json=body)
         assert resp.status_code == 403
-        assert resp.json()["detail"] == "Only the chat's owner can do that."
+        assert resp.json()["detail"] == chats.NOT_JOINED
         assert api.delete(f"/api/chats/{chat['id']}").status_code == 403
-    unchanged = api.get(f"/api/chats/{chat['id']}").json()
-    assert unchanged["name"] == "Design" and unchanged["visibility"] == "private"
+    assert api.get(f"/api/chats/{chat['id']}").json()["name"] == "Design"
 
-    updated = api.put(f"/api/chats/{chat['id']}", json=body).json()
+    # Any member can.
+    add_user(api, chat, other)
+    with signed_in_as(other):
+        updated = api.put(f"/api/chats/{chat['id']}", json=body).json()
     assert updated["name"] == "Product design"
     assert updated["description"] == "Pixels"
-    assert updated["visibility"] == "public"
     assert updated["member_count"] == 3
     # A rename to another chat's name is refused.
     make_chat(api, "Taken")
@@ -162,61 +160,41 @@ def test_only_the_owner_changes_or_deletes_a_chat(api, user, other):
     assert api.get(f"/api/chats/{chat['id']}").status_code == 404
     assert api.delete(f"/api/chats/{chat['id']}").status_code == 404
     assert [c["name"] for c in api.get("/api/chats").json()] == ["Taken"]
-    with signed_in_as(other):
-        assert api.get("/api/chats").json() == []
 
 
-def test_only_the_owner_removes_a_member(api, user, other):
+def test_a_member_removes_a_member(api, user, other):
     chat = make_chat(api, "Design")
     updated = add_user(api, chat, other)
-    owner, member = updated["members"]["users"]
-    with signed_in_as(other):
-        resp = api.delete(f"/api/chats/{chat['id']}/members/{owner['id']}")
-        assert resp.status_code == 403
-        assert api.delete(f"/api/chats/{chat['id']}/members/{member['id']}").status_code == 403
-    # The owner stays: a chat always has one.
-    resp = api.delete(f"/api/chats/{chat['id']}/members/{owner['id']}")
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == "The owner can't be removed from the chat."
+    first, added = updated["members"]["users"]
     # A member of another chat isn't one of this chat's.
     elsewhere = add_user(api, make_chat(api, "Elsewhere"), other)
     stray = elsewhere["members"]["users"][1]["id"]
     assert api.delete(f"/api/chats/{chat['id']}/members/{stray}").status_code == 404
 
-    assert api.delete(f"/api/chats/{chat['id']}/members/{member['id']}").status_code == 204
-    assert api.delete(f"/api/chats/{chat['id']}/members/{member['id']}").status_code == 404
+    assert api.delete(f"/api/chats/{chat['id']}/members/{added['id']}").status_code == 204
+    assert api.delete(f"/api/chats/{chat['id']}/members/{added['id']}").status_code == 404
     after = api.get(f"/api/chats/{chat['id']}").json()
     assert [m["target_id"] for m in after["members"]["users"]] == [user.id]
     assert after["member_count"] == 2
-    # Removed from a private chat, the other user no longer sees it.
+    # Out of it, the other user still reads it, but can't remove anyone.
     with signed_in_as(other):
-        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
-        assert [c["name"] for c in api.get("/api/chats").json()] == ["Elsewhere"]
+        assert api.get(f"/api/chats/{chat['id']}").json()["is_member"] is False
+        resp = api.delete(f"/api/chats/{chat['id']}/members/{first['id']}")
+        assert resp.status_code == 403
 
 
-def test_a_private_chat_im_not_in_is_a_404_everywhere(api, user, other):
-    chat = make_chat(api, "Secret", visibility="private")
-    [owner] = chat["members"]["users"]
+def test_a_chat_of_another_organisation_is_a_404_everywhere(api, user, outsider):
+    chat = make_chat(api, "Secret")
+    [first] = chat["members"]["users"]
     url = f"/api/chats/{chat['id']}"
-    body = {"name": "Secret", "description": "", "visibility": "public"}
-    with signed_in_as(other):
+    body = {"name": "Secret", "description": ""}
+    with signed_in_as(outsider):
         assert api.get(url).status_code == 404
         assert api.put(url, json=body).status_code == 404
         assert api.delete(url).status_code == 404
-        assert api.post(f"{url}/members", json={"kind": "user", "id": other.id}).status_code == 404
-        assert api.delete(f"{url}/members/{owner['id']}").status_code == 404
+        assert api.post(f"{url}/messages", json={"body": "Hi"}).status_code == 404
+        assert api.delete(f"{url}/members/{first['id']}").status_code == 404
         assert api.get("/api/chats").json() == []
-
-    # A public chat exists for everyone: it can be read, but is still the owner's to change.
-    public = make_chat(api, "Open", visibility="public")
-    with signed_in_as(other):
-        assert api.get(f"/api/chats/{public['id']}").json()["is_owner"] is False
-        assert api.put(f"/api/chats/{public['id']}", json=body).status_code == 403
-        assert api.delete(f"/api/chats/{public['id']}").status_code == 403
-        # Listed for them to find, as one they're not in.
-        assert [(c["name"], c["is_member"]) for c in api.get("/api/chats").json()] == [
-            ("Open", False)
-        ]
 
 
 def post(api, chat: dict, body: str) -> dict:
@@ -247,31 +225,17 @@ def test_a_member_posts_a_markdown_message(api, user):
     assert messages(api, chat) == {"messages": [message], "invocations": []}
 
 
-def test_only_members_post(api, user, other):
-    public = make_chat(api, "Open", visibility="public")
-    private = make_chat(api, "Secret", visibility="private")
-    hello = post(api, public, "Hello")
+def test_anyone_in_the_organisation_posts_as_themselves(api, user, other):
+    chat = make_chat(api, "Open")
+    hello = post(api, chat, "Hello")
     with signed_in_as(other):
-        # A public chat can be read, but not posted in, by someone who isn't in it.
-        assert api.get(f"/api/chats/{public['id']}").json()["is_member"] is False
-        assert messages(api, public)["messages"] == [hello]
-        resp = api.post(f"/api/chats/{public['id']}/messages", json={"body": "Hi"})
-        assert resp.status_code == 403
-        assert resp.json()["detail"] == "Only the chat's members can post in it."
-        # A private one doesn't exist for them.
-        resp = api.post(f"/api/chats/{private['id']}/messages", json={"body": "Hi"})
-        assert resp.status_code == 404
-        assert api.get(f"/api/chats/{private['id']}/messages").status_code == 404
-    assert messages(api, public)["messages"] == [hello]
-
-    # Once added, they can post, as themselves.
-    add_user(api, private, other)
-    with signed_in_as(other):
-        theirs = post(api, private, "Hi")
+        # Read before joining, and posted in, which joins (see test_open_chats.py).
+        assert messages(api, chat)["messages"] == [hello]
+        theirs = post(api, chat, "Hi")
     assert theirs["author"]["id"] == other.id and theirs["author"]["name"] == "Other Person"
     # An empty message isn't one.
     for body in ("", "  \n"):
-        resp = api.post(f"/api/chats/{private['id']}/messages", json={"body": body})
+        resp = api.post(f"/api/chats/{chat['id']}/messages", json={"body": body})
         assert resp.status_code == 422, repr(body)
 
 
@@ -317,7 +281,7 @@ def test_the_before_cursor_pages_back_through_history(api, monkeypatch):
 
 def test_a_message_outlives_its_author(api, db, user):
     leaver = join_organisation(db, user, "leaver")
-    chat = make_chat(api, "Design", visibility="public")
+    chat = make_chat(api, "Design")
     add_user(api, chat, leaver)
     with signed_in_as(leaver):
         post(api, chat, "Bye")
@@ -345,8 +309,8 @@ def add(api, chat: dict, kind: str, target: dict) -> dict:
     return resp.json()
 
 
-def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsider):
-    chat = make_chat(api, "Design", visibility="public")
+def test_a_member_adds_the_organisations_agents_and_workflows(api, other, outsider):
+    chat = make_chat(api, "Design")
     # An agent and a workflow may share a name; they're members of different kinds.
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Review")
@@ -356,20 +320,14 @@ def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsi
     [assistant, a] = chat["members"]["agents"]
     assert assistant["name"] == "Documents assistant"
     assert (a["kind"], a["target_id"], a["name"]) == ("agent", agent["id"], "Review")
-    assert a["role"] is None
     [w] = chat["members"]["workflows"]
-    assert (w["kind"], w["target_id"], w["name"], w["role"]) == (
-        "workflow",
-        workflow["id"],
-        "Review",
-        None,
-    )
+    assert (w["kind"], w["target_id"], w["name"]) == ("workflow", workflow["id"], "Review")
     # Once each.
     for kind, target in (("agent", agent), ("workflow", workflow)):
         resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": target["id"]})
         assert resp.status_code == 409, kind
         assert resp.json()["detail"] == "Already a member of this chat."
-    # Only the owner adds members.
+    # Only its members add to it.
     with signed_in_as(other):
         member = {"kind": "agent", "id": agent["id"]}
         resp = api.post(f"/api/chats/{chat['id']}/members", json=member)
@@ -390,7 +348,7 @@ def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsi
 
 
 def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
-    chat = make_chat(api, "Design", visibility="public")
+    chat = make_chat(api, "Design")
     add_user(api, chat, other)
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Review")
@@ -441,11 +399,9 @@ def test_the_mentionable_members_are_grouped_by_kind(api, user, other):
         ],
     }
     assert api.get(f"/api/chats/{chat['id']}/mentionable").json() == expected
-    # Anyone the chat exists for sees who's in it; a private chat doesn't exist for outsiders.
-    private = make_chat(api, "Secret")
+    # Anyone in the organisation sees who's in it, joined or not.
     with signed_in_as(other):
         assert api.get(f"/api/chats/{chat['id']}/mentionable").json() == expected
-        assert api.get(f"/api/chats/{private['id']}/mentionable").status_code == 404
 
 
 def test_an_archived_agent_or_workflow_stays_a_member_shown_archived(api):
@@ -579,7 +535,7 @@ def test_a_mention_of_a_user_still_points_at_them_once_theyre_renamed(api, db, o
     }
 
 
-def test_a_mention_of_a_non_member_is_refused(api, other):
+def test_a_mention_of_anyone_or_anything_the_chat_doesnt_include_is_refused(api, other):
     chat = make_chat(api, "Design")
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
@@ -588,18 +544,30 @@ def test_a_mention_of_a_non_member_is_refused(api, other):
     add(api, chat, "workflow", removed)
     member_id = api.get(f"/api/chats/{chat['id']}").json()["members"]["workflows"][0]["id"]
     assert api.delete(f"/api/chats/{chat['id']}/members/{member_id}").status_code == 204
-    for mention in (
+    # A person who hasn't joined.
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages",
+        json={"body": "Hi", "mentions": [{"kind": "user", "id": other.id}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Only the chat's members can be mentioned in it."
+    for mention, name in (
         # Exists, but isn't in the chat.
-        {"kind": "workflow", "id": workflow["id"]},
-        {"kind": "user", "id": other.id},
-        # The agent's id, as another kind.
-        {"kind": "workflow", "id": agent["id"]},
+        ({"kind": "workflow", "id": workflow["id"]}, "Digest"),
         # Was a member, but has since been removed.
-        {"kind": "workflow", "id": removed["id"]},
+        ({"kind": "workflow", "id": removed["id"]}, "Removed"),
     ):
         resp = api.post(
             f"/api/chats/{chat['id']}/messages", json={"body": "Hi", "mentions": [mention]}
         )
         assert resp.status_code == 422, mention
-        assert resp.json()["detail"] == "Only the chat's members can be mentioned in it."
+        assert resp.json()["detail"]["missing"] == [{**mention, "name": name}]
+    # One that doesn't exist (the agent's id, as a workflow's, with no such workflow).
+    missing_id = max(agent["id"], workflow["id"], removed["id"]) + 100
+    resp = api.post(
+        f"/api/chats/{chat['id']}/messages",
+        json={"body": "Hi", "mentions": [{"kind": "workflow", "id": missing_id}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Unknown workflow"
     assert messages(api, chat)["messages"] == []
