@@ -16,9 +16,8 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 30_000 },
   outputDir: "test-results-fullstack",
-  reporter: process.env.CI
-    ? [["list"], ["html", { open: "never", outputFolder: "playwright-report-fullstack" }]]
-    : "list",
+  // In CI each shard writes a blob report; the full-stack gate merges them into one HTML report.
+  reporter: process.env.CI ? [["list"], ["blob", { outputDir: "blob-report-fullstack" }]] : "list",
   use: {
     baseURL,
     trace: "retain-on-failure",

@@ -59,6 +59,7 @@ jobs:
       - run: uv run alembic check
       - run: uv run pytest
 
+  # The frontend's build and unit tests, once. The browser tests run in `browser`'s shards.
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -78,20 +79,96 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
+
+  # The browser tests (frontend/e2e/), split across machines. Each shard writes a blob report;
+  # frontend-gate merges them into one HTML report.
+  browser:
+    needs: frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shard count: one entry per shard.
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - run: pnpm test:e2e --shard=${{ matrix.shard }}/${{ strategy.job-total }}
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: frontend/blob-report
+          retention-days: 1
+
+  # The frontend's required check: passes only if the build, the unit tests and every browser
+  # shard passed. Merges the shards' reports into one HTML report, kept on failure.
+  frontend-gate:
+    needs: [frontend, browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v5
+        # None when no shard ran (the build failed).
+        continue-on-error: true
+        with:
+          pattern: blob-report-*
+          path: frontend/all-blob-reports
+          merge-multiple: true
+      - name: Merge the shards' reports
+        run: |
+          if [ -d all-blob-reports ]; then
+            pnpm exec playwright merge-reports --reporter html all-blob-reports
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ needs.browser.result != 'success' }}
         with:
           name: playwright-report
           path: frontend/playwright-report
+          if-no-files-found: ignore
           retention-days: 7
+      - name: Every shard passed
+        if: ${{ needs.frontend.result != 'success' || needs.browser.result != 'success' }}
+        run: |
+          echo "frontend: ${{ needs.frontend.result }}, browser shards: ${{ needs.browser.result }}"
+          exit 1
 
   # The core loop against the real stack (Compose's `fullstack` profile, on the scripted model):
-  # frontend/fullstack/README.md.
-  fullstack:
+  # frontend/fullstack/README.md. Split across machines like the browser tests; each shard
+  # brings up its own stack on its own machine, so shards share nothing.
+  fullstack-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shard count: one entry per shard.
+        shard: [1]
     steps:
       - uses: actions/checkout@v5
       - name: Start the stack
@@ -108,20 +185,70 @@ jobs:
         working-directory: frontend
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: frontend
-      - run: pnpm test:fullstack
+      - run: pnpm test:fullstack --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         working-directory: frontend
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-fullstack-${{ matrix.shard }}
+          path: frontend/blob-report-fullstack
+          retention-days: 1
       - name: Keep the stack's logs
         if: failure()
         run: docker compose --profile fullstack logs --no-color --timestamps > fullstack-logs.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: fullstack-report
+          name: fullstack-logs-${{ matrix.shard }}
           path: |
-            frontend/playwright-report-fullstack
             frontend/test-results-fullstack
             fullstack-logs.txt
           retention-days: 7
+
+  # The full-stack test's required check: passes only if every shard passed. Merges the shards'
+  # reports into one HTML report, kept on failure with each failing shard's stack logs.
+  fullstack:
+    needs: fullstack-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v5
+        continue-on-error: true
+        with:
+          pattern: blob-report-fullstack-*
+          path: frontend/all-blob-reports-fullstack
+          merge-multiple: true
+      - name: Merge the shards' reports
+        run: |
+          if [ -d all-blob-reports-fullstack ]; then
+            PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-fullstack \
+              pnpm exec playwright merge-reports --reporter html all-blob-reports-fullstack
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ needs.fullstack-shard.result != 'success' }}
+        with:
+          name: fullstack-report
+          path: frontend/playwright-report-fullstack
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Every shard passed
+        if: ${{ needs.fullstack-shard.result != 'success' }}
+        run: |
+          echo "full-stack shards: ${{ needs.fullstack-shard.result }}"
+          exit 1
 
   terraform:
     runs-on: ubuntu-latest
