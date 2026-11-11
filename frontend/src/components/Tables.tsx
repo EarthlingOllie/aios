@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Loader2, Table2, X } from "lucide-react";
 
+import { ErrorBanner, selectClass } from "@/components/crud";
 import { useDataStore } from "@/components/Documents";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
 import { Notice } from "@/components/Notice";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   api,
@@ -13,14 +15,27 @@ import {
   type DataRowsPage,
   type DataRowsQuery,
   type DataTable,
+  type TableAccess,
+  type TableAgent,
 } from "@/lib/api";
-import { nextSort, PAGE_SIZE, rowCountLabel, rowRangeLabel, type Sort } from "@/lib/data-tables";
+import { useRefusal } from "@/lib/current-user";
+import {
+  accessLabel,
+  nextSort,
+  ownerCandidates,
+  PAGE_SIZE,
+  rowCountLabel,
+  rowRangeLabel,
+  shareCandidates,
+  type Sort,
+} from "@/lib/data-tables";
 import { cn } from "@/lib/utils";
 
 /**
  * The Data page's Tables: the tables in the store's `data` schema, and, with `?table=` in the
  * URL, one table's rows (sorted by `sort` and `order`, from `offset`), so a reload or a link
- * opens the same page of rows. Read-only.
+ * opens the same page of rows. Rows are read-only; each table shows who may write it, and editors
+ * and admins share, unshare and transfer it.
  */
 export function TablesSection() {
   const { status, error: storeError } = useDataStore();
@@ -47,7 +62,7 @@ export function TablesSection() {
       )}
       {ready &&
         (open === null ? (
-          <TableList tables={tables.list} truncated={tables.truncated} />
+          <TableList tables={tables.list} truncated={tables.truncated} onAccess={tables.setAccess} />
         ) : (
           <TableRows name={open} table={tables.list?.find((t) => t.name === open)} />
         ))}
@@ -80,7 +95,13 @@ function useTables(ready: boolean) {
     };
   }, [ready, round]);
   const reload = useCallback(() => setRound((n) => n + 1), []);
-  return { list, truncated, error, reload };
+  /** A table's access, as a change to it answered. */
+  const setAccess = useCallback(
+    (access: TableAccess) =>
+      setList((tables) => tables?.map((t) => (t.name === access.name ? { ...t, ...access } : t))),
+    [],
+  );
+  return { list, truncated, error, reload, setAccess };
 }
 
 /** A link to `table`'s rows (or, with null, back to the list), keeping the open tab. */
@@ -90,8 +111,17 @@ function tableLink(params: URLSearchParams, table: string | null) {
   return { search: `?${next}` };
 }
 
-function TableList({ tables, truncated }: { tables?: DataTable[]; truncated: boolean }) {
+function TableList({
+  tables,
+  truncated,
+  onAccess,
+}: {
+  tables?: DataTable[];
+  truncated: boolean;
+  onAccess: (access: TableAccess) => void;
+}) {
   const [params] = useSearchParams();
+  const agents = useLiveAgents(useRefusal("tables") === null);
   if (!tables) {
     return (
       <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading tables" />
@@ -128,6 +158,7 @@ function TableList({ tables, truncated }: { tables?: DataTable[]; truncated: boo
             {table.description && (
               <p className="text-muted-foreground text-sm">{table.description}</p>
             )}
+            <Access table={table} agents={agents} onAccess={onAccess} />
             <ColumnsTable table={table} />
           </li>
         ))}
@@ -138,6 +169,173 @@ function TableList({ tables, truncated }: { tables?: DataTable[]; truncated: boo
         </p>
       )}
     </>
+  );
+}
+
+/** The agents that aren't archived, which tables can be given to or shared with; read only for a
+ * member who may change access. */
+function useLiveAgents(load: boolean): TableAgent[] | undefined {
+  const [agents, setAgents] = useState<TableAgent[]>();
+  useEffect(() => {
+    if (!load) return;
+    let stale = false;
+    api.listAgents().then(
+      (list) => {
+        if (!stale) setAgents(list.map((a) => ({ id: a.id, name: a.name, archived: false })));
+      },
+      () => {
+        if (!stale) setAgents([]);
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [load]);
+  return agents;
+}
+
+/** Choosing an agent, and acting on it with one button. */
+function AgentPicker({
+  id,
+  label,
+  agents,
+  action,
+  busy,
+  onPick,
+}: {
+  id: string;
+  label: string;
+  agents: TableAgent[];
+  action: string;
+  busy: boolean;
+  onPick: (agentId: number) => void;
+}) {
+  const [picked, setPicked] = useState("");
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-muted-foreground text-xs">
+        {label}
+      </label>
+      <div className="flex gap-1.5">
+        <select id={id} className={selectClass} value={picked} onChange={(e) => setPicked(e.target.value)}>
+          <option value="">Choose an agent</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy || !picked}
+          onClick={() => {
+            onPick(Number(picked));
+            setPicked("");
+          }}
+        >
+          {action}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Who may write the table: its owner ("No owner": any agent may; read-only while its owner is
+ * archived) and the agents it's shared with. Editors and admins change it here: assign, transfer
+ * or clear the owner, and share and unshare. A change the approval rules keep from them is refused,
+ * and says why.
+ */
+function Access({
+  table,
+  agents,
+  onAccess,
+}: {
+  table: DataTable;
+  agents?: TableAgent[];
+  onAccess: (access: TableAccess) => void;
+}) {
+  const refusal = useRefusal("tables");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const id = `table-${table.name}`;
+
+  async function change(call: () => Promise<TableAccess>) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      onAccess(await call());
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const { owner, shares } = table;
+  return (
+    <section aria-label={`Access to ${table.name}`} className="flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={owner?.archived ? "destructive" : owner ? "outline" : "secondary"}>
+          {accessLabel(table)}
+        </Badge>
+        {table.pending && <Badge variant="secondary">pending</Badge>}
+        {shares.length > 0 && <span className="text-muted-foreground">Shared with</span>}
+        <ul className="flex flex-wrap gap-1.5" aria-label="Shared with">
+          {shares.map((agent) => (
+            <li key={agent.id} className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5">
+              {agent.name}
+              {agent.archived && <span className="text-muted-foreground">(archived)</span>}
+              {!refusal && (
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label={`Unshare with ${agent.name}`}
+                  disabled={busy}
+                  onClick={() => change(() => api.unshareTable(table.name, agent.id))}
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      {!refusal && agents && (
+        <div className="flex flex-wrap items-end gap-2">
+          <AgentPicker
+            id={`${id}-owner`}
+            label={owner ? "Transfer to" : "Assign an owner"}
+            agents={ownerCandidates(agents, table)}
+            action={owner ? "Transfer" : "Assign"}
+            busy={busy}
+            onPick={(agentId) => change(() => api.setTableOwner(table.name, agentId))}
+          />
+          {owner && (
+            <AgentPicker
+              id={`${id}-share`}
+              label="Share with"
+              agents={shareCandidates(agents, table)}
+              action="Share"
+              busy={busy}
+              onPick={(agentId) => change(() => api.shareTable(table.name, agentId))}
+            />
+          )}
+          {owner && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => change(() => api.setTableOwner(table.name, null))}
+            >
+              Clear owner
+            </Button>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

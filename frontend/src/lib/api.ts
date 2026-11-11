@@ -206,7 +206,22 @@ export type DataColumn = {
 };
 
 /** A table in the store's `data` schema: what the organisation's agents keep. */
-export type DataTable = {
+/** An agent as a table's access names it. */
+export type TableAgent = { id: number; name: string; archived: boolean };
+
+/**
+ * Who may write a table: its owner (null: no owner, so any agent with `write_data` may) and the
+ * agents it's shared with. A table whose owner is archived is read-only until it's transferred.
+ */
+export type TableAccess = {
+  name: string;
+  owner: TableAgent | null;
+  shares: TableAgent[];
+  /** A change the database hasn't applied yet. */
+  pending: boolean;
+};
+
+export type DataTable = TableAccess & {
   name: string;
   description: string | null;
   columns: DataColumn[];
@@ -912,7 +927,7 @@ export type AgentUsedBy = {
   triggers: UsedByTrigger[];
   /** The chats it's a member of. */
   chats: { id: number; name: string }[];
-  /** The data tables it will leave read-only: none until tables have owners. */
+  /** The data tables it owns, which archiving it leaves read-only. */
   tables: { name: string }[];
 };
 
@@ -1292,6 +1307,21 @@ export const api = {
     if (sort && order) params.set("order", order);
     return request<DataRowsPage>(`${organisationApi()}/data/tables/${encodeURIComponent(table)}/rows?${params}`);
   },
+  /** Assign, transfer or (with null) clear a table's owner. */
+  setTableOwner: (table: string, agentId: number | null) =>
+    request<TableAccess>(
+      `${organisationApi()}/data/tables/${encodeURIComponent(table)}/owner`,
+      json("PUT", { agent_id: agentId }),
+    ),
+  shareTable: (table: string, agentId: number) =>
+    request<TableAccess>(
+      `${organisationApi()}/data/tables/${encodeURIComponent(table)}/shares`,
+      json("POST", { agent_id: agentId }),
+    ),
+  unshareTable: (table: string, agentId: number) =>
+    request<TableAccess>(`${organisationApi()}/data/tables/${encodeURIComponent(table)}/shares/${agentId}`, {
+      method: "DELETE",
+    }),
   getDataValue: (table: string, row: string, column: string) =>
     request<{ value: string | null; truncated: boolean }>(
       `${organisationApi()}/data/tables/${encodeURIComponent(table)}/value?${new URLSearchParams({ row, column })}`,

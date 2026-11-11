@@ -30,6 +30,7 @@ class Action(enum.StrEnum):
     documents = "upload or delete documents"
     decide = "approve or reject schema change requests"
     restore = "restore dropped tables and columns"
+    tables = "share, unshare or transfer data tables"
     sources = "add, change, pause or remove sources"
     run_organisation = (
         "change the organisation's roles, invitations, name or settings, or delete it"
@@ -52,6 +53,8 @@ TABLE: dict[Action, frozenset[Role]] = {
     # And at least the role the request needs, by the approval rules (`aios.approval_rules`).
     Action.decide: BUILDERS,
     Action.restore: ADMINS,
+    # And at least the role the approval rules ask to change an owner (`aios.approval_rules`).
+    Action.tables: BUILDERS,
     Action.sources: ADMINS,
     Action.run_organisation: ADMINS,
     Action.leave: EVERYONE,

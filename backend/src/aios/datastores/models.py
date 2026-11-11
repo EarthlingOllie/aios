@@ -1137,6 +1137,64 @@ class ApprovalRule(StoreBase):
     )
 
 
+class TableOwner(StoreBase):
+    """A data table's owning agent, or none (`aios.datastores.ownership`): only the owner, and
+    the agents it's shared with, may write an owned table. Named as the table is now in `data`:
+    a dropped table's row goes by its dropped name until it's restored, and goes when it's
+    purged."""
+
+    __tablename__ = "table_owners"
+
+    table_name: Mapped[str] = mapped_column(
+        Text, primary_key=True, comment="The data table, as named in the data schema now."
+    )
+    agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="SET NULL"),
+        comment="The agent that owns it (aios.agents.id); null: no owner.",
+    )
+    set_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The person who set it (aios.people.id); null: a schema change did."
+    )
+    set_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was set."
+    )
+
+    __table_args__ = (
+        Index("ix_table_owners_agent_id", "agent_id"),
+        {"comment": "Each data table's owning agent, or none"},
+    )
+
+
+class TableShare(StoreBase):
+    """An agent a data table is shared with, which may write it as its owner may. Hangs off the
+    table's ownership row, which carries it through renames (drop, restore) and deletion
+    (purge)."""
+
+    __tablename__ = "table_shares"
+
+    table_name: Mapped[str] = mapped_column(
+        ForeignKey("table_owners.table_name", onupdate="CASCADE", ondelete="CASCADE"),
+        primary_key=True,
+        comment="The data table, as named in the data schema now.",
+    )
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        comment="The agent it's shared with (aios.agents.id).",
+    )
+    granted_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The person who shared it (aios.people.id)."
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was shared."
+    )
+
+    __table_args__ = (
+        Index("ix_table_shares_agent_id", "agent_id"),
+        {"comment": "The agents each data table is shared with, who may write it too"},
+    )
+
+
 VERDICT = Enum(Verdict, name="verdict")
 
 

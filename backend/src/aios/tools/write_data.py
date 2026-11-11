@@ -10,6 +10,9 @@ in one transaction per call: a call is written whole, or not at all.
   or any others): there's no "every row".
 - A call writes at most `WRITE_DATA_MAX_ROWS` rows. Inserts and upserts past it are refused
   before anything is run, as are updates and deletes that match more (they're counted first).
+- Only the table's owner, and the agents it's shared with, may write an owned table; a table
+  whose owner is archived is read-only; a table with no owner is anyone's to write
+  (`aios.datastores.ownership`). A refusal names the owner.
 - Only `data` tables: the platform's (`aios`) are never written here. It runs as the store's
   writer role (`as_writer`), which may write in `data` and nowhere else.
 - Each call that writes is recorded in the store's audit log (`aios.audit`), in its
@@ -41,7 +44,7 @@ from sqlalchemy.exc import DBAPIError
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import quota, store_session
+from aios.datastores import ownership, quota, store_session
 from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.models import EMBEDDING_DIM
 from aios.datastores.provision import writer_of
@@ -532,6 +535,13 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
     max_rows = get_settings().write_data_max_rows
     with store_session(data_store_id, "rw") as session:
         pg: psycopg.Connection = session.connection().connection.driver_connection
+        # Asked as the read-write role (the writer reads only `data`), holding the table's
+        # ownership until the write is done.
+        schema, dot, table = call.table.strip().rpartition(".")
+        if not dot or schema == SCHEMA:
+            refusal = ownership.write_refusal(pg, table, call.run_id)
+            if refusal is not None:
+                return {"error": refusal}
         as_writer(pg)
         try:
             plan = _plan(pg, call)

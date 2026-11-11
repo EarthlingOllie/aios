@@ -120,6 +120,8 @@ STORE_TABLES = {
         "skill_versions",
         "skills",
         "sources",
+        "table_owners",
+        "table_shares",
         "triggers",
         "turns",
         "workflow_edges",

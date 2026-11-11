@@ -5,7 +5,7 @@ the list only says what will stop working.
 
 - An agent (`GET /api/agents/{id}/used-by`): the live workflows whose current version runs one
   of its versions, at any depth, with their schedules; its own schedules; the chats it's a
-  member of; and the data tables it will leave read-only (none until tables have owners).
+  member of; and the data tables it owns, which archiving it leaves read-only.
 - A workflow (`GET /api/workflows/{id}/used-by`): the live workflows whose current version nests
   one of its versions, at any depth, with their schedules; its own schedules; and the chats it's
   a member of.
@@ -26,6 +26,7 @@ from sqlalchemy import ColumnElement, Select, false, literal, or_, select
 from sqlalchemy.orm import Session
 
 from aios import cron
+from aios.datastores import ownership
 from aios.datastores.models import (
     Agent,
     AgentVersion,
@@ -81,7 +82,7 @@ class AgentUsedBy(BaseModel):
     triggers: list[UsedByTrigger]
     # The chats it's a member of.
     chats: list[UsedByChat]
-    # The data tables it owns: none until tables have owners.
+    # The data tables it owns (not dropped ones), which archiving it leaves read-only.
     tables: list[UsedByTable]
 
 
@@ -186,7 +187,7 @@ def agent(store: Session, agent: Agent, user_id: int) -> AgentUsedBy:
         workflows=_workflows(store, WorkflowNode.agent_version_id.in_(versions)),
         triggers=_triggers(store, Trigger.agent_id == agent.id),
         chats=_chats(store, ChatMember.agent_id == agent.id, user_id),
-        tables=[],
+        tables=[UsedByTable(name=n) for n in ownership.owned_by(store, agent.id)],
     )
 
 

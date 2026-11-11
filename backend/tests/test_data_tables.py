@@ -70,6 +70,10 @@ def test_the_tables_list_has_each_data_table_with_its_columns_and_row_count(api,
                 ],
                 "row_count": 3,
                 "row_count_estimated": False,
+                # Made by hand, not by a schema change: no owner (`test_table_ownership`).
+                "owner": None,
+                "shares": [],
+                "pending": False,
             }
         ],
         "truncated": False,
@@ -472,10 +476,12 @@ def test_the_tables_api_takes_names_and_numbers_never_sql(client):
     """Each parameter is a name checked against the catalog, a number, or a direction."""
     schema = client.get("/openapi.json").json()
     prefix = "/api/o/{organisation_id}"
+    # The reads: managing a table's access (`test_table_ownership`) names an agent by its id.
+    access = ("/owner", "/shares", "/shares/{agent_id}")
     data_paths = {
         p.removeprefix(prefix): ops
         for p, ops in schema["paths"].items()
-        if p.startswith(f"{prefix}/data/")
+        if p.startswith(f"{prefix}/data/") and not p.endswith(access)
     }
 
     params = {

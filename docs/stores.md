@@ -361,6 +361,33 @@ dimension (`vector(1024)`), never their numbers, and `jsonb` pretty-printed.
 New tables and columns come from agents' schema change requests (see
 [Tools](tools.md#request-schema-changes)).
 
+### Table ownership
+
+**Each data table can have an owning agent** (`aios.table_owners`, `aios.table_shares`; module
+`aios.datastores.ownership`). Applying an approved schema change that creates a table records
+the agent behind the request's run as its owner, in the same transaction. Only the owner, and
+the agents it's shared with, may write an owned table with `write_data`; a table with no owner
+(made before owners, by hand, or cleared) is writable by any agent with the tool, and a table
+whose owner is archived is read-only for every agent, its shares included, until it's
+transferred. A refused write names the owner. Reads are unchanged: every agent reads every table
+through `query_data`.
+
+The Tables list shows each table's owner ("No owner", or read-only while its owner is archived)
+and shares, and editors and admins change them there: `PUT .../tables/{table}/owner` (assign,
+transfer, or `null` to clear), `POST .../tables/{table}/shares` and
+`DELETE .../tables/{table}/shares/{agent}`, each answering with the table's access and a
+`pending` flag (always false until the database enforces access), and each audited
+(`table.owner_assigned`, `table.transferred`, `table.owner_cleared`, `table.shared`,
+`table.unshared`). Assigning an owner to a table with none only tightens access, so any editor
+may; transferring or clearing an owner is an ownership change, which needs the role of the
+`change_ownership` approval rule (an admin by default; 403 otherwise). Sharing with an archived
+agent, with the owner, twice, or sharing a table with no owner is refused (409), as is making an
+archived agent the owner; a new owner loses any share it had. An agent's archive dialog lists the
+tables it owns, which archiving leaves read-only. Ownership rows name a table as it's named now:
+a drop renames them with the table, a restore renames them back, and a purge deletes them, its
+shares with them. `make seed` makes owned tables. For now `write_data` enforces this; the
+database will, with a login role per agent.
+
 ### Quotas
 
 Each store has a storage cap (`aios.datastores.quota`): `DATA_STORE_DB_QUOTA_BYTES` (default

@@ -12,6 +12,9 @@ them), so what it makes is what the app would have made:
   workflow; and a schedule;
 - a chat with the documents assistant and an agent in it, and a first message, which posting
   indexes for search as it does any (`aios.search_index`);
+- data tables made by approved schema changes, as an agent's run asks for them: `notes`, which
+  the writer owns and shares with the reviewer, and `reading_list`, owned by an agent that's
+  then archived, so it's read-only (`aios.datastores.ownership`);
 - an archived agent, to show what archiving does;
 - two documents, checked by Jev as ingestion checks them: one clean, and one flagged (a pasted
   email carrying a prompt injection), for the Documents page and the flagged list.
@@ -28,17 +31,21 @@ import sys
 from pathlib import Path
 
 from fastapi import BackgroundTasks
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from aios import jev, organisations, seed_documents
-from aios.api.agents import AgentIn, archive_agent, create_agent
+from aios.api.agents import AgentIn, archive_agent, create_agent, new_agent_run
 from aios.api.chats import ChatIn, MemberIn, MessageIn, add_member, create_chat, post_message
 from aios.api.skills import SkillIn, create_skill
 from aios.api.triggers import TriggerIn, create_trigger
 from aios.api.workflows import WorkflowEdgeIn, WorkflowIn, WorkflowNodeIn, create_workflow
 from aios.config import get_settings
-from aios.datastores import data_store_for, organisation_store, provision
+from aios.datastores import data_store_for, organisation_store, provision, schema_changes
+from aios.datastores.connections import store_id_of
+from aios.datastores.models import Agent, SchemaChangeRequest
+from aios.datastores.ownership import share
+from aios.datastores.schema_changes import SchemaChange
 from aios.db import SessionLocal
 from aios.models import (
     ChatMemberKind,
@@ -47,6 +54,7 @@ from aios.models import (
     DataStoreStatus,
     Organisation,
     Role,
+    SchemaChangeStatus,
     TriggerTargetKind,
     User,
     WorkflowNodeKind,
@@ -187,6 +195,10 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
     )
     for member in (writer, old):
         add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=member.id), user, org, db, store)
+    table(store, user, org, writer.id, "notes", "Notes the writer keeps between drafts")
+    share(store, "notes", reviewer.id, user.id)
+    store.commit()
+    table(store, user, org, old.id, "reading_list", "What the researcher meant to read")
     archive_agent(old.id, user, org, db, store)
     post_message(
         chat.id,
@@ -200,6 +212,38 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
     )
     for filename, body in seed_documents.DOCUMENTS:
         seed_documents.add_document(store, user, filename, body)
+
+
+def table(
+    store: Session, user: User, org: Organisation, agent_id: int, name: str, about: str
+) -> None:
+    """`data.<name>`, asked for in a run of the agent's, approved by `user` and applied: the
+    agent owns it."""
+    run = new_agent_run(store, org.id, store.get_one(Agent, agent_id), created_by=user.id)
+    store.commit()
+    spec = SchemaChange.model_validate(
+        {
+            "ops": [
+                {
+                    "op": "create_table",
+                    "name": name,
+                    "description": about,
+                    "columns": [{"name": "title", "type": "text", "nullable": False}],
+                }
+            ]
+        }
+    )
+    store_id = store_id_of(store)
+    request = schema_changes.propose(store_id, spec, about, run_id=run.id, tool_call_id=None)
+    store.execute(
+        update(SchemaChangeRequest)
+        .where(SchemaChangeRequest.id == request.id)
+        .values(
+            status=SchemaChangeStatus.approved, decided_by_user_id=user.id, decided_at=func.now()
+        )
+    )
+    store.commit()
+    schema_changes.apply(store_id, request.id)
 
 
 def main(argv: list[str] | None = None) -> int:

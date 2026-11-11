@@ -12,6 +12,7 @@ export type Action =
   | "documents"
   | "decide"
   | "restore"
+  | "tables"
   | "sources"
   | "run_organisation";
 
@@ -29,6 +30,7 @@ const TABLE: Record<Action, { roles: Role[]; does: string }> = {
   documents: { roles: BUILDERS, does: "upload or delete documents" },
   decide: { roles: BUILDERS, does: "approve or reject schema change requests" },
   restore: { roles: ADMINS, does: "restore dropped tables and columns" },
+  tables: { roles: BUILDERS, does: "share, unshare or transfer data tables" },
   sources: { roles: ADMINS, does: "add, change, pause or remove sources" },
   run_organisation: {
     roles: ADMINS,

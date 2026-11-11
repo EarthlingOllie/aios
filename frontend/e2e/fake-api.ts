@@ -257,6 +257,10 @@ export type TableRow = {
   estimated?: boolean;
   /** The row count sent, if not how many `rows` there are (e.g. an estimate of millions). */
   rowCount?: number;
+  /** The agent that owns it (by id): unset or null, none. */
+  owner?: number | null;
+  /** The agents it's shared with, by id. */
+  shares?: number[];
 };
 /** As the server cuts values in a page of rows (`PREVIEW_CHARS`). */
 const PREVIEW_CHARS = 200;
@@ -886,23 +890,95 @@ export class FakeApi {
     return table;
   }
 
+  /** An agent as a table's access names it. */
+  private tableAgent(id: number) {
+    const agent = this.agents.get(id);
+    return { id, name: agent?.name ?? `Agent ${id}`, archived: !!agent?.archived_at };
+  }
+
+  /** Who may write the table, as `aios.api.data` lists it. */
+  tableAccess(table: TableRow) {
+    return {
+      name: table.name,
+      owner: table.owner == null ? null : this.tableAgent(table.owner),
+      shares: (table.shares ?? []).map((id) => this.tableAgent(id)),
+      pending: false,
+    };
+  }
+
+  /** Every share, unshare and transfer the app made, as [table, what, agent id or null]. */
+  accessChanges: [string, string, number | null][] = [];
+
+  /** Setting a table's owner, sharing and unsharing it, as `aios.api.data` answers them. */
+  private changeAccess(
+    name: string,
+    what: string,
+    method: string,
+    body: Record<string, unknown> | null,
+    shareId?: string,
+  ): [number, unknown] {
+    const role = this.roleOf(this.me.id);
+    if (role === "participant") {
+      return [403, { detail: "Participants can't share, unshare or transfer data tables. Ask an editor or an admin." }];
+    }
+    const table = this.dataTables.find((t) => t.name === name);
+    if (!table) return [404, { detail: "No such table" }];
+    const agentId = shareId !== undefined ? Number(shareId) : (body?.agent_id as number | null);
+    const agent = agentId === null ? undefined : this.agents.get(agentId);
+    if (agentId !== null && !agent) return [404, { detail: "No such agent" }];
+    const shares = table.shares ?? [];
+    if (what === "owner" && method === "PUT") {
+      if (agent?.archived_at) return [409, { detail: `The agent ${agent.name} is archived, so it can't own a table.` }];
+      if (table.owner != null && table.owner !== agentId && role !== "admin" && this.approvalRules.change_ownership === "admin") {
+        return [403, { detail: "Changing a table's owner needs an admin, by the organisation's approval rules." }];
+      }
+      table.owner = agentId;
+      table.shares = shares.filter((id) => id !== agentId);
+      this.accessChanges.push([name, "owner", agentId]);
+      return [200, this.tableAccess(table)];
+    }
+    if (what === "shares" && method === "POST" && agent) {
+      if (agent.archived_at) return [409, { detail: `The agent ${agent.name} is archived, so it can't be given a table.` }];
+      if (table.owner == null) return [409, { detail: `\`data.${name}\` has no owner, so any agent may write it: assign one before sharing it.` }];
+      if (table.owner === agent.id) return [409, { detail: `The agent ${agent.name} owns \`data.${name}\` already.` }];
+      if (shares.includes(agent.id)) return [409, { detail: `\`data.${name}\` is shared with the agent ${agent.name} already.` }];
+      table.shares = [...shares, agent.id];
+      this.accessChanges.push([name, "share", agent.id]);
+      return [201, this.tableAccess(table)];
+    }
+    if (what === "shares" && method === "DELETE" && agentId !== null) {
+      if (!shares.includes(agentId)) return [404, { detail: "The table isn't shared with that agent" }];
+      table.shares = shares.filter((id) => id !== agentId);
+      this.accessChanges.push([name, "unshare", agentId]);
+      return [200, this.tableAccess(table)];
+    }
+    return [405, { detail: "Method Not Allowed" }];
+  }
+
   /** The tables endpoints, as `aios.api.data` answers them. */
-  private tablesResponse(path: string, params: URLSearchParams): [number, unknown] {
+  private tablesResponse(
+    path: string,
+    params: URLSearchParams,
+    method = "GET",
+    body: Record<string, unknown> | null = null,
+  ): [number, unknown] {
     if (path === "/api/data/tables") {
       return [
         200,
         {
           tables: this.dataTables.map((t) => ({
-            name: t.name,
             description: t.description,
             columns: t.columns,
             row_count: t.rowCount ?? t.rows.length,
             row_count_estimated: t.estimated ?? false,
+            ...this.tableAccess(t),
           })),
           truncated: false,
         },
       ];
     }
+    const access = path.match(/^\/api\/data\/tables\/([^/]+)\/(owner|shares)(?:\/(\d+))?$/);
+    if (access) return this.changeAccess(decodeURIComponent(access[1]), access[2], method, body, access[3]);
     const m = path.match(/^\/api\/data\/tables\/([^/]+)\/(rows|value)$/);
     const table = m && this.dataTables.find((t) => t.name === decodeURIComponent(m[1]));
     if (!m || !table) return [404, { detail: "No such table" }];
@@ -2381,7 +2457,7 @@ export class FakeApi {
       if (this.dataStoreBusy) return fail(503, "The organisation's data store is busy. Try again in a moment.");
       if (path.startsWith("/api/data/")) {
         if (this.tablesFail) return fail(500, "Internal Server Error");
-        const [status, json] = this.tablesResponse(path, new URL(request.url()).searchParams);
+        const [status, json] = this.tablesResponse(path, new URL(request.url()).searchParams, method, body);
         return reply(status, json);
       }
       if (path === "/api/search") {
@@ -2782,7 +2858,8 @@ export class FakeApi {
       const chats = [...this.chats.values()]
         .filter((c) => c.members.some((x) => x.kind === "agent" && x.target_id === agent.id))
         .map((c) => ({ id: c.id, name: c.name }));
-      return reply(200, { workflows, triggers, chats, tables: [] });
+      const tables = this.dataTables.filter((t) => t.owner === agent.id).map((t) => ({ name: t.name }));
+      return reply(200, { workflows, triggers, chats, tables });
     }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/runs\/(\d+)$/)) && method === "DELETE") {
       const run = this.agentRuns.get(Number(m[2]));
