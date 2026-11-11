@@ -17,6 +17,20 @@ function notification(fields: Partial<Notification>): Notification {
 }
 
 describe("describeNotification", () => {
+  it("opens a released document whose content changed on the Data page's Documents tab", () => {
+    const changed = notification({
+      kind: "released_document_changed",
+      ref: { filename: "Pasted email.md", document_id: "4", data_store_id: "s1" },
+      title: null,
+    });
+    expect(describeNotification(changed)).toEqual({
+      heading: "A document you released has changed",
+      detail: "Pasted email.md is waiting for Jev to check it again, and isn't searchable until then.",
+      to: "/data/documents",
+      organisation: "acme",
+    });
+  });
+
   it("opens a schema change request on the Data page's Changes tab", () => {
     expect(describeNotification(notification({}))).toEqual({
       heading: "A schema change is waiting for you",

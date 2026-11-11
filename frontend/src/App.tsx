@@ -20,6 +20,7 @@ import {
 
 import { formatDate } from "@/components/crud";
 import { Documents, DocumentsProvider } from "@/components/Documents";
+import { JevNotice } from "@/components/JevNotice";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import {
@@ -414,18 +415,13 @@ function Shell({ user, current, onSignOut }: { user: Me; current: Membership; on
           <LogOut />
         </Button>
       </nav>
-      {!current.deletes_at ? (
-        <main className="min-h-0">
+      <main className="flex min-h-0 flex-col">
+        {current.deletes_at && <DeletionBanner name={current.name} deletesAt={current.deletes_at} />}
+        <JevNotice />
+        <div className="min-h-0 flex-1">
           <Outlet />
-        </main>
-      ) : (
-        <main className="flex min-h-0 flex-col">
-          <DeletionBanner name={current.name} deletesAt={current.deletes_at} />
-          <div className="min-h-0 flex-1">
-            <Outlet />
-          </div>
-        </main>
-      )}
+        </div>
+      </main>
     </div>
   );
 }

@@ -24,6 +24,9 @@ x-backend: &backend
     DATA_STORE_FILES_PUBLIC_ENDPOINT: http://localhost:9000
     DATA_STORE_FILES_ACCESS_KEY: rustfsadmin
     DATA_STORE_FILES_SECRET_KEY: rustfsadmin
+    # Jev, the prompt-injection classifier (`aios.jev`): its fake unless .env names one, hosted
+    # (with JEV_API_KEY) or the `jev` service below (`JEV_URL=http://jev:8000`).
+    JEV_URL: ${JEV_URL:-fake}
   depends_on:
     db:
       condition: service_healthy
@@ -45,6 +48,7 @@ x-fullstack: &fullstack
     SCRIPTED_MODELS_ENABLED: "true"
     LLM_MODEL: scripted:core-loop
     EMBEDDING_MODEL: scripted:fake
+    JEV_URL: fake
     # Each test registers its own account, from the one address.
     REGISTER_RATE_LIMIT_PER_IP: 1000/hour
     LOGIN_RATE_LIMIT_PER_IP: 1000/hour
@@ -299,6 +303,30 @@ services:
     ports: ["127.0.0.1:8081:8080"]
     restart: unless-stopped
 
+  # Jev for local development (profile `jev`), as laya-php runs it: laya-serve, which speaks
+  # Jev's `POST /v1/systemone`, built from upstream's Dockerfile pinned to a known commit (CPU
+  # torch). Its first request downloads its weights (~1 GB) into the volume. Point the backend at
+  # it with JEV_URL=http://jev:8000 in .env:
+  #   docker compose --profile jev up -d --wait jev
+  jev:
+    profiles: [jev]
+    build:
+      context: https://github.com/NandhaKishorM/laya.git#8c42cf35127448ad4b2dfc011ee087a9f134488e
+    command: ["laya-serve"]
+    environment:
+      LAYA_DEVICE: cpu
+      LAYA_PRELOAD: "0"
+      LAYA_API_KEY: ${JEV_API_KEY:-}
+    volumes:
+      - jev-models:/home/laya/.cache/huggingface
+    init: true
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      start_period: 10m
+      start_interval: 2s
+
   web:
     build: ./frontend
     volumes:
@@ -425,6 +453,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
+  jev-models:
   pgdata:
   rustfsdata:
   claude-home:

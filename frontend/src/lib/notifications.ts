@@ -37,6 +37,14 @@ export function describeNotification(notification: Notification): NotificationVi
       organisation: notification.organisation.slug,
     };
   }
+  if (notification.kind === "released_document_changed") {
+    return {
+      heading: "A document you released has changed",
+      detail: `${notification.ref.filename ?? "It"} is waiting for Jev to check it again, and isn't searchable until then.`,
+      to: "/data/documents",
+      organisation: notification.organisation.slug,
+    };
+  }
   return {
     heading: notification.title ?? "Notification",
     detail: null,

@@ -78,6 +78,7 @@ resource "aws_secretsmanager_secret_version" "external" {
   secret_string = jsonencode({
     ANTHROPIC_API_KEY = "set-me"
     VOYAGE_API_KEY    = "set-me"
+    JEV_API_KEY       = "set-me"
   })
 
   lifecycle {

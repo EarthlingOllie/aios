@@ -32,7 +32,14 @@ from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import Agent, AgentRun, SchemaChangeRequest, WorkflowRun
 from aios.models import DataStore, SchemaChangeStatus, WorkflowRunStatus
-from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
+from aios.testing.fake_model import (
+    ToolCall,
+    instructions,
+    last_tool_results,
+    model,
+    tool_output,
+    use_model,
+)
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
 
@@ -72,7 +79,7 @@ class Flow:
         self.results: list = []
 
     async def __call__(self, messages, info):
-        name, text = messages[0].content, messages[-1].content
+        name, text = instructions(messages), messages[-1].content
         if not name.startswith("builder"):
             yield f"{name}({text})"
             return
@@ -479,7 +486,7 @@ def test_a_node_failing_while_another_waits_fails_the_run_and_cancels_the_reques
     flow = Flow()
 
     async def breaks(messages, info):
-        if messages[0].content == "broken":
+        if instructions(messages) == "broken":
             await asyncio.sleep(0.5)  # once the other node waits
             raise RuntimeError("it broke")
         async for item in flow(messages, info):
@@ -516,7 +523,7 @@ def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, stor
     api.post(f"/api/schema-changes/{contacts['id']}/reject", json={})
 
     async def decide_meanwhile(messages, info):
-        if messages[0].content == "builder" and last_tool_results(messages):
+        if instructions(messages) == "builder" and last_tool_results(messages):
             # The places node has found nothing decided, and waits again, by now.
             await asyncio.sleep(0.5)
             api.post(f"/api/schema-changes/{places_request['id']}/reject", json={})
@@ -633,7 +640,7 @@ def test_a_node_asking_twice_shows_both_requests_and_resumes_once_both_are_decid
     flow = Flow()
 
     async def ask_twice(messages, info):
-        if messages[0].content == "builder" and not last_tool_results(messages):
+        if instructions(messages) == "builder" and not last_tool_results(messages):
             for table in ("contacts", "places"):
                 yield ToolCall(
                     "request_schema_change",

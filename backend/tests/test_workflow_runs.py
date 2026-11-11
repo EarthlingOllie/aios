@@ -26,7 +26,14 @@ from aios.datastores import store_session
 from aios.datastores.models import AgentRun, WorkflowRun, WorkflowRunStep
 from aios.main import app
 from aios.models import WorkflowRunStatus
-from aios.testing.fake_model import ToolCall, last_tool_results, model, replies, use_model
+from aios.testing.fake_model import (
+    ToolCall,
+    instructions,
+    last_tool_results,
+    model,
+    replies,
+    use_model,
+)
 from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 
@@ -62,7 +69,7 @@ def echo(fail: set[str] = frozenset(), together: set[str] = frozenset()):
     arrived: set[str] = set()
 
     async def script(messages, info):
-        name, text = messages[0].content, messages[-1].content
+        name, text = instructions(messages), messages[-1].content
         if name in fail:
             raise RuntimeError(f"{name} broke")
         if name in together:
@@ -261,7 +268,7 @@ def test_a_subworkflow_stopped_by_another_branchs_failure_fails_cleanly(api, que
     url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
 
     async def script(messages, info):
-        name = messages[0].content
+        name = instructions(messages)
         if name == "boom":
             raise RuntimeError("boom broke")
         if name == "slow":
@@ -295,7 +302,7 @@ def test_a_run_stopped_midway_fails_the_steps_still_running(api, queued):
     started = start(api, wf)
 
     async def script(messages, info):
-        if messages[0].content == "slow":
+        if instructions(messages) == "slow":
             await asyncio.sleep(60)
         yield "done"
 
@@ -589,7 +596,7 @@ def test_progress_is_visible_while_the_run_goes(api, queued):
     seen = []
 
     async def script(messages, info):
-        if messages[0].content == "second":
+        if instructions(messages) == "second":
             # Mid-run, as the UI polls it.
             seen.append(await asyncio.to_thread(lambda: api.get(url).json()))
         yield "done"
@@ -652,7 +659,7 @@ def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued,
         finish_step(*args)
 
     async def script(messages, info):
-        if messages[0].content == "second":
+        if instructions(messages) == "second":
             dying.append(True)
         yield "done"
 
@@ -879,7 +886,7 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     monkeypatch.setattr(workflows, "_start_step", trying)
 
     async def script(messages, info):
-        name = messages[0].content
+        name = instructions(messages)
         if name == "left":
             # As deleting it does, less its agent runs: the API's delete would wait for this
             # turn to end before it returned (`checkpoints.delete_threads`).
@@ -980,7 +987,7 @@ def test_a_run_ended_elsewhere_stops_its_worker(api, queued, monkeypatch):
     started = start(api, wf)
 
     async def script(messages, info):
-        if messages[0].content == "slow":
+        if instructions(messages) == "slow":
             await asyncio.to_thread(fail_run, queued.store, started["id"], "Stopped elsewhere")
             await asyncio.sleep(30)
         yield "done"
@@ -1021,7 +1028,7 @@ def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(
         seen.append((run.status, run.error))
 
     async def script(messages, info):
-        if messages[0].content == "stuck":
+        if instructions(messages) == "stuck":
             reader = threading.Thread(target=read_later)
             reader.start()
             time.sleep(1.5)  # Holds the event loop, five times the limit.

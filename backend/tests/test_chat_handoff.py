@@ -11,7 +11,7 @@ from test_chats import add, make_chat, messages, post
 from test_triggers import make_agent
 from test_workflows import agent_node, make_workflow
 
-from aios import checkpoints, llm, tracing
+from aios import checkpoints, jev, llm, tracing
 from aios.config import get_settings
 
 # The handoff's model as the app gets it: tests run it on `fake_model.briefs` by default.
@@ -65,9 +65,10 @@ def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api, u
     [invocation] = messages(api, chat)["invocations"]
     assert (invocation["status"], invocation["brief"]) == ("succeeded", brief)
     assert invocation["acknowledgement"] == ack
-    # The run was told the brief, a blank line, then the message.
+    # The run was told the brief (wrapped as untrusted: it's derived from the chat), a blank
+    # line, then the message.
     history = checkpoints.history(store_of(user), invocation["agent_run_id"])
-    assert history[0].text == f"{brief}\n\n@Bot check them"
+    assert history[0].text == f"{jev.wrap(brief, 'brief')}\n\n@Bot check them"
     # Named after what was asked, not the brief.
     [run] = api.get(f"/api/agents/{agent['id']}/runs").json()
     assert run["title"] == "@Bot check them"
@@ -87,7 +88,7 @@ def test_a_workflows_run_is_told_the_brief_then_the_message(api, queued):  # noq
     assert invocation["acknowledgement"] == "I'll sum up the week."
     assert card_of(api, chat)["body"] == "I'll sum up the week."
     run = invocation["workflow_run"]
-    assert run["input"] == "The release is on Friday.\n\n@Digest sum it up"
+    assert run["input"] == f"{jev.wrap('The release is on Friday.', 'brief')}\n\n@Digest sum it up"
 
 
 def failing_handoff():

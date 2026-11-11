@@ -15,7 +15,7 @@ from test_chats import (  # noqa: F401
 from test_organisation_scoping import member  # noqa: F401
 from test_triggers import make_agent
 
-from aios import checkpoints
+from aios import checkpoints, jev
 from aios.testing.fake_model import (
     ToolCall,
     briefs,
@@ -142,5 +142,5 @@ def test_mentioning_the_assistant_searches_the_chat_owners_documents_and_posts_t
     assert invocation["agent_run"]["tool_call_count"] == 1
     assert searched == [(store_of(user), "fish")]
     history = checkpoints.history(store_of(user), invocation["agent_run_id"])
-    assert history[0].text == f"They study fish.\n\n@{NAME} fish?"
+    assert history[0].text == f"{jev.wrap('They study fish.', 'brief')}\n\n@{NAME} fish?"
     assert replies_from(api, chat) == [(NAME, "Found Zebrafish. [fish.md]")]

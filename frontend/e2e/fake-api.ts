@@ -226,6 +226,10 @@ export type DocumentRow = {
   filename: string;
   status: "pending" | "processing" | "ready" | "failed";
   error: string | null;
+  /** Jev's verdict: only a clean or released document is found by search. */
+  verdict: "awaiting_check" | "clean" | "flagged" | "released";
+  /** Why Jev flagged it. */
+  verdict_reason: string | null;
   chunk_count: number;
   size_bytes: number;
   /** The member who uploaded it; null for one from before uploads were recorded. */
@@ -701,6 +705,8 @@ export class FakeApi {
   schemaChanges: SchemaChangeRow[] = [];
   /** The organisation's audit log, newest first, as GET /audit-log answers it. */
   auditEntries: AuditEntryRow[] = [];
+  /** Whether Jev answered its last health check (null: not known), as GET /jev-status answers. */
+  jevUp: boolean | null = true;
   /** The approval rules, by kind: each kind's least role, as an admin set it. */
   approvalRules: Record<string, Role> = { ...DEFAULT_RULES };
   /** Dropped tables and columns in the organisation's store, newest first. */
@@ -956,6 +962,8 @@ export class FakeApi {
       filename,
       status: "ready",
       error: null,
+      verdict: "clean",
+      verdict_reason: null,
       chunk_count: 1,
       size_bytes: 2048,
       uploaded_by: null,
@@ -2363,7 +2371,12 @@ export class FakeApi {
         const q = params.get("q")?.toLowerCase() ?? "";
         const kinds = params.getAll("kind");
         const passages: SearchItemRow[] = this.documents
-          .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+          .filter(
+            (d) =>
+              d.status === "ready" &&
+              (d.verdict === "clean" || d.verdict === "released") &&
+              d.filename.toLowerCase().includes(q),
+          )
           .map((d) => ({
             id: d.id * 1000,
             kind: "document_chunk",
@@ -2503,6 +2516,47 @@ export class FakeApi {
         if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
       }
       return reply(200, this.schemaChangeOut(request));
+    }
+    if (path === "/api/jev-status" && method === "GET") {
+      return reply(200, { up: this.jevUp });
+    }
+    if (path === "/api/flagged" || path.startsWith("/api/flagged/")) {
+      if (this.roleOf(this.me.id) !== "admin") {
+        const role = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
+        return fail(403, `${role} can't see flagged content or release it. Ask an admin.`);
+      }
+      if (path === "/api/flagged" && method === "GET") {
+        return reply(
+          200,
+          this.documents
+            .filter((d) => d.verdict === "flagged")
+            .map((d) => ({
+              id: d.id,
+              filename: d.filename,
+              reason: d.verdict_reason,
+              checked_at: d.created_at,
+              uploaded_by: d.uploaded_by,
+              created_at: d.created_at,
+            })),
+        );
+      }
+      if ((m = path.match(/^\/api\/flagged\/(\d+)\/release$/)) && method === "POST") {
+        const doc = this.documents.find((d) => d.id === Number(m![1]));
+        if (!doc) return fail(404, "Not Found");
+        if (doc.verdict !== "flagged") return fail(409, "Only a flagged document can be released.");
+        doc.verdict = "released";
+        this.auditEntries.unshift({
+          id: this.id(),
+          at: NOW,
+          actor: { kind: "person", user: { id: this.me.id, name: `${this.me.first_name} ${this.me.last_name}` }, agent: null, run_id: null },
+          action: "document.released",
+          target_kind: "document",
+          target_id: String(doc.id),
+          details: { filename: doc.filename, reason: doc.verdict_reason },
+        });
+        return reply(200, { id: doc.id, verdict: doc.verdict });
+      }
+      return fail(404, "Not Found");
     }
     if (path === "/api/audit-log" && method === "GET") {
       if (this.roleOf(this.me.id) !== "admin") {

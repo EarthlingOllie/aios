@@ -18,7 +18,7 @@ from psycopg import errors
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from aios import organisations, ratelimits
+from aios import jev, organisations, ratelimits
 from aios import run_service as run_service_package
 from aios.api import provenance
 from aios.auth import current_user
@@ -175,6 +175,14 @@ def run_service(monkeypatch) -> RunService:
     service = RunService()
     monkeypatch.setattr(run_service_package, "wake", service.woken)
     return service
+
+
+@pytest.fixture(autouse=True)
+def jev_classifier() -> Iterator[jev.FakeJev]:
+    """Jev (`aios.jev`), as its fake: flags the commonest prompt injections, and a test can take
+    it `down`, or see what it was sent."""
+    with jev.use(jev.FakeJev()) as fake:
+        yield fake
 
 
 @pytest.fixture(autouse=True)

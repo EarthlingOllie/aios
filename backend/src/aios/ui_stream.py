@@ -29,6 +29,8 @@ from langchain_core.messages import (
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from aios import jev
+
 log = logging.getLogger(__name__)
 
 Chunk = dict[str, Any]
@@ -136,12 +138,14 @@ def _assistant_step(parts: list[UIPart]) -> list[BaseMessage]:
             continue
         name = part.tool_name or part.type.removeprefix("tool-")
         if part.state == "output-available":
+            # Back in the untrusted block the model always gets tool results in.
             content = part.output if isinstance(part.output, str) else json.dumps(part.output)
+            content = jev.wrap(content, f"tool:{name}")
             results.append(ToolMessage(content, tool_call_id=part.tool_call_id, name=name))
         elif part.state == "output-error":
             results.append(
                 ToolMessage(
-                    part.error_text or "Error",
+                    jev.wrap(part.error_text or "Error", f"tool:{name}"),
                     tool_call_id=part.tool_call_id,
                     name=name,
                     status="error",
@@ -166,8 +170,10 @@ def _blocks(message: AIMessage) -> list[dict[str, Any]]:
 
 
 def _tool_output(content: Any) -> Any:
-    """A tool result as the UI shows it: JSON when it is JSON, otherwise the text."""
+    """A tool result as the UI shows it: out of the untrusted block the model got it in
+    (`aios.tool_checks`), and JSON when it is JSON, otherwise the text."""
     if isinstance(content, str):
+        content = jev.unwrap(content)
         try:
             return json.loads(content)
         except ValueError:
@@ -234,7 +240,7 @@ def to_ui_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
             }
             result = results.get(call["id"])
             if result is not None and result.status == "error":
-                part |= {"state": "output-error", "errorText": str(result.content)}
+                part |= {"state": "output-error", "errorText": jev.unwrap(str(result.content))}
             elif result is not None:
                 part |= {"state": "output-available", "output": _tool_output(result.content)}
             parts.append(part)
@@ -446,7 +452,7 @@ class UIStream:
             yield {
                 "type": "tool-output-error",
                 "toolCallId": message.tool_call_id,
-                "errorText": str(message.content),
+                "errorText": jev.unwrap(str(message.content)),
             }
         else:
             yield {

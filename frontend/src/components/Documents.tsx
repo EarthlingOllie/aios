@@ -30,6 +30,7 @@ import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 import { documentsFrom } from "@/lib/sources";
 import { cn } from "@/lib/utils";
+import { verdictView } from "@/lib/verdicts";
 
 const statusVariant = {
   pending: "secondary",
@@ -316,6 +317,16 @@ const statusLabel = {
   failed: "Failed",
 } as const;
 
+/** The document's Jev verdict (`lib/verdicts`), with what it means as its tooltip. */
+function VerdictBadge({ doc }: { doc: DocumentInfo }) {
+  const view = verdictView(doc.verdict, doc.verdict_reason);
+  return (
+    <Badge variant={view.variant} title={view.detail} aria-label={`Jev: ${view.label}`}>
+      {view.label}
+    </Badge>
+  );
+}
+
 function DocumentsLoading() {
   return (
     <Loader2 className="text-muted-foreground size-4 animate-spin" aria-label="Loading documents" />
@@ -361,6 +372,7 @@ export function Documents() {
             <Badge variant={statusVariant[doc.status]}>
               {doc.status === "ready" ? `${doc.chunk_count} chunks` : doc.status}
             </Badge>
+            {doc.status === "ready" && doc.verdict !== "clean" && <VerdictBadge doc={doc} />}
             {!refusal && (
               <button
                 className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
@@ -476,6 +488,16 @@ export function DocumentsSection() {
                 {doc.status === "failed" && doc.error && (
                   <p className="text-destructive mt-0.5 text-xs break-words">{doc.error}</p>
                 )}
+                {doc.status === "ready" && doc.verdict !== "clean" && (
+                  <p
+                    className={cn(
+                      "mt-0.5 text-xs break-words",
+                      doc.verdict === "flagged" ? "text-destructive" : "text-muted-foreground",
+                    )}
+                  >
+                    {verdictView(doc.verdict, doc.verdict_reason).detail}
+                  </p>
+                )}
               </div>
               <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
                 {formatBytes(doc.size_bytes)}
@@ -486,6 +508,7 @@ export function DocumentsSection() {
                 )}
                 {statusLabel[doc.status]}
               </Badge>
+              {doc.status === "ready" && <VerdictBadge doc={doc} />}
               {/* The API redirects to a link to the file that lasts a minute, minted per click,
                   which saves it under its own name; the page never holds one. A download, not a
                   navigation, so a refusal leaves the page (and any upload in flight) be. */}

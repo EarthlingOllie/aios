@@ -6,6 +6,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from aios import llm
 from aios.agent import ChatDeps
 from aios.datastores.models import AgentVersion
+from aios.jev import UNTRUSTED_RULE
+from aios.tool_checks import ToolResultChecks
 from aios.tools import AgentTool, ToolOrganisation, build_tool
 from aios.tools.web_search import WEB_SEARCH
 
@@ -47,11 +49,15 @@ def build_agent(
     checkpointer: BaseCheckpointSaver | None = None,
 ):
     """A LangGraph agent for one turn of a run: its version's model, instructions and tools,
-    the user and run as runtime context (`ChatDeps`), and the run's history in `checkpointer`."""
+    the user and run as runtime context (`ChatDeps`), and the run's history in `checkpointer`.
+    Its instructions end with what an untrusted block is, and every tool result reaches it
+    checked by Jev and wrapped as one (`aios.tool_checks`)."""
     return create_agent(
         llm.chat_model(model),
         server_tools(tools, model),
-        system_prompt=instructions,
+        system_prompt=f"{instructions}\n\n{UNTRUSTED_RULE}" if instructions else UNTRUSTED_RULE,
+        # Each tool result checked by Jev and wrapped as untrusted (`aios.tool_checks`).
+        middleware=[ToolResultChecks()],
         context_schema=ChatDeps,
         checkpointer=checkpointer,
         name="custom-agent",

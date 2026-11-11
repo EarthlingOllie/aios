@@ -35,6 +35,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from aios.jev import Verdict
 from aios.models.agents import AgentRunStatus
 from aios.models.approvals import SchemaChangeStatus
 from aios.models.audit import AuditActorKind
@@ -1136,6 +1137,9 @@ class ApprovalRule(StoreBase):
     )
 
 
+VERDICT = Enum(Verdict, name="verdict")
+
+
 class DocumentStatus(enum.StrEnum):
     pending = "pending"
     processing = "processing"
@@ -1166,6 +1170,33 @@ class Document(StoreBase):
     # The source it belongs to: Uploads for an upload. Required.
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Jev's verdict (`aios.verdicts`): awaiting_check until Jev checks it; only a clean or
+    # released document is found by search and reaches context. Copied onto its search items.
+    verdict: Mapped[Verdict] = mapped_column(
+        VERDICT,
+        server_default=Verdict.awaiting_check.value,
+        default=Verdict.awaiting_check,
+        comment="Jev's verdict: awaiting_check, clean, flagged or released.",
+    )
+    verdict_reason: Mapped[str | None] = mapped_column(Text, comment="Why Jev flagged it.")
+    verdict_version: Mapped[str | None] = mapped_column(
+        Text, comment="The version of Jev (model and policy) that judged it."
+    )
+    checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="When Jev last judged it."
+    )
+    content_hash: Mapped[str | None] = mapped_column(
+        Text, comment="The SHA-256 (hex) of the content Jev last judged."
+    )
+    released_by: Mapped[int | None] = mapped_column(
+        Integer, comment="The admin who released it (aios.people.id)."
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), comment="When it was released."
+    )
+    released_content_hash: Mapped[str | None] = mapped_column(
+        Text, comment="The SHA-256 (hex) of the content released."
+    )
 
     source: Mapped[Source] = relationship()
     chunks: Mapped[list["Chunk"]] = relationship(
@@ -1175,7 +1206,10 @@ class Document(StoreBase):
         order_by="Chunk.ordinal",
     )
 
-    __table_args__ = (Index("ix_documents_source_id", "source_id"),)
+    __table_args__ = (
+        Index("ix_documents_source_id", "source_id"),
+        Index("ix_documents_verdict", "verdict"),
+    )
 
 
 class Chunk(StoreBase):
@@ -1269,6 +1303,11 @@ class SearchItem(StoreBase):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIM), comment="What's searched's embedding; null until embedded."
     )
+    verdict: Mapped[Verdict] = mapped_column(
+        VERDICT,
+        server_default=Verdict.awaiting_check.value,
+        comment="Its source's Jev verdict: found by search only if clean, released or derived.",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -1301,5 +1340,12 @@ class SearchItem(StoreBase):
         Index("ix_search_items_chat_id", "chat_id"),
         Index("ix_search_items_agent_id", "agent_id"),
         Index("ix_search_items_agent_run_id", "agent_run_id"),
+        # Where `query_data` finds the stored verdict of text it read (`aios.tools.data`).
+        Index("ix_search_items_text_md5", func.md5(sql_text("text"))),
+        Index(
+            "ix_search_items_search_text_md5",
+            func.md5(sql_text("search_text")),
+            postgresql_where=sql_text("search_text IS NOT NULL"),
+        ),
         {"comment": "The search index: documents, chat messages, runs' messages and briefs"},
     )

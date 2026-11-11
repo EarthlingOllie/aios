@@ -129,6 +129,18 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=0, hour=settings.retention_prune_hour),
         "options": {"expires": 24 * 60 * 60},
     },
+    # Stored content awaiting Jev's check, or checked by an older version of it
+    # (`aios.verdicts.sweep`), on the app workers, as ingest is.
+    "check-stored-content": {
+        "task": "aios.check_stored_content_sweep",
+        "schedule": settings.jev_sweep_interval_seconds,
+        "options": {"expires": settings.jev_sweep_interval_seconds},
+    },
+    "check-jev-health": {
+        "task": "aios.check_jev_health",
+        "schedule": settings.jev_health_interval_seconds,
+        "options": {"expires": settings.jev_health_interval_seconds},
+    },
     # Platform-side audit entries, to their stores (`aios.audit.drain`).
     "drain-audit-outbox": {
         "task": "aios.drain_audit_outbox",
@@ -155,12 +167,18 @@ def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
     """Ingest a document in the data store (its id as a string: tasks' arguments are JSON)."""
     from aios.datastores.files import FilesUnavailable
     from aios.ingest import ingest_document
+    from aios.jev import JevUnavailable
 
     try:
         with store_session(uuid.UUID(data_store_id), "rw") as db:
             ingest_document(db, document_id, last_try=self.request.retries >= FILES_RETRIES)
     except FilesUnavailable as exc:
         raise self.retry(countdown=FILES_RETRY_COUNTDOWN) from exc
+    except JevUnavailable:
+        # Ingested, awaiting Jev's check: that's tried again on its own, not the ingest.
+        check_document_task.apply_async(
+            args=[data_store_id, document_id], countdown=JEV_RETRY_COUNTDOWN
+        )
     except DataStoreBehind as exc:
         # Ready, but not yet at the store tree's head this code needs: the schedule brings it
         # there in minutes (`provision.retry_unfinished`).
@@ -175,6 +193,62 @@ def ingest_document_task(self, data_store_id: str, document_id: int) -> None:
         # Its role's connections are all in use; the document is still pending (or, claimed,
         # processing), and the next delivery picks it up.
         raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
+
+
+# A document Jev couldn't check at ingestion is checked again this often (seconds), this many
+# times (about ten minutes); then it waits for the awaiting-check sweep.
+JEV_RETRY_COUNTDOWN = 60
+JEV_RETRIES = 10
+
+
+@celery_app.task(name="aios.check_document", bind=True, max_retries=JEV_RETRIES)
+def check_document_task(self, data_store_id: str, document_id: int) -> None:
+    """Jev's check of an ingested document it couldn't check at ingestion
+    (`aios.verdicts.check_document`), tried again while it can't."""
+    from aios import verdicts
+    from aios.jev import Verdict
+
+    try:
+        with store_session(uuid.UUID(data_store_id), "rw") as store:
+            verdict = verdicts.check_document(store, document_id)
+    except (DataStoreNotFound, DataStoreNotReady):
+        return
+    except (DataStoreBehind, DataStoreBusy) as exc:
+        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
+    if verdict == Verdict.awaiting_check and self.request.retries < JEV_RETRIES:
+        raise self.retry(countdown=JEV_RETRY_COUNTDOWN)
+
+
+@celery_app.task(name="aios.check_stored_content")
+def check_stored_content_task(data_store_id: str) -> None:
+    """The store's stored content checked again where it's due (`aios.verdicts.sweep`):
+    awaiting a check, judged by an older version of Jev, or released and since changed."""
+    from aios import verdicts
+
+    try:
+        verdicts.sweep(uuid.UUID(data_store_id))
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBehind, DataStoreBusy):
+        return  # gone, going, behind or busy: the next sweep tries it again
+
+
+@celery_app.task(name="aios.check_stored_content_sweep")
+def check_stored_content_sweep_task() -> None:
+    """Queue `check_stored_content_task` for every ready store, each dropped if it hasn't
+    started by the next sweep."""
+    from aios.datastores import ready_stores
+
+    every = settings.jev_sweep_interval_seconds
+    for store_id, _ in ready_stores():
+        check_stored_content_task.apply_async(args=[str(store_id)], expires=every)
+
+
+@celery_app.task(name="aios.check_jev_health")
+def check_jev_health_task() -> None:
+    """Poll Jev's health (`aios.jev_health.poll`): an alert and metrics while it's down, and the
+    notice people see."""
+    from aios import jev_health
+
+    jev_health.poll()
 
 
 # Provisioning is retried this many times after its first try (a minute apart, then longer:

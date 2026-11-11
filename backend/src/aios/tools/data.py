@@ -22,6 +22,7 @@ and stop another run's reads of the same store: nothing it couldn't read itself,
 run just gets an error. Revoking those functions would take a superuser, which RDS doesn't give.
 """
 
+import hashlib
 import json
 import logging
 import uuid
@@ -33,10 +34,12 @@ import psycopg
 from anyio import CapacityLimiter, to_thread
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
+from psycopg import pq
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from aios import jev
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import (
@@ -52,6 +55,7 @@ from aios.datastores import (
 from aios.datastores.connections import MAX_CONNECTIONS
 from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.reads import read_capped, read_only, statement_columns
+from aios.tool_checks import UNCHECKED
 from aios.tools.registry import AgentTool, ToolSpec, register
 
 log = logging.getLogger(__name__)
@@ -193,6 +197,148 @@ def pg_error(exc: psycopg.Error) -> str:
     return message if exc.diag.sqlstate is None else f"{message} (SQLSTATE {exc.diag.sqlstate})"
 
 
+# --- Jev, cell by cell ----------------------------------------------------------------------------
+#
+# What `query_data` reads is untrusted, so its text cells are checked by Jev before the model
+# sees them (`_screen`), packed into chunks of at most `jev.CHUNK_CHARS` characters, the chunks
+# of one result classified in parallel within Jev's timeout. A flagged cell is withheld, not the
+# whole result. Text read from the platform's tables that carry a stored verdict (`STORED`) isn't
+# checked again: its search item's verdict is looked up by its hash, and it stands if that's
+# clean, released or derived, and is withheld if it's flagged or awaiting a check. A result Jev
+# couldn't check in time is an error, as for any tool (`aios.tool_checks`).
+
+WITHHELD = "[withheld: flagged by Jev]"
+UNCHECKED_ROW = "[withheld: awaiting Jev's check]"
+
+# The platform's tables whose text is in the search index, with its verdict.
+STORED = ("aios.search_items", "aios.chunks", "aios.chat_messages", "aios.invocations")
+STORED_SQL = "SELECT oid FROM pg_class WHERE oid = ANY(ARRAY[{}]::regclass[])".format(
+    ", ".join(f"to_regclass('{t}')" for t in STORED)
+)
+# The verdicts of the search items with these texts' hashes (MD5, as Postgres's `md5`).
+VERDICTS_SQL = """
+    SELECT md5(text) AS hash, verdict::text FROM aios.search_items WHERE md5(text) = ANY(%(h)s)
+    UNION ALL
+    SELECT md5(search_text), verdict::text FROM aios.search_items
+    WHERE search_text IS NOT NULL AND md5(search_text) = ANY(%(h)s)
+"""
+VISIBLE = {v.value for v in jev.VISIBLE}
+
+
+def statement_tables(pg: psycopg.Connection, sql: str) -> list[int]:
+    """The OID of the table each of the statement's columns is read from (0 for none: an
+    expression), from parsing it without running it."""
+    pgconn = pg.pgconn
+    for res in (pgconn.prepare(b"", sql.encode()), pgconn.describe_prepared(b"")):
+        if res.status != pq.ExecStatus.COMMAND_OK:
+            raise psycopg.errors.error_from_result(res, encoding=pg.info.encoding)
+    return [res.ftable(i) for i in range(res.nfields)]
+
+
+def _cell_text(value: Any) -> str | None:
+    """A cell's text, for Jev: strings, and JSON objects and arrays as JSON; None for the rest
+    (numbers, booleans, nulls), which can't carry instructions."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return None
+
+
+# A text with several items takes the most guarded of their verdicts.
+_GUARD = {"flagged": 2, "awaiting_check": 1}
+
+
+def _stored_verdicts(pg: psycopg.Connection, texts: set[str]) -> dict[str, str]:
+    """For each text found in the search index, what stands for it: "flagged" or
+    "awaiting_check" if any of its items is, else "visible"."""
+    hashes = {hashlib.md5(t.encode()).hexdigest(): t for t in texts}
+    found: dict[str, str] = {}
+    for hash_, verdict in pg.execute(VERDICTS_SQL, {"h": list(hashes)}):
+        text_ = hashes.get(hash_)
+        if text_ is None:
+            continue
+        verdict = verdict if verdict not in VISIBLE else "visible"
+        if _GUARD.get(verdict, 0) >= _GUARD.get(found.get(text_, "visible"), 0):
+            found[text_] = verdict
+    return found
+
+
+def _mark_unchecked(pg: psycopg.Connection, sources: list[int], result: dict) -> None:
+    """Withhold the result's stored text whose verdict says so, and note the cells left for Jev
+    to check (`_unchecked`, by row and column)."""
+    stored = {row[0] for row in pg.execute(STORED_SQL)} if any(sources) else set()
+    from_stored = {
+        (r, c): text_
+        for r, row in enumerate(result["rows"])
+        for c, value in enumerate(row)
+        if sources[c] in stored and (text_ := _cell_text(value)) is not None
+    }
+    known = _stored_verdicts(pg, set(from_stored.values())) if from_stored else {}
+    unchecked = []
+    for r, row in enumerate(result["rows"]):
+        for c, value in enumerate(row):
+            text_ = _cell_text(value)
+            if text_ is None or not text_.strip():
+                continue
+            if (r, c) in from_stored and text_ in known:
+                if known[text_] == "flagged":
+                    row[c] = WITHHELD
+                elif known[text_] == "awaiting_check":
+                    row[c] = UNCHECKED_ROW
+                continue
+            unchecked.append((r, c))
+    result["_unchecked"] = unchecked
+
+
+def _packed(texts: list[str]) -> list[list[str]]:
+    """The texts in packs of at most `jev.CHUNK_CHARS` characters (a longer one alone, which
+    `jev.check_all` splits)."""
+    packs: list[list[str]] = []
+    size = 0
+    for t in texts:
+        if packs and size + len(t) + 1 <= jev.CHUNK_CHARS:
+            packs[-1].append(t)
+            size += len(t) + 1
+        else:
+            packs.append([t])
+            size = len(t)
+    return packs
+
+
+async def _flagged_texts(texts: list[str]) -> set[str]:
+    """Which of the texts Jev flags: checked in packs, all at once; a flagged pack's texts are
+    then checked one by one, so only the flagged ones are withheld. Raises `JevUnavailable`."""
+    source = "tool:query_data"
+    packs = _packed(texts)
+    judged = await jev.check_all(["\n".join(p) for p in packs], source)
+    suspects = [t for p, j in zip(packs, judged, strict=True) if j.flagged for t in p]
+    if not suspects:
+        return set()
+    if len(suspects) == 1:
+        return set(suspects)
+    again = await jev.check_all(suspects, source)
+    return {t for t, j in zip(suspects, again, strict=True) if j.flagged}
+
+
+async def _screen(result: dict) -> dict:
+    """The result with the cells Jev flags withheld (see above); an error if Jev couldn't check
+    them."""
+    unchecked = result.pop("_unchecked", [])
+    texts = list(dict.fromkeys(_cell_text(result["rows"][r][c]) for r, c in unchecked))
+    if not texts:
+        return result
+    try:
+        flagged = await _flagged_texts(texts)
+    except jev.JevUnavailable as exc:
+        log.warning("Withheld query_data's result: %s", exc)
+        return {"error": UNCHECKED}
+    for r, c in unchecked:
+        if _cell_text(result["rows"][r][c]) in flagged:
+            result["rows"][r][c] = WITHHELD
+    return result
+
+
 def _read(pg: psycopg.Connection, sql: str) -> dict:
     """Runs the statement in the open transaction, reading its rows up to the caps."""
     settings = get_settings()
@@ -201,9 +347,12 @@ def _read(pg: psycopg.Connection, sql: str) -> dict:
     if not columns[0]:
         # So nothing that returns no rows (SET, COMMIT, DO, ...) is run at all.
         return {"error": "Only queries that return rows can be run (SELECT, WITH, VALUES)."}
+    sources = statement_tables(pg, sql)
     read = read_capped(pg, sql, max_rows=max_rows, max_bytes=max_bytes, columns=columns)
     rows, truncated = read.rows, read.truncated
     result: dict = {"columns": read.columns, "rows": rows, "row_count": len(rows)}
+    # A row too big to read closed the connection: whatever was read goes to Jev.
+    _mark_unchecked(pg, sources if not pg.closed else [0] * len(sources), result)
     result["truncated"] = truncated
     if truncated and not rows:
         # Only bytes can stop it at no rows: narrowing the query wouldn't help.
@@ -301,6 +450,9 @@ most {settings.query_data_max_rows} rows or {settings.query_data_max_bytes} byte
 past that, `truncated` is true and the rest is left out, so filter, aggregate or LIMIT the
 query rather than reading whole tables. On failure it has an `error` instead.
 
+Text is checked for prompt injection before you see it: a cell flagged by the check comes back
+as "{WITHHELD}", and text not yet checked as "{UNCHECKED_ROW}".
+
 {DATA_NOT_INSTRUCTIONS}"""
 
 
@@ -314,11 +466,17 @@ def build_describe(config: DescribeDataConfig) -> list[AgentTool]:
     ]
 
 
+async def _checked_query(data_store_id: uuid.UUID, sql: str) -> dict:
+    """The query's result, with what Jev flags withheld (`_screen`)."""
+    result = await in_thread(data_store_id, _query, sql)
+    return await _screen(result) if "_unchecked" in result else result
+
+
 def build_query(config: QueryDataConfig) -> list[AgentTool]:
     async def query_data(
         sql: Annotated[str, "One read-only SQL statement."], runtime: ToolRuntime[ChatDeps]
     ) -> str:
-        return await in_store(runtime, in_thread, _query, sql)
+        return await in_store(runtime, _checked_query, sql)
 
     return [StructuredTool.from_function(coroutine=query_data, description=_query_description())]
 

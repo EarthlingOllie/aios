@@ -38,6 +38,8 @@ test("a ready store's documents are listed once", async ({ page }) => {
     filename: "notes.md",
     status: "ready",
     error: null,
+    verdict: "clean",
+    verdict_reason: null,
     chunk_count: 3,
     size_bytes: 7,
     uploaded_by: null,

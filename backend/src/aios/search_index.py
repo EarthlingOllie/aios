@@ -11,6 +11,10 @@ source is a foreign key that cascades):
   (`index_turn`);
 - the handoff indexes its brief (`index_brief`).
 
+**Verdicts.** Each item carries its source's Jev verdict (`aios.verdicts`): a chunk its
+document's, and the rest `derived` (what agents wrote, and people's chat messages until phase 2
+checks them at posting). Search finds only clean, released and derived items.
+
 **Embedding** is deferred: an item is written without one, and found by keyword until the
 store's sweep (`embed_pending`, the `aios.embed_search_items` task, on a schedule) embeds it,
 under a time budget per store per sweep. An item whose text is already embedded elsewhere in the
@@ -37,11 +41,13 @@ from aios.datastores.models import (
     AgentRun,
     ChatMessage,
     Chunk,
+    Document,
     Invocation,
     SearchItem,
     SearchItemKind,
 )
 from aios.embeddings import embed_documents
+from aios.jev import Verdict
 from aios.models import ChatMessageKind
 
 log = logging.getLogger(__name__)
@@ -81,8 +87,12 @@ def _write(store: Session, conflict: list[str], **values: Any) -> None:
     )
 
 
-def index_chunks(store: Session, document_id: int) -> None:
-    """Index the document's chunks (flushed), searched by their text with its headings."""
+def index_chunks(store: Session, document_id: int, verdict: Verdict | None = None) -> None:
+    """Index the document's chunks (flushed), searched by their text with its headings, with
+    `verdict`, else the document's own (`aios.verdicts`): ingest indexes them awaiting Jev's
+    check."""
+    if verdict is None:
+        verdict = store.scalar(select(Document.verdict).where(Document.id == document_id))
     chunks = store.execute(
         select(Chunk.id, Chunk.text, Chunk.contextualized, Chunk.meta).where(
             Chunk.document_id == document_id
@@ -99,6 +109,7 @@ def index_chunks(store: Session, document_id: int) -> None:
             ref={"headings": meta.get("headings", []), "pages": meta.get("pages", [])},
             text=chunk.text,
             search_text=chunk.contextualized if chunk.contextualized != chunk.text else None,
+            verdict=verdict,
         )
 
 
@@ -116,6 +127,7 @@ def index_chat_message(store: Session, message: ChatMessage) -> None:
         agent_id=message.author_agent_id,
         author_user_id=message.author_user_id,
         text=message.body,
+        verdict=Verdict.derived,
     )
 
 
@@ -131,6 +143,7 @@ def index_brief(store: Session, invocation: Invocation) -> None:
         chat_id=invocation.chat_id,
         agent_id=invocation.agent_id,
         text=invocation.brief,
+        verdict=Verdict.derived,
     )
 
 
@@ -178,6 +191,7 @@ def index_turn(
             author_user_id=requested_by if role == "user" else None,
             ref={"role": role},
             text=said,
+            verdict=Verdict.derived,
         )
 
 
