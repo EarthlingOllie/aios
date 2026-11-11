@@ -36,6 +36,7 @@ class Action(enum.StrEnum):
     )
     leave = "leave the organisation"
     audit = "read the audit log"
+    release = "see flagged content or release it"
 
 
 EVERYONE = frozenset(Role)
@@ -55,6 +56,7 @@ TABLE: dict[Action, frozenset[Role]] = {
     Action.run_organisation: ADMINS,
     Action.leave: EVERYONE,
     Action.audit: ADMINS,
+    Action.release: ADMINS,
 }
 
 _A = {Role.admin: "an admin", Role.editor: "an editor", Role.participant: "a participant"}

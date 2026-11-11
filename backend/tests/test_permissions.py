@@ -44,6 +44,7 @@ RESTORE = (ADMINS, "restore")  # restores need an admin
 SOURCES = (ADMINS, "sources")  # add, change, pause or remove sources
 LEAVE = (EVERYONE, None)
 AUDIT = (ADMINS, "audit log")  # read the audit log
+RELEASE = (ADMINS, "flagged")  # see flagged content, release it
 
 # Every route under the organisation prefix, by method and path after it, and its row.
 ROUTES = {
@@ -51,6 +52,9 @@ ROUTES = {
     ("GET", "/approval-rules"): READ,
     ("PUT", "/approval-rules/{kind}"): RUN_ORGANISATION,
     ("GET", "/audit-log"): AUDIT,
+    ("GET", "/flagged"): RELEASE,
+    ("POST", "/flagged/{document_id}/release"): RELEASE,
+    ("GET", "/jev-status"): READ,
     ("POST", "/agents"): BUILD,
     ("GET", "/agents/{agent_id}"): READ,
     ("PUT", "/agents/{agent_id}"): BUILD,

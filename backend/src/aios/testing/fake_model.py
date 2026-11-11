@@ -140,6 +140,17 @@ def use_handoff(fake: FakeChatModel) -> Iterator[FakeChatModel]:
         yield fake
 
 
+def instructions(messages: list[BaseMessage]) -> str:
+    """The agent's own instructions, from the system prompt it was sent: without the rule on
+    untrusted blocks every agent's prompt ends with (`aios.jev.UNTRUSTED_RULE`)."""
+    from aios.jev import UNTRUSTED_RULE
+
+    system = messages[0].content if messages else ""
+    if system == UNTRUSTED_RULE:
+        return ""
+    return system.removesuffix("\n\n" + UNTRUSTED_RULE)
+
+
 def last_tool_results(messages: list[BaseMessage]) -> list[ToolMessage]:
     """The tool results at the end of `messages`: those of the model's last tool calls."""
     results = []
@@ -151,7 +162,12 @@ def last_tool_results(messages: list[BaseMessage]) -> list[ToolMessage]:
 
 
 def tool_output(message: ToolMessage) -> Any:
+    """What the tool returned, as the model got it: out of its untrusted block (every tool result
+    comes in one, `aios.tool_checks`), and as JSON if it is."""
+    from aios.jev import unwrap
+
+    content = unwrap(message.content) if isinstance(message.content, str) else message.content
     try:
-        return json.loads(message.content)
-    except ValueError:
-        return message.content
+        return json.loads(content)
+    except (TypeError, ValueError):
+        return content

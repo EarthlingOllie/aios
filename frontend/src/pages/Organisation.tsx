@@ -4,6 +4,7 @@ import { Loader2, Pencil } from "lucide-react";
 import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } from "@/components/crud";
 import { ApprovalRulesSection } from "@/components/ApprovalRules";
 import { AuditLogSection } from "@/components/AuditLog";
+import { FlaggedSection } from "@/components/FlaggedDocuments";
 import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,8 +23,8 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
 /**
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
  * page: its creator and members with their roles, which admins change (`/organisation`), its
- * invitation links (`/organisation/invitations`, admins' only), its settings: the approval rules,
- * leaving it and deleting it (`/organisation/settings`), and its audit log
+ * invitation links (`/organisation/invitations`, admins' only), its settings: the flagged list
+ * (admins' only), the approval rules, leaving it and deleting it (`/organisation/settings`), and its audit log
  * (`/organisation/audit-log`, admins' only).
  */
 export function OrganisationPage() {
@@ -58,6 +59,8 @@ export function OrganisationPage() {
       label: "Settings",
       content: (
         <>
+          {/* Only admins see flagged content and release it. */}
+          {org.role === "admin" && <FlaggedSection key={`flagged-${org.id}`} />}
           <ApprovalRulesSection key={`rules-${org.id}`} />
           <LeaveSection
             org={org}

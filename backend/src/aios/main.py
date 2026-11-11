@@ -31,6 +31,7 @@ from aios.api import (
 )
 from aios.api import approval_rules as approval_rules_api
 from aios.api import audit as audit_api
+from aios.api import flagged as flagged_api
 from aios.api import search as search_api
 from aios.api.scoping import mount_organisation_prefix
 from aios.config import get_settings
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
     app.include_router(audit_api.router)
+    app.include_router(flagged_api.router)
     app.include_router(approval_rules_api.router)
     app.include_router(dropped.router)
     app.include_router(sources.router)

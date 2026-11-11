@@ -12,7 +12,11 @@ them), so what it makes is what the app would have made:
   workflow; and a schedule;
 - a chat with the documents assistant and an agent in it, and a first message, which posting
   indexes for search as it does any (`aios.search_index`);
-- an archived agent, to show what archiving does.
+- an archived agent, to show what archiving does;
+- two documents, checked by Jev as ingestion checks them: one clean, and one flagged (a pasted
+  email carrying a prompt injection), for the Documents page and the flagged list.
+
+It checks with Jev's fake (`aios.jev.FakeJev`), not a real Jev.
 
 It refuses to run unless the development sign-in picker is on (`DEV_LOGIN_ENABLED`), which no
 deployment has, or `--force` is given.
@@ -27,7 +31,7 @@ from fastapi import BackgroundTasks
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
-from aios import organisations
+from aios import jev, organisations, seed_documents
 from aios.api.agents import AgentIn, archive_agent, create_agent
 from aios.api.chats import ChatIn, MemberIn, MessageIn, add_member, create_chat, post_message
 from aios.api.skills import SkillIn, create_skill
@@ -194,6 +198,8 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
         store,
         BackgroundTasks(),
     )
+    for filename, body in seed_documents.DOCUMENTS:
+        seed_documents.add_document(store, user, filename, body)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     migrate()
-    with SessionLocal() as db:
+    with SessionLocal() as db, jev.use(jev.FakeJev()):
         wipe(db)
         build(db)
     print(f"Seeded. Sign in as {EMAIL} with the password {SEED_PASSWORD!r}.")

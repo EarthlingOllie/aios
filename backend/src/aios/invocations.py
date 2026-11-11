@@ -59,7 +59,7 @@ from datetime import timedelta
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, search_index
+from aios import checkpoints, jev, search_index
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -107,9 +107,10 @@ def message_text(body: str) -> str:
 
 def run_input(brief: str | None, body: str) -> str:
     """A run's input: the handoff's brief, a blank line, then the message's text (just the
-    text if the chat had nothing to brief it on)."""
+    text if the chat had nothing to brief it on). The brief is derived text, written by the
+    handoff's model from the chat, so it's wrapped as untrusted (`aios.jev.wrap`)."""
     text = message_text(body)
-    return f"{brief}\n\n{text}" if brief else text
+    return f"{jev.wrap(brief, 'brief')}\n\n{text}" if brief else text
 
 
 def for_run(

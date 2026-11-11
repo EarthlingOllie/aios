@@ -136,6 +136,21 @@ export type DataStoreUsage = {
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
+/** Jev's verdict on stored content (`aios.jev.Verdict`): only clean, released and derived content
+ * is searchable and reaches agents. */
+export type Verdict = "awaiting_check" | "clean" | "flagged" | "released" | "derived";
+
+/** A document Jev flagged, on the admins' flagged list. */
+export type FlaggedDocument = {
+  id: number;
+  filename: string;
+  /** Jev's reason. */
+  reason: string | null;
+  checked_at: string | null;
+  uploaded_by: User | null;
+  created_at: string;
+};
+
 /** What brings content into the store. Every store has exactly one `upload` source, Uploads. */
 export type SourceKind = "upload" | "url" | "webhook" | "email" | "connector";
 export type SourceStatus = "active" | "paused" | "failing" | "needs_reauth" | "removing";
@@ -158,6 +173,10 @@ export type DocumentInfo = {
   filename: string;
   status: DocumentStatus;
   error: string | null;
+  /** Jev's verdict: only a clean or released document is searchable. */
+  verdict: Verdict;
+  /** Why Jev flagged it. */
+  verdict_reason: string | null;
   chunk_count: number;
   size_bytes: number;
   /** The member who uploaded it; null for documents from before it was recorded. */
@@ -559,10 +578,12 @@ export type Notification = {
    * in): it opens there. */
   organisation: { id: number; slug: string };
   /** What it's about: `schema_change_request` (a request waiting for a decision),
-   * `organisation_deletion_scheduled` or `organisation_deletion_cancelled`. */
+   * `organisation_deletion_scheduled`, `organisation_deletion_cancelled` or
+   * `released_document_changed` (a document the user released has changed since). */
   kind: string;
   /** For a schema change request, `request_id` and `data_store_id`; for an organisation's
-   * deletion, `organisation_name` (and, scheduled, `deletes_at`). */
+   * deletion, `organisation_name` (and, scheduled, `deletes_at`); for a released document,
+   * `document_id`, `filename` and `data_store_id`. */
   ref: Record<string, string>;
   /** What it says, in a line; null when what it's about has gone. */
   title: string | null;
@@ -1199,6 +1220,10 @@ export const api = {
     ),
   schemaChangeImpact: (id: string) =>
     request<{ removes: Removal[] }>(`${organisationApi()}/schema-changes/${id}/impact`),
+  listFlagged: () => request<FlaggedDocument[]>(`${organisationApi()}/flagged`),
+  releaseFlagged: (id: number) =>
+    request<{ id: number; verdict: Verdict }>(`${organisationApi()}/flagged/${id}/release`, { method: "POST" }),
+  jevStatus: () => request<{ up: boolean | null }>(`${organisationApi()}/jev-status`),
   listApprovalRules: () => request<ApprovalRule[]>(`${organisationApi()}/approval-rules`),
   setApprovalRule: (kind: string, role: Role) =>
     request<ApprovalRule[]>(`${organisationApi()}/approval-rules/${kind}`, json("PUT", { role })),

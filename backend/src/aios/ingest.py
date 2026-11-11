@@ -1,6 +1,8 @@
 """Document ingestion: the file from S3 -> Docling conversion -> HybridChunker -> chunks table,
 and each chunk into the search index (`aios.search_index`), in the same transaction, in the
-document's data store (on a `store_session` the caller gives it). The chunks are embedded later,
+document's data store (on a `store_session` the caller gives it). Then Jev checks it
+(`aios.verdicts.check_document`): its chunks are found by search only once it's clean (or
+released). The chunks are embedded later,
 by the store's embedding sweep: found by keyword until then.
 
 Docling is only installed in the worker image (the `ingest` extra), so it's imported lazily.
@@ -12,9 +14,11 @@ from io import BytesIO
 from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
+from aios import verdicts
 from aios.config import get_settings
 from aios.datastores import DataStoreBusy, files
 from aios.datastores.models import Chunk, Document, DocumentStatus
+from aios.jev import JevUnavailable, Verdict
 from aios.search_index import index_chunks
 
 # Deliveries before giving up; a doc that crashes the worker would otherwise be redelivered forever.
@@ -67,7 +71,9 @@ def set_status(db: Session, document_id: int, status: DocumentStatus, error: str
 
 def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> None:
     """Ingests the document. Should S3 be unavailable, raises `files.FilesUnavailable` for a
-    later try, or, on the `last_try`, fails the document with S3's error."""
+    later try, or, on the `last_try`, fails the document with S3's error. Should Jev be unable
+    to check it, it's ingested awaiting the check, and raises `JevUnavailable`, for a later
+    check."""
     # Atomically claim the row and count this delivery. Finished docs (e.g. a duplicate
     # delivery) are skipped. Its file's key comes back with the claim, and the commit ends the
     # transaction so none sits idle through the download and the (possibly minutes-long)
@@ -102,7 +108,14 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
             Chunk(document_id=document_id, ordinal=i, **piece) for i, piece in enumerate(pieces)
         )
         db.flush()
-        index_chunks(db, document_id)
+        # Unsearchable until Jev has checked them (a released document keeps its release
+        # while its content is what was released: `verdicts.check_document`).
+        db.execute(
+            update(Document)
+            .where(Document.id == document_id, Document.verdict != Verdict.released)
+            .values(verdict=Verdict.awaiting_check)
+        )
+        index_chunks(db, document_id, Verdict.awaiting_check)
         set_status(db, document_id, DocumentStatus.ready, None)
     except DataStoreBusy:
         raise  # Left processing, for the task's retry to claim again (`aios.worker`).
@@ -124,6 +137,11 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
     except Exception as exc:
         if _fail(db, document_id, exc):
             raise
+        return
+    if verdicts.check_document(db, document_id) == Verdict.awaiting_check:
+        # Ingested, but Jev couldn't check it: the task retries the check
+        # (`aios.worker.check_document_task`), and the sweep checks it should that give up.
+        raise JevUnavailable(f"Jev couldn't check document {document_id}")
 
 
 def _fail(db: Session, document_id: int, exc: BaseException) -> bool:

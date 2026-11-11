@@ -2,7 +2,9 @@
 with RRF) over a data store's search index (`aios.search_index`): its documents' chunks, its
 chat messages, its runs' messages and its briefs, in its own database, as its read-only role.
 
-Everyone in the organisation can find everything, so nothing here filters by who's asking. An
+Everyone in the organisation can find everything, so nothing here filters by who's asking. But
+it finds only items whose Jev verdict is clean, released or derived (`aios.verdicts`): flagged
+items, and items still awaiting Jev's check, are left out. An
 item not yet embedded is found by keyword alone, and so is everything when the query can't be
 embedded (the embedding API is down): an outage doesn't blind search.
 
@@ -35,6 +37,7 @@ from aios.datastores import (
 )
 from aios.datastores.models import SearchItemKind
 from aios.embeddings import embed_query
+from aios.jev import VISIBLE
 from aios.models import DataStoreStatus
 
 log = logging.getLogger(__name__)
@@ -103,7 +106,9 @@ class Filters:
     exclude_run_id: int | None = None
 
     def sql(self) -> tuple[str, dict[str, Any]]:
-        where, params = [], {}
+        # Only what may reach a model: never flagged items, nor any Jev hasn't checked yet.
+        where = ["i.verdict::text = ANY(:visible)"]
+        params: dict[str, Any] = {"visible": [v.value for v in VISIBLE]}
         if self.kinds:
             where.append("i.kind::text = ANY(:kinds)")
             params["kinds"] = [SearchItemKind(k).value for k in self.kinds]

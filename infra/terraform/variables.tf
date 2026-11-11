@@ -60,6 +60,19 @@ variable "embedding_model" {
   default = "voyageai:voyage-4"
 }
 
+# Jev, the prompt-injection classifier (jev.tf): hosted, as laya-php uses it. Its key is
+# JEV_API_KEY in the external secret.
+variable "jev_url" {
+  type    = string
+  default = "https://api.typesafe.ai"
+}
+
+# Where the Jev-down alarm goes (an SNS topic's ARN); none: the alarm only shows in CloudWatch.
+variable "alarm_actions" {
+  type    = list(string)
+  default = []
+}
+
 # --- Database ---
 variable "db_instance_class" {
   type    = string

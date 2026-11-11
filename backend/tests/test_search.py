@@ -24,6 +24,7 @@ from aios.auth import current_data_store, current_user
 from aios.datastores import store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus, SearchItem
+from aios.jev import Verdict
 from aios.main import app
 from aios.models import Role, User
 from aios.permissions import current_role
@@ -58,9 +59,14 @@ def add_chunks(
     store_id: uuid.UUID, filename: str, chunks: list[tuple[str, list[float]]], **meta
 ) -> int:
     """A ready document in the store, of these chunks (text, embedding), indexed as ingest
-    indexes them, and embedded as the sweep would embed them. Its id."""
+    indexes them once Jev has passed them, and embedded as the sweep would embed them. Its id."""
     doc = Document(
-        filename=filename, s3_key="", size_bytes=0, sha256="", status=DocumentStatus.ready
+        filename=filename,
+        s3_key="",
+        size_bytes=0,
+        sha256="",
+        status=DocumentStatus.ready,
+        verdict=Verdict.clean,
     )
     doc.chunks = [
         Chunk(ordinal=i, text=t, contextualized=t, meta=meta) for i, (t, _) in enumerate(chunks)

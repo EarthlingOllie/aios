@@ -8,14 +8,16 @@ store's; others (a failed workflow run, a store over quota) can use the same row
 email could deliver them too.
 """
 
+import uuid
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios.models import Notification
+from aios.db import SessionLocal
+from aios.models import DataStore, Notification
 
 SCHEMA_CHANGE_REQUEST = "schema_change_request"
 
@@ -60,3 +62,19 @@ def mark_unread_about(db: Session, kind: str, ref: dict[str, Any], read_at: date
         )
         .values(read_at=None)
     )
+
+
+def notify_from_store(
+    data_store_id: uuid.UUID, user_ids: Iterable[int], kind: str, ref: dict[str, Any]
+) -> None:
+    """`notify`, from the organisation whose store this is, in a platform transaction of its own
+    (committed): for what a store-side job finds (`aios.verdicts`). Nothing if the store has no
+    organisation any more."""
+    with SessionLocal() as db:
+        organisation_id = db.scalar(
+            select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+        )
+        if organisation_id is None:
+            return
+        notify(db, user_ids, organisation_id, kind, ref)
+        db.commit()

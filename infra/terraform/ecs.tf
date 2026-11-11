@@ -147,13 +147,15 @@ locals {
       SANDBOX_PROXY_ADDRESS   = local.proxy_address
       # Stores through the pooler (pooler.tf); the platform database stays direct.
       DATA_STORE_POOLER_ADDRESS = local.pooler_address
+      # Jev, the prompt-injection classifier (jev.tf), hosted; its key is in the external secret.
+      JEV_URL = var.jev_url
     } : { name = k, value = v }
   ]
 
   backend_secrets = concat(
     [for k in ["DATABASE_URL", "SESSION_SECRET", "SANDBOX_PROXY_SECRET", "DATA_STORE_CREDENTIALS_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::" }],
-    [for k in ["ANTHROPIC_API_KEY", "VOYAGE_API_KEY"] :
+    [for k in ["ANTHROPIC_API_KEY", "VOYAGE_API_KEY", "JEV_API_KEY"] :
     { name = k, valueFrom = "${aws_secretsmanager_secret.external.arn}:${k}::" }],
   )
 

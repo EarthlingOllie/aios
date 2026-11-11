@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from aios import invocations, llm, tracing
+from aios import invocations, jev, llm, tracing
 from aios.config import get_settings
 from aios.datastores import people, store_session
 from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
@@ -59,6 +59,9 @@ check the Q3 figures against the plan." No greeting, and no promises about timin
 say: facts, decisions, constraints, names, links and earlier results. Plain prose or short \
 bullets, at most about 200 words. Don't restate the message, address no one, and invent \
 nothing. Leave it empty if the chat holds nothing relevant beyond the message."""
+
+
+SYSTEM_PROMPT += "\n\n" + jev.UNTRUSTED_RULE
 
 
 class Handoff(BaseModel):
@@ -172,10 +175,14 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
         model = Agent if is_agent else Workflow
         name = store.scalar(select(model.name).where(model.id == target_id)) or ""
         *earlier, mentioning = window(store, organisation_id, invocation)
+        # What was said before is untrusted (people's messages and what agents derived), so
+        # it comes in an untrusted block (`aios.jev.wrap`).
         chat = "\n\n".join(
             [
                 "The chat so far, oldest first:",
-                *(earlier or ["(nothing before the message)"]),
+                jev.wrap("\n\n".join(earlier), "chat")
+                if earlier
+                else "(nothing before the message)",
                 f"The message mentioning {name}:",
                 mentioning,
             ]

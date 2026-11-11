@@ -15,6 +15,7 @@ from aios.config import get_settings
 from aios.datastores import files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus, Source, SourceKind
 from aios.db import DbId
+from aios.jev import Verdict
 from aios.models import DataStoreStatus
 from aios.permissions import Action, allow
 from aios.sources import uploads_source_id
@@ -42,6 +43,10 @@ class DocumentOut(BaseModel):
     filename: str
     status: DocumentStatus
     error: str | None
+    # Jev's verdict (`aios.verdicts`): only a clean or released document is searchable; one
+    # awaiting a check waits for Jev, a flagged one for an admin to release it.
+    verdict: Verdict
+    verdict_reason: str | None
     chunk_count: int
     size_bytes: int
     # The member who uploaded it; null for documents from before it was recorded, and once
@@ -98,6 +103,8 @@ def list_documents(store_id: CurrentDataStore, source_id: DbId | None = None):
             filename=d.filename,
             status=d.status,
             error=d.error,
+            verdict=d.verdict,
+            verdict_reason=d.verdict_reason,
             chunk_count=n,
             size_bytes=d.size_bytes,
             uploaded_by=by.get(d.uploaded_by) if d.uploaded_by is not None else None,
@@ -187,6 +194,8 @@ def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataSt
         filename=doc.filename,
         status=doc.status,
         error=None,
+        verdict=doc.verdict,
+        verdict_reason=None,
         chunk_count=0,
         size_bytes=doc.size_bytes,
         uploaded_by=UserOut.model_validate(user, from_attributes=True),

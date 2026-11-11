@@ -177,6 +177,29 @@ class Settings(BaseSettings):
     search_embed_budget_seconds: float = Field(default=60, ge=0)
     search_embed_interval_seconds: float = Field(default=60, gt=0)
 
+    # Jev, the prompt-injection classifier (`aios.jev`), that checks untrusted content before it
+    # reaches a model. Its address (the server that answers `POST /v1/systemone`, hosted or
+    # Compose's container) and bearer key. "fake" uses the scripted fake (`aios.jev.FakeJev`),
+    # for development and `make seed`; empty means none is configured, so nothing can be
+    # checked: documents wait unsearchable and checked tool results become errors (it fails
+    # closed).
+    jev_url: str = ""
+    jev_api_key: SecretStr = SecretStr("")
+    # The model name the request carries (Jev's spec requires one; laya-serve routes by language
+    # for names it doesn't know).
+    jev_model: str = "jev-latest"
+    # A check gives up after this long (seconds), and the content counts as unchecked.
+    jev_timeout_seconds: float = Field(default=3, gt=0)
+    # Content is flagged when Jev's probability that it's a prompt injection reaches this.
+    jev_threshold: float = Field(default=0.5, gt=0, le=1)
+    # Bumped by hand when what we ask Jev changes in a way stored verdicts shouldn't outlive:
+    # part of the version the re-check job compares (`aios.verdicts.recheck`).
+    jev_policy_version: str = "1"
+    # How often Jev's health is polled, and stored content awaiting a check (or checked by an
+    # older version of Jev) is checked again (seconds).
+    jev_health_interval_seconds: float = Field(default=30, gt=0)
+    jev_sweep_interval_seconds: float = Field(default=300, gt=0)
+
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.
     sandbox_backend: str = ""
