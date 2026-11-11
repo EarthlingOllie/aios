@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The skill page splits its detail into tabs: Content, Used by and Versions. */
 
@@ -13,7 +13,7 @@ test("opens on the Content tab, with when to use the skill and its instructions"
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes");
   api.addSkillUse(skill, api.addAgent("Writer"));
-  await page.goto(`/skills/${skill.id}`);
+  await page.goto(inOrg(`/skills/${skill.id}`));
 
   await expect(page.getByRole("tablist")).toBeVisible();
   await expect(tab(page, /Content/)).toHaveAttribute("aria-selected", "true");
@@ -34,7 +34,7 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
   const skill = api.addSkill("Release notes", 3);
   api.addSkillUse(skill, api.addAgent("Writer"), 2);
   api.addSkillUse(skill, api.addAgent("Editor"));
-  await page.goto(`/skills/${skill.id}`);
+  await page.goto(inOrg(`/skills/${skill.id}`));
 
   await expect(tab(page, "Used by 2")).toBeVisible();
   await expect(tab(page, "Versions 3")).toBeVisible();
@@ -65,7 +65,7 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 test("a deep link opens the Used by tab; with no agents it says so", async ({ page }) => {
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes");
-  await page.goto(`/skills/${skill.id}/used-by`);
+  await page.goto(inOrg(`/skills/${skill.id}/used-by`));
 
   await expect(tab(page, "Used by 0")).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByText("No agents use this skill yet.")).toBeVisible();
@@ -74,14 +74,14 @@ test("a deep link opens the Used by tab; with no agents it says so", async ({ pa
 test("an unknown tab in the URL falls back to the first", async ({ page }) => {
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes");
-  await page.goto(`/skills/${skill.id}/nope`);
+  await page.goto(inOrg(`/skills/${skill.id}/nope`));
   await expect(tab(page, /Content/)).toHaveAttribute("aria-selected", "true");
 });
 
 test("moves between tabs with the keyboard", async ({ page }) => {
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes");
-  await page.goto(`/skills/${skill.id}`);
+  await page.goto(inOrg(`/skills/${skill.id}`));
 
   await tab(page, /Content/).focus();
   await page.keyboard.press("ArrowRight");
@@ -97,7 +97,7 @@ test("moves between tabs with the keyboard", async ({ page }) => {
 test("going back from a version returns to the Versions tab", async ({ page }) => {
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes", 2);
-  await page.goto(`/skills/${skill.id}/versions`);
+  await page.goto(inOrg(`/skills/${skill.id}/versions`));
 
   await panel(page).getByRole("link").first().click();
   await expect(page).toHaveURL(new RegExp(`/skills/${skill.id}/versions/2$`));
@@ -111,7 +111,7 @@ test("restoring a version returns to the Versions tab, with the new current vers
 }) => {
   const api = await fakeApi(page);
   const skill = api.addSkill("Release notes", 2);
-  await page.goto(`/skills/${skill.id}/versions`);
+  await page.goto(inOrg(`/skills/${skill.id}/versions`));
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("button", { name: "Restore this version" }).click();

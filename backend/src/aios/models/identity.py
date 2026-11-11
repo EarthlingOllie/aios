@@ -59,6 +59,10 @@ class Organisation(Base):
     # all the same (it can be renamed and, later, invited into); the flag only decides whether it
     # may be deleted when its one member joins another.
     personal: Mapped[bool] = mapped_column(server_default=text("false"))
+    # What a link in the browser names it by (`/o/<slug>/...`; the API uses the id): made from
+    # the name when it's created, suffixed on a clash (`aios.organisations.free_slug`), and
+    # never changed by a rename, so a shared link keeps working.
+    slug: Mapped[str] = mapped_column(String(255), unique=True)
     # Null once that user is deleted.
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

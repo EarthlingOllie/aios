@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /**
  * The Agents list can be narrowed to the agents whose current version uses a skill, or has a
@@ -24,30 +24,30 @@ test("the agents can be filtered by a skill and by a tool, with the search", asy
   api.addSkillUse(terse, gamma);
   api.addToolUse(beta, "web_search");
   api.addToolUse(gamma, "web_search");
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
 
   await expect(skillSelect(page)).toHaveValue("");
   await expect(skillSelect(page).getByRole("option")).toHaveText(["Any skill", "Terse", "Haiku"]);
   await skillSelect(page).selectOption({ label: "Terse" });
-  await expect(page).toHaveURL(`/agents?skill=${terse.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents?skill=${terse.id}`));
   await expect(links(page)).toHaveText([/Alpha writer/, /Gamma/]);
   await expect(page.getByText("2 of 3")).toBeVisible();
 
   // The tool narrows it further, and so does the search.
   await expect(toolSelect(page).getByRole("option")).toHaveText(["Any tool", "Web search", "Run Python"]);
   await toolSelect(page).selectOption({ label: "Web search" });
-  await expect(page).toHaveURL(`/agents?skill=${terse.id}&tool=web_search`);
+  await expect(page).toHaveURL(inOrg(`/agents?skill=${terse.id}&tool=web_search`));
   await expect(links(page)).toHaveText([/Gamma/]);
 
   await skillSelect(page).selectOption({ label: "Any skill" });
-  await expect(page).toHaveURL("/agents?tool=web_search");
+  await expect(page).toHaveURL(inOrg("/agents?tool=web_search"));
   await expect(links(page)).toHaveText([/Beta writer/, /Gamma/]);
   await page.getByRole("searchbox", { name: "Search agents" }).fill("writer");
   await expect(links(page)).toHaveText([/Beta writer/]);
 
   // Opening an agent keeps the filters.
   await links(page).first().click();
-  await expect(page).toHaveURL(`/agents/${beta.id}?q=writer&tool=web_search`);
+  await expect(page).toHaveURL(inOrg(`/agents/${beta.id}?q=writer&tool=web_search`));
   await expect(toolSelect(page)).toHaveValue("web_search");
 });
 
@@ -68,7 +68,7 @@ test("a link with a skill opens filtered, and an unknown skill or tool is as if 
     await skillsHeld;
     await route.fallback();
   });
-  await page.goto(`/agents?skill=${terse.id}`);
+  await page.goto(inOrg(`/agents?skill=${terse.id}`));
   await expect(links(page)).toHaveText([/Alpha/]);
   await expect(page.getByText("1 of 2")).toBeVisible();
   releaseSkills();
@@ -76,7 +76,7 @@ test("a link with a skill opens filtered, and an unknown skill or tool is as if 
   await expect(skillSelect(page)).toHaveValue(String(terse.id));
   await expect(links(page)).toHaveText([/Alpha/]);
 
-  await page.goto("/agents?skill=999999&tool=gone");
+  await page.goto(inOrg("/agents?skill=999999&tool=gone"));
   await expect(links(page)).toHaveText([/Alpha/, /Beta/]);
   await expect(skillSelect(page)).toHaveValue("");
   await expect(toolSelect(page)).toHaveValue("");

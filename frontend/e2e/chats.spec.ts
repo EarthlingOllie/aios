@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 test("creates a chat and opens it", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/chats");
+  await page.goto(inOrg("/chats"));
   await expect(page.getByText("No chats yet")).toBeVisible();
 
   await page.getByRole("link", { name: "New" }).click();
@@ -15,7 +15,7 @@ test("creates a chat and opens it", async ({ page }) => {
   await page.getByRole("button", { name: "Create chat" }).click();
 
   const [chat] = [...api.chats.values()];
-  await expect(page).toHaveURL(`/chats/${chat.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${chat.id}`));
   expect(api.writes).toEqual([
     ["POST", "/api/chats", { name: "Design", description: "Where design happens", visibility: "public" }],
   ]);
@@ -40,7 +40,7 @@ test("the owner removes a member", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design", { visibility: "private" });
   const member = api.addChatMember(chat, { id: 2, first_name: "Sam", last_name: "Jones" });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await expect(page.getByRole("heading", { name: "Design", level: 2 })).toContainText("Private");
   await page.getByRole("tab", { name: /Members/ }).click();
@@ -56,7 +56,7 @@ test("a member sees no owner actions", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design", { owner: { id: 2, first_name: "Sam", last_name: "Jones" } });
   api.addChatMember(chat, api.me);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await expect(page.getByRole("heading", { name: "Design" })).toBeVisible();
   await page.getByRole("tab", { name: /Members/ }).click();

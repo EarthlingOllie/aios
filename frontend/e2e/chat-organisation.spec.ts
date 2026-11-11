@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** Chats are the organisation's: "public" is its members, names are unique within it, the owner
  * adds any of its members and agents, and another organisation's chats don't exist here. */
@@ -11,12 +11,12 @@ test("the chat header says which member created it", async ({ page }) => {
   const api = await fakeApi(page);
   const theirs = api.addChat("Design", { visibility: "public", owner: sam });
   const mine = api.addChat("Planning");
-  await page.goto(`/chats/${theirs.id}`);
+  await page.goto(inOrg(`/chats/${theirs.id}`));
 
   const header = page.getByRole("heading", { name: "Design", level: 2 }).locator("..");
   await expect(header.getByTestId("provenance")).toHaveText("Created by Sam Jones");
 
-  await page.goto(`/chats/${mine.id}`);
+  await page.goto(inOrg(`/chats/${mine.id}`));
   const own = page.getByRole("heading", { name: "Planning", level: 2 }).locator("..");
   await expect(own.getByTestId("provenance")).toHaveText("Created by you");
 });
@@ -25,20 +25,20 @@ test("another organisation's chats aren't listed, don't open, and don't take a n
   const api = await fakeApi(page);
   api.addChat("Open", { visibility: "public", owner: sam });
   const elsewhere = api.addChat("general", { visibility: "public", owner: sam, organisation_id: 99 });
-  await page.goto("/chats");
+  await page.goto(inOrg("/chats"));
 
   const list = page.getByRole("list").filter({ hasText: "Open" });
   await expect(list.getByRole("listitem")).toHaveText([/Open.*Not joined/]);
 
-  await page.goto(`/chats/${elsewhere.id}`);
+  await page.goto(inOrg(`/chats/${elsewhere.id}`));
   await expect(page.getByText("Not Found")).toBeVisible();
 
   // "general" is free in this organisation; "Open" isn't.
-  await page.goto("/chats/new");
+  await page.goto(inOrg("/chats/new"));
   await page.getByLabel("Name").fill("general");
   await page.getByRole("button", { name: "Create chat" }).click();
   await expect(page.getByRole("heading", { name: "general", level: 2 })).toBeVisible();
-  await page.goto("/chats/new");
+  await page.goto(inOrg("/chats/new"));
   await page.getByLabel("Name").fill("Open");
   await page.getByRole("button", { name: "Create chat" }).click();
   await expect(page.getByRole("alert")).toHaveText("The organisation already has a chat with that name.");
@@ -50,7 +50,7 @@ test("the owner adds a fellow member and another member's agent", async ({ page 
   const agent = api.addAgent("Their reviewer");
   agent.created_by = sam;
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}/members`);
+  await page.goto(inOrg(`/chats/${chat.id}/members`));
 
   const members = page.getByRole("tabpanel", { name: /Members/ });
   await members.getByLabel("Add a member").selectOption("Sam Jones");

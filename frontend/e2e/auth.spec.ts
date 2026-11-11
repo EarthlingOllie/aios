@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** Registering, signing in and out, and coming back to a deep link after signing in. */
 
@@ -20,7 +20,7 @@ test("a deep link while signed out comes back to that page after signing in", as
   await expect(page).toHaveURL("/login?next=%2Fsettings%3Ftab%3Dx");
   await signIn(page, "Tester@Example.com", "correct horse battery");
 
-  await expect(page).toHaveURL("/settings?tab=x");
+  await expect(page).toHaveURL(inOrg("/settings?tab=x"));
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await expect(sidebar(page)).toContainText("Terry Tester");
 });
@@ -100,7 +100,7 @@ test("a new visitor registers and is signed in", async ({ page }) => {
   // One request at a time.
   await expect(create).toBeDisabled();
 
-  await expect(page).toHaveURL("/chats");
+  await expect(page).toHaveURL("/o/alice-smith/chats");
   await expect(sidebar(page)).toContainText("Alice Smith");
   expect(api.writes).toEqual([
     [
@@ -152,8 +152,8 @@ test("signed out elsewhere, the next request goes to sign in and back afterwards
   api.signedInAs = null;
   await sidebar(page).getByRole("link", { name: "Agents" }).click();
 
-  await expect(page).toHaveURL("/login?next=%2Fagents");
+  await expect(page).toHaveURL("/login?next=%2Fo%2Ftester%2Fagents");
   await signIn(page, "tester@example.com", "correct horse battery");
-  await expect(page).toHaveURL("/agents");
+  await expect(page).toHaveURL(inOrg("/agents"));
   await expect(sidebar(page)).toContainText("Terry Tester");
 });

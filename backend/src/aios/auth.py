@@ -127,6 +127,8 @@ def account_out(user: User) -> AccountOut:
 class OrganisationSummaryOut(BaseModel):
     id: int
     name: str
+    # What a link in the browser names it by; never changed by a rename.
+    slug: str
     # Made for one user on sign-up (or on leaving another organisation).
     personal: bool
     # Whether the signed-in user is its creator, who alone may rename it.
@@ -135,15 +137,32 @@ class OrganisationSummaryOut(BaseModel):
 
 def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
     return OrganisationSummaryOut(
-        id=org.id, name=org.name, personal=org.personal, is_creator=org.created_by == user.id
+        id=org.id,
+        name=org.name,
+        slug=org.slug,
+        personal=org.personal,
+        is_creator=org.created_by == user.id,
     )
+
+
+class MembershipOut(BaseModel):
+    """One of the organisations the signed-in user is in, as "me" lists them."""
+
+    id: int
+    name: str
+    slug: str
+    # Whether the signed-in user is its creator.
+    is_creator: bool
 
 
 class MeOut(AccountOut):
     """The signed-in user and the organisation they're in, as `GET /api/me` and signing in
-    answer (the shell shows both)."""
+    answer (the shell shows both), with every organisation they're in (`organisations`, the
+    one joined most recently first): what links in the browser name one by (its slug), and
+    which to open a link without one in when none was used last."""
 
     organisation: OrganisationSummaryOut
+    organisations: list[MembershipOut]
 
 
 def me_out(db: Session, user: User) -> MeOut:
@@ -151,7 +170,14 @@ def me_out(db: Session, user: User) -> MeOut:
     if org is None:
         # Starting a session and leaving each put a user in one (see `current_organisation`).
         raise RuntimeError(f"user {user.id} is in no organisation")
-    return MeOut(**account_out(user).model_dump(), organisation=summary_out(org, user))
+    return MeOut(
+        **account_out(user).model_dump(),
+        organisation=summary_out(org, user),
+        organisations=[
+            MembershipOut(id=o.id, name=o.name, slug=o.slug, is_creator=o.created_by == user.id)
+            for o in organisations.memberships(db, user.id)
+        ],
+    )
 
 
 def start_session(
@@ -189,10 +215,29 @@ def current_user(request: Request, db: DB) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
-def current_organisation(user: CurrentUser, db: DB) -> Organisation:
-    """The signed-in user's organisation: their one membership (`aios.organisations`). The one
-    place a request's organisation is resolved, so when a user can be in several, this is where
-    the request says which it means."""
+# Answered alike for an organisation the user isn't in and one that doesn't exist, so a
+# request can't learn which ids exist.
+ORGANISATION_NOT_FOUND = "Organisation not found"
+# The largest id an organisation can have (a Postgres integer); a larger one names none.
+ORGANISATION_ID_MAX = 2**31 - 1
+
+
+def current_organisation(request: Request, user: CurrentUser, db: DB) -> Organisation:
+    """The organisation the request means: the one place a request's organisation is resolved.
+
+    Under the organisation prefix (`aios.api.scoping`), the one whose id is in the path, if the
+    signed-in user is a member of it: a 404 otherwise, the same as for one that doesn't exist.
+    Without the prefix, their one membership (`aios.organisations`), until every route has
+    moved under it."""
+    named = request.path_params.get("organisation_id")
+    if named is not None:
+        org_id = int(named) if named.isdecimal() and named.isascii() else None
+        if org_id is None or org_id > ORGANISATION_ID_MAX:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
+        org = organisations.membership(db, user.id, org_id)
+        if org is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
+        return org
     org = organisations.membership_of(db, user.id)
     if org is None:
         # Signing in, leaving and the upgrade each put a user in one; this is a bug, not a

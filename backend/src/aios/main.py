@@ -29,6 +29,7 @@ from aios.api import (
     workflows,
 )
 from aios.api import settings as settings_api
+from aios.api.scoping import mount_organisation_prefix
 from aios.config import get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
 from aios.db import engine
@@ -84,6 +85,8 @@ def create_app() -> FastAPI:
     if settings.dev_login_enabled:
         log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
         app.include_router(dev_auth.router)
+    # After every router: each organisation-scoped route is mounted under the prefix too.
+    mount_organisation_prefix(app)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

@@ -60,6 +60,7 @@ def test_registering_signs_the_new_user_in(client, registered):
         "last_name": "Smith",
         "email": email,
         "organisation": me.json()["organisation"],
+        "organisations": me.json()["organisations"],
     }
 
 
@@ -101,9 +102,9 @@ def test_registering_trims_names_and_email_and_stores_the_email_normalised(clien
     )
 
     assert resp.status_code == 201
-    assert client.get("/api/me").json() | {"id": 0, "organisation": None} == {
-        "id": 0,
-        "organisation": None,
+    unscoped = {"id": 0, "organisation": None, "organisations": None}
+    assert client.get("/api/me").json() | unscoped == {
+        **unscoped,
         "first_name": "Alice",
         "last_name": "Smith",
         "email": email,

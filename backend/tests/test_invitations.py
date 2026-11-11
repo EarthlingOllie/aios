@@ -401,7 +401,7 @@ def test_leaving_with_a_name_with_like_wildcards_or_a_backslash_lands_in_the_nex
     name = member.full_name
     others = [name, f"{name}-2", "mem__x Person", "mem__x Person-3"]
     try:
-        db.add_all(Organisation(name=n) for n in others)
+        db.add_all(Organisation(name=n, slug=f"wildcards-{i}") for i, n in enumerate(others))
         db.commit()
         # One pick: no clash to pick again after.
         picking_names_at_most(monkeypatch, 1)

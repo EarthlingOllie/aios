@@ -2,7 +2,7 @@
 /// <reference lib="dom" />
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
@@ -45,7 +45,7 @@ function seed(api: FakeApi) {
 test("builds a new workflow from agents and workflows", async ({ page }) => {
   const api = await fakeApi(page);
   const { researcher, review } = seed(api);
-  await page.goto("/workflows");
+  await page.goto(inOrg("/workflows"));
   await page.getByRole("link", { name: "New" }).click();
   await expect(page.getByRole("heading", { name: "New workflow" })).toBeVisible();
   await page.getByLabel("Name").fill("Pipeline");
@@ -83,9 +83,9 @@ test("builds a new workflow from agents and workflows", async ({ page }) => {
 test("edits a workflow's nodes and edges and saves a new version", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, critic } = seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   await page.getByRole("link", { name: "Edit" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByLabel("Name")).toHaveValue("Report");
   await expect(
     page.getByText(
@@ -115,7 +115,7 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
 
   await page.getByLabel("Change note").fill("Just the critic");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   await expect(node(page, "draft")).toContainText("Critic");
   await page.getByRole("tab", { name: /Versions/ }).click();
   await expect(page.getByText("Just the critic")).toBeVisible();
@@ -129,7 +129,7 @@ test("edits a workflow's nodes and edges and saves a new version", async ({ page
 test("connects nodes by dragging from one handle to another", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   // With research selected, so the new node isn't put right of write to begin with.
   await node(page, "research").click();
   await addNode(page, "Critic");
@@ -169,7 +169,7 @@ test("lays the graph out again in edge order when edges change", async ({ page }
       ["review", "publish"],
     ],
   );
-  await page.goto(`/workflows/${weekly.id}/edit`);
+  await page.goto(inOrg(`/workflows/${weekly.id}/edit`));
   await addNode(page, "Editor");
   await inspector(page).getByLabel("Key").fill("final_edit");
   await inspector(page).getByLabel("Key").press("Enter");
@@ -195,7 +195,7 @@ test("lays the graph out again in edge order when edges change", async ({ page }
 
   // What's saved is that layout, so the workflow reads the same once saved.
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}`));
   await expect(page.getByRole("button", { name: "Save changes" })).toBeHidden();
   await expect(node(page, "final_edit")).toBeVisible();
   // The view may still be drawing the saved graph, so a node can be replaced while it's measured.
@@ -207,7 +207,7 @@ test("lays the graph out again in edge order when edges change", async ({ page }
 test("selects one node at a time, even with Shift held", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "research").click();
   await node(page, "write").click({ modifiers: ["Shift"] });
   // Dragging a box over the canvas doesn't select (or cover) the nodes inside it.
@@ -229,7 +229,7 @@ test("selects one node at a time, even with Shift held", async ({ page }) => {
 test("Delete and Backspace delete only while the canvas has focus", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "research").click();
   await inspector(page).getByLabel("Runs").focus();
   await page.keyboard.press("Backspace");
@@ -246,7 +246,7 @@ test("Delete and Backspace delete only while the canvas has focus", async ({ pag
 test("refuses an edge that would make a cycle, and says why", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   // Only nodes it can lead to are offered: none here, so there's nothing to open.
   const picker = inspector(page).getByLabel("Connect to");
@@ -260,7 +260,7 @@ test("refuses an edge that would make a cycle, and says why", async ({ page }) =
 test("connects nodes from the inspector with the keyboard", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await addNode(page, "Critic");
   await node(page, "research").click();
   const picker = inspector(page).getByLabel("Connect to");
@@ -293,7 +293,7 @@ test("connects nodes from the inspector with the keyboard", async ({ page }) => 
 test("rejects an invalid or duplicate key", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   const key = inspector(page).getByLabel("Key");
   await key.fill("has space");
@@ -311,7 +311,7 @@ test("rejects an invalid or duplicate key", async ({ page }) => {
 test("a button clicked straight after typing a key acts on the renamed node", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   await inspector(page).getByLabel("Key").fill("draft");
   // Blurring the field renames the node between the button's mousedown and its click.
@@ -325,26 +325,26 @@ test("takes a newer version of what a node runs", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, writer } = seed(api);
   api.bumpAgent(writer);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   await inspector(page).getByRole("button", { name: "Update to v2" }).click();
   await expect(node(page, "write")).not.toContainText("v2 available");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(api.current(report).nodes[1].version_id).toBe(writer.versions[1]);
 });
 
 test("moving nodes saves the layout without a new version", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   const box = (await node(page, "research").boundingBox())!;
   await page.mouse.move(box.x + 20, box.y + 20);
   await page.mouse.down();
   await page.mouse.move(box.x + 20, box.y + 220, { steps: 10 });
   await page.mouse.up();
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(report.versions).toHaveLength(1);
   expect(report.layout.research.y).toBeGreaterThan(report.layout.write.y + 100);
 });
@@ -359,7 +359,7 @@ test("brings a new node into view", async ({ page }) => {
     agents.slice(1).map((_, i) => [`n${i}`, `n${i + 1}`] as [string, string]),
   );
   await page.setViewportSize({ width: 1440, height: 1500 });
-  await page.goto(`/workflows/${chain.id}/edit`);
+  await page.goto(inOrg(`/workflows/${chain.id}/edit`));
   await expect(node(page, "n4")).toBeVisible();
   await addNode(page, researcher.name);
   const pane = (await page.locator(".react-flow").boundingBox())!;
@@ -380,13 +380,13 @@ test("with no agents, says so and links to creating one", async ({ page }) => {
   const api = await fakeApi(page);
   // Other workflows can still be added, but there's no agent to add.
   api.addWorkflow("Review");
-  await page.goto("/workflows/new");
+  await page.goto(inOrg("/workflows/new"));
   await page.getByLabel("Add node").click();
   await expect(page.getByRole("listbox").getByRole("option")).toHaveText(["Review"]);
   await expect(page.getByText("You have no agents yet.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
     "href",
-    "/agents/new",
+    inOrg("/agents/new"),
   );
 });
 
@@ -394,17 +394,17 @@ test("shows the server's reason when a save is refused", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflow("Taken");
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await page.getByLabel("Name").fill("Taken");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByRole("alert")).toContainText("organisation already has a workflow with that name");
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
 });
 
 test("refuses to overwrite a version saved since the editor loaded", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, critic } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByText("Editing v1.")).toBeVisible();
   await node(page, "research").click();
   await page.keyboard.press("Delete");
@@ -417,7 +417,7 @@ test("refuses to overwrite a version saved since the editor loaded", async ({ pa
     "This workflow has changed since you started editing (now v2)",
   );
   // The draft is kept, and v2 isn't overwritten.
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(node(page, "research")).toHaveCount(0);
   expect(report.versions).toHaveLength(2);
   expect(api.writes.at(-1)![2]).toMatchObject({ base_version: 1 });
@@ -427,7 +427,7 @@ test("reports a stale version before a taken name", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflow("Taken");
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByText("Editing v1.")).toBeVisible();
   await page.getByLabel("Name").fill("Taken");
   api.addWorkflowVersion(report, (v) => v.edges.splice(0));
@@ -440,7 +440,7 @@ test("reports a stale version before a taken name", async ({ page }) => {
 test("cancel discards the changes", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   await page.getByRole("link", { name: "Edit" }).click();
   await node(page, "research").click();
   await page.keyboard.press("Delete");
@@ -449,7 +449,7 @@ test("cancel discards the changes", async ({ page }) => {
     void dialog.accept();
   });
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   await expect(node(page, "research")).toBeVisible();
   expect(api.writes).toEqual([]);
 });
@@ -457,20 +457,20 @@ test("cancel discards the changes", async ({ page }) => {
 test("won't save while a node's key is invalid", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   const key = inspector(page).getByLabel("Key");
   await key.fill("research");
   await key.press("Enter");
   await expect(inspector(page)).toContainText("already used by another node");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
 
   // Once it's fixed, the edit is saved, and only then.
   await key.fill("draft");
   await key.press("Enter");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(api.writes).toHaveLength(1);
   expect(api.current(report).nodes.map((n) => n.key)).toEqual(["research", "draft"]);
 });
@@ -481,14 +481,14 @@ test("says why there's nothing to add when agents fail to load", async ({ page }
   await page.route("/api/agents", (route) =>
     route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
   );
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByRole("alert")).toContainText("Couldn't load agents and workflows: boom");
 });
 
 test("cancel asks before discarding changes, and stays if you say no", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await page.getByLabel("Description").fill("Changed");
   let asked = false;
   page.once("dialog", (dialog) => {
@@ -497,14 +497,14 @@ test("cancel asks before discarding changes, and stays if you say no", async ({ 
   });
   await page.getByRole("button", { name: "Cancel" }).click();
   expect(asked).toBe(true);
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByLabel("Description")).toHaveValue("Changed");
 });
 
 test("cancel without changes doesn't ask", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   // Changing something and changing it back leaves nothing to lose.
   await page.getByLabel("Description").fill("Changed");
   await page.getByLabel("Description").fill("");
@@ -514,14 +514,14 @@ test("cancel without changes doesn't ask", async ({ page }) => {
     void dialog.accept();
   });
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(asked).toBe(false);
 });
 
 test("leaving the page with changes asks first", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "research").click();
   await page.keyboard.press("Delete");
   const dialog = page.waitForEvent("dialog");
@@ -534,7 +534,7 @@ test("leaving for another page with changes asks first, and stays if you say no"
 }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await page.getByLabel("Description").fill("Changed");
   const messages: string[] = [];
   page.once("dialog", (dialog) => {
@@ -543,7 +543,7 @@ test("leaving for another page with changes asks first, and stays if you say no"
   });
   await page.getByRole("link", { name: "Agents" }).click();
   await expect.poll(() => messages).toEqual(["Discard your unsaved changes?"]);
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByLabel("Description")).toHaveValue("Changed");
 
   // Saying yes leaves, and asks only the once.
@@ -552,7 +552,7 @@ test("leaving for another page with changes asks first, and stays if you say no"
     void dialog.accept();
   });
   await page.getByRole("link", { name: "Report" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(messages).toHaveLength(2);
   expect(api.writes).toEqual([]);
 });
@@ -560,21 +560,21 @@ test("leaving for another page with changes asks first, and stays if you say no"
 test("leaving for another page without changes doesn't ask", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   let asked = false;
   page.on("dialog", (dialog) => {
     asked = true;
     void dialog.accept();
   });
   await page.getByRole("link", { name: "Agents" }).click();
-  await expect(page).toHaveURL("/agents");
+  await expect(page).toHaveURL(inOrg("/agents"));
   expect(asked).toBe(false);
 });
 
 test("following what a node runs without changes goes there in the same tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, writer } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await node(page, "write").click();
   let asked = false;
   page.on("dialog", (dialog) => {
@@ -584,7 +584,7 @@ test("following what a node runs without changes goes there in the same tab", as
   let opened = false;
   page.context().on("page", () => (opened = true));
   await inspector(page).getByRole("link", { name: "Writer" }).click();
-  await expect(page).toHaveURL(`/agents/${writer.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents/${writer.id}`));
   expect(opened).toBe(false);
   expect(asked).toBe(false);
 });
@@ -594,7 +594,7 @@ test("following what a node runs with changes asks first, and stays if you say n
 }) => {
   const api = await fakeApi(page);
   const { report, writer } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await page.getByLabel("Description").fill("Changed");
   await node(page, "write").click();
   let opened = false;
@@ -607,7 +607,7 @@ test("following what a node runs with changes asks first, and stays if you say n
   const link = inspector(page).getByRole("link", { name: "Writer" });
   await link.click();
   await expect.poll(() => messages).toEqual(["Discard your unsaved changes?"]);
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(page.getByLabel("Description")).toHaveValue("Changed");
 
   // Saying yes goes there, in the same tab.
@@ -616,7 +616,7 @@ test("following what a node runs with changes asks first, and stays if you say n
     void dialog.accept();
   });
   await link.click();
-  await expect(page).toHaveURL(`/agents/${writer.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents/${writer.id}`));
   expect(messages).toHaveLength(2);
   expect(opened).toBe(false);
   expect(api.writes).toEqual([]);
@@ -625,25 +625,25 @@ test("following what a node runs with changes asks first, and stays if you say n
 test("going back with changes asks first", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   await page.getByRole("link", { name: "Edit" }).click();
   await node(page, "research").click();
   await page.keyboard.press("Delete");
   page.once("dialog", (dialog) => void dialog.dismiss());
   await page.goBack();
-  await expect(page).toHaveURL(`/workflows/${report.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/edit`));
   await expect(node(page, "research")).toHaveCount(0);
 
   page.once("dialog", (dialog) => void dialog.accept());
   await page.goBack();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   await expect(node(page, "research")).toBeVisible();
 });
 
 test("cancel with changes asks only once", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await page.getByLabel("Description").fill("Changed");
   let asked = 0;
   page.on("dialog", (dialog) => {
@@ -651,7 +651,7 @@ test("cancel with changes asks only once", async ({ page }) => {
     void dialog.accept();
   });
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   expect(asked).toBe(1);
 });
 
@@ -660,7 +660,7 @@ test("the workflow itself and ones that run it are shown but can't be added", as
   const { report } = seed(api);
   const middle = api.addWorkflow("Middle", [{ key: "report", workflow: report }]);
   api.addWorkflow("Outer", [{ key: "middle", workflow: middle }]);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   const picker = page.getByLabel("Add node");
   await picker.click();
   const options = page.getByRole("listbox").getByRole("option");
@@ -691,7 +691,7 @@ test("the workflow itself and ones that run it are shown but can't be added", as
 test("the picker can be used with the keyboard", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   const picker = page.getByLabel("Add node");
   await picker.focus();
   await page.keyboard.press("ArrowDown");
@@ -726,7 +726,7 @@ test("won't update a node to a version that runs this workflow", async ({ page }
     v.nodes.push({ key: "outer", kind: "workflow", version_id: outer.versions[0] });
   });
   api.bumpAgent(researcher);
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
 
   await node(page, "review").click();
   const update = inspector(page).getByRole("button", { name: "Update to v2" });
@@ -788,7 +788,7 @@ test("shows the nodes when the graph changes just as they're first measured", as
   const lists = ["agents", "workflows"].map((list) =>
     page.waitForResponse((r) => new URL(r.url()).pathname === `/api/${list}`),
   );
-  await page.goto(`/workflows/${report.id}/edit`);
+  await page.goto(inOrg(`/workflows/${report.id}/edit`));
   await Promise.all(lists);
   await expect(node(page, "write")).toBeAttached();
   await expect.poll(() => loads).toBe(2);

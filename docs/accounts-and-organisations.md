@@ -72,8 +72,34 @@ agents, workflows, schedules, chats) with their organisation and with them as `c
 which says why, as 0015 did). A user is in exactly one organisation at a time: memberships are a
 table, held to one membership per user by a unique index, and the request's organisation is
 resolved in one place (`aios.auth.current_organisation`, the `CurrentOrganisation`
-dependency), never named in a URL or header. `GET /api/me` says which organisation the user is
-in and the shell shows its name, which opens the **Organisation** page
+dependency).
+
+### Organisations in links
+
+Every organisation has a unique **slug**, made from its name when it's created (lower-case ASCII
+words joined by `-`, `organisation` when nothing's left; `aios.organisations.free_slug`),
+suffixed `-2`, `-3`, ... when another organisation has it, and never changed by a rename, so a
+shared link keeps working. Revision 0054 gave existing organisations theirs, oldest first. Links
+in the browser use the slug and the API uses the id:
+
+- **API.** Every route that resolves the request's organisation (its dependencies reach
+  `current_organisation`, as `CurrentOrganisation` and `CurrentDataStore` do) is also mounted
+  under the organisation prefix, `/api/o/{organisation_id}/...` (`aios.api.scoping`, from the
+  router, so a new route is covered as soon as it takes the organisation). There
+  `current_organisation` reads the id from the path and checks the user is a member: a 404,
+  "Organisation not found", alike for an organisation they aren't in and one that doesn't exist.
+  The unprefixed forms still resolve the user's one membership until they move under it.
+  `tests/test_organisation_prefix.py` is generated from the router: every prefixed route answers
+  a non-member 404.
+- **Front end.** Every signed-in page is under `/o/<slug>/`, the router's basename for as long as
+  the page is open (`frontend/src/lib/organisation-path.ts`), so the app's own links stay in it.
+  A path without one (an old bookmark, the root) opens the same page in the organisation used
+  last, remembered in the browser's storage (every access guarded), else in the one joined most
+  recently. A link to an organisation the user isn't in shows "Organisation not found".
+
+`GET /api/me` lists the user's organisations (`organisations`: id, name, slug and whether
+they're its creator, the one joined most recently first), and says which one they're in
+(`organisation`); the shell shows its name, which opens the **Organisation** page
 (`GET /api/organisation`): the name and the creator above three tabs, as on the agent page,
 each a route: **Members**, with when each joined and the count (`/organisation`);
 **Invitations**, the links, for the creator only (`/organisation/invitations`); and

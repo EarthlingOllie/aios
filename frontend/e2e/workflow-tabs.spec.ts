@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 /** The workflow page splits its detail into tabs: Graph, Runs, Versions and Schedule. */
 
@@ -26,7 +26,7 @@ test("opens on the Graph tab, with the title and actions above the tabs", async 
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addRun(report, { input: "Write the weekly report" });
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await expect(page.getByRole("tablist")).toBeVisible();
   await expect(tab(page, /Graph/)).toHaveAttribute("aria-selected", "true");
@@ -50,7 +50,7 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
   api.addWorkflowVersion(report, (v) => v.edges.pop(), "Drop the edge");
   api.addRun(report, { input: "Write the weekly report", status: "succeeded" });
   api.addRun(report, { input: "Write the monthly report", status: "succeeded" });
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await expect(tab(page, "Runs 2")).toBeVisible();
   await expect(tab(page, "Versions 2")).toBeVisible();
@@ -86,18 +86,18 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
 test("a deep link opens its tab; an unknown one falls back to Graph", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/runs`);
+  await page.goto(inOrg(`/workflows/${report.id}/runs`));
   await expect(tab(page, /Runs/)).toHaveAttribute("aria-selected", "true");
   await expect(panel(page).getByText("No runs yet. Start one to watch it go.")).toBeVisible();
 
-  await page.goto(`/workflows/${report.id}/nope`);
+  await page.goto(inOrg(`/workflows/${report.id}/nope`));
   await expect(tab(page, /Graph/)).toHaveAttribute("aria-selected", "true");
 });
 
 test("moves between tabs with the keyboard", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await tab(page, /Graph/).focus();
   await page.keyboard.press("ArrowRight");
@@ -113,7 +113,7 @@ test("moves between tabs with the keyboard", async ({ page }) => {
 test("the start-a-run form stays above the tabs, whichever is open", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}/versions`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions`));
 
   await page.getByRole("button", { name: "Run" }).click();
   const input = page.getByLabel("Input");
@@ -127,7 +127,7 @@ test("the start-a-run form stays above the tabs, whichever is open", async ({ pa
 test("the graph's node selection resets on switching back to Graph", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   const inspector = page.getByRole("complementary", { name: "Inspector" });
 
   await node(page, "write").click();
@@ -141,7 +141,7 @@ test("going back from a run returns to the Runs tab", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addRun(report, { input: "Write the weekly report", status: "succeeded" });
-  await page.goto(`/workflows/${report.id}/runs`);
+  await page.goto(inOrg(`/workflows/${report.id}/runs`));
 
   await panel(page)
     .getByRole("link", { name: /weekly report/ })
@@ -156,7 +156,7 @@ test("deleting a run from its page returns to the Runs tab, without it", async (
   const { report } = seed(api);
   const run = api.addRun(report, { input: "Write the weekly report", status: "succeeded" });
   api.addRun(report, { input: "Write the monthly report", status: "succeeded" });
-  await page.goto(`/workflows/${report.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}/runs/${run.id}`));
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete run" }).click();
@@ -171,7 +171,7 @@ test("going back from a version returns to the Versions tab", async ({ page }) =
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflowVersion(report, (v) => v.edges.pop());
-  await page.goto(`/workflows/${report.id}/versions`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions`));
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("heading").getByRole("link", { name: "Report" }).click();
@@ -185,7 +185,7 @@ test("restoring a version returns to the Versions tab, with the new current vers
   const api = await fakeApi(page);
   const { report } = seed(api);
   api.addWorkflowVersion(report, (v) => v.edges.pop());
-  await page.goto(`/workflows/${report.id}/versions`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions`));
 
   await panel(page).getByRole("link", { name: /v1/ }).click();
   await page.getByRole("button", { name: "Restore this version" }).click();

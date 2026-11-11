@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg } from "./fake-api";
 import { setHidden } from "./visibility";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
@@ -21,7 +21,7 @@ const scroll = (page: Page) =>
 test("posts a markdown message and shows it with its author", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(messageList(page)).toContainText("No messages yet");
 
   await composer(page).fill("Hello, **world**");
@@ -40,7 +40,7 @@ test("a message posted by someone else appears within a poll", async ({ page }) 
   const chat = api.addChat("Design");
   api.addChatMember(chat, sam);
   const first = api.addChatMessage(chat, "Morning");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(message(page, "Morning")).toBeVisible();
 
   api.addChatMessage(chat, "Morning, *all*", sam);
@@ -58,7 +58,7 @@ test("loads history when scrolled to the top, keeping the reader's place", async
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   for (let n = 1; n <= 60; n++) api.addChatMessage(chat, `Message ${n}`);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   // The latest page, scrolled to the newest.
   await expect(message(page, "Message 60")).toBeInViewport();
@@ -78,7 +78,7 @@ test("follows new messages at the bottom, but not while reading older ones", asy
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   for (let n = 1; n <= 30; n++) api.addChatMessage(chat, `Message ${n}`);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(message(page, "Message 30")).toBeInViewport();
 
   // At the bottom: a new message scrolls into view.
@@ -98,7 +98,7 @@ test("a hidden tab asks less often, and catches up as soon as it's shown", async
   await page.clock.install();
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(messageList(page)).toContainText("No messages yet");
 
   await setHidden(page, true);
@@ -122,7 +122,7 @@ test("someone not in a public chat reads it but can't post", async ({ page }) =>
   const api = await fakeApi(page);
   const chat = api.addChat("Open", { visibility: "public", owner: sam });
   api.addChatMessage(chat, "Welcome", sam);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(message(page, "Welcome")).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
   await expect(page.getByText("Join the chat to post in it.")).toBeVisible();

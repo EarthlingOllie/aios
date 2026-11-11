@@ -15,22 +15,25 @@ the slug, and the API uses the id.
 - **Scoping test.** A test generated from the router checks that a person can't reach another
   organisation through any prefixed route.
 
+There's no `make seed` yet: revision 0054 gives every existing organisation, dev ones included,
+its slug, oldest first.
+
 This is the first step of a wide refactor. Moving routes and screens follows in the next ticket.
 
 [Spec](../../specs/phase-0-refactor-and-guard-rails.md)
 
 **Blocked by:** [02: Models split into a package by domain](02-models-package.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every organisation has a unique slug, and two organisations named "Acme" get distinct
+- [x] Every organisation has a unique slug, and two organisations named "Acme" get distinct
   slugs.
-- [ ] Renaming an organisation leaves its slug unchanged.
-- [ ] "Me" lists the person's organisations with id, name, slug and whether they're its creator.
-- [ ] On every prefixed route, a non-member gets 404, the same as for an organisation that
+- [x] Renaming an organisation leaves its slug unchanged.
+- [x] "Me" lists the person's organisations with id, name, slug and whether they're its creator.
+- [x] On every prefixed route, a non-member gets 404, the same as for an organisation that
   doesn't exist. The test is generated from the router, so new routes are covered automatically.
-- [ ] The current-organisation dependency is still the only place a request's organisation is
+- [x] The current-organisation dependency is still the only place a request's organisation is
   resolved.
-- [ ] An old bookmark without an organisation redirects to the same page in the organisation
+- [x] An old bookmark without an organisation redirects to the same page in the organisation
   used last.
-- [ ] A link to an organisation the person isn't in shows "not found".
+- [x] A link to an organisation the person isn't in shows "not found".

@@ -11,7 +11,7 @@ import { leaveRefusal } from "@/lib/organisation";
  * organisation of their own. Refused, with why, for the last member and for the creator while
  * others remain (`leaveRefusal`, as the API refuses it).
  */
-export function LeaveSection({ org, onLeft }: { org: Organisation; onLeft: () => void }) {
+export function LeaveSection({ org, onLeft }: { org: Organisation; onLeft: (landed: Organisation) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const refusal = leaveRefusal(org);
@@ -21,8 +21,7 @@ export function LeaveSection({ org, onLeft }: { org: Organisation; onLeft: () =>
     setBusy(true);
     setError(undefined);
     try {
-      await api.leaveOrganisation();
-      onLeft();
+      onLeft(await api.leaveOrganisation());
     } catch (err) {
       setError(describeError(err));
     } finally {

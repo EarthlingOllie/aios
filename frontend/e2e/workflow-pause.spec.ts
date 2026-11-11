@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 
@@ -44,7 +44,7 @@ test("a waiting run shows its waiting node and the request, approved from the ru
 }) => {
   const api = await fakeApi(page);
   const { workflow, run, request, builder, conversation } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   await expect(page.getByTestId("run-status")).toHaveText("Waiting for you");
   await expect(node(page, "build")).toHaveAttribute("data-state", "waiting");
@@ -58,11 +58,11 @@ test("a waiting run shows its waiting node and the request, approved from the ru
   await expect(card.getByLabel("SQL")).toContainText('CREATE TABLE "data"."contacts"');
   await expect(waiting.getByRole("link", { name: "Open the conversation" })).toHaveAttribute(
     "href",
-    `/agents/${builder.id}/runs/${conversation.id}`,
+    inOrg(`/agents/${builder.id}/runs/${conversation.id}`),
   );
   await expect(waiting.getByRole("link", { name: "All schema changes" })).toHaveAttribute(
     "href",
-    "/data/changes",
+    inOrg("/data/changes"),
   );
 
   await card.getByRole("button", { name: "Approve" }).click();
@@ -80,7 +80,7 @@ test("a waiting run shows its waiting node and the request, approved from the ru
 test("rejecting from the run page sends the note", async ({ page }) => {
   const api = await fakeApi(page);
   const { workflow, run, request } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   const card = page.getByRole("region", { name: `Schema change: ${request.summary}` });
   await card.getByRole("button", { name: "Reject…" }).click();
@@ -98,7 +98,7 @@ test("rejecting from the run page sends the note", async ({ page }) => {
 test("a waiting node's details say what it waits on", async ({ page }) => {
   const api = await fakeApi(page);
   const { workflow, run, request } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   await node(page, "build").click();
   const inspector = page.getByRole("complementary", { name: "Inspector" });
@@ -114,7 +114,7 @@ test("a waiting run flags the pins it resumes on that are no longer current", as
     { path: ["build"], kind: "agent", name: "Builder", pinned_version: 1, current_version: 3 },
     { path: ["after"], kind: "agent", name: "After", pinned_version: 1, current_version: null },
   ];
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   const pins = page.getByRole("region", { name: "Pinned versions" });
   await expect(pins).toContainText("It resumes on the versions it started with");
@@ -128,7 +128,7 @@ test("a waiting run flags the pins it resumes on that are no longer current", as
 test("a waiting run shows no pins notice while every pin is current", async ({ page }) => {
   const api = await fakeApi(page);
   const { workflow, run } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
   await expect(page.getByTestId("run-status")).toHaveText("Waiting for you");
   await expect(page.getByRole("region", { name: "Pinned versions" })).toHaveCount(0);
 });
@@ -138,7 +138,7 @@ test("a node waiting on two requests shows a card for each", async ({ page }) =>
   const { workflow, run, request, conversation } = waitingRun(api);
   const second = api.addSchemaChange({ run_id: conversation.id, summary: "Create table data.places" });
   run.steps[0].waiting_on_request_ids = [request.id, second.id];
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
 
   const waiting = page.getByRole("region", { name: "Waiting for your decision" });
   await expect(waiting).toContainText("these requests");
@@ -151,7 +151,7 @@ test("a node waiting on two requests shows a card for each", async ({ page }) =>
 test("a request decided elsewhere stops offering approve and reject", async ({ page }) => {
   const api = await fakeApi(page);
   const { workflow, run, request } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
   const card = page.getByRole("region", { name: `Schema change: ${request.summary}` });
   await expect(card.getByRole("button", { name: "Approve" })).toBeVisible();
 
@@ -174,14 +174,14 @@ test("a run that waited shows how long it ran apart from how long it waited", as
     waited_seconds: 3540,
   });
   Object.assign(run.steps[0], { status: "succeeded", waiting_on_request_ids: [] });
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
   await expect(page.getByText(/ran 1m 0s · waited 59m 0s/)).toBeVisible();
 });
 
 test("a waiting step says so in the step list rather than counting up", async ({ page }) => {
   const api = await fakeApi(page);
   const { workflow, run } = waitingRun(api);
-  await page.goto(`/workflows/${workflow.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/workflows/${workflow.id}/runs/${run.id}`));
   const build = page.getByRole("listitem").filter({ hasText: /^build/ });
   await expect(build).toContainText("paused");
 });

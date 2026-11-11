@@ -1,13 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The documents panel while the organisation's data store is being set up, and once it's ready. */
 
 test("documents wait for a store that's being set up, then can be uploaded", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "provisioning";
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   const notice = page.getByRole("status", { name: "Data store" });
   await expect(notice).toContainText("Setting up the organisation's data store");
@@ -43,7 +43,7 @@ test("a ready store's documents are listed once", async ({ page }) => {
     uploaded_by: null,
     created_at: "2026-10-14T09:00:00Z",
   });
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   await expect(page.getByText("notes.md")).toBeVisible();
   await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
@@ -56,7 +56,7 @@ test("uploads wait until the store's status is known", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "ready";
   api.dataStoreDelay = 1500;
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   const upload = page.getByRole("button", { name: "Upload" });
   await upload.waitFor();
@@ -67,7 +67,7 @@ test("uploads wait until the store's status is known", async ({ page }) => {
 test("a store that couldn't be set up says so", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "failed";
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   // An error, not news of progress.
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
@@ -81,7 +81,7 @@ test("a busy store doesn't tell the chat panel there are no documents", async ({
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
   api.dataStoreBusy = true;
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   await expect(page.getByRole("status", { name: "Documents list" })).toContainText(
     "The organisation's data store is busy.",
@@ -97,7 +97,7 @@ test("the chat's panel shows it's loading, not an invitation to upload", async (
   const api = await fakeApi(page);
   api.addDocument("report.pdf");
   api.documentsDelay = 1500;
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
   await expect(page.getByLabel("Loading documents")).toBeVisible();
   await expect(page.getByText("Upload files to search them in chat.")).toBeHidden();
@@ -109,7 +109,7 @@ test("the chat's panel shows it's loading, not an invitation to upload", async (
 test("search waits for a store that's being set up, then searches", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "provisioning";
-  await page.goto("/search?q=fish");
+  await page.goto(inOrg("/search?q=fish"));
 
   // News of progress, not a failed search.
   await expect(page.getByRole("status", { name: "Data store" })).toContainText(
@@ -127,7 +127,7 @@ test("search waits for a store that's being set up, then searches", async ({ pag
 test("search says when a store couldn't be set up", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreStatus = "failed";
-  await page.goto("/search?q=fish");
+  await page.goto(inOrg("/search?q=fish"));
 
   await expect(page.getByRole("alert", { name: "Data store" })).toContainText(
     "The organisation's data store couldn't be set up",

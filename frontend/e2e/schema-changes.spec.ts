@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 /**
  * Schema change requests: the approval card at the agent's tool call in its chat, and the Data
@@ -53,7 +53,7 @@ test("a run's turn ends with a card of the exact SQL, and waits for a decision",
   const api = await fakeApi(page);
   const { agent, run } = waitingRun(api);
 
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 
   await expect(card(page)).toContainText("Waiting for you");
   await expect(card(page)).toContainText("To keep track of the people you meet");
@@ -70,7 +70,7 @@ test("a run's turn ends with a card of the exact SQL, and waits for a decision",
 test("approving in the chat applies it, and the run carries on", async ({ page }) => {
   const api = await fakeApi(page);
   const { agent, run, request } = waitingRun(api);
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 
   await card(page).getByRole("button", { name: "Approve" }).click();
 
@@ -90,7 +90,7 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
 test("a run that carries on into another request shows that request's card", async ({ page }) => {
   const api = await fakeApi(page);
   const { agent, run, request } = waitingRun(api);
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
   await card(page).getByRole("button", { name: "Approve" }).click();
   await expect(card(page)).toContainText("Applying");
 
@@ -129,7 +129,7 @@ test("a run that carries on into another request shows that request's card", asy
 test("rejecting with a note sends the note, and the run carries on", async ({ page }) => {
   const api = await fakeApi(page);
   const { agent, run, request } = waitingRun(api);
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 
   await card(page).getByRole("button", { name: "Reject…" }).click();
   await card(page).getByLabel("Note for the agent (optional)").fill("Use a spreadsheet instead");
@@ -148,7 +148,7 @@ test("rejecting with a note sends the note, and the run carries on", async ({ pa
 test("a failed apply says why on the card", async ({ page }) => {
   const api = await fakeApi(page);
   const { agent, run, request } = waitingRun(api);
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
   await card(page).getByRole("button", { name: "Approve" }).click();
   await expect(card(page)).toContainText("Applying");
 
@@ -172,7 +172,7 @@ test("the Changes section lists pending requests first, with the run that asked"
     decided_at: "2026-10-14T10:00:00Z",
     resumed_at: "2026-10-14T10:00:01Z",
   });
-  await page.goto("/data/changes");
+  await page.goto(inOrg("/data/changes"));
 
   const pending = page.getByRole("region", { name: "Pending changes" });
   const history = page.getByRole("region", { name: "Change history" });
@@ -187,13 +187,13 @@ test("the Changes section lists pending requests first, with the run that asked"
   await expect(pending.getByLabel("SQL")).toBeVisible();
 
   await pending.getByRole("link", { name: "From run “Track my contacts”" }).click();
-  await expect(page).toHaveURL(`/agents/${agent.id}/runs/${run.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 });
 
 test("deciding from the Changes section moves the request to the history", async ({ page }) => {
   const api = await fakeApi(page);
   const { request } = waitingRun(api);
-  await page.goto("/data/changes");
+  await page.goto(inOrg("/data/changes"));
 
   await card(page).getByRole("button", { name: "Approve" }).click();
 
@@ -220,7 +220,7 @@ test("the history shows expired and cancelled requests, with no controls", async
     decided_at: "2026-10-15T10:00:00Z",
     resumed_at: "2026-10-15T10:00:00Z",
   });
-  await page.goto("/data/changes");
+  await page.goto(inOrg("/data/changes"));
 
   const history = page.getByRole("region", { name: "Change history" });
   const expired = history.getByRole("region", { name: "Schema change: Create table data.places" });
@@ -239,7 +239,7 @@ test("the history shows expired and cancelled requests, with no controls", async
 test("a request the user may not decide has no controls", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSchemaChange({ decider: false });
-  await page.goto("/data/changes");
+  await page.goto(inOrg("/data/changes"));
 
   await expect(card(page)).toBeVisible();
   await expect(card(page).getByRole("button")).toHaveCount(0);

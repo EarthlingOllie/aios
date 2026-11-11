@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
 const message = (page: Page, text: string | RegExp) =>
@@ -24,7 +24,7 @@ test("an agent's acknowledgement says what it understood, and its card shows the
     ack: "On it: I'll check the Q3 figures against the plan.",
     brief: "The team is reviewing Q3. The figures are in the shared sheet.",
   });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Scout](agent:${agent.id}) check them`);
   // The placeholder first, while the handoff reads the chat.
@@ -44,7 +44,7 @@ test("an agent's acknowledgement says what it understood, and its card shows the
   await brief.getByText("Brief").click();
   await expect(brief.getByText("The team is reviewing Q3. The figures are in the shared sheet.")).toBeVisible();
   // Opening it isn't a click through to the run.
-  await expect(page).toHaveURL(`/chats/${chat.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${chat.id}`));
 
   // The run was told the brief, a blank line, then the message.
   const [run] = [...api.agentRuns.values()];
@@ -65,7 +65,7 @@ test("a workflow's card shows its brief too, and a failed handoff fails the card
   api.addChatTarget(chat, "workflow", report);
   api.handoffs.set(digest.id, { ack: "I'll sum up the week.", brief: "The release is on Friday." });
   api.handoffs.set(report.id, { error: "model overloaded" });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Digest](workflow:${digest.id}) sum it up`);
   const digestAck = message(page, "I'll sum up the week.");

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 const node = (page: Page, key: string) => page.locator(`.react-flow__node[data-id="${key}"]`);
 const edge = (page: Page, source: string, target: string) =>
@@ -40,12 +40,12 @@ async function seed(api: FakeApi) {
 test("lists workflows and shows a workflow's graph", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
-  await page.goto("/workflows");
+  await page.goto(inOrg("/workflows"));
 
   const list = page.getByRole("list").filter({ hasText: "Report" });
   await expect(list.getByText("3 nodes")).toBeVisible();
   await page.getByRole("link", { name: /Report/ }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   await expect(page.getByRole("heading", { name: "Report" })).toBeVisible();
 
   for (const [key, name] of [
@@ -71,7 +71,7 @@ test("clicking a node shows what it runs", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, writer } = await seed(api);
   api.bumpAgent(writer);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await expect(inspector(page)).toContainText("Select a node or an edge");
   await node(page, "write").click();
@@ -80,7 +80,7 @@ test("clicking a node shows what it runs", async ({ page }) => {
   await expect(panel).toContainText("Agent");
   await expect(panel.getByRole("link", { name: "Writer" })).toHaveAttribute(
     "href",
-    `/agents/${writer.id}`,
+    inOrg(`/agents/${writer.id}`),
   );
   await expect(panel).toContainText("v1");
   await expect(panel).toContainText("v2 available");
@@ -100,14 +100,14 @@ test("clicking a node shows what it runs", async ({ page }) => {
   await expect(panel.getByRole("link", { name: "Review" })).not.toHaveAttribute("target", /.*/);
   await panel.getByRole("link", { name: "Review" }).click();
   await expect(page).toHaveURL(/\/workflows\/\d+$/);
-  await expect(page).not.toHaveURL(`/workflows/${report.id}`);
+  await expect(page).not.toHaveURL(inOrg(`/workflows/${report.id}`));
 });
 
 test("a node whose target was deleted names it without a link", async ({ page }) => {
   const api = await fakeApi(page);
   const { report, review } = await seed(api);
   review.deleted = true;
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await node(page, "review").click();
   const panel = inspector(page);
@@ -120,7 +120,7 @@ test("a node whose target was deleted names it without a link", async ({ page })
 test("clicking an edge shows what passes along it", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
 
   await clickEdge(page, "research", "write");
   const panel = inspector(page);
@@ -156,7 +156,7 @@ test("saved positions are used for the layout", async ({ page }) => {
     // Drawn right to left, against the automatic layout.
     { first: { x: 600, y: 0 }, second: { x: 0, y: 0 } },
   );
-  await page.goto(`/workflows/${wf.id}`);
+  await page.goto(inOrg(`/workflows/${wf.id}`));
   const first = (await node(page, "first").boundingBox())!;
   const second = (await node(page, "second").boundingBox())!;
   expect(second.x).toBeLessThan(first.x);
@@ -174,7 +174,7 @@ test("a graph too wide to fit is shown legibly from where it starts, to be panne
     keys.map((key) => ({ key, agent: a })),
     keys.slice(1).map((key, i) => [keys[i], key]),
   );
-  await page.goto(`/workflows/${wf.id}`);
+  await page.goto(inOrg(`/workflows/${wf.id}`));
   // Drawn at no less than 80% of its size: its text is still readable.
   const first = (await node(page, "one").boundingBox())!;
   expect(first.width).toBeGreaterThanOrEqual(160);
@@ -187,7 +187,7 @@ test("a graph too wide to fit is shown legibly from where it starts, to be panne
 test("an empty workflow says so", async ({ page }) => {
   const api = await fakeApi(page);
   const wf = api.addWorkflow("Empty");
-  await page.goto(`/workflows/${wf.id}`);
+  await page.goto(inOrg(`/workflows/${wf.id}`));
   await expect(page.getByText("This workflow has no nodes yet.")).toBeVisible();
 });
 
@@ -202,20 +202,20 @@ test("version history opens an old version's graph, which can be restored", asyn
     },
     "drop review",
   );
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   await expect(node(page, "review")).toHaveCount(0);
 
   await page.getByRole("tab", { name: /Versions/ }).click();
   const history = page.getByRole("list").filter({ hasText: "drop review" });
   await expect(history.getByText("2 nodes")).toBeVisible();
   await history.getByRole("link", { name: /v1/ }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/versions/1`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/versions/1`));
   await expect(node(page, "review")).toBeVisible();
   await node(page, "review").click();
   await expect(inspector(page)).toContainText("Review");
 
   await page.getByRole("button", { name: "Restore this version" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/versions`));
   await expect(page.getByText("Restored from v1")).toBeVisible();
   await page.getByRole("tab", { name: /Graph/ }).click();
   await expect(node(page, "review")).toBeVisible();
@@ -239,12 +239,12 @@ test("restoring a version sends one request, however often it's clicked", async 
   const { report } = await seed(api);
   api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
   const restores = await holdRestores(page);
-  await page.goto(`/workflows/${report.id}/versions/1`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions/1`));
 
   await page.getByRole("button", { name: "Restore this version" }).dblclick();
   await expect.poll(() => restores.count).toBeGreaterThan(0);
   restores.release();
-  await expect(page).toHaveURL(`/workflows/${report.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/versions`));
   expect(restores.count).toBe(1);
   expect(api.writes.filter(([method]) => method === "POST")).toHaveLength(1);
 });
@@ -254,13 +254,13 @@ test("the restore button shows that the restore is running", async ({ page }) =>
   const { report } = await seed(api);
   api.addWorkflowVersion(report, (v) => (v.nodes = []), "empty");
   const restores = await holdRestores(page);
-  await page.goto(`/workflows/${report.id}/versions/1`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions/1`));
 
   await page.getByRole("button", { name: "Restore this version" }).click();
   const restoring = page.getByRole("button", { name: "Restoring…" });
   await expect(restoring).toBeDisabled();
   restores.release();
-  await expect(page).toHaveURL(`/workflows/${report.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/versions`));
 });
 
 test("a failed restore can be retried", async ({ page }) => {
@@ -277,12 +277,12 @@ test("a failed restore can be retried", async ({ page }) => {
         })
       : route.fallback(),
   );
-  await page.goto(`/workflows/${report.id}/versions/1`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions/1`));
 
   await page.getByRole("button", { name: "Restore this version" }).click();
   await expect(page.getByText("Restore failed")).toBeVisible();
   await page.getByRole("button", { name: "Restore this version" }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/versions`));
   await expect(page.getByText("Restored from v1")).toBeVisible();
 });
 
@@ -296,7 +296,7 @@ test("version history that fails to load says why", async ({ page }) => {
       body: JSON.stringify({ detail: "Version store unavailable" }),
     }),
   );
-  await page.goto(`/workflows/${report.id}/versions`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions`));
   await expect(page.getByText("Version store unavailable")).toBeVisible();
 });
 
@@ -311,14 +311,14 @@ test("a version page whose workflow fails to load says why", async ({ page }) =>
       body: JSON.stringify({ detail: "Workflow store unavailable" }),
     }),
   );
-  await page.goto(`/workflows/${report.id}/versions/1`);
+  await page.goto(inOrg(`/workflows/${report.id}/versions/1`));
   await expect(page.getByText("Workflow store unavailable")).toBeVisible();
 });
 
 test("deleting a workflow that another runs is refused with the reason", async ({ page }) => {
   const api = await fakeApi(page);
   const { review } = await seed(api);
-  await page.goto(`/workflows/${review.id}`);
+  await page.goto(inOrg(`/workflows/${review.id}`));
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete workflow" }).click();
   await expect(page.getByRole("alert")).toContainText(
@@ -329,13 +329,13 @@ test("deleting a workflow that another runs is refused with the reason", async (
 test("a refused delete's reason doesn't follow you to another workflow", async ({ page }) => {
   const api = await fakeApi(page);
   const { review, report } = await seed(api);
-  await page.goto(`/workflows/${review.id}`);
+  await page.goto(inOrg(`/workflows/${review.id}`));
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete workflow" }).click();
   await expect(page.getByRole("alert")).toBeVisible();
 
   await page.getByRole("link", { name: /Report/ }).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}`));
   await expect(page.getByRole("heading", { name: "Report" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
@@ -343,9 +343,9 @@ test("a refused delete's reason doesn't follow you to another workflow", async (
 test("deleting a workflow returns to the list", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = await seed(api);
-  await page.goto(`/workflows/${report.id}`);
+  await page.goto(inOrg(`/workflows/${report.id}`));
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Delete workflow" }).click();
-  await expect(page).toHaveURL("/workflows");
+  await expect(page).toHaveURL(inOrg("/workflows"));
   await expect(page.getByRole("link", { name: /Report/ })).toHaveCount(0);
 });

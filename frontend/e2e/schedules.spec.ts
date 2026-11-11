@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The new-schedule form's preview, as the timezone is typed. */
 
@@ -8,7 +8,7 @@ test.use({ timezoneId: "Europe/London" });
 
 async function openForm(page: Page) {
   await fakeApi(page);
-  await page.goto("/scheduler");
+  await page.goto(inOrg("/scheduler"));
   await page.getByRole("button", { name: "Add schedule" }).click();
   await expect(page.getByTestId("schedule-preview")).toContainText("Next runs (Europe/London)");
   return page.getByLabel("Timezone");
@@ -45,15 +45,15 @@ test("a schedule's agent or workflow opens on its Schedule tab", async ({ page }
   const workflow = api.addWorkflow("Report");
   api.addSchedule("agent", agent);
   api.addSchedule("workflow", workflow);
-  await page.goto("/scheduler");
+  await page.goto(inOrg("/scheduler"));
 
   await page.getByRole("link", { name: "Researcher" }).click();
-  await expect(page).toHaveURL(`/agents/${agent.id}/schedule`);
+  await expect(page).toHaveURL(inOrg(`/agents/${agent.id}/schedule`));
   await expect(page.getByRole("tab", { name: "Schedule" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tabpanel").getByTestId("schedule-row")).toHaveCount(1);
 
-  await page.goto("/scheduler");
+  await page.goto(inOrg("/scheduler"));
   await page.getByRole("link", { name: "Report" }).click();
-  await expect(page).toHaveURL(`/workflows/${workflow.id}/schedule`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${workflow.id}/schedule`));
   await expect(page.getByRole("tab", { name: "Schedule" })).toHaveAttribute("aria-selected", "true");
 });

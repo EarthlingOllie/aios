@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The Data page's storage caps: usage on the Overview, and uploads refused at the file cap. */
 
@@ -17,7 +17,7 @@ const file = (name: string) => ({
 test("the Overview shows usage against both caps", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: 12 * MB, files_bytes: 300 * MB };
-  await page.goto("/data");
+  await page.goto(inOrg("/data"));
 
   await expect(meter(page, "Data stored")).toHaveAttribute("aria-valuetext", "12 MB of 1.0 GB");
   await expect(meter(page, "Documents")).toHaveAttribute("aria-valuetext", "300 MB of 5.0 GB");
@@ -30,7 +30,7 @@ test("the Overview warns as usage nears a cap, and says what's refused at one", 
 }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: 0.9 * GB, files_bytes: 5 * GB };
-  await page.goto("/data");
+  await page.goto(inOrg("/data"));
 
   await expect(overview(page)).toContainText("Your data is nearly at its cap.");
   await expect(overview(page).getByRole("alert")).toContainText(
@@ -46,7 +46,7 @@ test("the Overview says usage isn't measured yet for a new store", async ({ page
     files_bytes: null,
     measured_at: null,
   };
-  await page.goto("/data");
+  await page.goto(inOrg("/data"));
 
   await expect(meter(page, "Data stored")).toHaveAttribute("aria-valuetext", "Not measured yet");
 });
@@ -54,7 +54,7 @@ test("the Overview says usage isn't measured yet for a new store", async ({ page
 test("the Overview reads usage again while it's open", async ({ page }) => {
   const api = await fakeApi(page);
   await page.clock.install({ time: new Date("2026-10-17T09:00:00Z") });
-  await page.goto("/data");
+  await page.goto(inOrg("/data"));
   await expect(meter(page, "Documents")).toHaveAttribute("aria-valuetext", "0 B of 5.0 GB");
 
   // The schedule measures the store again.
@@ -67,14 +67,14 @@ test("the Overview reads usage again while it's open", async ({ page }) => {
 test("a store at its file cap can't take uploads, here or in the chat", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
-  await page.goto("/data/documents");
+  await page.goto(inOrg("/data/documents"));
 
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   await expect(page.getByRole("alert", { name: "Storage" })).toContainText(
     "Your documents are at their cap: uploads are refused",
   );
 
-  await page.goto("/");
+  await page.goto(inOrg("/"));
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   expect(api.writes).toEqual([]);
 });
@@ -82,7 +82,7 @@ test("a store at its file cap can't take uploads, here or in the chat", async ({
 test("a store at its database cap can't take uploads either", async ({ page }) => {
   const api = await fakeApi(page);
   api.dataStoreUsage = { ...api.dataStoreUsage, db_bytes: GB };
-  await page.goto("/data/documents");
+  await page.goto(inOrg("/data/documents"));
 
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
   await expect(page.getByRole("alert", { name: "Storage" })).toContainText(
@@ -94,7 +94,7 @@ test("deleting documents at the file cap lets uploads in again", async ({ page }
   const api = await fakeApi(page);
   api.addDocument("big.pdf");
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
-  await page.goto("/data/documents");
+  await page.goto(inOrg("/data/documents"));
   await expect(page.getByRole("button", { name: "Upload" })).toBeDisabled();
 
   page.once("dialog", (dialog) => dialog.accept());
@@ -106,7 +106,7 @@ test("deleting documents at the file cap lets uploads in again", async ({ page }
 
 test("uploads refused for the cap say why, each of them, and uploads stop", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/data/documents");
+  await page.goto(inOrg("/data/documents"));
   await expect(page.getByRole("button", { name: "Upload" })).toBeEnabled();
   // Filled (from the chat, say) since the page last asked.
   api.dataStoreUsage = { ...api.dataStoreUsage, files_bytes: 5 * GB };
