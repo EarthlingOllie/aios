@@ -591,7 +591,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):
-            resp = client.post("/api/agents/1/runs/1/chat", json=chat_body("hello"))
+            resp = client.post("/api/o/1/agents/1/runs/1/chat", json=chat_body("hello"))
     finally:
         app.dependency_overrides.clear()
         checkpoints.delete_threads([1])

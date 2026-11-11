@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser, inOrg } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
@@ -36,8 +36,8 @@ test("the owner adds the organisation's agents and workflows, grouped by kind", 
   await expect(members.getByLabel("Add a workflow").getByRole("option")).toHaveText(["Choose a workflow", "Digest"]);
   await expect(page.getByText("3 members").first()).toBeVisible();
   expect(api.writes).toEqual([
-    ["POST", `/api/chats/${chat.id}/members`, { kind: "agent", id: agent.id }],
-    ["POST", `/api/chats/${chat.id}/members`, { kind: "workflow", id: workflow.id }],
+    ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id }],
+    ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "workflow", id: workflow.id }],
   ]);
 });
 
@@ -97,7 +97,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
   expect(api.writes).toEqual([
     [
       "POST",
-      `/api/chats/${chat.id}/messages`,
+      orgApi(`/chats/${chat.id}/messages`),
       {
         body: `Please @[Review](workflow:${workflow.id}) and @[Sam Jones](user:2) thanks`,
         mentions: [
@@ -119,7 +119,7 @@ test("Escape closes the suggestions, and Enter then sends", async ({ page }) => 
   await expect(suggestions(page)).toHaveCount(0);
   await composer(page).press("Enter");
   await expect(message(page, "mail @tes")).toBeVisible();
-  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/messages`, { body: "mail @tes", mentions: [] }]]);
+  expect(api.writes).toEqual([["POST", orgApi(`/chats/${chat.id}/messages`), { body: "mail @tes", mentions: [] }]]);
 });
 
 test("a token for someone who isn't a member is plain text, not a mention", async ({ page }) => {
@@ -133,7 +133,7 @@ test("a token for someone who isn't a member is plain text, not a mention", asyn
   const posted = message(page, "ping");
   await expect(posted).toContainText("@Outsider");
   await expect(posted.getByTitle(/Outsider/)).toHaveCount(0);
-  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/messages`, { body: typed, mentions: [] }]]);
+  expect(api.writes).toEqual([["POST", orgApi(`/chats/${chat.id}/messages`), { body: typed, mentions: [] }]]);
 });
 
 test("a message that mentions me is highlighted", async ({ page }) => {

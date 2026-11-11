@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * Reversible drops: a request that drops a table or column shows what it would remove and
@@ -53,7 +53,7 @@ test("a drop's card shows what it removes, and approves only with the names type
   await expect(card(page)).toContainText("Applying");
   expect(api.writes).toContainEqual([
     "POST",
-    `/api/schema-changes/${request.id}/approve`,
+    orgApi(`/schema-changes/${request.id}/approve`),
     { confirm: "fish, eels" },
   ]);
 });
@@ -105,7 +105,7 @@ test("restoring takes it off the list once it's back", async ({ page }) => {
 
   await expect(page.getByRole("listitem", { name: "Table data.eels" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Dropped" })).toContainText("Nothing is dropped");
-  expect(api.writes).toContainEqual(["POST", `/api/dropped/${eels.id}/restore`, null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/dropped/${eels.id}/restore`), null]);
 });
 
 test("a restore refused once it ran says why", async ({ page }) => {

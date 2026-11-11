@@ -225,24 +225,18 @@ ORGANISATION_ID_MAX = 2**31 - 1
 def current_organisation(request: Request, user: CurrentUser, db: DB) -> Organisation:
     """The organisation the request means: the one place a request's organisation is resolved.
 
-    Under the organisation prefix (`aios.api.scoping`), the one whose id is in the path, if the
-    signed-in user is a member of it: a 404 otherwise, the same as for one that doesn't exist.
-    Without the prefix, their one membership (`aios.organisations`), until every route has
-    moved under it."""
+    The one whose id is in the path, under the organisation prefix (`aios.api.scoping`, which
+    mounts every route that takes this there), if the signed-in user is a member of it: a 404
+    otherwise, the same as for one that doesn't exist."""
     named = request.path_params.get("organisation_id")
-    if named is not None:
-        org_id = int(named) if named.isdecimal() and named.isascii() else None
-        if org_id is None or org_id > ORGANISATION_ID_MAX:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
-        org = organisations.membership(db, user.id, org_id)
-        if org is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
-        return org
-    org = organisations.membership_of(db, user.id)
+    if named is None:
+        raise RuntimeError(f"{request.url.path} isn't under the organisation prefix")
+    org_id = int(named) if named.isdecimal() and named.isascii() else None
+    if org_id is None or org_id > ORGANISATION_ID_MAX:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
+    org = organisations.membership(db, user.id, org_id)
     if org is None:
-        # Signing in, leaving and the upgrade each put a user in one; this is a bug, not a
-        # request that can be answered.
-        raise RuntimeError(f"user {user.id} is in no organisation")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
     return org
 
 

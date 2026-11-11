@@ -286,7 +286,7 @@ def create_trigger(body: TriggerIn, user: CurrentUser, org: CurrentOrganisation,
 
 
 @router.post("/triggers/preview", response_model=PreviewOut)
-def preview_schedule(body: PreviewIn, user: CurrentUser):
+def preview_schedule(body: PreviewIn, org: CurrentOrganisation):
     """What a schedule means: its description and next few runs (for the form, as it's typed)."""
     expr, tz = checked_schedule(body.cron, body.timezone)
     return PreviewOut(

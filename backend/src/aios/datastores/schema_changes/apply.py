@@ -139,9 +139,11 @@ def propose(
     with SessionLocal() as db:
         db.add(request)
         db.flush()
+        data_store = db.get_one(DataStore, data_store_id)
         notifications.notify(
             db,
-            approvers(db, db.get_one(DataStore, data_store_id)),
+            approvers(db, data_store),
+            data_store.owner_organisation_id,
             notifications.SCHEMA_CHANGE_REQUEST,
             _notification_ref(request),
         )

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * Schema change requests: the approval card at the agent's tool call in its chat, and the Data
@@ -76,7 +76,7 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
 
   await expect(card(page)).toContainText("Applying");
   await expect(card(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
-  expect(api.writes).toContainEqual(["POST", `/api/schema-changes/${request.id}/approve`, null]);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${request.id}/approve`), null]);
 
   api.finishSchemaChange(request.id, { status: "applied", messages: carriedOn });
 
@@ -138,7 +138,7 @@ test("rejecting with a note sends the note, and the run carries on", async ({ pa
   await expect(card(page)).toContainText("Rejected: Use a spreadsheet instead");
   expect(api.writes).toContainEqual([
     "POST",
-    `/api/schema-changes/${request.id}/reject`,
+    orgApi(`/schema-changes/${request.id}/reject`),
     { note: "Use a spreadsheet instead" },
   ]);
   api.finishSchemaChange(request.id, { messages: carriedOn });

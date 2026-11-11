@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** The Data page: the store's Overview, and the Documents it owns. */
 
@@ -198,7 +198,7 @@ test("each document links to its download", async ({ page }) => {
   // The API's address, never a file's link itself: the API mints one per click, which saves
   // the file under its name. A download (not a navigation), so a refusal leaves the page be.
   // (The browser following the API's redirect to the file is tested against the real app.)
-  await expect(link).toHaveAttribute("href", `/api/documents/${doc.id}/download`);
+  await expect(link).toHaveAttribute("href", orgApi(`/documents/${doc.id}/download`));
   await expect(link).toHaveAttribute("download");
 });
 
@@ -321,7 +321,7 @@ test("deleting a document removes it from the list and from search", async ({ pa
   await expect(row(page, "keep.md")).toBeVisible();
   expect(api.writes).toContainEqual([
     "DELETE",
-    expect.stringMatching(/^\/api\/documents\/\d+$/),
+    expect.stringMatching(/^\/api\/o\/1\/documents\/\d+$/),
     null,
   ]);
 
@@ -462,7 +462,7 @@ test("a list refused for good says so once, without asking again", async ({ page
 
   // The session expires: the next read of the list is refused, and so would every later one be.
   let reads = 0;
-  await page.route("**/api/documents", (route) => {
+  await page.route(`**${orgApi("/documents")}`, (route) => {
     reads++;
     return route.fulfill({ status: 401, body: '{"detail":"Not authenticated"}' });
   });
@@ -487,7 +487,7 @@ test("a list refused for good stops polling, even with an ingest still running",
   await expect(row(page, "slides.pptx")).toContainText("Processing");
 
   let reads = 0;
-  await page.route("**/api/documents", (route) => {
+  await page.route(`**${orgApi("/documents")}`, (route) => {
     reads++;
     return route.fulfill({ status: 401, body: '{"detail":"Not authenticated"}' });
   });
@@ -522,7 +522,7 @@ test("a slow poll that answers after a delete doesn't bring the document back", 
   await expect(row(page, "drop.md")).toHaveCount(0);
 
   // The slow poll answers last, with the list from before the delete.
-  const stale = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/documents");
+  const stale = page.waitForResponse((r) => new URL(r.url()).pathname === orgApi("/documents"));
   api.heldDocumentLists[0]();
   await stale;
   await page.waitForTimeout(300);

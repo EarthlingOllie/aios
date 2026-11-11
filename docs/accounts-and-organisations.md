@@ -83,28 +83,35 @@ shared link keeps working. Revision 0055 gave existing organisations theirs, old
 in the browser use the slug and the API uses the id:
 
 - **API.** Every route that resolves the request's organisation (its dependencies reach
-  `current_organisation`, as `CurrentOrganisation` and `CurrentDataStore` do) is also mounted
-  under the organisation prefix, `/api/o/{organisation_id}/...` (`aios.api.scoping`, from the
-  router, so a new route is covered as soon as it takes the organisation). There
-  `current_organisation` reads the id from the path and checks the user is a member: a 404,
-  "Organisation not found", alike for an organisation they aren't in and one that doesn't exist.
-  The unprefixed forms still resolve the user's one membership until they move under it.
-  `tests/test_organisation_prefix.py` is generated from the router: every prefixed route answers
-  a non-member 404.
+  `current_organisation`, as `CurrentOrganisation` and `CurrentDataStore` do) is mounted under
+  the organisation prefix, `/api/o/{organisation_id}/...`, and only there (`aios.api.scoping`,
+  from the router, so a new route moves as soon as it takes the organisation; no unprefixed
+  form is kept). `current_organisation` reads the id from the path and checks the user is a
+  member: a 404, "Organisation not found", alike for an organisation they aren't in and one that
+  doesn't exist. Only what's the person's own stays unscoped: signing in (and the development
+  picker), their profile (`/api/me`), opening and accepting invitations, their notifications,
+  the tool library and the list of timezones. `tests/test_organisation_prefix.py` is generated
+  from the router: every prefixed route answers a non-member 404, and only those listed stay
+  unscoped. The backend tests' client sends an organisation's routes under the prefix, in the
+  signed-in user's organisation (`OrganisationClient` in `tests/conftest.py`).
 - **Front end.** Every signed-in page is under `/o/<slug>/`, the router's basename for as long as
   the page is open (`frontend/src/lib/organisation-path.ts`), so the app's own links stay in it.
   A path without one (an old bookmark, the root) opens the same page in the organisation used
   last, remembered in the browser's storage (every access guarded), else in the one joined most
-  recently. A link to an organisation the user isn't in shows "Organisation not found".
+  recently. A link to an organisation the user isn't in shows "Organisation not found". The
+  page sends the API its organisation's id (`organisationApi` in `frontend/src/lib/api.ts`, set
+  once the slug is matched to a membership), so two tabs on two organisations work
+  independently. The browser tests' fake API (`frontend/e2e/fake-api.ts`) answers only under
+  the prefix too.
 
 `GET /api/me` lists the user's organisations (`organisations`: id, name, slug and whether
 they're its creator, the one joined most recently first), and says which one they're in
 (`organisation`); the shell shows its name, which opens the **Organisation** page
-(`GET /api/organisation`): the name and the creator above three tabs, as on the agent page,
+(`GET /api/o/{org}/organisation`): the name and the creator above three tabs, as on the agent page,
 each a route: **Members**, with when each joined and the count (`/organisation`);
 **Invitations**, the links, for the creator only (`/organisation/invitations`); and
 **Settings**, the run history export and leaving (`/organisation/settings`). Only the creator
-renames it (`PUT /api/organisation`; a 403 for another member, a 409 for a name another
+renames it (`PUT /api/o/{org}/organisation`; a 403 for another member, a 409 for a name another
 organisation has): a stopgap role until roles exist. The **Settings** page is the user's own
 and links to it.
 
@@ -139,7 +146,7 @@ the organisation, the ones chats and schedules started included, and to anyone e
 ## Invitation links
 
 The creator brings people in with **invitation links**, made on the Organisation page's
-Invitations tab (`/organisation/invitations`; `POST /api/organisation/invites`,
+Invitations tab (`/organisation/invitations`; `POST /api/o/{org}/organisation/invites`,
 `expires_in_days` 1 to 30, a week by default): the response carries the link's random token
 once, and only its hash is stored, so the page shows the link to copy and never again. `GET`
 lists the open links (who made each, when it expires) and `DELETE .../invites/{id}` revokes
@@ -164,7 +171,7 @@ can be deleted.
 ## Leaving
 
 A member **leaves** from the Organisation page's Settings tab (`/organisation/settings`;
-`POST /api/organisation/leave`): they drop out of the organisation's chats (an add, a join or a
+`POST /api/o/{org}/organisation/leave`): they drop out of the organisation's chats (an add, a join or a
 new chat of theirs at the same moment is a 404, not a way back into one), their unread
 notifications about its schema change requests go, and they land in a new personal
 organisation with a store of its own; what they made stays, and a chat they owned goes to its

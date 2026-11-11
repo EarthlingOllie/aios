@@ -39,10 +39,17 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   await page.getByLabel("Confirm password").fill("a long passphrase");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).not.toHaveURL(/\/register/);
+  // Their organisation: the API names it by its id (`/api/o/<id>/...`), links by its slug.
+  const me = await page.request.get("/api/me");
+  expect(me.status(), await me.text()).toBe(200);
+  const { organisation } = (await me.json()) as { organisation: { id: number; slug: string } };
+  const api = (path: string) => `/api/o/${organisation.id}${path}`;
+  const link = (path: string) => `/o/${organisation.slug}${path}`;
+  await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("")}(/|$)`));
   await expect
     .poll(
       async () => {
-        const response = await page.request.get("/api/data-store");
+        const response = await page.request.get(api("/data-store"));
         return response.ok() ? (await response.json()).status : `HTTP ${response.status()}`;
       },
       { message: "the organisation's data store is provisioned", timeout: 60_000 },
@@ -51,12 +58,12 @@ test("a mention asks for a table, waits for approval on the Data page, then save
 
   // An agent that may ask for tables and write to them, in a chat (their screens have tests of
   // their own).
-  const agent = await created<{ id: number }>(page.request, "/api/agents", { name: "Notes", tools: NOTES_TOOLS });
-  const chat = await created<{ id: number }>(page.request, "/api/chats", { name: `Notes ${suffix}` });
-  await created(page.request, `/api/chats/${chat.id}/members`, { kind: "agent", id: agent.id });
+  const agent = await created<{ id: number }>(page.request, api("/agents"), { name: "Notes", tools: NOTES_TOOLS });
+  const chat = await created<{ id: number }>(page.request, api("/chats"), { name: `Notes ${suffix}` });
+  await created(page.request, api(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id });
 
   // 2. Mention the agent.
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(link(`/chats/${chat.id}`));
   await composer(page).pressSequentially("@Not");
   await page.getByRole("listbox", { name: "Mention" }).getByRole("option", { name: "Notes agent" }).click();
   await composer(page).pressSequentially(" buy milk");
@@ -74,16 +81,17 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   await expect(request).toContainText("To keep the chat's notes");
   await request.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByRole("region", { name: "Change history" })).toContainText("Create table data.notes");
+  await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("/data/changes")}`));
 
   // 5. The run resumes, writes its row and replies in the chat.
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(link(`/chats/${chat.id}`));
   const reply = messageList(page).getByRole("article").filter({ hasText: "Saved." });
   await expect(reply).toBeVisible({ timeout: 60_000 });
   await expect(reply.getByText("Notes", { exact: true })).toBeVisible();
   await expect(cardStatus(page)).toHaveText("Succeeded");
 
   // The row it wrote, on the Data page's Tables.
-  await page.goto("/data/tables?table=notes");
+  await page.goto(link("/data/tables?table=notes"));
   await expect(page.getByRole("table", { name: "Rows of notes" }).getByRole("row")).toHaveText([
     /id\s*body/,
     /1\s*@Notes\s+buy milk/,

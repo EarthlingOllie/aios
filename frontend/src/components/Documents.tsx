@@ -18,6 +18,7 @@ import {
   api,
   ApiError,
   describeError,
+  organisationApi,
   type DataStoreStatus,
   type DataStoreUsage,
   type DocumentInfo,
@@ -432,7 +433,7 @@ export function DocumentsSection() {
                   which saves it under its own name; the page never holds one. A download, not a
                   navigation, so a refusal leaves the page (and any upload in flight) be. */}
               <a
-                href={`/api/documents/${doc.id}/download`}
+                href={`${organisationApi()}/documents/${doc.id}/download`}
                 download
                 className="text-muted-foreground hover:text-foreground focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
                 aria-label={`Download ${doc.filename}`}

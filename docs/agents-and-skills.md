@@ -110,12 +110,12 @@ A member archives an agent from its page in one confirmation, instead of deletin
 lost, and nothing new starts on it. Any member may archive and unarchive, as any member may
 delete; phase 1's roles later give this to editors and admins.
 
-- `POST /api/agents/{id}/archive` sets `archived_at` and `archived_by` (who archived it) and
+- `POST /api/o/{org}/agents/{id}/archive` sets `archived_at` and `archived_by` (who archived it) and
   pauses its schedules. It's never refused, whatever uses it, and archiving an archived agent
-  changes nothing. `POST /api/agents/{id}/unarchive` clears both; its schedules stay paused
+  changes nothing. `POST /api/o/{org}/agents/{id}/unarchive` clears both; its schedules stay paused
   until someone resumes them, so unarchiving doesn't set off a burst of runs. Both answer the
   agent, which carries its archived fields everywhere (`archived_at`, `archived_by`).
-- `GET /api/agents/{id}/used-by` is what the confirmation shows, read-only
+- `GET /api/o/{org}/agents/{id}/used-by` is what the confirmation shows, read-only
   (`aios.dependents.used_by`): the live workflows that run it at any depth (with their
   schedules), its own schedules, the chats it's in (those the member may see) and the data
   tables it will leave read-only, which stays empty until tables have owners. The workflows and
@@ -129,8 +129,8 @@ delete; phase 1's roles later give this to editors and admins.
 - Turns and runs already going aren't checked again: a turn underway finishes, and a workflow
   run already past its start runs the agent's node.
 - In a chat it stays a member, shown as archived (`archived` on the member), and drops out of
-  mention suggestions (`GET /api/chats/{id}/mentionable`). Unarchiving restores both.
-- `GET /api/agents` leaves archived agents out; `?archived=true` lists only them, which the
+  mention suggestions (`GET /api/o/{org}/chats/{id}/mentionable`). Unarchiving restores both.
+- `GET /api/o/{org}/agents` leaves archived agents out; `?archived=true` lists only them, which the
   Agents list's Archived filter shows. The agent's page shows an archived badge and notice, and
   Unarchive in place of New run.
 
@@ -142,11 +142,11 @@ was kept for agents, skills or workflows deleted before archiving existed.
 Until it's removed, deleting an agent archives it and still deletes its runs, their threads and sandboxes. An agent is deleted only
 once what depends on it is resolved (`aios.dependents`).
 
-`GET /api/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
+`GET /api/o/{org}/agents/{id}/dependents` lists its chat runs that wait on a schema change request or
 have a turn underway, the workflow runs still going (queued, running or waiting) whose pinned
 version runs it at any depth, the live workflows whose current version runs it (directly, or
 through a nested workflow's pinned version) with their schedules, and its own schedules.
-`DELETE /api/agents/{id}` answers 409 with that list (`detail.dependents`, and a
+`DELETE /api/o/{org}/agents/{id}` answers 409 with that list (`detail.dependents`, and a
 `detail.message`) until its body resolves each: `cancel_agent_runs` and
 `cancel_workflow_runs` name the runs to stop, and `deactivate_workflows` the workflows to
 deactivate; any other workflow must first be edited to stop running the agent (the agent's

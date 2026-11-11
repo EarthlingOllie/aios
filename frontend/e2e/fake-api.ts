@@ -138,6 +138,8 @@ export type DroppedRow = {
 };
 export type NotificationRow = {
   id: string;
+  /** The organisation it's from: the fake's own unless a test says otherwise. */
+  organisation: { id: number; slug: string };
   kind: string;
   ref: Record<string, string>;
   /** For a kind other than a schema change request (whose title is its summary). */
@@ -425,6 +427,14 @@ export function inOrg(path: string): string {
   return `/o/${ORGANISATION_SLUG}${path}`;
 }
 
+/** The id of the fake's organisation, as a new fake has it: what its API paths name it by. */
+export const ORGANISATION_ID = 1;
+
+/** An API path in the fake's organisation, as the app sends it: `/api/o/1/agents`. */
+export function orgApi(path: string, organisationId: number = ORGANISATION_ID): string {
+  return `/api/o/${organisationId}${path}`;
+}
+
 /** A slug as the API makes one from a name (`aios.organisations.slugify`). */
 function slugify(name: string): string {
   const ascii = name.normalize("NFKD").replace(/[^\x00-\x7f]/g, "");
@@ -505,7 +515,7 @@ export class FakeApi {
    * they created, with them as its first member. `me` is its creator while `creator` is them.
    */
   organisation: OrganisationRow = {
-    id: 1,
+    id: ORGANISATION_ID,
     name: "tester",
     slug: ORGANISATION_SLUG,
     personal: true,
@@ -1018,6 +1028,7 @@ export class FakeApi {
   addNotification(fields: Partial<NotificationRow> = {}): NotificationRow {
     const notification: NotificationRow = {
       id: `note-${this.id()}`,
+      organisation: { id: this.organisation.id, slug: this.organisation.slug },
       kind: "schema_change_request",
       ref: {},
       title: null,
@@ -1906,7 +1917,7 @@ export class FakeApi {
     const request = route.request();
     const method = request.method();
     const url = new URL(request.url());
-    const path = url.pathname;
+    let path = url.pathname;
     // As postDataJSON gives it (`any`), or a placeholder for an upload.
     let body: ReturnType<typeof request.postDataJSON> = null;
     try {
@@ -1915,7 +1926,7 @@ export class FakeApi {
       // Not JSON: an upload's multipart form.
       body = "(form)";
     }
-    if (method !== "GET" && !/^\/api\/chats\/\d+\/read$/.test(path)) this.writes.push([method, path, body]);
+    if (method !== "GET" && !/^\/api\/o\/\d+\/chats\/\d+\/read$/.test(path)) this.writes.push([method, path, body]);
     const reply = (status: number, json?: unknown) =>
       route.fulfill({
         status,
@@ -1993,6 +2004,17 @@ export class FakeApi {
     }
 
     if (path === "/api/me") return reply(200, this.meOut(account));
+    // Everything but the person's own (signing in, the profile, invitations, notifications, the
+    // tool library and timezones) is an organisation's, under its prefix (`/api/o/<id>/...`), as
+    // in the API: the fake's organisation answers (as it was before the prefix, from here on),
+    // and any other is a 404, as for one that doesn't exist. Nothing answers without the prefix.
+    const unscoped = /^\/api\/(notifications|tools|triggers\/timezones)(\/|$)/.test(path);
+    if (!unscoped) {
+      const scoped = path.match(/^\/api\/o\/([^/]+)(\/.*)$/);
+      if (!scoped) return fail(404, "Not Found");
+      if (scoped[1] !== String(this.organisation.id)) return fail(404, "Organisation not found");
+      path = `/api${scoped[2]}`;
+    }
     if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
       if (this.organisation.creator?.id !== this.me.id) {
         return fail(403, "Only the organisation's creator can invite people into it.");

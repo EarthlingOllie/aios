@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** Chats are the organisation's: "public" is its members, names are unique within it, the owner
  * adds any of its members and agents, and another organisation's chats don't exist here. */
@@ -66,7 +66,7 @@ test("the owner adds a fellow member and another member's agent", async ({ page 
   await members.getByRole("button", { name: "Add agent" }).click();
   await expect(members.getByRole("list", { name: "Agents" })).toHaveText("Their reviewer");
   expect(api.writes).toEqual([
-    ["POST", `/api/chats/${chat.id}/members`, { kind: "user", id: sam.id }],
-    ["POST", `/api/chats/${chat.id}/members`, { kind: "agent", id: agent.id }],
+    ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "user", id: sam.id }],
+    ["POST", orgApi(`/chats/${chat.id}/members`), { kind: "agent", id: agent.id }],
   ]);
 });

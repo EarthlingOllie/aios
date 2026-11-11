@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type AgentDependentsRow, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type AgentDependentsRow, type FakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * Deleting an agent first checks what depends on it. With nothing, it's a simple confirm;
@@ -167,7 +167,7 @@ test("deletes once each is resolved: the runs cancelled, each workflow deactivat
   await expect(page).toHaveURL(/\/agents$/);
   expect(api.writes.find(([method]) => method === "DELETE")).toEqual([
     "DELETE",
-    `/api/agents/${agent.id}`,
+    orgApi(`/agents/${agent.id}`),
     { cancel_agent_runs: [run.id], cancel_workflow_runs: [501], deactivate_workflows: [51, 52] },
   ]);
 });

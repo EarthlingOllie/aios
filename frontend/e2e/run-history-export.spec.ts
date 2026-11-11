@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** The Organisation page's run history export: its switch, when it last ran, and deleting it. */
 
@@ -18,7 +18,7 @@ test("switching the export on sets the store up, then says when it last ran", as
 
   await toggle.check();
   await expect(toggle).toBeChecked();
-  expect(api.writes).toEqual([["PUT", "/api/organisation/settings", { export_run_history: true }]]);
+  expect(api.writes).toEqual([["PUT", orgApi("/organisation/settings"), { export_run_history: true }]]);
   await expect(status).toHaveText("Setting up the history tables in the data store…");
 
   // The workers set the store up and export: the page keeps asking until they have.
@@ -38,7 +38,7 @@ test("with no runs to export, the page settles once the store is set up", async 
   const api = await fakeApi(page);
   let asked = 0;
   page.on("request", (r) => {
-    if (r.method() === "GET" && new URL(r.url()).pathname === "/api/organisation/settings") asked++;
+    if (r.method() === "GET" && new URL(r.url()).pathname === orgApi("/organisation/settings")) asked++;
   });
   await page.goto(inOrg("/organisation/settings"));
   await page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" }).check();
@@ -149,7 +149,7 @@ test("embedding is offered only while the export is on, and says when it caught 
 
   await embedToggle.check();
   await expect(embedToggle).toBeChecked();
-  expect(api.writes.at(-1)).toEqual(["PUT", "/api/organisation/settings", { embed_run_history: true }]);
+  expect(api.writes.at(-1)).toEqual(["PUT", orgApi("/organisation/settings"), { embed_run_history: true }]);
   // The backfill: the page keeps asking until it's caught up.
   await expect(status).toHaveText("Embedding the exported messages…");
   api.settings.history_embedded_at = "2026-10-16T11:00:00Z";
@@ -164,7 +164,7 @@ test("embedding is offered only while the export is on, and says when it caught 
 test("a switch still being saved when another tab opens is read back on returning", async ({ page }) => {
   const api = await fakeApi(page);
   // The save takes a while: the user leaves the tab and comes back before it lands.
-  await page.route("**/api/organisation/settings", async (route) => {
+  await page.route(`**${orgApi("/organisation/settings")}`, async (route) => {
     if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 1000));
     await route.fallback();
   });
@@ -182,5 +182,5 @@ test("a switch still being saved when another tab opens is read back on returnin
   api.settings.history_ready = true;
   api.settings.history_exported_at = "2026-10-16T10:00:00Z";
   await expect(status).toContainText("Last exported");
-  expect(api.writes).toEqual([["PUT", "/api/organisation/settings", { export_run_history: true }]]);
+  expect(api.writes).toEqual([["PUT", orgApi("/organisation/settings"), { export_run_history: true }]]);
 });

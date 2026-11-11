@@ -12,6 +12,7 @@ from conftest import (
     delete_user,
     join_organisation,
     make_user,
+    org_of,
     register,
     store_of,
 )
@@ -309,10 +310,17 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
             tool_call_id=None,
         )
         about = notifications.SCHEMA_CHANGE_REQUEST
-        notifications.notify(db, [member.id], about, {"request_id": "2", "data_store_id": "other"})
+        other = org_of(db, elsewhere).id
+        notifications.notify(
+            db, [member.id], other, about, {"request_id": "2", "data_store_id": "other"}
+        )
         # One they've read already no longer reaches them, and stays.
         notifications.notify(
-            db, [member.id], about, {"request_id": "3", "data_store_id": str(store_id)}
+            db,
+            [member.id],
+            org_of(db, user).id,
+            about,
+            {"request_id": "3", "data_store_id": str(store_id)},
         )
         db.flush()
         db.execute(

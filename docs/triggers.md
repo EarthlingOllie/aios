@@ -4,7 +4,7 @@
 first is a **schedule**: a cron expression (5 fields, or `@hourly`, `@daily`, `@weekly`,
 `@monthly`, `@yearly`) in an IANA timezone. The **Scheduler** page lists every schedule, the
 next to run first, and creates, edits, pauses and deletes them; each agent's and workflow's page
-does the same for its own (`/api/triggers`). Schedules belong to the organisation (see
+does the same for its own (`/api/o/{org}/triggers`). Schedules belong to the organisation (see
 [Accounts and organisations](accounts-and-organisations.md#what-the-organisation-owns)), and a
 schedule's run records its schedule rather than a member.
 

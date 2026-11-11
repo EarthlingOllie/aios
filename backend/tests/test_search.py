@@ -118,7 +118,7 @@ def test_search_endpoint_rejects_bad_params(client, params):
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[current_data_store] = uuid.uuid4
     try:
-        resp = client.get("/api/search", params=params)
+        resp = client.get("/api/o/1/search", params=params)
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 422

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * Archiving an agent from its page: one confirmation that shows, read-only, what uses it, and is
@@ -58,8 +58,8 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
   await show(page, "All").click();
   await expect(links(page)).toHaveText([/Builder/, /Other/]);
   expect(api.writes).toEqual([
-    ["POST", `/api/agents/${agent.id}/archive`, null],
-    ["POST", `/api/agents/${agent.id}/unarchive`, null],
+    ["POST", orgApi(`/agents/${agent.id}/archive`), null],
+    ["POST", orgApi(`/agents/${agent.id}/unarchive`), null],
   ]);
 });
 

@@ -107,7 +107,7 @@ The login roles' passwords are generated with the row, stored encrypted with a k
 `DATA_STORE_CREDENTIALS_KEY`, and sent to Postgres only as SCRAM verifiers, so the app's logs
 never have them, and a server logging statements has only the encrypted ones (in the
 `data_stores` insert), useless without the key. The API returns only a store's status and
-usage (`GET /api/data-store`).
+usage (`GET /api/o/{org}/data-store`).
 
 `python -m aios.datastores.provision migrate-all` (Compose's `migrate-stores`, and a deploy step
 after the platform's migration) finishes provisioning any store left `provisioning` or `failed`,
@@ -154,7 +154,7 @@ queues the ingest, and deletes the object again if either of those fails (unless
 still there); the ingest reads it back from S3 (when S3 can't answer for now, the document
 waits, and the task tries again a minute later, up to ten times), and deleting a document
 deletes its object, then its row (so should S3 refuse, the document stays to be deleted
-again). Downloading (`GET /api/documents/{id}/download`) looks the document up in the
+again). Downloading (`GET /api/o/{org}/documents/{id}/download`) looks the document up in the
 organisation's store, so another's is a 404, and redirects to a presigned `GetObject` link that
 saves it under its original name and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS` (60). Anyone holding
 a link can use it until then, so one is minted per click and never shown on the page. Links are
@@ -166,7 +166,7 @@ objects, under `stores/*`, and the app subnets reach it through an S3 gateway en
 
 ### Tables
 
-The Data page's **Tables** (`GET /api/data/tables`, `.../tables/{table}/rows` and
+The Data page's **Tables** (`GET /api/o/{org}/data/tables`, `.../tables/{table}/rows` and
 `.../tables/{table}/value`, in `aios.api.data` and `aios.datastores.tables`) show the store's
 `data` tables, with their columns and row counts (the planner's estimate for a big table), and
 their rows a page at a time. They read as `_ro` through `aios.datastores.reads`, as

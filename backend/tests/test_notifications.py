@@ -4,6 +4,7 @@ deciding it clears them. Each user only ever sees their own."""
 import uuid
 
 import pytest
+from conftest import org_of
 from test_schema_change_requests import CONTACTS, Script, agent, queued, start, store  # noqa: F401
 
 from aios import worker
@@ -66,6 +67,17 @@ def test_requesting_a_change_notifies_the_owner(api, agent, store, queued):  # n
         "data_store_id": str(store.id),
     }
     assert notification["read_at"] is None
+
+
+def test_a_notification_says_which_organisation_its_from(api, db, user, agent, queued):  # noqa: F811
+    """Notifications are the person's, from every organisation they're in: each names its own, so
+    opening it goes there."""
+    start(api, agent, Script(CONTACTS))
+
+    [notification] = api.get("/api/notifications").json()["notifications"]
+
+    org = org_of(db, user)
+    assert notification["organisation"] == {"id": org.id, "slug": org.slug}
 
 
 def test_a_requests_notification_says_what_it_asks_for(api, agent, queued):  # noqa: F811

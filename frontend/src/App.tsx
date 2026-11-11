@@ -18,7 +18,7 @@ import {
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
-import { api, ApiError, describeError, fullName, onSessionEnded, type Me } from "@/lib/api";
+import { api, ApiError, describeError, fullName, onSessionEnded, openOrganisationApi, type Me } from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
 import { CurrentUserContext, ReloadCurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
 import {
@@ -108,7 +108,16 @@ export default function App({ organisation = null }: { organisation?: string | n
   const location = useLocation();
   const onSignedOutPage = SIGNED_OUT_PATHS.includes(location.pathname);
   const user = auth.status === "signed-in" ? auth.user : null;
-  const member = user !== null && organisation !== null && user.organisations.some((o) => o.slug === organisation);
+  const membership = organisation === null ? undefined : user?.organisations.find((o) => o.slug === organisation);
+  const member = membership !== undefined;
+  // Before any page asks: the API's prefix is the organisation's id (its slug is the link's). A
+  // page opened without one (an invitation link's) is shown in the one used last.
+  const apiOrganisation =
+    membership ??
+    (user !== null && organisation === null
+      ? user.organisations.find((o) => o.slug === organisationToOpen(user.organisations, lastOrganisation()))
+      : undefined);
+  if (apiOrganisation !== undefined) openOrganisationApi(apiOrganisation.id);
   useEffect(() => {
     if (member && organisation !== null) rememberOrganisation(organisation);
   }, [member, organisation]);

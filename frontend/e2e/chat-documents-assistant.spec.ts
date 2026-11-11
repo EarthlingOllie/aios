@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi, inOrg } from "./fake-api";
+import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /** The documents assistant joins each new chat, and `/` opens the Chats section. */
 
@@ -33,7 +33,7 @@ test("a new chat has the documents assistant as a member, to mention like any ag
   // Mentioned like any agent, it answers as one: its acknowledgement and card, then its reply.
   await expect.poll(() => api.writes.at(-1)).toEqual([
     "POST",
-    `/api/chats/${chat.id}/messages`,
+    orgApi(`/chats/${chat.id}/messages`),
     {
       body: `@[Documents assistant](agent:${assistant.id}) what's in my notes?`,
       mentions: [{ kind: "agent", id: assistant.id }],

@@ -20,10 +20,15 @@ from aios.models import Notification
 SCHEMA_CHANGE_REQUEST = "schema_change_request"
 
 
-def notify(db: Session, user_ids: Iterable[int], kind: str, ref: dict[str, Any]) -> None:
-    """Add a notification of `kind` about `ref` for each user, in the caller's transaction (so
-    it commits, or doesn't, with what it's about)."""
-    db.add_all(Notification(user_id=user_id, kind=kind, ref=ref) for user_id in user_ids)
+def notify(
+    db: Session, user_ids: Iterable[int], organisation_id: int, kind: str, ref: dict[str, Any]
+) -> None:
+    """Add a notification of `kind` about `ref`, from the organisation, for each user, in the
+    caller's transaction (so it commits, or doesn't, with what it's about)."""
+    db.add_all(
+        Notification(user_id=user_id, organisation_id=organisation_id, kind=kind, ref=ref)
+        for user_id in user_ids
+    )
 
 
 def mark_read_about(db: Session, kind: str, ref: dict[str, Any]) -> None:

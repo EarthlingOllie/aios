@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser, inOrg } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 // How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
@@ -37,7 +37,7 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
     /Sam Jones.*owner/,
     /Terry Tester/,
   ]);
-  expect(api.writes).toEqual([["POST", `/api/chats/${chat.id}/join`, null]]);
+  expect(api.writes).toEqual([["POST", orgApi(`/chats/${chat.id}/join`), null]]);
   await page.getByRole("tab", { name: "Chat" }).click();
 
   // And having joined, they can leave again; it's back to one to join.
@@ -46,7 +46,7 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
   await expect(page.getByRole("button", { name: "Join", exact: true })).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
   await expect(listItem(page, "Design")).toContainText("Not joined");
-  expect(api.writes.at(-1)).toEqual(["POST", `/api/chats/${chat.id}/leave`, null]);
+  expect(api.writes.at(-1)).toEqual(["POST", orgApi(`/chats/${chat.id}/leave`), null]);
 });
 
 test("the owner is offered no Leave", async ({ page }) => {

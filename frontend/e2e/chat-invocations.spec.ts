@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi, inOrg } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg, orgApi } from "./fake-api";
 import { setHidden } from "./visibility";
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
@@ -49,7 +49,7 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
   expect(api.writes).toEqual([
     [
       "POST",
-      `/api/chats/${chat.id}/messages`,
+      orgApi(`/chats/${chat.id}/messages`),
       {
         body: `@[Report](workflow:${report.id}) Summarise the week`,
         mentions: [{ kind: "workflow", id: report.id }],

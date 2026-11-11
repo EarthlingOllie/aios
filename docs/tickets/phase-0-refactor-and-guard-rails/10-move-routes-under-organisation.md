@@ -28,19 +28,23 @@ The in-memory fake API and every browser spec move with the screens. The domains
 batches, each its own change, and each route's unprefixed form goes in the change that moves
 it: no transition routes are kept.
 
+Revision 0056 gives each notification its organisation: an existing one gets its schema change
+request's store's, and one whose store has no organisation any more goes. Deciding a schema
+change request and the schedule preview took no organisation before, and now take it.
+
 [Spec](../../specs/phase-0-refactor-and-guard-rails.md)
 
 **Blocked by:** [09: Organisation in the path](09-organisation-in-the-path.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every screen listed above works under the organisation's slug.
-- [ ] The generated scoping test covers every moved route, each answering 404 to a non-member.
-- [ ] Only the routes listed as unscoped remain unscoped.
-- [ ] Each notification carries its organisation's id and slug, and opening it goes to that
+- [x] Every screen listed above works under the organisation's slug.
+- [x] The generated scoping test covers every moved route, each answering 404 to a non-member.
+- [x] Only the routes listed as unscoped remain unscoped.
+- [x] Each notification carries its organisation's id and slug, and opening it goes to that
   organisation.
-- [ ] Two tabs on two organisations work independently: a message posted in each lands in that
+- [x] Two tabs on two organisations work independently: a message posted in each lands in that
   tab's organisation.
-- [ ] The fake API and every browser spec use organisation-prefixed links, and the browser tests
+- [x] The fake API and every browser spec use organisation-prefixed links, and the browser tests
   pass.
-- [ ] The full-stack test passes.
+- [x] The full-stack test passes.

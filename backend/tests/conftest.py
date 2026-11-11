@@ -39,10 +39,53 @@ from aios.passwords import hash_password
 from aios.sandbox import runner
 from aios.testing import fake_model
 
+# The first segments of the API's unscoped paths (`aios.api.scoping`): what's the person's, not
+# any one organisation's. `o` is the organisation prefix itself.
+UNSCOPED = {"auth", "dev", "me", "invites", "notifications", "tools", "o"}
+
+
+def unscoped(path: str) -> bool:
+    """Whether an API path is one of the unscoped routes', or already under the prefix."""
+    rest = path.removeprefix("/api/")
+    return rest.split("/", 1)[0].split("?", 1)[0] in UNSCOPED or rest == "triggers/timezones"
+
+
+class OrganisationClient(TestClient):
+    """A client whose requests to an organisation's routes go under the organisation prefix, in
+    the organisation of whoever is signed in: `get("/api/agents")` asks for
+    `/api/o/<their organisation's id>/agents`, as the browser does in the organisation a page is
+    open in. A path already under the prefix (to name another organisation) is sent as it is,
+    and so is one of the unscoped routes'.
+
+    Who's signed in is the user `current_user` is overridden with (the `api` fixture), else
+    whoever `/api/me` says the client's session is; signed out, the path is sent as it is (no
+    route answers it). Tests are about the routes' behaviour in an organisation, so most needn't
+    name it; `test_organisation_prefix.py` is about the prefix itself."""
+
+    def _organisation_id(self) -> int | None:
+        override = app.dependency_overrides.get(current_user)
+        if override is not None:
+            user_id = override().id
+        else:
+            me = self.get("/api/me")
+            if me.status_code != 200:
+                return None
+            user_id = me.json()["id"]
+        with SessionLocal() as db:
+            org = organisations.membership_of(db, user_id)
+            return None if org is None else org.id
+
+    def request(self, method, url, *args, **kwargs):
+        if isinstance(url, str) and url.startswith("/api/") and not unscoped(url):
+            org_id = self._organisation_id()
+            if org_id is not None:
+                url = f"/api/o/{org_id}/{url.removeprefix('/api/')}"
+        return super().request(method, url, *args, **kwargs)
+
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    return OrganisationClient(app)
 
 
 @pytest.fixture
@@ -221,7 +264,7 @@ def signed_in_client(user: User) -> TestClient:
     data = {"user_id": user.id, "session_version": user.session_version}
     session = base64.b64encode(json.dumps(data).encode())
     cookie = TimestampSigner(settings.session_secret.get_secret_value()).sign(session)
-    return TestClient(app, cookies={settings.session_cookie: cookie.decode()})
+    return OrganisationClient(app, cookies={settings.session_cookie: cookie.decode()})
 
 
 def register(client: TestClient, first_name: str, last_name: str = "Tester", **values):
