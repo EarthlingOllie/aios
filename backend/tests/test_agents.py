@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import psycopg
 import pytest
-from conftest import build_user, delete_user, make_user, org_of
+from conftest import build_user, delete_user, org_of, provisioned_user, user_store
 from sqlalchemy import func
 
 from aios import checkpoints, turn_lease, ui_stream
@@ -14,9 +14,10 @@ from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
 from aios.auth import current_organisation, current_user
+from aios.datastores.models import Agent
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Agent, Organisation
+from aios.models import Organisation
 from aios.testing.fake_model import ToolCall, model, replies, use_model
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
@@ -266,11 +267,9 @@ def test_skill_archive_waits_for_in_flight_attach(api, user):
     agent = make_agent(api, "Bot")
     result = {}
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # An agent save that has resolved (and locked) the skill but not yet committed.
-        skills = agents_api.resolve_skill_versions(
-            session, org_of(session, user), [skill["current_version"]["id"]]
-        )
+        skills = agents_api.resolve_skill_versions(session, [skill["current_version"]["id"]])
         archiver = threading.Thread(
             target=lambda: result.update(resp=api.post(f"/api/skills/{skill['id']}/archive"))
         )
@@ -295,11 +294,11 @@ def test_skill_archive_waits_for_in_flight_attach(api, user):
     assert [a["agent_name"] for a in used] == ["Bot"]
 
 
-def test_starting_a_run_waits_for_an_in_flight_agent_archive(api):
+def test_starting_a_run_waits_for_an_in_flight_agent_archive(api, user):
     agent = make_agent(api, "Bot")
     result = {}
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # An archive that has locked the agent, but not committed yet.
         assert lock_live(session, Agent, [agent["id"]])
         session.get(Agent, agent["id"]).archived_at = func.now()
@@ -318,7 +317,9 @@ def test_starting_a_run_waits_for_an_in_flight_agent_archive(api):
 
 def test_other_users_cannot_see_agents(api, client, db):
     agent = make_agent(api, "Mine")
-    other = make_user(db, "other")
+    # Another organisation, with a store of its own, which has no agents: ids are each store's
+    # own, so the same id names nothing there.
+    other = provisioned_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(f"/api/agents/{agent['id']}").status_code == 404
@@ -334,7 +335,7 @@ def test_other_users_cannot_read_an_archived_agents_versions(api, client, db):
     url = f"/api/agents/{agent['id']}"
     assert api.post(f"{url}/archive").status_code == 200
     assert api.get(f"{url}/versions/1").status_code == 200
-    other = make_user(db, "other")
+    other = provisioned_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         for gone in (url, f"{url}/versions", f"{url}/versions/1"):

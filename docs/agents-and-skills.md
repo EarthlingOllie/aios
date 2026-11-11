@@ -26,7 +26,9 @@ list's search box, except while typing in a field.
 
 Agents and skills are **versioned**. Each has an editable identity row (name, description) and a
 chain of immutable versions (`agent_versions`, `skill_versions`) holding everything that affects
-the model's behaviour:
+the model's behaviour. They're all in the organisation's store, with the skill versions each
+agent version pins (`agent_version_skills`) and its tools (`agent_version_tools`); see
+[Stores](stores.md#agents-skills-and-workflows):
 
 - Changing an agent's prompt, skills or tools (or a tool's settings) creates a new version.
   Renaming doesn't, and nor does saving without changes (configs are compared by hash).

@@ -9,9 +9,8 @@ import math
 import psycopg
 import pytest
 from conftest import add_document, store_of
-from sqlalchemy import update
 from test_agents import agent_body, make_agent
-from test_data_tools import as_owner, provisioned, run_tools
+from test_data_tools import as_owner, provisioned, run_tools, set_status
 from test_provisioning import login_url
 
 from aios import worker
@@ -394,11 +393,14 @@ def test_updates_and_deletes_over_the_row_cap_are_refused_before_they_run(
 @pytest.mark.parametrize(
     "status", [DataStoreStatus.provisioning, DataStoreStatus.failed, DataStoreStatus.deleting]
 )
-def test_it_says_why_the_store_isnt_ready(api, db, user, agent, status):
-    db.execute(update(DataStore).where(DataStore.id == store_of(user)).values(status=status))
-    db.commit()
-
-    result = write(api, agent, table="fish", operation="delete", where={"id": 1})
+def test_it_says_why_the_store_isnt_ready(api, user, agent, status):
+    # Once the turn has its agent (from the store, while it was ready).
+    (result,) = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="delete", where={"id": 1}),
+        as_turn_starts=lambda: set_status(store_of(user), status),
+    )
 
     assert result == {"error": store_not_ready(status)}
 
@@ -407,12 +409,19 @@ def test_it_says_why_the_store_isnt_ready(api, db, user, agent, status):
     ("change", "says"), [("NOLOGIN", "couldn't be reached"), ("CONNECTION LIMIT 0", "busy")]
 )
 def test_a_store_that_cant_be_reached_is_an_error_for_the_model(api, store, agent, change, says):
-    url = get_settings().data_store_provisioner_url
-    with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
-        provisioner.execute(f'ALTER ROLE "{store.role_prefix}_rw" {change}')
-    dispose_engines()
+    def unreachable() -> None:
+        # Once the turn has started: making the run, and starting its turn, read the store.
+        url = get_settings().data_store_provisioner_url
+        with psycopg.connect(libpq_conninfo(url), autocommit=True) as provisioner:
+            provisioner.execute(f'ALTER ROLE "{store.role_prefix}_rw" {change}')
+        dispose_engines()
 
-    result = write(api, agent, table="fish", operation="delete", where={"id": 1})
+    (result,) = run_tools(
+        api,
+        agent,
+        call(table="fish", operation="delete", where={"id": 1}),
+        as_turn_starts=unreachable,
+    )
 
     assert set(result) == {"error"}
     assert says in result["error"]

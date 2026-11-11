@@ -4,7 +4,6 @@ machinery's cap (`aios.firing`)."""
 import asyncio
 from dataclasses import dataclass
 
-from fastapi import HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
@@ -12,6 +11,8 @@ from aios import firing, handoff, invocations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
+from aios.datastores import organisation_store
+from aios.datastores.models import Agent, Workflow
 from aios.db import SessionLocal
 from aios.models import (
     ChatInvocation,
@@ -37,21 +38,24 @@ class InvocationFiring:
         if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
         message = db.get(ChatMessage, invocation.message_id)
-        try:
+        organisation_id = invocations.organisation_of(db, invocation)
+        with organisation_store(organisation_id) as store:
+            workflow = store.get(Workflow, invocation.workflow_id)
+            if workflow is None:
+                raise firing.CantStart("The workflow has been deleted.")
             run = workflows_api.new_workflow_run(
                 db,
-                invocation.workflow,
+                store,
+                organisation_id,
+                workflow,
                 invocations.run_input(invocation.brief, message.body),
                 created_by=invocation.requested_by,
             )
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_404_NOT_FOUND:
-                raise firing.CantStart("The workflow has been deleted.") from exc
-            raise
-        invocation.workflow_run_id = run.id
-        # Commits the run and the link to it; if it can't be queued the run is deleted, and the
-        # link with it (SET NULL).
-        workflows_api.queue_workflow_run(db, run)
+            invocation.workflow_run_id = run.id
+            # Commits the run and the link to it; if it can't be queued the run is deleted, and
+            # the link with it (SET NULL). Then the workflow's share lock in the store goes.
+            workflows_api.queue_workflow_run(db, run)
+            store.commit()
         invocations.mark_running(db, self.invocation_id)
         db.commit()
         return None
@@ -84,23 +88,25 @@ class TurnFiring:
         invocation = db.get(ChatInvocation, self.invocation_id)
         if invocation is None or invocation.status != ChatInvocationStatus.briefing:
             return None
-        agent = invocation.agent
         body = db.get(ChatMessage, invocation.message_id).body
         prompt = invocations.run_input(invocation.brief, body)
-        try:
-            # The agent's lock first, then the invocation's, as deleting the agent takes them.
-            run = agents_api.new_agent_run(db, agent, created_by=invocation.requested_by)
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_404_NOT_FOUND:
-                raise firing.CantStart("The agent has been deleted.") from exc
-            raise
-        invocation = invocations.lock(db, self.invocation_id)
-        if invocation is None or invocation.status != ChatInvocationStatus.briefing:
-            db.rollback()
-            return None
-        invocation.agent_run_id = run.id
-        invocations.mark_running(db, self.invocation_id)
-        db.commit()
+        organisation_id = invocations.organisation_of(db, invocation)
+        with organisation_store(organisation_id) as store:
+            agent = store.get(Agent, invocation.agent_id)
+            if agent is None:
+                raise firing.CantStart("The agent has been deleted.")
+            # The agent's share lock (in the store) first, then the invocation's.
+            run = agents_api.new_agent_run(
+                db, store, organisation_id, agent, created_by=invocation.requested_by
+            )
+            invocation = invocations.lock(db, self.invocation_id)
+            if invocation is None or invocation.status != ChatInvocationStatus.briefing:
+                db.rollback()
+                return None
+            invocation.agent_run_id = run.id
+            invocations.mark_running(db, self.invocation_id)
+            db.commit()
+            store.commit()
         # Titled after what was asked.
         return firing.Turn(agent.id, run.id, prompt, title=invocations.message_text(body))
 

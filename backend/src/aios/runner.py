@@ -5,7 +5,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from aios import llm
 from aios.agent import ChatDeps
-from aios.models import AgentVersion
+from aios.datastores.models import AgentVersion
 from aios.tools import AgentTool, build_tool
 from aios.tools.web_search import WEB_SEARCH
 

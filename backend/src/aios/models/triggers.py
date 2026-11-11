@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -16,9 +17,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from aios.models.agents import Agent
 from aios.models.base import Base
-from aios.models.workflows import Workflow, WorkflowRun
+from aios.models.workflows import WorkflowRun
 
 # Triggers start agents and workflows without a user in the loop. Each has a kind; the only one
 # so far is a schedule (a cron expression in a timezone). Kind-specific settings are columns that
@@ -58,14 +58,10 @@ class Trigger(Base):
     target_kind: Mapped[TriggerTargetKind] = mapped_column(
         Enum(TriggerTargetKind, name="trigger_target_kind")
     )
-    # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted, and
-    # deleting one deletes its triggers; the cascade is for deleting the organisation.
-    agent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), index=True
-    )
-    workflow_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
-    )
+    # Exactly one is set, matching `target_kind`: the agent or workflow, in the organisation's
+    # store (`aios.datastores.models`), so not a foreign key. They're archived, never deleted.
+    agent_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    workflow_id: Mapped[int | None] = mapped_column(Integer, index=True)
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
     # The message an agent run starts with, or a workflow run's input.
     input: Mapped[str] = mapped_column(Text, server_default="")
@@ -98,8 +94,6 @@ class Trigger(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    agent: Mapped[Agent | None] = relationship()
-    workflow: Mapped[Workflow | None] = relationship()
     last_workflow_run: Mapped[WorkflowRun | None] = relationship(
         foreign_keys=[last_workflow_run_id]
     )

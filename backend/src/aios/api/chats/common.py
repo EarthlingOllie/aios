@@ -8,16 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from aios.api.provenance import Provenance, UserOut, provenance
+from aios.datastores import organisation_store
+from aios.datastores.models import Agent, Workflow
 from aios.db import DbId
 from aios.models import (
-    Agent,
     Chat,
     ChatMember,
     ChatMemberKind,
     ChatMemberRole,
     ChatVisibility,
     Organisation,
-    Workflow,
 )
 
 CHAT_NAME_INDEX = "uq_chats_organisation_id_name"
@@ -92,7 +92,32 @@ class ChatOut(ChatSummary):
     members: ChatMembersOut
 
 
-def member_out(member: ChatMember) -> ChatMemberOut:
+# An agent or workflow member's name, and whether it's archived, by (kind, id).
+Targets = dict[tuple[ChatMemberKind, int], tuple[str, bool]]
+
+
+def chat_targets(chat: Chat) -> Targets:
+    """The chat's agent and workflow members as they are in its organisation's store (which
+    the members name them in, by id): their names, and whether each is archived."""
+    found: Targets = {}
+    wanted = {
+        kind: [m.agent_id or m.workflow_id for m in chat.members if m.kind == kind]
+        for kind in TARGET_MODELS
+    }
+    if not any(wanted.values()):
+        return found
+    with organisation_store(chat.organisation_id, "ro") as store:
+        for kind, ids in wanted.items():
+            model = TARGET_MODELS[kind]
+            for i, name, archived_at in store.execute(
+                select(model.id, model.name, model.archived_at).where(model.id.in_(ids))
+            ):
+                found[kind, i] = (name, archived_at is not None)
+    return found
+
+
+def member_out(member: ChatMember, targets: Targets) -> ChatMemberOut:
+    """The member, an agent or workflow one as `targets` (`chat_targets`) has it."""
     if member.kind == ChatMemberKind.user:
         user = member.user
         return ChatMemberOut(
@@ -103,15 +128,16 @@ def member_out(member: ChatMember) -> ChatMemberOut:
             name=user.full_name,
             added_at=member.added_at,
         )
-    target = member.agent if member.kind == ChatMemberKind.agent else member.workflow
+    target_id = member.agent_id or member.workflow_id
+    name, archived = targets.get((member.kind, target_id), ("", False))
     return ChatMemberOut(
         id=member.id,
         kind=member.kind,
         role=None,
-        target_id=target.id,
-        name=target.name,
+        target_id=target_id,
+        name=name,
         added_at=member.added_at,
-        archived=target.archived_at is not None,
+        archived=archived,
     )
 
 
@@ -122,9 +148,10 @@ def ordered_members(chat: Chat) -> list[ChatMember]:
 
 
 def members_out(chat: Chat) -> ChatMembersOut:
+    targets = chat_targets(chat)
     by_kind: dict[ChatMemberKind, list[ChatMemberOut]] = {kind: [] for kind in ChatMemberKind}
     for member in ordered_members(chat):
-        by_kind[member.kind].append(member_out(member))
+        by_kind[member.kind].append(member_out(member, targets))
     return ChatMembersOut(
         users=by_kind[ChatMemberKind.user],
         agents=by_kind[ChatMemberKind.agent],
@@ -165,11 +192,7 @@ def chat_out(db: Session, chat: Chat, user_id: int) -> ChatOut:
     )
 
 
-LOAD = (
-    selectinload(Chat.members).selectinload(ChatMember.user),
-    selectinload(Chat.members).selectinload(ChatMember.agent),
-    selectinload(Chat.members).selectinload(ChatMember.workflow),
-)
+LOAD = (selectinload(Chat.members).selectinload(ChatMember.user),)
 
 
 def load(db: Session, chat_id: int) -> Chat:

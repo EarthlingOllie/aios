@@ -78,25 +78,25 @@ from aios.datastores.connections import (
 )
 from aios.datastores.models import (
     EMBEDDABLE,
+    Agent,
+    AgentVersion,
     HistoryAgentRun,
     HistoryMessage,
     HistoryWorkflowRun,
     HistoryWorkflowRunStep,
+    Workflow,
+    WorkflowVersion,
 )
 from aios.db import SessionLocal, engine
 from aios.embeddings import embed_documents
 from aios.models import (
-    Agent,
     AgentRun,
-    AgentVersion,
     DataStore,
     DataStoreStatus,
     HistoryExport,
     HistoryExportKind,
-    Workflow,
     WorkflowRun,
     WorkflowRunStep,
-    WorkflowVersion,
 )
 
 log = logging.getLogger(__name__)
@@ -214,11 +214,7 @@ def enqueue_runs(db: Session, *where: ColumnElement[bool], deleting: bool = Fals
     through their rows. Their copies are kept while the export is off, so they go in the outbox
     then too, if the store has its `history` tables, and are deleted once it's back on. The
     workflow runs whose steps held them go in too: the steps stay, without them."""
-    runs = (
-        select(AgentRun.id, Agent.organisation_id)
-        .join(Agent, Agent.id == AgentRun.agent_id)
-        .where(*where)
-    )
+    runs = select(AgentRun.id, AgentRun.organisation_id).where(*where)
     _enqueue(db, HistoryExportKind.agent_run, runs, deleting)
     if deleting:
         held = select(WorkflowRunStep.run_id).where(
@@ -233,18 +229,14 @@ def enqueue_workflow_runs(db: Session, *where: ColumnElement[bool], deleting: bo
     ending it (`aios.workflows._end_runs`), deleting it, and pausing and resuming it, once runs
     can pause. A writer of both kinds writes its agent runs' rows first, as the export marks
     them."""
-    runs = (
-        select(WorkflowRun.id, Workflow.organisation_id)
-        .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
-        .where(*where)
-    )
+    runs = select(WorkflowRun.id, WorkflowRun.organisation_id).where(*where)
     _enqueue(db, HistoryExportKind.workflow_run, runs, deleting)
 
 
 def enqueue_everything(db: Session, organisation_id: int) -> None:
     """Put every run in the organisation, of each kind, in its store's outbox (a backfill)."""
-    enqueue_runs(db, Agent.organisation_id == organisation_id)
-    enqueue_workflow_runs(db, Workflow.organisation_id == organisation_id)
+    enqueue_runs(db, AgentRun.organisation_id == organisation_id)
+    enqueue_workflow_runs(db, WorkflowRun.organisation_id == organisation_id)
 
 
 @contextmanager
@@ -370,8 +362,9 @@ def flatten(run_id: int, messages: list[BaseMessage]) -> list[dict[str, Any]]:
     return rows
 
 
-def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
-    """The runs that still exist, as `history.agent_runs` rows."""
+def _load_runs(data_store_id: uuid.UUID, run_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """The runs that still exist, as `history.agent_runs` rows: from the platform, with their
+    agents' names and their versions' numbers and models from the store."""
     workflow_run = (
         select(WorkflowRunStep.run_id)
         .where(WorkflowRunStep.agent_run_id == AgentRun.id)
@@ -383,9 +376,7 @@ def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
             select(
                 AgentRun.id,
                 AgentRun.agent_id,
-                Agent.name.label("agent_name"),
-                AgentVersion.version.label("agent_version"),
-                AgentVersion.model,
+                AgentRun.agent_version_id,
                 AgentRun.title,
                 # The member who started it; none for a schedule's run.
                 AgentRun.created_by.label("user_id"),
@@ -394,12 +385,26 @@ def _load_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 AgentRun.message_count,
                 AgentRun.created_at,
                 AgentRun.updated_at,
-            )
-            .join(Agent, Agent.id == AgentRun.agent_id)
-            .join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
-            .where(AgentRun.id.in_(run_ids))
+            ).where(AgentRun.id.in_(run_ids))
         ).mappings()
-        return {r["id"]: _clean(dict(r)) for r in rows}
+        runs = [dict(r) for r in rows]
+    with store_session(data_store_id, "ro") as store:
+        versions = {
+            v.id: v
+            for v in store.execute(
+                select(AgentVersion.id, Agent.name, AgentVersion.version, AgentVersion.model)
+                .join(Agent, Agent.id == AgentVersion.agent_id)
+                .where(AgentVersion.id.in_([r["agent_version_id"] for r in runs]))
+            )
+        }
+    loaded = {}
+    for run in runs:
+        version = versions.get(run.pop("agent_version_id"))
+        if version is None:
+            continue
+        run |= {"agent_name": version.name, "agent_version": version.version}
+        loaded[run["id"]] = _clean({**run, "model": version.model})
+    return loaded
 
 
 def _upsert(store: Session, table: type, rows: list[dict[str, Any]]) -> None:
@@ -453,16 +458,16 @@ def _pending() -> ColumnElement[bool]:
     )
 
 
-def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
+def _load_workflow_runs(data_store_id: uuid.UUID, run_ids: list[int]) -> dict[int, dict[str, Any]]:
     """The workflow runs that still exist, as `history.workflow_runs` rows, each with its
-    steps (at every depth) as `history.workflow_run_steps` rows under "steps"."""
+    steps (at every depth) as `history.workflow_run_steps` rows under "steps": from the
+    platform, with their workflows' names and their versions' numbers from the store."""
     with SessionLocal() as db:
         rows = db.execute(
             select(
                 WorkflowRun.id,
                 WorkflowRun.workflow_id,
-                Workflow.name.label("workflow_name"),
-                WorkflowVersion.version.label("workflow_version"),
+                WorkflowRun.workflow_version_id,
                 # The member who started it; none for a schedule's run.
                 WorkflowRun.created_by.label("user_id"),
                 cast(WorkflowRun.status, Text).label("status"),
@@ -472,12 +477,25 @@ def _load_workflow_runs(run_ids: list[int]) -> dict[int, dict[str, Any]]:
                 WorkflowRun.created_at,
                 WorkflowRun.started_at,
                 WorkflowRun.finished_at,
-            )
-            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
-            .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
-            .where(WorkflowRun.id.in_(run_ids))
+            ).where(WorkflowRun.id.in_(run_ids))
         ).mappings()
-        runs = {r["id"]: {**_clean(dict(r)), "steps": []} for r in rows}
+        found = [dict(r) for r in rows]
+        with store_session(data_store_id, "ro") as store:
+            versions = {
+                v.id: v
+                for v in store.execute(
+                    select(WorkflowVersion.id, Workflow.name, WorkflowVersion.version)
+                    .join(Workflow, Workflow.id == WorkflowVersion.workflow_id)
+                    .where(WorkflowVersion.id.in_([r["workflow_version_id"] for r in found]))
+                )
+            }
+        runs = {}
+        for run in found:
+            version = versions.get(run.pop("workflow_version_id"))
+            if version is None:
+                continue
+            run |= {"workflow_name": version.name, "workflow_version": version.version}
+            runs[run["id"]] = {**_clean(run), "steps": []}
         steps = db.execute(
             select(
                 WorkflowRunStep.id,
@@ -547,7 +565,7 @@ def _read(batch: _Batch, data_store_id: uuid.UUID) -> None:
         (HistoryExportKind.workflow_run, _load_workflow_runs),
     ):
         ids = [p.source_id for p in batch.of(kind)]
-        batch.found[kind] = load(ids) if ids else {}
+        batch.found[kind] = load(data_store_id, ids) if ids else {}
     agent_runs = [p for p in batch.of(HistoryExportKind.agent_run) if batch.exists(p)]
     if not agent_runs:
         return

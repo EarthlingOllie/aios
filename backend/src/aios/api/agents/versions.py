@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from aios.api.agents.common import (
     AgentOut,
@@ -17,15 +17,14 @@ from aios.api.agents.common import (
     tool_count,
     version_out,
 )
+from aios.api.agents.crud import run_counts
 from aios.api.agents.runs import build_version_tools
 from aios.api.provenance import UserOut, people
 from aios.api.skills import lock_skills
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores.models import AgentVersion
 from aios.db import DB, DbId
-from aios.models import (
-    AgentRun,
-    AgentVersion,
-)
+from aios.models import AgentRun
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -44,18 +43,14 @@ class AgentVersionSummary(BaseModel):
 
 
 @router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
-def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
-    agent = get_org_agent(db, org, agent_id)
-    run_count = (
-        select(func.count(AgentRun.id))
-        .where(AgentRun.agent_version_id == AgentVersion.id)
-        .scalar_subquery()
-    )
-    rows = db.execute(
-        select(AgentVersion, skill_count(AgentVersion.id), tool_count(AgentVersion.id), run_count)
+def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    agent = get_org_agent(store, agent_id)
+    rows = store.execute(
+        select(AgentVersion, skill_count(AgentVersion.id), tool_count(AgentVersion.id))
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
+    runs = run_counts(db, org.id, AgentRun.agent_version_id, [v.id for v, *_ in rows])
     known = people(db, org.id, [v.created_by for v, *_ in rows])
     return [
         AgentVersionSummary(
@@ -66,38 +61,47 @@ def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB):
             created_by=known.get(v.created_by),
             skill_count=skills,
             tool_count=tools,
-            run_count=runs,
+            run_count=runs.get(v.id, 0),
         )
-        for v, skills, tools, runs in rows
+        for v, skills, tools in rows
     ]
 
 
 @router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
-def get_agent_version_detail(agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
+def get_agent_version_detail(
+    agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     # Also once the agent is archived: workflow versions, and their past runs, still pin its
     # versions.
-    agent = get_org_agent(db, org, agent_id)
-    return version_out(get_agent_version(db, agent, number))
+    agent = get_org_agent(store, agent_id)
+    version = get_agent_version(store, agent, number)
+    return version_out(version, people(db, org.id, [version.created_by]))
 
 
 @router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
 def restore_agent_version(
-    agent_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+    agent_id: DbId,
+    number: DbId,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Make an old version's config current again, as a new version (numbers only go up)."""
-    agent = get_org_agent(db, org, agent_id)
-    old = get_agent_version(db, agent, number)
+    agent = get_org_agent(store, agent_id)
+    old = get_agent_version(store, agent, number)
     # Kept as stored, like an unchanged save, but only if a run could still load them.
     build_version_tools(old, "That version can't be restored")
     tools = [(t.tool_key, t.config) for t in old.tools]
-    if any(s.archived_at is not None for s in lock_skills(db, {sv.skill_id for sv in old.skills})):
+    skill_ids = {sv.skill_id for sv in old.skills}
+    if any(s.archived_at is not None for s in lock_skills(store, skill_ids)):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "That version uses a skill that has since been archived."
         )
-    lock_agent(db, agent)
+    lock_agent(store, agent)
     agent.updated_by = user.id
     save_agent_version(
-        db,
+        store,
         agent,
         base_prompt=old.base_prompt,
         skills=list(old.skills),
@@ -106,5 +110,5 @@ def restore_agent_version(
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
-    db.commit()
-    return agent_out(db, agent)
+    store.commit()
+    return agent_out(db, org.id, agent)

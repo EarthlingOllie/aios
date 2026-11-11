@@ -13,23 +13,30 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Column,
     Computed,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
     MetaData,
     PrimaryKeyConstraint,
     String,
+    Table,
     Text,
+    UniqueConstraint,
     false,
     func,
 )
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from aios.models.workflows import WorkflowNodeKind
 
 EMBEDDING_DIM = 1024
 
@@ -123,6 +130,320 @@ class Person(StoreBase):
     # When they left; null while they're a member.
     left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# Agents, skills and workflows: what the organisation builds. Each is an editable identity row
+# (its name and description) and a chain of immutable version rows holding everything that
+# affects model behaviour (`aios.versioning`); runs, evals and traces point at a version, so they
+# always know exactly what the model was given. None is ever deleted, only archived: older
+# versions pin their versions, and their runs are the members' history with them. Who made,
+# changed, archived or saved each is a platform user id, resolved through the people mirror
+# (`aios.api.provenance`); a store has no users table, so there's no foreign key. Ids are the
+# store's own, and repeat across organisations.
+
+
+class Skill(StoreBase):
+    """Reusable instructions that can be attached to agents. Content lives on SkillVersion."""
+
+    __tablename__ = "skills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Which member made it and which last changed it.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("skill_versions.id", use_alter=True, name="fk_skills_current_version_id")
+    )
+    # When it was archived, and by which member; both null while it isn't. Archived rather
+    # than deleted: old agent versions pin its versions.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    current_version: Mapped["SkillVersion | None"] = relationship(
+        foreign_keys=[current_version_id], post_update=True
+    )
+
+    __table_args__ = (
+        # Names are unique among the skills, archived ones included: an archived skill's name
+        # stays reserved.
+        Index("uq_skills_name", "name", unique=True),
+        {"comment": "Skills: reusable instructions agents can be given"},
+    )
+
+
+class SkillVersion(StoreBase):
+    """An immutable snapshot of a skill's content."""
+
+    __tablename__ = "skill_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    # The skill's name when this version was saved: it's rendered into agent instructions.
+    name: Mapped[str] = mapped_column(String(255))
+    # Short summary of when to use the skill; `content` holds the instructions themselves.
+    description: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    skill: Mapped[Skill] = relationship(foreign_keys=[skill_id])
+
+    __table_args__ = (
+        UniqueConstraint("skill_id", "version", name="uq_skill_versions_skill_id_version"),
+        {"comment": "Each skill's versions, which never change once saved"},
+    )
+
+
+agent_version_skills = Table(
+    "agent_version_skills",
+    StoreBase.metadata,
+    Column("agent_version_id", ForeignKey("agent_versions.id"), primary_key=True),
+    Column("skill_version_id", ForeignKey("skill_versions.id"), primary_key=True),
+    Column("position", Integer, nullable=False),
+    Index("ix_agent_version_skills_skill_version_id", "skill_version_id"),
+    comment="The skill versions each agent version pins, in order",
+)
+
+
+class Agent(StoreBase):
+    """An agent's identity. Its prompt and skills live on AgentVersion."""
+
+    __tablename__ = "agents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Which member made it and which last changed it.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, server_default="")
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_versions.id", use_alter=True, name="fk_agents_current_version_id")
+    )
+    # Which of the app's built-in agents it is, if it's one: made by the app rather than by a
+    # member (`aios.assistant`), and found again by this. Null for the members' own agents.
+    builtin: Mapped[str | None] = mapped_column(String(32))
+    # When it was archived, and by which member; both null while it isn't. Archived rather
+    # than deleted: workflow versions pin its versions, and its runs are the members' history
+    # with it. An archived agent starts nothing new.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    current_version: Mapped["AgentVersion | None"] = relationship(
+        foreign_keys=[current_version_id], post_update=True
+    )
+
+    __table_args__ = (
+        # Names are unique among the agents, archived ones included: an archived agent's name
+        # stays reserved, so unarchiving it never clashes.
+        Index("uq_agents_name", "name", unique=True),
+        # One agent of each built-in kind.
+        Index(
+            "uq_agents_builtin",
+            "builtin",
+            unique=True,
+            postgresql_where=sql_text("builtin IS NOT NULL"),
+        ),
+        {"comment": "Agents: each a name, and its current version"},
+    )
+
+
+class AgentVersion(StoreBase):
+    """An immutable snapshot of everything that shapes an agent's behaviour."""
+
+    __tablename__ = "agent_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    base_prompt: Mapped[str] = mapped_column(Text)
+    # LangChain "provider:model" name; null means the deployment default (settings.llm_model).
+    model: Mapped[str | None] = mapped_column(String(255))
+    # The exact instructions sent to the model, rendered once when the version is created.
+    instructions: Mapped[str] = mapped_column(Text)
+    config_hash: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    agent: Mapped[Agent] = relationship(foreign_keys=[agent_id])
+    # View-only: rows carry a position, so versioning.save_agent_version inserts them directly.
+    skills: Mapped[list[SkillVersion]] = relationship(
+        secondary=agent_version_skills, order_by=agent_version_skills.c.position, viewonly=True
+    )
+    tools: Mapped[list["AgentVersionTool"]] = relationship(
+        order_by="AgentVersionTool.position", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "version", name="uq_agent_versions_agent_id_version"),
+        {"comment": "Each agent's versions, which never change once saved"},
+    )
+
+
+class AgentVersionTool(StoreBase):
+    """A tool from the library (`aios.tools`) given to an agent version, with its settings."""
+
+    __tablename__ = "agent_version_tools"
+    __table_args__ = {"comment": "The tools each agent version has, in order, with their settings"}
+
+    agent_version_id: Mapped[int] = mapped_column(ForeignKey("agent_versions.id"), primary_key=True)
+    # A key in aios.tools.TOOLS. Tools are code, so there's no row to reference.
+    tool_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The tool's validated settings (its config_model, defaults filled in).
+    config: Mapped[dict] = mapped_column(JSONB)
+    position: Mapped[int] = mapped_column(Integer)
+
+
+# Workflows graph agents together, and can nest other workflows as subgraphs. They're versioned
+# like agents: an identity row plus immutable versions, and each version pins the exact agent and
+# workflow versions its nodes run. A version can only pin versions that already exist, so nesting
+# is always finite: no workflow version can contain itself, however deep.
+
+
+class Workflow(StoreBase):
+    """A workflow's identity. Its graph lives on WorkflowVersion."""
+
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Which member made it and which last changed it.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, server_default="")
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_versions.id", use_alter=True, name="fk_workflows_current_version_id")
+    )
+    # Where the editor draws each node, by node key: {"key": {"x": 0, "y": 0}}. Presentation
+    # only, like the name, so it isn't versioned; nodes without a position are laid out for you.
+    layout: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"))
+    # When it was archived, and by which member; both null while it isn't. Archived rather
+    # than deleted: other workflows' versions pin its versions.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    current_version: Mapped["WorkflowVersion | None"] = relationship(
+        foreign_keys=[current_version_id], post_update=True
+    )
+
+    __table_args__ = (
+        # Names are unique among the workflows, archived ones included: an archived workflow's
+        # name stays reserved.
+        Index("uq_workflows_name", "name", unique=True),
+        {"comment": "Workflows: each a name, its current version and its layout"},
+    )
+
+
+class WorkflowVersion(StoreBase):
+    """An immutable snapshot of a workflow's graph: its nodes and the edges between them."""
+
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    config_hash: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    workflow: Mapped[Workflow] = relationship(foreign_keys=[workflow_id])
+    nodes: Mapped[list["WorkflowNode"]] = relationship(
+        order_by="WorkflowNode.position",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="WorkflowNode.workflow_version_id",
+    )
+    edges: Mapped[list["WorkflowEdge"]] = relationship(
+        order_by="WorkflowEdge.position", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "version", name="uq_workflow_versions_workflow_id_version"),
+        {"comment": "Each workflow's versions, which never change once saved"},
+    )
+
+
+class WorkflowNode(StoreBase):
+    """A step in a workflow version: a pinned agent version, or a pinned workflow version run as
+    a subgraph."""
+
+    __tablename__ = "workflow_nodes"
+
+    workflow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_versions.id"), primary_key=True
+    )
+    # Names the node within its version; edges refer to nodes by key.
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[WorkflowNodeKind] = mapped_column(
+        Enum(WorkflowNodeKind, name="workflow_node_kind")
+    )
+    # Exactly one of these is set, matching `kind`. Agents and workflows are archived, never
+    # deleted, so the versions a node pins are always there.
+    agent_version_id: Mapped[int | None] = mapped_column(ForeignKey("agent_versions.id"))
+    subworkflow_version_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_versions.id"))
+    position: Mapped[int] = mapped_column(Integer)
+
+    agent_version: Mapped[AgentVersion | None] = relationship()
+    subworkflow_version: Mapped[WorkflowVersion | None] = relationship(
+        foreign_keys=[subworkflow_version_id]
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'agent' AND agent_version_id IS NOT NULL AND subworkflow_version_id IS NULL)"
+            " OR (kind = 'workflow' AND subworkflow_version_id IS NOT NULL"
+            " AND agent_version_id IS NULL)",
+            name="ck_workflow_nodes_target",
+        ),
+        Index("ix_workflow_nodes_agent_version_id", "agent_version_id"),
+        Index("ix_workflow_nodes_subworkflow_version_id", "subworkflow_version_id"),
+        {"comment": "Each workflow version's nodes: an agent version or a workflow version"},
+    )
+
+
+class WorkflowEdge(StoreBase):
+    """Control passes from `source` to `target` (node keys in the same version) when `source`
+    finishes. Nodes with no incoming edge are where the workflow starts."""
+
+    __tablename__ = "workflow_edges"
+
+    workflow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_versions.id"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workflow_version_id", "source"],
+            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
+            name="fk_workflow_edges_source",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_version_id", "target"],
+            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
+            name="fk_workflow_edges_target",
+        ),
+        {"comment": "Each workflow version's edges: control passes from source to target"},
+    )
 
 
 class DocumentStatus(enum.StrEnum):

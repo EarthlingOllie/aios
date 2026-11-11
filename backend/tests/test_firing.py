@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 
+from conftest import home_organisation
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent
@@ -13,8 +14,10 @@ from test_triggers import make_agent
 from aios import checkpoints, firing
 from aios.api.agents import new_agent_run
 from aios.config import get_settings
+from aios.datastores import organisation_store
+from aios.datastores.models import Agent
 from aios.db import SessionLocal
-from aios.models import Agent, AgentRun, AgentRunStatus
+from aios.models import AgentRun, AgentRunStatus
 from aios.testing.fake_model import model, replies, use_model
 
 
@@ -42,8 +45,12 @@ class Mention:
         assert self.prepared
         if self.cant_start:
             raise firing.CantStart(self.cant_start)
-        run = new_agent_run(db, db.get(Agent, self.agent_id), created_by=self.user_id)
-        db.commit()
+        org_id = home_organisation(db, self.user_id).id
+        with organisation_store(org_id) as store:
+            agent = store.get(Agent, self.agent_id)
+            run = new_agent_run(db, store, org_id, agent, created_by=self.user_id)
+            db.commit()
+            store.commit()
         self.run_id = run.id
         return firing.Turn(self.agent_id, run.id, self.message)
 

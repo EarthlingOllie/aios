@@ -20,7 +20,6 @@ from aios import workflows as package
 from aios.agent import ChatDeps
 from aios.db import SessionLocal
 from aios.models import (
-    Agent,
     AgentRun,
     WorkflowRun,
     WorkflowRunStatus,
@@ -105,23 +104,23 @@ def _start_step(
     """
     with SessionLocal() as db:
         live = node.agent is not None
-        if live:
-            db.execute(
-                select(Agent.id).where(Agent.id == node.agent.agent_id).with_for_update(read=True)
-            )
         # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
         # worker went on), whose steps, and their exported copy, are final. Share-locked, so
         # ending it waits for this, or this for that.
-        status = db.scalar(
-            select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
-        )
-        if status is None:
+        found = db.execute(
+            select(WorkflowRun.status, WorkflowRun.organisation_id)
+            .where(WorkflowRun.id == run_id)
+            .with_for_update(read=True)
+        ).one_or_none()
+        if found is None:
             raise RunError("The run has been deleted")
+        status, organisation_id = found
         if status != WorkflowRunStatus.running:
             raise RunError("The run has ended")
         agent_run_id = None
         if live:
             agent_run = AgentRun(
+                organisation_id=organisation_id,
                 agent_id=node.agent.agent_id,
                 agent_version_id=node.agent.agent_version_id,
                 # Titled after its message, like a run after its first turn.

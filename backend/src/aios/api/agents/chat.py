@@ -25,10 +25,10 @@ from aios.api.agents.common import refuse_if_archived
 from aios.api.agents.runs import build_version_tools, get_live_run, get_org_run
 from aios.api.schema_changes import waiting_on
 from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import data_store_of, history, schema_changes
+from aios.datastores import data_store_for, history, schema_changes, store_session
+from aios.datastores.models import Agent, AgentVersion
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
-    Agent,
     AgentRun,
     AgentRunStatus,
     Organisation,
@@ -51,15 +51,15 @@ log = logging.getLogger(__package__)
 router = APIRouter(prefix="/api")
 
 
-def trace_metadata(run: AgentRun) -> dict[str, Any]:
+def trace_metadata(run: AgentRun, agent: Agent, version: AgentVersion) -> dict[str, Any]:
     """Attached to the run's trace (Langfuse), e.g. for filtering and experiments: the agent's
-    organisation, which the run executes for, and the member who started it."""
-    version = run.agent_version
+    organisation, which the run executes for, and the member who started it. `agent` and
+    `version` are the run's, from the organisation's store."""
     return tracing.trace_metadata(
         session_id=checkpoints.thread_id(run.id),
-        organisation_id=run.agent.organisation_id,
+        organisation_id=run.organisation_id,
         created_by=run.created_by,
-        tags=[f"agent:{run.agent.name}", f"agent-version:{version.version}"],
+        tags=[f"agent:{agent.name}", f"agent-version:{version.version}"],
         agent_run_id=run.id,
         **tracing.agent_version_metadata(version),
     )
@@ -97,34 +97,42 @@ def load_chat_context(
         if org is None
         else get_org_run(db, org, agent_id, run_id)
     )
-    if org is not None:
-        # A new turn asked for by hand, which an archived agent doesn't start. What started the
-        # other turns checked when it started their runs, and they finish as already going.
-        refuse_if_archived(run.agent)
-    version = run.agent_version
-    tools = build_version_tools(version)
-    # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy token
-    # carries the domains the tool expects.
-    sandbox_domains = next(
-        (
-            stored_settings(t.tool_key, t.config).allowed_domains
-            for t in version.tools
-            if t.tool_key == "run_python"
-        ),
-        None,
-    )
+    # The agent's organisation's, on this session rather than one of its own alongside it;
+    # committed in case it's created.
+    data_store_id = data_store_for(run.organisation_id, db)
+    db.commit()
+    # The agent and the version the run pinned, from the organisation's store.
+    with store_session(data_store_id, "ro") as store:
+        agent = store.get(Agent, run.agent_id)
+        version = store.get(AgentVersion, run.agent_version_id)
+        if agent is None or version is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        if org is not None:
+            # A new turn asked for by hand, which an archived agent doesn't start. What started
+            # the other turns checked when it started their runs, and they finish as already
+            # going.
+            refuse_if_archived(agent)
+        tools = build_version_tools(version)
+        # Parsed as the tool itself is built (`build_tool`), so a pre-warmed sandbox's proxy
+        # token carries the domains the tool expects.
+        sandbox_domains = next(
+            (
+                stored_settings(t.tool_key, t.config).allowed_domains
+                for t in version.tools
+                if t.tool_key == "run_python"
+            ),
+            None,
+        )
+        metadata = trace_metadata(run, agent, version)
+        model, instructions = version.model, version.instructions
     if sandbox_domains is not None and not worth_prewarming(
         db, run.id, first_turn=run.message_count == 0
     ):
         sandbox_domains = None
-    # The agent's organisation's, on this session rather than one of its own alongside it;
-    # committed in case it's created.
-    data_store_id = data_store_of(db, Agent, agent_id)
-    db.commit()
     return ChatContext(
-        model=version.model,
-        instructions=version.instructions,
-        metadata=trace_metadata(run),
+        model=model,
+        instructions=instructions,
+        metadata=metadata,
         tools=tools,
         sandbox_domains=sandbox_domains,
         data_store_id=data_store_id,

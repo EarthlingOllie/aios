@@ -18,17 +18,16 @@ from aios import invocations
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
 from aios.config import get_settings
-from aios.datastores import history, schema_changes
+from aios.datastores import history, schema_changes, store_session
+from aios.datastores.models import Workflow, WorkflowVersion
 from aios.db import SessionLocal
 from aios.models import (
     SchemaChangeRequest,
     SchemaChangeStatus,
-    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowRunStep,
     WorkflowStepStatus,
-    WorkflowVersion,
 )
 from aios.ui_stream import error_text
 from aios.workflows.steps import NodeWaiting, RecordedStep, RunState, StepFailed, _run_graph
@@ -113,18 +112,17 @@ def _claim(run_id: int) -> Claimed | None:
             )
             # After the update: `ran` is its running time so far.
             .returning(
-                WorkflowRun.workflow_version_id, WorkflowRun.input, WorkflowRun.created_by, ran
+                WorkflowRun.organisation_id,
+                WorkflowRun.workflow_version_id,
+                WorkflowRun.input,
+                WorkflowRun.created_by,
+                ran,
             )
         ).one_or_none()
         if row is None:
             fail_stopped_runs(db, WorkflowRun.id == run_id)
             return None
-        version_id, text, created_by, ran_seconds = row
-        workflow, version = db.execute(
-            select(Workflow, WorkflowVersion.version)
-            .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
-            .where(WorkflowVersion.id == version_id)
-        ).one()
+        organisation_id, version_id, text, created_by, ran_seconds = row
         recorded = {
             tuple(step.path): RecordedStep(
                 id=step.id,
@@ -135,9 +133,16 @@ def _claim(run_id: int) -> Claimed | None:
             )
             for step in db.scalars(select(WorkflowRunStep).where(WorkflowRunStep.run_id == run_id))
         }
-        # In the claim's transaction: if the store can't be resolved, the run isn't claimed...
+        # In the claim's transaction: if the store can't be resolved, or its workflow read from
+        # it, the run isn't claimed...
         try:
-            data_store_id = package.data_store_of(db, Workflow, workflow.id)
+            data_store_id = package.data_store_for(organisation_id, db)
+            with store_session(data_store_id, "ro") as store:
+                workflow_id, name, version = store.execute(
+                    select(Workflow.id, Workflow.name, WorkflowVersion.version)
+                    .join(WorkflowVersion, WorkflowVersion.workflow_id == Workflow.id)
+                    .where(WorkflowVersion.id == version_id)
+                ).one()
         except Exception as exc:
             db.rollback()
             error = exc
@@ -159,10 +164,10 @@ def _claim(run_id: int) -> Claimed | None:
         return None
     state = RunState(
         id=run_id,
-        organisation_id=workflow.organisation_id,
+        organisation_id=organisation_id,
         created_by=created_by,
-        workflow_id=workflow.id,
-        workflow_name=workflow.name,
+        workflow_id=workflow_id,
+        workflow_name=name,
         workflow_version=version,
         data_store_id=data_store_id,
         recorded=recorded,
@@ -329,9 +334,9 @@ class _Heartbeat:
         await asyncio.to_thread(self.thread.join)
 
 
-def _load(version_id: int, strict: bool = True) -> Graph:
-    with SessionLocal() as db:
-        return load_graph(db, version_id, strict=strict)
+def _load(data_store_id, version_id: int, strict: bool = True) -> Graph:
+    with store_session(data_store_id, "ro") as store:
+        return load_graph(store, version_id, strict=strict)
 
 
 # A run that hasn't ended: what a worker ends itself, and a run waiting for a decision.
@@ -478,7 +483,9 @@ async def _execute(claimed: Claimed) -> None:
         async with asyncio.timeout(claimed.time_left):
             # Loaded again rather than trusted from when the run was started: e.g. a tool may
             # have left the library since. A run resuming fails only at a node that runs again.
-            graph = await asyncio.to_thread(_load, claimed.version_id, not run.recorded)
+            graph = await asyncio.to_thread(
+                _load, run.data_store_id, claimed.version_id, not run.recorded
+            )
             output = await _run_graph(run, graph, (), claimed.input)
     except TimeoutError:
         await asyncio.to_thread(fail_run, run.id, time_limit_error())

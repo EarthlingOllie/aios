@@ -36,12 +36,15 @@ blocking call, a deadlock), and stops it if the loop frees up; a node awaiting a
 the loop free, so it isn't failed.
 
 Split into `validation` (the graph), `steps` (running its nodes) and `execution` (the run). Every
-name is re-exported here, where callers import it; `data_store_of`, `trace_metadata`, `_start_step`,
-`_finish_step`, `_beat`, `HEARTBEAT_SECONDS` and `STALE_AFTER` are read here at call time, so a
-test that replaces one here replaces it for every part.
+name is re-exported here, where callers import it; `data_store_for`, `trace_metadata`,
+`_start_step`, `_finish_step`, `_beat`, `HEARTBEAT_SECONDS` and `STALE_AFTER` are read here at
+call time, so a test that replaces one here replaces it for every part.
+
+The workflow's graph (its versions, nodes and edges, and the agent versions they pin) is in the
+organisation's store; the run and its steps are on the platform.
 """
 
-from aios.datastores import data_store_of
+from aios.datastores import data_store_for
 from aios.workflows.execution import (
     HEARTBEAT_SECONDS,
     NOT_ENDED,
@@ -108,7 +111,7 @@ __all__ = [
     "_start_step",
     "alive",
     "close_requests",
-    "data_store_of",
+    "data_store_for",
     "execute_run",
     "fail_run",
     "fail_stopped_runs",

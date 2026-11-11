@@ -25,6 +25,7 @@ from aios import worker
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import people, provision
 from aios.datastores.connections import dispose_engines
+from aios.datastores.migrations import head_revision
 from aios.models import DataStoreStatus, Organisation, OrganisationMember, User
 
 
@@ -51,6 +52,13 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store_id = store_of(user)
     store = store_row(db, store_id)
     with as_owner(store) as conn:
+        # What the revisions after it made, then the mirror.
+        conn.execute(
+            "DROP TABLE aios.workflow_edges, aios.workflow_nodes, aios.workflow_versions,"
+            " aios.workflows, aios.agent_version_tools, aios.agent_version_skills,"
+            " aios.agent_versions, aios.agents, aios.skill_versions, aios.skills CASCADE"
+        )
+        conn.execute("DROP TYPE aios.workflow_node_kind")
         conn.execute("DROP TABLE aios.people")
         conn.execute("UPDATE aios.alembic_version SET version_num = '0007'")
     db.execute(update(type(store)).where(type(store).id == store_id).values(schema_revision="0007"))
@@ -58,7 +66,7 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
 
     outcome = provision.migrate_all([store_id])
 
-    assert outcome == {store_id: "0008"}
+    assert outcome == {store_id: head_revision()}
     assert mirror(db, user) == {user.id: ("Test", "User", user.email, "admin", False)}
 
 

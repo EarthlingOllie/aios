@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 import test_agents
-from conftest import delete_user, make_user, store_of
+from conftest import delete_user, provisioned_user, store_of
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
@@ -325,7 +325,7 @@ def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, q
     def broken(*args):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_of", broken)
+    monkeypatch.setattr(workflows, "data_store_for", broken)
     # Failed then and there, not left running without a worker until it's failed as stopped.
     asyncio.run(execute_run(started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
@@ -432,7 +432,9 @@ def test_runs_belong_to_the_workflows_owner(api, client, db, queued):
     assert api.delete(f"/api/workflows/{other_wf['id']}/runs/{started['id']}").status_code == 404
     assert api.get(f"{url}/{2**31}").status_code == 422
 
-    other = make_user(db, "other")
+    # Another organisation, with a store of its own: it has no such workflow (ids are each
+    # store's own), and the run isn't its.
+    other = provisioned_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get(url).status_code == 404

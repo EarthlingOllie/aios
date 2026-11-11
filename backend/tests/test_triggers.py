@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import delete_user, make_user
+from conftest import delete_user, provisioned_user
 
 from aios.auth import current_user
 from aios.cron import next_run
@@ -134,7 +134,9 @@ def test_targets_must_be_the_users_agents_or_workflows_and_not_archived(api, cli
     )
     assert api.put(url, json=schedule("agent", agent["id"])).status_code == 409
 
-    other = make_user(db, "other")
+    # Another organisation, with a store of its own: it has no such workflow (ids are each
+    # store's own).
+    other = provisioned_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         resp = client.post("/api/triggers", json=schedule("workflow", workflow["id"]))
@@ -227,7 +229,7 @@ def test_archiving_the_target_pauses_its_triggers_and_keeps_them(api):
 def test_other_users_cannot_see_or_change_triggers(api, client, db):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
-    other = make_user(db, "other")
+    other = provisioned_user(db, "other")
     try:
         app.dependency_overrides[current_user] = lambda: other
         assert client.get("/api/triggers").json() == []

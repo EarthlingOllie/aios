@@ -55,12 +55,16 @@ def test_a_new_chat_has_the_documents_assistant_as_a_member(api):
     assert [a["name"] for a in api.get("/api/agents").json()] == [NAME]
 
 
-def test_each_organisation_has_its_own_assistant(api, outsider):  # noqa: F811
+def test_each_organisation_has_its_own_assistant(api, user, outsider):  # noqa: F811
+    """Each in its organisation's store, made by whoever first needed it there (ids are each
+    store's own, so the two may share one)."""
     mine = assistant_of(make_chat(api, "Mine"))
     with signed_in_as(outsider):
         theirs = assistant_of(make_chat(api, "Theirs"))
-        assert [a["id"] for a in api.get("/api/agents").json()] == [theirs["target_id"]]
-    assert theirs["target_id"] != mine["target_id"]
+        [listed] = api.get("/api/agents").json()
+        assert (listed["id"], listed["created_by"]["id"]) == (theirs["target_id"], outsider.id)
+    [listed] = api.get("/api/agents").json()
+    assert (listed["id"], listed["created_by"]["id"]) == (mine["target_id"], user.id)
 
 
 def test_the_members_of_an_organisation_share_one_assistant(api, user, member):  # noqa: F811

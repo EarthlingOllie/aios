@@ -14,7 +14,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
 from psycopg import errors
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios import checkpoints, organisations, ratelimits
@@ -26,15 +26,7 @@ from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import (
-    Agent,
-    DataStore,
-    Organisation,
-    OrganisationMember,
-    Skill,
-    User,
-    Workflow,
-)
+from aios.models import DataStore, Organisation, OrganisationMember, User
 from aios.passwords import hash_password
 from aios.sandbox import runner
 from aios.testing import fake_model
@@ -178,10 +170,6 @@ def delete_user(db, user: User) -> None:
     for store in owned:
         db.delete(store)
     for org in orgs:
-        # What pins another's versions first (workflows pin agents', agents pin skills'): one
-        # cascading delete of them all can check a pin before it has deleted the pinning row.
-        for model in (Workflow, Agent, Skill):
-            db.execute(delete(model).where(model.organisation_id == org.id))
         db.delete(org)
     db.delete(user)
     db.commit()
@@ -233,6 +221,12 @@ def store_of(user: User) -> uuid.UUID:
     """The id of the user's organisation's data store, made (not provisioned) if it has none."""
     with SessionLocal() as db:
         return data_store_for(home_organisation(db, user.id).id)
+
+
+def user_store(user: User, role: str = "rw"):
+    """A session on the user's organisation's store (`store_session`), where its agents, skills
+    and workflows are; the store must be ready (`provisioned_user`)."""
+    return store_session(store_of(user), role)
 
 
 def join_organisation(db, of: User, handle: str | None = None, **values) -> User:

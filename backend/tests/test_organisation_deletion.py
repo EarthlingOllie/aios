@@ -14,16 +14,7 @@ from test_invitations import signed_out
 from aios import organisations
 from aios.config import Settings, get_settings
 from aios.datastores import provision
-from aios.models import (
-    Agent,
-    DataStore,
-    DataStoreStatus,
-    Notification,
-    Organisation,
-    OrganisationDeletion,
-    Skill,
-    Workflow,
-)
+from aios.models import DataStore, DataStoreStatus, Notification, Organisation, OrganisationDeletion
 from aios.worker import celery_app
 
 DELETION = "/api/organisation/deletion"
@@ -240,8 +231,7 @@ def test_after_the_grace_period_the_sweep_deletes_it_records_it_and_tears_its_st
 
         db.expire_all()
         assert db.get(Organisation, org_id) is None
-        for model in (Agent, Skill, Workflow):
-            assert db.scalars(select(model).where(model.organisation_id == org_id)).all() == []
+        # Its agents, skills and workflows were in its store, which goes (below).
         record = db.scalar(
             select(OrganisationDeletion).where(OrganisationDeletion.organisation_id == org_id)
         )

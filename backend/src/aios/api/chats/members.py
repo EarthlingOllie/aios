@@ -15,7 +15,9 @@ from aios.api.chats.common import (
     TARGET_MODELS,
     ChatOut,
     MemberIn,
+    Targets,
     chat_out,
+    chat_targets,
     get_chat_if_owner,
     get_visible_chat,
     is_member,
@@ -28,7 +30,7 @@ from aios.api.chats.common import (
     user_member,
 )
 from aios.api.skills import lock_live, on_conflict
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Chat,
@@ -64,8 +66,8 @@ class MentionablesOut(BaseModel):
     workflows: list[MentionableOut]
 
 
-def mentionable_out(member: ChatMember) -> MentionableOut:
-    out = member_out(member)
+def mentionable_out(member: ChatMember, targets: Targets) -> MentionableOut:
+    out = member_out(member, targets)
     user = member.user if member.kind == ChatMemberKind.user else None
     return MentionableOut(
         kind=out.kind,
@@ -79,12 +81,13 @@ def mentionable_out(member: ChatMember) -> MentionableOut:
 def mentionables(chat: Chat, *, archived: bool = False) -> MentionablesOut:
     """The chat's members to offer for mentioning: not its archived agents and workflows, unless
     `archived` (a mention of one is still taken, and fails at once: `aios.invocations.create`)."""
+    targets = chat_targets(chat)
     by_kind: dict[ChatMemberKind, list[MentionableOut]] = {kind: [] for kind in ChatMemberKind}
     for member in ordered_members(chat):
-        target = member.agent or member.workflow
-        if not archived and target is not None and target.archived_at is not None:
+        target = targets.get((member.kind, member.agent_id or member.workflow_id))
+        if not archived and target is not None and target[1]:
             continue
-        by_kind[member.kind].append(mentionable_out(member))
+        by_kind[member.kind].append(mentionable_out(member, targets))
     return MentionablesOut(
         users=by_kind[ChatMemberKind.user],
         agents=by_kind[ChatMemberKind.agent],
@@ -101,7 +104,14 @@ def list_mentionable(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation,
 @router.post(
     "/chats/{chat_id}/members", response_model=ChatOut, status_code=status.HTTP_201_CREATED
 )
-def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def add_member(
+    chat_id: DbId,
+    body: MemberIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
+):
     """Add a member of the organisation, or one of its agents or workflows, to the chat (its
     owner only). A user outside the organisation doesn't exist here: a 404, as one who doesn't
     exist at all is, and as one who leaves it as they're added is (`organisations.holds_member`:
@@ -115,14 +125,11 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
         )
     else:
         model = TARGET_MODELS[body.kind]
-        target = db.get(model, body.id)
-        # Not an archived one. Locked until commit, so a concurrent archive either waits for the
-        # add or wins it.
-        if (
-            target is None
-            or target.organisation_id != org.id
-            or not lock_live(db, model, [target.id], read=True)
-        ):
+        # One in the organisation's store, not an archived one. Share-locked there until the
+        # store's transaction ends, after the add commits, so a concurrent archive either waits
+        # for the add or wins it.
+        target = store.get(model, body.id)
+        if target is None or not lock_live(store, model, [target.id], read=True):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.kind}")
         member = ChatMember(kind=body.kind, added_by=user.id, **{f"{body.kind}_id": target.id})
     # After the agent or workflow is locked, the order everything that locks both takes, so the
@@ -136,6 +143,7 @@ def add_member(chat_id: DbId, body: MemberIn, user: CurrentUser, org: CurrentOrg
     # The check above can lose a race with another add of the same member; this catches that.
     with on_conflict(db, MEMBER_CONSTRAINTS[body.kind], ALREADY_A_MEMBER):
         db.commit()
+    store.commit()
     return chat_out(db, load(db, chat.id), user.id)
 
 

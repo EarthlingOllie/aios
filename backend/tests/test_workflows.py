@@ -3,15 +3,16 @@ import threading
 from contextlib import contextmanager
 
 import pytest
-from conftest import delete_user, made_by, make_user, org_of
+from conftest import user_store
 from fastapi import HTTPException
-from sqlalchemy import event, func
+from sqlalchemy import Engine, event, func
 from sqlalchemy.exc import IntegrityError
 
 from aios.api import workflows as workflows_api
+from aios.api.provenance import built_by
 from aios.api.skills import lock_live, unique_name
-from aios.db import SessionLocal, engine
-from aios.models import Agent, Workflow, WorkflowNodeKind
+from aios.datastores.models import Agent, Workflow
+from aios.models import WorkflowNodeKind
 from aios.versioning import NodeSpec, save_workflow_version
 from aios.workflows import GraphError, validate_graph
 
@@ -245,22 +246,26 @@ def test_workflow_list_says_what_each_contains(api):
 
 def test_restore_refuses_a_version_that_contains_its_workflow(api, db, user):
     """Versions saved before nesting was checked through other workflows can't be restored."""
-    from aios.models import Workflow, WorkflowNodeKind
+    from aios.datastores.models import Workflow
+    from aios.models import WorkflowNodeKind
     from aios.versioning import NodeSpec, save_workflow_version
 
     agent = make_agent(api, "solo")
     inner = make_workflow(api, "inner", [agent_node("only", agent)])
     outer = make_workflow(api, "outer", [workflow_node("run_inner", inner)])
     # inner v2 -> outer v1 -> inner v1, written directly as the old check would have allowed.
-    save_workflow_version(
-        db,
-        db.get(Workflow, inner["id"]),
-        nodes=[NodeSpec("run_outer", WorkflowNodeKind.workflow, outer["current_version"]["id"])],
-        edges=[],
-        note=None,
-        user_id=user.id,
-    )
-    db.commit()
+    with user_store(user) as store:
+        save_workflow_version(
+            store,
+            store.get(Workflow, inner["id"]),
+            nodes=[
+                NodeSpec("run_outer", WorkflowNodeKind.workflow, outer["current_version"]["id"])
+            ],
+            edges=[],
+            note=None,
+            user_id=user.id,
+        )
+        store.commit()
     resp = api.put(
         f"/api/workflows/{inner['id']}", json=workflow_body("inner", [agent_node("x", agent)])
     )
@@ -294,20 +299,11 @@ def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
 
 
 def test_invalid_workflows_are_rejected(api, db):
-    from aios.models import Agent
-    from aios.versioning import save_agent_version
-
     agent = make_agent(api, "mine")
-    other = make_user(db, "someone-else")
-    theirs = Agent(**made_by(db, other), name="theirs")
-    db.add(theirs)
-    their_version = save_agent_version(
-        db, theirs, base_prompt="", skills=[], note=None, user_id=other.id
-    )
-    db.commit()
     try:
         cases = [
-            ([{"key": "x", "kind": "agent", "version_id": their_version.id}], [], "agent version"),
+            # One the organisation's store doesn't have (another's ids are their store's own).
+            ([{"key": "x", "kind": "agent", "version_id": 99_999}], [], "agent version"),
             ([{"key": "x", "kind": "workflow", "version_id": 0}], [], "workflow version"),
             ([agent_node("a", agent), agent_node("b", agent)], [("a", "b"), ("b", "a")], "cycle"),
             ([agent_node("a", agent)], [("a", "missing")], "unknown node"),
@@ -320,21 +316,22 @@ def test_invalid_workflows_are_rejected(api, db):
         make_workflow(api, "dup")
         assert api.post("/api/workflows", json=workflow_body("dup")).status_code == 409
     finally:
-        delete_user(db, other)
+        pass
 
 
 @contextmanager
 def count_queries():
+    """The statements run meanwhile, on any engine: the platform's and the stores'."""
     statements = []
 
     def record(conn, cursor, statement, *args):
         statements.append(statement)
 
-    event.listen(engine, "before_cursor_execute", record)
+    event.listen(Engine, "before_cursor_execute", record)
     try:
         yield statements
     finally:
-        event.remove(engine, "before_cursor_execute", record)
+        event.remove(Engine, "before_cursor_execute", record)
 
 
 def test_workflow_responses_take_a_fixed_number_of_queries(api):
@@ -437,29 +434,33 @@ def test_restoring_a_version_whose_targets_are_live_still_works(api):
     assert [w["name"] for w in used["workflows"]] == ["Flow"]
 
 
-def test_unique_name_only_maps_the_name_index(db, user):
+def test_unique_name_only_maps_the_name_index(user):
     """Any other integrity error, e.g. a pin of a version that doesn't exist, isn't a name clash."""
-    workflow = Workflow(**made_by(db, user), name="Broken")
-    db.add(workflow)
-    index = workflows_api.WORKFLOW_NAME_INDEX
-    with pytest.raises(IntegrityError, match="agent_version_id"), unique_name(db, "a", index):
-        save_workflow_version(
-            db,
-            workflow,
-            nodes=[NodeSpec("x", WorkflowNodeKind.agent, 2**31 - 1)],
-            edges=[],
-            note=None,
-            user_id=user.id,
-        )
-        db.commit()  # the deferred foreign key fails here
-    db.rollback()
+    with user_store(user) as store:
+        workflow = Workflow(**built_by(user.id), name="Broken")
+        store.add(workflow)
+        index = workflows_api.WORKFLOW_NAME_INDEX
+        with (
+            pytest.raises(IntegrityError, match="agent_version_id"),
+            unique_name(store, "a", index),
+        ):
+            save_workflow_version(
+                store,
+                workflow,
+                nodes=[NodeSpec("x", WorkflowNodeKind.agent, 2**31 - 1)],
+                edges=[],
+                note=None,
+                user_id=user.id,
+            )
+            store.commit()
+        store.rollback()
 
-    db.add(Workflow(**made_by(db, user), name="Taken"))
-    db.commit()
-    with pytest.raises(HTTPException) as caught, unique_name(db, "a workflow", index):
-        db.add(Workflow(**made_by(db, user), name="Taken"))
-        db.commit()
-    assert caught.value.status_code == 409
+        store.add(Workflow(**built_by(user.id), name="Taken"))
+        store.commit()
+        with pytest.raises(HTTPException) as caught, unique_name(store, "a workflow", index):
+            store.add(Workflow(**built_by(user.id), name="Taken"))
+            store.commit()
+        assert caught.value.status_code == 409
 
 
 def run_in_thread(call) -> tuple[threading.Thread, dict]:
@@ -474,7 +475,7 @@ def held_save(session, user, workflow_id: int, nodes: list[dict]):
     """A workflow save that has checked and locked its graph, but not committed yet."""
     workflow = session.get(Workflow, workflow_id)
     body = workflows_api.WorkflowIn(**workflow_body(workflow.name, nodes))
-    specs, edges = workflows_api.resolve_graph(session, org_of(session, user), body, workflow)
+    specs, edges = workflows_api.resolve_graph(session, body, workflow)
     workflows_api.lock_new_graph(session, specs, workflow)
     return lambda: save_workflow_version(
         session, workflow, nodes=specs, edges=edges, note=None, user_id=user.id
@@ -496,7 +497,7 @@ def test_archive_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
     flow = make_workflow(api, "Flow")
     url = f"/api/{kind}s/{target['id']}"
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         save = held_save(session, user, flow["id"], [node])
         archiver, result = run_in_thread(lambda: api.post(f"{url}/archive"))
         assert archiver.is_alive(), "archive should block on the row lock"
@@ -510,12 +511,12 @@ def test_archive_waits_for_an_in_flight_save_that_runs_it(api, user, kind):
 
 
 @pytest.mark.parametrize("kind", ["agent", "workflow"])
-def test_save_waits_for_an_in_flight_archive_of_what_it_runs(api, kind):
+def test_save_waits_for_an_in_flight_archive_of_what_it_runs(api, user, kind):
     target, node = archivable(api, kind)
     flow = make_workflow(api, "Flow")
     model = Agent if kind == "agent" else Workflow
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # An archive that has locked the row, but not committed yet.
         assert lock_live(session, model, [target["id"]])
         session.get(model, target["id"]).archived_at = func.now()
@@ -538,7 +539,7 @@ def test_saves_of_workflows_that_run_each_other_lock_in_one_order(api, user):
     first = make_workflow(api, "First", [agent_node("a", agent)])
     second = make_workflow(api, "Second", [agent_node("a", agent)])
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # Saving Second to run First locks both workflows, First (the lower id) first.
         save = held_save(session, user, second["id"], [workflow_node("f", first)])
         body = workflow_body("First", [agent_node("b", agent)])
@@ -620,7 +621,7 @@ def test_agent_summaries_carry_the_current_version_id(api):
     assert summary["version_id"] == agent["current_version"]["id"]
 
 
-def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
+def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api, user):
     a = make_agent(api, "layout-race-a")
     b = make_agent(api, "layout-race-b")
     nodes = [agent_node("a", a), agent_node("b", b)]
@@ -628,7 +629,7 @@ def test_a_save_without_a_layout_keeps_one_saved_while_it_waited(api):
     wf = make_workflow(api, "racy layout", nodes)
     api.put(f"/api/workflows/{wf['id']}", json=workflow_body("racy layout", nodes, layout=layout))
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # A save that has locked the workflow and moved node a, but not committed yet.
         assert lock_live(session, Workflow, [wf["id"]])
         session.get(Workflow, wf["id"]).layout = layout | {"a": {"x": 50, "y": 50}}
@@ -682,7 +683,7 @@ def test_the_base_version_is_checked_once_locked(api, user):
     agent = make_agent(api, "Solo")
     wf = make_workflow(api, "Flow", [agent_node("a", agent)])
 
-    with SessionLocal() as session:
+    with user_store(user) as session:
         # A save of v2 that has locked the workflow, but not committed yet.
         save = held_save(session, user, wf["id"], [agent_node("b", agent)])
         body = workflow_body("Flow", [agent_node("c", agent)], base_version=1)

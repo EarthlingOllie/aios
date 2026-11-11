@@ -19,7 +19,7 @@ from aios.api.chats.common import (
 )
 from aios.api.provenance import made_by, people
 from aios.api.skills import unique_name
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.db import DB, DbId
 from aios.models import (
     Chat,
@@ -78,15 +78,18 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
 
 
 @router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
-def create_chat(body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def create_chat(
+    body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Make a chat of the organisation's, with the user as its owner and first member, and the
     organisation's documents assistant (`aios.assistant`) as its first agent. A 404 for a user
     who left the organisation as they made it (`organisations.holds_member`): it would be owned by
     someone it doesn't exist for."""
-    # It locks the organisation, which `holds_member` would otherwise lock first.
-    agent = assistant.documents_assistant(db, org, user.id)
     if not organisations.holds_member(db, org, user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # In the store, the source of truth, first: the chat on the platform names it after.
+    agent = assistant.documents_assistant(store, user.id)
+    store.commit()
     chat = Chat(
         **made_by(org.id, user.id),
         name=body.name,
@@ -104,7 +107,7 @@ def create_chat(body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: D
     chat.members.append(
         ChatMember(
             kind=ChatMemberKind.agent,
-            agent=agent,
+            agent_id=agent.id,
             added_by=user.id,
         )
     )

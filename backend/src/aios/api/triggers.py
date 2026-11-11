@@ -8,6 +8,7 @@ A trigger is its organisation's, like its target: every member sees, changes and
 one, and each says which member made it and which last changed it.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -16,19 +17,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
-from aios import cron
+from aios import cron, stored
 from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.skills import lock_live
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores.models import Agent, Workflow
 from aios.db import DB, DbId
 from aios.models import (
-    Agent,
     Organisation,
     Trigger,
     TriggerKind,
     TriggerStatus,
     TriggerTargetKind,
-    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
 )
@@ -102,19 +102,42 @@ def last_outcome(trigger: Trigger) -> tuple[TriggerStatus | None, str | None]:
     return RUN_STATUS[run.status], run.error if run.status == WorkflowRunStatus.failed else None
 
 
+def target_id(trigger: Trigger) -> int:
+    """The id of the trigger's agent or workflow, in its organisation's store."""
+    return (
+        trigger.agent_id if trigger.target_kind == TriggerTargetKind.agent else trigger.workflow_id
+    )
+
+
+def target_names(
+    organisation_id: int, triggers: Sequence[Trigger]
+) -> dict[tuple[TriggerTargetKind, int], str]:
+    """The names of the organisation's triggers' targets, from its store, by (kind, id)."""
+    found: dict[tuple[TriggerTargetKind, int], str] = {}
+    for kind, model in ((TriggerTargetKind.agent, Agent), (TriggerTargetKind.workflow, Workflow)):
+        ids = [target_id(t) for t in triggers if t.target_kind == kind]
+        for i, name in stored.names(organisation_id, model, ids).items():
+            found[kind, i] = name
+    return found
+
+
 def trigger_out(
-    db: Session, trigger: Trigger, known: dict[int, UserOut] | None = None
+    db: Session,
+    trigger: Trigger,
+    known: dict[int, UserOut] | None = None,
+    names: dict[tuple[TriggerTargetKind, int], str] | None = None,
 ) -> TriggerOut:
-    """The trigger, with who made and last changed it from `known` (`provenance.people`), else
-    read now."""
-    target = trigger.agent if trigger.target_kind == TriggerTargetKind.agent else trigger.workflow
+    """The trigger, with who made and last changed it from `known` (`provenance.people`) and its
+    target's name from `names` (`target_names`), else read now."""
+    if names is None:
+        names = target_names(trigger.organisation_id, [trigger])
     last_status, last_error = last_outcome(trigger)
     return TriggerOut(
         id=trigger.id,
         kind=trigger.kind,
         target_kind=trigger.target_kind,
-        target_id=target.id,
-        target_name=target.name,
+        target_id=target_id(trigger),
+        target_name=names.get((trigger.target_kind, target_id(trigger)), ""),
         enabled=trigger.enabled,
         input=trigger.input,
         cron=trigger.cron,
@@ -150,9 +173,10 @@ def checked_schedule(expr: str, tz: str) -> tuple[str, str]:
     return expr, tz
 
 
-def apply(db: Session, org: Organisation, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
+def apply(db: Session, store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> None:
     """Set the trigger from the request (made by `user_id`), checked, and schedule its next run.
-    Its target must be one of the organisation's."""
+    Its target must be one of the organisation's: in its store, `store`, whose share lock on the
+    target is held until the caller ends `store`'s transaction, after committing `db`'s."""
     expr, tz = checked_schedule(body.cron, body.timezone)
     if not body.input.strip():
         raise HTTPException(
@@ -163,16 +187,17 @@ def apply(db: Session, org: Organisation, user_id: int, trigger: Trigger, body: 
             else "A schedule for a workflow needs an input to start its run with.",
         )
     model = Agent if body.target_kind == TriggerTargetKind.agent else Workflow
-    target = db.get(model, body.target_id)
-    if target is None or target.organisation_id != org.id:
+    target = store.get(model, body.target_id)
+    if target is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown {body.target_kind.value}"
         )
     # An archived target starts nothing, so its schedules can be changed only while paused.
-    # Share-locked until commit, so a concurrent archive of the target (which pauses its
-    # triggers) either waits and then pauses this one, or wins and is seen here.
-    if not lock_live(db, model, [target.id], read=True) and body.enabled:
-        db.refresh(target)
+    # Share-locked until the store's transaction ends, after the trigger is committed, so a
+    # concurrent archive of the target (which pauses its triggers) either waits and then pauses
+    # this one, or wins and is seen here.
+    if not lock_live(store, model, [target.id], read=True) and body.enabled:
+        store.refresh(target)
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"The {body.target_kind.value} {target.name} is archived."
         )
@@ -188,11 +213,7 @@ def apply(db: Session, org: Organisation, user_id: int, trigger: Trigger, body: 
     trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
 
 
-LOAD = (
-    selectinload(Trigger.agent),
-    selectinload(Trigger.workflow),
-    selectinload(Trigger.last_workflow_run),
-)
+LOAD = (selectinload(Trigger.last_workflow_run),)
 
 
 def fail_stopped_last_runs(db: Session, *where) -> None:
@@ -269,15 +290,19 @@ def list_triggers(
         query = query.where(Trigger.workflow_id == target_id)
     triggers = db.scalars(query).all()
     known = people(db, org.id, [i for t in triggers for i in (t.created_by, t.updated_by)])
-    return [trigger_out(db, t, known) for t in triggers]
+    names = target_names(org.id, triggers)
+    return [trigger_out(db, t, known, names) for t in triggers]
 
 
 @router.post("/triggers", response_model=TriggerOut, status_code=status.HTTP_201_CREATED)
-def create_trigger(body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def create_trigger(
+    body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     trigger = Trigger(**made_by(org.id, user.id))
-    apply(db, org, user.id, trigger, body)
+    apply(db, store, user.id, trigger, body)
     db.add(trigger)
     db.commit()
+    store.commit()
     return trigger_out(db, load(db, trigger.id))
 
 
@@ -303,14 +328,20 @@ def get_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB):
 
 @router.put("/triggers/{trigger_id}", response_model=TriggerOut)
 def update_trigger(
-    trigger_id: DbId, body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+    trigger_id: DbId,
+    body: TriggerIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Replace the trigger's settings; its next run is worked out again from now. A firing that
     hasn't started its run yet is dropped (see `cancel_unstarted_firing`)."""
     trigger = get_org_trigger(db, org, trigger_id)
-    apply(db, org, user.id, trigger, body)
+    apply(db, store, user.id, trigger, body)
     cancel_unstarted_firing(db, Trigger.id == trigger.id)
     db.commit()
+    store.commit()
     return trigger_out(db, load(db, trigger.id))
 
 

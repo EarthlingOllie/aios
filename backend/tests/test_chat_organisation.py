@@ -135,9 +135,13 @@ def test_the_owner_adds_another_members_agent_and_workflow_and_a_fellow_member(
     assert resp.status_code == 201, resp.text
 
     # Nothing of another organisation's, and nobody from it: they don't exist here.
+    # Ids are each organisation's store's own: ones of theirs whose ids nothing here has.
     with signed_in_as(outsider):
-        theirs = make_agent(api, "Outsider's agent")
-        their_workflow = make_workflow(api, "Outsider's workflow")
+        for n in range(4):
+            theirs = make_agent(api, f"Outsider's agent {n}")
+            their_workflow = make_workflow(api, f"Outsider's workflow {n}")
+    assert theirs["id"] not in [a["id"] for a in api.get("/api/agents").json()]
+    assert their_workflow["id"] not in [w["id"] for w in api.get("/api/workflows").json()]
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": outsider.id})
     assert resp.status_code == 404
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": -999})
@@ -163,8 +167,13 @@ def test_a_new_chats_first_agent_is_the_organisations_documents_assistant(
     assert assistant["name"] == "Documents assistant"
     # The same agent for every member's chat, whoever made it.
     assert [a["target_id"] for a in theirs["members"]["agents"]] == [assistant["target_id"]]
+    # Another organisation's is its own, in its store (whatever its id there).
     [their_assistant] = elsewhere["members"]["agents"]
-    assert their_assistant["target_id"] != assistant["target_id"]
+    with signed_in_as(outsider):
+        made = api.get(f"/api/agents/{their_assistant['target_id']}").json()
+    assert made["created_by"]["id"] == outsider.id
+    mine_made = api.get(f"/api/agents/{assistant['target_id']}").json()
+    assert mine_made["created_by"]["id"] != outsider.id
 
 
 def test_a_chat_says_who_made_it_and_who_last_changed_it(api, user, member):  # noqa: F811

@@ -21,7 +21,6 @@ from test_chats import signed_in_as
 from aios import organisations
 from aios.db import SessionLocal
 from aios.models import (
-    Agent,
     Chat,
     ChatVisibility,
     DataStore,
@@ -42,9 +41,21 @@ def revision(name: str):
     return module
 
 
+def before_the_store(db) -> None:
+    """Put agents, skills and workflows back in the platform database, empty, as they were
+    before they moved to the stores (revision 0060's downgrade), in this test's transaction only,
+    unless they're back already."""
+    if db.scalar(text("SELECT to_regclass('agents')")) is not None:
+        return
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0060_agents_skills_workflows_to_store").downgrade()
+
+
 def before_the_contract(db) -> None:
     """Put the schema back as it was before the contract step (revision 0048's downgrade), in
-    this test's transaction only: each row's owner is back, filled in from who made it."""
+    this test's transaction only: each row's owner is back, filled in from who made it. Agents,
+    skills and workflows are back in the platform database first (`before_the_store`)."""
+    before_the_store(db)
     with Operations.context(MigrationContext.configure(db.connection())):
         revision("0048_organisations_contract").downgrade()
 
@@ -65,6 +76,7 @@ def before_native_auth(db) -> None:
     """Put the schema back as it was before native auth (revision 0052's downgrade): GitHub's
     columns on `users`. In this test's transaction only, and with every user and organisation
     deleted in it, as the downgrade does."""
+    before_the_store(db)
     with Operations.context(MigrationContext.configure(db.connection())):
         revision("0052_native_auth").downgrade()
 
@@ -91,22 +103,29 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
         db.flush()
         db.add(OrganisationMember(organisation_id=org.id, user_id=user_id))
         made.append(org)
-    agent = Agent(organisation_id=made[1].id, created_by=second, name="Reviewer")
+    # An agent, back in the platform database as it was then.
+    before_the_store(db)
+    agent_id = db.execute(
+        text(
+            "INSERT INTO agents (organisation_id, created_by, name)"
+            " VALUES (:org, :by, 'Reviewer') RETURNING id"
+        ),
+        {"org": made[1].id, "by": second},
+    ).scalar_one()
     chat = Chat(
         organisation_id=made[0].id,
         created_by=first,
         name="design-0030",
         visibility=ChatVisibility.private,
     )
-    db.add_all([agent, chat])
+    db.add(chat)
     db.flush()
     before_the_contract(db)
-    for row in (agent, chat):
-        db.execute(
-            update(type(row))
-            .where(type(row).id == row.id)
-            .values(organisation_id=None, created_by=None)
-        )
+    db.execute(
+        text("UPDATE agents SET organisation_id = NULL, created_by = NULL WHERE id = :id"),
+        {"id": agent_id},
+    )
+    db.execute(update(Chat).where(Chat.id == chat.id).values(organisation_id=None, created_by=None))
     db.execute(delete(Organisation).where(Organisation.id.in_([o.id for o in made])))
 
     backfill_before_slugs(db)
@@ -126,7 +145,12 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
         assert org.created_by == u
         assert [m.user_id for m in org.members] == [u]
 
-    db.refresh(agent)
+    agent = db.execute(
+        text(
+            "SELECT organisation_id, created_by, updated_by, archived_by FROM agents WHERE id = :id"
+        ),
+        {"id": agent_id},
+    ).one()
     db.refresh(chat)
     assert (agent.organisation_id, agent.created_by) == (organisation_of(second).id, second)
     assert (chat.organisation_id, chat.created_by) == (organisation_of(first).id, first)

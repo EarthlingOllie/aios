@@ -5,43 +5,39 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field, FiniteFloat
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session, aliased, object_session, selectinload
+from sqlalchemy import Row, delete, func, or_, select
+from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import checkpoints, invocations, used_by
+from aios import checkpoints, invocations, stored, used_by
 from aios.api.provenance import (
     Archived,
     Provenance,
     UserOut,
     archived,
-    made_by,
+    built_by,
     people,
     provenance,
     started_by,
 )
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import disable_triggers
-from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import history
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores import history, organisation_store
+from aios.datastores.models import Agent, AgentVersion, Workflow, WorkflowNode, WorkflowVersion
 from aios.db import DB, DbId
 from aios.models import (
-    Agent,
     AgentRun,
-    AgentVersion,
     Chat,
     ChatInvocation,
     Organisation,
     SchemaChangeRequest,
     SchemaChangeStatus,
     Trigger,
-    Workflow,
-    WorkflowNode,
     WorkflowNodeKind,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowRunStep,
     WorkflowStepStatus,
-    WorkflowVersion,
 )
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.versioning import NodeSpec, save_workflow_version
@@ -60,7 +56,7 @@ from aios.workflows import (
 
 router = APIRouter(prefix="/api")
 
-WORKFLOW_NAME_INDEX = "uq_workflows_organisation_id_name"
+WORKFLOW_NAME_INDEX = "uq_workflows_name"
 
 
 class WorkflowNodeIn(BaseModel):
@@ -159,10 +155,11 @@ class WorkflowOut(Provenance, Archived):
     layout: dict[str, NodePosition]
 
 
-def get_org_workflow(db: Session, org: Organisation, workflow_id: int) -> Workflow:
-    """The organisation's workflow, archived or not; a 404 otherwise, as if it didn't exist."""
-    workflow = db.get(Workflow, workflow_id)
-    if workflow is None or workflow.organisation_id != org.id:
+def get_org_workflow(store: Session, workflow_id: int) -> Workflow:
+    """The workflow in the organisation's store (`store`), archived or not; a 404 otherwise. Ids
+    are the store's own, so another organisation's workflow is never reached, whatever its id."""
+    workflow = store.get(Workflow, workflow_id)
+    if workflow is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return workflow
 
@@ -247,10 +244,10 @@ def refuse_self_containment(db: Session, workflow: Workflow, version_ids: set[in
 
 
 def resolve_graph(
-    db: Session, org: Organisation, body: WorkflowIn, workflow: Workflow | None = None
+    db: Session, body: WorkflowIn, workflow: Workflow | None = None
 ) -> tuple[list[NodeSpec], list[tuple[str, str]]]:
     """The requested graph, checked: its shape, and that each node pins a version of one of the
-    organisation's agents or of another of its workflows."""
+    organisation's agents or of another of its workflows (in its store, `db`)."""
     edges = [(e.source, e.target) for e in body.edges]
     try:
         validate_graph([n.key for n in body.nodes], edges)
@@ -258,21 +255,15 @@ def resolve_graph(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     agent_ids = {n.version_id for n in body.nodes if n.kind == WorkflowNodeKind.agent}
     workflow_ids = {n.version_id for n in body.nodes if n.kind == WorkflowNodeKind.workflow}
-    found_agents = set(
-        db.scalars(
-            select(AgentVersion.id)
-            .join(Agent, Agent.id == AgentVersion.agent_id)
-            .where(AgentVersion.id.in_(agent_ids), Agent.organisation_id == org.id)
-        )
-    )
+    found_agents = set(db.scalars(select(AgentVersion.id).where(AgentVersion.id.in_(agent_ids))))
     if found_agents != agent_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown agent version")
     found_workflows = {
         version_id: workflow_id
         for version_id, workflow_id in db.execute(
-            select(WorkflowVersion.id, WorkflowVersion.workflow_id)
-            .join(Workflow, Workflow.id == WorkflowVersion.workflow_id)
-            .where(WorkflowVersion.id.in_(workflow_ids), Workflow.organisation_id == org.id)
+            select(WorkflowVersion.id, WorkflowVersion.workflow_id).where(
+                WorkflowVersion.id.in_(workflow_ids)
+            )
         )
     }
     if set(found_workflows) != workflow_ids:
@@ -374,10 +365,10 @@ def node_out(node: WorkflowNode) -> WorkflowNodeOut:
     )
 
 
-def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
-    saved_by = people(
-        object_session(version), version.workflow.organisation_id, [version.created_by]
-    ).get(version.created_by)
+def version_out(db: Session, org_id: int, version: WorkflowVersion) -> WorkflowVersionOut:
+    """The version (in the organisation `org_id`'s store), with who saved it read through the
+    platform session `db`."""
+    saved_by = people(db, org_id, [version.created_by]).get(version.created_by)
     return WorkflowVersionOut(
         id=version.id,
         version=version.version,
@@ -389,10 +380,12 @@ def version_out(version: WorkflowVersion) -> WorkflowVersionOut:
     )
 
 
-def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
+def workflow_out(db: Session, org_id: int, store: Session, workflow: Workflow) -> WorkflowOut:
+    """The workflow (in the organisation `org_id`'s store, `store`), with who made, changed and
+    archived it read through the platform session `db`."""
     known = people(
         db,
-        workflow.organisation_id,
+        org_id,
         [workflow.created_by, workflow.updated_by, workflow.archived_by],
     )
     return WorkflowOut(
@@ -401,7 +394,7 @@ def workflow_out(db: Session, workflow: Workflow) -> WorkflowOut:
         description=workflow.description,
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
-        current_version=version_out(load_version(db, workflow.current_version_id)),
+        current_version=version_out(db, org_id, load_version(store, workflow.current_version_id)),
         layout=workflow.layout,
         **provenance(db, workflow, known),
         **archived(workflow, known),
@@ -430,15 +423,15 @@ def node_count(version_id) -> Any:
     )
 
 
-def contained_workflows(db: Session, org: Organisation) -> dict[int, set[int]]:
-    """For each of the organisation's workflows, the workflows its current version runs, at any
-    depth, in one recursive query (and so ending, as in `refuse_self_containment`)."""
+def contained_workflows(store: Session) -> dict[int, set[int]]:
+    """For each of the organisation's workflows (in its store), the workflows its current version
+    runs, at any depth, in one recursive query (and so ending, as in
+    `refuse_self_containment`)."""
     pinned = aliased(WorkflowVersion)
     reach = (
         select(Workflow.id.label("root_id"), pinned.id.label("version_id"), pinned.workflow_id)
         .join(WorkflowNode, WorkflowNode.workflow_version_id == Workflow.current_version_id)
         .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
-        .where(Workflow.organisation_id == org.id)
         .cte("reach", recursive=True)
     )
     reach = reach.union(
@@ -447,7 +440,9 @@ def contained_workflows(db: Session, org: Organisation) -> dict[int, set[int]]:
         .join(pinned, pinned.id == WorkflowNode.subworkflow_version_id)
     )
     contained: dict[int, set[int]] = {}
-    for root_id, workflow_id in db.execute(select(reach.c.root_id, reach.c.workflow_id).distinct()):
+    for root_id, workflow_id in store.execute(
+        select(reach.c.root_id, reach.c.workflow_id).distinct()
+    ):
         contained.setdefault(root_id, set()).add(workflow_id)
     return contained
 
@@ -456,22 +451,22 @@ def contained_workflows(db: Session, org: Organisation) -> dict[int, set[int]]:
 def list_workflows(
     org: CurrentOrganisation,
     db: DB,
+    store: CurrentStore,
     archived_only: Annotated[bool, Query(alias="archived")] = False,
 ):
     """The organisation's workflows that aren't archived, by name; with `archived`, the archived
     ones instead."""
-    rows = db.execute(
+    rows = store.execute(
         select(
             Workflow, WorkflowVersion.version, WorkflowVersion.id, node_count(WorkflowVersion.id)
         )
         .join(WorkflowVersion, WorkflowVersion.id == Workflow.current_version_id)
         .where(
-            Workflow.organisation_id == org.id,
-            Workflow.archived_at.is_not(None) if archived_only else Workflow.archived_at.is_(None),
+            Workflow.archived_at.is_not(None) if archived_only else Workflow.archived_at.is_(None)
         )
         .order_by(Workflow.name)
     ).all()
-    contained = contained_workflows(db, org)
+    contained = contained_workflows(store)
     known = people(
         db, org.id, [i for w, *_ in rows for i in (w.created_by, w.updated_by, w.archived_by)]
     )
@@ -493,28 +488,30 @@ def list_workflows(
 
 
 @router.post("/workflows", response_model=WorkflowOut, status_code=status.HTTP_201_CREATED)
-def create_workflow(body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    nodes, edges = resolve_graph(db, org, body)
-    lock_new_graph(db, nodes, None)
+def create_workflow(
+    body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    nodes, edges = resolve_graph(store, body)
+    lock_new_graph(store, nodes, None)
     workflow = Workflow(
-        **made_by(org.id, user.id),
+        **built_by(user.id),
         name=body.name,
         description=body.description,
         layout={},
     )
     apply_layout(workflow, body)
-    db.add(workflow)
-    with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
+    store.add(workflow)
+    with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
-            db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
+            store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
-        db.commit()
-    return workflow_out(db, workflow)
+        store.commit()
+    return workflow_out(db, org.id, store, workflow)
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowOut)
-def get_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB):
-    return workflow_out(db, get_org_workflow(db, org, workflow_id))
+def get_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    return workflow_out(db, org.id, store, get_org_workflow(store, workflow_id))
 
 
 def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None) -> None:
@@ -534,72 +531,90 @@ def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None)
 
 @router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
 def update_workflow(
-    workflow_id: DbId, body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+    workflow_id: DbId,
+    body: WorkflowIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Rename/describe the workflow; a changed graph creates a new version."""
-    workflow = get_org_workflow(db, org, workflow_id)
+    workflow = get_org_workflow(store, workflow_id)
     # Before checking the graph: an edit of an older version may be invalid only because of what
     # has changed since, and reloading is what fixes it.
-    refuse_stale_edit(db, workflow, body.base_version)
-    nodes, edges = resolve_graph(db, org, body, workflow)
-    lock_new_graph(db, nodes, workflow)
+    refuse_stale_edit(store, workflow, body.base_version)
+    nodes, edges = resolve_graph(store, body, workflow)
+    lock_new_graph(store, nodes, workflow)
     # Another save may have changed the layout, or made a new version, while we waited for the
     # lock; prune that layout, and compare against that version.
-    db.refresh(workflow, ["layout", "current_version_id"])
-    refuse_stale_edit(db, workflow, body.base_version)
+    store.refresh(workflow, ["layout", "current_version_id"])
+    refuse_stale_edit(store, workflow, body.base_version)
     workflow.name = body.name
     workflow.description = body.description
     workflow.updated_by = user.id
     apply_layout(workflow, body)
-    with unique_name(db, "a workflow", WORKFLOW_NAME_INDEX):
+    with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(
-            db, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
+            store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
-        db.commit()
-    return workflow_out(db, workflow)
+        store.commit()
+    return workflow_out(db, org.id, store, workflow)
 
 
 @router.post("/workflows/{workflow_id}/archive", response_model=WorkflowOut)
-def archive_workflow(workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def archive_workflow(
+    workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Archive the workflow: no new run starts on it, by hand, by schedule, by mention or nested
     in another workflow, and its schedules are paused. Never refused, whatever uses it
     (`GET .../used-by`); runs already going finish, and nothing is lost. Archiving an archived
     workflow changes nothing."""
-    workflow = get_org_workflow(db, org, workflow_id)
+    workflow = get_org_workflow(store, workflow_id)
     # Starting a run share-locks the workflow and checks it isn't archived
     # (`lock_live_workflow`), so one being started is waited for here, and goes on as already
     # going. Saving a workflow that nests it locks it too (`lock_graph`).
-    lock_workflow(db, workflow)
+    lock_workflow(store, workflow)
     if workflow.archived_at is None:
         workflow.archived_at = func.now()
         workflow.archived_by = user.id
-        disable_triggers(db, Trigger.workflow_id == workflow.id, user.id)
+        # The store first, as the source of truth; then its schedules, on the platform (see
+        # `aios.api.agents.archive_agent`).
+        store.commit()
+        disable_triggers(
+            db,
+            (Trigger.organisation_id == org.id) & (Trigger.workflow_id == workflow.id),
+            user.id,
+        )
         db.commit()
-    return workflow_out(db, workflow)
+    return workflow_out(db, org.id, store, workflow)
 
 
 @router.post("/workflows/{workflow_id}/unarchive", response_model=WorkflowOut)
-def unarchive_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB):
+def unarchive_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     """Bring the workflow back. Its schedules stay paused until someone resumes them."""
-    workflow = get_org_workflow(db, org, workflow_id)
-    lock_workflow(db, workflow)
+    workflow = get_org_workflow(store, workflow_id)
+    lock_workflow(store, workflow)
     workflow.archived_at = None
     workflow.archived_by = None
-    db.commit()
-    return workflow_out(db, workflow)
+    store.commit()
+    return workflow_out(db, org.id, store, workflow)
 
 
 @router.get("/workflows/{workflow_id}/used-by", response_model=used_by.WorkflowUsedBy)
-def get_workflow_used_by(workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def get_workflow_used_by(
+    workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """What uses the workflow, for the archive confirmation to show: read-only, as archiving is
     never refused."""
-    return used_by.workflow(db, get_org_workflow(db, org, workflow_id), user.id)
+    return used_by.workflow(db, store, org.id, get_org_workflow(store, workflow_id), user.id)
 
 
 @router.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionSummary])
-def list_workflow_versions(workflow_id: DbId, org: CurrentOrganisation, db: DB):
-    workflow = get_org_workflow(db, org, workflow_id)
-    rows = db.execute(
+def list_workflow_versions(
+    workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    workflow = get_org_workflow(store, workflow_id)
+    rows = store.execute(
         select(WorkflowVersion, node_count(WorkflowVersion.id))
         .where(WorkflowVersion.workflow_id == workflow.id)
         .order_by(WorkflowVersion.version.desc())
@@ -619,18 +634,26 @@ def list_workflow_versions(workflow_id: DbId, org: CurrentOrganisation, db: DB):
 
 
 @router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
-def get_workflow_version_detail(workflow_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
-    workflow = get_org_workflow(db, org, workflow_id)
-    return version_out(load_version(db, get_workflow_version(db, workflow, number).id))
+def get_workflow_version_detail(
+    workflow_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    workflow = get_org_workflow(store, workflow_id)
+    version = load_version(store, get_workflow_version(store, workflow, number).id)
+    return version_out(db, org.id, version)
 
 
 @router.post("/workflows/{workflow_id}/versions/{number}/restore", response_model=WorkflowOut)
 def restore_workflow_version(
-    workflow_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+    workflow_id: DbId,
+    number: DbId,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Make an old version's graph current again, as a new version (numbers only go up)."""
-    workflow = get_org_workflow(db, org, workflow_id)
-    old = get_workflow_version(db, workflow, number)
+    workflow = get_org_workflow(store, workflow_id)
+    old = get_workflow_version(store, workflow, number)
     # The versions its nodes pin still exist (nothing is deleted), but the agents and workflows
     # they belong to may have been archived since.
     nodes = [
@@ -640,9 +663,9 @@ def restore_workflow_version(
     # The old version passed this check when saved and pins never change, so this only refuses
     # versions saved before the check covered nesting through other workflows.
     refuse_self_containment(
-        db, workflow, {n.subworkflow_version_id for n in old.nodes if n.subworkflow_version_id}
+        store, workflow, {n.subworkflow_version_id for n in old.nodes if n.subworkflow_version_id}
     )
-    archived_kinds = lock_graph(db, nodes, workflow)
+    archived_kinds = lock_graph(store, nodes, workflow)
     if archived_kinds:
         what = " and ".join(
             f"{'an' if kind == WorkflowNodeKind.agent else 'a'} {kind}"
@@ -656,15 +679,15 @@ def restore_workflow_version(
     workflow.layout = {key: p for key, p in workflow.layout.items() if key in keys}
     workflow.updated_by = user.id
     save_workflow_version(
-        db,
+        store,
         workflow,
         nodes=nodes,
         edges=edges,
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
-    db.commit()
-    return workflow_out(db, workflow)
+    store.commit()
+    return workflow_out(db, org.id, store, workflow)
 
 
 # --- Runs ---------------------------------------------------------------------------------------
@@ -849,9 +872,8 @@ def get_org_workflow_run(
     """A run of the organisation's workflow, archived or not; a 404 otherwise, as if it didn't
     exist. Every member reads and deletes every run of the organisation's, whoever started it
     and however."""
-    workflow = get_org_workflow(db, org, workflow_id)
     run = db.get(WorkflowRun, run_id)
-    if run is None or run.workflow_id != workflow.id:
+    if run is None or run.organisation_id != org.id or run.workflow_id != workflow_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
@@ -862,7 +884,6 @@ def workflow_run_summary_query():
             WorkflowRun.id,
             WorkflowRun.workflow_id,
             WorkflowRun.workflow_version_id,
-            WorkflowVersion.version.label("workflow_version"),
             WorkflowRun.status,
             WorkflowRun.input,
             WorkflowRun.output,
@@ -879,31 +900,48 @@ def workflow_run_summary_query():
             WorkflowRun.created_by.label("created_by_id"),
             WorkflowRun.trigger_id,
         )
-        .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
         .outerjoin(ChatInvocation, ChatInvocation.workflow_run_id == WorkflowRun.id)
         .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
     )
 
 
+def workflow_run_summaries(
+    db: Session, organisation_id: int, rows: Sequence[Row]
+) -> list[WorkflowRunSummary]:
+    """Rows of `workflow_run_summary_query` for the organisation's runs as summaries: with the
+    numbers of the versions they pinned, from its store, and who started each."""
+    numbers = stored.version_numbers(
+        organisation_id, WorkflowVersion, [row.workflow_version_id for row in rows]
+    )
+    return started_by(
+        db,
+        organisation_id,
+        [
+            {**row._mapping, "workflow_version": numbers.get(row.workflow_version_id)}
+            for row in rows
+        ],
+        WorkflowRunSummary,
+    )
+
+
 def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
     row = db.execute(workflow_run_summary_query().where(WorkflowRun.id == run_id)).one()
-    organisation_id = db.scalar(
-        select(Workflow.organisation_id).join(WorkflowRun).where(WorkflowRun.id == run_id)
-    )
-    return started_by(db, organisation_id, [row], WorkflowRunSummary)[0]
+    organisation_id = db.scalar(select(WorkflowRun.organisation_id).where(WorkflowRun.id == run_id))
+    return workflow_run_summaries(db, organisation_id, [row])[0]
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
-def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
-    workflow = get_org_workflow(db, org, workflow_id)
+def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    workflow = get_org_workflow(store, workflow_id)
+    theirs = (WorkflowRun.organisation_id == org.id, WorkflowRun.workflow_id == workflow.id)
     # Its worker died: shown failed rather than running for ever (see `get_workflow_run`).
-    fail_stopped_runs(db, WorkflowRun.workflow_id == workflow.id)
+    fail_stopped_runs(db, *theirs)
     rows = db.execute(
         workflow_run_summary_query()
-        .where(WorkflowRun.workflow_id == workflow.id)
+        .where(*theirs)
         .order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
     ).all()
-    return started_by(db, org.id, rows, WorkflowRunSummary)
+    return workflow_run_summaries(db, org.id, rows)
 
 
 @router.post(
@@ -912,46 +950,57 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB):
     status_code=status.HTTP_201_CREATED,
 )
 def create_workflow_run(
-    workflow_id: DbId, body: WorkflowRunIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+    workflow_id: DbId,
+    body: WorkflowRunIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Start a run of the workflow's current version. The worker runs it (`aios.workflows`)."""
-    workflow = get_org_workflow(db, org, workflow_id)
-    run = new_workflow_run(db, workflow, body.input, created_by=user.id)
+    workflow = get_org_workflow(store, workflow_id)
+    run = new_workflow_run(db, store, org.id, workflow, body.input, created_by=user.id)
     queue_workflow_run(db, run)
+    store.commit()
     return workflow_run_summary(db, run.id)
 
 
 def new_workflow_run(
     db: Session,
+    store: Session,
+    organisation_id: int,
     workflow: Workflow,
     input: str,
     *,
     created_by: int | None,
     trigger_id: int | None = None,
 ) -> WorkflowRun:
-    """Add (and flush, not commit) a run of the workflow's current version, given `input`,
-    started by the member `created_by`; it runs for the workflow's organisation, not for them
-    (`aios.workflows`), as do its agent nodes' runs, which it passes `created_by` on to.
+    """Add (and flush, not commit) a run of the workflow's current version (the workflow in the
+    organisation `organisation_id`'s store, `store`), given `input`, started by the member
+    `created_by`; it runs for the workflow's organisation, not for them (`aios.workflows`), as
+    do its agent nodes' runs, which it passes `created_by` on to.
 
     Raises `HTTPException` if it can't run: 409 if it, or an agent or workflow in its graph at
     any depth, is archived ("The workflow <name> is archived.") or an agent version in it can't
-    run; 422 if it has no nodes. Commit with `queue_workflow_run`; the share lock taken here
-    keeps a concurrent archive waiting until the run counts as already going. Also how a
-    schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
+    run; 422 if it has no nodes. Commit with `queue_workflow_run`, then end `store`'s
+    transaction; the share lock taken here keeps a concurrent archive waiting until the run
+    counts as already going. Also how a schedule starts one (`aios.scheduler`), passing its
+    `trigger_id` and no member.
     """
-    lock_live_workflow(db, workflow)
+    lock_live_workflow(store, workflow)
     version = workflow.current_version
     if not version.nodes:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "This workflow has no nodes")
     # Checked now, at every depth, so a version that can't run doesn't leave a run that fails.
-    if refusal := archived_in_graph(db, version.id):
+    if refusal := archived_in_graph(store, version.id):
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     try:
-        load_graph(db, version.id)
+        load_graph(store, version.id)
     except RunError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # Pin the version: later edits to the workflow don't change this run.
     run = WorkflowRun(
+        organisation_id=organisation_id,
         workflow_id=workflow.id,
         workflow_version_id=version.id,
         input=input,
@@ -990,10 +1039,11 @@ class WorkflowRunPageOut(WorkflowRunOut):
 
 
 @router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunPageOut)
-def get_workflow_run(workflow_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB):
+def get_workflow_run(
+    workflow_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     run = get_org_workflow_run(db, org, workflow_id, run_id)
-    # Read now: `workflow_run_out` expires the session's rows.
-    name = db.get(Workflow, run.workflow_id).name
+    name = get_org_workflow(store, run.workflow_id).name
     # A run whose worker died is failed when it's read: its task may never come round again to
     # do it (one requeued as its worker was lost finds the heartbeat still fresh and leaves it).
     # Reads are what show it, and the UI polls a running run, so it's failed within a poll of
@@ -1003,9 +1053,10 @@ def get_workflow_run(workflow_id: DbId, run_id: DbId, org: CurrentOrganisation, 
 
 
 def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
-    """The run as its page shows it: its summary, pinned graph and steps. Also what a chat's
-    card of it draws (`aios.api.chats`). Expires the session's rows."""
+    """The run as its page shows it: its summary, pinned graph (from its organisation's store)
+    and steps. Also what a chat's card of it draws (`aios.api.chats`)."""
     summary = workflow_run_summary(db, run_id)
+    organisation_id = db.scalar(select(WorkflowRun.organisation_id).where(WorkflowRun.id == run_id))
     steps = db.execute(
         select(WorkflowRunStep, AgentRun.agent_id)
         .outerjoin(AgentRun, AgentRun.id == WorkflowRunStep.agent_run_id)
@@ -1013,7 +1064,6 @@ def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
         .order_by(WorkflowRunStep.id)
     ).all()
     waits = waiting_requests(db, [step for step, _ in steps])
-    # Read before `load_version`, which expires the session's rows.
     steps_out = [
         WorkflowRunStepOut(
             id=step.id,
@@ -1031,13 +1081,16 @@ def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
         )
         for step, agent_id in steps
     ]
+    with organisation_store(organisation_id, "ro") as store:
+        version = load_version(store, summary.workflow_version_id)
+        stale = (
+            stale_pins(store, summary.workflow_version_id)
+            if summary.status == WorkflowRunStatus.waiting
+            else []
+        )
+        version_shown = version_out(db, organisation_id, version)
     return WorkflowRunOut(
-        **summary.model_dump(),
-        version=version_out(load_version(db, summary.workflow_version_id)),
-        steps=steps_out,
-        stale_pins=stale_pins(db, summary.workflow_version_id)
-        if summary.status == WorkflowRunStatus.waiting
-        else [],
+        **summary.model_dump(), version=version_shown, steps=steps_out, stale_pins=stale
     )
 
 
@@ -1048,6 +1101,7 @@ def get_run_subworkflow(
     path: Annotated[list[str], Query(min_length=1)],
     org: CurrentOrganisation,
     db: DB,
+    store: CurrentStore,
 ):
     """The version the run's graph pinned for the workflow node at `path` (node keys, outermost
     first): what its page draws on opening a subworkflow, as the run pinned it (the subworkflow
@@ -1055,11 +1109,11 @@ def get_run_subworkflow(
     run = get_org_workflow_run(db, org, workflow_id, run_id)
     version_id = run.workflow_version_id
     for key in path:
-        node = db.get(WorkflowNode, (version_id, key))
+        node = store.get(WorkflowNode, (version_id, key))
         if node is None or node.kind != WorkflowNodeKind.workflow:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
         version_id = node.subworkflow_version_id
-    return version_out(load_version(db, version_id))
+    return version_out(db, org.id, load_version(store, version_id))
 
 
 @router.delete("/workflows/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

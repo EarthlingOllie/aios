@@ -1,16 +1,17 @@
 from dataclasses import replace
 
 import pytest
-from conftest import delete_user, made_by, provisioned_user, store_of
+from conftest import delete_user, provisioned_user, store_of, user_store
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
 from test_search import add_chunks, unit
 
 from aios import llm, search
 from aios.agent import ChatDeps
+from aios.api.provenance import built_by
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.models import Agent
+from aios.datastores.models import Agent
 from aios.runner import server_tools
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import TOOLS, ToolSpec, register
@@ -217,18 +218,17 @@ def test_version_history_counts_tools(api):
     assert counts == [(2, 1), (1, 0)]
 
 
-def test_versions_without_tools_keep_their_hash(db, user):
-    agent = Agent(**made_by(db, user), name="Old")
-    db.add(agent)
-    version = save_agent_version(
-        db, agent, base_prompt="Hi.", skills=[], note=None, user_id=user.id
-    )
-    db.commit()
+def test_versions_without_tools_keep_their_hash(user):
+    with user_store(user) as store:
+        agent = Agent(**built_by(user.id), name="Old")
+        store.add(agent)
+        version = save_agent_version(
+            store, agent, base_prompt="Hi.", skills=[], note=None, user_id=user.id
+        )
+        store.commit()
     # The hash a version got before tools existed, so unchanged re-saves still match it.
     old = config_hash({"base_prompt": "Hi.", "model": None, "skill_version_ids": []})
     assert version.config_hash == old
-    db.delete(agent)
-    db.commit()
 
 
 def test_run_is_given_its_versions_tools(api, monkeypatch):

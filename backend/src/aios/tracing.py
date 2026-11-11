@@ -9,7 +9,7 @@ from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
 from aios.config import get_settings
-from aios.models import AgentVersion
+from aios.datastores.models import AgentVersion
 
 
 @lru_cache

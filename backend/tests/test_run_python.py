@@ -6,13 +6,15 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from conftest import user_store
 from pydantic import ValidationError
 from sqlalchemy import select
 from test_agents import agent_body, chat_body, make_agent, spy_run
 
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.models import AgentVersionTool, SandboxSession
+from aios.datastores.models import AgentVersionTool
+from aios.models import SandboxSession
 from aios.sandbox import proxy_token, sessions
 from aios.sandbox.base import (
     ExecResult,
@@ -379,16 +381,17 @@ def test_the_sandbox_is_prewarmed_when_a_turn_starts(api, backend):
     assert backend.calls == []
 
 
-def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, db, monkeypatch):
+def test_prewarming_uses_the_settings_the_tool_is_built_with(api, backend, user, monkeypatch):
     agent, run = python_agent(api, allowed_domains=["api.example.com"])
     # Stored by an older version of the settings model: not in today's canonical form.
-    tool = db.scalar(
-        select(AgentVersionTool).where(
-            AgentVersionTool.agent_version_id == agent["current_version"]["id"]
+    with user_store(user) as store:
+        tool = store.scalar(
+            select(AgentVersionTool).where(
+                AgentVersionTool.agent_version_id == agent["current_version"]["id"]
+            )
         )
-    )
-    tool.config = {"allowed_domains": ["API.Example.com."], "dropped_setting": 1}
-    db.commit()
+        tool.config = {"allowed_domains": ["API.Example.com."], "dropped_setting": 1}
+        store.commit()
     prewarmed = []
 
     async def ensure(*, run_id, allowed_domains):

@@ -124,13 +124,20 @@ def test_a_store_that_failed_to_provision_says_so(api, db, unready_user):
     assert api.get("/api/data-store").json()["status"] == "failed"
 
 
-def search_tool_results(api) -> list:
-    """What the model sees from one `search_documents` call in an agent's run."""
+def search_tool_results(api, user, status: DataStoreStatus) -> list:
+    """What the model sees from one `search_documents` call in an agent's run, its store put in
+    `status` once the turn has started (it reads its agent from the store, while it's ready)."""
     agent = librarian(api)
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     seen = []
 
     async def search_then_answer_seeing(messages, info):
+        if not seen and not last_tool_results(messages):
+            with SessionLocal() as session:
+                session.execute(
+                    update(DataStore).where(DataStore.id == store_of(user)).values(status=status)
+                )
+                session.commit()
         if results := last_tool_results(messages):
             seen.extend(results)
             yield "done"
@@ -143,22 +150,15 @@ def search_tool_results(api) -> list:
     return seen
 
 
-def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, unready_user):
-    seen = search_tool_results(api)
+def test_the_search_tools_tell_the_model_the_store_is_being_set_up(api, user):
+    seen = search_tool_results(api, user, DataStoreStatus.provisioning)
 
     assert seen and all("still being set up" in str(r) for r in seen)
 
 
-def test_the_search_tools_tell_the_model_the_store_couldnt_be_set_up(api, db, unready_user):
+def test_the_search_tools_tell_the_model_the_store_couldnt_be_set_up(api, user):
     """Not "being set up", which would have the user wait for what may never come."""
-    db.execute(
-        update(DataStore)
-        .where(DataStore.id == store_of(unready_user))
-        .values(status=DataStoreStatus.failed)
-    )
-    db.commit()
-
-    seen = search_tool_results(api)
+    seen = search_tool_results(api, user, DataStoreStatus.failed)
 
     assert seen and all("couldn't be set up" in r.content for r in seen)
 
@@ -331,7 +331,7 @@ def test_a_workflow_run_whose_store_cant_be_resolved_is_failed_unstarted(api, db
     def unavailable(*args, **kwargs):
         raise OperationalError("SELECT", {}, Exception("connection lost"))
 
-    monkeypatch.setattr(workflows, "data_store_of", unavailable)
+    monkeypatch.setattr(workflows, "data_store_for", unavailable)
     asyncio.run(execute_run(started["id"]))
 
     run = db.get(WorkflowRun, started["id"])

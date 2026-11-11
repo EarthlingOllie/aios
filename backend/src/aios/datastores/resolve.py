@@ -2,14 +2,17 @@
 
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import event, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios.datastores import credentials
+from aios.datastores.connections import Role, store_session
 from aios.db import SessionLocal
-from aios.models import Agent, DataStore, OrganisationMember, Workflow
+from aios.models import DataStore, OrganisationMember
 
 log = logging.getLogger(__name__)
 
@@ -64,15 +67,6 @@ def approvers(db: Session, store: DataStore) -> list[int]:
     )
 
 
-def data_store_of(db: Session, owned: type[Agent] | type[Workflow], owned_id: int) -> uuid.UUID:
-    """The data store of the organisation the agent or workflow belongs to: the store a run of
-    it uses. In `db`'s transaction, as `data_store_for`."""
-    organisation_id = db.scalar(select(owned.organisation_id).where(owned.id == owned_id))
-    if organisation_id is None:
-        raise LookupError(f"{owned.__name__} {owned_id} doesn't exist")
-    return data_store_for(organisation_id, db)
-
-
 def data_store_for(organisation_id: int, db: Session | None = None) -> uuid.UUID:
     """The id of the organisation's data store, creating it if it doesn't have one yet.
 
@@ -116,6 +110,15 @@ def data_store_for(organisation_id: int, db: Session | None = None) -> uuid.UUID
         else:
             db.info.setdefault(_NEW_STORES, []).append(store_id)
     return store_id
+
+
+@contextmanager
+def organisation_store(organisation_id: int, role: Role = "rw") -> Iterator[Session]:
+    """A session on the organisation's store (`data_store_for`, then `store_session`), as `role`,
+    closed on exit: where its agents, skills and workflows are. Raises as `store_session` does
+    (a new store isn't ready)."""
+    with store_session(data_store_for(organisation_id), role) as store:
+        yield store
 
 
 def data_store_for_request(organisation_id: int, db: Session) -> uuid.UUID:

@@ -8,8 +8,8 @@ them), so what it makes is what the app would have made:
 
 - the dev user, `dev@example.com`, whose password is `SEED_PASSWORD`, in their organisation, with
   its store provisioned;
-- a skill, agents that use it, a workflow that runs one of them inside another workflow, and a
-  schedule;
+- in the store, a skill, agents that use it, and a workflow that runs one of them inside another
+  workflow; and a schedule;
 - a chat with the documents assistant and an agent in it;
 - an archived agent, to show what archiving does.
 
@@ -32,13 +32,14 @@ from aios.api.skills import SkillIn, create_skill
 from aios.api.triggers import TriggerIn, create_trigger
 from aios.api.workflows import WorkflowEdgeIn, WorkflowIn, WorkflowNodeIn, create_workflow
 from aios.config import get_settings
-from aios.datastores import data_store_for, provision
+from aios.datastores import data_store_for, organisation_store, provision
 from aios.db import SessionLocal
 from aios.models import (
     ChatMemberKind,
     ChatVisibility,
     DataStore,
     DataStoreStatus,
+    Organisation,
     TriggerTargetKind,
     User,
     WorkflowNodeKind,
@@ -91,7 +92,13 @@ def build(db: Session) -> None:
     org = organisations.create(db, user, "Dev Team")
     db.commit()
     provision.provision(data_store_for(org.id))
+    with organisation_store(org.id) as store:
+        build_contents(db, store, user, org)
 
+
+def build_contents(db: Session, store: Session, user: User, org: Organisation) -> None:
+    """What the organisation has, made through the API's handlers: its agents, skills and
+    workflows in its store (`store`), and its schedule and chat on the platform (`db`)."""
     skill = create_skill(
         SkillIn(
             name="Plain English",
@@ -101,35 +108,31 @@ def build(db: Session) -> None:
         user,
         org,
         db,
+        store,
     )
     version = skill.current_version.id
-    writer = create_agent(
+
+    def agent(body: AgentIn):
+        return create_agent(body, user, org, db, store)
+
+    writer = agent(
         AgentIn(
             name="Writer",
             description="Drafts notes and summaries",
             base_prompt="You write clear, short drafts.",
             skill_version_ids=[version],
-        ),
-        user,
-        org,
-        db,
+        )
     )
-    reviewer = create_agent(
+    reviewer = agent(
         AgentIn(
             name="Reviewer",
             description="Checks a draft and suggests changes",
             base_prompt="You review drafts for clarity and accuracy.",
             skill_version_ids=[version],
-        ),
-        user,
-        org,
-        db,
+        )
     )
-    old = create_agent(
-        AgentIn(name="Old researcher", description="Put away: archived agents keep their history"),
-        user,
-        org,
-        db,
+    old = agent(
+        AgentIn(name="Old researcher", description="Put away: archived agents keep their history")
     )
 
     def node(key: str, kind: WorkflowNodeKind, version_id: int) -> WorkflowNodeIn:
@@ -147,6 +150,7 @@ def build(db: Session) -> None:
         user,
         org,
         db,
+        store,
     )
     create_workflow(
         WorkflowIn(
@@ -156,6 +160,7 @@ def build(db: Session) -> None:
         user,
         org,
         db,
+        store,
     )
     create_trigger(
         TriggerIn(
@@ -168,11 +173,14 @@ def build(db: Session) -> None:
         user,
         org,
         db,
+        store,
     )
-    chat = create_chat(ChatIn(name="General", visibility=ChatVisibility.public), user, org, db)
-    add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=writer.id), user, org, db)
-    add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=old.id), user, org, db)
-    archive_agent(old.id, user, org, db)
+    chat = create_chat(
+        ChatIn(name="General", visibility=ChatVisibility.public), user, org, db, store
+    )
+    for member in (writer, old):
+        add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=member.id), user, org, db, store)
+    archive_agent(old.id, user, org, db, store)
 
 
 def main(argv: list[str] | None = None) -> int:

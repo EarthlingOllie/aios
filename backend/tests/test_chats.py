@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 
 import pytest
-from conftest import delete_user, join_organisation, make_user
+from conftest import delete_user, join_organisation, provisioned_user
 
 from aios.api import chats
 from aios.auth import current_user
@@ -26,8 +26,8 @@ def other(db, user):
 
 @pytest.fixture
 def outsider(db):
-    """A user in an organisation of their own."""
-    u = make_user(db, "outsider")
+    """A user in an organisation of their own, with its store provisioned."""
+    u = provisioned_user(db, "outsider")
     yield u
     delete_user(db, u)
 
@@ -102,7 +102,7 @@ def test_the_owner_adds_a_user_as_a_member(api, user, other):
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "user", "id": -1})
     assert resp.status_code == 404
     for kind in ("agent", "workflow"):
-        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": 1})
+        resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": kind, "id": 99_999})
         assert resp.status_code == 422, kind
 
     # Only the owner adds members.
@@ -374,8 +374,11 @@ def test_the_owner_adds_the_organisations_agents_and_workflows(api, other, outsi
         resp = api.post(f"/api/chats/{chat['id']}/members", json=member)
         assert resp.status_code == 403
     # And only the organisation's agents and workflows, that aren't archived.
+    # Ids are each organisation's store's own: one of theirs whose id no agent here has.
     with signed_in_as(outsider):
-        theirs = make_agent(api, "Theirs")
+        for n in range(4):
+            theirs = make_agent(api, f"Theirs {n}")
+    assert theirs["id"] not in [a["id"] for a in api.get("/api/agents").json()]
     resp = api.post(f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": theirs["id"]})
     assert resp.status_code == 422 and resp.json()["detail"] == "Unknown agent"
     gone = make_workflow(api, "Gone")

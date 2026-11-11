@@ -21,7 +21,7 @@ from aios.datastores.resolve import (
     can_approve,
     data_store_for,
     data_store_for_request,
-    data_store_of,
+    organisation_store,
 )
 
 __all__ = [
@@ -33,7 +33,7 @@ __all__ = [
     "can_approve",
     "data_store_for",
     "data_store_for_request",
-    "data_store_of",
+    "organisation_store",
     "store_busy",
     "store_engine",
     "store_not_ready",

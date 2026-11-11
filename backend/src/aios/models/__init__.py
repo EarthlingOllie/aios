@@ -1,17 +1,12 @@
 """The platform's models, one module per domain. Every name is re-exported here, so
 `from aios.models import ...` reaches any of them, and `Base.metadata` sees every table (the
-migrations' autogenerate and `alembic check` read it)."""
+migrations' autogenerate and `alembic check` read it). What's in each organisation's store, its
+agents, skills and workflows among it, is in `aios.datastores.models`."""
 
 from aios.models.agents import (
-    Agent,
     AgentRun,
     AgentRunStatus,
-    AgentVersion,
-    AgentVersionTool,
     SandboxSession,
-    Skill,
-    SkillVersion,
-    agent_version_skills,
 )
 from aios.models.approvals import (
     SchemaChangeRequest,
@@ -55,15 +50,11 @@ from aios.models.triggers import (
     TriggerTargetKind,
 )
 from aios.models.workflows import (
-    Workflow,
-    WorkflowEdge,
-    WorkflowNode,
     WorkflowNodeKind,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowRunStep,
     WorkflowStepStatus,
-    WorkflowVersion,
 )
 
 __all__ = [
@@ -77,20 +68,10 @@ __all__ = [
     "DataStore",
     "HistoryExportKind",
     "HistoryExport",
-    "Skill",
-    "SkillVersion",
-    "agent_version_skills",
-    "Agent",
-    "AgentVersion",
-    "AgentVersionTool",
     "AgentRunStatus",
     "AgentRun",
     "SandboxSession",
     "WorkflowNodeKind",
-    "Workflow",
-    "WorkflowVersion",
-    "WorkflowNode",
-    "WorkflowEdge",
     "WorkflowRunStatus",
     "WorkflowStepStatus",
     "WorkflowRun",

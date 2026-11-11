@@ -28,9 +28,10 @@ from test_workflows import (
 
 from aios import worker, workflows
 from aios.config import get_settings
+from aios.datastores import store_session
+from aios.datastores.models import Agent
 from aios.db import SessionLocal
 from aios.models import (
-    Agent,
     AgentRun,
     DataStore,
     SchemaChangeRequest,
@@ -304,13 +305,25 @@ def test_editing_the_agent_while_the_run_waits_doesnt_change_what_it_resumes_on(
     assert steps(out)["build"]["output"] == "builder:built(applied)"
 
 
-def delete_behind_the_api(agent: dict) -> None:
+def delete_behind_the_api(store_id, agent: dict) -> None:
     """Delete the agent as deleting one did before agents were archived instead (no route deletes
     one now): soft-deleted, its runs gone. Data from then can still be like this."""
+    with store_session(store_id) as store:
+        store.execute(update(Agent).where(Agent.id == agent["id"]).values(archived_at=func.now()))
+        organisation_id = store_organisation(store_id)
+        store.commit()
     with SessionLocal() as db:
-        db.execute(delete(AgentRun).where(AgentRun.agent_id == agent["id"]))
-        db.execute(update(Agent).where(Agent.id == agent["id"]).values(archived_at=func.now()))
+        db.execute(
+            delete(AgentRun).where(
+                AgentRun.organisation_id == organisation_id, AgentRun.agent_id == agent["id"]
+            )
+        )
         db.commit()
+
+
+def store_organisation(store_id) -> int:
+    with SessionLocal() as db:
+        return db.get(DataStore, store_id).owner_organisation_id
 
 
 def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, builder, store, queued):
@@ -318,7 +331,7 @@ def test_an_agent_deleted_while_the_run_waits_fails_its_step_on_resume(api, buil
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
-    delete_behind_the_api(builder)
+    delete_behind_the_api(store.id, builder)
 
     decide(api, queued, flow)
 
@@ -404,7 +417,7 @@ def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
     workflow = chain(api, builder)
     waiting = start(api, queued, workflow, Flow())
     api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("Builders", []))
-    delete_behind_the_api(builder)
+    delete_behind_the_api(store.id, builder)
 
     r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
 
@@ -705,7 +718,7 @@ def test_a_waiting_run_whose_store_cant_be_resolved_on_resume_fails(
     def unavailable(*args, **kwargs):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_of", unavailable)
+    monkeypatch.setattr(workflows, "data_store_for", unavailable)
     decide(api, queued, flow, "reject")
 
     out = read(api, workflow, waiting["id"])

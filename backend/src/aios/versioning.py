@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from aios.models import (
+from aios.datastores.models import (
     Agent,
     AgentVersion,
     AgentVersionTool,
@@ -27,10 +27,10 @@ from aios.models import (
     Workflow,
     WorkflowEdge,
     WorkflowNode,
-    WorkflowNodeKind,
     WorkflowVersion,
     agent_version_skills,
 )
+from aios.models import WorkflowNodeKind
 
 DEFAULT_BASE_PROMPT = "You are a helpful assistant."
 

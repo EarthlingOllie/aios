@@ -9,23 +9,30 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from aios.api.provenance import Archived, Provenance, UserOut, archived, made_by, people, provenance
-from aios.auth import CurrentOrganisation, CurrentUser
-from aios.db import DB, DbId
-from aios.models import (
+from aios.api.provenance import (
+    Archived,
+    Provenance,
+    UserOut,
+    archived,
+    built_by,
+    people,
+    provenance,
+)
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores.models import (
     Agent,
     AgentVersion,
-    Organisation,
     Skill,
     SkillVersion,
     Workflow,
     agent_version_skills,
 )
+from aios.db import DB, DbId
 from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
 
-SKILL_NAME_INDEX = "uq_skills_organisation_id_name"
+SKILL_NAME_INDEX = "uq_skills_name"
 
 
 class SkillIn(BaseModel):
@@ -88,10 +95,11 @@ class SkillUsedBy(BaseModel):
     agents: list[SkillUsage]
 
 
-def get_org_skill(db: Session, org: Organisation, skill_id: int) -> Skill:
-    """The organisation's skill, archived or not; a 404 otherwise, as if it didn't exist."""
-    skill = db.get(Skill, skill_id)
-    if skill is None or skill.organisation_id != org.id:
+def get_org_skill(store: Session, skill_id: int) -> Skill:
+    """The skill in the organisation's store (`store`), archived or not; a 404 otherwise. Ids are
+    the store's own, so another organisation's skill is never reached, whatever its id."""
+    skill = store.get(Skill, skill_id)
+    if skill is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return skill
 
@@ -202,8 +210,8 @@ def skill_uses(*columns) -> Select:
     )
 
 
-def skill_usage(db: Session, skill_id: int) -> list[SkillUsage]:
-    rows = db.execute(
+def skill_usage(store: Session, skill_id: int) -> list[SkillUsage]:
+    rows = store.execute(
         skill_uses(Agent.id, Agent.name, AgentVersion.version, SkillVersion.version)
         .where(SkillVersion.skill_id == skill_id)
         .order_by(Agent.name)
@@ -222,11 +230,13 @@ def version_summary(
     return model(**fields, created_by=known.get(version.created_by))
 
 
-def skill_out(db: Session, skill: Skill) -> SkillOut:
+def skill_out(db: Session, org_id: int, store: Session, skill: Skill) -> SkillOut:
+    """The skill (in the organisation `org_id`'s store, `store`), with who made, changed and
+    archived it read through the platform session `db`."""
     version = skill.current_version
     known = people(
         db,
-        skill.organisation_id,
+        org_id,
         [skill.created_by, skill.updated_by, skill.archived_by, version.created_by],
     )
     return SkillOut(
@@ -235,7 +245,7 @@ def skill_out(db: Session, skill: Skill) -> SkillOut:
         created_at=skill.created_at,
         updated_at=skill.updated_at,
         current_version=version_summary(version, known, SkillVersionOut),
-        agents=skill_usage(db, skill.id),
+        agents=skill_usage(store, skill.id),
         **provenance(db, skill, known),
         **archived(skill, known),
     )
@@ -245,25 +255,21 @@ def skill_out(db: Session, skill: Skill) -> SkillOut:
 def list_skills(
     org: CurrentOrganisation,
     db: DB,
+    store: CurrentStore,
     archived_only: Annotated[bool, Query(alias="archived")] = False,
 ):
     """The organisation's skills that aren't archived, by name; with `archived`, the archived
     ones instead."""
     uses = (
         skill_uses(SkillVersion.skill_id, func.count(Agent.id.distinct()).label("agents"))
-        # Agents pin only their organisation's skills, so this keeps the count to its rows.
-        .where(Agent.organisation_id == org.id)
         .group_by(SkillVersion.skill_id)
         .subquery()
     )
-    rows = db.execute(
+    rows = store.execute(
         select(Skill, SkillVersion, func.coalesce(uses.c.agents, 0))
         .join(SkillVersion, SkillVersion.id == Skill.current_version_id)
         .outerjoin(uses, uses.c.skill_id == Skill.id)
-        .where(
-            Skill.organisation_id == org.id,
-            Skill.archived_at.is_not(None) if archived_only else Skill.archived_at.is_(None),
-        )
+        .where(Skill.archived_at.is_not(None) if archived_only else Skill.archived_at.is_(None))
         .order_by(Skill.name)
     ).all()
     known = people(
@@ -286,85 +292,94 @@ def list_skills(
 
 
 @router.post("/skills", response_model=SkillOut, status_code=status.HTTP_201_CREATED)
-def create_skill(body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    skill = Skill(**made_by(org.id, user.id), name=body.name)
-    db.add(skill)
-    with unique_name(db, "a skill", SKILL_NAME_INDEX):
+def create_skill(
+    body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    skill = Skill(**built_by(user.id), name=body.name)
+    store.add(skill)
+    with unique_name(store, "a skill", SKILL_NAME_INDEX):
         save_skill_version(
-            db,
+            store,
             skill,
             description=body.description,
             content=body.content,
             note=body.note,
             user_id=user.id,
         )
-        db.commit()
-    return skill_out(db, skill)
+        store.commit()
+    return skill_out(db, org.id, store, skill)
 
 
 @router.get("/skills/{skill_id}", response_model=SkillOut)
-def get_skill(skill_id: DbId, org: CurrentOrganisation, db: DB):
-    return skill_out(db, get_org_skill(db, org, skill_id))
+def get_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    return skill_out(db, org.id, store, get_org_skill(store, skill_id))
 
 
 @router.put("/skills/{skill_id}", response_model=SkillOut)
 def update_skill(
-    skill_id: DbId, body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+    skill_id: DbId,
+    body: SkillIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
-    skill = get_org_skill(db, org, skill_id)
+    skill = get_org_skill(store, skill_id)
     skill.name = body.name
     skill.updated_by = user.id
-    with unique_name(db, "a skill", SKILL_NAME_INDEX):
+    with unique_name(store, "a skill", SKILL_NAME_INDEX):
         save_skill_version(
-            db,
+            store,
             skill,
             description=body.description,
             content=body.content,
             note=body.note,
             user_id=user.id,
         )
-        db.commit()
-    return skill_out(db, skill)
+        store.commit()
+    return skill_out(db, org.id, store, skill)
 
 
 @router.post("/skills/{skill_id}/archive", response_model=SkillOut)
-def archive_skill(skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def archive_skill(
+    skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Archive the skill: it can't be added to a new agent version. Never refused, even while
     agents use it (`GET .../used-by`): the versions that pin it keep running on it. Archiving
     an archived skill changes nothing."""
-    skill = get_org_skill(db, org, skill_id)
+    skill = get_org_skill(store, skill_id)
     # Agent saves lock the skills they attach (`resolve_skill_versions`), so one in flight is
     # waited for, or sees this archive.
-    lock_skills(db, [skill.id])
+    lock_skills(store, [skill.id])
     if skill.archived_at is None:
         skill.archived_at = func.now()
         skill.archived_by = user.id
-        db.commit()
-    return skill_out(db, skill)
+        store.commit()
+    return skill_out(db, org.id, store, skill)
 
 
 @router.post("/skills/{skill_id}/unarchive", response_model=SkillOut)
-def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB):
+def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     """Bring the skill back: agent versions can include it again."""
-    skill = get_org_skill(db, org, skill_id)
-    lock_skills(db, [skill.id])
+    skill = get_org_skill(store, skill_id)
+    lock_skills(store, [skill.id])
     skill.archived_at = None
     skill.archived_by = None
-    db.commit()
-    return skill_out(db, skill)
+    store.commit()
+    return skill_out(db, org.id, store, skill)
 
 
 @router.get("/skills/{skill_id}/used-by", response_model=SkillUsedBy)
-def get_skill_used_by(skill_id: DbId, org: CurrentOrganisation, db: DB):
+def get_skill_used_by(skill_id: DbId, store: CurrentStore):
     """What uses the skill, for the archive confirmation to show: read-only, as archiving is
     never refused."""
-    return SkillUsedBy(agents=skill_usage(db, get_org_skill(db, org, skill_id).id))
+    return SkillUsedBy(agents=skill_usage(store, get_org_skill(store, skill_id).id))
 
 
 @router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])
-def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB):
-    skill = get_org_skill(db, org, skill_id)
-    versions = db.scalars(
+def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    skill = get_org_skill(store, skill_id)
+    versions = store.scalars(
         select(SkillVersion)
         .where(SkillVersion.skill_id == skill.id)
         .order_by(SkillVersion.version.desc())
@@ -374,27 +389,34 @@ def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB):
 
 
 @router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
-def get_skill_version_detail(skill_id: DbId, number: DbId, org: CurrentOrganisation, db: DB):
-    version = get_skill_version(db, get_org_skill(db, org, skill_id), number)
+def get_skill_version_detail(
+    skill_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    version = get_skill_version(store, get_org_skill(store, skill_id), number)
     known = people(db, org.id, [version.created_by])
     return version_summary(version, known, SkillVersionOut)
 
 
 @router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)
 def restore_skill_version(
-    skill_id: DbId, number: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
+    skill_id: DbId,
+    number: DbId,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
 ):
     """Make an old version's content current again, as a new version."""
-    skill = get_org_skill(db, org, skill_id)
-    old = get_skill_version(db, skill, number)
+    skill = get_org_skill(store, skill_id)
+    old = get_skill_version(store, skill, number)
     skill.updated_by = user.id
     save_skill_version(
-        db,
+        store,
         skill,
         description=old.description,
         content=old.content,
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
-    db.commit()
-    return skill_out(db, skill)
+    store.commit()
+    return skill_out(db, org.id, store, skill)

@@ -1,177 +1,33 @@
-"""Workflows, with their versions, nodes, edges, runs and steps."""
+"""Workflow runs and their steps."""
 
 import enum
 import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    CheckConstraint,
     DateTime,
     Double,
     Enum,
     ForeignKey,
-    ForeignKeyConstraint,
-    Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Mapped, mapped_column
 
-from aios.models.agents import AgentVersion
 from aios.models.base import Base
 
-# Workflows graph agents together, and can nest other workflows as subgraphs. They're versioned
-# like agents: an identity row plus immutable versions, and each version pins the exact agent and
-# workflow versions its nodes run. A version can only pin versions that already exist, so nesting
-# is always finite: no workflow version can contain itself, however deep.
+# Workflows themselves, with their versions, nodes and edges, are in each organisation's store
+# (`aios.datastores.models`). Runs stay here for now, naming the workflow and version they ran by
+# id within their organisation's store.
 
 
 class WorkflowNodeKind(enum.StrEnum):
     agent = "agent"
     workflow = "workflow"
-
-
-class Workflow(Base):
-    """A workflow's identity. Its graph lives on WorkflowVersion."""
-
-    __tablename__ = "workflows"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    # The organisation it belongs to (`aios.organisations`), and what it answers to: every
-    # member's, and gone with the organisation.
-    organisation_id: Mapped[int] = mapped_column(
-        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
-    )
-    # Which member made it and which last changed it; null once that user is deleted.
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    name: Mapped[str] = mapped_column(String(255))
-    description: Mapped[str] = mapped_column(Text, server_default="")
-    current_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflow_versions.id", use_alter=True, name="fk_workflows_current_version_id")
-    )
-    # Where the editor draws each node, by node key: {"key": {"x": 0, "y": 0}}. Presentation
-    # only, like the name, so it isn't versioned; nodes without a position are laid out for you.
-    layout: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
-    # When it was archived, and by which member (null once that user is deleted); both null
-    # while it isn't. Archived rather than deleted: other workflows' versions pin its versions.
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    archived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    current_version: Mapped["WorkflowVersion | None"] = relationship(
-        foreign_keys=[current_version_id], post_update=True
-    )
-
-    __table_args__ = (
-        # Names are unique among the organisation's workflows, archived ones included: an
-        # archived workflow's name stays reserved.
-        Index("uq_workflows_organisation_id_name", "organisation_id", "name", unique=True),
-    )
-
-
-class WorkflowVersion(Base):
-    """An immutable snapshot of a workflow's graph: its nodes and the edges between them."""
-
-    __tablename__ = "workflow_versions"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
-    version: Mapped[int] = mapped_column(Integer)
-    config_hash: Mapped[str] = mapped_column(String(64))
-    note: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    workflow: Mapped[Workflow] = relationship(foreign_keys=[workflow_id])
-    nodes: Mapped[list["WorkflowNode"]] = relationship(
-        order_by="WorkflowNode.position",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        foreign_keys="WorkflowNode.workflow_version_id",
-    )
-    edges: Mapped[list["WorkflowEdge"]] = relationship(
-        order_by="WorkflowEdge.position", cascade="all, delete-orphan", passive_deletes=True
-    )
-
-    __table_args__ = (UniqueConstraint("workflow_id", "version"),)
-
-
-class WorkflowNode(Base):
-    """A step in a workflow version: a pinned agent version, or a pinned workflow version run as
-    a subgraph."""
-
-    __tablename__ = "workflow_nodes"
-
-    workflow_version_id: Mapped[int] = mapped_column(
-        ForeignKey("workflow_versions.id", ondelete="CASCADE"), primary_key=True
-    )
-    # Names the node within its version; edges refer to nodes by key.
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    kind: Mapped[WorkflowNodeKind] = mapped_column(
-        Enum(WorkflowNodeKind, name="workflow_node_kind")
-    )
-    # Exactly one of these is set, matching `kind`. No ON DELETE: agents and workflows are
-    # archived, never deleted, so the versions a node pins are never deleted by the API. Only
-    # deleting an organisation removes them, cascading to its agents and workflows alike, so
-    # the check is deferred to commit: by then the nodes pinning them have gone too, whatever
-    # order the cascades ran in.
-    agent_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_versions.id", deferrable=True, initially="DEFERRED"), index=True
-    )
-    subworkflow_version_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflow_versions.id", deferrable=True, initially="DEFERRED"), index=True
-    )
-    position: Mapped[int] = mapped_column(Integer)
-
-    agent_version: Mapped[AgentVersion | None] = relationship()
-    subworkflow_version: Mapped[WorkflowVersion | None] = relationship(
-        foreign_keys=[subworkflow_version_id]
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "(kind = 'agent' AND agent_version_id IS NOT NULL AND subworkflow_version_id IS NULL)"
-            " OR (kind = 'workflow' AND subworkflow_version_id IS NOT NULL"
-            " AND agent_version_id IS NULL)",
-            name="ck_workflow_nodes_target",
-        ),
-    )
-
-
-class WorkflowEdge(Base):
-    """Control passes from `source` to `target` (node keys in the same version) when `source`
-    finishes. Nodes with no incoming edge are where the workflow starts."""
-
-    __tablename__ = "workflow_edges"
-
-    workflow_version_id: Mapped[int] = mapped_column(
-        ForeignKey("workflow_versions.id", ondelete="CASCADE"), primary_key=True
-    )
-    source: Mapped[str] = mapped_column(String(64), primary_key=True)
-    target: Mapped[str] = mapped_column(String(64), primary_key=True)
-    position: Mapped[int] = mapped_column(Integer)
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["workflow_version_id", "source"],
-            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["workflow_version_id", "target"],
-            ["workflow_nodes.workflow_version_id", "workflow_nodes.key"],
-            ondelete="CASCADE",
-        ),
-    )
 
 
 # A workflow run walks its pinned version's graph, recording a step per node as it starts. An
@@ -204,14 +60,16 @@ class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Owned through the workflow. Soft-deleting it leaves its runs.
-    workflow_id: Mapped[int] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    # The organisation whose workflow it runs (`aios.organisations`): its store holds the
+    # workflow and the version, and it goes with the organisation.
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
+    # The workflow, in the organisation's store (`aios.datastores.models.Workflow`): ids repeat
+    # across organisations, so it's named with `organisation_id`, and isn't a foreign key.
+    workflow_id: Mapped[int] = mapped_column(Integer, index=True)
     # Pinned when the run starts: editing the workflow mid-run doesn't change the run.
-    workflow_version_id: Mapped[int] = mapped_column(
-        ForeignKey("workflow_versions.id", ondelete="CASCADE"), index=True
-    )
+    workflow_version_id: Mapped[int] = mapped_column(Integer, index=True)
     # The member who started it; null for a schedule's run, or once that user is deleted.
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     # The trigger that started it (a schedule), if one did and it still exists.
@@ -239,8 +97,6 @@ class WorkflowRun(Base):
     # doesn't count towards the run's time limit.
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     waited_seconds: Mapped[float] = mapped_column(Double, server_default=text("0"))
-
-    workflow_version: Mapped[WorkflowVersion] = relationship()
 
 
 class WorkflowRunStep(Base):

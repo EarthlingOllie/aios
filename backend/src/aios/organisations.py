@@ -63,7 +63,6 @@ from aios import notifications
 from aios.config import get_settings
 from aios.datastores import people
 from aios.models import (
-    Agent,
     Chat,
     ChatMember,
     ChatMemberKind,
@@ -76,9 +75,7 @@ from aios.models import (
     OrganisationDeletion,
     OrganisationInvite,
     OrganisationMember,
-    Skill,
     User,
-    Workflow,
 )
 
 log = logging.getLogger(__name__)
@@ -505,10 +502,7 @@ def _delete(db: Session, org_id: int) -> uuid.UUID | None | bool:
             .where(DataStore.id == store_id)
             .values(status=DataStoreStatus.deleting, owner_organisation_id=None)
         )
-    # What pins another's versions first (workflows pin agents', agents pin skills'): one
-    # cascading delete of them all can check a pin before it has deleted the pinning row.
-    for model in (Workflow, Agent, Skill):
-        db.execute(delete(model).where(model.organisation_id == org.id))
+    # Its agents, skills and workflows go with its store; what's here cascades from it.
     db.execute(delete(Organisation).where(Organisation.id == org.id))
     db.flush()
     db.expire_all()

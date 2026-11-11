@@ -2,15 +2,18 @@
 runs and deletes every one, names are unique within it, each says who made and last changed it,
 and to anyone in another organisation they don't exist."""
 
+from contextlib import nullcontext
+
 import pytest
-from conftest import delete_user, join_organisation, make_user
+from conftest import delete_user, join_organisation, provisioned_user, user_store
 from test_agents import agent_body, make_agent, make_skill
 from test_chats import signed_in_as
 from test_triggers import schedule
 from test_workflow_runs import queued  # noqa: F401
 from test_workflows import agent_node, make_workflow, workflow_body
 
-from aios.models import Agent, Skill, User, Workflow
+from aios.datastores.models import Agent, Skill, Workflow
+from aios.models import User
 
 
 @pytest.fixture
@@ -24,8 +27,8 @@ def member(db, user):
 
 @pytest.fixture
 def outsider(db):
-    """A user in an organisation of their own."""
-    u = make_user(db, "outsider")
+    """A user in an organisation of their own, with its store provisioned."""
+    u = provisioned_user(db, "outsider")
     yield u
     delete_user(db, u)
 
@@ -57,12 +60,12 @@ def test_a_member_works_on_an_agent_another_member_made(api, user, member, db):
         assert ok(api.get(f"{url}/used-by"))["workflows"] == []
         ok(api.delete(f"{url}/runs/{run['id']}"), 204)
         ok(api.post(f"{url}/archive"))
-    db.expire_all()
-    archived = db.get(Agent, agent["id"])
+    with user_store(user, "ro") as store:
+        archived = store.get(Agent, agent["id"])
     assert archived.archived_at is not None and archived.archived_by == member.id
 
 
-def test_a_member_works_on_a_skill_another_member_made(api, member, db):
+def test_a_member_works_on_a_skill_another_member_made(api, user, member):
     skill = make_skill(api, "Tone", content="Be kind.")
     url = f"/api/skills/{skill['id']}"
     with signed_in_as(member):
@@ -78,11 +81,11 @@ def test_a_member_works_on_a_skill_another_member_made(api, member, db):
     with signed_in_as(member):
         assert [a["agent_name"] for a in ok(api.get(f"{url}/used-by"))["agents"]] == ["Kind"]
         ok(api.post(f"{url}/archive"))
-    db.expire_all()
-    assert db.get(Skill, skill["id"]).archived_by == member.id
+    with user_store(user, "ro") as store:
+        assert store.get(Skill, skill["id"]).archived_by == member.id
 
 
-def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queued):  # noqa: F811
+def test_a_member_works_on_a_workflow_another_member_made(api, user, member, queued):  # noqa: F811
     agent = make_agent(api, "Step")
     workflow = make_workflow(api, "Pipeline", [agent_node("step", agent)])
     url = f"/api/workflows/{workflow['id']}"
@@ -102,8 +105,8 @@ def test_a_member_works_on_a_workflow_another_member_made(api, member, db, queue
         assert ok(api.get(f"{url}/runs/{run['id']}"))["created_by"] == person(member)
         assert ok(api.get(f"{url}/used-by"))["workflows"] == []
         ok(api.post(f"{url}/archive"))
-    db.expire_all()
-    assert db.get(Workflow, workflow["id"]).archived_by == member.id
+    with user_store(user, "ro") as store:
+        assert store.get(Workflow, workflow["id"]).archived_by == member.id
 
 
 def test_a_member_works_on_a_schedule_another_member_made(api, user, member):
@@ -175,6 +178,84 @@ def test_another_organisation_cant_reach_any_of_it(api, outsider, queued):  # no
         ]
         assert [r.status_code for r in unknown] == [422] * len(unknown)
     assert queued == [workflow_run["id"]]
+
+
+def test_ids_repeat_across_organisations_and_each_reaches_only_its_own(
+    api,
+    outsider,
+    queued,  # noqa: F811
+):
+    """Each organisation's agents, skills and workflows are in its own store, whose ids are its
+    own: two organisations' first agent, skill and workflow have the same ids. Every route, with
+    those ids, reaches the asking organisation's, never the other's."""
+    built = {}
+    for who in ("user", "outsider"):
+        with signed_in_as(outsider) if who == "outsider" else nullcontext():
+            skill = make_skill(api, f"{who} tone", content=f"{who} content")
+            agent = make_agent(api, f"{who} agent", base_prompt=f"{who} prompt", skills=[skill])
+            workflow = make_workflow(api, f"{who} flow", [agent_node("step", agent)])
+            built[who] = (skill, agent, workflow)
+    mine, theirs = built["user"], built["outsider"]
+    # The same ids in both stores, version ids included.
+    for a, b in zip(mine, theirs, strict=True):
+        assert (a["id"], a["current_version"]["id"]) == (b["id"], b["current_version"]["id"])
+
+    def everything(who: str) -> list:
+        skill, agent, workflow = built[who]
+        s, a, w = (
+            f"/api/skills/{skill['id']}",
+            f"/api/agents/{agent['id']}",
+            f"/api/workflows/{workflow['id']}",
+        )
+        return [
+            [x["name"] for x in ok(api.get("/api/skills"))],
+            [x["name"] for x in ok(api.get("/api/agents"))],
+            [x["name"] for x in ok(api.get("/api/workflows"))],
+            ok(api.get(s))["name"],
+            ok(api.get(f"{s}/versions/1"))["content"],
+            [x["agent_name"] for x in ok(api.get(f"{s}/used-by"))["agents"]],
+            ok(api.get(a))["name"],
+            ok(api.get(f"{a}/versions/1"))["base_prompt"],
+            [x["name"] for x in ok(api.get(f"{a}/versions/1"))["skills"]],
+            [x["name"] for x in ok(api.get(f"{a}/used-by"))["workflows"]],
+            ok(api.get(w))["name"],
+            [n["name"] for n in ok(api.get(f"{w}/versions/1"))["nodes"]],
+        ]
+
+    def expected(who: str) -> list:
+        return [
+            [f"{who} tone"],
+            [f"{who} agent"],
+            [f"{who} flow"],
+            f"{who} tone",
+            f"{who} content",
+            [f"{who} agent"],
+            f"{who} agent",
+            f"{who} prompt",
+            [f"{who} tone"],
+            [f"{who} flow"],
+            f"{who} flow",
+            [f"{who} agent"],
+        ]
+
+    assert everything("user") == expected("user")
+    with signed_in_as(outsider):
+        assert everything("outsider") == expected("outsider")
+        # Changing theirs leaves ours alone.
+        _, agent, workflow = theirs
+        ok(api.post(f"/api/agents/{agent['id']}/archive"))
+        ok(api.put(f"/api/workflows/{workflow['id']}", json=workflow_body("outsider flow")))
+    _, agent, workflow = mine
+    assert ok(api.get(f"/api/agents/{agent['id']}"))["archived_at"] is None
+    assert ok(api.get(f"/api/workflows/{workflow['id']}"))["current_version"]["version"] == 1
+    # A run of ours is found by us, by its agent's id, and not by them with the same id.
+    run = ok(api.post(f"/api/agents/{agent['id']}/runs"), 201)
+    assert ok(api.get(f"/api/agents/{agent['id']}/runs/{run['id']}"))["agent_name"] == "user agent"
+    with signed_in_as(outsider):
+        assert api.get(f"/api/agents/{agent['id']}/runs/{run['id']}").status_code == 404
+        assert ok(api.get(f"/api/agents/{agent['id']}/runs")) == []
+        assert ok(api.get(f"/api/agents/{agent['id']}/versions"))[0]["run_count"] == 0
+    assert ok(api.get(f"/api/agents/{agent['id']}/versions"))[0]["run_count"] == 1
 
 
 def test_names_are_unique_within_the_organisation(api, member, outsider):

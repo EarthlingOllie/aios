@@ -44,9 +44,10 @@ from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
+from aios.datastores import organisation_store
+from aios.datastores.models import Agent, Workflow
 from aios.datastores.schema_changes import not_given
 from aios.models import (
-    Agent,
     AgentRun,
     AgentRunStatus,
     Chat,
@@ -57,7 +58,6 @@ from aios.models import (
     ChatMessageKind,
     SchemaChangeRequest,
     TriggerTargetKind,
-    Workflow,
     WorkflowRun,
     WorkflowRunStatus,
 )
@@ -104,6 +104,9 @@ def create(
         return []
     db.flush()
     made = []
+    organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == message.chat_id))
+    targets = list(targets)
+    archived = _archived(organisation_id, targets)
     for kind, target_id in targets:
         is_agent = kind == TriggerTargetKind.agent
         invocation = ChatInvocation(
@@ -129,11 +132,40 @@ def create(
             )
         )
         db.flush()
-        target = db.get(Agent if is_agent else Workflow, target_id)
-        if target.archived_at is not None:
-            fail_unstarted(db, invocation.id, f"The {kind.value} {target.name} is archived")
+        if (name := archived.get((kind, target_id))) is not None:
+            fail_unstarted(db, invocation.id, f"The {kind.value} {name} is archived")
         made.append(invocation)
     return made
+
+
+def _archived(
+    organisation_id: int, targets: Sequence[tuple[TriggerTargetKind, int]]
+) -> dict[tuple[TriggerTargetKind, int], str]:
+    """The names of these agents and workflows (kind, id) of the organisation's that are
+    archived, from its store, by (kind, id)."""
+    found: dict[tuple[TriggerTargetKind, int], str] = {}
+    if not targets:
+        return found
+    with organisation_store(organisation_id, "ro") as store:
+        for kind, model in (
+            (TriggerTargetKind.agent, Agent),
+            (TriggerTargetKind.workflow, Workflow),
+        ):
+            ids = [i for k, i in targets if k == kind]
+            if not ids:
+                continue
+            for i, name in store.execute(
+                select(model.id, model.name).where(
+                    model.id.in_(ids), model.archived_at.is_not(None)
+                )
+            ):
+                found[kind, i] = name
+    return found
+
+
+def organisation_of(db: Session, invocation: ChatInvocation) -> int:
+    """The organisation the invocation's chat is in: whose store its agent or workflow is in."""
+    return db.scalar(select(Chat.organisation_id).where(Chat.id == invocation.chat_id))
 
 
 def lock(db: Session, invocation_id: int) -> ChatInvocation | None:

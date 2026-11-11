@@ -11,14 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from aios import tracing
-from aios.models import (
-    Agent,
-    AgentVersion,
-    Workflow,
-    WorkflowNode,
-    WorkflowNodeKind,
-    WorkflowVersion,
-)
+from aios.datastores.models import Agent, AgentVersion, Workflow, WorkflowNode, WorkflowVersion
+from aios.models import WorkflowNodeKind
 from aios.runner import version_tools
 from aios.tools import AgentTool, ToolError
 

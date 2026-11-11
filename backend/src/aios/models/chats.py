@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -18,11 +19,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from aios.models.agents import Agent
 from aios.models.base import Base
 from aios.models.identity import User
 from aios.models.triggers import TriggerTargetKind
-from aios.models.workflows import Workflow
 
 # Chats are group conversations between users, agents and workflows. A member row says who is
 # in a chat; which kind it is decides which id column is set, like a trigger's target, so agents
@@ -92,18 +91,14 @@ class ChatMember(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
     kind: Mapped[ChatMemberKind] = mapped_column(Enum(ChatMemberKind, name="chat_member_kind"))
-    # Exactly one is set, matching `kind`. Agents and workflows are soft-deleted; the cascades are
-    # for deleting a user, and for deleting an organisation, which deletes its agents and
-    # workflows.
+    # Exactly one is set, matching `kind`. The cascade is for deleting a user. An agent or
+    # workflow is the one in the chat's organisation's store (`aios.datastores.models`), so not
+    # a foreign key: they're archived, never deleted.
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    agent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), index=True
-    )
-    workflow_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
-    )
+    agent_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    workflow_id: Mapped[int | None] = mapped_column(Integer, index=True)
     # Users only: the chat's owner, or an ordinary member.
     role: Mapped[ChatMemberRole | None] = mapped_column(
         Enum(ChatMemberRole, name="chat_member_role")
@@ -116,8 +111,6 @@ class ChatMember(Base):
 
     chat: Mapped[Chat] = relationship(back_populates="members")
     user: Mapped[User | None] = relationship(foreign_keys=[user_id])
-    agent: Mapped[Agent | None] = relationship()
-    workflow: Mapped[Workflow | None] = relationship()
 
     __table_args__ = (
         CheckConstraint(
@@ -171,17 +164,14 @@ class ChatMessage(Base):
     author_kind: Mapped[ChatAuthorKind] = mapped_column(
         Enum(ChatAuthorKind, name="chat_author_kind")
     )
-    # At most one is set, matching `author_kind`; none for a system message. Deleting the author
-    # leaves what they posted, with no author.
+    # At most one is set, matching `author_kind`; none for a system message. Deleting the user
+    # leaves what they posted, with no author. An agent or workflow is the one in the chat's
+    # organisation's store, so not a foreign key.
     author_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
-    author_agent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="SET NULL"), index=True
-    )
-    author_workflow_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflows.id", ondelete="SET NULL"), index=True
-    )
+    author_agent_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    author_workflow_id: Mapped[int | None] = mapped_column(Integer, index=True)
     kind: Mapped[ChatMessageKind] = mapped_column(Enum(ChatMessageKind, name="chat_message_kind"))
     body: Mapped[str] = mapped_column(Text)
     # Who the message mentions, `[{kind, id, name}]`, with the names as they were when posted.
@@ -200,8 +190,6 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     author_user: Mapped[User | None] = relationship()
-    author_agent: Mapped[Agent | None] = relationship()
-    author_workflow: Mapped[Workflow | None] = relationship()
 
     __table_args__ = (
         CheckConstraint(
@@ -252,14 +240,10 @@ class ChatInvocation(Base):
     target_kind: Mapped[TriggerTargetKind] = mapped_column(
         Enum(TriggerTargetKind, name="chat_invocation_target_kind")
     )
-    # Exactly one is set, matching `target_kind`. Agents and workflows are soft-deleted; the
-    # cascades are for deleting an organisation, which deletes its agents and workflows too.
-    agent_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="CASCADE"), index=True
-    )
-    workflow_id: Mapped[int | None] = mapped_column(
-        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
-    )
+    # Exactly one is set, matching `target_kind`: the agent or workflow in the chat's
+    # organisation's store (`aios.datastores.models`), so not a foreign key.
+    agent_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    workflow_id: Mapped[int | None] = mapped_column(Integer, index=True)
     status: Mapped[ChatInvocationStatus] = mapped_column(
         Enum(ChatInvocationStatus, name="chat_invocation_status"),
         default=ChatInvocationStatus.queued,
@@ -284,9 +268,6 @@ class ChatInvocation(Base):
     # while the turn runs; one whose heartbeat has stopped lost its process, and is failed. Null
     # while it waits for a free slot, and for a workflow's, whose run the worker looks after.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    workflow: Mapped[Workflow | None] = relationship()
-    agent: Mapped[Agent | None] = relationship()
 
     __table_args__ = (
         CheckConstraint(

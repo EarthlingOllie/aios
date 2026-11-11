@@ -30,8 +30,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from aios import invocations, llm, tracing
+from aios import invocations, llm, stored, tracing
 from aios.config import get_settings
+from aios.datastores.models import Agent, Workflow
 from aios.db import SessionLocal
 from aios.firing import CantStart
 from aios.models import ChatAuthorKind, ChatInvocation, ChatMessage, ChatMessageKind
@@ -79,25 +80,43 @@ class Request:
     metadata: dict[str, Any]
 
 
-def author_name(message: ChatMessage) -> str:
-    """Who posted the message, as the transcript names them."""
+# The names of the agents and workflows that posted messages, by (kind, id).
+Names = dict[tuple[ChatAuthorKind, int], str]
+
+
+def author_name(message: ChatMessage, names: Names) -> str:
+    """Who posted the message, as the transcript names them; an agent or workflow by its name in
+    `names` (from the organisation's store)."""
     if message.author_kind == ChatAuthorKind.system:
         return "system"
     if message.author_user is not None:
         name = message.author_user.full_name
-    elif author := message.author_agent or message.author_workflow:
-        name = author.name
+    elif (
+        author := names.get(
+            (message.author_kind, message.author_agent_id or message.author_workflow_id)
+        )
+    ) is not None:
+        name = author
     else:
         return f"a deleted {message.author_kind}"
     return f"{name} ({message.author_kind})"
 
 
-def line(message: ChatMessage, limit: int | None = None) -> str:
+def line(message: ChatMessage, names: Names, limit: int | None = None) -> str:
     """The message as a line of the transcript, its text cut to `limit` characters."""
     text = invocations.message_text(message.body)
     if limit is not None and len(text) > limit:
         text = text[:limit] + "…"
-    return f"[{author_name(message)}]: {text}"
+    return f"[{author_name(message, names)}]: {text}"
+
+
+def _names(organisation_id: int, messages: list[ChatMessage]) -> Names:
+    names: Names = {}
+    for kind, model in ((ChatAuthorKind.agent, Agent), (ChatAuthorKind.workflow, Workflow)):
+        ids = [m.author_agent_id or m.author_workflow_id for m in messages if m.author_kind == kind]
+        for i, name in stored.names(organisation_id, model, ids).items():
+            names[kind, i] = name
+    return names
 
 
 def window(db: Session, invocation: ChatInvocation) -> list[str]:
@@ -113,20 +132,17 @@ def window(db: Session, invocation: ChatInvocation) -> list[str]:
             ChatMessage.id <= invocation.message_id,
             ChatMessage.kind == ChatMessageKind.text,
         )
-        .options(
-            selectinload(ChatMessage.author_user),
-            selectinload(ChatMessage.author_agent),
-            selectinload(ChatMessage.author_workflow),
-        )
+        .options(selectinload(ChatMessage.author_user))
         .order_by(ChatMessage.id.desc())
         .limit(settings.handoff_window_messages)
     ).all()
     budget = settings.handoff_window_tokens * CHARS_PER_TOKEN
+    names = _names(invocations.organisation_of(db, invocation), list(rows))
     mentioning, *earlier = rows
-    lines = [line(mentioning, limit=budget)]
+    lines = [line(mentioning, names, limit=budget)]
     budget -= len(lines[0])
     for message in earlier:
-        text = line(message)
+        text = line(message, names)
         if len(text) > budget:
             break
         lines.append(text)
@@ -142,24 +158,28 @@ def _begin(invocation_id: int) -> Request | None:
         invocation = invocations.begin_briefing(db, invocation_id)
         if invocation is None:
             return None
-        target = invocation.agent or invocation.workflow
+        organisation_id = invocations.organisation_of(db, invocation)
+        is_agent = invocation.agent_id is not None
+        target_id = invocation.agent_id if is_agent else invocation.workflow_id
+        target = stored.names(organisation_id, Agent if is_agent else Workflow, [target_id])
+        name = target.get(target_id, "")
         *earlier, mentioning = window(db, invocation)
         chat = "\n\n".join(
             [
                 "The chat so far, oldest first:",
                 *(earlier or ["(nothing before the message)"]),
-                f"The message mentioning {target.name}:",
+                f"The message mentioning {name}:",
                 mentioning,
             ]
         )
         request = Request(
-            system=SYSTEM_PROMPT.format(kind=invocation.target_kind.value, name=target.name),
+            system=SYSTEM_PROMPT.format(kind=invocation.target_kind.value, name=name),
             chat=chat,
             metadata=tracing.trace_metadata(
                 # A chat's handoffs, together.
                 session_id=f"chat-{invocation.chat_id}",
                 # As the run's own trace will say: the organisation it runs for, and who asked.
-                organisation_id=target.organisation_id,
+                organisation_id=organisation_id,
                 created_by=invocation.requested_by,
                 tags=["handoff"],
                 invocation_id=invocation.id,
@@ -167,8 +187,8 @@ def _begin(invocation_id: int) -> Request | None:
                 message_id=invocation.message_id,
                 requested_by=invocation.requested_by,
                 target_kind=invocation.target_kind.value,
-                target_id=target.id,
-                target_name=target.name,
+                target_id=target_id,
+                target_name=name,
             ),
         )
         db.commit()

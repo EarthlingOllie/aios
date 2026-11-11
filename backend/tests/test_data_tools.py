@@ -93,13 +93,48 @@ def data_agent(api) -> dict:
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=DATA_TOOLS)).json()
 
 
-def run_tools(api, agent: dict, *calls: ToolCall, before_turn=None) -> list:
+# The platform-managed tables every store has, which the read-only role reads.
+STORE_TABLES = {
+    ("aios", name)
+    for name in (
+        "agent_version_skills",
+        "agent_version_tools",
+        "agent_versions",
+        "agents",
+        "chunks",
+        "documents",
+        "embedding_columns",
+        "people",
+        "schema_history",
+        "skill_versions",
+        "skills",
+        "workflow_edges",
+        "workflow_nodes",
+        "workflow_versions",
+        "workflows",
+    )
+}
+
+
+def set_status(store_id, status: DataStoreStatus) -> None:
+    """Put the store in `status`, as if it weren't ready (or no longer were)."""
+    with SessionLocal() as session:
+        session.execute(update(DataStore).where(DataStore.id == store_id).values(status=status))
+        session.commit()
+
+
+def run_tools(api, agent: dict, *calls: ToolCall, as_turn_starts=None) -> list:
     """One agent turn in which the model makes `calls` (in turn); returns what each gave.
-    `before_turn` is called once the run is made, before the turn."""
+    `as_turn_starts` is called once the turn has started (it has read its agent from the store),
+    before the model's first call: to break the store the tools then use."""
     outputs = []
     pending = list(calls)
+    started = []
 
     async def script(messages, info):
+        if as_turn_starts is not None and not started:
+            started.append(True)
+            as_turn_starts()
         outputs.extend(tool_output(m) for m in last_tool_results(messages))
         if pending:
             yield pending.pop(0)
@@ -107,8 +142,6 @@ def run_tools(api, agent: dict, *calls: ToolCall, before_turn=None) -> list:
             yield "done"
 
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
-    if before_turn is not None:
-        before_turn()
     with use_model(model(script)):
         url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
         assert api.post(url, json=chat_body("go")).status_code == 200
@@ -554,11 +587,7 @@ def test_neither_tool_reaches_another_store_or_the_platform(api, store, other_st
     described = describe(api, data_agent)
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "fish"),
-        ("aios", "chunks"),
-        ("aios", "documents"),
-        ("aios", "embedding_columns"),
-        ("aios", "people"),
-        ("aios", "schema_history"),
+        *STORE_TABLES,
     }
     assert query(api, data_agent, "SELECT current_database()")["rows"] == [[store.dbname]]
 
@@ -608,11 +637,7 @@ def test_each_run_reads_its_own_organisations_store(api, store, other_store, dat
 
     assert {(t["schema"], t["name"]) for t in described["tables"]} == {
         ("data", "secrets"),
-        ("aios", "chunks"),
-        ("aios", "documents"),
-        ("aios", "embedding_columns"),
-        ("aios", "people"),
-        ("aios", "schema_history"),
+        *STORE_TABLES,
     }
     assert result["rows"] == [["hunter2"]]
     assert "does not exist" in query(api, their_agent, "SELECT * FROM data.fish")["error"]
@@ -629,15 +654,14 @@ def test_each_run_reads_its_own_organisations_store(api, store, other_store, dat
         (DataStoreStatus.deleted, "isn't available"),
     ],
 )
-def test_both_tools_say_why_the_store_isnt_ready(api, db, user, data_agent, status, says):
-    db.execute(update(DataStore).where(DataStore.id == store_of(user)).values(status=status))
-    db.commit()
-
+def test_both_tools_say_why_the_store_isnt_ready(api, user, data_agent, status, says):
+    # Once the turn has its agent (from the store, while it was ready).
     described, queried = run_tools(
         api,
         data_agent,
         ToolCall("describe_data", {}),
         ToolCall("query_data", {"sql": "SELECT 1"}),
+        as_turn_starts=lambda: set_status(store_of(user), status),
     )
 
     assert described == queried
@@ -662,14 +686,14 @@ def test_a_store_that_cant_be_reached_is_an_error_for_the_model(
     pooler, a login after a failed one answers alike for a while (`server_login_retry`)."""
 
     def unreachable() -> None:
-        # Once the run is made: showing it reads who started it from the store, as the role.
+        # Once the turn has started: making the run, and starting its turn, read the store.
         with psycopg.connect(
             libpq_conninfo(get_settings().data_store_provisioner_url), autocommit=True
         ) as conn:
             conn.execute(f'ALTER ROLE "{store.role_prefix}_ro" {change}')
         new_sessions(store, "ro")
 
-    (result,) = run_tools(api, data_agent, call, before_turn=unreachable)
+    (result,) = run_tools(api, data_agent, call, as_turn_starts=unreachable)
 
     assert set(result) == {"error"}
     assert says in result["error"]

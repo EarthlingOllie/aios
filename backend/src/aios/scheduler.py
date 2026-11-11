@@ -57,6 +57,8 @@ from aios import cron, firing
 from aios.api import agents as agents_api
 from aios.api import chats as chats_api
 from aios.api import workflows as workflows_api
+from aios.datastores import organisation_store
+from aios.datastores.models import Agent, Workflow
 from aios.db import SessionLocal
 from aios.firing import HEARTBEAT_SECONDS, STALE_AFTER, STOPPED, CantStart
 from aios.models import Trigger, TriggerStatus, TriggerTargetKind
@@ -175,18 +177,23 @@ def _claimed(
 def _start_agent_run(db, trigger_id: int, fired_at: datetime) -> firing.Turn:
     """Start a run for an agent's schedule; commits."""
     trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent)
-    agent = trigger.agent
-    try:
-        run = agents_api.new_agent_run(db, agent, created_by=None, trigger_id=trigger.id)
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            raise CantStart("The agent has been deleted.") from exc
-        raise CantStart(exc.detail) from exc
-    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
-    # Committed with the run, under the agent's share lock (see `new_agent_run`).
-    trigger.last_run_id = run.id
-    db.commit()
-    return firing.Turn(agent.id, run.id, trigger.input)
+    organisation_id, agent_id = trigger.organisation_id, trigger.agent_id
+    with organisation_store(organisation_id) as store:
+        agent = store.get(Agent, agent_id)
+        if agent is None:
+            raise CantStart("The agent has been deleted.")
+        try:
+            run = agents_api.new_agent_run(
+                db, store, organisation_id, agent, created_by=None, trigger_id=trigger.id
+            )
+        except HTTPException as exc:
+            raise CantStart(exc.detail) from exc
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.agent, lock=True)
+        # Committed with the run, under the agent's share lock (see `new_agent_run`).
+        trigger.last_run_id = run.id
+        db.commit()
+        store.commit()
+    return firing.Turn(agent_id, run.id, trigger.input)
 
 
 def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
@@ -194,14 +201,26 @@ def _start_workflow_run(db, trigger_id: int, fired_at: datetime) -> None:
 
     Raises `HTTPException` as starting one by hand would, if it can't start or be queued."""
     trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow)
-    run = workflows_api.new_workflow_run(
-        db, trigger.workflow, trigger.input, created_by=None, trigger_id=trigger.id
-    )
-    trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
-    trigger.last_workflow_run_id = run.id
-    # Commits the link with the run; if queueing fails the run is deleted, and the link
-    # with it (SET NULL).
-    workflows_api.queue_workflow_run(db, run)
+    organisation_id = trigger.organisation_id
+    with organisation_store(organisation_id) as store:
+        workflow = store.get(Workflow, trigger.workflow_id)
+        if workflow is None:
+            raise CantStart("The workflow has been deleted.")
+        run = workflows_api.new_workflow_run(
+            db,
+            store,
+            organisation_id,
+            workflow,
+            trigger.input,
+            created_by=None,
+            trigger_id=trigger.id,
+        )
+        trigger = _claimed(db, trigger_id, fired_at, TriggerTargetKind.workflow, lock=True)
+        trigger.last_workflow_run_id = run.id
+        # Commits the link with the run; if queueing fails the run is deleted, and the link
+        # with it (SET NULL). Then the workflow's share lock in the store goes.
+        workflows_api.queue_workflow_run(db, run)
+        store.commit()
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,8 @@
 # Stores
 
 Each organisation has a **store**: a Postgres database of its own, on the same instance as the
-platform database, which holds its documents, the data tables its agents asked for, and, when
-it's switched on, a copy of its run history. In code and on screen it's a "data store"
+platform database, which holds its agents, skills and workflows, its documents, the data tables
+its agents asked for, and, when it's switched on, a copy of its run history. In code and on screen it's a "data store"
 (`aios.datastores`, the `data_stores` table, the "Data store" notices); screens show its
 contents as **Data**. See also [Accounts and organisations](accounts-and-organisations.md) and
 [Tools](tools.md), for the tools that read and write it.
@@ -174,6 +174,38 @@ fixed: rows it added (one deleted, or never written), updated (stale) and marked
 "Made by" and "changed by" resolve through it (`people.resolve`, for `aios.api.provenance`): a
 person's name, and whether they're a former member, from the mirror; anyone it doesn't have
 (the store isn't ready or can't be reached, or it hasn't caught up) from the platform.
+
+### Agents, skills and workflows
+
+What the organisation builds is in its store (store revision `0009`, `aios.datastores.models`):
+`aios.skills`, `aios.agents` and `aios.workflows`, each with its versions (`skill_versions`,
+`agent_versions`, `workflow_versions`), the skill versions each agent version pins
+(`agent_version_skills`), its tools and their settings (`agent_version_tools`), and each
+workflow version's nodes and edges (`workflow_nodes`, `workflow_edges`). A workflow's `layout`
+is on its row. Who made, changed, archived or saved each is a platform user id, resolved through
+the people mirror; there's no foreign key, as a store has no users table. They're archived,
+never deleted, so the versions pinned by other versions are always there.
+
+**Ids are the store's own**, so they repeat across organisations: two organisations' first
+agents both have id 1. Every agents, skills and workflows endpoint works in the asking
+organisation's store (`aios.auth.CurrentStore`, a session on it for the request), so an id never
+reaches another organisation's row: it names that organisation's own, or nothing. What's still
+on the platform and names one of them (agent and workflow runs, schedules, chat members, chat
+messages' authors and chat invocations) keeps its id without a foreign key, beside the
+organisation it's in (`organisation_id` on runs, schedules and chats), and every lookup by it is
+within that organisation. Reading their names or version numbers for those goes to the store
+(`aios.stored`).
+
+**Writes across the two databases** follow the source of truth: the store commits first. Saving
+an agent, skill or workflow writes only the store. Archiving one commits the store, then pauses
+its schedules on the platform. Starting a run, adding one to a chat or saving a schedule for it
+share-locks it in the store (so an archive waits), commits the platform's rows, and only then
+ends the store's transaction, so an archive racing it either waits and then sees what it made,
+or wins and is seen by it. The documents assistant (`aios.assistant`) is made in the store under
+a lock for its transaction only, and the chat that gets it is committed after.
+
+The platform's tables for them went in the same change (platform revision `0060`); nothing was
+copied across, and development data is rebuilt with `make seed`.
 
 ### The deny list
 

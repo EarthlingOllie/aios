@@ -1,5 +1,6 @@
 """A chat's messages: reading them, keeping track of what's been read, and posting."""
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from aios import invocations
+from aios import invocations, stored
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -17,6 +18,7 @@ from aios.api.chats.common import get_visible_chat, is_member, lock_chat, user_m
 from aios.api.chats.invocations import fail_stopped_turns, run_turns
 from aios.api.chats.members import mentionables
 from aios.auth import CurrentOrganisation, CurrentUser
+from aios.datastores.models import Agent, Workflow
 from aios.db import DB, DbId
 from aios.models import (
     AgentRun,
@@ -140,21 +142,47 @@ class MessagesOut(BaseModel):
     invocations: list[InvocationOut]
 
 
-def author_out(message: ChatMessage) -> MessageAuthorOut | None:
+# The names of the agents and workflows that posted messages, by (kind, id).
+AuthorNames = dict[tuple[ChatAuthorKind, int], str]
+
+
+def author_names(db: Session, chat_id: int, messages: Sequence[ChatMessage]) -> AuthorNames:
+    """The names of the agents and workflows that posted these messages of the chat's, from its
+    organisation's store (the messages name them by their ids there)."""
+    agent_ids = {m.author_agent_id for m in messages if m.author_agent_id is not None}
+    workflow_ids = {m.author_workflow_id for m in messages if m.author_workflow_id is not None}
+    if not agent_ids and not workflow_ids:
+        return {}
+    organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
+    names: AuthorNames = {}
+    for kind, model, ids in (
+        (ChatAuthorKind.agent, Agent, agent_ids),
+        (ChatAuthorKind.workflow, Workflow, workflow_ids),
+    ):
+        for i, name in stored.names(organisation_id, model, ids).items():
+            names[kind, i] = name
+    return names
+
+
+def author_out(message: ChatMessage, names: AuthorNames) -> MessageAuthorOut | None:
     if message.author_user is not None:
         user = message.author_user
         return MessageAuthorOut(kind=ChatAuthorKind.user, id=user.id, name=user.full_name)
-    target = message.author_agent or message.author_workflow
-    if target is None:
+    target_id = message.author_agent_id or message.author_workflow_id
+    if target_id is None:
         return None
-    return MessageAuthorOut(kind=message.author_kind, id=target.id, name=target.name)
+    return MessageAuthorOut(
+        kind=message.author_kind,
+        id=target_id,
+        name=names.get((message.author_kind, target_id), ""),
+    )
 
 
-def message_out(message: ChatMessage) -> MessageOut:
+def message_out(message: ChatMessage, names: AuthorNames) -> MessageOut:
     return MessageOut(
         id=message.id,
         chat_id=message.chat_id,
-        author=author_out(message),
+        author=author_out(message, names),
         kind=message.kind,
         body=message.body,
         mentions=message.mentions,
@@ -221,7 +249,8 @@ def with_runs(db: Session, outs: list[InvocationOut]) -> list[InvocationOut]:
 
 def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> MessagesOut:
     """The messages, and the invocations they belong to and those of the chat still going."""
-    out = [message_out(m) for m in messages]
+    names = author_names(db, chat_id, messages)
+    out = [message_out(m, names) for m in messages]
     found = db.scalars(
         select(ChatInvocation)
         .where(
@@ -264,11 +293,7 @@ def catch_up(db: Session, chat_id: int) -> None:
     invocations.fail_stalled(db, chat_id)
 
 
-MESSAGE_LOAD = (
-    selectinload(ChatMessage.author_user),
-    selectinload(ChatMessage.author_agent),
-    selectinload(ChatMessage.author_workflow),
-)
+MESSAGE_LOAD = (selectinload(ChatMessage.author_user),)
 
 
 def resolve_mentions(chat: Chat, mentions: list[MentionIn]) -> list[MentionOut]:

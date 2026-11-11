@@ -24,8 +24,9 @@ Schedule tab (see [Triggers](triggers.md)), and a workflow can be mentioned in a
 
 ## Versions
 
-Workflows are versioned like agents (`workflows`, `workflow_versions`; see
-[Agents and skills](agents-and-skills.md#versions)):
+Workflows are versioned like agents (`workflows`, `workflow_versions`, in the organisation's
+store with its agents; see [Agents and skills](agents-and-skills.md#versions) and
+[Stores](stores.md#agents-skills-and-workflows)):
 
 - A version is a directed acyclic graph: nodes (`workflow_nodes`), each pinning one agent version
   or one workflow version by id, and edges (`workflow_edges`) between node keys. Nodes with no

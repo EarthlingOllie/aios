@@ -1,25 +1,25 @@
 """An agent's runs: listing, starting, reading and deleting them."""
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, ui_stream
+from aios import checkpoints, stored, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
 from aios.api.provenance import UserOut, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
-from aios.auth import CurrentOrganisation, CurrentUser
+from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import history, schema_changes
+from aios.datastores.models import Agent, AgentVersion
 from aios.db import DB, DbId
 from aios.models import (
-    Agent,
     AgentRun,
     AgentRunStatus,
-    AgentVersion,
     Chat,
     ChatInvocation,
     Organisation,
@@ -87,16 +87,16 @@ def get_org_run(db: Session, org: Organisation, agent_id: int, run_id: int) -> A
     exist. Every member reads, continues and deletes every run of the organisation's, whoever
     started it and however (by hand, from a chat, by a schedule)."""
     run = get_live_run(db, agent_id, run_id)
-    if run.agent.organisation_id != org.id:
+    if run.organisation_id != org.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
 
 def get_live_run(db: Session, agent_id: int, run_id: int) -> AgentRun:
-    """A run of the agent, whoever's it is; a 404 otherwise."""
-    agent = db.get(Agent, agent_id)
+    """A run of the agent (by its id in the run's organisation's store), whoever's it is; a 404
+    otherwise."""
     run = db.get(AgentRun, run_id)
-    if agent is None or run is None or run.agent_id != agent.id:
+    if run is None or run.agent_id != agent_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return run
 
@@ -107,7 +107,6 @@ def run_summary_query():
             AgentRun.id,
             AgentRun.agent_id,
             AgentRun.agent_version_id,
-            AgentVersion.version.label("agent_version"),
             AgentRun.title,
             AgentRun.message_count,
             AgentRun.trigger_id,
@@ -124,18 +123,29 @@ def run_summary_query():
             AgentRun.created_at,
             AgentRun.updated_at,
         )
-        .join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
         .outerjoin(ChatInvocation, ChatInvocation.agent_run_id == AgentRun.id)
         .outerjoin(Chat, Chat.id == ChatInvocation.chat_id)
     )
 
 
+def run_summaries(db: Session, organisation_id: int, rows: Sequence[Row]) -> list[RunSummary]:
+    """Rows of `run_summary_query` for the organisation's runs as summaries: with the numbers
+    of the versions they pinned, from its store, and who started each."""
+    numbers = stored.version_numbers(
+        organisation_id, AgentVersion, [row.agent_version_id for row in rows]
+    )
+    return started_by(
+        db,
+        organisation_id,
+        [{**row._mapping, "agent_version": numbers.get(row.agent_version_id)} for row in rows],
+        RunSummary,
+    )
+
+
 def run_summary(db: Session, run_id: int) -> RunSummary:
     row = db.execute(run_summary_query().where(AgentRun.id == run_id)).one()
-    organisation_id = db.scalar(
-        select(Agent.organisation_id).join(AgentRun).where(AgentRun.id == run_id)
-    )
-    return started_by(db, organisation_id, [row], RunSummary)[0]
+    organisation_id = db.scalar(select(AgentRun.organisation_id).where(AgentRun.id == run_id))
+    return run_summaries(db, organisation_id, [row])[0]
 
 
 def build_version_tools(
@@ -150,34 +160,43 @@ def build_version_tools(
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
-def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB):
-    agent = get_org_agent(db, org, agent_id)
+def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+    agent = get_org_agent(store, agent_id)
     rows = db.execute(
         run_summary_query()
-        .where(AgentRun.agent_id == agent.id)
+        .where(AgentRun.organisation_id == org.id, AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return started_by(db, org.id, rows, RunSummary)
+    return run_summaries(db, org.id, rows)
 
 
 def new_agent_run(
-    db: Session, agent: Agent, *, created_by: int | None, trigger_id: int | None = None
+    db: Session,
+    store: Session,
+    organisation_id: int,
+    agent: Agent,
+    *,
+    created_by: int | None,
+    trigger_id: int | None = None,
 ) -> AgentRun:
-    """Add (and flush, not commit) a run of the agent's current version, started by the member
-    `created_by`: who asked for it by hand or in a chat. It runs for the agent's organisation,
-    not for them (`load_chat_context`).
+    """Add (and flush, not commit) a run of the agent's current version (the agent in the
+    organisation `organisation_id`'s store, `store`), started by the member `created_by`: who
+    asked for it by hand or in a chat. It runs for the agent's organisation, not for them
+    (`load_chat_context`).
 
     Raises `HTTPException` if it can't run: 409 if the agent is archived ("The agent <name> is
-    archived.") or its version can't be built. The caller commits; the share lock taken here,
-    held until then, keeps a concurrent archive or delete from missing the run. Also how a schedule
-    starts one (`aios.scheduler`), passing its `trigger_id` and no member.
+    archived.") or its version can't be built. The caller commits `db`, then ends `store`'s
+    transaction; the share lock taken here, held until then, keeps a concurrent archive from
+    missing the run. Also how a schedule starts one (`aios.scheduler`), passing its
+    `trigger_id` and no member.
     """
-    lock_live_agent(db, agent, read=True)
+    lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
     build_version_tools(agent.current_version)
     # Pin the version: later edits to the agent don't change this conversation.
     run = AgentRun(
-        agent=agent,
+        organisation_id=organisation_id,
+        agent_id=agent.id,
         agent_version_id=agent.current_version_id,
         trigger_id=trigger_id,
         created_by=created_by,
@@ -190,24 +209,34 @@ def new_agent_run(
 @router.post(
     "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
 )
-def create_run(agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    agent = get_org_agent(db, org, agent_id)
-    run = new_agent_run(db, agent, created_by=user.id)
+def create_run(
+    agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
+    agent = get_org_agent(store, agent_id)
+    run = new_agent_run(db, store, org.id, agent, created_by=user.id)
     db.commit()
+    store.commit()
     return run_summary(db, run.id)
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
-def get_run(agent_id: DbId, run_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
+def get_run(
+    agent_id: DbId,
+    run_id: DbId,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    db: DB,
+    store: CurrentStore,
+):
     run = get_org_run(db, org, agent_id, run_id)
     summary = run_summary(db, run.id)
     messages = checkpoints.history(run.id)
     return RunOut(
         **summary.model_dump(),
-        agent_name=run.agent.name,
+        agent_name=get_org_agent(store, run.agent_id).name,
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
-        instructions=run.agent_version.instructions,
+        instructions=store.get_one(AgentVersion, run.agent_version_id).instructions,
         schema_change_requests=run_requests(db, run.id, user.id),
         waiting=waiting_on(db, run.id),
     )

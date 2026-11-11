@@ -7,20 +7,18 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session
 
 from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
 from aios.api.skills import lock_skills
-from aios.db import DbId
-from aios.models import (
+from aios.datastores.models import (
     Agent,
     AgentVersion,
     AgentVersionTool,
-    Organisation,
-    Skill,
     SkillVersion,
     agent_version_skills,
 )
+from aios.db import DbId
 from aios.tools import (
     TOOLS,
     ToolError,
@@ -28,7 +26,7 @@ from aios.tools import (
     validate_tool,
 )
 
-AGENT_NAME_INDEX = "uq_agents_organisation_id_name"
+AGENT_NAME_INDEX = "uq_agents_name"
 
 
 class AgentToolIn(BaseModel):
@@ -113,10 +111,11 @@ class AgentOut(Provenance, Archived):
     current_version: AgentVersionOut
 
 
-def get_org_agent(db: Session, org: Organisation, agent_id: int) -> Agent:
-    """The organisation's agent, archived or not; a 404 otherwise, as if it didn't exist."""
-    agent = db.get(Agent, agent_id)
-    if agent is None or agent.organisation_id != org.id:
+def get_org_agent(store: Session, agent_id: int) -> Agent:
+    """The agent in the organisation's store (`store`), archived or not; a 404 otherwise. Ids
+    are the store's own, so another organisation's agent is never reached, whatever its id."""
+    agent = store.get(Agent, agent_id)
+    if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return agent
 
@@ -162,19 +161,12 @@ def get_agent_version(db: Session, agent: Agent, number: int) -> AgentVersion:
     return version
 
 
-def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> list[SkillVersion]:
-    """The requested versions of the organisation's skills, in request order, archived or not:
-    an agent may keep pinning an archived skill as long as it makes no new version with it
-    (`refuse_archived_skills`). Their skills are locked until commit, so a concurrent archive
-    either waits for the save or wins and is seen by it."""
-    found = {
-        v.id: v
-        for v in db.scalars(
-            select(SkillVersion)
-            .join(Skill, Skill.id == SkillVersion.skill_id)
-            .where(SkillVersion.id.in_(ids), Skill.organisation_id == org.id)
-        )
-    }
+def resolve_skill_versions(store: Session, ids: list[int]) -> list[SkillVersion]:
+    """The requested versions of the organisation's skills (in its store, `store`), in request
+    order, archived or not: an agent may keep pinning an archived skill as long as it makes no
+    new version with it (`refuse_archived_skills`). Their skills are locked until commit, so a
+    concurrent archive either waits for the save or wins and is seen by it."""
+    found = {v.id: v for v in store.scalars(select(SkillVersion).where(SkillVersion.id.in_(ids)))}
     versions = [found[i] for i in ids if i in found]
     if len(versions) != len(ids):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown skill version")
@@ -182,7 +174,7 @@ def resolve_skill_versions(db: Session, org: Organisation, ids: list[int]) -> li
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "Each skill can be attached only once"
         )
-    lock_skills(db, {v.skill_id for v in versions})
+    lock_skills(store, {v.skill_id for v in versions})
     return versions
 
 
@@ -235,10 +227,8 @@ def tool_out(tool: AgentVersionTool) -> AgentToolOut:
     )
 
 
-def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) -> AgentVersionOut:
-    """The version, with who saved it from `known` (`provenance.people`), else read now."""
-    if known is None:
-        known = people(object_session(version), version.agent.organisation_id, [version.created_by])
+def version_out(version: AgentVersion, known: dict[int, UserOut]) -> AgentVersionOut:
+    """The version, with who saved it from `known` (`provenance.people`)."""
     skills = []
     for sv in version.skills:
         skill = sv.skill
@@ -269,11 +259,13 @@ def version_out(version: AgentVersion, known: dict[int, UserOut] | None = None) 
     )
 
 
-def agent_out(db: Session, agent: Agent) -> AgentOut:
+def agent_out(db: Session, org_id: int, agent: Agent) -> AgentOut:
+    """The agent (in the organisation `org_id`'s store), with who made, changed and archived it
+    read through the platform session `db`."""
     version = agent.current_version
     known = people(
         db,
-        agent.organisation_id,
+        org_id,
         [agent.created_by, agent.updated_by, agent.archived_by, version.created_by],
     )
     return AgentOut(

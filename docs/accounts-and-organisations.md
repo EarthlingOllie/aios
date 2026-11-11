@@ -127,9 +127,12 @@ and links to it.
 ### What the organisation owns
 
 **Agents, skills, workflows and schedules** belong to the organisation: every member lists,
-reads, edits, versions, restores, runs and deletes every one, whoever made it, and to a user in
-another organisation each is a 404 (each API module's `get_org_*` checks `organisation_id`
-against `CurrentOrganisation`, and lists filter by it). Names are unique within the
+reads, edits, versions, restores, runs and archives every one, whoever made it, and to a user in
+another organisation each is a 404. Agents, skills and workflows are in the organisation's store,
+whose ids are its own (another organisation's store may use the same ones), and their endpoints
+read only that store (`CurrentStore`; see [Stores](stores.md#agents-skills-and-workflows)); a
+schedule's `get_org_trigger` checks its `organisation_id` against `CurrentOrganisation`, and
+the lists filter by it. Names are unique within the
 organisation (a 409 names the clash), so two organisations can each have a "Reviewer". Each
 says which member made it and which last changed it (`created_by`, `updated_by`, reported as
 the person, shown on lists and pages: `aios.api.provenance`, resolved through the store's people

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
+from conftest import home_organisation, user_store
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
@@ -12,16 +13,9 @@ from test_workflow_runs import echo
 from aios import checkpoints, firing, scheduler
 from aios.api.agents import new_agent_run
 from aios.cron import next_run
+from aios.datastores.models import Agent, AgentVersionTool
 from aios.db import SessionLocal
-from aios.models import (
-    Agent,
-    AgentRun,
-    AgentVersionTool,
-    Trigger,
-    TriggerStatus,
-    WorkflowRun,
-    WorkflowRunStatus,
-)
+from aios.models import AgentRun, Trigger, TriggerStatus, WorkflowRun, WorkflowRunStatus
 from aios.testing.fake_model import model, replies, use_model
 from aios.worker import run_workflow_task
 from aios.workflows import execute_run
@@ -143,17 +137,19 @@ def test_a_failed_turn_is_recorded_on_the_schedule(api, db):
     assert fired.enabled and fired.next_run_at > now
 
 
-def test_an_agent_that_cant_run_fails_without_a_run(api, db):
+def test_an_agent_that_cant_run_fails_without_a_run(api, db, user):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
-    db.add(
-        AgentVersionTool(
-            agent_version_id=agent["current_version"]["id"],
-            tool_key="retired_tool",
-            config={},
-            position=0,
+    with user_store(user) as store:
+        store.add(
+            AgentVersionTool(
+                agent_version_id=agent["current_version"]["id"],
+                tool_key="retired_tool",
+                config={},
+                position=0,
+            )
         )
-    )
+        store.commit()
     now = datetime.now(UTC)
     make_due(db, t["id"], now - timedelta(seconds=1))
     with use_model(replies("hi")):
@@ -715,10 +711,10 @@ def test_a_pause_landing_as_the_run_is_being_created_drops_it(api, db, monkeypat
     now = datetime.now(UTC)
     claim(db, t["id"], now)
 
-    def pause_then_create(db, agent, **kwargs):
+    def pause_then_create(db, *args, **kwargs):
         # Paused after the scheduler checked the trigger, before it's locked for the run.
         put(api, t["id"], {**body, "enabled": False})
-        return new_agent_run(db, agent, **kwargs)
+        return new_agent_run(db, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.agents_api, "new_agent_run", pause_then_create)
     asyncio.run(scheduler.fire(t["id"], now))
@@ -754,7 +750,7 @@ def test_pausing_a_schedule_once_its_run_has_started_lets_the_run_finish(api, db
     assert not fired.enabled and fired.next_run_at is None
 
 
-def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db):
+def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db, user):
     """A pause racing the start of a run waits for it, then sees that it has started."""
     agent = make_agent(api, "Bot")
     body = schedule("agent", agent["id"])
@@ -763,10 +759,12 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db):
     claim(db, t["id"], now)
 
     async def go():
-        with SessionLocal() as s:
+        with SessionLocal() as s, user_store(user) as store:
             # Mid-start, as the scheduler starts a run: the agent share-locked, then the
             # trigger row locked, until the run and the link to it are committed together.
-            run = new_agent_run(s, s.get(Agent, agent["id"]), created_by=None, trigger_id=t["id"])
+            org_id = home_organisation(s, user.id).id
+            agent_row = store.get(Agent, agent["id"])
+            run = new_agent_run(s, store, org_id, agent_row, created_by=None, trigger_id=t["id"])
             trigger = s.scalars(
                 select(Trigger).where(Trigger.id == t["id"]).with_for_update()
             ).one()
@@ -806,12 +804,12 @@ def test_an_agent_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(api,
     later = now + timedelta(minutes=1)
     claim(db, t["id"], now)
 
-    def reclaim_then_create(db, agent, **kwargs):
+    def reclaim_then_create(db, *args, **kwargs):
         # Fired again (a tight schedule, a slow start) before this firing commits its run. Not
         # after the run is inserted: its foreign key share-locks the trigger, so a claim (SKIP
         # LOCKED) would skip it until the start commits, as when it's locked (see below).
         assert reclaim(t["id"], later) == [t["id"]]
-        return new_agent_run(db, agent, **kwargs)
+        return new_agent_run(db, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.agents_api, "new_agent_run", reclaim_then_create)
     asyncio.run(scheduler.fire(t["id"], now))
@@ -849,11 +847,11 @@ def test_a_workflow_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
     claim(db, t["id"], now)
     new_workflow_run = scheduler.workflows_api.new_workflow_run
 
-    def reclaim_then_create(db, workflow, input, **kwargs):
+    def reclaim_then_create(db, *args, **kwargs):
         # Not after the run is inserted: its foreign key share-locks the trigger, as an agent
         # run's does (see above).
         assert reclaim(t["id"], later) == [t["id"]]
-        return new_workflow_run(db, workflow, input, **kwargs)
+        return new_workflow_run(db, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", reclaim_then_create)
     asyncio.run(scheduler.fire(t["id"], now))

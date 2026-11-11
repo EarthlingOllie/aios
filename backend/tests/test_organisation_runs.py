@@ -11,7 +11,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import delete_user, join_organisation, make_user, store_of
+from conftest import delete_user, join_organisation, make_user, provisioned_user, store_of
 from langchain_core.callbacks import BaseCallbackHandler
 from test_agents import agent_body, chat_body, make_agent
 from test_chats import add, make_chat, messages, signed_in_as
@@ -38,8 +38,8 @@ def member(db, user):
 
 @pytest.fixture
 def outsider(db):
-    """A user in an organisation of their own."""
-    u = make_user(db, "outsider")
+    """A user in an organisation of their own, with its store provisioned."""
+    u = provisioned_user(db, "outsider")
     yield u
     delete_user(db, u)
 

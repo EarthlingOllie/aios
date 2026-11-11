@@ -12,6 +12,7 @@ from conftest import (
     join_organisation,
     make_user,
     org_of,
+    provisioned_user,
     register,
     store_of,
 )
@@ -382,7 +383,8 @@ def test_a_person_in_no_organisation_joins_by_accepting(api, db, user):
 def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, provisioning):
     from test_chats import make_chat
 
-    elsewhere = make_user(db, "elsewhere")
+    # Making a chat makes its documents assistant, in the organisation's store.
+    elsewhere = provisioned_user(db, "elsewhere")
     try:
         ours = make_chat(api, "ours", visibility="public")
         with signed_in_as(elsewhere):

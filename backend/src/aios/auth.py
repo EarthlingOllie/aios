@@ -14,6 +14,7 @@ opens is ignored, and the invite page they're sent back to says why.
 """
 
 import uuid
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from aios import organisations, ratelimits
 from aios.config import get_settings
-from aios.datastores import data_store_for_request
+from aios.datastores import data_store_for_request, organisation_store
 from aios.db import DB
 from aios.models import Organisation, User
 from aios.passwords import hash_password, verify_password
@@ -247,6 +248,20 @@ def current_data_store(org: CurrentOrganisation, db: DB) -> uuid.UUID:
 
 # For endpoints that reach the organisation's data only through its store.
 CurrentDataStore = Annotated[uuid.UUID, Depends(current_data_store)]
+
+
+def current_store(org: CurrentOrganisation) -> Iterator[Session]:
+    """A session on the signed-in user's organisation's store, as its read-write role, closed
+    (rolling back what wasn't committed) once the request is done: where its agents, skills and
+    workflows are. A store that isn't ready yet answers 503 (`DataStoreNotReady`)."""
+    with organisation_store(org.id) as store:
+        yield store
+
+
+# For endpoints that read or write what's in the organisation's store (its agents, skills and
+# workflows) alongside the platform's own rows (`DB`). Ids in it are the organisation's own:
+# another organisation's store may use the same ones for different rows.
+CurrentStore = Annotated[Session, Depends(current_store)]
 
 
 class OptionsOut(BaseModel):

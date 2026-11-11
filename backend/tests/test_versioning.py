@@ -1,18 +1,19 @@
-from conftest import made_by
+from conftest import user_store
 
-from aios.db import SessionLocal
-from aios.models import Skill
+from aios.api.provenance import built_by
+from aios.datastores.models import Skill
 from aios.versioning import render_skill_block, save_skill_version
 
 
-def test_identical_save_after_concurrent_save_does_not_duplicate(db, user):
+def test_identical_save_after_concurrent_save_does_not_duplicate(user):
     """A save that read a stale current version must not create a duplicate version."""
-    skill = Skill(**made_by(db, user), name="Race")
-    db.add(skill)
-    save_skill_version(db, skill, description="", content="v1", note=None, user_id=user.id)
-    db.commit()
+    with user_store(user) as store:
+        skill = Skill(**built_by(user.id), name="Race")
+        store.add(skill)
+        save_skill_version(store, skill, description="", content="v1", note=None, user_id=user.id)
+        store.commit()
 
-    with SessionLocal() as a, SessionLocal() as b:
+    with user_store(user) as a, user_store(user) as b:
         stale = a.get(Skill, skill.id)
         assert stale.current_version.content == "v1"  # loaded into a's identity map
 
