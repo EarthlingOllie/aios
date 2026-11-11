@@ -5,6 +5,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
+import { RunStatusBadge } from "@/components/workflow/status";
 import {
   ErrorBanner,
   formatDate,
@@ -30,11 +31,14 @@ import {
   type ModelMessage,
   type Run,
   type SchemaChangeRequest,
+  type Turn,
 } from "@/lib/api";
+
+import { turnCounters } from "@/lib/agent-runs";
 import { useRefusal } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
-type Tab = "conversation" | "events";
+type Tab = "conversation" | "turns" | "events";
 
 export function RunPage() {
   const agentId = Number(useParams().agentId);
@@ -92,7 +96,7 @@ export function RunPage() {
           </div>
         </div>
         <div className="bg-muted flex rounded-md p-0.5 text-sm" role="tablist">
-          {(["conversation", "events"] as const).map((t) => (
+          {(["conversation", "turns", "events"] as const).map((t) => (
             <button
               key={t}
               role="tab"
@@ -130,6 +134,11 @@ export function RunPage() {
           onDecided={() => run.reload()}
         />
       </div>
+      {tab === "turns" && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <TurnList turns={run.data.turns} />
+        </div>
+      )}
       {tab === "events" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <EventLog messages={run.data.messages} instructions={run.data.instructions} />
@@ -354,6 +363,29 @@ function blocks(message: ModelMessage): ContentBlock[] {
     return message.content ? [{ type: "text", text: message.content }] : [];
   }
   return message.content.map((b) => (typeof b === "string" ? { type: "text", text: b } : b));
+}
+
+/** The run's turns, oldest first: each with the version it ran on, how it went, how long it
+ * took and what it cost. */
+function TurnList({ turns }: { turns: Turn[] }) {
+  if (turns.length === 0) return <Placeholder>No turns yet.</Placeholder>;
+  return (
+    <ol className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-6">
+      {turns.map((turn, i) => (
+        <li key={turn.id} className="rounded-md border px-3 py-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Turn {i + 1}</span>
+            <RunStatusBadge status={turn.status} />
+            <span className="text-muted-foreground text-xs">
+              v{turn.agent_version} · {formatDate(turn.started_at)}
+            </span>
+          </div>
+          <div className="text-muted-foreground mt-1 text-xs tabular-nums">{turnCounters(turn)}</div>
+          {turn.error && <p className="text-destructive mt-1 text-xs">{turn.error}</p>}
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function EventLog({ messages, instructions }: { messages: ModelMessage[]; instructions: string }) {

@@ -89,6 +89,22 @@ type AgentRunRow = AgentRunCounters & {
   trigger_id: number | null;
   /** Its conversation, as AI SDK UIMessages. */
   ui_messages: unknown[];
+  /** Its turns, oldest first. */
+  turns: TurnRow[];
+};
+
+export type TurnRow = {
+  id: number;
+  invocation_id: number | null;
+  agent_version_id: number;
+  status: "running" | "succeeded" | "failed";
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  model_calls: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
 };
 
 export type SchemaChangeRow = {
@@ -1168,11 +1184,32 @@ export class FakeApi {
       created_by: this.me,
       trigger_id: null,
       ui_messages: [],
+      turns: [],
       ...NOT_TRACKED,
       ...fields,
     };
     this.agentRuns.set(run.id, run);
     return run;
+  }
+
+  /** Adds a turn to the run, on its version; it doesn't change the run's own counters. */
+  addTurn(run: AgentRunRow, fields: Partial<TurnRow> = {}): TurnRow {
+    const turn: TurnRow = {
+      id: this.id(),
+      invocation_id: null,
+      agent_version_id: run.agent_version_id,
+      status: "succeeded",
+      error: null,
+      started_at: NOW,
+      finished_at: NOW,
+      model_calls: 0,
+      tool_calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      ...fields,
+    };
+    run.turns.push(turn);
+    return turn;
   }
 
   /** Adds a workflow; `nodes` name their target as `{ agent }` or `{ workflow }`, at its latest. */
@@ -1603,7 +1640,7 @@ export class FakeApi {
   }
 
   private agentRunOut(run: AgentRunRow) {
-    const { ui_messages: _, ...summary } = run;
+    const { ui_messages: _, turns: __, ...summary } = run;
     const invocation = [...this.invocations.values()].find(
       (i) => i.target_kind === "agent" && i.run_id === run.id,
     );
@@ -2546,6 +2583,11 @@ export class FakeApi {
           ...this.agentRunOut(run),
           agent_name: agent.name,
           ui_messages: run.ui_messages,
+          invocation: null,
+          turns: run.turns.map((t) => ({
+            ...t,
+            agent_version: this.agentVersions.get(t.agent_version_id)![1],
+          })),
           messages: [],
           instructions: agent.base_prompt,
           schema_change_requests: this.schemaChanges

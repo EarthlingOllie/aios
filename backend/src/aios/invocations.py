@@ -1,5 +1,15 @@
-"""What a mention in a chat starts: an invocation of an agent or workflow (`Invocation`, in the
-organisation's store, with mention as its cause).
+"""Why each run ran: an invocation of an agent or workflow (`Invocation`, in the organisation's
+store). Every run has exactly one, made with it: a mention's (cause mention), a schedule's
+(schedule, naming its trigger) or a person's starting it by hand (manual), and a workflow agent
+node's, a child of its workflow run's with that one's cause (`for_run`). A child carries the
+chain of its ancestors' ids and its depth, for loops to be stopped by.
+
+An invocation no chat follows (any but a mention's) is queued until its run starts, running
+while it goes, and finished, with no message posted, when an agent run's first turn ends
+(`finish_quietly`) or a workflow run ends (`finish_workflow_runs`). Later turns of the run,
+from its page, are the same invocation's.
+
+What a mention in a chat starts:
 
 Posting a message that mentions an agent or workflow member creates, in the message's own
 transaction, a queued invocation and the member's acknowledgement: a run card (`create`), so the
@@ -63,9 +73,9 @@ from aios.datastores.models import (
 )
 from aios.datastores.schema_changes import not_given
 from aios.models import (
-    AgentRunStatus,
     ChatAuthorKind,
     ChatMessageKind,
+    InvocationCause,
     InvocationStatus,
     TriggerTargetKind,
     WorkflowRunStatus,
@@ -100,6 +110,55 @@ def run_input(brief: str | None, body: str) -> str:
     text if the chat had nothing to brief it on)."""
     text = message_text(body)
     return f"{brief}\n\n{text}" if brief else text
+
+
+def for_run(
+    store: Session,
+    kind: TriggerTargetKind,
+    target_id: int,
+    *,
+    requested_by: int | None,
+    trigger_id: int | None = None,
+    parent: Invocation | None = None,
+    status: InvocationStatus = InvocationStatus.queued,
+) -> Invocation:
+    """Add (and flush) the invocation of a run of the agent or workflow (kind, id) that no
+    mention started: a workflow agent node's (`parent`, its workflow run's invocation, whose
+    cause it takes), a schedule's (`trigger_id`), else one started by hand by `requested_by`.
+    The caller links the run to it; in the caller's transaction."""
+    if parent is not None:
+        cause = parent.cause
+    elif trigger_id is not None:
+        cause = InvocationCause.schedule
+    else:
+        cause = InvocationCause.manual
+    is_agent = kind == TriggerTargetKind.agent
+    invocation = Invocation(
+        cause=cause,
+        requested_by=requested_by,
+        trigger_id=trigger_id,
+        parent_id=None if parent is None else parent.id,
+        ancestor_ids=[] if parent is None else [*parent.ancestor_ids, parent.id],
+        depth=0 if parent is None else parent.depth + 1,
+        target_kind=kind,
+        agent_id=target_id if is_agent else None,
+        workflow_id=None if is_agent else target_id,
+        status=status,
+        started_at=func.now() if status == InvocationStatus.running else None,
+    )
+    store.add(invocation)
+    store.flush()
+    return invocation
+
+
+def of_workflow_run(store: Session, workflow_run_id: int) -> Invocation | None:
+    """The store's workflow run's invocation."""
+    return store.scalars(
+        select(Invocation)
+        .where(Invocation.workflow_run_id == workflow_run_id)
+        .order_by(Invocation.id)
+        .limit(1)
+    ).one_or_none()
 
 
 def create(
@@ -218,10 +277,13 @@ def mark_running(store: Session, invocation_id: int) -> None:
 def _finish(
     store: Session, invocation: Invocation, status: InvocationStatus, body: str, error=None
 ) -> None:
-    """End the (locked, unfinished) invocation and post its result back into the chat."""
+    """End the (locked, unfinished) invocation and post its result back into its chat, if a
+    chat follows it."""
     invocation.status = status
     invocation.error = error
     invocation.finished_at = func.now()
+    if invocation.chat_id is None:
+        return
     store.add(
         ChatMessage(
             chat_id=invocation.chat_id,
@@ -424,12 +486,46 @@ def fail_stopped_turns(
         .with_for_update(skip_locked=True)
     ):
         if invocation.agent_run_id is not None:
-            store.execute(
-                update(AgentRun)
-                .where(
-                    AgentRun.id == invocation.agent_run_id,
-                    AgentRun.status == AgentRunStatus.running,
-                )
-                .values(status=AgentRunStatus.failed, finished_at=func.now())
-            )
+            from aios import turns
+
+            turns.fail_running(store, AgentRun.id == invocation.agent_run_id, error=error)
         failed(store, invocation, error)
+
+
+def finish_quietly(store: Session, run_id: int, error: str | None) -> None:
+    """Finish the unfinished invocation no chat follows of the store's agent run, whose turn has
+    just ended (`error` None if it went fine): unless the run waits on a schema change request,
+    whose resume's turn ends it. In the caller's transaction."""
+    invocation = store.scalars(
+        select(Invocation)
+        .where(
+            Invocation.agent_run_id == run_id,
+            Invocation.chat_id.is_(None),
+            Invocation.status.in_(UNFINISHED),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if invocation is None:
+        return
+    invocation.started_at = func.coalesce(Invocation.started_at, func.now())
+    if error is not None:
+        failed(store, invocation, error)
+    elif not store.scalar(select(waiting_on_a_request(run_id))):
+        _finish(store, invocation, InvocationStatus.succeeded, "")
+
+
+def fail_deleted_agent_run(store: Session, run_id: int) -> None:
+    """Fail the unfinished invocation no chat follows of the store's agent run, being deleted;
+    in the caller's transaction, before the run's deletion clears its link to it. (A chat's is
+    finished by its turn, `finish_turn`.)"""
+    for invocation in store.scalars(
+        select(Invocation)
+        .where(
+            Invocation.agent_run_id == run_id,
+            Invocation.chat_id.is_(None),
+            Invocation.status.in_(UNFINISHED),
+        )
+        .with_for_update()
+    ):
+        failed(store, invocation, RUN_DELETED)

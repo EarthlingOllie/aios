@@ -15,7 +15,7 @@ Running turns in a process that also serves requests needs:
   while a fire runs, the process refreshes its run's heartbeat (`agent_runs.heartbeat_at`, in
   the run's store) and the cause's own (in the same store) every `HEARTBEAT_SECONDS` (`beat`).
   Each cause sweeps its own rows whose heartbeat has stopped for `STALE_AFTER`, and fails their
-  runs too if still marked running with a stale heartbeat (`fail_stalled`): runs are in each
+  runs' turns too if still running with a stale heartbeat (`fail_stalled`): runs are in each
   organisation's store, and a cause names its run.
 - Stopping: a fire in flight when the process stops is cancelled, which stops its turn like a chat
   turn the client abandons (what the agent got to is kept) and records that it was `STOPPED`.
@@ -35,12 +35,12 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import func, update
 from sqlalchemy.orm import Session
 
+from aios import invocations, turns
 from aios.api import agents as agents_api
 from aios.config import get_settings
 from aios.datastores import DataStoreBusy, DataStoreNotFound, DataStoreNotReady, store_session
 from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
-from aios.models import AgentRunStatus
 
 log = logging.getLogger(__name__)
 
@@ -114,21 +114,23 @@ def free_slots() -> int:
 
 
 def fail_stalled_in(store: Session, run_ids: list[int]) -> None:
-    """Fail those of these runs (of the store `store` is a session on) stored as running whose
-    heartbeat has stopped: the process firing them has gone (see the module docstring); for a
-    cause sweeping its own rows. A run with no heartbeat is a request's, left to it (a null
-    heartbeat is never stale). In the caller's transaction."""
+    """Fail the running turns of those of these runs (of the store `store` is a session on)
+    whose heartbeat has stopped, and the invocations no chat follows of them: the process firing
+    them has gone (see the module docstring); for a cause sweeping its own rows. A run with no
+    heartbeat is a request's, left to it (a null heartbeat is never stale). In the caller's
+    transaction."""
     if not run_ids:
         return
-    store.execute(
-        update(AgentRun)
-        .where(
-            AgentRun.id.in_(run_ids),
-            AgentRun.status == AgentRunStatus.running,
-            AgentRun.heartbeat_at < func.now() - STALE_AFTER,
-        )
-        .values(status=AgentRunStatus.failed, finished_at=func.now(), updated_at=func.now())
+    failed = turns.fail_running(
+        store,
+        AgentRun.id.in_(run_ids),
+        AgentRun.heartbeat_at < func.now() - STALE_AFTER,
+        error=STOPPED,
     )
+    if failed:
+        store.execute(update(AgentRun).where(AgentRun.id.in_(failed)).values(updated_at=func.now()))
+    for run_id in failed:
+        invocations.finish_quietly(store, run_id, STOPPED)
 
 
 def fail_stalled(data_store_id: uuid.UUID, run_ids: list[int]) -> None:
@@ -156,7 +158,7 @@ def _beat(flights: list[Fire]) -> None:
                 update(AgentRun)
                 .where(
                     AgentRun.id.in_(run_ids),
-                    AgentRun.status == AgentRunStatus.running,
+                    turns.running(AgentRun.id),
                     AgentRun.heartbeat_at.is_not(None),
                 )
                 .values(heartbeat_at=func.now())
@@ -183,18 +185,18 @@ async def beat_forever(interval: float) -> None:
             log.exception("heartbeat failed")
 
 
-def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
-    """Start the cause's run, and the turn: its run marked running, with its heartbeat."""
+def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext, int | None] | None:
+    """Start the cause's run, and the turn: begun, with its run's heartbeat; and its id."""
     turn = flight.cause.start()
     if turn is None:
         return None
     with SessionLocal() as db:
         ctx = agents_api.load_chat_context(db, turn.data_store_id, turn.agent_id, turn.run_id)
-    agents_api._start_turn(
+    turn_id = agents_api._start_turn(
         turn.data_store_id, turn.run_id, turn.title or turn.message, heartbeat=True
     )
     flight.run = (turn.data_store_id, turn.run_id)
-    return turn, ctx
+    return turn, ctx, turn_id
 
 
 def _record(cause: Cause, error: str | None) -> None:
@@ -207,8 +209,10 @@ async def _fire(flight: Fire) -> None:
         await flight.cause.prepare()
         started = await run_in_threadpool(_start, flight)
         if started is not None:
-            turn, ctx = started
-            stream = agents_api.turn_stream(ctx, turn.run_id, HumanMessage(content=turn.message))
+            turn, ctx, turn_id = started
+            stream = agents_api.turn_stream(
+                ctx, turn.run_id, HumanMessage(content=turn.message), turn_id=turn_id
+            )
             async for chunk in stream:
                 if chunk["type"] == "error":
                     error = chunk["errorText"]

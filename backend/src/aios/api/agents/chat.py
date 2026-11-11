@@ -17,7 +17,7 @@ from langgraph.types import Command
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, tracing, turn_lease, ui_stream
+from aios import checkpoints, invocations, tracing, turn_lease, turns, ui_stream
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
@@ -29,7 +29,6 @@ from aios.datastores import data_store_for, history, schema_changes, store_sessi
 from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
-    AgentRunStatus,
     DataStore,
     SchemaChangeStatus,
 )
@@ -145,8 +144,9 @@ def load_chat_context(
 
 def _start_turn(
     data_store_id: uuid.UUID, run_id: int, prompt: str, *, heartbeat: bool = False
-) -> None:
-    """Mark the store's run running as a turn begins, and title it after its first message.
+) -> int | None:
+    """Begin a turn of the store's run (`aios.turns.begin`), and title the run after its first
+    message; the turn's id (None if the run is gone).
 
     With `heartbeat`, the turn runs outside a request and its process will keep the run's
     heartbeat (`aios.firing`); without, any earlier one is cleared, so a request's turn isn't
@@ -157,13 +157,13 @@ def _start_turn(
             .where(AgentRun.id == run_id)
             .values(
                 title=func.coalesce(AgentRun.title, run_title(prompt)),
-                status=AgentRunStatus.running,
-                started_at=func.now(),
-                finished_at=None,
                 heartbeat_at=func.now() if heartbeat else None,
+                updated_at=func.now(),
             )
         )
+        turn_id = turns.begin(store, run_id)
         store.commit()
+    return turn_id
 
 
 def tool_call_count(response: AIMessage) -> int:
@@ -174,39 +174,42 @@ def tool_call_count(response: AIMessage) -> int:
     return len(response.tool_calls) + server
 
 
-def _count_step(data_store_id: uuid.UUID, run_id: int, response: AIMessage) -> None:
-    """Add a model step to the run's counters: its tool calls, and what the call cost."""
+def _count_step(data_store_id: uuid.UUID, turn_id: int, response: AIMessage) -> None:
+    """Add a model call to the turn's counters: its tool calls, and what the call cost."""
     usage = response.usage_metadata or {}
-    with store_session(data_store_id) as db:
-        db.execute(
-            update(AgentRun)
-            .where(AgentRun.id == run_id)
-            .values(
-                tool_call_count=func.coalesce(AgentRun.tool_call_count, 0)
-                + tool_call_count(response),
-                input_tokens=func.coalesce(AgentRun.input_tokens, 0) + usage.get("input_tokens", 0),
-                output_tokens=func.coalesce(AgentRun.output_tokens, 0)
-                + usage.get("output_tokens", 0),
-            )
+    with store_session(data_store_id) as store:
+        turns.count(
+            store,
+            turn_id,
+            tool_calls=tool_call_count(response),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
         )
-        db.commit()
+        store.commit()
 
 
 def _end_turn(
-    data_store_id: uuid.UUID, run_id: int, *, failed: bool, message_count: int | None = None
+    data_store_id: uuid.UUID,
+    run_id: int,
+    turn_id: int | None,
+    *,
+    error: str | None,
+    message_count: int | None = None,
 ) -> None:
-    """Record how the turn of the store's run ended; `message_count` is left as it was if the
-    turn never started."""
-    values: dict[str, Any] = {
-        "status": AgentRunStatus.failed if failed else AgentRunStatus.succeeded,
-        "finished_at": func.now(),
-        "updated_at": func.now(),
-    }
+    """Record how the turn of the store's run ended (`error` None if it went fine), and finish
+    the run's invocation if no chat follows it (a chat's posts the reply itself);
+    `message_count` is left as it was if the turn never started. `turn_id` None for a turn
+    that never began."""
+    values: dict[str, Any] = {"updated_at": func.now()}
     if message_count is not None:
         values["message_count"] = message_count
     with store_session(data_store_id) as store:
         # A no-op if the run was deleted mid-turn.
         ended = store.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
+        if turn_id is not None:
+            turns.end(store, turn_id, error)
+            if ended.rowcount:
+                invocations.finish_quietly(store, run_id, error)
         store.commit()
     if ended.rowcount:
         # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: once
@@ -284,8 +287,18 @@ def _cancel_requests(data_store_id: uuid.UUID, run_id: int, tool_call_ids: list[
 
 
 async def _record_turn(
-    agent, config, data_store_id: uuid.UUID, run_id: int, *, finished: bool, partial
+    agent,
+    config,
+    data_store_id: uuid.UUID,
+    run_id: int,
+    *,
+    turn_id: int | None,
+    error: str | None,
+    partial,
 ) -> None:
+    """Record the end of the run's turn: `error` None if it finished, else why not (and what it
+    got to is kept, `_keep_unfinished_turn`)."""
+    finished = error is None
     if not finished:
         try:
             stopped = await _keep_unfinished_turn(agent, config, partial)
@@ -299,7 +312,8 @@ async def _record_turn(
             package._end_turn,
             data_store_id,
             run_id,
-            failed=not finished,
+            turn_id,
+            error=error,
             message_count=len(state.values.get("messages", [])),
         )
     except Exception:
@@ -397,6 +411,8 @@ async def turn_stream(
     run_id: int,
     turn: HumanMessage | Resume,
     lease: turn_lease.Lease | None = None,
+    *,
+    turn_id: int | None = None,
 ) -> AsyncIterator[ui_stream.Chunk]:
     """One turn of a run (in the store `ctx.data_store_id`), as AI SDK UI message chunks: the
     user's message is checkpointed before the model is called, and whatever the reply got to is
@@ -409,6 +425,10 @@ async def turn_stream(
 
     The turn holds the run's turn lease (`checkpoints.turn`): `lease`, if the caller took it
     already, else it waits for it, and reports a run that stays busy as an `error` chunk.
+
+    Its record (`aios.turns`) is `turn_id`, if the caller began it (`_start_turn`), else it
+    begins one once it has the run and something to run (a resume with nothing decided to give
+    the run isn't a turn).
 
     Shared by the chat endpoint, the scheduler (`aios.scheduler`) and `resume_run`."""
     config = {
@@ -438,9 +458,13 @@ async def turn_stream(
                 await run_in_threadpool(_check_not_waiting, store_id, run_id)
                 graph_input = {"messages": [turn]}
             if graph_input is not None:
+                if turn_id is None:
+                    turn_id = await run_in_threadpool(_begin_turn, store_id, run_id)
                 # Closed here if the consumer stops the turn, so the turn is recorded while the
                 # checkpointer's connection is still open.
-                turn_chunks = _run_turn(agent, config, ctx, ui, run_id, graph_input, saver.lease)
+                turn_chunks = _run_turn(
+                    agent, config, ctx, ui, run_id, turn_id, graph_input, saver.lease
+                )
                 async with aclosing(turn_chunks):
                     async for chunk in turn_chunks:
                         yield chunk
@@ -451,7 +475,9 @@ async def turn_stream(
             log.exception("agent run %s couldn't start a turn", run_id)
         with CancelScope(shield=True):
             try:
-                await run_in_threadpool(package._end_turn, store_id, run_id, failed=True)
+                await run_in_threadpool(
+                    package._end_turn, store_id, run_id, turn_id, error=ui_stream.error_text(exc)
+                )
             except Exception:
                 log.exception("couldn't record the end of a turn of run %s", run_id)
         for chunk in ui.error(exc):
@@ -473,10 +499,11 @@ async def _run_turn(
     ctx: ChatContext,
     ui: ui_stream.UIStream,
     run_id: int,
+    turn_id: int | None,
     graph_input,
     lease: turn_lease.Lease,
 ) -> AsyncIterator[ui_stream.Chunk]:
-    finished = False
+    error: str | None = "The turn was stopped."
     # The graph runs in a task of its own, which stopping the turn cancels (`lease.on_stop`), so
     # a model or tool call underway ends at once rather than at the turn's next write.
     events = agent.astream(
@@ -513,18 +540,21 @@ async def _run_turn(
             # One small update per model step, so the run's counters are live. A count that
             # can't be written (the store busy, say) doesn't end the turn.
             for response in model_responses(mode, data):
+                if turn_id is None:
+                    break
                 try:
-                    await run_in_threadpool(_count_step, ctx.data_store_id, run_id, response)
+                    await run_in_threadpool(_count_step, ctx.data_store_id, turn_id, response)
                 except Exception:
                     log.exception("couldn't count a step of agent run %s", run_id)
         if producer.cancelled():
             raise _Stopped
         if (exc := producer.exception()) is not None:
             raise exc
-        finished = True
+        error = None
     except Exception as exc:
         if not isinstance(exc, _Stopped):
             log.exception("agent run %s failed", run_id)
+        error = ui_stream.error_text(exc)
         for chunk in ui.error(exc):
             yield chunk
     finally:
@@ -539,9 +569,18 @@ async def _run_turn(
                 config,
                 ctx.data_store_id,
                 run_id,
-                finished=finished,
+                turn_id=turn_id,
+                error=error,
                 partial=ui.partial_reply(),
             )
+
+
+def _begin_turn(data_store_id: uuid.UUID, run_id: int) -> int | None:
+    """Begin a turn of the store's run (`aios.turns.begin`); its id."""
+    with store_session(data_store_id) as store:
+        turn_id = turns.begin(store, run_id)
+        store.commit()
+    return turn_id
 
 
 def _run_agent(data_store_id: uuid.UUID, run_id: int) -> int | None:
@@ -659,10 +698,10 @@ async def run_chat(
     except turn_lease.RunGone as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND) from exc
     try:
-        await run_in_threadpool(package._start_turn, store_id, run_id, prompt.text)
+        turn_id = await run_in_threadpool(package._start_turn, store_id, run_id, prompt.text)
     except BaseException:
         with CancelScope(shield=True):
             await turn_lease.release(lease)
         raise
 
-    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt, lease))
+    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt, lease, turn_id=turn_id))

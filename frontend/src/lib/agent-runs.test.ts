@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import type { RunSummary } from "@/lib/api";
-import { formatCounters, formatDuration, formatElapsed, formatTokens, runCounters } from "@/lib/agent-runs";
+import type { RunSummary, Turn } from "@/lib/api";
+import {
+  formatCounters,
+  formatDuration,
+  formatElapsed,
+  formatTokens,
+  runCounters,
+  turnCounters,
+} from "@/lib/agent-runs";
 
 function run(changes: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -108,5 +115,32 @@ describe("runCounters", () => {
   it("counts a run that's running but hasn't reached a model step yet as zero so far", () => {
     const starting = run({ status: "running", started_at: "2026-10-14T09:00:00Z" });
     expect(runCounters(starting)).toEqual({ status: "running", toolCalls: 0, tokens: 0 });
+  });
+});
+
+describe("turnCounters", () => {
+  const turn: Turn = {
+    id: 1,
+    invocation_id: 2,
+    agent_version_id: 3,
+    agent_version: 1,
+    status: "succeeded",
+    error: null,
+    started_at: "2026-10-14T09:00:00Z",
+    finished_at: "2026-10-14T09:00:04.200Z",
+    model_calls: 3,
+    tool_calls: 2,
+    input_tokens: 1000,
+    output_tokens: 30,
+  };
+
+  it("says how long it took, its model calls, tool calls and tokens", () => {
+    expect(turnCounters(turn)).toBe("4.2s · 3 model calls · 2 tool calls · 1,030 tokens");
+  });
+
+  it("counts one model call as one, and a running turn up to now", () => {
+    const running = { ...turn, status: "running" as const, finished_at: null, model_calls: 1 };
+    const now = Date.parse("2026-10-14T09:00:10Z");
+    expect(turnCounters(running, now)).toBe("10.0s · 1 model call · 2 tool calls · 1,030 tokens");
   });
 });

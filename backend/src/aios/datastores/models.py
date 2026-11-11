@@ -468,8 +468,9 @@ class AgentRun(StoreBase):
     """One conversation with an agent. Its history is the checkpointer thread `agent-run-<id>`,
     in this store (`aios.checkpoints`).
 
-    How it went and what it cost are written by its turns (`aios.api.agents.turn_stream`): the
-    status and times are its latest turn's, the counters add up over all of them.
+    How it went and what it cost are its turns' (`Turn`, `aios.turns`): its status and times
+    are its latest turn's, its counters add up over all of them. Why it ran is its invocation
+    (`Invocation.agent_run_id`).
     """
 
     __tablename__ = "agent_runs"
@@ -488,21 +489,10 @@ class AgentRun(StoreBase):
     created_by: Mapped[int | None] = mapped_column(Integer)
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
-    # Running while a turn of it is in progress, then how that turn ended.
-    status: Mapped[AgentRunStatus | None] = mapped_column(
-        Enum(AgentRunStatus, name="agent_run_status")
-    )
-    # When its latest turn began and ended.
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # The model's tool calls, and the tokens of each model call, summed: input tokens count the
-    # context again at each step, as bills do.
-    tool_call_count: Mapped[int | None] = mapped_column(Integer)
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
     # While a turn runs outside a request (`aios.firing`), refreshed by the process running it;
-    # a running run whose heartbeat has stopped has lost its process, and is failed
-    # (`aios.firing.fail_stalled`). Null for a turn bound to a request, which ends with it.
+    # a run whose turn is running but whose heartbeat has stopped has lost its process, and the
+    # turn is failed (`aios.firing.fail_stalled`). Null for a turn bound to a request, which
+    # ends with it.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The turn lease (`aios.turn_lease`): the token of the turn that holds the run, and when its
     # hold lapses unless refreshed. Both null while no turn holds it; an expired one is free.
@@ -518,11 +508,46 @@ class AgentRun(StoreBase):
         Index("ix_agent_runs_agent_version_id", "agent_version_id"),
         # What the stall sweep looks at.
         Index(
-            "ix_agent_runs_running_heartbeat",
+            "ix_agent_runs_heartbeat",
             "heartbeat_at",
-            postgresql_where=sql_text("status = 'running' AND heartbeat_at IS NOT NULL"),
+            postgresql_where=sql_text("heartbeat_at IS NOT NULL"),
         ),
         {"comment": "Conversations with agents: each run's history is its checkpointer thread"},
+    )
+
+
+class Turn(StoreBase):
+    """One turn of an agent run (`aios.turns`): from a message (or a resume) to the agent's
+    reply, on the version the run ran on, for the invocation the run ran for."""
+
+    __tablename__ = "turns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_run_id: Mapped[int] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    # Why it ran: its run's invocation.
+    invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invocations.id", ondelete="SET NULL")
+    )
+    agent_version_id: Mapped[int] = mapped_column(ForeignKey("agent_versions.id"))
+    status: Mapped[AgentRunStatus] = mapped_column(
+        Enum(AgentRunStatus, name="turn_status"), default=AgentRunStatus.running
+    )
+    # Why it failed.
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Its model calls; their tool calls (the provider's own too, e.g. web search); and their
+    # tokens, summed: input tokens count the context again at each call, as bills do.
+    model_calls: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+    tool_calls: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+    input_tokens: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+    output_tokens: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+
+    __table_args__ = (
+        Index("ix_turns_agent_run_id_id", "agent_run_id", "id"),
+        Index("ix_turns_invocation_id", "invocation_id"),
+        Index("ix_turns_agent_version_id", "agent_version_id"),
+        {"comment": "Each turn of an agent run: what it ran on, how it went, and what it cost"},
     )
 
 
@@ -859,9 +884,10 @@ class ChatMessage(StoreBase):
 
 
 class Invocation(StoreBase):
-    """Why a run of an agent or workflow ran (`aios.invocations`): so far, always a mention in
-    a chat (`cause` mention). Its card follows the run; when the run ends, its result is posted
-    back and it finishes."""
+    """Why a run of an agent or workflow ran (`aios.invocations`): a mention in a chat, a
+    schedule, or a person starting it by hand. Every run has exactly one. A workflow agent
+    node's is a child of its workflow run's. A mention's card follows the run; when the run
+    ends, its result is posted back and it finishes."""
 
     __tablename__ = "invocations"
 
@@ -876,8 +902,17 @@ class Invocation(StoreBase):
     message_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="CASCADE")
     )
-    # Who caused it: the member who mentioned it, and so started its run (its `created_by`).
+    # Who or what caused it: the member who mentioned it or started its run by hand (its run's
+    # `created_by`); the schedule that fired it (cleared if it's deleted); the invocation it's a
+    # part of (a workflow agent node's: its workflow run's).
     requested_by: Mapped[int | None] = mapped_column(Integer)
+    trigger_id: Mapped[int | None] = mapped_column(ForeignKey("triggers.id", ondelete="SET NULL"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("invocations.id", ondelete="SET NULL"))
+    # Loop prevention: its ancestors' ids, the root first, and how many there are.
+    ancestor_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), default=list, server_default=sql_text("'{}'::integer[]")
+    )
+    depth: Mapped[int] = mapped_column(Integer, default=0, server_default=sql_text("0"))
     target_kind: Mapped[TriggerTargetKind] = mapped_column(
         Enum(TriggerTargetKind, name="trigger_target_kind")
     )
@@ -915,20 +950,23 @@ class Invocation(StoreBase):
             name="ck_invocations_target",
         ),
         CheckConstraint(
-            "cause <> 'mention' OR (chat_id IS NOT NULL AND message_id IS NOT NULL)",
+            "cause <> 'mention' OR depth > 0 OR (chat_id IS NOT NULL AND message_id IS NOT NULL)",
             name="ck_invocations_mention",
         ),
+        CheckConstraint("depth = cardinality(ancestor_ids)", name="ck_invocations_depth"),
         Index("ix_invocations_chat_id", "chat_id"),
         Index("ix_invocations_message_id", "message_id"),
         Index("ix_invocations_agent_run_id", "agent_run_id"),
         Index("ix_invocations_workflow_run_id", "workflow_run_id"),
+        Index("ix_invocations_trigger_id", "trigger_id"),
+        Index("ix_invocations_parent_id", "parent_id"),
         # The unfinished ones: what a chat's poll reports on, and what waits for a turn.
         Index(
             "ix_invocations_unfinished",
             "chat_id",
             postgresql_where=sql_text("status IN ('queued', 'briefing', 'running')"),
         ),
-        {"comment": "Why each run ran: so far, a mention in a chat"},
+        {"comment": "Why each run ran: a mention, a schedule, or a person starting it by hand"},
     )
 
 

@@ -53,6 +53,9 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("DROP SCHEMA reporting CASCADE")
+        conn.execute("DROP TABLE aios.turns")
+        conn.execute("DROP TYPE aios.turn_status")
         conn.execute(
             "DROP TABLE aios.schema_change_requests, aios.invocations, aios.chat_messages,"
             " aios.chat_members, aios.chats, aios.triggers CASCADE"
@@ -73,8 +76,7 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
             " aios.agent_versions, aios.agents, aios.skill_versions, aios.skills CASCADE"
         )
         conn.execute(
-            "DROP TYPE aios.workflow_node_kind, aios.workflow_step_status,"
-            " aios.workflow_run_status, aios.agent_run_status"
+            "DROP TYPE aios.workflow_node_kind, aios.workflow_step_status, aios.workflow_run_status"
         )
         conn.execute("DROP SCHEMA langgraph CASCADE")
         conn.execute("DROP TABLE aios.people")

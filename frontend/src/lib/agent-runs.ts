@@ -2,10 +2,10 @@
  * What an agent run records about how it went: its status, how long its latest turn took, and
  * what it cost over all its turns (see the `agent_runs` columns on the API's `RunSummary`).
  *
- * Runs from before this was kept have null for all of it, and are shown as not tracked rather
- * than as zero.
+ * They're its turns': runs with no turns yet have null for all of it, and are shown as not
+ * tracked rather than as zero.
  */
-import type { AgentRunStatus, RunSummary } from "@/lib/api";
+import type { AgentRunStatus, RunSummary, Turn } from "@/lib/api";
 
 export type RunCounters = {
   status: AgentRunStatus;
@@ -63,4 +63,16 @@ export function runCounters(
     toolCalls: run.tool_call_count ?? 0,
     tokens: (run.input_tokens ?? 0) + (run.output_tokens ?? 0),
   };
+}
+
+/** A turn's duration (while it runs, so far), model calls, tool calls and tokens:
+ * "4.2s · 3 model calls · 2 tool calls · 1,030 tokens". */
+export function turnCounters(turn: Turn, now = Date.now()) {
+  const calls = `${turn.model_calls} model ${turn.model_calls === 1 ? "call" : "calls"}`;
+  const rest = formatCounters({
+    status: turn.status,
+    toolCalls: turn.tool_calls,
+    tokens: turn.input_tokens + turn.output_tokens,
+  });
+  return [formatDuration(turn.started_at, turn.finished_at, now), calls, rest].join(" · ");
 }

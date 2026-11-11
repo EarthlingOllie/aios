@@ -11,7 +11,7 @@ from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent
 
-from aios import checkpoints, firing
+from aios import checkpoints, firing, turns
 from aios.api.agents import new_agent_run
 from aios.config import get_settings
 from aios.datastores import organisation_store, store_id_of
@@ -62,9 +62,14 @@ class Mention:
         self.outcomes.append(error)
 
 
-def run_row(user, run_id: int) -> AgentRun:
+def run_row(user, run_id: int):
+    """The run with its status and times, its turns' (`aios.turns`)."""
     with user_store(user) as store:
-        return store.get(AgentRun, run_id)
+        return store.execute(
+            turns.run_columns(select(AgentRun.id, AgentRun.heartbeat_at)).where(
+                AgentRun.id == run_id
+            )
+        ).one()
 
 
 def runs_of(user, agent_id: int) -> list[AgentRun]:
@@ -179,11 +184,8 @@ def test_a_run_whose_process_died_is_failed_once_its_heartbeat_stops(api, user, 
     # (no heartbeat: it ends with the request).
     dead, alive, chatting = (api.post(runs_url).json()["id"] for _ in range(3))
     with user_store(user) as store:
-        store.execute(
-            update(AgentRun)
-            .where(AgentRun.id.in_([dead, alive, chatting]))
-            .values(status=AgentRunStatus.running, started_at=func.now())
-        )
+        for run_id in (dead, alive, chatting):
+            turns.begin(store, run_id)
         store.execute(update(AgentRun).where(AgentRun.id == alive).values(heartbeat_at=func.now()))
         store.commit()
     age(user, dead)

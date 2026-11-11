@@ -13,14 +13,19 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from aios import checkpoints, tracing
+from aios import checkpoints, invocations, tracing
 
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
 from aios.agent import ChatDeps
 from aios.datastores import store_session
 from aios.datastores.models import AgentRun, WorkflowRun, WorkflowRunStep
-from aios.models import WorkflowRunStatus, WorkflowStepStatus
+from aios.models import (
+    InvocationStatus,
+    TriggerTargetKind,
+    WorkflowRunStatus,
+    WorkflowStepStatus,
+)
 from aios.runner import build_agent, run_title
 from aios.ui_stream import error_text
 from aios.workflows.validation import AgentNode, Graph, Node, RunError
@@ -94,8 +99,8 @@ def _start_step(
 ) -> tuple[int, int | None]:
     """Record that a node of the store's run has started; return its step's id and, for an
     agent node, the agent run it's given (in the same store), started by whoever started the
-    workflow run (`created_by`). Its agent may have been archived since the run started: a run
-    already going still runs it.
+    workflow run (`created_by`), with its invocation, a child of the workflow run's. Its agent
+    may have been archived since the run started: a run already going still runs it.
 
     The step and its agent run are committed together. Inserting the step share-locks the run's
     row, which deleting the run locks first, so a delete either waits and then sees this step's
@@ -127,6 +132,18 @@ def _start_step(
             db.add(agent_run)
             db.flush()
             agent_run_id = agent_run.id
+            # Its invocation: a child of the workflow run's, at any depth of subworkflow (they're
+            # part of the same run).
+            parent = invocations.of_workflow_run(db, run_id)
+            invocation = invocations.for_run(
+                db,
+                TriggerTargetKind.agent,
+                node.agent.agent_id,
+                requested_by=created_by,
+                parent=parent,
+                status=InvocationStatus.running,
+            )
+            invocation.agent_run_id = agent_run_id
         step = WorkflowRunStep(
             run_id=run_id,
             path=list(path),
@@ -232,7 +249,14 @@ async def _run_agent(
     resumes (`aios.api.agents.resume_run`), and the agent goes on from there.
     """
     # Imported here: the agents API imports this module.
-    from aios.api.agents import Resume, _mark_resumed, _record_turn, _resume_command
+    from aios.api.agents import (
+        Resume,
+        _begin_turn,
+        _mark_resumed,
+        _record_turn,
+        _resume_command,
+        _start_turn,
+    )
 
     config = {
         **checkpoints.thread_config(agent_run_id),
@@ -259,7 +283,11 @@ async def _run_agent(
             # say): they count as given, rather than having the run queued again for them.
             await asyncio.to_thread(_mark_resumed, store_id, agent_run_id, resume.dealt_with)
         if graph_input is not None:
-            finished = False
+            if resuming:
+                turn_id = await asyncio.to_thread(_begin_turn, store_id, agent_run_id)
+            else:
+                turn_id = await asyncio.to_thread(_start_turn, store_id, agent_run_id, text)
+            error: str | None = "The turn was stopped."
             try:
                 await graph.ainvoke(
                     graph_input,
@@ -273,7 +301,10 @@ async def _run_agent(
                     # kept.
                     durability="sync",
                 )
-                finished = True
+                error = None
+            except Exception as exc:
+                error = error_text(exc)
+                raise
             finally:
                 with CancelScope(shield=True):
                     if resume.dealt_with:
@@ -284,7 +315,13 @@ async def _run_agent(
                     # The message count for listings, and, if the turn failed, a thread the user
                     # can carry on from on the run's page (see `_keep_unfinished_turn`).
                     await _record_turn(
-                        graph, config, store_id, agent_run_id, finished=finished, partial=None
+                        graph,
+                        config,
+                        store_id,
+                        agent_run_id,
+                        turn_id=turn_id,
+                        error=error,
+                        partial=None,
                     )
         state = await graph.aget_state(config)
     request_id = _waits_on(state)

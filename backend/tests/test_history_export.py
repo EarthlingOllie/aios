@@ -658,7 +658,7 @@ def test_a_run_deleted_as_its_turn_ends_doesnt_deadlock(api, user, store_id, his
 
     def end_turn():
         try:
-            agents_api._end_turn(store_id, run["id"], failed=False, message_count=2)
+            agents_api._end_turn(store_id, run["id"], None, error=None, message_count=2)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
