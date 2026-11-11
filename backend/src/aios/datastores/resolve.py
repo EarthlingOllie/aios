@@ -13,6 +13,7 @@ from aios.datastores import credentials
 from aios.datastores.connections import Role, store_session
 from aios.db import SessionLocal
 from aios.models import DataStore, OrganisationMember
+from aios.models import Role as MemberRole
 
 log = logging.getLogger(__name__)
 
@@ -55,15 +56,21 @@ def can_approve(db: Session, user_id: int, store: DataStore) -> bool:
     return user_id in approvers(db, store)
 
 
-def approvers(db: Session, store: DataStore) -> list[int]:
-    """The users who may decide the store's schema change requests (`can_approve`), whom a new
-    one notifies: every member of its organisation, in the order they joined."""
-    return list(
-        db.scalars(
-            select(OrganisationMember.user_id)
-            .where(OrganisationMember.organisation_id == store.owner_organisation_id)
-            .order_by(OrganisationMember.joined_at, OrganisationMember.user_id)
+def approvers(db: Session, store: DataStore, least: MemberRole | None = None) -> list[int]:
+    """The users who see the store's schema change requests (`can_approve`): every member of
+    its organisation, in the order they joined. With `least`, only those whose role is it or
+    above (`aios.approval_rules`): whom a request needing it notifies."""
+    query = select(OrganisationMember.user_id).where(
+        OrganisationMember.organisation_id == store.owner_organisation_id
+    )
+    if least is not None:
+        from aios.approval_rules import RANK
+
+        query = query.where(
+            OrganisationMember.role.in_([r for r in RANK if RANK[r] >= RANK[least]])
         )
+    return list(
+        db.scalars(query.order_by(OrganisationMember.joined_at, OrganisationMember.user_id))
     )
 
 

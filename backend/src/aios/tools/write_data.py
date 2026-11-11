@@ -12,6 +12,9 @@ in one transaction per call: a call is written whole, or not at all.
   before anything is run, as are updates and deletes that match more (they're counted first).
 - Only `data` tables: the platform's (`aios`) are never written here. It runs as the store's
   writer role (`as_writer`), which may write in `data` and nowhere else.
+- Each call that writes is recorded in the store's audit log (`aios.audit`), in its
+  transaction, as the read-write role once the writer is done: its table, operation and row
+  count, and the run and agent that made it.
 
 Embedding columns are marked in `aios.embedding_columns`: a `vector(EMBEDDING_DIM)` column, and
 the text column in the same table it embeds. Writing the text writes its embedding too, made
@@ -163,6 +166,9 @@ class Call:
     values: dict[str, Any] | None
     where: dict[str, Any] | None
     on_conflict: list[str] | None
+    # Who's writing, for the audit log: the run, and the person who started it.
+    run_id: int | None = None
+    user_id: int | None = None
 
 
 def _table(pg: psycopg.Connection, name: str) -> Table:
@@ -557,6 +563,7 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
                             dict(zip(names, map(jsonable, row), strict=True))
                             for row in cur.fetchall()
                         ]
+            _audit(pg, call, plan, count)
             try:
                 session.commit()
             except DBAPIError as exc:
@@ -570,6 +577,34 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
     if plan.table.primary_key:
         result["rows"] = written
     return result
+
+
+# The audit entry of a call (`aios.audit`), written as the read-write role in the call's
+# transaction: the writer may not touch the audit log. The agent is the run's.
+AUDIT_SQL = """
+    INSERT INTO aios.audit_log
+        (actor_kind, actor_user_id, actor_agent_id, actor_run_id, action, target_kind, target_id,
+         details)
+    VALUES ('agent', %(user_id)s, (SELECT agent_id FROM aios.agent_runs WHERE id = %(run_id)s),
+            %(run_id)s, 'data.written', 'table', %(table)s, %(details)s)
+"""
+
+
+def _audit(pg: psycopg.Connection, call: Call, plan: Plan, count: int) -> None:
+    """Record the call in the store's audit log: its table, operation and row count, and the
+    run (and agent) that made it. Back as the read-write role for the rest of the transaction,
+    after everything the call writes."""
+    pg.execute("SET LOCAL ROLE NONE")
+    table = plan.table.qualified
+    pg.execute(
+        AUDIT_SQL,
+        {
+            "user_id": call.user_id,
+            "run_id": call.run_id,
+            "table": table,
+            "details": Jsonb({"table": table, "operation": plan.operation, "row_count": count}),
+        },
+    )
 
 
 async def _embed(texts: list[str]) -> Embedded | dict:
@@ -662,7 +697,16 @@ def build(config: WriteDataConfig) -> list[AgentTool]:
             list[str] | None, "upsert: the unique columns rows are matched on (default: the key)."
         ] = None,
     ) -> str:
-        call = Call(table, operation, rows, values, where, on_conflict)
+        call = Call(
+            table,
+            operation,
+            rows,
+            values,
+            where,
+            on_conflict,
+            run_id=runtime.context.run_id,
+            user_id=runtime.context.user_id,
+        )
         return await in_store(runtime, _write, call)
 
     return [StructuredTool.from_function(coroutine=write_data, description=_description())]

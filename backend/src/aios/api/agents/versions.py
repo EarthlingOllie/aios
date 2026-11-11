@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from aios import audit
 from aios.api.agents.common import (
     AgentOut,
     AgentVersionOut,
@@ -123,5 +124,6 @@ def restore_agent_version(
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
+    audit.configured(store, user.id, "agent", agent, "version_restored", version=old.version)
     store.commit()
     return agent_out(db, org.id, agent)

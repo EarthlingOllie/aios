@@ -9,6 +9,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from aios import audit
 from aios.api.provenance import (
     Archived,
     Provenance,
@@ -312,6 +313,7 @@ def create_skill(
             note=body.note,
             user_id=user.id,
         )
+        audit.configured(store, user.id, "skill", skill, "created")
         store.commit()
     return skill_out(db, org.id, store, skill)
 
@@ -342,6 +344,7 @@ def update_skill(
             note=body.note,
             user_id=user.id,
         )
+        audit.configured(store, user.id, "skill", skill, "updated")
         store.commit()
     return skill_out(db, org.id, store, skill)
 
@@ -362,6 +365,7 @@ def archive_skill(
     if skill.archived_at is None:
         skill.archived_at = func.now()
         skill.archived_by = user.id
+        audit.configured(store, user.id, "skill", skill, "archived")
         store.commit()
     return skill_out(db, org.id, store, skill)
 
@@ -369,10 +373,14 @@ def archive_skill(
 @router.post(
     "/skills/{skill_id}/unarchive", response_model=SkillOut, dependencies=[allow(Action.build)]
 )
-def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+def unarchive_skill(
+    skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Bring the skill back: agent versions can include it again."""
     skill = get_org_skill(store, skill_id)
     lock_skills(store, [skill.id])
+    if skill.archived_at is not None:
+        audit.configured(store, user.id, "skill", skill, "unarchived")
     skill.archived_at = None
     skill.archived_by = None
     store.commit()
@@ -442,5 +450,6 @@ def restore_skill_version(
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
+    audit.configured(store, user.id, "skill", skill, "version_restored", version=old.version)
     store.commit()
     return skill_out(db, org.id, store, skill)

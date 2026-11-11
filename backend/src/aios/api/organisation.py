@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from aios import organisations
+from aios import audit, organisations
 from aios.api.provenance import UserOut, people
 from aios.auth import (
     CurrentOrganisation,
@@ -152,7 +152,18 @@ def get_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     "/organisation", response_model=OrganisationOut, dependencies=[allow(Action.run_organisation)]
 )
 def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    org.name = body.name.strip()
+    old, new = org.name, body.name.strip()
+    org.name = new
+    if new != old:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "organisation.renamed",
+            "organisation",
+            org.id,
+            {"from": old, "to": new},
+        )
     db.commit()
     return organisation_out(db, org, user)
 
@@ -184,7 +195,7 @@ def schedule_deletion(body: DeletionIn, user: CurrentUser, org: CurrentOrganisat
 )
 def cancel_deletion(user: CurrentUser, org: CurrentOrganisation, db: DB):
     try:
-        organisations.cancel_deletion(db, org)
+        organisations.cancel_deletion(db, org, user)
     except organisations.DeletionRefused as refused:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(refused)) from None
@@ -272,7 +283,7 @@ def list_invites(org: CurrentOrganisation, db: DB):
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.run_organisation)],
 )
-def revoke_invite(invite_id: uuid.UUID, org: CurrentOrganisation, db: DB):
+def revoke_invite(invite_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
     invite = db.scalar(
         select(OrganisationInvite).where(
             OrganisationInvite.id == invite_id,
@@ -283,6 +294,7 @@ def revoke_invite(invite_id: uuid.UUID, org: CurrentOrganisation, db: DB):
     if invite is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_SUCH_INVITE)
     invite.revoked_at = func.now()
+    audit.enqueue(db, org.id, audit.person(user.id), "invitation.revoked", "invitation", invite.id)
     db.commit()
 
 
@@ -334,7 +346,7 @@ def change_role(user_id: int, body: RoleIn, user: CurrentUser, org: CurrentOrgan
     """Give a member another role (an admin's): 404 for someone who isn't a member, 409 for
     demoting the organisation's last admin. Answers with the Organisation page."""
     try:
-        changed = organisations.change_role(db, org, user_id, body.role)
+        changed = organisations.change_role(db, org, user_id, body.role, by=user.id)
     except organisations.RoleChangeRefused as refused:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(refused)) from None

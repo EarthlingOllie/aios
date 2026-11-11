@@ -45,6 +45,6 @@
   `query_data` after a turn whose text must not appear, and checks their only text columns are
   `kind`, `cause` and `status`.)
 
-Note for merging: P1-08 also adds store revision 0013 (and may also create the `reporting`
-schema, which this revision creates `IF NOT EXISTS` and drops only when empty): renumber one so
-the store tree's `aios` line has one head.
+Merged after P1-08 was renumbered: this is store revision 0013, and P1-08's audit log and
+approval rules are 0014, which adds `reporting.audit_log` to the `reporting` schema made here
+(`IF NOT EXISTS`) and leaves dropping the schema to this revision's downgrade.

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import Row, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
-from aios import checkpoints, invocations, used_by
+from aios import audit, checkpoints, invocations, used_by
 from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
     Archived,
@@ -518,6 +518,7 @@ def create_workflow(
         save_workflow_version(
             store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
+        audit.configured(store, user.id, "workflow", workflow, "created")
         store.commit()
     return workflow_out(db, org.id, store, workflow)
 
@@ -574,6 +575,7 @@ def update_workflow(
         save_workflow_version(
             store, workflow, nodes=nodes, edges=edges, note=body.note, user_id=user.id
         )
+        audit.configured(store, user.id, "workflow", workflow, "updated")
         store.commit()
     return workflow_out(db, org.id, store, workflow)
 
@@ -600,6 +602,7 @@ def archive_workflow(
         workflow.archived_by = user.id
         # Its schedules are paused with it (see `aios.api.agents.archive_agent`).
         paused = disable_triggers(store, Trigger.workflow_id == workflow.id, user.id)
+        audit.configured(store, user.id, "workflow", workflow, "archived")
         store.commit()
         unindex(store, paused)
     return workflow_out(db, org.id, store, workflow)
@@ -610,10 +613,14 @@ def archive_workflow(
     response_model=WorkflowOut,
     dependencies=[allow(Action.build)],
 )
-def unarchive_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+def unarchive_workflow(
+    workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Bring the workflow back. Its schedules stay paused until someone resumes them."""
     workflow = get_org_workflow(store, workflow_id)
     lock_workflow(store, workflow)
+    if workflow.archived_at is not None:
+        audit.configured(store, user.id, "workflow", workflow, "unarchived")
     workflow.archived_at = None
     workflow.archived_by = None
     store.commit()
@@ -722,6 +729,7 @@ def restore_workflow_version(
         note=f"Restored from v{old.version}",
         user_id=user.id,
     )
+    audit.configured(store, user.id, "workflow", workflow, "version_restored", version=old.version)
     store.commit()
     return workflow_out(db, org.id, store, workflow)
 

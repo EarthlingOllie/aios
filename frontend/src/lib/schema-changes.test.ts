@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SchemaChangeRequest } from "@/lib/api";
-import { requestSummary } from "@/lib/schema-changes";
+import { approvalNeeds, requestSummary } from "@/lib/schema-changes";
 
 function request(fields: Partial<SchemaChangeRequest>): SchemaChangeRequest {
   return {
@@ -20,6 +20,7 @@ function request(fields: Partial<SchemaChangeRequest>): SchemaChangeRequest {
     decided_at: null,
     applied_at: null,
     resumed_at: null,
+    needs_role: "editor",
     can_decide: true,
     confirm_with: null,
     ...fields,
@@ -93,5 +94,16 @@ describe("requestSummary", () => {
     expect(requestSummary(request({ status: "rejected", ...at })).decidedLabel).toBe("Decided");
     expect(requestSummary(request({ status: "expired", ...at })).decidedLabel).toBe("Expired");
     expect(requestSummary(request({ status: "cancelled", ...at })).decidedLabel).toBe("Cancelled");
+  });
+});
+
+describe("approvalNeeds", () => {
+  it("names the least role that may decide a pending request", () => {
+    expect(approvalNeeds(request({ needs_role: "editor" }))).toBe("Needs an editor or an admin to approve");
+    expect(approvalNeeds(request({ needs_role: "admin" }))).toBe("Needs an admin to approve");
+  });
+
+  it("says nothing once it's decided", () => {
+    expect(approvalNeeds(request({ status: "applied", needs_role: "admin" }))).toBeNull();
   });
 });

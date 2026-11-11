@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentDataStore
+from aios import audit
+from aios.auth import CurrentDataStore, CurrentUser
 from aios.datastores import store_session
 from aios.datastores.models import Document, Source, SourceKind, SourceStatus
 from aios.db import DbId
@@ -89,7 +90,9 @@ def get_source(source_id: DbId, store_id: CurrentDataStore):
 @router.patch(
     "/sources/{source_id}", response_model=SourceOut, dependencies=[allow(Action.sources)]
 )
-def update_source(source_id: DbId, body: SourceUpdate, store_id: CurrentDataStore):
+def update_source(
+    source_id: DbId, body: SourceUpdate, user: CurrentUser, store_id: CurrentDataStore
+):
     """Rename, pause or resume a source. Uploads can't be (409)."""
     with store_session(store_id, "rw") as store:
         source = _changeable(store, source_id)
@@ -99,6 +102,8 @@ def update_source(source_id: DbId, body: SourceUpdate, store_id: CurrentDataStor
             source.status = SourceStatus.paused
         elif body.paused is False and source.status == SourceStatus.paused:
             source.status = SourceStatus.active
+        changed = body.model_dump(exclude_none=True)
+        audit.configured(store, user.id, "source", source, "updated", **changed)
         store.commit()
         return _one(store, source_id)
 
@@ -108,8 +113,10 @@ def update_source(source_id: DbId, body: SourceUpdate, store_id: CurrentDataStor
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[allow(Action.sources)],
 )
-def remove_source(source_id: DbId, store_id: CurrentDataStore) -> None:
+def remove_source(source_id: DbId, user: CurrentUser, store_id: CurrentDataStore) -> None:
     """Mark a source for removal; it stops syncing at once. Uploads can't be removed (409)."""
     with store_session(store_id, "rw") as store:
-        _changeable(store, source_id).status = SourceStatus.removing
+        source = _changeable(store, source_id)
+        source.status = SourceStatus.removing
+        audit.configured(store, user.id, "source", source, "removed")
         store.commit()

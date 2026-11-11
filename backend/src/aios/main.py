@@ -29,6 +29,8 @@ from aios.api import (
     triggers,
     workflows,
 )
+from aios.api import approval_rules as approval_rules_api
+from aios.api import audit as audit_api
 from aios.api import settings as settings_api
 from aios.api.scoping import mount_organisation_prefix
 from aios.config import get_settings
@@ -78,6 +80,8 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router)
     app.include_router(triggers.router)
     app.include_router(schema_changes.router)
+    app.include_router(audit_api.router)
+    app.include_router(approval_rules_api.router)
     app.include_router(dropped.router)
     app.include_router(sources.router)
     app.include_router(notifications.router)

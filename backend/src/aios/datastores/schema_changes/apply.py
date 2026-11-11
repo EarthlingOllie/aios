@@ -11,7 +11,7 @@ import psycopg
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import notifications
+from aios import approval_rules, notifications
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import AgentRun, SchemaChangeRequest
@@ -164,12 +164,13 @@ def propose(
                 raise Invalid("The run has been deleted")
         store.add(request)
         store.commit()
+        least = approval_rules.needed_for(store, request.ops)
     with SessionLocal() as db:
         data_store = db.get(DataStore, data_store_id)
         if data_store is not None and data_store.owner_organisation_id is not None:
             notifications.notify(
                 db,
-                approvers(db, data_store),
+                approvers(db, data_store, least),
                 data_store.owner_organisation_id,
                 notifications.SCHEMA_CHANGE_REQUEST,
                 _notification_ref(data_store_id, request.id),

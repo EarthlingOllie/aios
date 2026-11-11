@@ -128,6 +128,8 @@ export type SchemaChangeRow = {
   decider: boolean;
   /** What approving it takes typed, if it drops anything. */
   confirm_with: string | null;
+  /** The least role that may decide it (the approval rules): an editor's unless set. */
+  needs_role: Role;
   /** What its drops would remove (GET .../impact). */
   impact: {
     table: string;
@@ -336,6 +338,45 @@ type ChatMemberOut = {
   archived: boolean;
 };
 export type Role = "admin" | "editor" | "participant";
+
+/** An entry of the audit log, as GET /audit-log answers it. */
+export type AuditEntryRow = {
+  id: number;
+  at: string;
+  actor: {
+    kind: "person" | "agent" | "system";
+    user: Pick<Account, "id" | "first_name" | "last_name"> | { id: number; name: string } | null;
+    agent: { id: number; name: string | null } | null;
+    run_id: number | null;
+  };
+  action: string;
+  target_kind: string | null;
+  target_id: string | null;
+  details: Record<string, unknown>;
+};
+
+/** Each kind of schema change's least role by default (`aios.approval_rules`). */
+const DEFAULT_RULES: Record<string, Role> = {
+  create_table: "editor",
+  add_column: "editor",
+  create_index: "editor",
+  drop_table: "admin",
+  drop_column: "admin",
+  restore: "admin",
+  purge: "admin",
+  change_ownership: "admin",
+};
+
+const RULE_LABELS: Record<string, string> = {
+  create_table: "Create a table",
+  add_column: "Add a column",
+  create_index: "Create an index",
+  drop_table: "Drop a table",
+  drop_column: "Drop a column",
+  restore: "Restore a dropped table or column",
+  purge: "Purge a dropped table or column",
+  change_ownership: "Change a table's owner",
+};
 /** A member, with their role: the creator's is admin and anyone else's editor unless it's set. */
 export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null; role?: Role };
 /** An open invitation link, with the token the fake keeps (the API keeps only its hash), and the
@@ -644,6 +685,10 @@ export class FakeApi {
   private holdingLists = false;
   /** Schema change requests in the organisation's store, oldest first. */
   schemaChanges: SchemaChangeRow[] = [];
+  /** The organisation's audit log, newest first, as GET /audit-log answers it. */
+  auditEntries: AuditEntryRow[] = [];
+  /** The approval rules, by kind: each kind's least role, as an admin set it. */
+  approvalRules: Record<string, Role> = { ...DEFAULT_RULES };
   /** Dropped tables and columns in the organisation's store, newest first. */
   dropped: DroppedRow[] = [];
   /**
@@ -700,6 +745,16 @@ export class FakeApi {
     const role = this.roleOf(this.me.id);
     if (role === "admin") return null;
     return `${role === "editor" ? "Editors" : "Participants"} can't ${FakeApi.ADMINS_ONLY}. Ask an admin.`;
+  }
+
+  private approvalRulesOut() {
+    return Object.entries(DEFAULT_RULES).map(([kind, default_role]) => ({
+      kind,
+      label: RULE_LABELS[kind],
+      role: this.approvalRules[kind],
+      default_role,
+      updated_at: null,
+    }));
   }
 
   private inviteOut({ token: _token, ...invite }: InviteRow) {
@@ -1080,6 +1135,7 @@ export class FakeApi {
       resumed_at: null,
       decider: true,
       confirm_with: null,
+      needs_role: "editor",
       impact: [],
       ...fields,
     };
@@ -1161,8 +1217,29 @@ export class FakeApi {
     return {
       ...fields,
       run: run ? { agent_id: run.agent_id, run_id: run.id, title: run.title } : null,
-      can_decide: decider && request.status === "pending",
+      can_decide: decider && request.status === "pending" && this.decides(request.needs_role),
     };
+  }
+
+  /** Whether `me` may decide a request needing `needs` (an editor's or an admin's). */
+  private decides(needs: Role): boolean {
+    const role = this.roleOf(this.me.id);
+    return role === "admin" || (role === "editor" && needs === "editor");
+  }
+
+  /** Adds an entry to the audit log, newest first; by `me` unless `fields` say otherwise. */
+  addAuditEntry(fields: Partial<AuditEntryRow> & Pick<AuditEntryRow, "action">): AuditEntryRow {
+    const entry: AuditEntryRow = {
+      id: this.id(),
+      at: NOW,
+      actor: { kind: "person", user: this.me, agent: null, run_id: null },
+      target_kind: null,
+      target_id: null,
+      details: {},
+      ...fields,
+    };
+    this.auditEntries = [entry, ...this.auditEntries].sort((a, b) => b.at.localeCompare(a.at));
+    return entry;
   }
 
   /**
@@ -2388,6 +2465,12 @@ export class FakeApi {
       if (request.status !== "pending") {
         return fail(409, `This request has already been ${request.status}`);
       }
+      if (!this.decides(request.needs_role)) {
+        return fail(
+          403,
+          `This request needs ${request.needs_role === "admin" ? "an admin" : "an editor"} to approve or reject it (the organisation's approval rules). Ask one.`,
+        );
+      }
       const typed = (body?.confirm ?? "").trim();
       if (m[2] === "approve" && request.confirm_with && typed !== request.confirm_with) {
         return fail(422, `This request drops data: Type \`${request.confirm_with}\` to confirm.`);
@@ -2403,6 +2486,42 @@ export class FakeApi {
         if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
       }
       return reply(200, this.schemaChangeOut(request));
+    }
+    if (path === "/api/audit-log" && method === "GET") {
+      if (this.roleOf(this.me.id) !== "admin") {
+        const role = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
+        return fail(403, `${role} can't read the audit log. Ask an admin.`);
+      }
+      const q = url.searchParams;
+      const actor = q.get("actor");
+      const action = q.get("action");
+      const since = q.get("since");
+      const until = q.get("until");
+      const entries = this.auditEntries.filter(
+        (e) =>
+          (actor === null || e.actor.user?.id === Number(actor)) &&
+          (action === null || e.action === action || e.action.startsWith(`${action}.`)) &&
+          (since === null || e.at.slice(0, 10) >= since) &&
+          (until === null || e.at.slice(0, 10) <= until),
+      );
+      return reply(200, { entries, next: null });
+    }
+    if (path === "/api/approval-rules") {
+      if (method === "PUT") return fail(405, "Method Not Allowed");
+      return reply(200, this.approvalRulesOut());
+    }
+    if ((m = path.match(/^\/api\/approval-rules\/(\w+)$/)) && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      const kind = m[1];
+      if (!(kind in DEFAULT_RULES)) return fail(404, "There's no such kind of change");
+      const role = body?.role as Role;
+      if (DEFAULT_RULES[kind] === "admin" && role !== "admin") {
+        return fail(422, "It needs at least an admin to approve: a rule can be raised, but not lowered below its default.");
+      }
+      if (role === "participant") return fail(422, "It needs at least an editor to approve.");
+      this.approvalRules[kind] = role;
+      return reply(200, this.approvalRulesOut());
     }
     if (path === "/api/dropped" && method === "GET") {
       return reply(200, this.dropped.map((d) => this.droppedOut(d)));

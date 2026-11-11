@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } from "@/components/crud";
+import { ApprovalRulesSection } from "@/components/ApprovalRules";
+import { AuditLogSection } from "@/components/AuditLog";
 import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -21,8 +23,9 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
 /**
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
  * page: its creator and members with their roles, which admins change (`/organisation`), its
- * invitation links (`/organisation/invitations`, admins' only), and its settings, the run history
- * export, leaving it and deleting it (`/organisation/settings`).
+ * invitation links (`/organisation/invitations`, admins' only), its settings, the run history
+ * export, the approval rules, leaving it and deleting it (`/organisation/settings`), and its audit
+ * log (`/organisation/audit-log`, admins' only).
  */
 export function OrganisationPage() {
   const me = useCurrentUser();
@@ -57,6 +60,7 @@ export function OrganisationPage() {
       content: (
         <>
           <RunHistoryExportSection key={`export-${org.id}`} />
+          <ApprovalRulesSection key={`rules-${org.id}`} />
           <LeaveSection
             org={org}
             onLeft={(after) => {
@@ -77,6 +81,10 @@ export function OrganisationPage() {
         </>
       ),
     },
+    // Only admins read the audit log.
+    ...(org.role === "admin"
+      ? [{ id: "audit-log", label: "Audit log", content: <AuditLogSection key={org.id} org={org} /> }]
+      : []),
   ];
 
   return (

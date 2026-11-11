@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, describeError, type SchemaChangeRequest } from "@/lib/api";
 import { confirmed, removalText } from "@/lib/dropped";
-import { requestSummary } from "@/lib/schema-changes";
+import { approvalNeeds, requestSummary } from "@/lib/schema-changes";
 import { cn } from "@/lib/utils";
 
 /** How often a request the platform is still working on is read again (ms). */
@@ -46,6 +46,8 @@ export function SchemaChangeCard({
   // For a request that drops anything: the tables' names, as the owner typed them.
   const [typed, setTyped] = useState("");
   const summary = requestSummary(request);
+  // Who may decide it while it's pending (the approval rules), for everyone to see.
+  const needs = approvalNeeds(request);
   const confirmWith = request.can_decide ? request.confirm_with : null;
   const refreshNotifications = useRefreshNotifications();
 
@@ -119,6 +121,11 @@ export function SchemaChangeCard({
           {summary.message}
         </p>
       )}
+      {needs && (
+        <p role="note" aria-label="Who may approve" className="text-muted-foreground text-xs">
+          {needs}
+        </p>
+      )}
       {confirmWith && <Removals request={request} />}
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       {confirmWith && !rejecting && (
@@ -178,6 +185,17 @@ export function SchemaChangeCard({
             </Button>
           </div>
         ))}
+      {/* Pending, but not the user's to decide: the controls are there, disabled, saying why. */}
+      {request.status === "pending" && !request.can_decide && (
+        <div className="flex gap-2">
+          <Button size="sm" disabled title={needs ?? undefined}>
+            <Check /> Approve
+          </Button>
+          <Button size="sm" variant="outline" disabled title={needs ?? undefined}>
+            <X /> Reject…
+          </Button>
+        </div>
+      )}
     </section>
   );
 }

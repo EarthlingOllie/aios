@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios import used_by
+from aios import audit, used_by
 from aios.api.agents.common import (
     AGENT_NAME_INDEX,
     AgentIn,
@@ -115,6 +115,7 @@ def create_agent(
             note=body.note,
             user_id=user.id,
         )
+        audit.configured(store, user.id, "agent", agent, "created")
         store.commit()
     return agent_out(db, org.id, agent)
 
@@ -165,6 +166,7 @@ def update_agent(
         # Keeping an archived skill is fine; making a new version with it isn't.
         if version.id != before:
             refuse_archived_skills(skills)
+        audit.configured(store, user.id, "agent", agent, "updated", version=version.version)
         store.commit()
     return agent_out(db, org.id, agent)
 
@@ -188,6 +190,7 @@ def archive_agent(
         # Its schedules are paused with it. A schedule saved meanwhile waited for the lock, and
         # is paused here too; one saved after sees the agent archived.
         paused = disable_triggers(store, Trigger.agent_id == agent.id, user.id)
+        audit.configured(store, user.id, "agent", agent, "archived")
         store.commit()
         unindex(store, paused)
     return agent_out(db, org.id, agent)
@@ -196,10 +199,14 @@ def archive_agent(
 @router.post(
     "/agents/{agent_id}/unarchive", response_model=AgentOut, dependencies=[allow(Action.build)]
 )
-def unarchive_agent(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
+def unarchive_agent(
+    agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+):
     """Bring the agent back. Its schedules stay paused until someone resumes them."""
     agent = get_org_agent(store, agent_id)
     lock_agent(store, agent)
+    if agent.archived_at is not None:
+        audit.configured(store, user.id, "agent", agent, "unarchived")
     agent.archived_at = None
     agent.archived_by = None
     store.commit()

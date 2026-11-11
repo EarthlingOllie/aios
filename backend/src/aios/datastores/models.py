@@ -39,6 +39,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from aios.models.agents import AgentRunStatus
 from aios.models.approvals import SchemaChangeStatus
+from aios.models.audit import AuditActorKind
 from aios.models.chats import (
     ChatAuthorKind,
     ChatMemberKind,
@@ -1077,6 +1078,70 @@ class Source(StoreBase):
             postgresql_where=sql_text("kind = 'upload'"),
         ),
         {"comment": "What brings content into the store: Uploads, and later synced sources"},
+    )
+
+
+class AuditEntry(StoreBase):
+    """One entry of the audit log (`aios.audit`): who did what to what, and when. Append-only:
+    the read-write role may only insert and read, and a trigger refuses updates, deletes and
+    truncation even to the store's owner. Its details are on the deny list, so the data tools
+    read only the rest (and agents read the reporting view, `reporting.audit_log`)."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was done."
+    )
+    actor_kind: Mapped[AuditActorKind] = mapped_column(
+        Enum(AuditActorKind, name="audit_actor_kind"), comment="person, agent or system."
+    )
+    actor_user_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The person who did it (aios.people.id)."
+    )
+    actor_agent_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The agent that did it (aios.agents.id)."
+    )
+    actor_run_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The agent run it was done in (aios.agent_runs.id)."
+    )
+    action: Mapped[str] = mapped_column(
+        Text, comment="What was done, dotted: agent.archived, approval.decided, data.written."
+    )
+    target_kind: Mapped[str | None] = mapped_column(
+        Text, comment="What kind of thing it was done to: agent, member, table, ..."
+    )
+    target_id: Mapped[str | None] = mapped_column(Text, comment="Which one: its id, or name.")
+    details: Mapped[dict] = mapped_column(
+        JSONB, server_default=sql_text("'{}'::jsonb"), default=dict
+    )
+    # The platform outbox row it came from (`aios.models.AuditOutbox`), so delivering one twice
+    # records it once.
+    outbox_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        UniqueConstraint("outbox_id", name="uq_audit_log_outbox_id"),
+        Index("ix_audit_log_at_id", "at", "id"),
+        Index("ix_audit_log_action", "action"),
+        Index("ix_audit_log_actor_user_id", "actor_user_id"),
+        {"comment": "The audit log: who did what, and when. Append-only."},
+    )
+
+
+class ApprovalRule(StoreBase):
+    """The least role that may decide a kind of schema change (`aios.approval_rules`), where an
+    admin raised it above its default; a kind with no row has its default."""
+
+    __tablename__ = "approval_rules"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    least_role: Mapped[str] = mapped_column(Text, comment="editor or admin.")
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("least_role IN ('editor', 'admin')", name="ck_approval_rules_least_role"),
+        {"comment": "Who may decide each kind of schema change, where raised from the default"},
     )
 
 

@@ -4,7 +4,8 @@ import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
  * The Organisation page splits into tabs, each a route: Members (`/organisation`), Invitations
- * (`/organisation/invitations`, the creator's) and Settings (`/organisation/settings`).
+ * (`/organisation/invitations`, the creator's), Settings (`/organisation/settings`) and the audit
+ * log (`/organisation/audit-log`, admins').
  */
 
 const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
@@ -48,9 +49,9 @@ test("switching tabs moves to each tab's route, and the route opens its tab", as
   // The arrow keys move between tabs, as on the other tabbed pages.
   await tab(page, /Members/).focus();
   await page.keyboard.press("End");
-  await expect(page).toHaveURL(inOrg("/organisation/settings"));
+  await expect(page).toHaveURL(inOrg("/organisation/audit-log"));
   await page.keyboard.press("ArrowLeft");
-  await expect(page).toHaveURL(inOrg("/organisation/invitations"));
+  await expect(page).toHaveURL(inOrg("/organisation/settings"));
 });
 
 test("an unknown tab, and the first tab's own segment, land on /organisation", async ({ page }) => {

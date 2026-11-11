@@ -15,7 +15,9 @@ three roles named after it (never after a user):
 - `<prefix>_writer` (no login), which `write_data` writes as: `rw` may `SET ROLE` to it but
   doesn't inherit it, and it may write in the `data` schema and nowhere else (`_grant_writer`).
 - The deny list (`DENIED_COLUMNS`): columns neither `ro` nor the writer may read (people's
-  emails in the people mirror), applied each time the store is migrated.
+  emails in the people mirror, the audit log's details), applied each time the store is
+  migrated. The audit log is append-only to `rw` too (`APPEND_ONLY`), and the `reporting`
+  views read-only.
 
 Nobody else may connect (`CONNECT` is revoked from `PUBLIC`; until it is, the database takes no
 connections at all), and the database has no `public` schema. It's copied from the store
@@ -269,7 +271,8 @@ BOOKKEEPING = (
 )
 
 
-# Read-only views for agents to query (runs, turns): read by both roles, written by neither.
+# Read-only views for agents to query (runs, turns, the audit log): read by both roles, written
+# by neither.
 REPORTING = "reporting"
 
 
@@ -286,7 +289,13 @@ DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
     "aios.people": ("email",),
     # The bearer token a run's sandbox takes.
     "aios.sandbox_sessions": ("secret",),
+    # Free-form: agents read the rest, and the reporting view (`reporting.audit_log`).
+    "aios.audit_log": ("details",),
 }
+
+# What the read-write role, the platform's own, may only insert and read: the audit log is
+# append-only (its trigger refuses even the owner; this is the first line).
+APPEND_ONLY = ("aios.audit_log",)
 
 # What the writer may read besides `data`: what `write_data` plans a write with.
 WRITER_READS = ("aios.embedding_columns", "aios.dropped_objects")
@@ -392,6 +401,10 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
             # Every time, not in a revision: the tree doesn't know the store's role names.
             conn.exec_driver_sql(
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
+            )
+            conn.exec_driver_sql(
+                f"REVOKE UPDATE, DELETE, TRUNCATE ON {', '.join(APPEND_ONLY)}"
+                f" FROM {quote(names.rw)}"
             )
             # Nor does anyone write through the reporting views (a view of one table would let
             # the default privileges' writes through to it).

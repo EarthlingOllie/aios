@@ -65,7 +65,7 @@ from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import notifications
+from aios import audit, notifications
 from aios.config import get_settings
 from aios.datastores import (
     DataStoreBusy,
@@ -246,6 +246,15 @@ def make_invite(
     db.add(invite)
     db.flush()
     db.refresh(invite)
+    audit.enqueue(
+        db,
+        org.id,
+        audit.person(user.id),
+        "invitation.created",
+        "invitation",
+        invite.id,
+        {"role": role.value, "expires_at": invite.expires_at.isoformat()},
+    )
     return invite, token
 
 
@@ -287,7 +296,7 @@ def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
     """Make the user a member of the link's organisation, with the role the link grants,
     recording the link they came through; if they're one already, nothing changes (accepting a
     link twice adds nothing, and doesn't change their role). Flushed, not committed."""
-    db.execute(
+    joined = db.scalar(
         insert(OrganisationMember)
         .values(
             organisation_id=invite.organisation_id,
@@ -296,8 +305,19 @@ def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
             role=invite.role,
         )
         .on_conflict_do_nothing(index_elements=["organisation_id", "user_id"])
+        .returning(OrganisationMember.user_id)
     )
     db.flush()
+    if joined is not None:
+        audit.enqueue(
+            db,
+            invite.organisation_id,
+            audit.person(user.id),
+            "member.joined",
+            "member",
+            user.id,
+            {"role": invite.role.value, "invitation": str(invite.id)},
+        )
     people.changed(db, invite.organisation_id)
     return db.get_one(Organisation, invite.organisation_id)
 
@@ -341,12 +361,14 @@ class RoleChangeRefused(Exception):
     """Why changing a member's role was refused (`NEEDS_AN_ADMIN`)."""
 
 
-def change_role(db: Session, org: Organisation, user_id: int, new_role: Role) -> bool:
-    """Give a member of the organisation `new_role`; False if they aren't a member. Refused
-    (`RoleChangeRefused`) when it would leave the organisation with no admin. Locks the
-    organisation first (as leaving does), so two admins demoting each other at once can't both
-    succeed. Their store's people mirror is updated once this commits. Flushed, not
-    committed."""
+def change_role(
+    db: Session, org: Organisation, user_id: int, new_role: Role, by: int | None = None
+) -> bool:
+    """Give a member of the organisation `new_role`, as the admin `by` (the platform itself if
+    None); False if they aren't a member. Refused (`RoleChangeRefused`) when it would leave the
+    organisation with no admin. Locks the organisation first (as leaving does), so two admins
+    demoting each other at once can't both succeed. Their store's people mirror is updated once
+    this commits, and a change is audited. Flushed, not committed."""
     db.scalar(select(Organisation.id).where(Organisation.id == org.id).with_for_update())
     member = db.scalar(
         select(OrganisationMember).where(
@@ -357,8 +379,19 @@ def change_role(db: Session, org: Organisation, user_id: int, new_role: Role) ->
         return False
     if new_role != Role.admin and _admins(db, org) == [user_id]:
         raise RoleChangeRefused(NEEDS_AN_ADMIN)
+    old_role = member.role
     member.role = new_role
     db.flush()
+    if old_role != new_role:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.SYSTEM if by is None else audit.person(by),
+            "member.role_changed",
+            "member",
+            user_id,
+            {"from": old_role.value, "to": new_role.value},
+        )
     people.changed(db, org.id)
     return True
 
@@ -394,6 +427,7 @@ def leave(db: Session, org: Organisation, user: User) -> None:
         )
     )
     leave_chats(db, org.id, user.id)
+    audit.enqueue(db, org.id, audit.person(user.id), "member.left", "member", user.id)
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
         _forget_requests(db, user, store_id)
@@ -565,20 +599,37 @@ def schedule_deletion(db: Session, org: Organisation, user: User, name: str) -> 
         )
     )
     db.refresh(org)
+    audit.enqueue(
+        db,
+        org.id,
+        audit.person(user.id),
+        "organisation.deletion_scheduled",
+        "organisation",
+        org.id,
+        {"deletes_at": org.deletes_at.isoformat()},
+    )
     _notify_members(db, org, ORGANISATION_DELETION_SCHEDULED, org.deletes_at)
     db.flush()
 
 
-def cancel_deletion(db: Session, org: Organisation) -> None:
-    """Cancel the organisation's scheduled deletion: nothing in it is touched, and every member
-    is notified again. Refused (`DeletionRefused`) when none is scheduled, or the sweep has it
-    under way. Flushed, not committed."""
+def cancel_deletion(db: Session, org: Organisation, user: User | None = None) -> None:
+    """Cancel the organisation's scheduled deletion, as `user` (an admin): nothing in it is
+    touched, and every member is notified again. Refused (`DeletionRefused`) when none is
+    scheduled, or the sweep has it under way. Flushed, not committed."""
     _lock(db, org)
     if org.deletes_at is None:
         raise DeletionRefused(NOT_SCHEDULED)
     org.deletion_scheduled_at = None
     org.deletion_scheduled_by = None
     org.deletes_at = None
+    audit.enqueue(
+        db,
+        org.id,
+        audit.SYSTEM if user is None else audit.person(user.id),
+        "organisation.deletion_cancelled",
+        "organisation",
+        org.id,
+    )
     _notify_members(db, org, ORGANISATION_DELETION_CANCELLED, None)
     db.flush()
 

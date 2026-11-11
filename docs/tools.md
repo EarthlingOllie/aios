@@ -59,7 +59,7 @@ for sandboxes on AWS.
 
 **Describe data** (`describe_data`) and **Query data** (`query_data`) read the run's store, as
 its read-only role (`aios.tools.data`). `describe_data` lists the tables in `data` (the
-organisation's) and the platform's `aios` tables, with their columns, types and `COMMENT ON`
+organisation's), the platform's `aios` tables and the `reporting` views, with their columns, types and `COMMENT ON`
 descriptions, from the catalog. `query_data` runs one SQL statement that returns rows, in a
 `READ ONLY` transaction that's always rolled back, under the role's statement timeout; the
 statement is sent with the extended protocol, which takes only one. Rows are streamed and cut
@@ -68,9 +68,10 @@ set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. B
 model their results are data, not instructions, and that the store is being set up until
 it's ready. `write_data` (`aios.tools.write_data`) writes the `data` tables, within the store's
 quota (see [Stores](stores.md#quotas)), as the store's writer role, which may write in `data`
-and nowhere else. Neither tool can read what's on the deny list (people's emails in the people
-mirror, `aios.people`; see [Stores](stores.md#the-deny-list)): `describe_data` leaves the column out,
-and `query_data` is refused it.
+and nowhere else, and records each call in the audit log. Neither tool can read what's on the
+deny list (people's emails in the people mirror, `aios.people`, and the audit log's details; see
+[Stores](stores.md#the-deny-list)): `describe_data` leaves the column out, and `query_data` is
+refused it.
 
 ## Request schema changes
 

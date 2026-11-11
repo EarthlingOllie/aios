@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     # period is over every `organisation_deletion_check_seconds`.
     organisation_deletion_grace_days: float = Field(default=14, ge=0)
     organisation_deletion_check_seconds: float = Field(default=10 * 60, gt=0)
+    # Platform-side audit entries wait in the platform's outbox until the provisioning worker's
+    # beat delivers them to their organisation's store, this often (`aios.audit.drain`).
+    audit_drain_seconds: float = Field(default=10, gt=0)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).
