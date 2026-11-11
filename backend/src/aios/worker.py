@@ -3,6 +3,7 @@ import uuid
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.schedules import crontab
 
 from aios.config import get_settings
 from aios.datastores import (
@@ -55,6 +56,8 @@ celery_app.conf.update(
         "aios.purge_dropped": {"queue": "provisioning"},
         # Run by the provisioning worker's beat, next to the store retries.
         "aios.expire_schema_change_requests": {"queue": "provisioning"},
+        # Nightly, by the same beat; it deletes in small batches, so it's never in the way.
+        "aios.prune_retention": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
     },
@@ -118,6 +121,13 @@ celery_app.conf.beat_schedule = {
         "task": "aios.repair_stores",
         "schedule": REPAIR_STORES_EVERY,
         "options": {"expires": REPAIR_STORES_EVERY},
+    },
+    # Runs and chat history past each organisation's retention (`aios.retention`), nightly at
+    # a quiet hour. A day's run that waited past the next is stale.
+    "prune-retention": {
+        "task": "aios.prune_retention",
+        "schedule": crontab(minute=0, hour=settings.retention_prune_hour),
+        "options": {"expires": 24 * 60 * 60},
     },
     # Platform-side audit entries, to their stores (`aios.audit.drain`).
     "drain-audit-outbox": {
@@ -385,6 +395,15 @@ def purge_dropped_task() -> None:
     from aios.datastores import dropped
 
     dropped.purge_all()
+
+
+@celery_app.task(name="aios.prune_retention")
+def prune_retention_task() -> None:
+    """Prune every store's runs and chat history past its organisation's retention, in batches,
+    recording each prune in its audit log (`aios.retention.prune_all`)."""
+    from aios import retention
+
+    retention.prune_all()
 
 
 @celery_app.task(name="aios.expire_schema_change_requests")

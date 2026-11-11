@@ -9,7 +9,9 @@ organisations apart. It's the welcome page's, and the switcher's "Create an orga
 `GET .../organisation` is the Organisation page: the name, the creator, the members with their
 roles and when each joined, the signed-in member's own role, and its deletion while one is
 scheduled. What only admins do (`aios.permissions`) is a 403 naming it for anyone else:
-renaming it (`PUT`), changing a member's role (`PUT .../organisation/members/{user_id}/role`,
+renaming it (`PUT`), setting how long runs and chat history are kept (`PUT
+.../organisation/retention`, `aios.retention`; every member sees it as `retention`), changing a
+member's role (`PUT .../organisation/members/{user_id}/role`,
 a 409 for demoting its last admin), and scheduling its deletion
 (`POST .../organisation/deletion`, typing its name: a 422 for another name, a 409 if it's
 scheduled already) or cancelling it (`DELETE`, a 409 if none is scheduled).
@@ -27,6 +29,7 @@ still in.
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -79,6 +82,23 @@ class DeletionOut(BaseModel):
     deletes_at: datetime
 
 
+# Retention runs from a day to a hundred years (`aios.retention`).
+RetentionDays = Annotated[int, Field(strict=True, ge=1, le=36_500)]
+
+
+class RetentionOut(BaseModel):
+    """How many days finished runs, and chats' messages, are kept: null keeps them
+    indefinitely."""
+
+    run_days: int | None
+    chat_days: int | None
+
+
+class RetentionIn(BaseModel):
+    run_days: RetentionDays | None
+    chat_days: RetentionDays | None
+
+
 class OrganisationOut(OrganisationSummaryOut):
     # Null once the creator's account is deleted.
     creator: UserOut | None
@@ -87,6 +107,8 @@ class OrganisationOut(OrganisationSummaryOut):
     created_at: datetime
     # Its deletion, while one is scheduled; else null.
     deletion: DeletionOut | None
+    # Every member sees it; admins change it.
+    retention: RetentionOut
 
 
 class DeletionIn(BaseModel):
@@ -119,7 +141,12 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         ],
         created_at=org.created_at,
         deletion=deletion_out(db, org),
+        retention=retention_out(org),
     )
+
+
+def retention_out(org: Organisation) -> RetentionOut:
+    return RetentionOut(run_days=org.run_retention_days, chat_days=org.chat_retention_days)
 
 
 def deletion_out(db: Session, org: Organisation) -> DeletionOut | None:
@@ -163,6 +190,31 @@ def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrg
             "organisation",
             org.id,
             {"from": old, "to": new},
+        )
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+@router.put(
+    "/organisation/retention",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def set_retention(body: RetentionIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Set how long runs and chat history are kept (null: indefinitely), audited when it
+    changes; the next nightly prune (`aios.retention`) follows it."""
+    old = retention_out(org)
+    org.run_retention_days, org.chat_retention_days = body.run_days, body.chat_days
+    new = retention_out(org)
+    if new != old:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "settings.changed",
+            "organisation",
+            org.id,
+            {"setting": "retention", "from": old.model_dump(), "to": new.model_dump()},
         )
     db.commit()
     return organisation_out(db, org, user)

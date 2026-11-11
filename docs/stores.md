@@ -395,6 +395,31 @@ dropped with when it's purged, and restores it (on the provisioning worker,
 beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hour
 (`aios.purge_dropped`). Restores and purges are logged in `aios.schema_history` too.
 
+### Retention
+
+**Runs and chat history are kept indefinitely unless an admin says otherwise** (`aios.retention`).
+Two settings on the organisation, in the platform database (`organisations.run_retention_days`
+and `.chat_retention_days`, platform revision `0066`), from 1 to 36,500 days; null, the default,
+keeps everything. Admins set them on the Organisation page's Settings tab
+(`PUT /api/o/{org}/organisation/retention`, audited as `settings.changed`); everyone else sees
+them read-only. The provisioning worker's beat prunes every ready store with a setting nightly
+at `RETENTION_PRUNE_HOUR` (UTC, 3 by default; `aios.prune_retention`), 1,000 rows per
+transaction:
+
+- **Runs** finished longer ago than the setting go: an agent run with its turns, sandbox session
+  (stopped too), checkpoint thread and search items; a workflow run with its steps and its agent
+  nodes' runs. Never pruned: a run with a running turn, a held lease, an unfinished invocation or
+  a request it still waits on, or a turn since the cutoff (phase 1 prunes whole runs); a workflow
+  run queued, running or waiting; an agent node's run on its own.
+- **Messages** older than the setting go, with their mentions, the invocations they started
+  (and those invocations' cards, results, briefs and search items) and their search items. Never
+  pruned: a message whose invocation, or one it started, is unfinished or finished after the
+  cutoff. Chats stay.
+- Documents, data tables, memory, usage and the audit log are never pruned.
+
+Each run of the job writes one audit entry per kind with a setting (`runs.pruned`,
+`messages.pruned`, by the platform) with the `count` and the `cutoff`.
+
 ## The search index
 
 `aios.search_items` (store revision `0015`, `aios.search_index`) holds one item per thing worth

@@ -95,6 +95,15 @@ export type Organisation = OrganisationSummary & {
   created_at: string;
   /** Its deletion, while one is scheduled; else null. */
   deletion: OrganisationDeletion | null;
+  /** How long runs and chat history are kept; every member sees it, admins change it. */
+  retention: Retention;
+};
+
+/** How many days finished runs, and chats' messages, are kept (1 to 36,500); null keeps them
+ * indefinitely, the default. A nightly job prunes what's older. */
+export type Retention = {
+  run_days: number | null;
+  chat_days: number | null;
 };
 
 /** An organisation's scheduled deletion: it's deleted at `deletes_at` unless an admin cancels. */
@@ -1145,6 +1154,9 @@ export const api = {
   /** Admins only (a 403 otherwise). Names may repeat. */
   renameOrganisation: (name: string) =>
     request<Organisation>(`${organisationApi()}/organisation`, json("PUT", { name })),
+  /** Admins only: how long runs and chat history are kept (null: indefinitely). */
+  setRetention: (retention: Retention) =>
+    request<Organisation>(`${organisationApi()}/organisation/retention`, json("PUT", retention)),
   /** Admins only (a 403 otherwise); demoting the last admin is a 409. Answers with the
    * Organisation page. */
   changeRole: (userId: number, role: Role) =>

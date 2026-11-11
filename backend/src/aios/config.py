@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     # Platform-side audit entries wait in the platform's outbox until the provisioning worker's
     # beat delivers them to their organisation's store, this often (`aios.audit.drain`).
     audit_drain_seconds: float = Field(default=10, gt=0)
+    # The hour (UTC, 0-23) the provisioning worker's beat prunes runs and chat history past
+    # each organisation's retention (`aios.retention`): a quiet one.
+    retention_prune_hour: int = Field(default=3, ge=0, le=23)
     redis_url: str = "redis://localhost:6379/0"
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).

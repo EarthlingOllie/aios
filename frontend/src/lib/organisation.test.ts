@@ -15,6 +15,7 @@ const base: Organisation = {
   members: [],
   created_at: "2026-10-14T08:00:00Z",
   deletion: null,
+  retention: { run_days: null, chat_days: null },
 };
 
 describe("describeOrganisation", () => {

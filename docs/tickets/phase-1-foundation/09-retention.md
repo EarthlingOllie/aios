@@ -6,11 +6,11 @@
 
 **Blocked by:** [06: Unified search across documents, chats and runs](06-unified-search.md), [08: Audit log and approval rules](08-audit-log-and-approval-rules.md), [10: An invocation for every run, and turns as records](10-invocations-and-turns.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Both settings appear on the Organisation page's Settings tab, editable by admins and read-only for editors and participants.
-- [ ] Keep indefinitely, the default, prunes nothing; switching back to it stops further pruning.
-- [ ] Runs that are running, queued or waiting, or waiting on an approval, are never pruned.
-- [ ] A message whose invocation is unfinished is kept until it finishes, and chats remain after their messages are pruned.
-- [ ] Documents, data tables, usage and the audit log are never pruned.
-- [ ] Each run of the job writes one audit entry per kind with the count and the cutoff, and deletes in batches.
+- [x] Both settings appear on the Organisation page's Settings tab, editable by admins and read-only for editors and participants.
+- [x] Keep indefinitely, the default, prunes nothing; switching back to it stops further pruning.
+- [x] Runs that are running, queued or waiting, or waiting on an approval, are never pruned.
+- [x] A message whose invocation is unfinished is kept until it finishes, and chats remain after their messages are pruned.
+- [x] Documents, data tables, usage and the audit log are never pruned.
+- [x] Each run of the job writes one audit entry per kind with the count and the cutoff, and deletes in batches.
