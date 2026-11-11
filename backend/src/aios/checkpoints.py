@@ -5,6 +5,7 @@ migrates itself (`setup`); Alembic manages the `public` schema only and doesn't 
 except that downgrading past 0005 drops the schema along with the runs its threads belong to.
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -16,16 +17,18 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, Connection
 from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from aios import turn_lease
 from aios.config import get_settings, libpq_conninfo
+from aios.turn_lease import Lease, LeaseLost, RunBusy, RunGone
+
+__all__ = ["Lease", "LeaseLost", "RunBusy", "RunGone"]
 
 SCHEMA = "langgraph"
 
-# Advisory lock keys (the first of the two-int form; the second is the run id, or 0).
+# The setup's lock key (the first of the two-int form of a transaction's advisory lock).
 _SETUP_LOCK = 0x6C67
-_TURN_LOCK = 0x7275
 
 _ready = False
 
@@ -35,11 +38,13 @@ def conninfo() -> str:
     return libpq_conninfo(get_settings().database_url)
 
 
+# No session state, so the connections work through a pooler in transaction mode: no prepared
+# statements, and nothing set at connection startup. The search path that finds the
+# checkpointer's tables is the app's role's default on the database (migration 0057).
 _CONNECT_KWARGS = {
     "autocommit": True,
-    "prepare_threshold": 0,
+    "prepare_threshold": None,
     "row_factory": dict_row,
-    "options": f"-c search_path={SCHEMA}",
 }
 
 
@@ -51,20 +56,27 @@ def thread_config(run_id: int) -> RunnableConfig:
     return {"configurable": {"thread_id": thread_id(run_id)}}
 
 
+class _SetupSaver(AsyncPostgresSaver):
+    # LangGraph builds its indexes CONCURRENTLY, which can't run inside a transaction; the setup
+    # runs in one, so the indexes are built plainly (only ever on the first setup, on tables
+    # still empty, since each migration runs once).
+    MIGRATIONS = [m.replace(" CONCURRENTLY", "") for m in AsyncPostgresSaver.MIGRATIONS]
+
+
 async def setup(conn: AsyncConnection) -> None:
     """Create or migrate the checkpointer's tables, once per process (it's idempotent).
 
-    Under an advisory lock, so replicas starting together don't migrate at the same time.
-    """
+    In one transaction, under a lock that lasts only as long as it, so replicas starting
+    together don't migrate at the same time."""
     global _ready
     if _ready:
         return
-    await conn.execute("SELECT pg_advisory_lock(%s, 0)", (_SETUP_LOCK,))
-    try:
+    async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(%s, 0)", (_SETUP_LOCK,))
         await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-        await AsyncPostgresSaver(conn).setup()
-    finally:
-        await conn.execute("SELECT pg_advisory_unlock(%s, 0)", (_SETUP_LOCK,))
+        # Where its tables are created: the role's default puts `public` first.
+        await conn.execute(f"SET LOCAL search_path TO {SCHEMA}")
+        await _SetupSaver(conn).setup()
     _ready = True
 
 
@@ -78,65 +90,72 @@ async def ensure_ready() -> None:
         await setup(conn)
 
 
-@asynccontextmanager
-async def turn(run_id: int) -> AsyncIterator[AsyncPostgresSaver]:
-    """A checkpointer for one turn of a run, on a connection of its own.
-
-    The connection holds the run's turn lock until the turn ends, so turns of the same run (two
-    tabs, two replicas) take turns: each starts from the history the previous one left, rather
-    than both forking from the same checkpoint.
-    """
-    conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
-    async with conn:
-        await setup(conn)
-        await conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))
-        # A run deleted before this took the lock (its agent, say) is gone: its thread has been
-        # deleted, or will be once this lets go, so nothing written now would be kept, or
-        # would outlive it. One deleted later ends this turn (`stop_turns`).
-        if await _run_gone(conn, run_id):
-            raise RunGone(f"Agent run {run_id} has been deleted")
-        # Closing the connection releases the lock, however the turn ends.
-        yield AsyncPostgresSaver(conn)
-
-
-async def _run_gone(conn: AsyncConnection, run_id: int) -> bool:
-    cursor = await conn.execute("SELECT 1 FROM public.agent_runs WHERE id = %s", (run_id,))
-    return await cursor.fetchone() is None
-
-
-class RunGone(Exception):
-    """A turn of a run that has been deleted."""
-
-
-# The turns held on this database: advisory locks are per database, but pg_locks lists them all.
-_TURN_LOCKS = (
-    "FROM pg_locks WHERE locktype = 'advisory' AND granted"
-    " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
-    # The two-int form of an advisory lock shows its keys as classid and objid (objsubid 2).
-    " AND objsubid = 2 AND classid = CAST(:key AS oid) AND objid::bigint = ANY(:ids)"
+# Whether the lease still holds, in the write's transaction: the row stays locked (shared) until
+# the write commits, so stopping the turn (which clears the token) waits for a write underway.
+_FENCE = (
+    "SELECT 1 FROM public.agent_runs WHERE id = %s AND lease_token = %s"
+    " AND lease_until > now() FOR SHARE"
 )
 
 
+class FencedSaver(AsyncPostgresSaver):
+    """The checkpointer of a turn holding `lease`: every write first checks, in its own
+    transaction, that the lease still holds, and fails (`LeaseLost`) storing nothing if not."""
+
+    def __init__(self, conn: AsyncConnection, lease: Lease) -> None:
+        super().__init__(conn)
+        self.lease = lease
+        self._fence_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _fenced(self) -> AsyncIterator[None]:
+        async with self._fence_lock, self.conn.transaction():
+            cursor = await self.conn.execute(_FENCE, (self.lease.run_id, self.lease.token))
+            if await cursor.fetchone() is None:
+                raise LeaseLost(f"Agent run {self.lease.run_id}: this turn's lease has lapsed")
+            yield
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        async with self._fenced():
+            return await super().aput(config, checkpoint, metadata, new_versions)
+
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        async with self._fenced():
+            return await super().aput_writes(config, writes, task_id, task_path)
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        async with self._fenced():
+            return await super().adelete_thread(thread_id)
+
+
+@asynccontextmanager
+async def turn(run_id: int, lease: Lease | None = None) -> AsyncIterator[FencedSaver]:
+    """A checkpointer for one turn of a run, on a connection of its own, holding the run's turn
+    lease (`aios.turn_lease`) until the turn ends: turns of the same run (two tabs, two replicas)
+    take turns, each starting from the history the previous one left.
+
+    `lease` is one the caller already took (the chat endpoint, to answer 409 before streaming);
+    otherwise this waits for it. Raises `RunBusy` if the run stays busy past the wait, and
+    `RunGone` if it has been deleted (its thread has been deleted, or will be, so nothing
+    written now would be kept). One deleted or stopped later ends the turn (`stop_turns`)."""
+    await ensure_ready()
+    if lease is None:
+        lease = await turn_lease.acquire(run_id)
+    async with turn_lease.held(lease):
+        conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
+        async with conn:
+            yield FencedSaver(conn, lease)
+
+
 def stop_turns(db: Session, run_ids: list[int]) -> None:
-    """End the turns underway of these runs, which have been deleted, wherever they run: their
-    connections, which hold them, are closed, so each fails at its next write and nothing more
-    of it happens (a model or tool call already underway finishes, unrecorded). Only for runs
-    that are gone, once that's committed (a turn starting later finds its run gone)."""
-    if run_ids:
-        db.execute(
-            text(f"SELECT pg_terminate_backend(pid) {_TURN_LOCKS}"),
-            {"key": _TURN_LOCK, "ids": list(run_ids)},
-        )
+    """End the turns underway of these runs (deleted, say), wherever they run: see
+    `turn_lease.stop`. Commits."""
+    turn_lease.stop(db, run_ids)
 
 
 def turns_underway(db: Session, run_ids: list[int]) -> set[int]:
-    """Those of these runs with a turn underway, in any process: their turn lock is held."""
-    if not run_ids:
-        return set()
-    rows = db.execute(
-        text(f"SELECT objid::bigint {_TURN_LOCKS}"), {"key": _TURN_LOCK, "ids": list(run_ids)}
-    )
-    return {row[0] for row in rows}
+    """Those of these runs with a turn underway, in any process: their lease is held."""
+    return turn_lease.underway(db, run_ids)
 
 
 @contextmanager
@@ -165,18 +184,15 @@ def history(run_id: int, saver: PostgresSaver | None = None) -> list[BaseMessage
 def delete_threads(run_ids: list[int]) -> None:
     """Delete the runs' checkpoints. They aren't tied to `agent_runs`, so they don't cascade.
 
-    Each under the run's turn lock: a turn still running would write the thread back.
-    """
+    Only once the runs' deletion is committed: a turn still running can't write the thread back,
+    as its writes check its lease on the run's row (`FencedSaver`), and a write underway holds
+    that row until it commits, so the deletion waited for it."""
     if not run_ids:
         return
     with sync_saver() as saver:
         try:
             for run_id in run_ids:
-                saver.conn.execute("SELECT pg_advisory_lock(%s, %s)", (_TURN_LOCK, run_id))
-                try:
-                    saver.delete_thread(thread_id(run_id))
-                finally:
-                    saver.conn.execute("SELECT pg_advisory_unlock(%s, %s)", (_TURN_LOCK, run_id))
+                saver.delete_thread(thread_id(run_id))
         except UndefinedTable:
             pass
 

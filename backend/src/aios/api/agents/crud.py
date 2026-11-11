@@ -274,7 +274,6 @@ def delete_agent(
     # Turns still underway (a chat's, a schedule's, a cancelled workflow run's node) stop now,
     # rather than carrying on with tool calls for runs that are gone.
     checkpoints.stop_turns(db, run_ids)
-    db.commit()
     # Their checkpoints aren't tied to the runs, so they don't cascade.
     background.add_task(checkpoints.delete_threads, run_ids)
     # Their session rows went with the runs; the sandboxes would run on until they time out.

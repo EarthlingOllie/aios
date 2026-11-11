@@ -8,9 +8,15 @@ while held starts a new pool nothing here tracks. A caller that wants to know th
 ready before something costly (search, before it pays to embed the query) checks
 `store_status` first, then opens its session.
 
-Each login role may hold only so many connections (`data_store_connection_limit`). Past it, or
-when this process's pool on the store stays full for `POOL_TIMEOUT` seconds, opening a
-connection raises `DataStoreBusy`, which callers can retry.
+Store sessions go through the connection pooler when one is configured
+(`data_store_pooler_address`): PgBouncer in transaction mode, which may hand each transaction a
+different server connection. So nothing here leaves session state behind: no prepared
+statements (psycopg's are off), no settings at connection startup (the roles' own defaults
+carry them), and no session advisory locks.
+
+Each login role may hold only so many connections (`data_store_connection_limit`, a backstop
+behind the pooler's own pools). Past it, or when this process's pool on the store stays full for
+`POOL_TIMEOUT` seconds, opening a connection raises `DataStoreBusy`, which callers can retry.
 """
 
 import threading
@@ -34,10 +40,10 @@ from aios.models import DataStore, DataStoreStatus
 # Read-write, or read-only (search, and queries agents write).
 Role = Literal["rw", "ro"]
 
-# Engines kept open at once (each up to 3 connections); past it the least recently used goes.
+# Engines kept open at once (each up to 5 connections); past it the least recently used goes.
 MAX_ENGINES = 64
-# The connections each store engine pools, at most: one kept, two more while busy.
-POOL_SIZE, MAX_OVERFLOW = 1, 2
+# The connections each store engine pools, at most: one kept, four more while busy.
+POOL_SIZE, MAX_OVERFLOW = 1, 4
 MAX_CONNECTIONS = POOL_SIZE + MAX_OVERFLOW
 
 # Seconds to wait for one of those connections when all are in use.
@@ -95,13 +101,18 @@ def _ready_store(db: Session, data_store_id: uuid.UUID) -> DataStore:
 
 
 def store_url(store: DataStore, role: Role) -> URL:
-    """Where the app reaches the store's database, as its `role`.
+    """Where the app reaches the store's database, as its `role`: at the pooler, if one is
+    configured (`data_store_pooler_address`), which passes the role and database on.
 
-    A store with no host of its own is on the platform database's instance, so it's reached at
-    DATABASE_URL's address, with its options (e.g. `sslmode`): where the provisioner reached it
-    from may not resolve here (Compose's `db`, with the API on the host)."""
-    url = make_url(get_settings().database_url)
-    if store.host is not None:
+    Otherwise, a store with no host of its own is on the platform database's instance, so it's
+    reached at DATABASE_URL's address, with its options (e.g. `sslmode`): where the provisioner
+    reached it from may not resolve here (Compose's `db`, with the API on the host)."""
+    settings = get_settings()
+    url = make_url(settings.database_url)
+    if settings.data_store_pooler_address:
+        host, _, port = settings.data_store_pooler_address.rpartition(":")
+        url = url.set(host=host, port=int(port))
+    elif store.host is not None:
         url = url.set(host=store.host, port=store.port)
     password = store.rw_password if role == "rw" else store.ro_password
     return url.set(
@@ -156,11 +167,11 @@ def _engine(store: DataStore, role: Role) -> Engine:
         if engine is not None:
             _engines.move_to_end(key)
             return engine
-        # Up to `MAX_CONNECTIONS` per (store, role) in each process: the roles' connection limit
-        # is budgeted from it (`data_store_connection_limit`). `query_data` resets read-only
-        # connections with `DISCARD ALL`, which drops prepared statements, so psycopg mustn't
-        # make any on them (it prepares those it runs often).
-        connect_args = {"prepare_threshold": None} if role == "ro" else {}
+        # Up to `MAX_CONNECTIONS` per (store, role) in each process. psycopg mustn't prepare the
+        # statements it runs often: through the pooler, the next transaction may be on a server
+        # connection that never saw them (and `query_data` resets read-only connections with
+        # `DISCARD ALL`, which drops them).
+        connect_args = {"prepare_threshold": None}
         engine = create_engine(
             store_url(store, role),
             poolclass=_pool_class(store.id),

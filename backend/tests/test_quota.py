@@ -318,9 +318,12 @@ def test_the_api_gives_the_stores_usage_against_both_caps_once_measured(
     assert row.db_bytes > 0
 
 
-def test_measuring_leaves_no_connection_open_on_the_stores(db, user):
+def test_measuring_leaves_no_connection_open_on_the_stores(db, user, monkeypatch):
     """The provisioning worker measures every store, and would otherwise keep a connection to
-    each (up to the engines it caches) between runs."""
+    each (up to the engines it caches) between runs. Reached directly, so the store's sessions
+    are this process's own (a pooler keeps its server connections for the next client)."""
+    monkeypatch.setattr(get_settings(), "data_store_pooler_address", "")
+    dispose_engines()
     row = store_row(db, store_of(user))
 
     worker.measure_data_store_usage_task.apply().get()

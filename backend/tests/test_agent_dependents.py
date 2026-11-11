@@ -12,11 +12,9 @@ import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 
-import psycopg
 import pytest
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, update
-from test_data_tools import as_owner
 from test_scheduler import tick
 from test_schema_change_requests import (  # noqa: F401
     CONTACTS,
@@ -31,11 +29,11 @@ from test_workflow_pause import read as read_flow
 from test_workflow_pause import start as start_flow
 from test_workflows import agent_node, make_agent, make_workflow, workflow_body, workflow_node
 
-from aios import checkpoints, workflows
+from aios import checkpoints, turn_lease, workflows
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
 from aios.db import SessionLocal
-from aios.models import Agent, Workflow, WorkflowRun, WorkflowRunStatus
+from aios.models import Agent, AgentRun, Workflow, WorkflowRun, WorkflowRunStatus
 from aios.testing.fake_model import model, use_model
 
 
@@ -528,17 +526,40 @@ def test_cancelling_a_chat_run_mid_turn_stops_the_turn(
     agent,  # noqa: F811
 ):
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
+    config = {
+        "configurable": {
+            "thread_id": checkpoints.thread_id(run["id"]),
+            "checkpoint_ns": "",
+            "checkpoint_id": "1",
+        }
+    }
 
     async def scenario() -> None:
-        async with checkpoints.turn(run["id"]) as saver:
-            found = await asyncio.to_thread(dependents, api, agent)
-            resp = await asyncio.wait_for(
-                asyncio.to_thread(delete, api, agent, **cancelling(found)), timeout=10
-            )
-            assert resp.status_code == 204, resp.text
-            # Its connection, which holds the turn, was ended: the turn's next write fails.
-            with pytest.raises(psycopg.OperationalError):
-                await saver.conn.execute("SELECT 1")
+        entered, stopped = asyncio.Event(), asyncio.Event()
+
+        async def holder() -> None:
+            async with checkpoints.turn(run["id"]) as saver:
+                entered.set()
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    stopped.set()
+                    # Its lease is gone with the run: the turn's next write fails.
+                    with pytest.raises(checkpoints.LeaseLost):
+                        await saver.aput_writes(config, [("messages", ["x"])], "task")
+                    raise
+
+        task = asyncio.create_task(holder())
+        await entered.wait()
+        found = await asyncio.to_thread(dependents, api, agent)
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(delete, api, agent, **cancelling(found)), timeout=10
+        )
+        assert resp.status_code == 204, resp.text
+        # Its holder was told to stop it.
+        await asyncio.wait_for(stopped.wait(), timeout=5)
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     asyncio.run(scenario())
 
@@ -566,16 +587,22 @@ def test_a_turn_starting_on_a_run_deleted_meanwhile_writes_nothing(
     assert checkpoints.history(run["id"]) == []
 
 
-def test_a_turn_lock_in_another_database_isnt_a_turn_here(
+def test_a_lapsed_turn_lease_isnt_a_turn_underway(
     api,
     agent,  # noqa: F811
-    store,  # noqa: F811
 ):
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
-    with as_owner(store) as conn:
-        # The same advisory lock key, held on the store's database.
-        conn.execute("SELECT pg_advisory_lock(%s, %s)", (checkpoints._TURN_LOCK, run["id"]))
-        assert dependents(api, agent)["agent_runs"] == []
+    assert turn_lease.try_acquire(run["id"]) is not None
+    assert [r["id"] for r in dependents(api, agent)["agent_runs"]] == [run["id"]]
+    with SessionLocal() as db:
+        # Its process died a while ago.
+        db.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run["id"])
+            .values(lease_until=func.now() - timedelta(minutes=5))
+        )
+        db.commit()
+    assert dependents(api, agent)["agent_runs"] == []
 
 
 def test_a_run_whose_worker_died_is_failed_not_left_going(

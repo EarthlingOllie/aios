@@ -136,6 +136,28 @@ variable "sandbox" {
   default     = { cpu = 512, memory = 1024 }
 }
 
+variable "pooler" {
+  description = "PgBouncer in front of the data stores (pooler.tf; sizing in docs/deploy.md). pool sizes are per (store database, role); max_db_connections caps each store database."
+  type = object({
+    cpu                = number
+    memory             = number
+    count              = number
+    image              = string
+    default_pool_size  = number
+    max_db_connections = number
+    max_client_conn    = number
+  })
+  default = {
+    cpu                = 256
+    memory             = 512
+    count              = 1
+    image              = "edoburu/pgbouncer:v1.25.2-p0"
+    default_pool_size  = 5
+    max_db_connections = 10
+    max_client_conn    = 2000
+  }
+}
+
 variable "egress_proxy" {
   description = "The sandboxes' only way out. Two tasks, so one can fail or be replaced."
   type        = object({ cpu = number, memory = number, count = number })

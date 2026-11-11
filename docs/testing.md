@@ -11,6 +11,16 @@ Run it from `backend/`:
 uv run pytest
 ```
 
+### Through the pooler
+
+In CI the suite reaches every data store through PgBouncer in transaction mode, a service
+container of each shard (`DATA_STORE_POOLER_ADDRESS=localhost:6432`), as Compose and AWS do, so a
+store connection that leaned on session state (a prepared statement, a startup setting, a session
+advisory lock) fails there. Locally, point `DATA_STORE_POOLER_ADDRESS` at a PgBouncer in front of
+your Postgres (Compose's `pgbouncer`, on `localhost:6432`), or leave it empty to connect
+directly. PgBouncer needs `auth_dbname` set to the platform database: otherwise it keeps its
+auth query's connection on each store's database, and dropping a store waits on it.
+
 ### Random order
 
 The tests run in random order ([pytest-randomly](https://github.com/pytest-dev/pytest-randomly)):
@@ -44,7 +54,7 @@ uv run pytest -p no:randomly
 ### Shards
 
 CI splits the suite into groups ([pytest-split](https://github.com/jerry-git/pytest-split)), one job
-each, each with its own Postgres, Redis and RustFS. Groups are balanced on the recorded duration
+each, each with its own Postgres, PgBouncer, Redis and RustFS. Groups are balanced on the recorded duration
 of each test, in `backend/.test_durations`. A test with no recorded duration, in a new file or
 not, still runs: pytest-split counts it at the average duration and puts it in some group.
 

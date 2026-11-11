@@ -9,7 +9,7 @@ import pytest
 from conftest import build_user, delete_user, make_user, org_of
 from sqlalchemy import func
 
-from aios import checkpoints, ui_stream
+from aios import checkpoints, turn_lease, ui_stream
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
@@ -578,14 +578,15 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
         events.append("model")
         yield "arr"
 
-    async def run_there(conn, run_id):
-        return False
-
     monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
     monkeypatch.setattr(agents_api, "_start_turn", fake_start)
     monkeypatch.setattr(agents_api, "_end_turn", fake_end)
-    # Run 1 is made up, like the rest of what the turn loads.
-    monkeypatch.setattr(checkpoints, "_run_gone", run_there)
+    # Run 1 is made up, like the rest of what the turn loads: so is its turn lease, which holds.
+    monkeypatch.setattr(
+        turn_lease, "try_acquire", lambda run_id: turn_lease.Lease(run_id, uuid.uuid4())
+    )
+    monkeypatch.setattr(turn_lease, "holds", lambda lease: True)
+    monkeypatch.setattr(checkpoints, "_FENCE", "SELECT %s::bigint, %s::uuid")
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[current_organisation] = lambda: Organisation(id=1, name="t")
     app.dependency_overrides[get_db] = fake_db

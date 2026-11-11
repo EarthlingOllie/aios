@@ -145,6 +145,8 @@ locals {
       SANDBOX_SUBNETS         = join(",", aws_subnet.sandbox[*].id)
       SANDBOX_SECURITY_GROUPS = aws_security_group.sandbox.id
       SANDBOX_PROXY_ADDRESS   = local.proxy_address
+      # Stores through the pooler (pooler.tf); the platform database stays direct.
+      DATA_STORE_POOLER_ADDRESS = local.pooler_address
     } : { name = k, value = v }
   ]
 

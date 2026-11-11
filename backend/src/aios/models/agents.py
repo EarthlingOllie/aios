@@ -1,6 +1,7 @@
 """Agents and skills, with their versions, runs and sandbox sessions."""
 
 import enum
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -249,6 +251,10 @@ class AgentRun(Base):
     # a running run whose heartbeat has stopped has lost its process, and is failed
     # (`aios.firing.fail_stalled`). Null for a turn bound to a request, which ends with it.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The turn lease (`aios.turn_lease`): the token of the turn that holds the run, and when its
+    # hold lapses unless refreshed. Both null while no turn holds it; an expired one is free.
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
