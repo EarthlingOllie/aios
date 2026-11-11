@@ -10,7 +10,6 @@ import threading
 from datetime import timedelta
 
 import pytest
-from fake_model import model, use_model
 from sqlalchemy import select, update
 from test_schema_change_requests import (  # noqa: F401
     CONTACTS,
@@ -28,6 +27,7 @@ from aios.config import get_settings
 from aios.datastores import schema_changes
 from aios.db import SessionLocal
 from aios.models import SchemaChangeRequest, SchemaChangeStatus
+from aios.testing.fake_model import model, use_model
 
 
 def asked_ago(request: dict, age: timedelta) -> None:

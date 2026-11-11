@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:fullstack": "playwright test -c playwright.fullstack.config.ts"
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.129",

@@ -11,7 +11,6 @@ import contextlib
 
 import pytest
 from conftest import build_user, join_organisation, provisioned_user, store_of
-from fake_model import replies, use_model
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from test_agents import chat_body, make_agent
@@ -34,6 +33,7 @@ from aios.models import (
     SchemaChangeStatus,
     User,
 )
+from aios.testing.fake_model import replies, use_model
 from aios.workflows import execute_run
 
 

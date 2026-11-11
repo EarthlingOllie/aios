@@ -17,7 +17,7 @@ from langgraph.types import Command
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, tracing, ui_stream
+from aios import checkpoints, invocations, tracing, ui_stream
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
@@ -505,14 +505,25 @@ async def resume_run(run_id: int) -> None:
         # it isn't left waiting on what can't come.
         log.warning("agent run %s can't be resumed: %s", run_id, exc.detail)
         await run_in_threadpool(_mark_resumed, run_id)
+        await run_in_threadpool(_finish_invocation, run_id, str(exc.detail))
         return
     resume = Resume()
+    error = None
     async for chunk in turn_stream(ctx, run_id, resume):
         if chunk["type"] == "error":
-            log.warning("resuming agent run %s: %s", run_id, chunk["errorText"])
+            error = chunk["errorText"]
+            log.warning("resuming agent run %s: %s", run_id, error)
     if resume.dealt_with is None:
         raise ResumeFailed(f"Agent run {run_id} couldn't be resumed")
     await run_in_threadpool(_mark_resumed, run_id, resume.dealt_with)
+    await run_in_threadpool(_finish_invocation, run_id, error)
+
+
+def _finish_invocation(run_id: int, error: str | None) -> None:
+    """Post the resumed run's reply to the chat whose mention started it, if one did."""
+    with SessionLocal() as db:
+        invocations.finish_resumed(db, run_id, error)
+        db.commit()
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/chat")

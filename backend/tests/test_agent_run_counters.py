@@ -3,11 +3,11 @@ written from the turn loop at each model step (see `aios.api.agents.turn_stream`
 
 from datetime import datetime
 
-from fake_model import ToolCall, Usage, model, use_model
 from langchain_core.messages import AIMessage
 from test_agents import agent_body, chat_body, make_agent
 
 from aios.api.agents import tool_call_count
+from aios.testing.fake_model import ToolCall, Usage, model, use_model
 from aios.tools import hybrid_search
 
 

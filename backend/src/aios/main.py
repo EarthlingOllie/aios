@@ -52,6 +52,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    if settings.scripted_models_enabled and settings.cookie_secure:
+        raise RuntimeError(
+            "SCRIPTED_MODELS_ENABLED is for the full-stack test only, and can't be on with "
+            "COOKIE_SECURE (a production-like configuration)"
+        )
     app = FastAPI(title="aios", lifespan=lifespan)
     app.add_middleware(
         SessionMiddleware,

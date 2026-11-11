@@ -108,3 +108,20 @@ test("an agent's card whose run has been deleted says so", async ({ page }) => {
   await expect(card(page).getByText("Succeeded")).toBeVisible();
   await expect(messageList(page).getByRole("link", { name: /Open run/ })).toHaveCount(0);
 });
+
+test("an agent's card whose turn ended asking for a schema change shows the run waiting", async ({ page }) => {
+  const api = await fakeApi(page);
+  const { chat, agent } = seed(api);
+  const run = api.addAgentRun(agent, "@Scout keep notes", 2, { status: "succeeded" });
+  const invocation = api.addChatRunCard(chat, "agent", agent, run.id);
+  invocation.status = "running";
+  const request = api.addSchemaChange({ run_id: run.id, summary: "Create table data.notes" });
+  await page.goto(`/chats/${chat.id}`);
+
+  await expect(page.getByTestId("run-card-status")).toHaveText("Waiting for you");
+
+  request.status = "applied";
+  request.resumed_at = "2026-10-14T10:00:01Z";
+  await page.reload();
+  await expect(page.getByTestId("run-card-status")).toHaveText("Succeeded");
+});

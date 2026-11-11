@@ -3,7 +3,6 @@
 import asyncio
 
 import pytest
-from fake_model import model, use_model
 from sqlalchemy import func, select, update
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member  # noqa: F401
@@ -14,6 +13,7 @@ from aios import invocations, workflows
 from aios.api import chats
 from aios.api import workflows as workflows_api
 from aios.models import ChatInvocation, ChatMessage
+from aios.testing.fake_model import model, use_model
 from aios.tools import TOOLS
 from aios.workflows import execute_run
 

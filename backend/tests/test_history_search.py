@@ -8,7 +8,6 @@ import re
 
 import pytest
 from conftest import delete_user, provisioned_user, store_of
-from fake_model import ToolCall, last_tool_results, model, replies, tool_output, use_model
 from sqlalchemy import func, text, update
 from test_agents import agent_body, chat_body, make_agent
 from test_history_export import chat, new_run, set_up_and_export, settings, stored, switch
@@ -25,6 +24,14 @@ from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import AgentRun, DataStore, DataStoreStatus
+from aios.testing.fake_model import (
+    ToolCall,
+    last_tool_results,
+    model,
+    replies,
+    tool_output,
+    use_model,
+)
 
 DIM = 1024
 

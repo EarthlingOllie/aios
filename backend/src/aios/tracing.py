@@ -1,4 +1,5 @@
-"""Tracing agent runs to Langfuse (self-hosted or cloud), when LANGFUSE_* settings are set."""
+"""Tracing agent runs to Langfuse (self-hosted or cloud), when LANGFUSE_* settings are set (and
+scripted models aren't enabled)."""
 
 from functools import lru_cache
 from typing import Any
@@ -15,7 +16,8 @@ from aios.models import AgentVersion
 def _client() -> Langfuse | None:
     settings = get_settings()
     secret = settings.langfuse_secret_key.get_secret_value()
-    if not (settings.langfuse_public_key and secret):
+    # Scripted models (the full-stack test's) have nothing to trace, and call no one.
+    if settings.scripted_models_enabled or not (settings.langfuse_public_key and secret):
         return None
     # Registered with Langfuse under its public key; the callback handlers below find it by that.
     return Langfuse(

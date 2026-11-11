@@ -2,7 +2,6 @@ from dataclasses import replace
 
 import pytest
 from conftest import delete_user, made_by, provisioned_user, store_of
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
 from test_search import add_chunks, unit
@@ -13,6 +12,7 @@ from aios.config import get_settings
 from aios.datastores import store_session
 from aios.models import Agent
 from aios.runner import server_tools
+from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import TOOLS, ToolSpec, register
 from aios.tools.hybrid_search import HybridSearchConfig
 from aios.tools.web_search import WEB_SEARCH, WebSearchConfig

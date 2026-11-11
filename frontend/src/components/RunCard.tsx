@@ -21,7 +21,7 @@ const TICK_MS = 1000;
  * The card under a mentioned agent's or workflow's acknowledgement, following the run the
  * mention started. A workflow's shows its status, the run's graph with each node's state as the
  * run page draws it (still, at a fixed height, with no inspector) and how many nodes are done;
- * an agent's, its status, the time elapsed (ticking while it runs) and its tool calls and tokens
+ * an agent's, its status (waiting, while its schema change request waits for a decision), the time elapsed (ticking while it runs) and its tool calls and tokens
  * so far. Clicking anywhere on it opens the run. A run that couldn't start shows why; one since
  * deleted says so. Under it, behind a disclosure, is the brief the handoff gave the run, so
  * anyone can see exactly what it was told.
@@ -107,7 +107,11 @@ function AgentRunCard({ agentId, run }: { agentId: number; run: ChatAgentRun }) 
       <span data-testid="run-card-counters" className="text-muted-foreground flex-1 text-xs">
         {counters && formatCounters(counters, true)}
       </span>
-      {run.status && <RunStatusBadge status={run.status} data-testid="run-card-status" />}
+      {run.waiting ? (
+        <RunStatusBadge status="waiting" data-testid="run-card-status" />
+      ) : (
+        run.status && <RunStatusBadge status={run.status} data-testid="run-card-status" />
+      )}
     </Link>
   );
 }

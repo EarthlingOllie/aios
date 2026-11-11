@@ -96,6 +96,8 @@ class AgentRunLiveOut(BaseModel):
     tool_call_count: int | None
     input_tokens: int | None
     output_tokens: int | None
+    # Whether its turn ended waiting for a member to decide its schema change request.
+    waiting: bool
 
 
 class InvocationOut(BaseModel):
@@ -199,6 +201,7 @@ def agent_runs_live(db: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOu
             AgentRun.tool_call_count,
             AgentRun.input_tokens,
             AgentRun.output_tokens,
+            invocations.waiting_on_a_request(AgentRun.id).label("waiting"),
         ).where(AgentRun.id.in_(run_ids))
     )
     return {row.id: AgentRunLiveOut.model_validate(row, from_attributes=True) for row in rows}

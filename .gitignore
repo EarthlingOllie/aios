@@ -24,6 +24,8 @@ crash.log
 # Playwright
 frontend/test-results/
 frontend/playwright-report/
+frontend/test-results-fullstack/
+frontend/playwright-report-fullstack/
 
 # Redis snapshots from local redis-server runs
 dump.rdb

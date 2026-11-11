@@ -2,15 +2,6 @@
 the chat's owner the way any agent member answers a mention."""
 
 from conftest import store_of
-from fake_model import (
-    ToolCall,
-    briefs,
-    last_tool_results,
-    model,
-    tool_output,
-    use_handoff,
-    use_model,
-)
 from test_chat_agent_invocations import replies_from, say
 from test_chats import (  # noqa: F401
     add,
@@ -25,6 +16,15 @@ from test_organisation_scoping import member  # noqa: F401
 from test_triggers import make_agent
 
 from aios import checkpoints
+from aios.testing.fake_model import (
+    ToolCall,
+    briefs,
+    last_tool_results,
+    model,
+    tool_output,
+    use_handoff,
+    use_model,
+)
 from aios.tools import hybrid_search
 
 NAME = "Documents assistant"

@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from fake_model import model, replies, use_model
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent
@@ -16,6 +15,7 @@ from aios.api.agents import new_agent_run
 from aios.config import get_settings
 from aios.db import SessionLocal
 from aios.models import Agent, AgentRun, AgentRunStatus
+from aios.testing.fake_model import model, replies, use_model
 
 
 @dataclass

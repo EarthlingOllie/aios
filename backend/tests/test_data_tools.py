@@ -18,7 +18,6 @@ import psycopg
 import pytest
 from anyio import to_thread
 from conftest import store_of
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
 from test_agents import agent_body, chat_body, make_agent
@@ -31,6 +30,7 @@ from aios.datastores.connections import dispose_engines
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import DataStore, DataStoreStatus, Organisation
+from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import build_tool
 
 DATA_TOOLS = [{"key": "describe_data", "config": {}}, {"key": "query_data", "config": {}}]

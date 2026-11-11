@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 
 import pytest
 from conftest import org_of, store_of
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from psycopg import OperationalError
 from sqlalchemy import event
 from test_agents import agent_body, chat_body, make_agent
@@ -26,6 +25,7 @@ from aios.datastores.schema_changes import SchemaChange
 from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, User
+from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import build_tool, hybrid_search
 
 TOOLS = [

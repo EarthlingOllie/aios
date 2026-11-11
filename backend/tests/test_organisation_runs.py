@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import delete_user, join_organisation, make_user, store_of
-from fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from langchain_core.callbacks import BaseCallbackHandler
 from test_agents import agent_body, chat_body, make_agent
 from test_chats import add, make_chat, messages, signed_in_as
@@ -23,6 +22,7 @@ from test_workflow_runs import queued
 from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios import search, tracing
+from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.workflows import execute_run
 
 SEARCH = {"key": "hybrid_search", "config": {}}

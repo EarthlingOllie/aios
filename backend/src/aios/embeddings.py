@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from functools import lru_cache
 
-from langchain_core.embeddings import Embeddings
+from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
 from langchain_voyageai import VoyageAIEmbeddings
 
 from aios.config import get_settings
@@ -11,6 +11,9 @@ from aios.datastores.models import EMBEDDING_DIM
 @lru_cache
 def get_embedder() -> Embeddings:
     settings = get_settings()
+    if settings.scripted_models_enabled:
+        # No provider: the same text always embeds to the same vector (`aios.testing`).
+        return DeterministicFakeEmbedding(size=EMBEDDING_DIM)
     provider, _, model = settings.embedding_model.partition(":")
     if provider != "voyageai" or not model:
         raise ValueError(
