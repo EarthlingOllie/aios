@@ -1,0 +1,159 @@
+"""The agents API: agents (`crud`), their versions (`versions`), their runs (`runs`) and a run's
+chat stream (`chat`), mounted as one router.
+
+Every name is re-exported here, where callers import it. The turn's hooks (`load_chat_context`,
+`_start_turn`, `_end_turn`, `_record_turn` and `ChatDeps`) are read here at call time, so a test
+that replaces one here replaces it for the turn."""
+
+from fastapi import APIRouter
+
+from aios.agent import ChatDeps
+from aios.api.agents import chat as _chat
+from aios.api.agents import crud as _crud
+from aios.api.agents import runs as _runs
+from aios.api.agents import versions as _versions
+from aios.api.agents.chat import (
+    WAITING,
+    ChatContext,
+    Resume,
+    ResumeFailed,
+    RunWaiting,
+    _end_turn,
+    _mark_resumed,
+    _record_turn,
+    _resume_command,
+    _start_turn,
+    load_chat_context,
+    model_responses,
+    prewarm_sandbox,
+    resume_run,
+    run_chat,
+    tool_call_count,
+    trace_metadata,
+    turn_stream,
+)
+from aios.api.agents.common import (
+    AGENT_NAME_INDEX,
+    AgentIn,
+    AgentOut,
+    AgentSkillOut,
+    AgentSummary,
+    AgentToolIn,
+    AgentToolOut,
+    AgentVersionOut,
+    agent_out,
+    get_agent_version,
+    get_org_agent,
+    lock_live_agent,
+    resolve_skill_versions,
+    resolve_tools,
+    skill_count,
+    skill_ids,
+    tool_count,
+    tool_keys,
+    tool_out,
+    version_out,
+)
+from aios.api.agents.crud import (
+    AgentDeleteIn,
+    create_agent,
+    delete_agent,
+    get_agent,
+    get_agent_dependents,
+    list_agents,
+    update_agent,
+)
+from aios.api.agents.runs import (
+    RunOut,
+    RunSummary,
+    build_version_tools,
+    cancel_chat_requests,
+    create_run,
+    delete_run,
+    get_live_run,
+    get_org_run,
+    get_run,
+    list_runs,
+    new_agent_run,
+    run_summary,
+    run_summary_query,
+)
+from aios.api.agents.versions import (
+    AgentVersionSummary,
+    get_agent_version_detail,
+    list_agent_versions,
+    restore_agent_version,
+)
+
+# One router for the package, its sub-domains' routes in the order they were declared.
+router = APIRouter()
+router.include_router(_crud.router)
+router.include_router(_versions.router)
+router.include_router(_runs.router)
+router.include_router(_chat.router)
+
+__all__ = [
+    "AGENT_NAME_INDEX",
+    "AgentDeleteIn",
+    "AgentIn",
+    "AgentOut",
+    "AgentSkillOut",
+    "AgentSummary",
+    "AgentToolIn",
+    "AgentToolOut",
+    "AgentVersionOut",
+    "AgentVersionSummary",
+    "ChatContext",
+    "ChatDeps",
+    "Resume",
+    "ResumeFailed",
+    "RunOut",
+    "RunSummary",
+    "RunWaiting",
+    "WAITING",
+    "_end_turn",
+    "_mark_resumed",
+    "_record_turn",
+    "_resume_command",
+    "_start_turn",
+    "agent_out",
+    "build_version_tools",
+    "cancel_chat_requests",
+    "create_agent",
+    "create_run",
+    "delete_agent",
+    "delete_run",
+    "get_agent",
+    "get_agent_dependents",
+    "get_agent_version",
+    "get_agent_version_detail",
+    "get_live_run",
+    "get_org_agent",
+    "get_org_run",
+    "get_run",
+    "list_agent_versions",
+    "list_agents",
+    "list_runs",
+    "load_chat_context",
+    "lock_live_agent",
+    "model_responses",
+    "new_agent_run",
+    "prewarm_sandbox",
+    "resolve_skill_versions",
+    "resolve_tools",
+    "restore_agent_version",
+    "resume_run",
+    "run_chat",
+    "run_summary",
+    "run_summary_query",
+    "skill_count",
+    "skill_ids",
+    "tool_call_count",
+    "tool_count",
+    "tool_keys",
+    "tool_out",
+    "trace_metadata",
+    "turn_stream",
+    "update_agent",
+    "version_out",
+]
