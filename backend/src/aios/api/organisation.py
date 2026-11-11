@@ -1,22 +1,25 @@
-"""The signed-in user's organisation (`/api/organisation`, see `aios.organisations`); which one
-they're in is on `GET /api/me` (`aios.api.me`), which the shell shows.
+"""Organisations (`aios.organisations`): creating one, and the organisation a request is in
+(`/api/o/{organisation_id}/organisation`); which ones the signed-in person is in is on
+`GET /api/me` (`aios.api.me`), which the shell's switcher lists.
 
-`GET /api/organisation` is the Organisation page: the name, the creator and the members with
+`POST /api/organisations` creates an organisation from a name, with the person as its creator and
+only member, and its store queued to be provisioned at once (a 409 for a name another
+organisation has). It's the welcome page's, and the switcher's "Create an organisation".
+
+`GET .../organisation` is the Organisation page: the name, the creator and the members with
 when each joined; `PUT` renames it, for the creator only (a 403 for another member), to a name
 no other organisation has (a 409 otherwise).
 
-Invitation links (`/api/organisation/invites`) are the creator's too: making one (its token
+Invitation links (`.../organisation/invites`) are the creator's too: making one (its token
 shown in the response, once), listing the open ones and revoking one are a 403 for any other
 member. `/api/invites/{token}` is the invite page: what the link is for, with no sign-in
-needed, and accepting it (`/accept`, 409 with the reason when the user can't). Accepting from
-an empty personal organisation deletes it, with its store; from one with things in it, the
-409's detail is a `message` and its `contents`, how many of each kind (`organisations.KINDS`),
-for the invite page to link to where they can be deleted. An expired or revoked link is a 404.
-`POST /api/organisation/leave` leaves (409 with the reason when the user can't) and answers
-with the new personal organisation the user lands in.
+needed, and accepting it (`/accept`), which adds a membership and answers with the organisation,
+the same again for one the person is in already. An expired or revoked link is a 404.
+`POST .../organisation/leave` leaves (409 with the reason when the user can't): only the
+membership goes, and it answers with the person as "me" does, with the organisations they're
+still in.
 """
 
-import logging
 import uuid
 from datetime import datetime
 
@@ -28,12 +31,18 @@ from sqlalchemy.orm import Session, selectinload
 from aios import organisations
 from aios.api.provenance import UserOut, people
 from aios.api.skills import on_conflict
-from aios.auth import CurrentOrganisation, CurrentUser, OrganisationSummaryOut, summary_out
+from aios.auth import (
+    CurrentOrganisation,
+    CurrentUser,
+    MeOut,
+    OrganisationSummaryOut,
+    me_out,
+    summary_out,
+)
 from aios.config import get_settings
+from aios.datastores import data_store_for
 from aios.db import DB, SessionLocal
 from aios.models import Organisation, OrganisationInvite, OrganisationMember, User
-
-log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -42,8 +51,6 @@ NAME_TAKEN = "An organisation with that name already exists."
 NOT_THE_CREATOR = "Only the organisation's creator can rename it."
 NOT_THE_INVITER = "Only the organisation's creator can invite people into it."
 NO_SUCH_INVITE = "This invitation link has expired or been revoked, or never existed."
-# The one-organisation-per-user index: two accepts at once by one user.
-MEMBERSHIP_CONSTRAINT = "uq_organisation_members_user_id"
 
 
 class MemberOut(BaseModel):
@@ -85,6 +92,17 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         ],
         created_at=org.created_at,
     )
+
+
+@router.post("/organisations", response_model=OrganisationOut, status_code=status.HTTP_201_CREATED)
+def create_organisation(body: OrganisationIn, user: CurrentUser, db: DB):
+    """A new organisation, with the signed-in person as its creator and only member, and its
+    store queued to be provisioned once this commits."""
+    with on_conflict(db, NAME_CONSTRAINT, NAME_TAKEN):
+        org = organisations.create(db, user, body.name.strip())
+        data_store_for(org.id, db)
+        db.commit()
+    return organisation_out(db, org, user)
 
 
 @router.get("/organisation", response_model=OrganisationOut)
@@ -202,36 +220,18 @@ def accept_invite(token: str, user: CurrentUser, db: DB):
     invite = organisations.open_invite(db, token, lock=True)
     if invite is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_SUCH_INVITE)
-    refusal = organisations.accept_refusal(db, user, invite)
-    if isinstance(refusal, organisations.NotEmpty):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            {
-                "message": refusal.message,
-                "contents": [{"kind": kind, "count": n} for kind, n in refusal.contents],
-            },
-        )
-    if refusal is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, refusal)
-    with on_conflict(db, MEMBERSHIP_CONSTRAINT, organisations.ONE_AT_A_TIME):
-        org, deleted_store = organisations.accept(db, user, invite)
-        db.commit()
-    if deleted_store is not None:
-        try:
-            organisations.enqueue_store_deletion(deleted_store)
-        except Exception:
-            # Not the user's failure: the sweep's next scheduled pass drops it.
-            log.exception("Couldn't queue deleting data store %s", deleted_store)
+    org = organisations.join(db, user, invite)
+    db.commit()
     return organisation_out(db, org, user)
 
 
-@router.post("/organisation/leave", response_model=OrganisationOut)
+@router.post("/organisation/leave", response_model=MeOut)
 def leave_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     if (refusal := organisations.leave_refusal(db, org, user)) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
-    personal = organisations.leave(db, org, user)
+    organisations.leave(db, org, user)
     db.commit()
-    return organisation_out(db, personal, user)
+    return me_out(db, user)
 
 
 def users_out(user_ids: set[int]) -> dict[int, UserOut]:

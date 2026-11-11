@@ -22,12 +22,12 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from celery.exceptions import Retry, SoftTimeLimitExceeded
-from conftest import delete_user, provisioned_user, store_of
+from conftest import delete_user, home_organisation, provisioned_user, store_of
 from psycopg import errors, sql
 from sqlalchemy import create_engine, insert, pool, select, text, update
 from sqlalchemy.engine import make_url
 
-from aios import organisations, worker
+from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import credentials, migrations, provision, store_session
@@ -608,7 +608,7 @@ def test_a_store_from_before_databases_gets_its_passwords_when_provisioned(db, n
 def test_a_store_the_release_before_databases_makes_gets_its_names_and_is_provisioned(db, new_user):
     """While a deploy migrates, the release before migration 0014 still serves, and makes a
     new store with only its owner: the row gets its names from its id."""
-    org = organisations.membership_of(db, new_user().id)
+    org = home_organisation(db, new_user().id)
     store_id = db.scalar(
         insert(DataStore).values(owner_organisation_id=org.id).returning(DataStore.id)
     )

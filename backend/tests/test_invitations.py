@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import pytest
 from conftest import (
     TEST_PASSWORD,
-    build_user,
     delete_user,
     join_organisation,
     make_user,
@@ -18,18 +17,16 @@ from conftest import (
 )
 from sqlalchemy import delete, func, select, update
 from test_chats import signed_in_as
-from test_organisations import in_the_background, picking_names_at_most
+from test_organisations import in_the_background
 from test_schema_change_requests import CONTACTS
 
-from aios import notifications, organisations
+from aios import notifications
 from aios.auth import current_user
 from aios.datastores import schema_changes
 from aios.datastores.schema_changes import SchemaChange
-from aios.db import SessionLocal
 from aios.main import app
 from aios.models import (
     ChatMember,
-    DataStore,
     Notification,
     Organisation,
     OrganisationInvite,
@@ -49,15 +46,31 @@ def signed_out():
 
 
 def leave_behind(db, u: User) -> None:
-    """Delete a user made here, with the personal organisations they're in (but not one they
-    joined, which the test's `user` owns)."""
+    """Delete a user made here, with the organisations they created (but not ones they joined,
+    which other users own)."""
     db.expire_all()
-    org = organisations.membership_of(db, u.id)
-    if org is not None and org.personal and org.created_by == u.id:
-        delete_user(db, u)
-    else:
-        db.delete(db.get(User, u.id))
-        db.commit()
+    db.execute(
+        delete(OrganisationMember).where(
+            OrganisationMember.user_id == u.id,
+            OrganisationMember.organisation_id.not_in(
+                select(Organisation.id).where(Organisation.created_by == u.id)
+            ),
+        )
+    )
+    db.commit()
+    delete_user(db, db.get_one(User, u.id))
+
+
+def memberships(db, u: User) -> list[int]:
+    """The ids of the organisations the user is in, by when they joined each."""
+    db.expire_all()
+    return list(
+        db.scalars(
+            select(OrganisationMember.organisation_id)
+            .where(OrganisationMember.user_id == u.id)
+            .order_by(OrganisationMember.joined_at, OrganisationMember.organisation_id)
+        )
+    )
 
 
 @pytest.fixture
@@ -175,8 +188,9 @@ def registered(db, resp) -> User:
     return db.get(User, resp.json()["id"])
 
 
-def test_registering_through_a_link_joins_the_organisation_and_makes_no_personal_one(api, db, user):
+def test_registering_through_a_link_joins_only_that_organisation(api, db, user, provisioning):
     link = make_link(api)
+    provisioning.clear()
     joiner = None
     with signed_out():
         try:
@@ -184,12 +198,16 @@ def test_registering_through_a_link_joins_the_organisation_and_makes_no_personal
             assert api.get(f"/api/invites/{link['token']}").status_code == 200
             resp = register(api, "Joiner", invite=link["token"])
             joiner = registered(db, resp)
-            org = organisations.membership_of(db, joiner.id)
-            assert org.id == organisations.membership_of(db, user.id).id
-            assert resp.json()["organisation"]["id"] == org.id
+            ours = org_of(db, user)
+            assert memberships(db, joiner) == [ours.id]
+            assert resp.json()["organisations"] == [
+                {"id": ours.id, "name": ours.name, "slug": ours.slug, "is_creator": False}
+            ]
             assert (
-                db.scalar(select(Organisation).where(Organisation.name == "Joiner Tester")) is None
+                db.scalars(select(Organisation).where(Organisation.created_by == joiner.id)).all()
+                == []
             )
+            assert provisioning == []
         finally:
             if joiner is not None:
                 leave_behind(db, joiner)
@@ -211,27 +229,29 @@ def test_the_member_list_says_which_link_each_member_came_through(api, db, user)
         leave_behind(db, joiner)
 
 
-def test_registering_through_a_revoked_link_makes_a_personal_organisation(api, db):
+def test_registering_through_a_revoked_link_joins_nothing(api, db):
     link = make_link(api)
     api.delete(f"/api/organisation/invites/{link['id']}")
     latecomer = None
     with signed_out():
         try:
-            latecomer = registered(db, register(api, "Latecomer", invite=link["token"]))
-            org = organisations.membership_of(db, latecomer.id)
-            assert (org.name, org.personal) == ("Latecomer Tester", True)
+            resp = register(api, "Latecomer", invite=link["token"])
+            latecomer = registered(db, resp)
+            assert resp.json()["organisations"] == []
+            assert memberships(db, latecomer) == []
         finally:
             if latecomer is not None:
                 delete_user(db, latecomer)
             api.cookies.clear()
 
 
-def test_signing_in_from_a_links_page_while_in_an_organisation_stays_in_it(api, db):
-    """Signing in never moves anyone: the invite page they're sent back to is where they accept
-    the link, or are told why they can't."""
+def test_signing_in_from_a_links_page_joins_nothing(api, db):
+    """Signing in never joins anyone: the invite page they're sent back to is where they accept
+    the link."""
     link = make_link(api)
     existing = make_user(db, "existing")
     try:
+        mine = memberships(db, existing)
         with signed_out():
             resp = api.post(
                 "/api/auth/login",
@@ -239,60 +259,121 @@ def test_signing_in_from_a_links_page_while_in_an_organisation_stays_in_it(api, 
             )
             assert resp.status_code == 200, resp.text
             api.cookies.clear()
-        assert organisations.membership_of(db, existing.id).name == "existing Tester"
+        assert memberships(db, existing) == mine
     finally:
         delete_user(db, existing)
 
 
-def test_accepting_while_in_another_organisation_is_refused(api, db, user, new_user):
+def test_a_member_of_one_organisation_accepts_a_link_to_another_and_is_in_both(
+    api, db, user, new_user
+):
     link = make_link(api)
     other = new_user()
-    # Not theirs alone: an empty organisation of their own would be deleted as they join
-    # (`test_empty_organisation`).
-    friend = join_organisation(db, other, "friend")
+    theirs, ours = org_of(db, other), org_of(db, user)
     try:
         with signed_in_as(other):
             resp = api.post(f"/api/invites/{link['token']}/accept")
-            assert resp.status_code == 409
-            assert resp.json()["detail"] == (
-                f"You're a member of {other.full_name}. You can be in only one organisation at a "
-                "time."
-            )
-            assert api.get("/api/me").json()["organisation"]["name"] == other.full_name
+            assert resp.status_code == 200, resp.text
+            assert (resp.json()["id"], resp.json()["is_creator"]) == (ours.id, False)
+            listed = api.get("/api/me").json()["organisations"]
+        # The one joined most recently first.
+        assert [(o["id"], o["is_creator"]) for o in listed] == [(ours.id, False), (theirs.id, True)]
+        assert memberships(db, other) == [theirs.id, ours.id]
+        # Their own organisation, and what's in it, is untouched.
+        assert db.get(Organisation, theirs.id) is not None
+        members = api.get("/api/organisation").json()["members"]
+        assert [(m["user"]["id"], m["invite_id"]) for m in members] == [
+            (user.id, None),
+            (other.id, link["id"]),
+        ]
     finally:
-        db.delete(friend)
+        db.execute(
+            delete(OrganisationMember).where(
+                OrganisationMember.user_id == other.id,
+                OrganisationMember.organisation_id == ours.id,
+            )
+        )
         db.commit()
-    # And the creator, already in it.
-    resp = api.post(f"/api/invites/{link['token']}/accept")
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "You're already a member of Test User."
 
 
-def test_a_user_in_no_organisation_joins_by_accepting(api, db, user, new_user):
+def test_accepting_the_same_link_twice_answers_200_and_adds_nothing(api, db, user, new_user):
     link = make_link(api)
-    stray = new_user()
-    # Their membership removed by other means.
-    org = organisations.membership_of(db, stray.id)
-    db.delete(org)
-    db.commit()
+    other = new_user()
+    ours = org_of(db, user)
     try:
-        with signed_in_as(stray):
+        with signed_in_as(other):
+            first = api.post(f"/api/invites/{link['token']}/accept")
+            again = api.post(f"/api/invites/{link['token']}/accept")
+        assert (first.status_code, again.status_code) == (200, 200)
+        assert again.json() == first.json()
+        assert memberships(db, other) == [org_of(db, other).id, ours.id]
+        # And the creator accepting a link into their own organisation: nothing changes.
+        assert api.post(f"/api/invites/{link['token']}/accept").status_code == 200
+        members = api.get("/api/organisation").json()["members"]
+        assert [(m["user"]["id"], m["invite_id"]) for m in members] == [
+            (user.id, None),
+            (other.id, link["id"]),
+        ]
+    finally:
+        db.execute(
+            delete(OrganisationMember).where(
+                OrganisationMember.user_id == other.id,
+                OrganisationMember.organisation_id == ours.id,
+            )
+        )
+        db.commit()
+
+
+def test_two_accepts_at_once_both_succeed_with_one_membership(api, db, user, new_user):
+    link = make_link(api)
+    other = new_user()
+    ours = org_of(db, user)
+    try:
+        with signed_in_as(other):
+            runs = [
+                in_the_background(lambda: api.post(f"/api/invites/{link['token']}/accept"))
+                for _ in range(2)
+            ]
+            for thread, _ in runs:
+                thread.join(timeout=10)
+        for _, result in runs:
+            assert "error" not in result, result
+            assert result["value"].status_code == 200, result["value"].text
+        assert memberships(db, other) == [org_of(db, other).id, ours.id]
+    finally:
+        db.execute(
+            delete(OrganisationMember).where(
+                OrganisationMember.user_id == other.id,
+                OrganisationMember.organisation_id == ours.id,
+            )
+        )
+        db.commit()
+
+
+def test_a_person_in_no_organisation_joins_by_accepting(api, db, user):
+    link = make_link(api)
+    with signed_out():
+        stray = registered(db, register(api, "Stray"))
+        try:
+            assert api.get("/api/me").json()["organisations"] == []
             resp = api.post(f"/api/invites/{link['token']}/accept")
             assert resp.status_code == 200, resp.text
             assert resp.json()["name"] == "Test User"
-            assert api.get("/api/me").json()["organisation"]["name"] == "Test User"
+            listed = api.get("/api/me").json()["organisations"]
+            assert [o["name"] for o in listed] == ["Test User"]
+        finally:
+            api.cookies.clear()
+    try:
         members = api.get("/api/organisation").json()["members"]
         assert [(m["user"]["id"], m["invite_id"]) for m in members] == [
             (user.id, None),
             (stray.id, link["id"]),
         ]
     finally:
-        # So deleting them afterwards doesn't delete the organisation they joined.
-        db.execute(delete(OrganisationMember).where(OrganisationMember.user_id == stray.id))
-        db.commit()
+        leave_behind(db, stray)
 
 
-def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, user, member):
+def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, provisioning):
     from test_chats import make_chat
 
     elsewhere = make_user(db, "elsewhere")
@@ -301,6 +382,7 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         with signed_in_as(elsewhere):
             theirs = make_chat(api, "theirs")
         store_id = store_of(user)
+        provisioning.clear()
         # A request of the organisation's store, which notifies every member.
         request = schema_changes.propose(
             store_id,
@@ -337,18 +419,13 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         with signed_in_as(member):
             resp = api.post("/api/organisation/leave")
             assert resp.status_code == 200, resp.text
-            mine = resp.json()
-            assert (mine["name"], mine["personal"], mine["is_creator"]) == (
-                "Member Person",
-                True,
-                True,
-            )
-            assert [m["user"]["id"] for m in mine["members"]] == [member.id]
-            assert api.get("/api/me").json()["organisation"]["id"] == mine["id"]
-            # With a store of its own, as signing up gives a new organisation.
-            assert db.scalar(
-                select(DataStore.id).where(DataStore.owner_organisation_id == mine["id"])
-            ) not in (None, store_id)
+            # In no organisation now: nothing was made for them.
+            assert resp.json()["organisations"] == []
+            assert api.get("/api/me").json() == resp.json()
+        assert memberships(db, member) == []
+        made = select(Organisation).where(Organisation.created_by == member.id)
+        assert db.scalars(made).all() == []
+        assert provisioning == []
 
         # Gone from the organisation and its chats, and its requests no longer reach them.
         members = api.get("/api/organisation").json()["members"]
@@ -365,71 +442,29 @@ def test_a_member_leaves_for_a_new_personal_organisation_of_their_own(api, db, u
         delete_user(db, elsewhere)
 
 
-def test_leaving_while_a_sign_up_takes_the_name_lands_in_a_suffixed_one(api, db, user, member):
-    """Someone else with the member's name signs up as they leave: the name looked free to the
-    leave, and is taken by the time it inserts."""
-    twin = build_user("twin", first_name="Member", last_name="Person")
-    try:
-        with SessionLocal() as signing_up:
-            # The sign-up, flushed but not committed: the leave waits on its name.
-            signing_up.add(twin)
-            signing_up.flush()
-            organisations.create_personal(signing_up, twin)
-            with signed_in_as(member):
-                leaving, result = in_the_background(lambda: api.post("/api/organisation/leave"))
-                leaving.join(timeout=0.5)
-                assert leaving.is_alive(), "the leave should wait on the sign-up's name"
-                signing_up.commit()
-                leaving.join(timeout=10)
-
-        assert "error" not in result, result
-        resp = result["value"]
+def test_leaving_one_of_several_organisations_keeps_the_others(api, db, user, new_user):
+    link = make_link(api)
+    other = new_user()
+    theirs = org_of(db, other)
+    with signed_in_as(other):
+        assert api.post(f"/api/invites/{link['token']}/accept").status_code == 200
+        ours = org_of(db, user)
+        resp = api.post(f"/api/o/{ours.id}/organisation/leave")
         assert resp.status_code == 200, resp.text
-        mine = resp.json()
-        assert (mine["name"], mine["personal"], mine["is_creator"]) == (
-            "Member Person-2",
-            True,
-            True,
-        )
-        assert [m["user"]["id"] for m in mine["members"]] == [member.id]
-        # The rest of the leave held: they're out of the organisation they left.
-        members = api.get("/api/organisation").json()["members"]
-        assert [m["user"]["id"] for m in members] == [user.id]
-    finally:
-        if twin.id is not None and (twin := db.get(User, twin.id)) is not None:
-            delete_user(db, twin)
+        assert [o["id"] for o in resp.json()["organisations"]] == [theirs.id]
+    assert memberships(db, other) == [theirs.id]
+    members = api.get("/api/organisation").json()["members"]
+    assert [m["user"]["id"] for m in members] == [user.id]
 
 
-def test_leaving_with_a_name_with_like_wildcards_or_a_backslash_lands_in_the_next_free_name(
-    api, db, member, monkeypatch
-):
-    """`_`, `%` and `\\` mean something to LIKE. A member whose name has them sees the names
-    they could take (their name, and it suffixed) as taken when they leave, and only those."""
-    member.first_name = "mem\\_%"
-    name = member.full_name
-    others = [name, f"{name}-2", "mem__x Person", "mem__x Person-3"]
-    try:
-        db.add_all(Organisation(name=n, slug=f"wildcards-{i}") for i, n in enumerate(others))
-        db.commit()
-        # One pick: no clash to pick again after.
-        picking_names_at_most(monkeypatch, 1)
-        with signed_in_as(member):
-            resp = api.post("/api/organisation/leave")
-        assert resp.status_code == 200, resp.text
-        assert (resp.json()["name"], resp.json()["is_creator"]) == (f"{name}-3", True)
-    finally:
-        db.execute(delete(Organisation).where(Organisation.name.in_(others)))
-        db.commit()
-
-
-def test_the_last_member_cant_leave(api, user):
+def test_the_last_member_is_told_to_delete_the_organisation_instead(api, db, user):
     resp = api.post("/api/organisation/leave")
     assert resp.status_code == 409
     assert resp.json()["detail"] == (
-        "You're its only member, so nobody would be left to see what's in it: an organisation "
-        "can't be left empty."
+        "You're its only member, so nobody would be left to see what's in it. Delete the "
+        "organisation instead."
     )
-    assert api.get("/api/me").json()["organisation"]["name"] == "Test User"
+    assert memberships(db, user) == [org_of(db, user).id]
 
 
 def test_the_creator_cant_leave_while_others_remain(api, user, member):

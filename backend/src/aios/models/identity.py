@@ -43,21 +43,18 @@ class User(Base):
 class Organisation(Base):
     """A group of users, which owns what its members make (`aios.organisations`).
 
-    Every user is in exactly one organisation at a time: a personal one, made when they sign up
-    (or leave another), or one they joined through an invitation link. Nothing in an organisation
-    is private to one member. The creator is the one member who may rename it and, later, invite
-    others: a stopgap until roles exist.
+    A person is in any number of organisations: ones they created, and ones they joined through
+    an invitation link. Nothing in an organisation is private to one member. The creator is the
+    one member who may rename it and invite others: a stopgap until roles exist.
     """
 
     __tablename__ = "organisations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Unique among all organisations: a personal one is named after its user's full name, suffixed
-    # when that's taken.
+    # Unique among all organisations, for now.
     name: Mapped[str] = mapped_column(String(255), unique=True)
-    # Made for one user, on sign-up or on leaving another organisation. An ordinary organisation
-    # all the same (it can be renamed and, later, invited into); the flag only decides whether it
-    # may be deleted when its one member joins another.
+    # Made for one user on sign-up, before a person could be in several organisations: nothing
+    # makes one now, and nothing treats one differently.
     personal: Mapped[bool] = mapped_column(server_default=text("false"))
     # What a link in the browser names it by (`/o/<slug>/...`; the API uses the id): made from
     # the name when it's created, suffixed on a clash (`aios.organisations.free_slug`), and
@@ -100,8 +97,7 @@ class OrganisationInvite(Base):
 
 
 class OrganisationMember(Base):
-    """A user's membership of an organisation. A user has one at a time (the unique index on
-    the user), though the table allows several, for later."""
+    """A user's membership of an organisation: a user can be in any number of them."""
 
     __tablename__ = "organisation_members"
 
@@ -122,7 +118,6 @@ class OrganisationMember(Base):
     user: Mapped["User"] = relationship()
 
     __table_args__ = (
-        # One organisation per user, for now (`aios.auth.current_organisation` reads the one):
-        # drop this to allow several.
-        Index("uq_organisation_members_user_id", "user_id", unique=True),
+        # For listing a person's organisations (`aios.organisations.memberships`).
+        Index("ix_organisation_members_user_id", "user_id"),
     )

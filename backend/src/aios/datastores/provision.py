@@ -35,14 +35,14 @@ gave up (the instance was down, say) gets there once it can. It also brings read
 the tree's head to it: the release before a deploy can still make one after the deploy migrated
 stores, and migrating one can fail.
 
-**Deleting.** A store goes `deleting`, with no organisation, when its organisation is deleted
-(an empty one, on accepting an invitation: `aios.organisations.delete_empty`). The provisioning
+**Deleting.** A store goes `deleting`, with no organisation, when its organisation is deleted.
+The provisioning
 worker's sweep (`delete_deleting`, queued then and run on its schedule too) disposes of this
 process's engines on it, drops its database and roles, deletes its files under its prefix and
 marks it `deleted`. As provisioning's, each step can be run again whatever the ones before left,
 so a sweep cut short is finished by the next. It waits for a provisioning run still on the store
 (they share its lock), which runs its steps out but doesn't mark it ready: the store went
-`deleting` under it (its creator accepted an invitation straight after signing up).
+`deleting` under it (its organisation was deleted straight after it was created).
 """
 
 import logging

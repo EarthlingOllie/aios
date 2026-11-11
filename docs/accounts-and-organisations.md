@@ -1,7 +1,7 @@
 # Accounts and organisations
 
-aios has its own accounts: email and password, with no third-party sign-in. Every user is a
-member of one organisation, which owns everything its members make. See also
+aios has its own accounts: email and password, with no third-party sign-in. A person is a
+member of any number of organisations, each of which owns everything its members make. See also
 [Stores](stores.md), for the organisation's own database, and the glossary,
 [`CONTEXT.md`](../CONTEXT.md).
 
@@ -21,8 +21,9 @@ sign-in, and no emails are sent (no verification, no password reset).
   address in any case is one account. Registering a taken one answers 409.
 - **Names** are trimmed and must not be empty; the app shows a user as "First Last".
 - **Sessions** are the signed cookie (`aios_session`, 14 days). Registering signs the new user
-  in, in a new personal organisation (or the one an invitation link is for), and queues its
-  store, as signing in does if it has none (`aios.auth.start_session` starts every session).
+  in, and makes nothing: they're in no organisation (or only the one an invitation link is
+  for), and land on the welcome page. Signing in makes nothing either
+  (`aios.auth.start_session` starts every session).
   Each session holds the user's `session_version` from when it started; one that no longer
   matches the user's is signed out (401).
 - A signed-out visit to any page sends you to `/login?next=<page>`, and back there afterwards
@@ -54,25 +55,26 @@ sign-in, and no emails are sent (no verification, no password reset).
 **Upgrading a database from GitHub sign-in.** Migration `0052` deletes the users who signed in
 with GitHub (they have no password), and, as nobody is then left in any organisation, every
 organisation with everything in it. Their stores go `deleting`, for the provisioning worker's
-sweep to drop their databases, roles and files (see [Stores](stores.md#data-stores)), as when
-an empty organisation is deleted. On a development database it's as simple to start again:
+sweep to drop their databases, roles and files (see [Stores](stores.md#data-stores)). On a development database it's as simple to start again:
 `docker compose down -v` (which also empties RustFS), or drop and recreate the `aios` database,
 then run the setup steps again (`aios.db_roles`, `alembic upgrade head`: see
 [Local development](development.md#local-development)).
 
 ## Organisations
 
-Every user is in an **organisation** (`aios.organisations`), the group that owns what its
-members make. Registering makes a **personal** one named after the user's full name
-(suffixed, `Sam Jones-2`, when that name is taken), with them as its creator and only member
-(`aios.auth.start_session`, which every sign-in goes through, makes one for a user in none);
-the upgrade did the same for every existing user and stamped everything they own (skills,
-agents, workflows, schedules, chats) with their organisation and with them as `created_by`
-(revisions 0029 and 0030); the per-user ownership columns went in the same release (0048,
-which says why, as 0015 did). A user is in exactly one organisation at a time: memberships are a
-table, held to one membership per user by a unique index, and the request's organisation is
-resolved in one place (`aios.auth.current_organisation`, the `CurrentOrganisation`
-dependency).
+A person is in any number of **organisations** (`aios.organisations`), each the group that owns
+what its members make, or in none. Signing up makes nothing: a person in no organisation lands on
+the **welcome page** (`/welcome`), which creates one (`POST /api/organisations`, a name; a 409
+for a name another organisation has) with them as its creator and only member, its store queued
+to be provisioned at once, and opens it; it also explains that an invitation link is the way into
+a colleague's. Memberships are a table, one row per person and organisation (revision 0058
+dropped the one-per-person index), and the request's organisation is resolved in one place
+(`aios.auth.current_organisation`, the `CurrentOrganisation` dependency). Before many
+organisations, registering made a **personal** one named after the user, and the upgrade did
+the same for every existing user and stamped everything they own (skills, agents, workflows,
+schedules, chats) with their organisation and with them as `created_by` (revisions 0029 and
+0030); the per-user ownership columns went in the same release (0048, which says why, as 0015
+did). Nothing makes a personal organisation now, and nothing treats one differently.
 
 ### Organisations in links
 
@@ -89,7 +91,8 @@ in the browser use the slug and the API uses the id:
   form is kept). `current_organisation` reads the id from the path and checks the user is a
   member: a 404, "Organisation not found", alike for an organisation they aren't in and one that
   doesn't exist. Only what's the person's own stays unscoped: signing in (and the development
-  picker), their profile (`/api/me`), opening and accepting invitations, their notifications,
+  picker), their profile (`/api/me`), creating an organisation, opening and accepting
+  invitations, their notifications,
   the tool library and the list of timezones. `tests/test_organisation_prefix.py` is generated
   from the router: every prefixed route answers a non-member 404, and only those listed stay
   unscoped. The backend tests' client sends an organisation's routes under the prefix, in the
@@ -97,16 +100,21 @@ in the browser use the slug and the API uses the id:
 - **Front end.** Every signed-in page is under `/o/<slug>/`, the router's basename for as long as
   the page is open (`frontend/src/lib/organisation-path.ts`), so the app's own links stay in it.
   A path without one (an old bookmark, the root) opens the same page in the organisation used
-  last, remembered in the browser's storage (every access guarded), else in the one joined most
-  recently. A link to an organisation the user isn't in shows "Organisation not found". The
+  most recently, remembered in the browser's storage (a short list, most recent first, every
+  access guarded), else in the one joined most recently; a person in none goes to the welcome
+  page. A link to an organisation the user isn't in shows "Organisation not found", with links
+  to theirs and to create one. The
   page sends the API its organisation's id (`organisationApi` in `frontend/src/lib/api.ts`, set
   once the slug is matched to a membership), so two tabs on two organisations work
   independently. The browser tests' fake API (`frontend/e2e/fake-api.ts`) answers only under
   the prefix too.
 
 `GET /api/me` lists the user's organisations (`organisations`: id, name, slug and whether
-they're its creator, the one joined most recently first), and says which one they're in
-(`organisation`); the shell shows its name, which opens the **Organisation** page
+they're its creator, the one joined most recently first; empty for a person in none). The shell
+shows the name of the organisation the page is open in as the **switcher**: a menu of every
+organisation the person is in, where another opens in its own link (a new page load), the
+current one opens its **Organisation** page, and **Create an organisation** goes to the welcome
+page. The Organisation page
 (`GET /api/o/{org}/organisation`): the name and the creator above three tabs, as on the agent page,
 each a route: **Members**, with when each joined and the count (`/organisation`);
 **Invitations**, the links, for the creator only (`/organisation/invitations`); and
@@ -154,28 +162,26 @@ one; all three are the creator's (a 403 for another member). The link opens the 
 page** (`/invite/<token>`; `GET /api/invites/{token}`, no sign-in needed), which names the
 organisation; an expired or revoked link is a 404 and says so. Signed out, it offers to
 register (`/register?invite=<token>`, which sends the token with the registration: the new user
-joins the organisation, the membership recording the link, shown beside the member, and gets
-no personal one; a link that no longer opens gets them a personal one) or to sign in
-(`/login`); either comes back to the invite page, which says why a user it couldn't join
-wasn't.
+joins that organisation and only that one, the membership recording the link, shown beside the
+member; a link that no longer opens joins them to nothing) or to sign in (`/login`); either
+comes back to the invite page.
 
-Signed in, Accept (`POST /api/invites/{token}/accept`) joins, since a user is in one
-organisation at a time, a user who's in none or in an **empty** one: personal, theirs alone,
-and holding nothing but the defaults (no agents but the documents assistant, no workflows,
-skills, chats, schedules, documents or data tables). The empty one is deleted as they join, and
-its store goes `deleting` for the provisioning worker to drop (see
-[Stores](stores.md#data-stores)). Otherwise it's a 409 with the reason: when their organisation
-has things in it, how many of each kind, which the invite page lists with links to where each
-can be deleted.
+Signed in, Accept (`POST /api/invites/{token}/accept`) adds a membership of the link's
+organisation, whatever else the person is in, and the page opens it. Accepting a link into an
+organisation they're in already answers the same (200, the organisation) and adds nothing, so a
+second click, or two at once, is harmless; the invite page says they're a member, with a link to
+it.
 
 ## Leaving
 
 A member **leaves** from the Organisation page's Settings tab (`/organisation/settings`;
 `POST /api/o/{org}/organisation/leave`): they drop out of the organisation's chats (an add, a join or a
 new chat of theirs at the same moment is a 404, not a way back into one), their unread
-notifications about its schema change requests go, and they land in a new personal
-organisation with a store of its own; what they made stays, and a chat they owned goes to its
+notifications about its schema change requests go, and nothing else: no organisation is made
+for them. The page lands them in the organisation they used most recently of those they're still
+in, or on the welcome page if none remain. What they made stays, and a chat they owned goes to its
 chat member added first (with nobody left in it, a public one goes to whoever joins it next,
 and a private one, which nobody could join, is deleted, as its owner deleting it would be).
-The last member can't leave, nor can the creator while others remain (each a 409, explained on
-the page).
+The last member can't leave, and is told to delete the organisation instead; nor can the creator
+while others remain, since nobody else could invite, and there's no transfer until roles exist
+(each a 409, explained on the page).

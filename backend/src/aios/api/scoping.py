@@ -7,8 +7,8 @@ mounted under the prefix (`mount_organisation_prefix`), and only there: `/api/ag
 is `/api/o/{organisation_id}/agents/{agent_id}`. Nothing is listed by hand, so a route added
 later moves as soon as it takes the organisation. `current_organisation` reads the id from the
 path and checks the signed-in user is a member. What isn't any one organisation's (signing in,
-the person's profile and notifications, invitations, the tool library, timezones) stays
-unscoped.
+the person's profile and notifications, creating an organisation, invitations, the tool
+library, timezones) stays unscoped.
 """
 
 from fastapi import FastAPI

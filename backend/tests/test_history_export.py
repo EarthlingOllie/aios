@@ -8,13 +8,13 @@ import uuid
 
 import pytest
 import test_workflow_runs as workflow_runs
-from conftest import delete_user, make_user, org_of, store_of
+from conftest import delete_user, home_organisation, make_user, org_of, store_of
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import text, update
 from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow, workflow_node
 
-from aios import organisations, worker, workflows
+from aios import worker, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
@@ -993,7 +993,7 @@ def test_exporting_workflow_runs_again_gives_no_duplicates(
 
     for _ in range(2):
         with SessionLocal() as db:
-            history.enqueue_everything(db, organisations.membership_of(db, user.id).id)
+            history.enqueue_everything(db, home_organisation(db, user.id).id)
             db.commit()
         assert history.export(store_id) == 6
 
@@ -1055,7 +1055,7 @@ def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
     def broker_down(run_id: int) -> None:
         # Committed, so a backfill (or delete exported history) meanwhile exports it.
         with SessionLocal() as db:
-            history.enqueue_everything(db, organisations.membership_of(db, user.id).id)
+            history.enqueue_everything(db, home_organisation(db, user.id).id)
             db.commit()
         history.export(store_id)
         assert stored(store_id, "SELECT id FROM history.workflow_runs") == [(run_id,)]

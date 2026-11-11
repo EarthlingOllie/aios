@@ -147,8 +147,8 @@ model. Through the pooler, a client past a store's pool waits for a server conne
 ### One store per organisation
 
 **Organisation data goes through its store** (`aios.datastores`, the `data_stores` table): one
-per organisation, with an id of its own, made with the organisation (when a user registers,
-leaves for a new personal organisation, or signs in without one). Document upload, listing,
+per organisation, with an id of its own, made with the organisation (on the welcome page, or
+from the switcher's "Create an organisation"). Document upload, listing,
 deletion, search, ingest and the document search tools open their sessions with
 `store_session(data_store_id, role)`; the run context (`ChatDeps`) and the ingest task carry
 the `data_store_id`, so a run's tools act on its organisation's store whoever started it. Each store is a database of its own, so

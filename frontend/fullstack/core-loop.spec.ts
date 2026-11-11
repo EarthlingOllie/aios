@@ -30,7 +30,8 @@ test("a mention asks for a table, waits for approval on the Data page, then save
 }) => {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
-  // 1. Register: the organisation's store is provisioned by the provisioning worker.
+  // 1. Register, which makes nothing, then create an organisation on the welcome page: its store
+  // is provisioned by the provisioning worker.
   await page.goto("/register");
   await page.getByLabel("First name").fill("Core");
   await page.getByLabel("Last name").fill("Loop");
@@ -38,11 +39,17 @@ test("a mention asks for a table, waits for approval on the Data page, then save
   await page.getByLabel("Password", { exact: true }).fill("a long passphrase");
   await page.getByLabel("Confirm password").fill("a long passphrase");
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).not.toHaveURL(/\/register/);
+  await expect(page).toHaveURL(/\/welcome$/);
+  await expect(page.getByRole("heading", { name: "Welcome to aios" })).toBeVisible();
+  await page.getByLabel("Organisation name").fill(`Core Loop ${suffix}`);
+  await page.getByRole("button", { name: "Create organisation" }).click();
+  await expect(page).toHaveURL(/\/o\/[^/]+\//);
   // Their organisation: the API names it by its id (`/api/o/<id>/...`), links by its slug.
   const me = await page.request.get("/api/me");
   expect(me.status(), await me.text()).toBe(200);
-  const { organisation } = (await me.json()) as { organisation: { id: number; slug: string } };
+  const {
+    organisations: [organisation],
+  } = (await me.json()) as { organisations: { id: number; slug: string }[] };
   const api = (path: string) => `/api/o/${organisation.id}${path}`;
   const link = (path: string) => `/o/${organisation.slug}${path}`;
   await expect(page).toHaveURL(new RegExp(`^[^?#]*${link("")}(/|$)`));

@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from celery.exceptions import Retry
-from conftest import add_document, delete_user, provisioned_user, store_of
+from conftest import add_document, delete_user, home_organisation, provisioned_user, store_of
 from psycopg import sql
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
@@ -17,7 +17,7 @@ from test_agents import agent_body, chat_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
-from aios import ingest, organisations, search, worker, workflows
+from aios import ingest, search, worker, workflows
 from aios.api import agents as agents_api
 from aios.api import documents
 from aios.api import workflows as workflows_api
@@ -433,7 +433,7 @@ def test_the_platform_database_has_no_documents_or_chunks(db):
 def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(
     db, new_user, provisioning
 ):
-    org = organisations.membership_of(db, new_user().id)
+    org = home_organisation(db, new_user().id)
     store_id = data_store_for(org.id, db)
     assert provisioning == []
     db.commit()
@@ -447,7 +447,7 @@ def test_a_store_created_in_a_callers_transaction_is_queued_once_committed(
 def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(
     db, new_user, provisioning
 ):
-    data_store_for(organisations.membership_of(db, new_user().id).id, db)
+    data_store_for(home_organisation(db, new_user().id).id, db)
     db.rollback()
     db.commit()
     assert provisioning == []

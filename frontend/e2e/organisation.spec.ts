@@ -12,7 +12,8 @@ test("the shell names the organisation, and opens its page with the members", as
     invite_id: null,
   });
   await page.goto(inOrg("/"));
-  await page.getByRole("link", { name: "tester" }).first().click();
+  await page.getByRole("button", { name: "tester", exact: true }).first().click();
+  await page.getByRole("menu", { name: "Organisations" }).getByRole("menuitem", { name: "tester" }).click();
   await expect(page).toHaveURL(/\/organisation$/);
 
   await expect(page.getByRole("heading", { name: "tester" })).toBeVisible();
@@ -38,7 +39,7 @@ test("the creator renames it, and the shell follows", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   expect(api.writes).toEqual([["PUT", orgApi("/organisation"), { name: "Acme" }]]);
-  await expect(page.getByRole("link", { name: "Acme" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Acme", exact: true }).first()).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Name" })).toBeHidden();
 });
 

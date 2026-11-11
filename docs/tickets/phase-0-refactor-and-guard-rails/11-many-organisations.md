@@ -24,20 +24,20 @@ number of them.
 - [04: Full-stack test, with the scripted model as a selectable provider](04-full-stack-test.md)
 - [10: Move every route and screen under the organisation (notifications get their organisation here)](10-move-routes-under-organisation.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A new registrant without an invitation has no organisations, nothing is provisioned, and
+- [x] A new registrant without an invitation has no organisations, nothing is provisioned, and
   they land on the welcome page.
-- [ ] Creating an organisation from the welcome page provisions its store and opens it.
-- [ ] Registering through an invitation joins only that organisation.
-- [ ] A person in one organisation accepts an invitation to another and is in both.
-- [ ] Accepting the same invitation twice answers 200 the second time and adds nothing.
-- [ ] The switcher lists every organisation the person is in and offers "Create an
+- [x] Creating an organisation from the welcome page provisions its store and opens it.
+- [x] Registering through an invitation joins only that organisation.
+- [x] A person in one organisation accepts an invitation to another and is in both.
+- [x] Accepting the same invitation twice answers 200 the second time and adds nothing.
+- [x] The switcher lists every organisation the person is in and offers "Create an
   organisation".
-- [ ] Leaving creates no organisation and lands on the most recently used remaining organisation,
+- [x] Leaving creates no organisation and lands on the most recently used remaining organisation,
   or on the welcome page if none remain.
-- [ ] The last member is refused with "Delete the organisation instead", and the creator with
+- [x] The last member is refused with "Delete the organisation instead", and the creator with
   others remaining is refused.
-- [ ] The empty-organisation tests are removed, and the organisation, invitation, scoping and
+- [x] The empty-organisation tests are removed, and the organisation, invitation, scoping and
   auth tests pass without personal organisations.
-- [ ] The full-stack test passes, starting from the welcome page.
+- [x] The full-stack test passes, starting from the welcome page.

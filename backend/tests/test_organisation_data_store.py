@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 
 import pytest
-from conftest import build_user, join_organisation, provisioned_user, store_of
+from conftest import build_user, home_organisation, join_organisation, provisioned_user, store_of
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from test_agents import chat_body, make_agent
@@ -101,13 +101,13 @@ def test_the_upgrade_points_each_store_at_its_owners_organisation_with_their_exp
     db.add_all([exporting, quiet])
     db.flush()
     for u in (exporting, quiet):
-        organisations.create_personal(db, u)
+        organisations.create(db, u, f"{u.full_name} {u.id}")
     on = DataStore(
-        owner_organisation_id=organisations.membership_of(db, exporting.id).id,
+        owner_organisation_id=home_organisation(db, exporting.id).id,
         export_run_history=True,
         embed_run_history=True,
     )
-    off = DataStore(owner_organisation_id=organisations.membership_of(db, quiet.id).id)
+    off = DataStore(owner_organisation_id=home_organisation(db, quiet.id).id)
     stores = {exporting.id: on, quiet.id: off}
     db.add_all(stores.values())
     db.flush()
@@ -127,13 +127,13 @@ def test_the_upgrade_points_each_store_at_its_owners_organisation_with_their_exp
     for u, flags in ((exporting, (True, True)), (quiet, (False, False))):
         row = stores[u.id]
         db.refresh(row)
-        assert row.owner_organisation_id == organisations.membership_of(db, u.id).id
+        assert row.owner_organisation_id == home_organisation(db, u.id).id
         assert (row.export_run_history, row.embed_run_history) == flags
 
     # Run again, it changes nothing.
     step.backfill(db.connection())
     db.refresh(stores[quiet.id])
-    assert stores[quiet.id].owner_organisation_id == organisations.membership_of(db, quiet.id).id
+    assert stores[quiet.id].owner_organisation_id == home_organisation(db, quiet.id).id
 
 
 def test_a_store_has_an_organisation_unless_its_being_deleted(db, user):

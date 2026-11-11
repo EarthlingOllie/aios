@@ -12,7 +12,7 @@ import { InvitesSection } from "@/components/OrganisationInvites";
 import { api, describeError, type Me, type Organisation } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
-import { openInOrganisation } from "@/lib/organisation-path";
+import { landingPath, recentOrganisations } from "@/lib/organisation-path";
 
 /**
  * The user's organisation: its name (the creator renames it) above three tabs, as on the agent
@@ -55,9 +55,10 @@ export function OrganisationPage() {
           <RunHistoryExportSection key={`export-${org.id}`} />
           <LeaveSection
             org={org}
-            onLeft={(landed) => {
-              // Into a new personal organisation: its page, at its own link.
-              openInOrganisation(landed.slug, "/organisation");
+            onLeft={(after) => {
+              // Into the organisation used most recently, or the welcome page if none is left: a
+              // new page load, as the organisation is the router's basename.
+              window.location.assign(landingPath(after.organisations, recentOrganisations()));
             }}
           />
         </>

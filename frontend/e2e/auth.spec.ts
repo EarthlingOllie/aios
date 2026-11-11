@@ -70,7 +70,7 @@ test("signed in, the sign-in and registration pages go to the app", async ({ pag
   }
 });
 
-test("a new visitor registers and is signed in", async ({ page }) => {
+test("a new visitor registers, is signed in, and lands on the welcome page", async ({ page }) => {
   const api = await fakeApi(page);
   api.signedInAs = null;
   api.authDelay = 300;
@@ -100,8 +100,9 @@ test("a new visitor registers and is signed in", async ({ page }) => {
   // One request at a time.
   await expect(create).toBeDisabled();
 
-  await expect(page).toHaveURL("/o/alice-smith/chats");
-  await expect(sidebar(page)).toContainText("Alice Smith");
+  // In no organisation yet: signing up makes none, so on to the welcome page, which creates one.
+  await expect(page).toHaveURL("/welcome");
+  await expect(page.getByRole("heading", { name: "Welcome to aios" })).toBeVisible();
   expect(api.writes).toEqual([
     [
       "POST",
