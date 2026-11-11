@@ -30,9 +30,10 @@ export function mergeInvocations(current: Invocations, incoming: ChatInvocation[
   return merged;
 }
 
-/** Whether an invocation is still going (its card is live): it hasn't finished. */
+/** Whether an invocation is still going (its card is live): it hasn't finished (succeeded,
+ * failed, or been refused). */
 export function isLive(invocation: ChatInvocation): boolean {
-  return invocation.status !== "succeeded" && invocation.status !== "failed";
+  return !["succeeded", "failed", "refused"].includes(invocation.status);
 }
 
 /**

@@ -29,6 +29,7 @@ import { AgentArchiveDialog } from "@/components/ArchiveDialog";
 import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { ExportLink, ImportButton, UnrunnableNotice } from "@/components/ImportDialog";
+import { GuardFields, guardsValid } from "@/components/Limits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,9 +51,12 @@ import {
   type AgentSkill,
   type AgentSummary,
   type AgentVersion,
+  type InvocableBy,
+  type Limits,
   type SkillSummary,
   type ToolInfo,
 } from "@/lib/api";
+import { draftOf, limitsOf, TURN_LIMITS, type LimitsDraft } from "@/lib/limits";
 import {
   byMostRuns,
   nameAndDescription,
@@ -61,7 +65,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
-import { useRefusal } from "@/lib/current-user";
+import { useRefusal, useRole } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 
 const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
@@ -654,7 +658,11 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
   );
 }
 
-type FormState = Omit<AgentInput, "skill_version_ids"> & { skill_ids: number[] };
+type FormState = Omit<AgentInput, "skill_version_ids" | "limits" | "invocable_by"> & {
+  skill_ids: number[];
+  invocable_by: InvocableBy;
+  limits: LimitsDraft<(typeof TURN_LIMITS)[number]>;
+};
 
 const emptyAgent: FormState = {
   name: "",
@@ -662,6 +670,8 @@ const emptyAgent: FormState = {
   base_prompt: "",
   skill_ids: [],
   tools: [],
+  invocable_by: "everyone",
+  limits: draftOf(TURN_LIMITS, {}),
 };
 
 export function AgentForm() {
@@ -680,11 +690,17 @@ export function AgentForm() {
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const buildRefusal = useRefusal("build");
+  const role = useRole();
+  // The organisation's caps in force, and the agent's own as saved.
+  const [ceiling, setCeiling] = useState<Limits>();
+  const [savedLimits, setSavedLimits] = useState<Partial<Limits>>({});
 
   useEffect(() => {
     setForm(undefined);
     setLoaded(undefined);
     setPinned(new Map());
+    setSavedLimits({});
+    api.getOrganisation().then((o) => setCeiling(o.limits.in_force), (err) => setError(describeError(err)));
     api.listSkills().then(setSkills, (err) => setError(describeError(err)));
     api.listTools().then(setCatalog, (err) => setError(describeError(err)));
     if (id === undefined) setForm(emptyAgent);
@@ -699,7 +715,10 @@ export function AgentForm() {
             skill_ids: v.skills.map((s) => s.skill_id),
             tools: v.tools.map(({ key, config }) => ({ key, config })),
             note: "",
+            invocable_by: a.invocable_by,
+            limits: draftOf(TURN_LIMITS, a.limits),
           });
+          setSavedLimits(a.limits);
           setLoaded(v);
           setPinned(new Map(v.skills.map((s) => [s.skill_id, s])));
         },
@@ -736,9 +755,10 @@ export function AgentForm() {
     setSaving(true);
     setError(undefined);
     const latest = new Map(skills?.map((s) => [s.id, s.version_id]));
-    const { skill_ids, ...rest } = form!;
+    const { skill_ids, limits, ...rest } = form!;
     const body: AgentInput = {
       ...rest,
+      limits: limitsOf(TURN_LIMITS, limits)!,
       note: rest.note?.trim() || undefined,
       // Already-attached skills keep their pinned version; newly added ones get the latest.
       skill_version_ids: skill_ids.map((s) => pinned.get(s)?.skill_version_id ?? latest.get(s)!),
@@ -902,6 +922,17 @@ export function AgentForm() {
             ))}
           </ul>
         </fieldset>
+        <GuardFields
+          kind="agent"
+          names={TURN_LIMITS}
+          invocableBy={form.invocable_by}
+          onInvocableBy={(invocable_by) => set({ invocable_by })}
+          draft={form.limits}
+          onDraft={(limits) => set({ limits })}
+          ceiling={ceiling}
+          saved={savedLimits}
+          role={role}
+        />
         {id !== undefined && (
           <Field label="Change note" htmlFor="agent-note" hint="Optional. Shown in the version history.">
             <Input
@@ -913,7 +944,16 @@ export function AgentForm() {
           </Field>
         )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !form.name.trim() || !!buildRefusal} title={buildRefusal ?? undefined}>
+          <Button
+            type="submit"
+            disabled={
+              saving ||
+              !form.name.trim() ||
+              !!buildRefusal ||
+              !guardsValid(TURN_LIMITS, form.limits, ceiling, savedLimits, role)
+            }
+            title={buildRefusal ?? undefined}
+          >
             {id === undefined ? "Create agent" : "Save changes"}
           </Button>
           <Button type="button" variant="ghost" onClick={() => navigate(-1)}>

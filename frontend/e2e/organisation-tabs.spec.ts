@@ -49,6 +49,8 @@ test("switching tabs moves to each tab's route, and the route opens its tab", as
   // The arrow keys move between tabs, as on the other tabbed pages.
   await tab(page, /Members/).focus();
   await page.keyboard.press("End");
+  await expect(page).toHaveURL(inOrg("/organisation/usage"));
+  await page.keyboard.press("ArrowLeft");
   await expect(page).toHaveURL(inOrg("/organisation/audit-log"));
   await page.keyboard.press("ArrowLeft");
   await expect(page).toHaveURL(inOrg("/organisation/settings"));

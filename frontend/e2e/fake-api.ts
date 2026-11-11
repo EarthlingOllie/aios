@@ -42,6 +42,9 @@ type AgentRow = {
   archived_by: ChatUser | null;
   /** Why its versions can't run (an import's missing tool, say); null or unset if they can. */
   unrunnable?: string | null;
+  /** Who may mention it ("everyone" if unset), and its own caps. */
+  invocable_by?: InvocableBy;
+  limits?: Partial<Limits>;
 };
 type SkillVersionRow = {
   id: number;
@@ -195,6 +198,43 @@ type WorkflowRow = {
   /** The members who made it and last changed it (`me` unless a test says otherwise). */
   created_by: ChatUser | null;
   updated_by: ChatUser | null;
+  /** Who may mention it ("everyone" if unset), and its own caps. */
+  invocable_by?: InvocableBy;
+  limits?: Partial<Limits>;
+};
+
+type InvocableBy = "everyone" | "editors" | "admins";
+type LimitName = "turn_model_calls" | "turn_tokens" | "turn_cost" | "run_model_calls" | "run_cost";
+type Limits = Record<LimitName, number | null>;
+const TURN_LIMITS: LimitName[] = ["turn_model_calls", "turn_tokens", "turn_cost"];
+const RUN_LIMITS: LimitName[] = ["run_model_calls", "run_cost"];
+const LIMIT_LABELS: Record<LimitName, string> = {
+  turn_model_calls: "model calls per turn",
+  turn_tokens: "tokens per turn",
+  turn_cost: "cost per turn",
+  run_model_calls: "model calls per workflow run",
+  run_cost: "cost per workflow run",
+};
+/** The deployment's caps, as the API's settings default them. */
+export const DEFAULT_LIMITS: Limits = {
+  turn_model_calls: 200,
+  turn_tokens: 5_000_000,
+  turn_cost: 25,
+  run_model_calls: 2000,
+  run_cost: 100,
+};
+/** Usage totals by one group, as GET /api/usage answers them. */
+export type UsageTotalRow = {
+  key: number | string | null;
+  name: string | null;
+  model_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  embedded_texts: number;
+  web_searches: number;
+  sandbox_seconds: number;
+  cost: number | null;
+  unpriced: number;
 };
 
 /** A source: what brings content into the store. The store starts with Uploads. */
@@ -453,7 +493,7 @@ export type ChatMessageRow = {
   invocation_id: number | null;
   created_at: string;
 };
-type InvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
+type InvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed" | "refused";
 /** An agent's or workflow's run that a mention started. */
 export type InvocationRow = {
   id: number;
@@ -464,6 +504,8 @@ export type InvocationRow = {
   target_id: number;
   status: InvocationStatus;
   error: string | null;
+  /** Why the mention guards refused it. */
+  refusal_reason?: string | null;
   /** What the handoff told its run of the chat; null until it has. */
   brief: string | null;
   /** The run it started; gone from `runs` (or `agentRuns`) once it's deleted. */
@@ -627,6 +669,17 @@ export class FakeApi {
   }[] = [];
   /** Whether `otherMemberships` were joined before `organisation` (listed after it). */
   joinedEarlier = false;
+  /** The organisation's overrides of the deployment's caps (`PUT /api/organisation/limits`). */
+  limits: Limits = { turn_model_calls: null, turn_tokens: null, turn_cost: null, run_model_calls: null, run_cost: null };
+  /** Usage totals by group (`GET /api/usage`), whatever the range; and the query of each read. */
+  usage: Record<string, UsageTotalRow[]> = { agent: [], workflow: [], person: [], day: [] };
+  usageReads: string[] = [];
+  /** The mention guards: how many agents and workflows a message may mention; how many allowed
+   * mentions `me` may make (a 429 past it, retry in `mentionRetryAfter` seconds), and has made. */
+  mentionsPerMessage = 5;
+  mentionRate = 60;
+  mentionsMade = 0;
+  mentionRetryAfter = 42;
   /** How long runs and chat history are kept (`PUT /api/organisation/retention`). */
   retention: { run_days: number | null; chat_days: number | null } = { run_days: null, chat_days: null };
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
@@ -745,7 +798,44 @@ export class FakeApi {
       members: this.organisation.members.map((m) => ({ ...m, role: this.roleOf(m.user.id) })),
       deletion: this.organisation.deletion ?? null,
       retention: { ...this.retention },
+      limits: { defaults: { ...DEFAULT_LIMITS }, overrides: { ...this.limits }, in_force: this.limitsInForce() },
     };
+  }
+
+  /** The organisation's caps in force: its overrides, else the deployment's. */
+  limitsInForce(): Limits {
+    const out = { ...DEFAULT_LIMITS };
+    for (const [k, v] of Object.entries(this.limits)) if (v !== null) out[k as LimitName] = v;
+    return out;
+  }
+
+  /** An agent's or workflow's own caps (`names`), null where it follows the organisation's. */
+  private ownLimits(row: { limits?: Partial<Limits> }, names: LimitName[]) {
+    return Object.fromEntries(names.map((n) => [n, row.limits?.[n] ?? null]));
+  }
+
+  private limitsInForceFor(row: { limits?: Partial<Limits> }, names: LimitName[]) {
+    const org = this.limitsInForce();
+    return Object.fromEntries(names.map((n) => [n, row.limits?.[n] ?? org[n]]));
+  }
+
+  /** As the API sets an agent's or workflow's guards from a request: a 403's detail if a
+   * non-admin sets a cap above the organisation's (one already at it may be kept). */
+  private applyGuards(row: { invocable_by?: InvocableBy; limits?: Partial<Limits> }, body: Record<string, unknown>) {
+    const limits = body.limits as Partial<Limits> | undefined;
+    if (limits && this.roleOf(this.me.id) !== "admin") {
+      const org = this.limitsInForce();
+      for (const [name, value] of Object.entries(limits)) {
+        const n = name as LimitName;
+        if (value != null && value > org[n]! && row.limits?.[n] !== value) {
+          const shown = n.endsWith("_cost") ? `£${org[n]!.toFixed(2)}` : org[n]!.toLocaleString("en-GB");
+          return `Only admins can raise a limit above the organisation's (${LIMIT_LABELS[n]}: ${shown}). Ask an admin.`;
+        }
+      }
+    }
+    if (body.invocable_by) row.invocable_by = body.invocable_by as InvocableBy;
+    if (limits) row.limits = Object.fromEntries(Object.entries(limits).filter(([, v]) => v !== null));
+    return null;
   }
 
   /** A member's role in `organisation`: their row's, else admin for its creator, editor for
@@ -1543,7 +1633,13 @@ export class FakeApi {
   }
 
   /** Queues an invocation of the agent or workflow for a message mentioning it, with its card. */
-  private invoke(chat: ChatRow, message: ChatMessageRow, kind: Kind, target: AgentRow | WorkflowRow): InvocationRow {
+  private invoke(
+    chat: ChatRow,
+    message: ChatMessageRow,
+    kind: Kind,
+    target: AgentRow | WorkflowRow,
+    refusal?: string,
+  ): InvocationRow {
     const invocation: InvocationRow = {
       id: this.id(),
       chat_id: chat.id,
@@ -1551,24 +1647,26 @@ export class FakeApi {
       requested_by: this.me.id,
       target_kind: kind,
       target_id: target.id,
-      status: "queued",
+      // A mention its guards refused: nothing runs, and its card says why.
+      status: refusal ? "refused" : "queued",
       error: null,
+      refusal_reason: refusal ?? null,
       brief: null,
       run_id: null,
       created_at: NOW,
       started_at: null,
-      finished_at: null,
+      finished_at: refusal ? NOW : null,
     };
     this.invocations.set(invocation.id, invocation);
     this.addChatMessage(
       chat,
-      ACKNOWLEDGEMENT,
+      refusal ?? ACKNOWLEDGEMENT,
       { kind, id: target.id, name: target.name },
       [],
       { kind: "run_card", invocation_id: invocation.id },
     );
     // An archived agent's or workflow's fails at once, as the API's does: no handoff, no run.
-    if (target.archived_at !== null) {
+    if (!refusal && target.archived_at !== null) {
       const error = `The ${kind} ${target.name} is archived`;
       this.finishInvocation(invocation, "failed", `Couldn't start the run: ${error}`, error);
     }
@@ -1612,7 +1710,7 @@ export class FakeApi {
    */
   advanceInvocations(chat: ChatRow) {
     for (const invocation of this.invocations.values()) {
-      if (invocation.chat_id !== chat.id) continue;
+      if (invocation.chat_id !== chat.id || invocation.status === "refused") continue;
       if (invocation.status === "queued") {
         invocation.status = "briefing";
         continue;
@@ -1830,6 +1928,9 @@ export class FakeApi {
       archived_at: agent.archived_at,
       archived_by: agent.archived_by,
       current_version: this.agentVersionOut(agent, agent.versions.length),
+      invocable_by: agent.invocable_by ?? "everyone",
+      limits: this.ownLimits(agent, TURN_LIMITS),
+      limits_in_force: this.limitsInForceFor(agent, TURN_LIMITS),
     };
   }
 
@@ -1884,6 +1985,9 @@ export class FakeApi {
       archived_by: workflow.archived_by,
       current_version: this.versionOut(this.current(workflow)),
       layout: workflow.layout,
+      invocable_by: workflow.invocable_by ?? "everyone",
+      limits: this.ownLimits(workflow, RUN_LIMITS),
+      limits_in_force: this.limitsInForceFor(workflow, RUN_LIMITS),
     };
   }
 
@@ -1963,7 +2067,11 @@ export class FakeApi {
 
   private invocationOut(chat: ChatRow, invocation: InvocationRow) {
     const { run_id, ...invocationRest } = invocation;
-    const rest = { ...invocationRest, acknowledgement: this.cardOf(chat, invocation).body };
+    const rest = {
+      ...invocationRest,
+      refusal_reason: invocation.refusal_reason ?? null,
+      acknowledgement: this.cardOf(chat, invocation).body,
+    };
     if (invocation.target_kind === "agent") {
       const run = run_id === null ? undefined : this.agentRuns.get(run_id);
       return {
@@ -2003,7 +2111,7 @@ export class FakeApi {
   private messagesOut(chat: ChatRow, messages: ChatMessageRow[]) {
     const ids = new Set(messages.map((m) => m.invocation_id));
     const invocations = [...this.invocations.values()].filter(
-      (i) => i.chat_id === chat.id && (ids.has(i.id) || (i.status !== "succeeded" && i.status !== "failed")),
+      (i) => i.chat_id === chat.id && (ids.has(i.id) || !["succeeded", "failed", "refused"].includes(i.status)),
     );
     return {
       messages: messages.map((m) => this.messageOut(chat, m)),
@@ -2305,6 +2413,27 @@ export class FakeApi {
       this.organisation.members = this.organisation.members.filter((m) => m.user.id !== this.me.id);
       this.member = false;
       return reply(200, this.meOut(account));
+    }
+    if (path === "/api/organisation/limits" && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      this.limits = { ...this.limits, ...body };
+      return reply(200, this.organisationOut());
+    }
+    if (path === "/api/usage" && method === "GET") {
+      if (this.roleOf(this.me.id) !== "admin") {
+        const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
+        return fail(403, `${who} can't read usage totals. Ask an admin.`);
+      }
+      this.usageReads.push(url.search);
+      const group = url.searchParams.get("group") ?? "agent";
+      return reply(200, {
+        currency: "GBP",
+        group,
+        start: url.searchParams.get("start") ?? "2026-09-15",
+        end: url.searchParams.get("end") ?? "2026-10-14",
+        totals: this.usage[group] ?? [],
+      });
     }
     if (path === "/api/organisation/retention" && method === "PUT") {
       const refused = this.refuseUnlessAdmin();
@@ -2760,6 +2889,16 @@ export class FakeApi {
       });
       return reply(200, { dry_run: dryRun, root: items.at(-1), items });
     }
+    if ((m = path.match(/^\/api\/agents\/(\d+)$/)) && method === "PUT") {
+      const agent = this.agents.get(Number(m[1]));
+      if (!agent) return fail(404, "Not Found");
+      const refused = this.refuseUnlessBuilder() ?? this.applyGuards(agent, body);
+      if (refused) return fail(403, refused);
+      agent.name = body.name;
+      agent.description = body.description ?? "";
+      agent.updated_by = this.me;
+      return reply(200, this.agentOut(agent));
+    }
     if ((m = path.match(/^\/api\/agents\/(\d+)\/(archive|unarchive)$/)) && method === "POST") {
       const agent = this.agents.get(Number(m[1]));
       if (!agent) return fail(404, "Not Found");
@@ -2939,6 +3078,8 @@ export class FakeApi {
         if ([...this.workflows.values()].some((w) => w.name === body.name && w !== workflow)) {
           return fail(409, "The organisation already has a workflow with that name");
         }
+        const refused = this.applyGuards(workflow, body);
+        if (refused) return fail(403, refused);
         workflow.name = body.name;
         workflow.description = body.description ?? "";
         workflow.updated_by = this.me;
@@ -3129,9 +3270,45 @@ export class FakeApi {
           const twice = mentions.some((x) => x.kind === kind && x.id === id);
           if (!twice) mentions.push({ kind, id, name: member.name });
         }
+        // The mention guards, in the API's order: the count, each mention's invocable-by, the rate.
+        const targets = mentions.filter((x) => x.kind !== "user");
+        if (targets.length > this.mentionsPerMessage) {
+          return fail(
+            422,
+            `A message can mention at most ${this.mentionsPerMessage} agents and workflows. Mention fewer, or split it into several messages.`,
+          );
+        }
+        const role = this.roleOf(this.me.id);
+        const refusals = new Map<string, string>();
+        for (const x of targets) {
+          const target = (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!;
+          const by = target.invocable_by ?? "everyone";
+          if ((by === "editors" && role === "participant") || (by === "admins" && role !== "admin")) {
+            const who = by === "editors" ? "editors and admins" : "admins";
+            refusals.set(`${x.kind}:${x.id}`, `Only ${who} can invoke the ${x.kind} ${target.name}.`);
+          }
+        }
+        const allowed = targets.length - refusals.size;
+        if (allowed && this.mentionsMade + allowed > this.mentionRate) {
+          return route.fulfill({
+            status: 429,
+            contentType: "application/json",
+            headers: { "Retry-After": String(this.mentionRetryAfter) },
+            body: JSON.stringify({
+              detail: `You've mentioned agents and workflows too often. Try again in ${this.mentionRetryAfter} seconds; your message hasn't been posted.`,
+            }),
+          });
+        }
+        this.mentionsMade += allowed;
         const message = this.addChatMessage(chat, body.body, this.me, mentions);
-        const invoked = mentions.flatMap((x) =>
-          x.kind === "user" ? [] : [this.invoke(chat, message, x.kind, (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!)],
+        const invoked = targets.map((x) =>
+          this.invoke(
+            chat,
+            message,
+            x.kind as Kind,
+            (x.kind === "agent" ? this.agents : this.workflows).get(x.id)!,
+            refusals.get(`${x.kind}:${x.id}`),
+          ),
         );
         const ids = new Set(invoked.map((i) => i.id));
         return reply(

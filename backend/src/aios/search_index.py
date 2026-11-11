@@ -35,6 +35,7 @@ from sqlalchemy import bindparam, case, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from aios import usage
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import (
@@ -48,7 +49,8 @@ from aios.datastores.models import (
 )
 from aios.embeddings import embed_documents
 from aios.jev import Verdict
-from aios.models import ChatMessageKind
+from aios.models import ChatMessageKind, UsagePurpose
+from aios.usage import Charge
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +227,7 @@ def _waiting(data_store_id: uuid.UUID) -> list[Any]:
         rows = store.execute(
             select(
                 SearchItem.id,
+                SearchItem.kind,
                 SearchItem.text_hash,
                 SearchItem.text,
                 SearchItem.search_text,
@@ -258,6 +261,13 @@ def _store_embeddings(data_store_id: uuid.UUID, rows: list[Any], vectors: list[l
         store.commit()
 
 
+# What an embedding of each kind of item is for: a document's chunks are its ingest.
+_PURPOSES = (
+    (UsagePurpose.ingest, lambda kind: kind == SearchItemKind.document_chunk),
+    (UsagePurpose.index_embedding, lambda kind: kind != SearchItemKind.document_chunk),
+)
+
+
 def embed_pending(data_store_id: uuid.UUID, budget: float | None = None) -> int:
     """Embed the store's items waiting for an embedding, a batch at a time, until none are left
     or `budget` seconds (`search_embed_budget_seconds`) have gone: what's left waits for the next
@@ -272,7 +282,13 @@ def embed_pending(data_store_id: uuid.UUID, budget: float | None = None) -> int:
         if not rows:
             break
         texts = [(r.search_text or r.text)[:EMBED_MAX_CHARS] for r in rows]
-        vectors = asyncio.run(embed_documents(texts))
+        # Under no charge, so it records nothing itself: its purposes are recorded here.
+        with usage.charging(None):
+            vectors = asyncio.run(embed_documents(texts))
+        # Charged to no one: documents' chunks as ingest, everything else as indexing.
+        for purpose, kinds in _PURPOSES:
+            charged = [t for r, t in zip(rows, texts, strict=True) if kinds(r.kind)]
+            usage.record_embedding(Charge(data_store_id, purpose), charged)
         _store_embeddings(data_store_id, rows, vectors)
         done += len(rows) + _reuse(data_store_id)
         if time.monotonic() >= deadline:

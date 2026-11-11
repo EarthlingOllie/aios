@@ -120,7 +120,7 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
     version = skill.current_version.id
 
     def agent(body: AgentIn):
-        return create_agent(body, user, org, db, store)
+        return create_agent(body, user, org, Role.admin, db, store)
 
     writer = agent(
         AgentIn(
@@ -156,6 +156,7 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
         ),
         user,
         org,
+        Role.admin,
         db,
         store,
     )
@@ -166,6 +167,7 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
         ),
         user,
         org,
+        Role.admin,
         db,
         store,
     )

@@ -14,6 +14,7 @@ from aios.api.agents.common import (
     AgentOut,
     AgentSummary,
     agent_out,
+    apply_guards,
     get_org_agent,
     lock_agent,
     refuse_archived_skills,
@@ -28,7 +29,8 @@ from aios.api.triggers import disable_triggers, unindex
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores.models import Agent, AgentRun, AgentVersion, Trigger
 from aios.db import DB, DbId
-from aios.permissions import Action, allow
+from aios.models import InvocableBy
+from aios.permissions import Action, CurrentRole, allow
 from aios.tools import ToolOrganisation
 from aios.versioning import save_agent_version
 
@@ -97,12 +99,24 @@ def list_agents(
     dependencies=[allow(Action.build)],
 )
 def create_agent(
-    body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+    body: AgentIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    role: CurrentRole,
+    db: DB,
+    store: CurrentStore,
 ):
     tools = resolve_tools(body.tools, ToolOrganisation(org.id, store))
     skills = resolve_skill_versions(store, body.skill_version_ids)
     refuse_archived_skills(skills)
-    agent = Agent(**built_by(user.id), name=body.name, description=body.description)
+    agent = Agent(
+        **built_by(user.id),
+        name=body.name,
+        description=body.description,
+        invocable_by=InvocableBy.everyone,
+        limits={},
+    )
+    apply_guards(db, org.id, role, agent, body.invocable_by, body.limits)
     clash = name_clash(store, body.name)
     store.add(agent)
     with unique_name(store, "an agent", AGENT_NAME_INDEX, clash):
@@ -139,10 +153,13 @@ def update_agent(
     body: AgentIn,
     user: CurrentUser,
     org: CurrentOrganisation,
+    role: CurrentRole,
     db: DB,
     store: CurrentStore,
 ):
-    """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version."""
+    """Rename/describe the agent; a changed prompt, skill set or tool set creates a new version.
+    Who may invoke it and its caps are the agent's, not versioned: only admins raise a cap
+    above the organisation's (403)."""
     agent = get_org_agent(store, agent_id)
     tools = resolve_tools(body.tools, ToolOrganisation(org.id, store), agent.current_version)
     skills = resolve_skill_versions(store, body.skill_version_ids)
@@ -151,6 +168,7 @@ def update_agent(
     agent.name = body.name
     agent.description = body.description
     agent.updated_by = user.id
+    apply_guards(db, org.id, role, agent, body.invocable_by, body.limits)
     before = agent.current_version_id
     with unique_name(store, "an agent", AGENT_NAME_INDEX, clash):
         version = save_agent_version(

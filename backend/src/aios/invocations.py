@@ -53,7 +53,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, jev, search_index
+from aios import checkpoints, jev, limits, search_index
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -153,12 +153,18 @@ def of_workflow_run(store: Session, workflow_run_id: int) -> Invocation | None:
 
 
 def create(
-    store: Session, message: ChatMessage, targets: Sequence[tuple[TriggerTargetKind, int]]
+    store: Session,
+    message: ChatMessage,
+    targets: Sequence[tuple[TriggerTargetKind, int]],
+    refused: dict[tuple[TriggerTargetKind, int], str] | None = None,
 ) -> list[Invocation]:
     """Queue an invocation of each agent or workflow (kind, id) the (just added) message
     mentions, each with its acknowledgement and card; in the caller's transaction. Nothing for a
-    message that isn't a user's. An archived agent's or workflow's fails at once ("The agent
-    <name> is archived"), before any handoff, so no model is called for it."""
+    message that isn't a user's. One in `refused` (the mention guards', `aios.guards`) is
+    refused at once with the reason, which its card says; an archived agent's or workflow's
+    fails at once ("The agent <name> is archived"). Either is before any handoff, so no model is
+    called for it."""
+    refused = refused or {}
     if message.author_kind != ChatAuthorKind.user:
         return []
     store.flush()
@@ -167,6 +173,7 @@ def create(
     archived = _archived(store, targets)
     for kind, target_id in targets:
         is_agent = kind == TriggerTargetKind.agent
+        reason = refused.get((kind, target_id))
         invocation = Invocation(
             chat_id=message.chat_id,
             message_id=message.id,
@@ -174,7 +181,9 @@ def create(
             target_kind=kind,
             agent_id=target_id if is_agent else None,
             workflow_id=None if is_agent else target_id,
-            status=InvocationStatus.queued,
+            status=InvocationStatus.queued if reason is None else InvocationStatus.refused,
+            refusal_reason=reason,
+            finished_at=None if reason is None else func.now(),
         )
         store.add(invocation)
         store.flush()
@@ -185,12 +194,12 @@ def create(
                 author_agent_id=invocation.agent_id,
                 author_workflow_id=invocation.workflow_id,
                 kind=ChatMessageKind.run_card,
-                body=ACKNOWLEDGEMENT,
+                body=ACKNOWLEDGEMENT if reason is None else reason,
                 invocation_id=invocation.id,
             )
         )
         store.flush()
-        if (name := archived.get((kind, target_id))) is not None:
+        if reason is None and (name := archived.get((kind, target_id))) is not None:
             fail_unstarted(store, invocation.id, f"The {kind.value} {name} is archived")
         made.append(invocation)
     return made
@@ -362,6 +371,19 @@ def last_reply(data_store_id: uuid.UUID, run_id: int) -> str:
     return NO_REPLY
 
 
+def partial_reply(data_store_id: uuid.UUID, run_id: int) -> str:
+    """What the agent said in the store's run's last turn, up to where it stopped: its messages'
+    text since the last human message, in order; empty if none."""
+    history = checkpoints.history(data_store_id, run_id)
+    said: list[str] = []
+    for message in reversed(history):
+        if message.type == "human":
+            break
+        if message.type == "ai" and message.text.strip():
+            said.insert(0, message.text.strip())
+    return "\n\n".join(said)
+
+
 def finish_turn(store: Session, invocation_id: int, error: str | None) -> None:
     """Finish an agent invocation whose turn has ended (`error` None if it went fine): post the
     agent's reply, or why it failed; in the caller's transaction. A no-op if it has already
@@ -380,6 +402,11 @@ def finish_turn(store: Session, invocation_id: int, error: str | None) -> None:
         )
     elif invocation.agent_run_id is None:
         failed(store, invocation, RUN_DELETED)
+    elif error is not None and error.startswith(limits.REACHED):
+        # Stopped at a cap: what the agent got to, and which limit stopped it.
+        partial = partial_reply(store_id_of(store), invocation.agent_run_id)
+        body = f"{partial}\n\n_{error}_" if partial else f"_{error}_"
+        _finish(store, invocation, InvocationStatus.failed, body, error)
     elif error is not None:
         failed(store, invocation, error)
     elif not store.scalar(select(waiting_on_a_request(invocation.agent_run_id))):

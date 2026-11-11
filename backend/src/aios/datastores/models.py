@@ -49,6 +49,7 @@ from aios.models.chats import (
     InvocationStatus,
 )
 from aios.models.triggers import TriggerKind, TriggerStatus, TriggerTargetKind
+from aios.models.usage import InvocableBy, UsageKind, UsagePurpose
 from aios.models.workflows import WorkflowNodeKind, WorkflowRunStatus, WorkflowStepStatus
 
 EMBEDDING_DIM = 1024
@@ -239,6 +240,16 @@ class Agent(StoreBase):
     # Which of the app's built-in agents it is, if it's one: made by the app rather than by a
     # member (`aios.assistant`), and found again by this. Null for the members' own agents.
     builtin: Mapped[str | None] = mapped_column(String(32))
+    # Who may invoke it by mentioning it (`aios.guards`), and its own caps (`aios.limits`):
+    # only those it lowers, or an admin raised, by name; the rest follow the organisation's.
+    invocable_by: Mapped[InvocableBy] = mapped_column(
+        Enum(InvocableBy, name="invocable_by"),
+        default=InvocableBy.everyone,
+        server_default=InvocableBy.everyone.value,
+    )
+    limits: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=sql_text("'{}'::jsonb")
+    )
     # When it was archived, and by which member; both null while it isn't. Archived rather
     # than deleted: workflow versions pin its versions, and its runs are the members' history
     # with it. An archived agent starts nothing new.
@@ -338,6 +349,16 @@ class Workflow(StoreBase):
     # Where the editor draws each node, by node key: {"key": {"x": 0, "y": 0}}. Presentation
     # only, like the name, so it isn't versioned; nodes without a position are laid out for you.
     layout: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"))
+    # Who may invoke it by mentioning it (`aios.guards`), and its own caps (`aios.limits`):
+    # only those it lowers, or an admin raised, by name; the rest follow the organisation's.
+    invocable_by: Mapped[InvocableBy] = mapped_column(
+        Enum(InvocableBy, name="invocable_by"),
+        default=InvocableBy.everyone,
+        server_default=InvocableBy.everyone.value,
+    )
+    limits: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=sql_text("'{}'::jsonb")
+    )
     # When it was archived, and by which member; both null while it isn't. Archived rather
     # than deleted: other workflows' versions pin its versions.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -918,6 +939,8 @@ class Invocation(StoreBase):
     )
     # Why it failed: the run's error, or why it couldn't start.
     error: Mapped[str | None] = mapped_column(Text)
+    # Why it was refused (`aios.guards`), for a refused one.
+    refusal_reason: Mapped[str | None] = mapped_column(Text)
     # What the handoff told its run of the chat (`aios.handoff`); null until it has.
     brief: Mapped[str | None] = mapped_column(Text)
     # The run it started; null until it has, and once that run has been deleted (the card says
@@ -1348,4 +1371,67 @@ class SearchItem(StoreBase):
             postgresql_where=sql_text("search_text IS NOT NULL"),
         ),
         {"comment": "The search index: documents, chat messages, runs' messages and briefs"},
+    )
+
+
+class UsageEntry(StoreBase):
+    """One billable unit (`aios.usage`): a model call, an embedding batch, a provider's web
+    searches in one response, a tool call or a sandbox session's seconds, with what it cost in
+    pounds sterling and who and what it's charged to. Never pruned. Agents read it through
+    `reporting.usage`."""
+
+    __tablename__ = "usage"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="When it was recorded."
+    )
+    kind: Mapped[UsageKind] = mapped_column(
+        Enum(UsageKind, name="usage_kind"),
+        comment="model_call, embedding, web_search, tool_call or sandbox_seconds.",
+    )
+    purpose: Mapped[UsagePurpose] = mapped_column(
+        Enum(UsagePurpose, name="usage_purpose"),
+        comment="turn, handoff, handback, compaction, ingest, search_query, index_embedding or"
+        " insight.",
+    )
+    model: Mapped[str | None] = mapped_column(Text, comment="The model, as provider:model.")
+    input_tokens: Mapped[int] = mapped_column(BigInteger, server_default=sql_text("0"), default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, server_default=sql_text("0"), default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(
+        BigInteger, server_default=sql_text("0"), default=0
+    )
+    cache_write_tokens: Mapped[int] = mapped_column(
+        BigInteger, server_default=sql_text("0"), default=0
+    )
+    quantity: Mapped[float] = mapped_column(
+        Double,
+        server_default=sql_text("1"),
+        default=1,
+        comment="How many: calls, texts embedded, searches, or seconds.",
+    )
+    cost: Mapped[float | None] = mapped_column(
+        Double, comment="Estimated cost in GBP; null for a model with no price."
+    )
+    agent_id: Mapped[int | None] = mapped_column(Integer, comment="aios.agents.id")
+    workflow_id: Mapped[int | None] = mapped_column(Integer, comment="aios.workflows.id")
+    agent_run_id: Mapped[int | None] = mapped_column(Integer, comment="aios.agent_runs.id")
+    workflow_run_id: Mapped[int | None] = mapped_column(Integer, comment="aios.workflow_runs.id")
+    turn_id: Mapped[int | None] = mapped_column(Integer, comment="aios.turns.id")
+    invocation_id: Mapped[int | None] = mapped_column(Integer, comment="aios.invocations.id")
+    person_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The person charged (aios.people.id)."
+    )
+    cause: Mapped[InvocationCause | None] = mapped_column(
+        Enum(InvocationCause, name="invocation_cause"), comment="mention, schedule or manual."
+    )
+    # What makes recording it again a no-op (a model response's id): a retry never counts twice.
+    call_key: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("call_key", name="uq_usage_call_key"),
+        Index("ix_usage_at", "at"),
+        Index("ix_usage_turn_id", "turn_id"),
+        Index("ix_usage_workflow_run_id", "workflow_run_id"),
+        {"comment": "The usage ledger: one row per billable unit, priced in GBP. Never pruned."},
     )

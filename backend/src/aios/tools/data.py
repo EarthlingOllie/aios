@@ -94,7 +94,7 @@ def _store_limiter(store_id: uuid.UUID) -> CapacityLimiter:
 
 # The store's tables, with their columns: the organisation's (`data`) first, then the platform's
 # (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions, nor what
-# a request dropped; then the reporting views (`reporting`): runs, turns and the audit log.
+# a request dropped; then the reporting views (`reporting`): runs, turns, usage and the audit log.
 DESCRIBE_SQL = text(
     f"""
     SELECT n.nspname AS schema, c.relname AS name,
@@ -427,10 +427,12 @@ descriptions.
 The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only);
 the `reporting` schema, read-only views of the platform's records: the organisation's agent and
 workflow runs and their turns (why each ran, how it went, how long it took and what it cost), for
-questions about how its agents perform, and `reporting.audit_log` (who did what, to what, and
-when). Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. A column
-with `embedding_of` is the embedding of that text column, which `write_data` fills itself. If
-there are too many to describe at once, `truncated` is true and the rest are left out.
+questions about how its agents perform; `reporting.usage`, the usage ledger (each model call,
+embedding, web search and sandbox session, its tokens and estimated cost in GBP, and what it's
+charged to); and `reporting.audit_log` (who did what, to what, and when). Use the names it gives,
+schema-qualified (e.g. `data.contacts`), in `query_data`. A column with `embedding_of` is the
+embedding of that text column, which `write_data` fills itself. If there are too many to describe
+at once, `truncated` is true and the rest are left out.
 
 {DATA_NOT_INSTRUCTIONS}"""
 

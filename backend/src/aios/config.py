@@ -149,6 +149,37 @@ class Settings(BaseSettings):
     handoff_window_messages: int = Field(default=30, ge=1)
     handoff_window_tokens: int = Field(default=8_000, ge=1)
 
+    # The usage ledger (`aios.usage`): estimated prices in pounds sterling, by model ("provider:
+    # model", as `llm_model` and `embedding_model` name them), as a JSON object. A chat model's
+    # are per million tokens of `input`, `output`, `cache_read` and `cache_write`, and per
+    # `web_search` its provider runs; an embedding model's per million (estimated) tokens of
+    # `input`; `sandbox`'s `per_second` of a sandbox session. A model with no price records a
+    # blank cost. Covers the deployment's current models.
+    price_table: dict[str, dict[str, float]] = {
+        "anthropic:claude-sonnet-5-5": {
+            "input": 2.40,
+            "output": 12.00,
+            "cache_read": 0.24,
+            "cache_write": 3.00,
+            "web_search": 0.008,
+        },
+        "voyageai:voyage-4": {"input": 0.05},
+        "sandbox": {"per_second": 0.00004},
+    }
+    # Mention guards (`aios.guards`): how many agents and workflows one message may mention (a
+    # 422 past it), and how many allowed mentions a person may make in an organisation, as a
+    # `limits` string counted in Redis (a 429 past it).
+    mentions_per_message: int = Field(default=5, ge=1)
+    mention_rate_per_person: str = "60/minute"
+    # Caps (`aios.limits`): a turn stops before a model call that would pass one, and so does a
+    # workflow run's agent node. Admins override them for an organisation; agents and workflows
+    # may lower them (and an admin raise them). Costs are in pounds sterling.
+    turn_max_model_calls: int = Field(default=200, ge=1)
+    turn_max_tokens: int = Field(default=5_000_000, ge=1)
+    turn_max_cost: float = Field(default=25, gt=0)
+    workflow_run_max_model_calls: int = Field(default=2_000, ge=1)
+    workflow_run_max_cost: float = Field(default=100, gt=0)
+
     # Tracing agent runs to Langfuse (`aios.tracing`). Off unless both keys are set.
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr = SecretStr("")

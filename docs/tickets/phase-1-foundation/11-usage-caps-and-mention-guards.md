@@ -9,14 +9,14 @@
 
 **Blocked by:** [06: Unified search across documents, chats and runs](06-unified-search.md), [07: Roles and permissions on every route](07-roles-and-permissions.md), [10: An invocation for every run, and turns as records](10-invocations-and-turns.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A turn with N model calls writes exactly N model-call rows, counted with the scripted model; handoff calls, embedding batches, web search counts and sandbox seconds each write rows with the right purpose and person, and retries never double-count.
-- [ ] The usage reporting view is readable through `query_data` and holds no text.
-- [ ] Costs are in GBP; a model with no price records a blank cost; usage totals are admins-only.
-- [ ] An agent capped at three model calls stops before a fourth, with a message naming the limit and its partial reply kept.
-- [ ] An editor raising a limit above the organisation's answers 403; the limit in force follows the agent or workflow, then the organisation, then the deployment.
-- [ ] A message mentioning six agents answers 422 and writes nothing; people mentioned don't count.
-- [ ] A mention refused by invocable-by posts with a refused card, makes no model call and doesn't count towards the rate limit.
-- [ ] Going over the mention rate limit answers 429 with a retry time, and the composer keeps the draft.
-- [ ] Participants can mention; browser tests cover refused cards, the composer's 422 and 429 messages, and the invocable-by and limits controls.
+- [x] A turn with N model calls writes exactly N model-call rows, counted with the scripted model; handoff calls, embedding batches, web search counts and sandbox seconds each write rows with the right purpose and person, and retries never double-count.
+- [x] The usage reporting view is readable through `query_data` and holds no text.
+- [x] Costs are in GBP; a model with no price records a blank cost; usage totals are admins-only.
+- [x] An agent capped at three model calls stops before a fourth, with a message naming the limit and its partial reply kept.
+- [x] An editor raising a limit above the organisation's answers 403; the limit in force follows the agent or workflow, then the organisation, then the deployment.
+- [x] A message mentioning six agents answers 422 and writes nothing; people mentioned don't count.
+- [x] A mention refused by invocable-by posts with a refused card, makes no model call and doesn't count towards the rate limit.
+- [x] Going over the mention rate limit answers 429 with a retry time, and the composer keeps the draft.
+- [x] Participants can mention; browser tests cover refused cards, the composer's 422 and 429 messages, and the invocable-by and limits controls.

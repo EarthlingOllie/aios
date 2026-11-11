@@ -122,6 +122,7 @@ STORE_TABLES = {
         "sources",
         "triggers",
         "turns",
+        "usage",
         "workflow_edges",
         "workflow_nodes",
         "workflow_run_steps",
@@ -129,7 +130,12 @@ STORE_TABLES = {
         "workflow_versions",
         "workflows",
     )
-} | {("reporting", "runs"), ("reporting", "turns"), ("reporting", "audit_log")}
+} | {
+    ("reporting", "runs"),
+    ("reporting", "turns"),
+    ("reporting", "audit_log"),
+    ("reporting", "usage"),
+}
 
 
 def set_status(store_id, status: DataStoreStatus) -> None:

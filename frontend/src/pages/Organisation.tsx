@@ -12,7 +12,9 @@ import { Input } from "@/components/ui/input";
 import { DeleteSection } from "@/components/DeleteOrganisation";
 import { LeaveSection } from "@/components/LeaveOrganisation";
 import { InvitesSection } from "@/components/OrganisationInvites";
+import { OrganisationLimitsSection } from "@/components/Limits";
 import { RetentionSection } from "@/components/Retention";
+import { UsageSection } from "@/components/Usage";
 import { api, describeError, type Me, type Organisation, type Role } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
@@ -25,9 +27,9 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
  * page: its creator and members with their roles, which admins change (`/organisation`), its
  * invitation links (`/organisation/invitations`, admins' only), its settings: the flagged list
- * (admins' only), the approval rules, retention, leaving it and deleting it
- * (`/organisation/settings`), and its audit log
- * (`/organisation/audit-log`, admins' only).
+ * (admins' only), the approval rules, retention, limits, leaving it and deleting it
+ * (`/organisation/settings`), its audit log (`/organisation/audit-log`, admins' only) and its
+ * usage totals (`/organisation/usage`, admins' only).
  */
 export function OrganisationPage() {
   const me = useCurrentUser();
@@ -65,6 +67,7 @@ export function OrganisationPage() {
           {org.role === "admin" && <FlaggedSection key={`flagged-${org.id}`} />}
           <ApprovalRulesSection key={`rules-${org.id}`} />
           <RetentionSection key={`retention-${org.id}`} org={org} onChanged={reload} />
+          <OrganisationLimitsSection key={`limits-${org.id}`} org={org} onChanged={reload} />
           <LeaveSection
             org={org}
             onLeft={(after) => {
@@ -85,9 +88,12 @@ export function OrganisationPage() {
         </>
       ),
     },
-    // Only admins read the audit log.
+    // Only admins read the audit log and usage totals.
     ...(org.role === "admin"
-      ? [{ id: "audit-log", label: "Audit log", content: <AuditLogSection key={org.id} org={org} /> }]
+      ? [
+          { id: "audit-log", label: "Audit log", content: <AuditLogSection key={org.id} org={org} /> },
+          { id: "usage", label: "Usage", content: <UsageSection key={org.id} /> },
+        ]
       : []),
   ];
 

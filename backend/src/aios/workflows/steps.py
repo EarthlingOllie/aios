@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from aios import checkpoints, invocations, tracing
+from aios import checkpoints, invocations, tracing, usage
 
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
@@ -288,19 +288,26 @@ async def _run_agent(
             else:
                 turn_id = await asyncio.to_thread(_start_turn, store_id, agent_run_id, text)
             error: str | None = "The turn was stopped."
+            # Charged to the turn, and capped by its caps and its workflow run's
+            # (`aios.usage`).
+            charge = None
+            if turn_id is not None:
+                charge = await asyncio.to_thread(usage.for_turn, store_id, turn_id)
+            limit = usage.recursion_limit(charge)
             try:
-                await graph.ainvoke(
-                    graph_input,
-                    config,
-                    context=ChatDeps(
-                        user_id=run.created_by,
-                        run_id=agent_run_id,
-                        data_store_id=run.data_store_id,
-                    ),
-                    # As in a chat turn: checkpointed step by step, so a failed turn's history is
-                    # kept.
-                    durability="sync",
-                )
+                with usage.charging(charge):
+                    await graph.ainvoke(
+                        graph_input,
+                        config if limit is None else {**config, "recursion_limit": limit},
+                        context=ChatDeps(
+                            user_id=run.created_by,
+                            run_id=agent_run_id,
+                            data_store_id=run.data_store_id,
+                        ),
+                        # As in a chat turn: checkpointed step by step, so a failed turn's
+                        # history is kept.
+                        durability="sync",
+                    )
                 error = None
             except Exception as exc:
                 error = error_text(exc)

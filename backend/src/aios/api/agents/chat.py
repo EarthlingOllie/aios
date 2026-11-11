@@ -17,7 +17,16 @@ from langgraph.types import Command
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, search_index, tracing, turn_lease, turns, ui_stream
+from aios import (
+    checkpoints,
+    invocations,
+    search_index,
+    tracing,
+    turn_lease,
+    turns,
+    ui_stream,
+    usage,
+)
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
@@ -163,28 +172,6 @@ def _start_turn(
     return turn_id
 
 
-def tool_call_count(response: AIMessage) -> int:
-    """The tool calls in a model response: the agent's, and the provider's own (e.g. web
-    search), which are content blocks of the response (as the run page counts them)."""
-    blocks = response.content if isinstance(response.content, list) else []
-    server = sum(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in blocks)
-    return len(response.tool_calls) + server
-
-
-def _count_step(data_store_id: uuid.UUID, turn_id: int, response: AIMessage) -> None:
-    """Add a model call to the turn's counters: its tool calls, and what the call cost."""
-    usage = response.usage_metadata or {}
-    with store_session(data_store_id) as store:
-        turns.count(
-            store,
-            turn_id,
-            tool_calls=tool_call_count(response),
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
-        )
-        store.commit()
-
-
 def _end_turn(
     data_store_id: uuid.UUID,
     run_id: int,
@@ -219,19 +206,6 @@ def _end_turn(
                 if messages is not None:
                     search_index.index_turn(store, run_id, turn_id, messages, before)
         store.commit()
-
-
-def model_responses(mode: str, data: Any) -> list[AIMessage]:
-    """The model's finished responses in one item of the agent's stream: each is a step."""
-    if mode != "updates":
-        return []
-    return [
-        message
-        for node, update in data.items()
-        if node == "model"
-        for message in (update or {}).get("messages", [])
-        if isinstance(message, AIMessage)
-    ]
 
 
 async def _keep_unfinished_turn(agent, config, partial: AIMessage | None) -> list[str]:
@@ -541,6 +515,13 @@ async def _run_turn(
     lease: turn_lease.Lease,
 ) -> AsyncIterator[ui_stream.Chunk]:
     error: str | None = "The turn was stopped."
+    # What the turn's calls are charged to, and its caps (`aios.usage`): each model call is
+    # counted, and checked against them, as it's made.
+    charge = None
+    if turn_id is not None:
+        charge = await run_in_threadpool(usage.for_turn, ctx.data_store_id, turn_id)
+    if (limit := usage.recursion_limit(charge)) is not None:
+        config = {**config, "recursion_limit": limit}
     # The graph runs in a task of its own, which stopping the turn cancels (`lease.on_stop`), so
     # a model or tool call underway ends at once rather than at the turn's next write.
     events = agent.astream(
@@ -564,7 +545,9 @@ async def _run_turn(
             async for item in events:
                 queue.put_nowait(item)
 
-    producer = asyncio.create_task(produce())
+    # Its task, and what it starts, are charged to the turn.
+    with usage.charging(charge):
+        producer = asyncio.create_task(produce())
     producer.add_done_callback(lambda _: queue.put_nowait(done))
     lease.on_stop = producer.cancel
     if lease.stopped:
@@ -574,15 +557,6 @@ async def _run_turn(
             mode, data = item
             for chunk in ui.feed(mode, data):
                 yield chunk
-            # One small update per model step, so the run's counters are live. A count that
-            # can't be written (the store busy, say) doesn't end the turn.
-            for response in model_responses(mode, data):
-                if turn_id is None:
-                    break
-                try:
-                    await run_in_threadpool(_count_step, ctx.data_store_id, turn_id, response)
-                except Exception:
-                    log.exception("couldn't count a step of agent run %s", run_id)
         if producer.cancelled():
             raise _Stopped
         if (exc := producer.exception()) is not None:

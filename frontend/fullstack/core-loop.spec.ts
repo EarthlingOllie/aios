@@ -5,7 +5,8 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * agent in a chat; the agent, on the scripted model's `core-loop` scenario
  * (backend/src/aios/testing/scenarios.py), asks for a `notes` table and its card shows the run
  * waiting; the person approves on the Data page; the provisioning worker applies the change, the
- * workflow worker resumes the run, which writes a row and replies "Saved." in the chat.
+ * workflow worker resumes the run, which writes a row and replies "Saved." in the chat; and each
+ * of its model calls wrote a row of the usage ledger.
  *
  * Later steps add their stories here, each a scenario of the scripted model.
  */
@@ -103,4 +104,21 @@ test("a mention asks for a table, waits for approval on the Data page, then save
     /id\s*body/,
     /1\s*@Notes\s+buy milk/,
   ]);
+
+  // 6. Every model call of its turns wrote a usage row, charged to the agent, and so did the
+  // handoff's one call.
+  const runs = (await (await page.request.get(api(`/agents/${agent.id}/runs`))).json()) as { id: number }[];
+  let modelCalls = 0;
+  for (const run of runs) {
+    const detail = (await (await page.request.get(api(`/agents/${agent.id}/runs/${run.id}`))).json()) as {
+      turns: { model_calls: number }[];
+    };
+    modelCalls += detail.turns.reduce((sum, t) => sum + t.model_calls, 0);
+  }
+  expect(modelCalls).toBeGreaterThan(0);
+  const usage = await page.request.get(api("/usage?group=agent"));
+  expect(usage.status(), await usage.text()).toBe(200);
+  const totals = (await usage.json()) as { currency: string; totals: { key: number; model_calls: number }[] };
+  expect(totals.currency).toBe("GBP");
+  expect(totals.totals.find((t) => t.key === agent.id)?.model_calls).toBe(modelCalls + 1);
 });

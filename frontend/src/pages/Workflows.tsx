@@ -25,6 +25,7 @@ import {
 } from "@/components/crud";
 import { WorkflowArchiveDialog } from "@/components/ArchiveDialog";
 import { ExportLink, ImportButton, UnrunnableNotice } from "@/components/ImportDialog";
+import { GuardFields, guardsValid } from "@/components/Limits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +44,8 @@ import {
   type NodePosition,
   type WorkflowSummary,
   type WorkflowVersion,
+  type InvocableBy,
+  type Limits,
 } from "@/lib/api";
 import { plural } from "@/lib/utils";
 import { fromVersion, toInput, type Draft, type Target } from "@/lib/editor";
@@ -53,7 +56,8 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
-import { useRefusal } from "@/lib/current-user";
+import { useRefusal, useRole } from "@/lib/current-user";
+import { draftOf, limitsOf, RUN_LIMITS, type LimitsDraft } from "@/lib/limits";
 import { personName } from "@/lib/provenance";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 import { ArchivedBadge } from "@/pages/Agents";
@@ -469,7 +473,11 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   );
 }
 
-/** Builds a new workflow, or edits one: its name, description and graph. */
+type Guards = { invocable_by: InvocableBy; limits: LimitsDraft<(typeof RUN_LIMITS)[number]> };
+const newGuards: Guards = { invocable_by: "everyone", limits: draftOf(RUN_LIMITS, {}) };
+
+/** Builds a new workflow, or edits one: its name, description, graph, who may invoke it and
+ * its limits. */
 export function WorkflowEditorPage() {
   const params = useParams();
   const id = params.workflowId ? Number(params.workflowId) : undefined;
@@ -490,9 +498,16 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const buildRefusal = useRefusal("build");
+  const role = useRole();
   const agents = useLoad(api.listAgents);
   const workflows = useLoad(api.listWorkflows);
+  const organisation = useLoad(api.getOrganisation);
+  const ceiling = organisation.data?.limits.in_force;
   const loadError = agents.error ?? workflows.error;
+  // Who may invoke it and its own caps, as typed, and as saved.
+  const [guards, setGuards] = useState<Guards>(newGuards);
+  const [loadedGuards, setLoadedGuards] = useState<string>(JSON.stringify(newGuards));
+  const [savedLimits, setSavedLimits] = useState<Partial<Limits>>({});
 
   useEffect(() => {
     const load = (meta: { name: string; description: string; note: string }, draft: Draft) => {
@@ -510,6 +525,10 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
           { name: w.name, description: w.description, note: "" },
           fromVersion(w.current_version, w.layout),
         );
+        const saved = { invocable_by: w.invocable_by, limits: draftOf(RUN_LIMITS, w.limits) };
+        setGuards(saved);
+        setLoadedGuards(JSON.stringify(saved));
+        setSavedLimits(w.limits);
         setEditing(w.current_version.version);
       },
       (err) => setError(describeError(err)),
@@ -536,7 +555,8 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
     [agents.data, workflows.data, id],
   );
 
-  const dirty = !!meta && !!draft && JSON.stringify(toInput(draft, meta)) !== loaded;
+  const dirty =
+    !!meta && !!draft && (JSON.stringify(toInput(draft, meta)) !== loaded || JSON.stringify(guards) !== loadedGuards);
   // Set once saved or cancelled (which asks itself), so leaving then doesn't ask (again).
   const done = useRef(false);
   // Closing or reloading the tab asks first, and so does leaving within the app.
@@ -566,7 +586,12 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
     setSaving(true);
     setError(undefined);
     // Refused if someone saved another version meanwhile, rather than silently overwriting it.
-    const body = { ...toInput(draft!, meta!), base_version: editing };
+    const body = {
+      ...toInput(draft!, meta!),
+      base_version: editing,
+      invocable_by: guards.invocable_by,
+      limits: limitsOf(RUN_LIMITS, guards.limits)!,
+    };
     try {
       const saved =
         id === undefined ? await api.createWorkflow(body) : await api.updateWorkflow(id, body);
@@ -616,6 +641,17 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
         <Section title="Graph">
           <GraphEditor draft={draft} onChange={setDraft} targets={targets} />
         </Section>
+        <GuardFields
+          kind="workflow"
+          names={RUN_LIMITS}
+          invocableBy={guards.invocable_by}
+          onInvocableBy={(invocable_by) => setGuards({ ...guards, invocable_by })}
+          draft={guards.limits}
+          onDraft={(limits) => setGuards({ ...guards, limits })}
+          ceiling={ceiling}
+          saved={savedLimits}
+          role={role}
+        />
         {id !== undefined && (
           <Field
             label="Change note"
@@ -631,7 +667,16 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
           </Field>
         )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !meta.name.trim() || !!buildRefusal} title={buildRefusal ?? undefined}>
+          <Button
+            type="submit"
+            disabled={
+              saving ||
+              !meta.name.trim() ||
+              !!buildRefusal ||
+              !guardsValid(RUN_LIMITS, guards.limits, ceiling, savedLimits, role)
+            }
+            title={buildRefusal ?? undefined}
+          >
             {id === undefined ? "Create workflow" : "Save changes"}
           </Button>
           <Button type="button" variant="ghost" onClick={back}>

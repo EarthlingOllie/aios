@@ -10,6 +10,7 @@ from aios.jev import UNTRUSTED_RULE
 from aios.tool_checks import ToolResultChecks
 from aios.tools import AgentTool, ToolOrganisation, build_tool
 from aios.tools.web_search import WEB_SEARCH
+from aios.usage import UsageMiddleware
 
 
 def server_tools(tools: list[AgentTool], model: str | None) -> list[AgentTool]:
@@ -57,7 +58,8 @@ def build_agent(
         server_tools(tools, model),
         system_prompt=f"{instructions}\n\n{UNTRUSTED_RULE}" if instructions else UNTRUSTED_RULE,
         # Each tool result checked by Jev and wrapped as untrusted (`aios.tool_checks`).
-        middleware=[ToolResultChecks()],
+        # And each model call charged to the turn and checked against its caps (`aios.usage`).
+        middleware=[ToolResultChecks(), UsageMiddleware(llm.model_name(model))],
         context_schema=ChatDeps,
         checkpointer=checkpointer,
         name="custom-agent",

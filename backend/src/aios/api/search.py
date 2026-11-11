@@ -7,11 +7,14 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from aios.auth import CurrentDataStore
+from aios import usage
+from aios.auth import CurrentDataStore, CurrentUser
 from aios.datastores.models import SearchItemKind
+from aios.models import UsagePurpose
 from aios.permissions import Action, allow
 from aios.search import Filters
 from aios.search import search as search_index
+from aios.usage import Charge
 
 router = APIRouter(prefix="/api")
 
@@ -46,12 +49,15 @@ class SearchHitOut(BaseModel):
 @router.get("/search", response_model=list[SearchHitOut], dependencies=[allow(Action.read)])
 async def search(
     store_id: CurrentDataStore,
+    user: CurrentUser,
     # At least one non-whitespace character.
     q: Annotated[str, Query(min_length=1, pattern=r"\S")],
     limit: Annotated[int, Query(ge=1, le=50)] = 8,
     # Any of these kinds; every kind if none is given.
     kind: Annotated[list[SearchItemKind] | None, Query()] = None,
 ):
-    return await search_index(
-        data_store_id=store_id, query=q, limit=limit, filters=Filters(kinds=kind or ())
-    )
+    # The query's embedding is charged to the person searching (`aios.usage`).
+    with usage.charging(Charge(store_id, UsagePurpose.search_query, person_id=user.id)):
+        return await search_index(
+            data_store_id=store_id, query=q, limit=limit, filters=Filters(kinds=kind or ())
+        )

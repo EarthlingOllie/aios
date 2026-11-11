@@ -47,6 +47,11 @@ from aios.models.triggers import (
     TriggerStatus,
     TriggerTargetKind,
 )
+from aios.models.usage import (
+    InvocableBy,
+    UsageKind,
+    UsagePurpose,
+)
 from aios.models.work import (
     WorkItem,
     WorkKind,
@@ -90,4 +95,7 @@ __all__ = [
     "ChatMessageKind",
     "InvocationCause",
     "InvocationStatus",
+    "InvocableBy",
+    "UsageKind",
+    "UsagePurpose",
 ]

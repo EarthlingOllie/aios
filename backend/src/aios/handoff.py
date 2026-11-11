@@ -26,17 +26,17 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from aios import invocations, jev, llm, tracing
+from aios import invocations, jev, llm, tracing, usage
 from aios.config import get_settings
 from aios.datastores import people, store_session
 from aios.datastores.models import Agent, ChatMessage, Invocation, Workflow
 from aios.db import SessionLocal
-from aios.models import ChatAuthorKind, ChatMessageKind, DataStore
+from aios.models import ChatAuthorKind, ChatMessageKind, DataStore, UsagePurpose
 from aios.run_service.errors import CantStart
 
 log = logging.getLogger(__name__)
@@ -83,6 +83,8 @@ class Request:
     system: str
     chat: str
     metadata: dict[str, Any]
+    # What its model call is charged to (`aios.usage`).
+    charge: usage.Charge
 
 
 # The names of the people, agents and workflows that posted messages, by (kind, id).
@@ -190,6 +192,15 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
         request = Request(
             system=SYSTEM_PROMPT.format(kind=invocation.target_kind.value, name=name),
             chat=chat,
+            charge=usage.Charge(
+                data_store_id,
+                UsagePurpose.handoff,
+                agent_id=invocation.agent_id,
+                workflow_id=invocation.workflow_id,
+                invocation_id=invocation.id,
+                person_id=invocation.requested_by,
+                cause=invocation.cause,
+            ),
             metadata=tracing.trace_metadata(
                 # A chat's handoffs, together (chat ids are each store's own).
                 session_id=f"chat-{organisation_id}-{invocation.chat_id}",
@@ -210,20 +221,38 @@ def _begin(data_store_id: uuid.UUID, invocation_id: int) -> Request | None:
         return request
 
 
-async def _ask(request: Request) -> Handoff | None:
-    structured = model().with_structured_output(Handoff)
-    return await structured.ainvoke(
+async def _ask(request: Request) -> tuple[Handoff | None, AIMessage | None]:
+    """The handoff, and the model's response it came in (for its usage)."""
+    structured = model().with_structured_output(Handoff, include_raw=True)
+    answer = await structured.ainvoke(
         [SystemMessage(request.system), HumanMessage(request.chat)],
         {"callbacks": tracing.callbacks(), "run_name": "handoff", "metadata": request.metadata},
     )
+    raw = answer.get("raw")
+    return answer.get("parsed"), raw if isinstance(raw, AIMessage) else None
 
 
-def _record(data_store_id: uuid.UUID, invocation_id: int, handoff: Handoff) -> None:
+def _record(
+    data_store_id: uuid.UUID,
+    invocation_id: int,
+    handoff: Handoff | None,
+    charge: usage.Charge,
+    response: AIMessage | None,
+) -> None:
+    """Keep the handoff (if it gave one) and its call's usage, in one transaction."""
     with store_session(data_store_id) as store:
-        invocations.record_handoff(
-            store, invocation_id, ack=handoff.ack.strip(), brief=handoff.brief.strip()
-        )
+        if handoff is not None:
+            invocations.record_handoff(
+                store, invocation_id, ack=handoff.ack.strip(), brief=handoff.brief.strip()
+            )
+        if response is not None:
+            usage.record_model_call(store, charge, model_name(), response)
         store.commit()
+
+
+def model_name() -> str:
+    """The handoff model's name, as the price table knows it."""
+    return llm.model_name(get_settings().handoff_model or None)
 
 
 async def brief(data_store_id: uuid.UUID, invocation_id: int) -> None:
@@ -233,10 +262,12 @@ async def brief(data_store_id: uuid.UUID, invocation_id: int) -> None:
     if request is None:
         return
     try:
-        handoff = await asyncio.wait_for(_ask(request), TIMEOUT_SECONDS)
+        handoff, response = await asyncio.wait_for(_ask(request), TIMEOUT_SECONDS)
     except Exception as exc:
         log.warning("the handoff for invocation %s failed", invocation_id, exc_info=True)
         raise CantStart(f"The handoff failed: {str(exc) or type(exc).__name__}") from exc
+    await run_in_threadpool(
+        _record, data_store_id, invocation_id, handoff, request.charge, response
+    )
     if handoff is None:
         raise CantStart("The handoff failed: the model gave no brief.")
-    await run_in_threadpool(_record, data_store_id, invocation_id, handoff)

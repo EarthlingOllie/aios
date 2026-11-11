@@ -26,11 +26,9 @@ from aios.api.agents.chat import (
     _resume_command,
     _start_turn,
     load_chat_context,
-    model_responses,
     prewarm_sandbox,
     resume_run,
     run_chat,
-    tool_call_count,
     trace_metadata,
     turn_stream,
 )
@@ -90,6 +88,7 @@ from aios.api.agents.versions import (
     list_agent_versions,
     restore_agent_version,
 )
+from aios.usage import tool_call_count
 
 # One router for the package, its sub-domains' routes in the order they were declared.
 router = APIRouter()
@@ -145,7 +144,6 @@ __all__ = [
     "lock_live_agent",
     "refuse_archived_skills",
     "refuse_if_archived",
-    "model_responses",
     "new_agent_run",
     "prewarm_sandbox",
     "resolve_skill_versions",

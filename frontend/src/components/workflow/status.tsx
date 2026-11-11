@@ -10,6 +10,7 @@ export const statusLabel: Record<WorkflowRunStatus | ChatInvocationStatus | Node
   running: "Running",
   succeeded: "Succeeded",
   failed: "Failed",
+  refused: "Refused",
   waiting: "Waiting for you",
   pending: "Not started",
   "not-run": "Didn't run",
@@ -46,7 +47,7 @@ export function RunStatusBadge({ status, ...props }: { status: WorkflowRunStatus
   return (
     <Badge
       variant={
-        status === "failed" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
+        status === "failed" || status === "refused" ? "destructive" : status === "succeeded" ? "secondary" : "outline"
       }
       className={cn(
         (status === "running" || status === "briefing") && runningClass,

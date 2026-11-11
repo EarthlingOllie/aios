@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from aios import usage
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import SandboxSession
@@ -86,6 +87,17 @@ def _save(
                 .on_conflict_do_nothing(index_elements=[SandboxSession.agent_run_id])
             )
         else:
+            # The session it replaces has ended: its time is charged (`aios.usage`).
+            old = db.scalar(
+                select(SandboxSession)
+                .where(
+                    SandboxSession.agent_run_id == run_id,
+                    SandboxSession.ref == previous.ref,
+                )
+                .with_for_update()
+            )
+            if old is not None:
+                usage.sandbox_ended(db, old, db.scalar(select(func.now())))
             statement = (
                 update(SandboxSession)
                 .where(
@@ -137,9 +149,13 @@ async def _stop_quietly(backend: SandboxBackend, handle: SandboxHandle) -> None:
 
 
 def run_sandboxes(db: Session, run_ids: Select | list[int]) -> list[SandboxHandle]:
-    """The sandboxes of these runs of the store (`db`, a session on it), e.g. to stop them once
-    the runs are deleted."""
-    rows = db.scalars(select(SandboxSession).where(SandboxSession.agent_run_id.in_(run_ids)))
+    """The sandboxes of these runs of the store (`db`, a session on it), to stop them once the
+    runs are deleted: their sessions end, and their time is charged (`aios.usage`), in the
+    caller's transaction."""
+    rows = db.scalars(select(SandboxSession).where(SandboxSession.agent_run_id.in_(run_ids))).all()
+    now = db.scalar(select(func.now()))
+    for row in rows:
+        usage.sandbox_ended(db, row, now)
     return [SandboxHandle(row.ref, row.endpoint, row.secret) for row in rows]
 
 
