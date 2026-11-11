@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Link } from "react-router";
 import { Bot, CalendarClock, Pencil, Plus, Trash2, Workflow } from "lucide-react";
 
-import { ErrorBanner, Field, formatDate, Section, selectClass, useLoad } from "@/components/crud";
+import { ErrorBanner, Field, formatDate, RoleNote, Section, selectClass, useLoad } from "@/components/crud";
 import { ProvenanceLine } from "@/components/provenance";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   type TriggerInput,
   type TriggerTargetKind,
 } from "@/lib/api";
+import { useRefusal } from "@/lib/current-user";
 import { browserKnowsTimeZone, formatInTimeZone } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 
@@ -318,10 +319,14 @@ export function ScheduleRow({
   onEdit,
   onToggle,
   onDelete,
+  refusal,
 }: {
   trigger: Trigger;
   showTarget?: boolean;
   busy?: boolean;
+  /** Why the signed-in member can't change it (`useRefusal`): the switch is disabled, saying so,
+   * and editing and deleting are hidden. */
+  refusal?: string | null;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
@@ -372,22 +377,26 @@ export function ScheduleRow({
         <ProvenanceLine of={t} />
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <label className="text-muted-foreground mr-1 flex items-center gap-1 text-xs">
+        <label className="text-muted-foreground mr-1 flex items-center gap-1 text-xs" title={refusal ?? undefined}>
           <input
             type="checkbox"
             checked={t.enabled}
-            disabled={busy}
+            disabled={busy || !!refusal}
             onChange={onToggle}
             aria-label={t.enabled ? "Pause schedule" : "Resume schedule"}
           />
           On
         </label>
-        <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit schedule">
-          <Pencil />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={onDelete} disabled={busy} aria-label="Delete schedule">
-          <Trash2 />
-        </Button>
+        {!refusal && (
+          <>
+            <Button variant="ghost" size="icon" onClick={onEdit} aria-label="Edit schedule">
+              <Pencil />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onDelete} disabled={busy} aria-label="Delete schedule">
+              <Trash2 />
+            </Button>
+          </>
+        )}
       </div>
     </li>
   );
@@ -403,6 +412,7 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
   const [editing, setEditing] = useState<number | "new">();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const refusal = useRefusal("build");
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -425,11 +435,18 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
   return (
     <div className="flex flex-col gap-3">
       <ErrorBanner message={error ?? triggers.error} onDismiss={() => setError(undefined)} />
+      <RoleNote refusal={refusal} />
       {editing === "new" ? (
         <ScheduleEditor target={target} onSaved={saved} onCancel={() => setEditing(undefined)} />
       ) : (
         <div>
-          <Button size="sm" variant="outline" onClick={() => setEditing("new")}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setEditing("new")}
+            disabled={!!refusal}
+            title={refusal ?? undefined}
+          >
             <Plus />
             Add schedule
           </Button>
@@ -456,6 +473,7 @@ export function ScheduleList({ target, empty }: { target?: Target; empty: string
                 trigger={t}
                 showTarget={!target}
                 busy={busy}
+                refusal={refusal}
                 onEdit={() => setEditing(t.id)}
                 onToggle={() =>
                   act(() => api.updateTrigger(t.id, triggerInput(t, { enabled: !t.enabled })))

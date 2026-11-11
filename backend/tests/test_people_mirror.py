@@ -21,12 +21,12 @@ from test_data_tools import DATA_TOOLS, as_owner, describe, query
 from test_invitations import leave_behind, make_link
 from test_provisioning import store_row
 
-from aios import worker
+from aios import organisations, worker
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import people, provision
 from aios.datastores.connections import dispose_engines
 from aios.datastores.migrations import head_revision
-from aios.models import DataStoreStatus, Organisation, OrganisationMember, User
+from aios.models import DataStoreStatus, OrganisationMember, Role, User
 
 
 def mirror(db, user: User) -> dict[int, tuple]:
@@ -125,18 +125,15 @@ def test_a_rename_and_a_new_email_reach_the_mirror_of_every_organisation_theyre_
 
 
 def test_a_role_change_reaches_the_mirror(db, user, member):
-    """Until roles exist, the creator is the admin: handing the organisation to another member
-    is a role change for both."""
+    """Handing the organisation to another member is a role change for both."""
     org = org_of(db, user)
     people.refresh(org.id)
-    db.execute(update(Organisation).where(Organisation.id == org.id).values(created_by=member.id))
-    people.changed(db, org.id)
+    organisations.change_role(db, org, member.id, Role.admin)
+    organisations.change_role(db, org, user.id, Role.editor)
     db.commit()
 
     roles = {i: row[3] for i, row in mirror(db, user).items()}
     assert roles == {user.id: "editor", member.id: "admin"}
-    db.execute(update(Organisation).where(Organisation.id == org.id).values(created_by=user.id))
-    db.commit()
 
 
 def test_a_platform_change_that_rolls_back_never_reaches_the_mirror(db, user):

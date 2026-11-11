@@ -10,7 +10,14 @@ import asyncio
 import contextlib
 
 import pytest
-from conftest import build_user, home_organisation, join_organisation, provisioned_user, store_of
+from conftest import (
+    build_user,
+    home_organisation,
+    join_organisation,
+    org_of,
+    provisioned_user,
+    store_of,
+)
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from test_agents import chat_body, make_agent
@@ -29,6 +36,7 @@ from aios.main import app
 from aios.models import (
     DataStore,
     OrganisationMember,
+    Role,
     SchemaChangeRequest,
     SchemaChangeStatus,
     User,
@@ -241,7 +249,7 @@ def test_a_schema_change_request_notifies_every_member_and_any_member_decides_it
     assert db.get(SchemaChangeRequest, add.id).status == SchemaChangeStatus.rejected
 
 
-def test_any_member_restores_a_dropped_table(
+def test_any_admin_restores_a_dropped_table_and_an_editor_cant(
     db,
     api,
     user,
@@ -253,6 +261,12 @@ def test_any_member_restores_a_dropped_table(
 
     with signed_in_as(member):
         [table] = listed(api)
+        refused = api.post(f"/api/dropped/{table['id']}/restore")
+        assert refused.status_code == 403
+        assert "restore" in refused.json()["detail"]
+    organisations.change_role(db, org_of(db, user), member.id, Role.admin)
+    db.commit()
+    with signed_in_as(member):
         assert api.post(f"/api/dropped/{table['id']}/restore").status_code == 202
     run_restores(restores)
 
@@ -308,7 +322,9 @@ def test_the_export_is_the_organisations_and_takes_every_members_runs(
     with use_model(replies("went")):
         asyncio.run(execute_run(flow_run["id"]))
 
-    # Switched on by the member, it's on for the organisation.
+    # Switched on by another admin, it's on for the organisation.
+    organisations.change_role(db, org_of(db, user), member.id, Role.admin)
+    db.commit()
     with signed_in_as(member):
         r = api.put("/api/organisation/settings", json={"export_run_history": True})
         assert r.status_code == 200 and r.json()["export_run_history"] is True

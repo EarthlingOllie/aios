@@ -1,7 +1,7 @@
-"""Deleting an organisation (`aios.organisations`, `aios.api.organisation`): its creator schedules
+"""Deleting an organisation (`aios.organisations`, `aios.api.organisation`): an admin schedules
 it by typing its name, every member is told, and after a grace period the background sweep
 records it, detaches its store for the store teardown and deletes it. Until then it works as
-before, but its invitation links don't open, and the creator can cancel."""
+before, but its invitation links don't open, and an admin can cancel."""
 
 from datetime import datetime, timedelta
 
@@ -109,11 +109,14 @@ def test_scheduling_twice_is_a_conflict(api, db, user):
     assert len(notifications_of(db, user)) == 1
 
 
-def test_only_the_creator_can_schedule_or_cancel(api, db, user, member):
+def test_only_an_admin_can_schedule_or_cancel(api, db, user, member):
     with signed_in_as(member):
         resp = schedule(api)
     assert resp.status_code == 403
-    assert resp.json()["detail"] == "Only the organisation's creator can delete it."
+    assert resp.json()["detail"] == (
+        "Editors can't change the organisation's roles, invitations, name or settings, or "
+        "delete it. Ask an admin."
+    )
     assert api.get("/api/organisation").json()["deletion"] is None
 
     schedule(api)

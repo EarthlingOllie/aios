@@ -9,7 +9,7 @@ import { leaveRefusal } from "@/lib/organisation";
 /**
  * Leaving the organisation: only the membership goes, and what the member made stays in it.
  * `onLeft` gets the user as they are after, with the organisations they're still in. Refused,
- * with why, for the last member (who should delete it instead) and for the creator while others
+ * with why, for the last member (who should delete it instead) and for the last admin while others
  * remain (`leaveRefusal`, as the API refuses it).
  */
 export function LeaveSection({ org, onLeft }: { org: Organisation; onLeft: (me: Me) => void }) {

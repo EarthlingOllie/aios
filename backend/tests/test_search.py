@@ -11,6 +11,8 @@ from aios.datastores import store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.main import app
+from aios.models import Role
+from aios.permissions import current_role
 from aios.search import hybrid_search, hybrid_search_with_vector
 
 DIM = 1024
@@ -117,6 +119,7 @@ def test_search_opens_its_session_after_embedding(user, monkeypatch):
 def test_search_endpoint_rejects_bad_params(client, params):
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[current_data_store] = uuid.uuid4
+    app.dependency_overrides[current_role] = lambda: Role.participant
     try:
         resp = client.get("/api/o/1/search", params=params)
     finally:

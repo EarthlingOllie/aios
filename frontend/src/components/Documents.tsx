@@ -9,7 +9,7 @@ import {
 } from "react";
 import { Download, FileText, Loader2, Trash2, Upload, X } from "lucide-react";
 
-import { formatDate, usePoll } from "@/components/crud";
+import { formatDate, RoleNote, usePoll } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataStoreNotice } from "@/components/DataStoreNotice";
@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import { fullWarnings, uploadsRefused, useDataStoreStatus } from "@/lib/data-store";
 import { formatBytes } from "@/lib/format-bytes";
+import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 import { cn } from "@/lib/utils";
 
@@ -208,17 +209,20 @@ function useDocumentsList() {
   return { storeStatus, storeError, documents };
 }
 
-/** The Upload button, with the file picker it opens. */
+/** The Upload button, with the file picker it opens: disabled, saying why, for a role that
+ * can't upload. */
 function UploadButton({ documents }: { documents: DocumentsState }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const refusal = useRefusal("documents");
   return (
     <>
       <Button
         size="sm"
         variant="outline"
+        title={refusal ?? undefined}
         // One batch at a time, from here or the other view, so they can't trample each other's
         // progress and errors.
-        disabled={!documents.canUpload || documents.uploading}
+        disabled={!documents.canUpload || documents.uploading || !!refusal}
         onClick={() => inputRef.current?.click()}
       >
         {documents.uploading ? <Loader2 className="animate-spin" /> : <Upload />}
@@ -325,6 +329,7 @@ function isEmpty(documents: DocumentsState) {
 export function Documents() {
   const { storeStatus, storeError, documents } = useDocumentsList();
   const { docs } = documents;
+  const refusal = useRefusal("documents");
 
   return (
     <div className="flex h-full flex-col gap-3">
@@ -354,13 +359,15 @@ export function Documents() {
             <Badge variant={statusVariant[doc.status]}>
               {doc.status === "ready" ? `${doc.chunk_count} chunks` : doc.status}
             </Badge>
-            <button
-              className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-              onClick={() => documents.remove(doc)}
-              aria-label={`Delete ${doc.filename}`}
-            >
-              <Trash2 className="size-4" />
-            </button>
+            {!refusal && (
+              <button
+                className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                onClick={() => documents.remove(doc)}
+                aria-label={`Delete ${doc.filename}`}
+              >
+                <Trash2 className="size-4" />
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -377,6 +384,7 @@ export function Documents() {
 export function DocumentsSection() {
   const { storeStatus, storeError, documents } = useDocumentsList();
   const { docs } = documents;
+  const refusal = useRefusal("documents");
 
   const onDelete = (doc: DocumentInfo) => {
     if (!window.confirm(`Delete ${doc.filename}? It will no longer be found by search.`)) return;
@@ -391,6 +399,7 @@ export function DocumentsSection() {
         </p>
         <UploadButton documents={documents} />
       </div>
+      <RoleNote refusal={refusal} />
       <DocumentsNotices
         storeStatus={storeStatus}
         storeError={storeError}
@@ -440,13 +449,15 @@ export function DocumentsSection() {
               >
                 <Download className="size-4" />
               </a>
-              <button
-                className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
-                onClick={() => onDelete(doc)}
-                aria-label={`Delete ${doc.filename}`}
-              >
-                <Trash2 className="size-4" />
-              </button>
+              {!refusal && (
+                <button
+                  className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                  onClick={() => onDelete(doc)}
+                  aria-label={`Delete ${doc.filename}`}
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              )}
             </li>
           ))}
         </ul>

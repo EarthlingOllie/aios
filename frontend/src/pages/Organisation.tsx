@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
-import { ErrorBanner, formatDate, Placeholder, useLoad } from "@/components/crud";
+import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } from "@/components/crud";
 import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -10,16 +10,19 @@ import { Input } from "@/components/ui/input";
 import { DeleteSection } from "@/components/DeleteOrganisation";
 import { LeaveSection } from "@/components/LeaveOrganisation";
 import { InvitesSection } from "@/components/OrganisationInvites";
-import { api, describeError, type Me, type Organisation } from "@/lib/api";
+import { api, describeError, type Me, type Organisation, type Role } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
 import { landingPath, recentOrganisations } from "@/lib/organisation-path";
+import { refusal, ROLE_DESCRIPTIONS, roleLabel } from "@/lib/permissions";
+
+const ROLES: Role[] = ["admin", "editor", "participant"];
 
 /**
- * The user's organisation: its name (the creator renames it) above three tabs, as on the agent
- * page: its creator and members (`/organisation`), its invitation links (`/organisation/invitations`,
- * the creator's only), and its settings, the run history export, leaving it and deleting it
- * (`/organisation/settings`).
+ * The user's organisation: its name (admins rename it) above three tabs, as on the agent
+ * page: its creator and members with their roles, which admins change (`/organisation`), its
+ * invitation links (`/organisation/invitations`, admins' only), and its settings, the run history
+ * export, leaving it and deleting it (`/organisation/settings`).
  */
 export function OrganisationPage() {
   const me = useCurrentUser();
@@ -42,10 +45,10 @@ export function OrganisationPage() {
       id: "members",
       label: "Members",
       count: org.members.length,
-      content: <MembersList org={org} me={me} />,
+      content: <MembersList org={org} me={me} onChanged={reload} />,
     },
-    // Only the creator makes and revokes links, so only they have the tab.
-    ...(org.is_creator
+    // Only admins make and revoke links, so only they have the tab.
+    ...(org.role === "admin"
       ? [{ id: "invitations", label: "Invitations", content: <InvitesSection key={org.id} /> }]
       : []),
     {
@@ -84,7 +87,7 @@ export function OrganisationPage() {
             <h1 className="text-xl font-semibold break-words">{org.name}</h1>
             <p className="text-muted-foreground mt-1 text-sm">{describeOrganisation(org, me)}</p>
           </div>
-          {org.is_creator && !renaming && (
+          {org.role === "admin" && !renaming && (
             <Button variant="outline" size="sm" onClick={() => setRenaming(true)}>
               <Pencil />
               Rename
@@ -110,26 +113,74 @@ export function OrganisationPage() {
   );
 }
 
-function MembersList({ org, me }: { org: Organisation; me: Me | null }) {
+function MembersList({
+  org,
+  me,
+  onChanged,
+}: {
+  org: Organisation;
+  me: Me | null;
+  onChanged: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const admin = org.role === "admin";
+
+  async function change(userId: number, role: Role) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.changeRole(userId, role);
+      await onChanged();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <ul aria-label="Members" className="divide-y rounded-md border">
-      {org.members.map((m) => (
-        <li key={m.user.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-          <span className="bg-muted size-7 shrink-0 rounded-full" />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate font-medium">{m.user.name}</span>
-              {m.user.id === me?.id && <Badge variant="secondary">You</Badge>}
-              {m.user.id === org.creator?.id && <Badge variant="outline">Creator</Badge>}
+    <div className="flex flex-col gap-3">
+      <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
+      <RoleNote refusal={refusal(org.role, "run_organisation")} />
+      <ul aria-label="Members" className="divide-y rounded-md border">
+        {org.members.map((m) => (
+          <li key={m.user.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+            <span className="bg-muted size-7 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate font-medium">{m.user.name}</span>
+                {m.user.id === me?.id && <Badge variant="secondary">You</Badge>}
+                {m.user.id === org.creator?.id && <Badge variant="outline">Creator</Badge>}
+              </div>
+              <div className="text-muted-foreground truncate text-xs">
+                Joined {formatDate(m.joined_at)}
+                {m.invite_id && ` through ${linkName(m.invite_id)}`}
+              </div>
             </div>
-            <div className="text-muted-foreground truncate text-xs">
-              Joined {formatDate(m.joined_at)}
-              {m.invite_id && ` through ${linkName(m.invite_id)}`}
-            </div>
-          </div>
-        </li>
-      ))}
-    </ul>
+            {admin ? (
+              <select
+                aria-label={`${m.user.name}'s role`}
+                className={selectClass + " w-auto"}
+                value={m.role}
+                disabled={busy}
+                onChange={(e) => change(m.user.id, e.target.value as Role)}
+              >
+                {ROLES.map((role) => (
+                  <option key={role} value={role} title={ROLE_DESCRIPTIONS[role]}>
+                    {roleLabel(role)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Badge variant="outline" aria-label={`${m.user.name}'s role`}>
+                {roleLabel(m.role)}
+              </Badge>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

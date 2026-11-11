@@ -9,6 +9,7 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
+  RoleNote,
   Section,
   useListHref,
   useLoad,
@@ -43,6 +44,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 import { plural } from "@/lib/utils";
 import { ArchivedBadge } from "@/pages/Agents";
@@ -71,9 +73,11 @@ export function SkillsSection() {
   const { data, error, reload } = useLoad(
     useCallback(() => api.listSkills(archived), [archived]),
   );
+  const newRefusal = useRefusal("build");
   return (
     <MasterDetail
       title="Skills"
+      newRefusal={newRefusal}
       basePath="/skills"
       items={data}
       error={error}
@@ -135,6 +139,7 @@ export function SkillDetail() {
   const [actionError, setActionError] = useState<string>();
   const [archiving, setArchiving] = useState(false);
   const [busy, setBusy] = useState(false);
+  const buildRefusal = useRefusal("build");
 
   if (error) return <Placeholder>{error}</Placeholder>;
   if (!skill) return null;
@@ -173,6 +178,7 @@ export function SkillDetail() {
         </>
       }
       actions={
+        !buildRefusal && (
         <>
           <Button asChild variant="outline" size="sm">
             <Link to={listHref(`/skills/${id}/edit`)}>
@@ -192,9 +198,11 @@ export function SkillDetail() {
             </Button>
           )}
         </>
+        )
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      <RoleNote refusal={buildRefusal} />
       {skill.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
           This skill is archived{skill.archived_by ? ` by ${personName(skill.archived_by)}` : ""} on{" "}
@@ -288,6 +296,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
   );
   const [error, setError] = useState<string>();
   const savedBy = useSavedBy();
+  const buildRefusal = useRefusal("build");
 
   if (version.error) return <Placeholder>{version.error}</Placeholder>;
   if (!version.data || !skill.data) return null;
@@ -317,7 +326,7 @@ function SkillVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
-      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
+      actions={!isCurrent && !buildRefusal && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <SkillContent version={v} />
@@ -347,6 +356,7 @@ export function SkillForm() {
   const [version, setVersion] = useState<number>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const buildRefusal = useRefusal("build");
 
   useEffect(() => {
     setForm(undefined);
@@ -389,6 +399,7 @@ export function SkillForm() {
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+        <RoleNote refusal={buildRefusal} />
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
         <Field label="Name" htmlFor="skill-name">
           <Input
@@ -435,7 +446,7 @@ export function SkillForm() {
           </Field>
         )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !form.name.trim()}>
+          <Button type="submit" disabled={saving || !form.name.trim() || !!buildRefusal} title={buildRefusal ?? undefined}>
             {id === undefined ? "Create skill" : "Save changes"}
           </Button>
           <Button type="button" variant="ghost" onClick={() => navigate(-1)}>

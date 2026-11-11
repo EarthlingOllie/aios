@@ -32,6 +32,7 @@ from aios.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
+from aios.permissions import Action, allow
 from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
@@ -263,7 +264,7 @@ def disable_triggers(db: Session, condition, user_id: int) -> None:
     cancel_unstarted_firing(db, condition)
 
 
-@router.get("/triggers", response_model=list[TriggerOut])
+@router.get("/triggers", response_model=list[TriggerOut], dependencies=[allow(Action.read)])
 def list_triggers(
     org: CurrentOrganisation,
     db: DB,
@@ -294,7 +295,12 @@ def list_triggers(
     return [trigger_out(db, t, known, names) for t in triggers]
 
 
-@router.post("/triggers", response_model=TriggerOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/triggers",
+    response_model=TriggerOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.build)],
+)
 def create_trigger(
     body: TriggerIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -306,7 +312,7 @@ def create_trigger(
     return trigger_out(db, load(db, trigger.id))
 
 
-@router.post("/triggers/preview", response_model=PreviewOut)
+@router.post("/triggers/preview", response_model=PreviewOut, dependencies=[allow(Action.read)])
 def preview_schedule(body: PreviewIn, org: CurrentOrganisation):
     """What a schedule means: its description and next few runs (for the form, as it's typed)."""
     expr, tz = checked_schedule(body.cron, body.timezone)
@@ -321,12 +327,12 @@ def list_timezones(user: CurrentUser):
     return sorted(cron.timezones())
 
 
-@router.get("/triggers/{trigger_id}", response_model=TriggerOut)
+@router.get("/triggers/{trigger_id}", response_model=TriggerOut, dependencies=[allow(Action.read)])
 def get_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB):
     return trigger_out(db, load(db, get_org_trigger(db, org, trigger_id).id))
 
 
-@router.put("/triggers/{trigger_id}", response_model=TriggerOut)
+@router.put("/triggers/{trigger_id}", response_model=TriggerOut, dependencies=[allow(Action.build)])
 def update_trigger(
     trigger_id: DbId,
     body: TriggerIn,
@@ -345,7 +351,11 @@ def update_trigger(
     return trigger_out(db, load(db, trigger.id))
 
 
-@router.delete("/triggers/{trigger_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/triggers/{trigger_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.build)],
+)
 def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB) -> None:
     db.delete(get_org_trigger(db, org, trigger_id))
     db.commit()

@@ -5,6 +5,7 @@ import { ErrorBanner, formatDate, useLoad, usePoll } from "@/components/crud";
 import { Notice } from "@/components/Notice";
 import { Button } from "@/components/ui/button";
 import { api, describeError, type DroppedObject } from "@/lib/api";
+import { useRefusal } from "@/lib/current-user";
 import { droppedLabel, purgeIn } from "@/lib/dropped";
 
 /** How often the list is read again while a restore is on its way (ms). */
@@ -24,6 +25,7 @@ export function DroppedSection() {
   const list = useLoad(useCallback(() => api.listDropped(), []));
   const [restoring, setRestoring] = useState<Map<number, Restoring>>(new Map());
   const [error, setError] = useState<string>();
+  const restoreRefusal = useRefusal("restore");
   const items = list.data ?? [];
   // A restore is on its way while the item's still listed with no new reason it was refused,
   // until it's been waited for long enough (the platform may have given up without one).
@@ -87,7 +89,8 @@ export function DroppedSection() {
                     size="sm"
                     variant="outline"
                     className="ml-auto"
-                    disabled={!!item.blocked || waiting}
+                    disabled={!!item.blocked || waiting || !!restoreRefusal}
+                    title={restoreRefusal ?? undefined}
                     onClick={() => restore(item)}
                   >
                     {waiting ? <Loader2 className="animate-spin" /> : <RotateCcw />} Restore

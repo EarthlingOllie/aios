@@ -6,7 +6,9 @@ Every route that resolves the request's organisation (its dependencies reach
 mounted under the prefix (`mount_organisation_prefix`), and only there: `/api/agents/{agent_id}`
 is `/api/o/{organisation_id}/agents/{agent_id}`. Nothing is listed by hand, so a route added
 later moves as soon as it takes the organisation. `current_organisation` reads the id from the
-path and checks the signed-in user is a member.
+path and checks the signed-in user is a member. Each of them declares one permission check
+(`aios.permissions.allow`), which says what its action is and which roles may take it: one that
+doesn't stops the app starting (`UnpermittedRoute`).
 
 What isn't any one organisation's (signing in, the person's profile and notifications, creating
 an organisation, invitations, the tool library, timezones) stays unscoped, and only what's
@@ -19,6 +21,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, APIRouter, iter_route_contexts
 
 from aios.auth import current_organisation
+from aios.permissions import Permit, permit_of
 
 API = "/api"
 ORGANISATION_PREFIX = f"{API}/o/{{organisation_id}}"
@@ -54,6 +57,30 @@ UNSCOPED: set[tuple[str, str]] = {
 
 class UnscopedRoute(RuntimeError):
     """An API route that neither takes the organisation nor is listed in `UNSCOPED`."""
+
+
+class UnpermittedRoute(RuntimeError):
+    """A route of an organisation that doesn't declare exactly one permission check
+    (`aios.permissions.allow`)."""
+
+
+def permits(dependant: Dependant) -> list[Permit]:
+    """The permission checks among a route's dependencies, however deep."""
+    found = [p] if (p := permit_of(dependant.call)) is not None else []
+    for d in dependant.dependencies:
+        found += permits(d)
+    return found
+
+
+def route_permit(route) -> Permit:
+    """The one permission check a route of an organisation declares (else `UnpermittedRoute`)."""
+    found = permits(route.dependant)
+    if len(found) != 1:
+        raise UnpermittedRoute(
+            f"{sorted(route.methods)} {route.path} declares {len(found)} permission checks, "
+            "not one: give it `dependencies=[allow(Action...)]` (aios.permissions)"
+        )
+    return found[0]
 
 
 def resolves_organisation(dependant: Dependant) -> bool:
@@ -123,6 +150,7 @@ def mount_organisation_prefix(app: FastAPI) -> None:
         if not isinstance(route.original_route, APIRoute):
             others.append(route.original_route)
         elif resolves_organisation(route.dependant):
+            route_permit(route)
             _copy(routes, route, prefixed(route.path))
         else:
             _check_unscoped(route)

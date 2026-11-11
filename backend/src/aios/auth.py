@@ -38,7 +38,7 @@ from aios import organisations, ratelimits
 from aios.config import get_settings
 from aios.datastores import data_store_for_request, organisation_store
 from aios.db import DB
-from aios.models import Organisation, User
+from aios.models import Organisation, Role, User
 from aios.passwords import hash_password, verify_password
 
 
@@ -131,16 +131,19 @@ class OrganisationSummaryOut(BaseModel):
     name: str
     # What a link in the browser names it by; never changed by a rename.
     slug: str
-    # Whether the signed-in user is its creator, who alone may rename it.
+    # Whether the signed-in user is its creator.
     is_creator: bool
+    # The signed-in user's role in it: what they may do (`aios.permissions`).
+    role: Role
 
 
-def summary_out(org: Organisation, user: User) -> OrganisationSummaryOut:
+def summary_out(db: Session, org: Organisation, user: User) -> OrganisationSummaryOut:
     return OrganisationSummaryOut(
         id=org.id,
         name=org.name,
         slug=org.slug,
         is_creator=org.created_by == user.id,
+        role=organisations.role(db, org.id, user.id),
     )
 
 
@@ -152,6 +155,8 @@ class MembershipOut(BaseModel):
     slug: str
     # Whether the signed-in user is its creator.
     is_creator: bool
+    # Their role in it: what they may do there (`aios.permissions`).
+    role: Role
     # When it's deleted, while its deletion is scheduled (the app shows a banner); else null.
     deletes_at: datetime | None
 
@@ -174,9 +179,10 @@ def me_out(db: Session, user: User) -> MeOut:
                 name=o.name,
                 slug=o.slug,
                 is_creator=o.created_by == user.id,
+                role=role,
                 deletes_at=o.deletes_at,
             )
-            for o in organisations.memberships(db, user.id)
+            for o, role in organisations.memberships_with_roles(db, user.id)
         ],
     )
 
@@ -228,9 +234,12 @@ def current_organisation(request: Request, user: CurrentUser, db: DB) -> Organis
     org_id = int(named) if named.isdecimal() and named.isascii() else None
     if org_id is None or org_id > ORGANISATION_ID_MAX:
         raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
-    org = organisations.membership(db, user.id, org_id)
-    if org is None:
+    found = organisations.membership_role(db, user.id, org_id)
+    if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, ORGANISATION_NOT_FOUND)
+    org, role = found
+    # Their role in it, for the permission check (`aios.permissions`).
+    request.state.organisation_role = role
     return org
 
 

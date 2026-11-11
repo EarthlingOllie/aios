@@ -17,7 +17,8 @@ from aios.auth import current_organisation, current_user
 from aios.datastores.models import Agent
 from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Organisation
+from aios.models import Organisation, Role
+from aios.permissions import current_role
 from aios.testing.fake_model import ToolCall, model, replies, use_model
 from aios.tools import hybrid_search
 from aios.versioning import save_agent_version
@@ -551,6 +552,7 @@ def test_chat_releases_request_session_before_streaming(client, db, monkeypatch)
     monkeypatch.setattr(checkpoints, "_FENCE", "SELECT %s::bigint, %s::uuid")
     app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
     app.dependency_overrides[current_organisation] = lambda: Organisation(id=1, name="t")
+    app.dependency_overrides[current_role] = lambda: Role.admin
     app.dependency_overrides[get_db] = fake_db
     try:
         with use_model(model(script)):

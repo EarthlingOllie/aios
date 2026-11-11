@@ -26,6 +26,7 @@ from aios.models import (
     SchemaChangeRequest,
     WorkflowRunStep,
 )
+from aios.permissions import Action, allow
 from aios.runner import version_tools
 from aios.sandbox.sessions import (
     run_sandboxes,
@@ -159,7 +160,9 @@ def build_version_tools(
         raise HTTPException(status.HTTP_409_CONFLICT, f"{refusal}: {exc}") from exc
 
 
-@router.get("/agents/{agent_id}/runs", response_model=list[RunSummary])
+@router.get(
+    "/agents/{agent_id}/runs", response_model=list[RunSummary], dependencies=[allow(Action.read)]
+)
 def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     agent = get_org_agent(store, agent_id)
     rows = db.execute(
@@ -207,7 +210,10 @@ def new_agent_run(
 
 
 @router.post(
-    "/agents/{agent_id}/runs", response_model=RunSummary, status_code=status.HTTP_201_CREATED
+    "/agents/{agent_id}/runs",
+    response_model=RunSummary,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
 )
 def create_run(
     agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
@@ -219,7 +225,9 @@ def create_run(
     return run_summary(db, run.id)
 
 
-@router.get("/agents/{agent_id}/runs/{run_id}", response_model=RunOut)
+@router.get(
+    "/agents/{agent_id}/runs/{run_id}", response_model=RunOut, dependencies=[allow(Action.read)]
+)
 def get_run(
     agent_id: DbId,
     run_id: DbId,
@@ -242,7 +250,11 @@ def get_run(
     )
 
 
-@router.delete("/agents/{agent_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/agents/{agent_id}/runs/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.build)],
+)
 def delete_run(
     agent_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB, background: BackgroundTasks
 ) -> None:

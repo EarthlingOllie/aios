@@ -17,6 +17,7 @@ from aios.datastores import files, quota, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.db import DbId
 from aios.models import DataStoreStatus
+from aios.permissions import Action, allow
 from aios.search import hybrid_search
 from aios.worker import ingest_document_task
 
@@ -69,7 +70,7 @@ class DataStoreOut(BaseModel):
     usage: UsageOut
 
 
-@router.get("/data-store", response_model=DataStoreOut)
+@router.get("/data-store", response_model=DataStoreOut, dependencies=[allow(Action.read)])
 def data_store(store_id: CurrentDataStore):
     """The organisation's data store's status (documents and search wait until it's `ready`),
     and its usage against its storage caps."""
@@ -77,7 +78,7 @@ def data_store(store_id: CurrentDataStore):
     return DataStoreOut(status=status, usage=UsageOut(**asdict(usage)))
 
 
-@router.get("/documents", response_model=list[DocumentOut])
+@router.get("/documents", response_model=list[DocumentOut], dependencies=[allow(Action.read)])
 def list_documents(store_id: CurrentDataStore):
     """The organisation's documents, newest first, with who uploaded each."""
     with store_session(store_id, "ro") as db:
@@ -104,7 +105,12 @@ def list_documents(store_id: CurrentDataStore):
     ]
 
 
-@router.post("/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/documents",
+    response_model=DocumentOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.documents)],
+)
 def upload_document(file: UploadFile, user: CurrentUser, store_id: CurrentDataStore):
     # Plain `def`: FastAPI runs it in the threadpool, so the blocking upload to S3, DB commits
     # and broker publish below don't stall the event loop (SSE streams, health checks).
@@ -196,7 +202,7 @@ def _delete_unkept_file(key: str) -> None:
         logger.exception("Couldn't delete %s, the file of an upload that failed", key)
 
 
-@router.get("/documents/{document_id}/download")
+@router.get("/documents/{document_id}/download", dependencies=[allow(Action.read)])
 def download_document(document_id: DbId, store_id: CurrentDataStore) -> RedirectResponse:
     """Redirects to a link that downloads the document's file under its original name. The link
     is minted for this download, and lasts `DOCUMENT_DOWNLOAD_URL_SECONDS`."""
@@ -210,7 +216,11 @@ def download_document(document_id: DbId, store_id: CurrentDataStore) -> Redirect
     return RedirectResponse(url, status.HTTP_302_FOUND, headers={"Cache-Control": "no-store"})
 
 
-@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.documents)],
+)
 def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
     with store_session(store_id, "rw") as db:
         key = db.scalar(select(Document.s3_key).where(Document.id == document_id))
@@ -233,7 +243,7 @@ def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
         _record_files(store_id, db)
 
 
-@router.get("/search", response_model=list[SearchHitOut])
+@router.get("/search", response_model=list[SearchHitOut], dependencies=[allow(Action.read)])
 async def search(
     store_id: CurrentDataStore,
     # At least one non-whitespace character; blank queries would fail at the embedding API.

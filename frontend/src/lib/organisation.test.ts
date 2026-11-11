@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type Organisation, type User } from "@/lib/api";
+import { type Organisation, type Role, type User } from "@/lib/api";
 import { confirmsDeletion, describeOrganisation, leaveRefusal, linkName } from "@/lib/organisation";
 
 const me: User = { id: 1, name: "Terry Tester" };
@@ -10,6 +10,7 @@ const base: Organisation = {
   name: "Terry Tester",
   slug: "terry-tester",
   is_creator: true,
+  role: "admin",
   creator: me,
   members: [],
   created_at: "2026-10-14T08:00:00Z",
@@ -45,7 +46,7 @@ describe("confirmsDeletion", () => {
 });
 
 describe("leaveRefusal", () => {
-  const member = (user: User) => ({ user, joined_at: "2026-10-14T08:00:00Z", invite_id: null });
+  const member = (user: User, role: Role = "editor") => ({ user, role, joined_at: "2026-10-14T08:00:00Z", invite_id: null });
 
   it("tells the last member to delete the organisation instead", () => {
     expect(leaveRefusal({ ...base, members: [member(me)] })).toBe(
@@ -53,14 +54,18 @@ describe("leaveRefusal", () => {
     );
   });
 
-  it("refuses the creator while others remain", () => {
-    expect(leaveRefusal({ ...base, members: [member(me), member(sam)] })).toBe(
-      "You created it, and only its creator can invite people, so you can't leave while others are still members.",
+  it("refuses the last admin while others remain", () => {
+    expect(leaveRefusal({ ...base, members: [member(me, "admin"), member(sam)] })).toBe(
+      "You're its only admin, and an organisation needs an admin, so you can't leave while others are still members. Make someone else an admin first.",
     );
   });
 
+  it("lets an admin leave once there's another", () => {
+    expect(leaveRefusal({ ...base, members: [member(me, "admin"), member(sam, "admin")] })).toBeNull();
+  });
+
   it("lets any other member leave", () => {
-    const org = { ...base, is_creator: false, creator: sam, members: [member(sam), member(me)] };
+    const org = { ...base, is_creator: false, role: "editor" as const, creator: sam, members: [member(sam, "admin"), member(me)] };
     expect(leaveRefusal(org)).toBeNull();
   });
 });

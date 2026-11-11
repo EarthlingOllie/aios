@@ -25,6 +25,7 @@ from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores.models import AgentVersion
 from aios.db import DB, DbId
 from aios.models import AgentRun
+from aios.permissions import Action, allow
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -42,7 +43,11 @@ class AgentVersionSummary(BaseModel):
     run_count: int
 
 
-@router.get("/agents/{agent_id}/versions", response_model=list[AgentVersionSummary])
+@router.get(
+    "/agents/{agent_id}/versions",
+    response_model=list[AgentVersionSummary],
+    dependencies=[allow(Action.read)],
+)
 def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     agent = get_org_agent(store, agent_id)
     rows = store.execute(
@@ -67,7 +72,11 @@ def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB, store:
     ]
 
 
-@router.get("/agents/{agent_id}/versions/{number}", response_model=AgentVersionOut)
+@router.get(
+    "/agents/{agent_id}/versions/{number}",
+    response_model=AgentVersionOut,
+    dependencies=[allow(Action.read)],
+)
 def get_agent_version_detail(
     agent_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -78,7 +87,11 @@ def get_agent_version_detail(
     return version_out(version, people(db, org.id, [version.created_by]))
 
 
-@router.post("/agents/{agent_id}/versions/{number}/restore", response_model=AgentOut)
+@router.post(
+    "/agents/{agent_id}/versions/{number}/restore",
+    response_model=AgentOut,
+    dependencies=[allow(Action.build)],
+)
 def restore_agent_version(
     agent_id: DbId,
     number: DbId,

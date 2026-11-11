@@ -8,8 +8,8 @@ import { api, describeError, type Organisation } from "@/lib/api";
 import { confirmsDeletion } from "@/lib/organisation";
 
 /**
- * Deleting the organisation: its creator types its name, and it's deleted after a grace period,
- * which every member is told about (and a banner on every page dates); until then the creator can
+ * Deleting the organisation: an admin types its name, and it's deleted after a grace period,
+ * which every member is told about (and a banner on every page dates); until then an admin can
  * cancel. Another member sees only whether it's scheduled. `onChanged` gets the organisation as
  * it is after scheduling or cancelling.
  */
@@ -32,7 +32,8 @@ export function DeleteSection({ org, onChanged }: { org: Organisation; onChanged
   }
 
   const deletion = org.deletion;
-  const scheduledBy = deletion?.scheduled_by ? deletion.scheduled_by.name : "Its creator";
+  const scheduledBy = deletion?.scheduled_by ? deletion.scheduled_by.name : "An admin";
+  const admin = org.role === "admin";
   return (
     <Section title="Delete organisation" label="Delete organisation">
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
@@ -40,16 +41,16 @@ export function DeleteSection({ org, onChanged }: { org: Organisation; onChanged
         <p className="text-sm">
           {scheduledBy} scheduled it for deletion on {formatDate(deletion.scheduled_at)}. It will be deleted, with
           everything in it, on {formatDate(deletion.deletes_at)}
-          {org.is_creator ? ", unless you cancel before then." : "."}
+          {admin ? ", unless you cancel before then." : ", unless an admin cancels before then."}
         </p>
       ) : (
         <p className="text-muted-foreground text-sm">
-          {org.is_creator
+          {admin
             ? "It's deleted, with everything in it and its data store, after a grace period, in which you can cancel. Every member is told."
-            : "Only its creator can delete it."}
+            : "Only its admins can delete it."}
         </p>
       )}
-      {org.is_creator &&
+      {admin &&
         (deletion ? (
           <div>
             <Button variant="outline" disabled={busy} onClick={() => act(api.cancelOrganisationDeletion)}>

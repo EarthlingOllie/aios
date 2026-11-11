@@ -14,13 +14,13 @@ export function confirmsDeletion(typed: string, name: string): boolean {
 
 /** Why the signed-in user can't leave the organisation, as the API refuses it, or null if they
  * can: the last member can't (nobody would see what's in it: they should delete it instead), nor
- * can the creator while others remain (nobody else could invite). */
+ * can the last admin while others remain (an organisation needs an admin). */
 export function leaveRefusal(org: Organisation): string | null {
   if (org.members.length <= 1) {
     return "You're its only member, so nobody would be left to see what's in it. Delete the organisation instead.";
   }
-  if (org.is_creator) {
-    return "You created it, and only its creator can invite people, so you can't leave while others are still members.";
+  if (org.role === "admin" && org.members.filter((m) => m.role === "admin").length <= 1) {
+    return "You're its only admin, and an organisation needs an admin, so you can't leave while others are still members. Make someone else an admin first.";
   }
   return null;
 }

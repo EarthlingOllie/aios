@@ -35,6 +35,7 @@ from aios.models import (
     SchemaChangeRequest,
     SchemaChangeStatus,
 )
+from aios.permissions import Action, allow
 from aios.runner import build_agent, run_title
 from aios.sandbox.sessions import (
     SandboxNotConfigured,
@@ -585,7 +586,7 @@ def _finish_invocation(run_id: int, error: str | None) -> None:
         db.commit()
 
 
-@router.post("/agents/{agent_id}/runs/{run_id}/chat")
+@router.post("/agents/{agent_id}/runs/{run_id}/chat", dependencies=[allow(Action.post)])
 async def run_chat(
     agent_id: DbId,
     run_id: DbId,

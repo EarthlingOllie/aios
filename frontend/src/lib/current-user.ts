@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 
-import type { Me, Membership } from "@/lib/api";
+import type { Me, Membership, Role } from "@/lib/api";
+import { refusal, type Action } from "@/lib/permissions";
 
 /** The signed-in user, for the pages under the shell (null outside it, e.g. in isolation). */
 export const CurrentUserContext = createContext<Me | null>(null);
@@ -33,4 +34,15 @@ export const CurrentOrganisationContext = createContext<Membership | null>(null)
 
 export function useCurrentOrganisation(): Membership | null {
   return useContext(CurrentOrganisationContext);
+}
+
+/** The signed-in member's role in the organisation the page is open in (undefined outside one). */
+export function useRole(): Role | undefined {
+  return useCurrentOrganisation()?.role;
+}
+
+/** Why the signed-in member can't take `action` in the organisation the page is open in, as
+ * `refusal` says it, or null if they can: for hiding or disabling a control, and saying why. */
+export function useRefusal(action: Action): string | null {
+  return refusal(useRole(), action);
 }

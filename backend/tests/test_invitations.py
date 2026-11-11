@@ -88,7 +88,7 @@ def make_link(api, **body) -> dict:
     return resp.json()
 
 
-def test_the_creator_makes_a_link_shown_once_and_only_its_hash_is_kept(api, db, user):
+def test_an_admin_makes_a_link_shown_once_and_only_its_hash_is_kept(api, db, user):
     link = make_link(api)
     assert link["url"] == f"http://localhost:5173/invite/{link['token']}"
     assert link["creator"]["id"] == user.id
@@ -103,6 +103,7 @@ def test_the_creator_makes_a_link_shown_once_and_only_its_hash_is_kept(api, db, 
     [listed] = api.get("/api/organisation/invites").json()
     assert listed == {
         "id": link["id"],
+        "role": "editor",
         "creator": link["creator"],
         "created_at": link["created_at"],
         "expires_at": link["expires_at"],
@@ -158,7 +159,7 @@ def test_an_expired_link_no_longer_opens_or_lists(api, db):
     assert api.get("/api/organisation/invites").json() == []
 
 
-def test_only_the_creator_makes_lists_and_revokes_links(api, member):
+def test_only_an_admin_makes_lists_and_revokes_links(api, member):
     link = make_link(api)
     with signed_in_as(member):
         for resp in (
@@ -168,7 +169,8 @@ def test_only_the_creator_makes_lists_and_revokes_links(api, member):
         ):
             assert resp.status_code == 403
             assert resp.json()["detail"] == (
-                "Only the organisation's creator can invite people into it."
+                "Editors can't change the organisation's roles, invitations, name or settings, "
+                "or delete it. Ask an admin."
             )
     assert len(api.get("/api/organisation/invites").json()) == 1
 
@@ -207,6 +209,7 @@ def test_registering_through_a_link_joins_only_that_organisation(api, db, user, 
                     "name": ours.name,
                     "slug": ours.slug,
                     "is_creator": False,
+                    "role": "editor",
                     "deletes_at": None,
                 }
             ]
@@ -475,11 +478,11 @@ def test_the_last_member_is_told_to_delete_the_organisation_instead(api, db, use
     assert memberships(db, user) == [org_of(db, user).id]
 
 
-def test_the_creator_cant_leave_while_others_remain(api, user, member):
+def test_the_last_admin_cant_leave_while_others_remain(api, user, member):
     resp = api.post("/api/organisation/leave")
     assert resp.status_code == 409
     assert resp.json()["detail"] == (
-        "You created this organisation, and only its creator can invite people into it, so you "
-        "can't leave while others are still members."
+        "You're its only admin, and an organisation needs an admin, so you can't leave while "
+        "others are still members. Make someone else an admin first."
     )
     assert len(api.get("/api/organisation").json()["members"]) == 2

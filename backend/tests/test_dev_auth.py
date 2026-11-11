@@ -83,6 +83,7 @@ def test_picking_a_user_signs_in_as_them(dev_client, users, db, provisioning, ca
                 "name": org.name,
                 "slug": org.slug,
                 "is_creator": True,
+                "role": "admin",
                 "deletes_at": None,
             }
         ],

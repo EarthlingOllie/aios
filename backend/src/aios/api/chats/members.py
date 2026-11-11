@@ -39,6 +39,7 @@ from aios.models import (
     ChatMemberRole,
     ChatMessage,
 )
+from aios.permissions import Action, allow
 
 router = APIRouter(prefix="/api")
 
@@ -95,14 +96,21 @@ def mentionables(chat: Chat, *, archived: bool = False) -> MentionablesOut:
     )
 
 
-@router.get("/chats/{chat_id}/mentionable", response_model=MentionablesOut)
+@router.get(
+    "/chats/{chat_id}/mentionable",
+    response_model=MentionablesOut,
+    dependencies=[allow(Action.read)],
+)
 def list_mentionable(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """The chat's members, for the composer's `@` autocomplete."""
     return mentionables(get_visible_chat(db, org, user.id, chat_id))
 
 
 @router.post(
-    "/chats/{chat_id}/members", response_model=ChatOut, status_code=status.HTTP_201_CREATED
+    "/chats/{chat_id}/members",
+    response_model=ChatOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
 )
 def add_member(
     chat_id: DbId,
@@ -152,7 +160,7 @@ def newest_message_id(db: Session, chat_id: int) -> int | None:
     return db.scalar(select(func.max(ChatMessage.id)).where(ChatMessage.chat_id == chat_id))
 
 
-@router.post("/chats/{chat_id}/join", response_model=ChatOut)
+@router.post("/chats/{chat_id}/join", response_model=ChatOut, dependencies=[allow(Action.post)])
 def join_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Join a public chat as a member (a private one exists only for its members), or as its
     owner if it has none (its owner left the organisation with nobody in it to hand it to:
@@ -195,7 +203,11 @@ def take_out(db: Session, member: ChatMember) -> None:
     db.execute(delete(ChatMember).where(ChatMember.id == member.id))
 
 
-@router.post("/chats/{chat_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/chats/{chat_id}/leave",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.post)],
+)
 def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
     """Leave a chat the user is a member of but doesn't own (a chat always has its owner).
     Nothing they posted goes with them; a private chat stops existing for them."""
@@ -215,7 +227,11 @@ def leave_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: D
     db.commit()
 
 
-@router.delete("/chats/{chat_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/chats/{chat_id}/members/{member_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.post)],
+)
 def remove_member(
     chat_id: DbId, member_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB
 ) -> None:

@@ -29,6 +29,7 @@ from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores.models import Agent, AgentVersion
 from aios.db import DB, DbId
 from aios.models import AgentRun, Trigger
+from aios.permissions import Action, allow
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
@@ -46,7 +47,7 @@ def run_counts(db: Session, org_id: int, column, ids) -> dict[int, int]:
     )
 
 
-@router.get("/agents", response_model=list[AgentSummary])
+@router.get("/agents", response_model=list[AgentSummary], dependencies=[allow(Action.read)])
 def list_agents(
     org: CurrentOrganisation,
     db: DB,
@@ -91,7 +92,12 @@ def list_agents(
     ]
 
 
-@router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/agents",
+    response_model=AgentOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.build)],
+)
 def create_agent(
     body: AgentIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -123,12 +129,12 @@ def name_clash(store: Session, name: str) -> str:
     return f"The organisation already has an agent called {name}{archived_note}."
 
 
-@router.get("/agents/{agent_id}", response_model=AgentOut)
+@router.get("/agents/{agent_id}", response_model=AgentOut, dependencies=[allow(Action.read)])
 def get_agent(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     return agent_out(db, org.id, get_org_agent(store, agent_id))
 
 
-@router.put("/agents/{agent_id}", response_model=AgentOut)
+@router.put("/agents/{agent_id}", response_model=AgentOut, dependencies=[allow(Action.build)])
 def update_agent(
     agent_id: DbId,
     body: AgentIn,
@@ -165,7 +171,9 @@ def update_agent(
     return agent_out(db, org.id, agent)
 
 
-@router.post("/agents/{agent_id}/archive", response_model=AgentOut)
+@router.post(
+    "/agents/{agent_id}/archive", response_model=AgentOut, dependencies=[allow(Action.build)]
+)
 def archive_agent(
     agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -190,7 +198,9 @@ def archive_agent(
     return agent_out(db, org.id, agent)
 
 
-@router.post("/agents/{agent_id}/unarchive", response_model=AgentOut)
+@router.post(
+    "/agents/{agent_id}/unarchive", response_model=AgentOut, dependencies=[allow(Action.build)]
+)
 def unarchive_agent(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     """Bring the agent back. Its schedules stay paused until someone resumes them."""
     agent = get_org_agent(store, agent_id)
@@ -201,7 +211,11 @@ def unarchive_agent(agent_id: DbId, org: CurrentOrganisation, db: DB, store: Cur
     return agent_out(db, org.id, agent)
 
 
-@router.get("/agents/{agent_id}/used-by", response_model=used_by.AgentUsedBy)
+@router.get(
+    "/agents/{agent_id}/used-by",
+    response_model=used_by.AgentUsedBy,
+    dependencies=[allow(Action.read)],
+)
 def get_agent_used_by(
     agent_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):

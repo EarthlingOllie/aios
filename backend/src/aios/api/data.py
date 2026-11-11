@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from aios.auth import CurrentDataStore
 from aios.config import get_settings
 from aios.datastores import tables
+from aios.permissions import Action, allow
 
 router = APIRouter(prefix="/api/data")
 
@@ -59,7 +60,7 @@ class RowsOut(BaseModel):
     has_more: bool
 
 
-@router.get("/tables", response_model=TablesOut)
+@router.get("/tables", response_model=TablesOut, dependencies=[allow(Action.read)])
 def list_tables(store_id: CurrentDataStore):
     with _refusals():
         found, truncated = tables.list_tables(store_id)
@@ -69,7 +70,7 @@ def list_tables(store_id: CurrentDataStore):
     )
 
 
-@router.get("/tables/{table:path}/rows", response_model=RowsOut)
+@router.get("/tables/{table:path}/rows", response_model=RowsOut, dependencies=[allow(Action.read)])
 def read_rows(
     table: str,
     store_id: CurrentDataStore,
@@ -96,7 +97,9 @@ def read_rows(
     )
 
 
-@router.get("/tables/{table:path}/value", response_model=ValueOut)
+@router.get(
+    "/tables/{table:path}/value", response_model=ValueOut, dependencies=[allow(Action.read)]
+)
 def read_value(table: str, row: str, column: str, store_id: CurrentDataStore):
     """One value of a row in full (as far as the byte cap), where the page cut it short."""
     with _refusals():

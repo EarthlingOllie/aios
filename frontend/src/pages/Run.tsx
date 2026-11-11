@@ -31,6 +31,7 @@ import {
   type Run,
   type SchemaChangeRequest,
 } from "@/lib/api";
+import { useRefusal } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
 type Tab = "conversation" | "events";
@@ -44,6 +45,7 @@ export function RunPage() {
   const run = useLoad(useCallback(() => api.getRun(agentId, runId), [agentId, runId]));
   const [tab, setTab] = useState<Tab>("conversation");
   const [deleteError, setDeleteError] = useState<string>();
+  const deleteRefusal = useRefusal("build");
   // While the run waits on a schema change request, read it again: to see the request
   // decided, and the rest of the turn once the run carries on.
   usePoll(!!run.data?.waiting, run.reload, 2000);
@@ -105,9 +107,11 @@ export function RunPage() {
             </button>
           ))}
         </div>
-        <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
-          <Trash2 />
-        </Button>
+        {!deleteRefusal && (
+          <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete run">
+            <Trash2 />
+          </Button>
+        )}
       </header>
       {deleteError && (
         <div className="px-4 pt-2">

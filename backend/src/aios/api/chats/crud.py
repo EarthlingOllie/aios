@@ -29,6 +29,7 @@ from aios.models import (
     ChatMessage,
     ChatVisibility,
 )
+from aios.permissions import Action, allow
 
 router = APIRouter(prefix="/api")
 
@@ -39,7 +40,7 @@ class ChatListed(ChatSummary):
     unread_count: int | None
 
 
-@router.get("/chats", response_model=list[ChatListed])
+@router.get("/chats", response_model=list[ChatListed], dependencies=[allow(Action.read)])
 def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
     """The organisation's chats the user is a member of, and its public ones they aren't
     (`is_member` false), the most recently active first."""
@@ -77,7 +78,12 @@ def list_chats(user: CurrentUser, org: CurrentOrganisation, db: DB):
     ]
 
 
-@router.post("/chats", response_model=ChatOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/chats",
+    response_model=ChatOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
+)
 def create_chat(
     body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -117,12 +123,12 @@ def create_chat(
     return chat_out(db, load(db, chat.id), user.id)
 
 
-@router.get("/chats/{chat_id}", response_model=ChatOut)
+@router.get("/chats/{chat_id}", response_model=ChatOut, dependencies=[allow(Action.read)])
 def get_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB):
     return chat_out(db, get_visible_chat(db, org, user.id, chat_id), user.id)
 
 
-@router.put("/chats/{chat_id}", response_model=ChatOut)
+@router.put("/chats/{chat_id}", response_model=ChatOut, dependencies=[allow(Action.post)])
 def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Rename, describe or change the visibility of the chat (its owner only)."""
     chat = get_chat_if_owner(db, org, user.id, chat_id)
@@ -137,7 +143,9 @@ def update_chat(chat_id: DbId, body: ChatIn, user: CurrentUser, org: CurrentOrga
     return chat_out(db, load(db, chat.id), user.id)
 
 
-@router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[allow(Action.post)]
+)
 def delete_chat(chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB) -> None:
     """Delete the chat and its members (its owner only). A statement, its members, messages and
     invocations going with it in the database, not the ORM's delete of each member it loaded: one

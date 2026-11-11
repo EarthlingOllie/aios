@@ -32,6 +32,7 @@ from aios.models.identity import (
     OrganisationDeletion,
     OrganisationInvite,
     OrganisationMember,
+    Role,
     User,
 )
 from aios.models.notifications import (
@@ -64,6 +65,7 @@ __all__ = [
     "OrganisationDeletion",
     "OrganisationInvite",
     "OrganisationMember",
+    "Role",
     "DataStoreStatus",
     "DataStore",
     "HistoryExportKind",

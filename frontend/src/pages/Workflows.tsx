@@ -16,6 +16,7 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
+  RoleNote,
   Section,
   useListHref,
   useLoad,
@@ -51,6 +52,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 import { isActive, WAITING_POLL_MS } from "@/lib/runs";
 import { ArchivedBadge } from "@/pages/Agents";
@@ -77,9 +79,11 @@ export function WorkflowsSection() {
   const { data, error, reload } = useLoad(
     useCallback(() => api.listWorkflows(archived), [archived]),
   );
+  const newRefusal = useRefusal("build");
   return (
     <MasterDetail
       title="Workflows"
+      newRefusal={newRefusal}
       basePath="/workflows"
       items={data}
       error={error}
@@ -173,6 +177,7 @@ function WorkflowDetailView({ id }: { id: number }) {
   const [runInput, setRunInput] = useState<string>();
   const [starting, setStarting] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const buildRefusal = useRefusal("build");
 
   // Keep the list's statuses current while any run is still going, as the run page does (less
   // often while those left only wait for the user).
@@ -237,10 +242,12 @@ function WorkflowDetailView({ id }: { id: number }) {
       actions={
         <>
           {w.archived_at ? (
-            <Button size="sm" onClick={onUnarchive}>
-              <ArchiveRestore />
-              Unarchive
-            </Button>
+            !buildRefusal && (
+              <Button size="sm" onClick={onUnarchive}>
+                <ArchiveRestore />
+                Unarchive
+              </Button>
+            )
           ) : (
             <Button
               size="sm"
@@ -251,13 +258,15 @@ function WorkflowDetailView({ id }: { id: number }) {
               Run
             </Button>
           )}
-          <Button asChild variant="outline" size="sm">
-            <Link to={listHref(`/workflows/${id}/edit`)}>
-              <Pencil />
-              Edit
-            </Link>
-          </Button>
-          {!w.archived_at && (
+          {!buildRefusal && (
+            <Button asChild variant="outline" size="sm">
+              <Link to={listHref(`/workflows/${id}/edit`)}>
+                <Pencil />
+                Edit
+              </Link>
+            </Button>
+          )}
+          {!w.archived_at && !buildRefusal && (
             <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
               <Archive />
               Archive
@@ -267,6 +276,7 @@ function WorkflowDetailView({ id }: { id: number }) {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      <RoleNote refusal={buildRefusal} />
       {w.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
           This workflow is archived{w.archived_by ? ` by ${personName(w.archived_by)}` : ""} on{" "}
@@ -413,6 +423,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
   const version = useLoad(useCallback(() => api.getWorkflowVersion(id, number), [id, number]));
   const [error, setError] = useState<string>();
   const savedBy = useSavedBy();
+  const buildRefusal = useRefusal("build");
 
   const loadError = version.error ?? workflow.error;
   if (loadError) return <Placeholder>{loadError}</Placeholder>;
@@ -443,7 +454,7 @@ function WorkflowVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
-      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
+      actions={!isCurrent && !buildRefusal && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <Section title="Graph">
@@ -474,6 +485,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
   const [editing, setEditing] = useState<number>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const buildRefusal = useRefusal("build");
   const agents = useLoad(api.listAgents);
   const workflows = useLoad(api.listWorkflows);
   const loadError = agents.error ?? workflows.error;
@@ -574,6 +586,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+        <RoleNote refusal={buildRefusal} />
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
         {/* Without these there's nothing to add, so say why. */}
         <ErrorBanner message={loadError && `Couldn't load agents and workflows: ${loadError}`} />
@@ -614,7 +627,7 @@ function WorkflowEditorView({ id }: { id: number | undefined }) {
           </Field>
         )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !meta.name.trim()}>
+          <Button type="submit" disabled={saving || !meta.name.trim() || !!buildRefusal} title={buildRefusal ?? undefined}>
             {id === undefined ? "Create workflow" : "Save changes"}
           </Button>
           <Button type="button" variant="ghost" onClick={back}>

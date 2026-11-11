@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 
-import { ErrorBanner, formatDate, Section, useLoad, usePoll } from "@/components/crud";
+import { ErrorBanner, formatDate, RoleNote, Section, useLoad, usePoll } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { api, describeError } from "@/lib/api";
+import { useRefusal } from "@/lib/current-user";
 import {
   historyEmbeddingStatus,
   historyExportPending,
@@ -19,10 +20,12 @@ let saving: Promise<unknown> | undefined;
 
 /**
  * The Organisation page's run history export: its switch, embedding, when it last ran, and
- * deleting what it copied. The organisation's, kept on its data store: any member changes it.
+ * deleting what it copied. The organisation's, kept on its data store: any member sees it, and
+ * admins change it (it's disabled for anyone else, saying why).
  */
 export function RunHistoryExportSection() {
   const { data: settings, error: loadError, reload } = useLoad(api.getSettings);
+  const changeRefusal = useRefusal("run_organisation");
   const [busy, setBusy] = useState(() => saving !== undefined);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -93,17 +96,18 @@ export function RunHistoryExportSection() {
         every schedule's, into its data store, where its agents can query them in its{" "}
         <code>history</code> tables, and search them with the Run history search tool. The runs
         here stay as they are: switching the export off keeps what was copied, and deleting a
-        run deletes its copy while the export is on. Any member can change this.
+        run deletes its copy while the export is on. Admins can change this.
       </p>
       {settings === undefined ? (
         !loadError && <Loader2 className="text-muted-foreground size-4 animate-spin" />
       ) : (
         <div className="flex flex-col gap-3 rounded-md border p-3">
+          <RoleNote refusal={changeRefusal} />
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
               type="checkbox"
               checked={switching ?? settings.export_run_history}
-              disabled={busy}
+              disabled={busy || !!changeRefusal}
               onChange={(e) => {
                 const on = e.target.checked;
                 setSwitching(on);
@@ -128,7 +132,7 @@ export function RunHistoryExportSection() {
                 <input
                   type="checkbox"
                   checked={embedSwitching ?? settings.embed_run_history}
-                  disabled={busy}
+                  disabled={busy || !!changeRefusal}
                   onChange={(e) => {
                     const on = e.target.checked;
                     setEmbedSwitching(on);
@@ -152,7 +156,7 @@ export function RunHistoryExportSection() {
             <Button
               variant="outline"
               size="sm"
-              disabled={busy || !settings.history_ready}
+              disabled={busy || !settings.history_ready || !!changeRefusal}
               onClick={onDelete}
             >
               <Trash2 />

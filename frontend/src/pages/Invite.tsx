@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { api, ApiError, describeError, type Me } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { inOrganisation, openInOrganisation } from "@/lib/organisation-path";
+import { aRole } from "@/lib/permissions";
 
 /** The invite page in the shell, for a signed-in user. */
 export function InviteRoute() {
@@ -105,7 +106,8 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
       ) : (
         <>
           <p className="text-muted-foreground text-sm">
-            You've been invited to join {organisation.name}. Its members see everything in it.
+            You've been invited to join {organisation.name}
+            {invitation.role && ` as ${aRole(invitation.role)}`}. Its members see everything in it.
             {me.organisations.length > 0 && " You'll stay in your other organisations."}
           </p>
           {refusal && (

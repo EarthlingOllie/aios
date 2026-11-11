@@ -45,14 +45,19 @@ export type Registration = {
  */
 export type Provenance = { created_by: User | null; updated_by: User | null };
 
+/** What a member may do in an organisation (`lib/permissions` has what each may do). */
+export type Role = "admin" | "editor" | "participant";
+
 /** An organisation, as the Organisation page and creating one answer it. */
 export type OrganisationSummary = {
   id: number;
   name: string;
   /** What links in the browser name it by (`/o/<slug>/`); a rename leaves it unchanged. */
   slug: string;
-  /** Whether the signed-in user created it; the creator alone can rename and delete it. */
+  /** Whether the signed-in user created it. */
   is_creator: boolean;
+  /** The signed-in user's role in it. */
+  role: Role;
 };
 
 /** One of the organisations the signed-in user is in, as `/api/me` lists them. */
@@ -62,6 +67,8 @@ export type Membership = {
   slug: string;
   /** Whether the signed-in user created it. */
   is_creator: boolean;
+  /** Their role in it: what they may do there. */
+  role: Role;
   /** When it's deleted, while its deletion is scheduled (every page shows a banner); else null. */
   deletes_at: string | null;
 };
@@ -73,6 +80,7 @@ export type Me = Account & { organisations: Membership[] };
 
 export type OrganisationMember = {
   user: User;
+  role: Role;
   joined_at: string;
   /** The invitation link they came in through, if any. */
   invite_id: string | null;
@@ -89,7 +97,7 @@ export type Organisation = OrganisationSummary & {
   deletion: OrganisationDeletion | null;
 };
 
-/** An organisation's scheduled deletion: it's deleted at `deletes_at` unless the creator cancels. */
+/** An organisation's scheduled deletion: it's deleted at `deletes_at` unless an admin cancels. */
 export type OrganisationDeletion = {
   scheduled_at: string;
   /** Null once their account is deleted. */
@@ -97,9 +105,11 @@ export type OrganisationDeletion = {
   deletes_at: string;
 };
 
-/** An open invitation link into the organisation, as its creator lists them. */
+/** An open invitation link into the organisation, as its admins list them. */
 export type Invite = {
   id: string;
+  /** The role whoever joins through it is given. */
+  role: Role;
   /** Null once their account is deleted. */
   creator: User | null;
   created_at: string;
@@ -110,7 +120,7 @@ export type Invite = {
 export type NewInvite = Invite & { token: string; url: string };
 
 /** What the invite page shows of an open link, to anyone holding it. */
-export type Invitation = { organisation: { id: number; name: string }; expires_at: string };
+export type Invitation = { organisation: { id: number; name: string }; role: Role; expires_at: string };
 
 /** The organisation's data store: documents and search wait until it's "ready". */
 export type DataStoreStatus = "provisioning" | "ready" | "failed" | "deleting" | "deleted";
@@ -1020,13 +1030,20 @@ export const api = {
   changePassword: (body: { current_password: string; new_password: string; new_password_confirm: string }) =>
     request<void>("/api/me/password", json("PUT", body)),
   getOrganisation: () => request<Organisation>(`${organisationApi()}/organisation`),
-  /** The creator only (a 403 otherwise). Names may repeat. */
+  /** Admins only (a 403 otherwise). Names may repeat. */
   renameOrganisation: (name: string) =>
     request<Organisation>(`${organisationApi()}/organisation`, json("PUT", { name })),
-  /** Invitation links: the creator only (a 403 otherwise). */
+  /** Admins only (a 403 otherwise); demoting the last admin is a 409. Answers with the
+   * Organisation page. */
+  changeRole: (userId: number, role: Role) =>
+    request<Organisation>(`${organisationApi()}/organisation/members/${userId}/role`, json("PUT", { role })),
+  /** Invitation links: admins only (a 403 otherwise). */
   listInvites: () => request<Invite[]>(`${organisationApi()}/organisation/invites`),
-  makeInvite: (expiresInDays: number) =>
-    request<NewInvite>(`${organisationApi()}/organisation/invites`, json("POST", { expires_in_days: expiresInDays })),
+  makeInvite: (expiresInDays: number, role: Role = "editor") =>
+    request<NewInvite>(
+      `${organisationApi()}/organisation/invites`,
+      json("POST", { expires_in_days: expiresInDays, role }),
+    ),
   revokeInvite: (id: string) =>
     request<void>(`${organisationApi()}/organisation/invites/${id}`, { method: "DELETE" }),
   /** No sign-in needed; an expired or revoked link is a 404. */
@@ -1039,14 +1056,14 @@ export const api = {
   /** A new organisation, with the user as its creator and only member, and its store being
    * provisioned. Names may repeat: the slug tells organisations apart. */
   createOrganisation: (name: string) => request<Organisation>("/api/organisations", json("POST", { name })),
-  /** A 409 for the last member, and for the creator while others remain; otherwise the user, as
+  /** A 409 for the last member, and for the last admin while others remain; otherwise the user, as
    * `me` answers, with the organisations they're still in. */
   leaveOrganisation: () => request<Me>(`${organisationApi()}/organisation/leave`, { method: "POST" }),
-  /** The creator only (a 403 otherwise), typing the organisation's name (another is a 422); a 409
+  /** Admins only (a 403 otherwise), typing the organisation's name (another is a 422); a 409
    * if it's scheduled already. Every member is notified. */
   scheduleOrganisationDeletion: (name: string) =>
     request<Organisation>(`${organisationApi()}/organisation/deletion`, json("POST", { name })),
-  /** The creator only; a 409 if no deletion is scheduled. Every member is notified again. */
+  /** Admins only; a 409 if no deletion is scheduled. Every member is notified again. */
   cancelOrganisationDeletion: () =>
     request<Organisation>(`${organisationApi()}/organisation/deletion`, { method: "DELETE" }),
   getDataStore: () =>

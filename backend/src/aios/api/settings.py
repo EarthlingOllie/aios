@@ -1,5 +1,6 @@
 """The organisation's settings, on the Organisation page: so far, the run history export
-(`aios.datastores.history`), kept on its data store. Any member reads and changes them.
+(`aios.datastores.history`), kept on its data store. Any member reads them; admins change
+them (`aios.permissions`).
 
 The user's own Settings page has nothing of theirs to change yet, so nothing here is the
 user's."""
@@ -16,6 +17,7 @@ from aios.auth import CurrentOrganisation
 from aios.datastores import data_store_for, history
 from aios.db import DB
 from aios.models import DataStore
+from aios.permissions import Action, allow
 
 log = logging.getLogger(__name__)
 
@@ -66,12 +68,16 @@ def settings_out(db: DB, organisation_id: int) -> SettingsOut:
     )
 
 
-@router.get("/organisation/settings", response_model=SettingsOut)
+@router.get("/organisation/settings", response_model=SettingsOut, dependencies=[allow(Action.read)])
 def get_settings(org: CurrentOrganisation, db: DB):
     return settings_out(db, org.id)
 
 
-@router.put("/organisation/settings", response_model=SettingsOut)
+@router.put(
+    "/organisation/settings",
+    response_model=SettingsOut,
+    dependencies=[allow(Action.run_organisation)],
+)
 def update_settings(body: SettingsIn, org: CurrentOrganisation, db: DB):
     set_up = None
     if body.export_run_history is not None:
@@ -95,7 +101,11 @@ def update_settings(body: SettingsIn, org: CurrentOrganisation, db: DB):
     return settings_out(db, org.id)
 
 
-@router.delete("/organisation/settings/exported-history", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/organisation/settings/exported-history",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.run_organisation)],
+)
 async def delete_exported_history(org: CurrentOrganisation) -> None:
     """Empty the data store's `history` tables. A 409 while the store isn't ready."""
     store_id = await run_in_threadpool(data_store_for, org.id)

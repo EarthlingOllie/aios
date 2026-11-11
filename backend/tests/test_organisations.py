@@ -197,6 +197,7 @@ def test_creating_an_organisation_makes_the_person_its_creator_and_only_member(
                 "name": "Founders Ltd",
                 "slug": "founders-ltd",
                 "is_creator": True,
+                "role": "admin",
                 "deletes_at": None,
             }
         ]
@@ -267,19 +268,19 @@ def test_the_organisation_page_shows_the_name_creator_and_members_with_when_they
     org = api.get("/api/organisation").json()
     assert (org["name"], org["is_creator"]) == ("Test User", True)
     assert org["creator"] == {"id": user.id, "name": "Test User", "former_member": False}
-    assert [(m["user"], m["invite_id"]) for m in org["members"]] == [
-        ({"id": user.id, "name": "Test User", "former_member": False}, None),
-        ({"id": member.id, "name": "Member Person", "former_member": False}, None),
+    assert [(m["user"], m["role"], m["invite_id"]) for m in org["members"]] == [
+        ({"id": user.id, "name": "Test User", "former_member": False}, "admin", None),
+        ({"id": member.id, "name": "Member Person", "former_member": False}, "editor", None),
     ]
     first, second = (m["joined_at"] for m in org["members"])
     assert first <= second
     # The same organisation, from the other member's seat.
     with signed_in_as(member):
         theirs = api.get("/api/organisation").json()
-    assert theirs == {**org, "is_creator": False}
+    assert theirs == {**org, "is_creator": False, "role": "editor"}
 
 
-def test_the_creator_renames_the_organisation(api, user):
+def test_an_admin_renames_the_organisation(api, user):
     resp = api.put("/api/organisation", json={"name": "  Acme  "})
     assert resp.status_code == 200, resp.text
     assert resp.json()["name"] == "Acme"
@@ -313,11 +314,14 @@ def test_two_organisations_made_at_once_whose_names_make_one_slug_get_distinct_o
             delete_user(db, founder)
 
 
-def test_another_member_cant_rename_it(api, member):
+def test_an_editor_cant_rename_it(api, member):
     with signed_in_as(member):
         resp = api.put("/api/organisation", json={"name": "Theirs"})
     assert resp.status_code == 403
-    assert resp.json()["detail"] == "Only the organisation's creator can rename it."
+    assert resp.json()["detail"] == (
+        "Editors can't change the organisation's roles, invitations, name or settings, or "
+        "delete it. Ask an admin."
+    )
     assert api.get("/api/organisation").json()["name"] == "Test User"
 
 
@@ -409,6 +413,10 @@ def test_me_lists_the_users_organisations_and_whether_they_created_each(api, db,
         "slug": "test-user",
         "deletes_at": None,
     }
-    assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": True}]
+    assert api.get("/api/me").json()["organisations"] == [
+        {**expected, "is_creator": True, "role": "admin"}
+    ]
     with signed_in_as(member):
-        assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": False}]
+        assert api.get("/api/me").json()["organisations"] == [
+            {**expected, "is_creator": False, "role": "editor"}
+        ]

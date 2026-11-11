@@ -25,6 +25,7 @@ from aios.datastores import (
 )
 from aios.db import DB
 from aios.models import DataStore
+from aios.permissions import Action, allow
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def _read(store_id, fn, *args):
         return None
 
 
-@router.get("/dropped", response_model=list[DroppedOut])
+@router.get("/dropped", response_model=list[DroppedOut], dependencies=[allow(Action.read)])
 def list_dropped(user: CurrentUser, org: CurrentOrganisation, db: DB):
     """What's dropped in the organisation's store, newest first."""
     listed = _read(_store(user.id, org.id, db), dropped.listing) or []
@@ -97,6 +98,7 @@ def list_dropped(user: CurrentUser, org: CurrentOrganisation, db: DB):
     "/dropped/{dropped_id}/restore",
     response_model=DroppedOut,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[allow(Action.restore)],
 )
 def restore(dropped_id: int, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """Queue restoring it, unless it can't be restored now (409, saying why)."""

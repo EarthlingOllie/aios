@@ -32,18 +32,9 @@ from sqlalchemy.orm import Session
 
 from aios.datastores import connections
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus, Organisation, OrganisationMember, User
+from aios.models import DataStore, DataStoreStatus, OrganisationMember, User
 
 log = logging.getLogger(__name__)
-
-# admin, editor or participant. Until roles exist the creator, who alone runs the organisation,
-# is its admin, and every other member, who may build anything in it, an editor.
-ADMIN, EDITOR = "admin", "editor"
-
-
-def role_of(org: Organisation, user_id: int) -> str:
-    """The member's role in the organisation."""
-    return ADMIN if org.created_by == user_id else EDITOR
 
 
 @dataclass(frozen=True)
@@ -73,18 +64,15 @@ class Fixed:
 
 def members(db: Session, organisation_id: int) -> list[Person]:
     """The organisation's members, as the platform has them now."""
-    org = db.get(Organisation, organisation_id)
-    if org is None:
-        return []
     rows = db.execute(
-        select(User, OrganisationMember.joined_at)
+        select(User, OrganisationMember.role, OrganisationMember.joined_at)
         .join(OrganisationMember, OrganisationMember.user_id == User.id)
         .where(OrganisationMember.organisation_id == organisation_id)
         .order_by(User.id)
     ).all()
     return [
-        Person(u.id, u.first_name, u.last_name, u.email, role_of(org, u.id), joined_at)
-        for u, joined_at in rows
+        Person(u.id, u.first_name, u.last_name, u.email, role.value, joined_at)
+        for u, role, joined_at in rows
     ]
 
 

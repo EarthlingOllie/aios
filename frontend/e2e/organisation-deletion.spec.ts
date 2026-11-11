@@ -3,8 +3,8 @@ import { expect, test } from "@playwright/test";
 import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 /**
- * Deleting an organisation: its creator types its name on the Organisation page's Settings tab,
- * and it's deleted after a grace period, which every page's banner dates; the creator can cancel
+ * Deleting an organisation: an admin types its name on the Organisation page's Settings tab,
+ * and it's deleted after a grace period, which every page's banner dates; an admin can cancel
  * until then. Once it's gone, a member in no other organisation lands on the welcome page.
  */
 
@@ -60,7 +60,7 @@ test("another member sees the date but can't delete or cancel", async ({ page })
   api.organisation.members.unshift({ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null });
   await page.goto(inOrg("/organisation/settings"));
   const section = page.getByRole("region", { name: "Delete organisation" });
-  await expect(section).toContainText("Only its creator can delete it.");
+  await expect(section).toContainText("Only its admins can delete it.");
   await expect(section.getByRole("button")).toHaveCount(0);
 
   api.organisation.deletion = {

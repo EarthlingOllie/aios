@@ -1,5 +1,6 @@
 """Identity and organisations: users, organisations, their members and invitations."""
 
+import enum
 import uuid
 from datetime import datetime
 
@@ -7,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     Identity,
     Index,
@@ -19,6 +21,19 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from aios.models.base import Base
+
+
+class Role(enum.StrEnum):
+    """What a member may do in an organisation (`aios.permissions` has the table of what each
+    may do). An organisation always has at least one admin."""
+
+    admin = "admin"
+    editor = "editor"
+    participant = "participant"
+
+
+# The column type of a role, on memberships and invitation links.
+ROLE_TYPE = Enum(Role, name="organisation_role")
 
 
 class User(Base):
@@ -48,7 +63,7 @@ class Organisation(Base):
 
     A person is in any number of organisations: ones they created, and ones they joined through
     an invitation link. Nothing in an organisation is private to one member. The creator is the
-    one member who may rename it, invite others and delete it: a stopgap until roles exist.
+    admin it starts with; what each member may do is their role (`OrganisationMember.role`).
     """
 
     __tablename__ = "organisations"
@@ -136,7 +151,9 @@ class OrganisationInvite(Base):
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    # Set when the creator cuts the link off; a revoked link opens for no one.
+    # The role whoever joins through it is given: editor unless the admin who made it chose.
+    role: Mapped[Role] = mapped_column(ROLE_TYPE, server_default=Role.editor.value)
+    # Set when an admin cuts the link off; a revoked link opens for no one.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -156,6 +173,9 @@ class OrganisationMember(Base):
     invite_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organisation_invites.id", ondelete="SET NULL")
     )
+    # What they may do in it: its creator starts as its admin; whoever joins through a link, the
+    # link's role.
+    role: Mapped[Role] = mapped_column(ROLE_TYPE, server_default=Role.editor.value)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organisation: Mapped[Organisation] = relationship(back_populates="members")

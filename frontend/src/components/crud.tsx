@@ -261,6 +261,7 @@ export function MasterDetail<T extends { id: number }>({
   search,
   filters = [],
   sorts = [],
+  newRefusal,
 }: {
   title: string;
   basePath: string;
@@ -272,6 +273,8 @@ export function MasterDetail<T extends { id: number }>({
   search?: (item: T) => string[];
   filters?: ListFilterGroup<T>[];
   sorts?: ListSort<T>[];
+  /** Why the signed-in member can't make one (`useRefusal`): New is disabled, saying so. */
+  newRefusal?: string | null;
 }) {
   // On small screens show either the list or the detail, not both.
   const atIndex = useMatch(basePath) !== null;
@@ -302,12 +305,19 @@ export function MasterDetail<T extends { id: number }>({
       <section className={cn("min-h-0 flex-col border-r", atIndex ? "flex" : "hidden md:flex")}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h1 className="text-base font-semibold">{title}</h1>
-          <Button asChild size="sm">
-            <NavLink to={href(`${basePath}/new`)}>
+          {newRefusal ? (
+            <Button size="sm" disabled title={newRefusal} aria-description={newRefusal}>
               <Plus />
               New
-            </NavLink>
-          </Button>
+            </Button>
+          ) : (
+            <Button asChild size="sm">
+              <NavLink to={href(`${basePath}/new`)}>
+                <Plus />
+                New
+              </NavLink>
+            </Button>
+          )}
         </div>
         {(search || filters.length > 0 || sorts.length > 0) && (
           <div className="flex flex-col gap-1.5 border-b p-2">
@@ -419,6 +429,17 @@ export function MasterDetail<T extends { id: number }>({
         <Outlet context={{ reloadList } satisfies ListContext} />
       </section>
     </div>
+  );
+}
+
+/** Says why the signed-in member's role hides or disables the page's edit controls (`refusal`
+ * from `useRefusal`); nothing when it doesn't. */
+export function RoleNote({ refusal }: { refusal: string | null }) {
+  if (!refusal) return null;
+  return (
+    <p role="note" aria-label="What your role allows" className="bg-muted/50 text-muted-foreground rounded-md border px-3 py-2 text-sm">
+      {refusal}
+    </p>
   );
 }
 

@@ -39,6 +39,7 @@ from aios.models import (
     WorkflowRunStep,
     WorkflowStepStatus,
 )
+from aios.permissions import Action, allow
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.versioning import NodeSpec, save_workflow_version
 from aios.worker import run_workflow_task
@@ -447,7 +448,7 @@ def contained_workflows(store: Session) -> dict[int, set[int]]:
     return contained
 
 
-@router.get("/workflows", response_model=list[WorkflowSummary])
+@router.get("/workflows", response_model=list[WorkflowSummary], dependencies=[allow(Action.read)])
 def list_workflows(
     org: CurrentOrganisation,
     db: DB,
@@ -487,7 +488,12 @@ def list_workflows(
     ]
 
 
-@router.post("/workflows", response_model=WorkflowOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/workflows",
+    response_model=WorkflowOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.build)],
+)
 def create_workflow(
     body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -509,7 +515,9 @@ def create_workflow(
     return workflow_out(db, org.id, store, workflow)
 
 
-@router.get("/workflows/{workflow_id}", response_model=WorkflowOut)
+@router.get(
+    "/workflows/{workflow_id}", response_model=WorkflowOut, dependencies=[allow(Action.read)]
+)
 def get_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     return workflow_out(db, org.id, store, get_org_workflow(store, workflow_id))
 
@@ -529,7 +537,9 @@ def refuse_stale_edit(db: Session, workflow: Workflow, base_version: int | None)
         )
 
 
-@router.put("/workflows/{workflow_id}", response_model=WorkflowOut)
+@router.put(
+    "/workflows/{workflow_id}", response_model=WorkflowOut, dependencies=[allow(Action.build)]
+)
 def update_workflow(
     workflow_id: DbId,
     body: WorkflowIn,
@@ -561,7 +571,11 @@ def update_workflow(
     return workflow_out(db, org.id, store, workflow)
 
 
-@router.post("/workflows/{workflow_id}/archive", response_model=WorkflowOut)
+@router.post(
+    "/workflows/{workflow_id}/archive",
+    response_model=WorkflowOut,
+    dependencies=[allow(Action.build)],
+)
 def archive_workflow(
     workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -589,7 +603,11 @@ def archive_workflow(
     return workflow_out(db, org.id, store, workflow)
 
 
-@router.post("/workflows/{workflow_id}/unarchive", response_model=WorkflowOut)
+@router.post(
+    "/workflows/{workflow_id}/unarchive",
+    response_model=WorkflowOut,
+    dependencies=[allow(Action.build)],
+)
 def unarchive_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     """Bring the workflow back. Its schedules stay paused until someone resumes them."""
     workflow = get_org_workflow(store, workflow_id)
@@ -600,7 +618,11 @@ def unarchive_workflow(workflow_id: DbId, org: CurrentOrganisation, db: DB, stor
     return workflow_out(db, org.id, store, workflow)
 
 
-@router.get("/workflows/{workflow_id}/used-by", response_model=used_by.WorkflowUsedBy)
+@router.get(
+    "/workflows/{workflow_id}/used-by",
+    response_model=used_by.WorkflowUsedBy,
+    dependencies=[allow(Action.read)],
+)
 def get_workflow_used_by(
     workflow_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -609,7 +631,11 @@ def get_workflow_used_by(
     return used_by.workflow(db, store, org.id, get_org_workflow(store, workflow_id), user.id)
 
 
-@router.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionSummary])
+@router.get(
+    "/workflows/{workflow_id}/versions",
+    response_model=list[WorkflowVersionSummary],
+    dependencies=[allow(Action.read)],
+)
 def list_workflow_versions(
     workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -633,7 +659,11 @@ def list_workflow_versions(
     ]
 
 
-@router.get("/workflows/{workflow_id}/versions/{number}", response_model=WorkflowVersionOut)
+@router.get(
+    "/workflows/{workflow_id}/versions/{number}",
+    response_model=WorkflowVersionOut,
+    dependencies=[allow(Action.read)],
+)
 def get_workflow_version_detail(
     workflow_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -642,7 +672,11 @@ def get_workflow_version_detail(
     return version_out(db, org.id, version)
 
 
-@router.post("/workflows/{workflow_id}/versions/{number}/restore", response_model=WorkflowOut)
+@router.post(
+    "/workflows/{workflow_id}/versions/{number}/restore",
+    response_model=WorkflowOut,
+    dependencies=[allow(Action.build)],
+)
 def restore_workflow_version(
     workflow_id: DbId,
     number: DbId,
@@ -930,7 +964,11 @@ def workflow_run_summary(db: Session, run_id: int) -> WorkflowRunSummary:
     return workflow_run_summaries(db, organisation_id, [row])[0]
 
 
-@router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunSummary])
+@router.get(
+    "/workflows/{workflow_id}/runs",
+    response_model=list[WorkflowRunSummary],
+    dependencies=[allow(Action.read)],
+)
 def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     workflow = get_org_workflow(store, workflow_id)
     theirs = (WorkflowRun.organisation_id == org.id, WorkflowRun.workflow_id == workflow.id)
@@ -948,6 +986,7 @@ def list_workflow_runs(workflow_id: DbId, org: CurrentOrganisation, db: DB, stor
     "/workflows/{workflow_id}/runs",
     response_model=WorkflowRunSummary,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
 )
 def create_workflow_run(
     workflow_id: DbId,
@@ -1038,7 +1077,11 @@ class WorkflowRunPageOut(WorkflowRunOut):
     workflow_name: str
 
 
-@router.get("/workflows/{workflow_id}/runs/{run_id}", response_model=WorkflowRunPageOut)
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}",
+    response_model=WorkflowRunPageOut,
+    dependencies=[allow(Action.read)],
+)
 def get_workflow_run(
     workflow_id: DbId, run_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -1094,7 +1137,11 @@ def workflow_run_out(db: Session, run_id: int) -> WorkflowRunOut:
     )
 
 
-@router.get("/workflows/{workflow_id}/runs/{run_id}/subworkflow", response_model=WorkflowVersionOut)
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/subworkflow",
+    response_model=WorkflowVersionOut,
+    dependencies=[allow(Action.read)],
+)
 def get_run_subworkflow(
     workflow_id: DbId,
     run_id: DbId,
@@ -1116,7 +1163,11 @@ def get_run_subworkflow(
     return version_out(db, org.id, load_version(store, version_id))
 
 
-@router.delete("/workflows/{workflow_id}/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/workflows/{workflow_id}/runs/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.build)],
+)
 def delete_workflow_run(
     workflow_id: DbId,
     run_id: DbId,

@@ -13,6 +13,7 @@ import {
   usePoll,
 } from "@/components/crud";
 import { StartedBy } from "@/components/provenance";
+import { useRefusal } from "@/lib/current-user";
 import { Button } from "@/components/ui/button";
 import { VersionBadge } from "@/components/versions";
 import { WorkflowCanvas, type Selection } from "@/components/workflow/canvas";
@@ -93,6 +94,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
   const [opened, setOpened] = useState<Level[]>([]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState<string>();
+  const deleteRefusal = useRefusal("build");
   // A version never changes, so keep the first copy read: the fresh one in each poll would have
   // the canvas lay out and redraw the whole graph every second.
   const [version, setVersion] = useState<WorkflowVersion>();
@@ -197,6 +199,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         </>
       }
       actions={
+        !deleteRefusal && (
         <Button
           variant="outline"
           size="sm"
@@ -207,6 +210,7 @@ function WorkflowRunView({ id, runId }: { id: number; runId: number }) {
         >
           <Trash2 />
         </Button>
+        )
       }
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />

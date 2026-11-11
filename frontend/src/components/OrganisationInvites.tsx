@@ -4,9 +4,10 @@ import { Check, Copy, Link2, Trash2 } from "lucide-react";
 import { ErrorBanner, formatDate, Section, selectClass, useLoad } from "@/components/crud";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api, describeError, type NewInvite } from "@/lib/api";
+import { api, describeError, type NewInvite, type Role } from "@/lib/api";
 import { useCurrentUser } from "@/lib/current-user";
 import { linkName } from "@/lib/organisation";
+import { ROLE_DESCRIPTIONS, roleLabel } from "@/lib/permissions";
 
 // How long a new link lasts, in days: a week by default, a month at most (as the API allows).
 const LASTS = [
@@ -17,14 +18,15 @@ const LASTS = [
 ];
 
 /**
- * The organisation's invitation links, for its creator (the page shows it to no one else): make
- * one and copy it, once, since only its hash is kept; see the open ones, who made each and when
- * it expires; revoke one.
+ * The organisation's invitation links, for its admins (the page shows it to no one else): make
+ * one, granting the role they choose (editor by default), and copy it, once, since only its hash
+ * is kept; see the open ones, the role each grants, who made each and when it expires; revoke one.
  */
 export function InvitesSection() {
   const me = useCurrentUser();
   const { data: invites, error: loadError, reload } = useLoad(api.listInvites);
   const [days, setDays] = useState(7);
+  const [role, setRole] = useState<Role>("editor");
   const [made, setMade] = useState<NewInvite>();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -95,12 +97,29 @@ export function InvitesSection() {
               ))}
             </select>
           </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="invite-role" className="text-sm font-medium">
+              Joins as
+            </label>
+            <select
+              id="invite-role"
+              className={selectClass}
+              value={role}
+              onChange={(e) => setRole(e.target.value as Role)}
+            >
+              {(["editor", "participant", "admin"] as const).map((r) => (
+                <option key={r} value={r} title={ROLE_DESCRIPTIONS[r]}>
+                  {roleLabel(r)}
+                </option>
+              ))}
+            </select>
+          </div>
           <Button
             disabled={busy}
             onClick={() =>
               act(async () => {
                 setCopied(false);
-                setMade(await api.makeInvite(days));
+                setMade(await api.makeInvite(days, role));
               })
             }
           >
@@ -117,7 +136,9 @@ export function InvitesSection() {
             {invites.map((invite) => (
               <li key={invite.id} className="flex items-center gap-3 px-3 py-2 text-sm">
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium">{linkName(invite.id)}</div>
+                  <div className="font-medium">
+                    {linkName(invite.id)} · joins as {roleLabel(invite.role).toLowerCase()}
+                  </div>
                   <div className="text-muted-foreground truncate text-xs">
                     Made by{" "}
                     {invite.creator

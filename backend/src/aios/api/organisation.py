@@ -6,19 +6,20 @@
 only member, and its store queued to be provisioned at once. Names may repeat: the slug tells
 organisations apart. It's the welcome page's, and the switcher's "Create an organisation".
 
-`GET .../organisation` is the Organisation page: the name, the creator, the members with when
-each joined, and its deletion while one is scheduled; `PUT` renames it, for the creator only (a
-403 for another member).
+`GET .../organisation` is the Organisation page: the name, the creator, the members with their
+roles and when each joined, the signed-in member's own role, and its deletion while one is
+scheduled. What only admins do (`aios.permissions`) is a 403 naming it for anyone else:
+renaming it (`PUT`), changing a member's role (`PUT .../organisation/members/{user_id}/role`,
+a 409 for demoting its last admin), and scheduling its deletion
+(`POST .../organisation/deletion`, typing its name: a 422 for another name, a 409 if it's
+scheduled already) or cancelling it (`DELETE`, a 409 if none is scheduled).
 
-`POST .../organisation/deletion` schedules its deletion, for the creator only, who types its name
-(a 422 for another name, a 409 if it's scheduled already); `DELETE` cancels it (a 409 if none
-is scheduled). Both answer with the Organisation page (`aios.organisations`).
-
-Invitation links (`.../organisation/invites`) are the creator's too: making one (its token
-shown in the response, once), listing the open ones and revoking one are a 403 for any other
-member. `/api/invites/{token}` is the invite page: what the link is for, with no sign-in
-needed, and accepting it (`/accept`), which adds a membership and answers with the organisation,
-the same again for one the person is in already. An expired or revoked link is a 404.
+Invitation links (`.../organisation/invites`) are admins' too: making one (its token shown in
+the response, once, and the role it grants, editor unless they choose), listing the open ones
+and revoking one. `/api/invites/{token}` is the invite page: what the link is for, with no
+sign-in needed, and accepting it (`/accept`), which adds a membership with the link's role and
+answers with the organisation, the same again for one the person is in already. An expired or
+revoked link is a 404.
 `POST .../organisation/leave` leaves (409 with the reason when the user can't): only the
 membership goes, and it answers with the person as "me" does, with the organisations they're
 still in.
@@ -45,18 +46,24 @@ from aios.auth import (
 from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.db import DB, SessionLocal
-from aios.models import DataStore, Organisation, OrganisationInvite, OrganisationMember, User
+from aios.models import (
+    DataStore,
+    Organisation,
+    OrganisationInvite,
+    OrganisationMember,
+    Role,
+    User,
+)
+from aios.permissions import Action, allow
 
 router = APIRouter(prefix="/api")
 
-NOT_THE_CREATOR = "Only the organisation's creator can rename it."
-NOT_THE_DELETER = "Only the organisation's creator can delete it."
-NOT_THE_INVITER = "Only the organisation's creator can invite people into it."
 NO_SUCH_INVITE = "This invitation link has expired or been revoked, or never existed."
 
 
 class MemberOut(BaseModel):
     user: UserOut
+    role: Role
     joined_at: datetime
     # The invitation link they came in through, if any.
     invite_id: uuid.UUID | None
@@ -99,11 +106,12 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         .order_by(OrganisationMember.joined_at, OrganisationMember.user_id)
     ).all()
     return OrganisationOut(
-        **summary_out(org, user).model_dump(),
+        **summary_out(db, org, user).model_dump(),
         creator=UserOut.model_validate(org.creator, from_attributes=True) if org.creator else None,
         members=[
             MemberOut(
                 user=UserOut.model_validate(m.user, from_attributes=True),
+                role=m.role,
                 joined_at=m.joined_at,
                 invite_id=m.invite_id,
             )
@@ -135,24 +143,26 @@ def create_organisation(body: OrganisationIn, user: CurrentUser, db: DB):
     return organisation_out(db, org, user)
 
 
-@router.get("/organisation", response_model=OrganisationOut)
+@router.get("/organisation", response_model=OrganisationOut, dependencies=[allow(Action.read)])
 def get_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     return organisation_out(db, org, user)
 
 
-@router.put("/organisation", response_model=OrganisationOut)
+@router.put(
+    "/organisation", response_model=OrganisationOut, dependencies=[allow(Action.run_organisation)]
+)
 def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    if org.created_by != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_CREATOR)
     org.name = body.name.strip()
     db.commit()
     return organisation_out(db, org, user)
 
 
-@router.post("/organisation/deletion", response_model=OrganisationOut)
+@router.post(
+    "/organisation/deletion",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
 def schedule_deletion(body: DeletionIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    if org.created_by != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_DELETER)
     try:
         organisations.schedule_deletion(db, org, user, body.name.strip())
     except organisations.DeletionRefused as refused:
@@ -167,10 +177,12 @@ def schedule_deletion(body: DeletionIn, user: CurrentUser, org: CurrentOrganisat
     return organisation_out(db, org, user)
 
 
-@router.delete("/organisation/deletion", response_model=OrganisationOut)
+@router.delete(
+    "/organisation/deletion",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
 def cancel_deletion(user: CurrentUser, org: CurrentOrganisation, db: DB):
-    if org.created_by != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_DELETER)
     try:
         organisations.cancel_deletion(db, org)
     except organisations.DeletionRefused as refused:
@@ -185,10 +197,14 @@ def cancel_deletion(user: CurrentUser, org: CurrentOrganisation, db: DB):
 
 class InviteIn(BaseModel):
     expires_in_days: int = Field(organisations.INVITE_DAYS, ge=1, le=organisations.INVITE_DAYS_MAX)
+    # The role whoever joins through it is given.
+    role: Role = Role.editor
 
 
 class InviteOut(BaseModel):
     id: uuid.UUID
+    # The role whoever joins through it is given.
+    role: Role
     # Null once their account is deleted.
     creator: UserOut | None
     created_at: datetime
@@ -210,6 +226,8 @@ class InvitationOut(BaseModel):
     """What the invite page shows of an open link, to anyone holding it."""
 
     organisation: InvitedToOut
+    # The role they'd join with.
+    role: Role
     expires_at: datetime
 
 
@@ -217,23 +235,21 @@ def invite_out(invite: OrganisationInvite, db: Session) -> InviteOut:
     creator = db.get(User, invite.created_by) if invite.created_by is not None else None
     return InviteOut(
         id=invite.id,
+        role=invite.role,
         creator=UserOut.model_validate(creator, from_attributes=True) if creator else None,
         created_at=invite.created_at,
         expires_at=invite.expires_at,
     )
 
 
-def require_creator(org: Organisation, user: User) -> None:
-    if org.created_by != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_THE_INVITER)
-
-
 @router.post(
-    "/organisation/invites", response_model=NewInviteOut, status_code=status.HTTP_201_CREATED
+    "/organisation/invites",
+    response_model=NewInviteOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.run_organisation)],
 )
 def make_invite(body: InviteIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    require_creator(org, user)
-    invite, token = organisations.make_invite(db, org, user, body.expires_in_days)
+    invite, token = organisations.make_invite(db, org, user, body.expires_in_days, body.role)
     db.commit()
     return NewInviteOut(
         **invite_out(invite, db).model_dump(),
@@ -242,15 +258,21 @@ def make_invite(body: InviteIn, user: CurrentUser, org: CurrentOrganisation, db:
     )
 
 
-@router.get("/organisation/invites", response_model=list[InviteOut])
-def list_invites(user: CurrentUser, org: CurrentOrganisation, db: DB):
-    require_creator(org, user)
+@router.get(
+    "/organisation/invites",
+    response_model=list[InviteOut],
+    dependencies=[allow(Action.run_organisation)],
+)
+def list_invites(org: CurrentOrganisation, db: DB):
     return [invite_out(i, db) for i in organisations.open_invites(db, org)]
 
 
-@router.delete("/organisation/invites/{invite_id}", status_code=status.HTTP_204_NO_CONTENT)
-def revoke_invite(invite_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    require_creator(org, user)
+@router.delete(
+    "/organisation/invites/{invite_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.run_organisation)],
+)
+def revoke_invite(invite_id: uuid.UUID, org: CurrentOrganisation, db: DB):
     invite = db.scalar(
         select(OrganisationInvite).where(
             OrganisationInvite.id == invite_id,
@@ -271,7 +293,9 @@ def open_invite(token: str, db: DB):
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_SUCH_INVITE)
     org = db.get_one(Organisation, invite.organisation_id)
     return InvitationOut(
-        organisation=InvitedToOut(id=org.id, name=org.name), expires_at=invite.expires_at
+        organisation=InvitedToOut(id=org.id, name=org.name),
+        role=invite.role,
+        expires_at=invite.expires_at,
     )
 
 
@@ -285,13 +309,40 @@ def accept_invite(token: str, user: CurrentUser, db: DB):
     return organisation_out(db, org, user)
 
 
-@router.post("/organisation/leave", response_model=MeOut)
+@router.post("/organisation/leave", response_model=MeOut, dependencies=[allow(Action.leave)])
 def leave_organisation(user: CurrentUser, org: CurrentOrganisation, db: DB):
     if (refusal := organisations.leave_refusal(db, org, user)) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     organisations.leave(db, org, user)
     db.commit()
     return me_out(db, user)
+
+
+class RoleIn(BaseModel):
+    role: Role
+
+
+NOT_A_MEMBER = "They aren't a member of this organisation."
+
+
+@router.put(
+    "/organisation/members/{user_id}/role",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def change_role(user_id: int, body: RoleIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Give a member another role (an admin's): 404 for someone who isn't a member, 409 for
+    demoting the organisation's last admin. Answers with the Organisation page."""
+    try:
+        changed = organisations.change_role(db, org, user_id, body.role)
+    except organisations.RoleChangeRefused as refused:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(refused)) from None
+    if not changed:
+        db.rollback()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_A_MEMBER)
+    db.commit()
+    return organisation_out(db, org, user)
 
 
 def users_out(store_id: uuid.UUID, user_ids: set[int]) -> dict[int, UserOut]:

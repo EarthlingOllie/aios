@@ -19,6 +19,7 @@ import {
   formatDate,
   MasterDetail,
   Placeholder,
+  RoleNote,
   Section,
   useListHref,
   useLoad,
@@ -59,6 +60,7 @@ import {
   type ListFilterGroup,
   type ListSort,
 } from "@/lib/list-filter";
+import { useRefusal } from "@/lib/current-user";
 import { personName } from "@/lib/provenance";
 
 const AGENT_FILTERS: ListFilterGroup<AgentSummary>[] = [
@@ -147,9 +149,11 @@ export function AgentsSection() {
     () => agentFilters(skills, tools, { skill, tool }),
     [skills, tools, skill, tool],
   );
+  const newRefusal = useRefusal("build");
   return (
     <MasterDetail
       title="Agents"
+      newRefusal={newRefusal}
       basePath="/agents"
       items={data}
       error={error}
@@ -263,6 +267,7 @@ export function AgentDetail() {
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const buildRefusal = useRefusal("build");
 
   if (agent.error) return <Placeholder>{agent.error}</Placeholder>;
   if (!agent.data) return null;
@@ -351,23 +356,27 @@ export function AgentDetail() {
       actions={
         <>
           {a.archived_at ? (
-            <Button size="sm" onClick={onUnarchive} disabled={busy}>
-              <ArchiveRestore />
-              Unarchive
-            </Button>
+            !buildRefusal && (
+              <Button size="sm" onClick={onUnarchive} disabled={busy}>
+                <ArchiveRestore />
+                Unarchive
+              </Button>
+            )
           ) : (
             <Button size="sm" onClick={onNewRun} disabled={busy}>
               <Play />
               New run
             </Button>
           )}
-          <Button asChild variant="outline" size="sm">
-            <Link to={listHref(`/agents/${id}/edit`)}>
-              <Pencil />
-              Edit
-            </Link>
-          </Button>
-          {!a.archived_at && (
+          {!buildRefusal && (
+            <Button asChild variant="outline" size="sm">
+              <Link to={listHref(`/agents/${id}/edit`)}>
+                <Pencil />
+                Edit
+              </Link>
+            </Button>
+          )}
+          {!a.archived_at && !buildRefusal && (
             <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
               <Archive />
               Archive
@@ -377,6 +386,7 @@ export function AgentDetail() {
       }
     >
       <ErrorBanner message={actionError} onDismiss={() => setActionError(undefined)} />
+      <RoleNote refusal={buildRefusal} />
       {a.archived_at && (
         <p role="status" className="bg-muted/50 rounded-md border px-3 py-2 text-sm">
           This agent is archived{a.archived_by ? ` by ${personName(a.archived_by)}` : ""} on{" "}
@@ -411,6 +421,7 @@ export function AgentDetail() {
                           key={skill.skill_id}
                           skill={skill}
                           action={
+                            !buildRefusal &&
                             skill.latest_version !== null &&
                             skill.latest_version > skill.version && (
                               <Button
@@ -493,13 +504,15 @@ export function AgentDetail() {
                           <VersionBadge version={run.agent_version} />
                           <Badge variant="secondary">{run.message_count} msgs</Badge>
                         </Link>
-                        <button
-                          className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
-                          onClick={() => onDeleteRun(run.id)}
-                          aria-label="Delete run"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
+                        {!buildRefusal && (
+                          <button
+                            className="text-muted-foreground hover:text-destructive focus:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                            onClick={() => onDeleteRun(run.id)}
+                            aria-label="Delete run"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -570,6 +583,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
   );
   const [error, setError] = useState<string>();
   const savedBy = useSavedBy();
+  const buildRefusal = useRefusal("build");
 
   if (version.error) return <Placeholder>{version.error}</Placeholder>;
   if (!version.data || !agent.data) return null;
@@ -599,7 +613,7 @@ function AgentVersionView({ id, number }: { id: number; number: number }) {
         </span>
       }
       subtitle={`${v.note ?? "No note"} · ${formatDate(v.created_at)}${savedBy(v.created_by)}`}
-      actions={!isCurrent && <RestoreButton onRestore={onRestore} />}
+      actions={!isCurrent && !buildRefusal && <RestoreButton onRestore={onRestore} />}
     >
       <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
       <Section title="Skills">
@@ -661,6 +675,7 @@ export function AgentForm() {
   const [catalog, setCatalog] = useState<ToolInfo[]>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const buildRefusal = useRefusal("build");
 
   useEffect(() => {
     setForm(undefined);
@@ -744,6 +759,7 @@ export function AgentForm() {
       }
     >
       <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+        <RoleNote refusal={buildRefusal} />
         <ErrorBanner message={error} onDismiss={() => setError(undefined)} />
         <Field label="Name" htmlFor="agent-name">
           <Input
@@ -893,7 +909,7 @@ export function AgentForm() {
           </Field>
         )}
         <div className="flex gap-2">
-          <Button type="submit" disabled={saving || !form.name.trim()}>
+          <Button type="submit" disabled={saving || !form.name.trim() || !!buildRefusal} title={buildRefusal ?? undefined}>
             {id === undefined ? "Create agent" : "Save changes"}
           </Button>
           <Button type="button" variant="ghost" onClick={() => navigate(-1)}>

@@ -9,11 +9,14 @@ person and organisation; the request's organisation is resolved in one place,
 (`free_slug`), what links in the browser name it by, made when it's created and never changed by
 a rename.
 
-Only the creator renames an organisation, invites into it and deletes it: a stopgap role until
-roles exist. Everything in an organisation is visible to every member. Names may repeat; slugs
+**Roles.** Each member has a role (`aios.permissions` says what each may do): the creator
+starts as the admin, and whoever joins through a link gets the role the link grants (editor
+unless the admin who made it chose another). Admins change roles (`change_role`); an
+organisation always keeps an admin, so the last one can't be demoted, nor leave while others
+remain. Everything in an organisation is visible to every member. Names may repeat; slugs
 don't.
 
-**Invitation links.** The creator makes a link (`make_invite`) carrying a random token; only the
+**Invitation links.** An admin makes a link (`make_invite`) carrying a random token; only the
 token's hash is stored, so the link is shown once, when it's made. It lasts a week unless the
 creator says otherwise (a month at most) and can be revoked; an expired or revoked link opens for
 no one (`open_invite`). Signing up through a link joins its organisation, and only that one.
@@ -22,7 +25,8 @@ no one (`open_invite`). Signing up through a link joins its organisation, and on
 else the person is in; accepting one into an organisation they're in already adds nothing.
 
 **Leaving** (`leave`) is refused for the last member, who should delete the organisation instead,
-and for the creator while others remain, since nobody else could invite (`leave_refusal`).
+and for the last admin while others remain, since nobody would be left to run it
+(`leave_refusal`).
 Otherwise only the membership goes: the person drops out of the organisation's chats (adding
 them to one, or their making or joining one, waits for a leave under way and is then refused:
 `holds_member`) and their unread notifications about its schema change requests go. Nothing is
@@ -35,9 +39,9 @@ is deleted if it's private, as nobody could join it.
 organisation's store's people mirror as changed (`aios.datastores.people.changed`), which is
 brought up to date once the platform's transaction commits.
 
-**Deleting** is deliberate and slow. The creator schedules it (`schedule_deletion`) by typing the
+**Deleting** is deliberate and slow. An admin schedules it (`schedule_deletion`) by typing the
 organisation's name; it's deleted `ORGANISATION_DELETION_GRACE_DAYS` (14 by default) later, and
-every member is notified, and again if the creator cancels it in the meantime
+every member is notified, and again if an admin cancels it in the meantime
 (`cancel_deletion`). Until then the organisation works as before, but its invitation links don't
 open (`open_invite`). Once the grace period is over the sweep (`delete_due`, on the provisioning
 worker's beat every `ORGANISATION_DELETION_CHECK_SECONDS`) records the deletion
@@ -75,6 +79,7 @@ from aios.models import (
     OrganisationDeletion,
     OrganisationInvite,
     OrganisationMember,
+    Role,
     User,
 )
 
@@ -95,6 +100,46 @@ def membership(db: Session, user_id: int, organisation_id: int) -> Organisation 
             OrganisationMember.organisation_id == organisation_id,
         )
     )
+
+
+def membership_role(
+    db: Session, user_id: int, organisation_id: int
+) -> tuple[Organisation, Role] | None:
+    """The organisation and the user's role in it, if they're a member: None alike when they
+    aren't and when it doesn't exist."""
+    row = db.execute(
+        select(Organisation, OrganisationMember.role)
+        .join(OrganisationMember)
+        .where(
+            OrganisationMember.user_id == user_id,
+            OrganisationMember.organisation_id == organisation_id,
+        )
+    ).first()
+    return None if row is None else (row[0], row[1])
+
+
+def role(db: Session, organisation_id: int, user_id: int) -> Role:
+    """The member's role in the organisation."""
+    return db.scalar(
+        select(OrganisationMember.role).where(
+            OrganisationMember.organisation_id == organisation_id,
+            OrganisationMember.user_id == user_id,
+        )
+    )
+
+
+def memberships_with_roles(db: Session, user_id: int) -> list[tuple[Organisation, Role]]:
+    """Every organisation the user is in, with their role in it, the one they joined most
+    recently first."""
+    return [
+        (org, role)
+        for org, role in db.execute(
+            select(Organisation, OrganisationMember.role)
+            .join(OrganisationMember)
+            .where(OrganisationMember.user_id == user_id)
+            .order_by(OrganisationMember.joined_at.desc(), Organisation.id.desc())
+        )
+    ]
 
 
 def memberships(db: Session, user_id: int) -> list[Organisation]:
@@ -157,7 +202,7 @@ def create(db: Session, user: User, name: str) -> Organisation:
         )
         if org_id is not None:
             break
-    db.add(OrganisationMember(organisation_id=org_id, user_id=user.id))
+    db.add(OrganisationMember(organisation_id=org_id, user_id=user.id, role=Role.admin))
     db.flush()
     people.changed(db, org_id)
     return db.get_one(Organisation, org_id)
@@ -174,16 +219,22 @@ def hash_token(token: str) -> str:
 
 
 def make_invite(
-    db: Session, org: Organisation, user: User, days: int = INVITE_DAYS
+    db: Session,
+    org: Organisation,
+    user: User,
+    days: int = INVITE_DAYS,
+    role: Role = Role.editor,
 ) -> tuple[OrganisationInvite, str]:
-    """A new invitation link into the organisation, made by `user` (its creator), and its
-    token: the only time the token exists outside the link. Flushed, not committed."""
+    """A new invitation link into the organisation, made by `user` (an admin), granting `role`
+    to whoever joins through it, and its token: the only time the token exists outside the
+    link. Flushed, not committed."""
     token = secrets.token_urlsafe(32)
     invite = OrganisationInvite(
         organisation_id=org.id,
         token_hash=hash_token(token),
         created_by=user.id,
         expires_at=func.now() + timedelta(days=days),
+        role=role,
     )
     db.add(invite)
     db.flush()
@@ -226,12 +277,17 @@ def open_invites(db: Session, org: Organisation) -> list[OrganisationInvite]:
 
 
 def join(db: Session, user: User, invite: OrganisationInvite) -> Organisation:
-    """Make the user a member of the link's organisation, recording the link they came through;
-    if they're one already, nothing changes (accepting a link twice adds nothing). Flushed, not
-    committed."""
+    """Make the user a member of the link's organisation, with the role the link grants,
+    recording the link they came through; if they're one already, nothing changes (accepting a
+    link twice adds nothing, and doesn't change their role). Flushed, not committed."""
     db.execute(
         insert(OrganisationMember)
-        .values(organisation_id=invite.organisation_id, user_id=user.id, invite_id=invite.id)
+        .values(
+            organisation_id=invite.organisation_id,
+            user_id=user.id,
+            invite_id=invite.id,
+            role=invite.role,
+        )
         .on_conflict_do_nothing(index_elements=["organisation_id", "user_id"])
     )
     db.flush()
@@ -243,10 +299,23 @@ LAST_MEMBER = (
     "You're its only member, so nobody would be left to see what's in it. Delete the "
     "organisation instead."
 )
-CREATOR_WITH_OTHERS = (
-    "You created this organisation, and only its creator can invite people into it, so you "
-    "can't leave while others are still members."
+LAST_ADMIN_WITH_OTHERS = (
+    "You're its only admin, and an organisation needs an admin, so you can't leave while others "
+    "are still members. Make someone else an admin first."
 )
+# Demoting the last admin.
+NEEDS_AN_ADMIN = "An organisation needs an admin"
+
+
+def _admins(db: Session, org: Organisation) -> list[int]:
+    return list(
+        db.scalars(
+            select(OrganisationMember.user_id).where(
+                OrganisationMember.organisation_id == org.id,
+                OrganisationMember.role == Role.admin,
+            )
+        )
+    )
 
 
 def leave_refusal(db: Session, org: Organisation, user: User) -> str | None:
@@ -256,9 +325,35 @@ def leave_refusal(db: Session, org: Organisation, user: User) -> str | None:
     members = db.scalar(select(func.count()).where(OrganisationMember.organisation_id == org.id))
     if members <= 1:
         return LAST_MEMBER
-    if org.created_by == user.id:
-        return CREATOR_WITH_OTHERS
+    if _admins(db, org) == [user.id]:
+        return LAST_ADMIN_WITH_OTHERS
     return None
+
+
+class RoleChangeRefused(Exception):
+    """Why changing a member's role was refused (`NEEDS_AN_ADMIN`)."""
+
+
+def change_role(db: Session, org: Organisation, user_id: int, new_role: Role) -> bool:
+    """Give a member of the organisation `new_role`; False if they aren't a member. Refused
+    (`RoleChangeRefused`) when it would leave the organisation with no admin. Locks the
+    organisation first (as leaving does), so two admins demoting each other at once can't both
+    succeed. Their store's people mirror is updated once this commits. Flushed, not
+    committed."""
+    db.scalar(select(Organisation.id).where(Organisation.id == org.id).with_for_update())
+    member = db.scalar(
+        select(OrganisationMember).where(
+            OrganisationMember.organisation_id == org.id, OrganisationMember.user_id == user_id
+        )
+    )
+    if member is None:
+        return False
+    if new_role != Role.admin and _admins(db, org) == [user_id]:
+        raise RoleChangeRefused(NEEDS_AN_ADMIN)
+    member.role = new_role
+    db.flush()
+    people.changed(db, org.id)
+    return True
 
 
 def holds_member(db: Session, org: Organisation, user_id: int) -> bool:
@@ -399,7 +494,7 @@ def _notify_members(db: Session, org: Organisation, kind: str, deletes_at) -> No
 
 
 def schedule_deletion(db: Session, org: Organisation, user: User, name: str) -> None:
-    """Schedule the organisation's deletion, by `user` (its creator), who typed `name`: it's
+    """Schedule the organisation's deletion, by `user` (an admin), who typed `name`: it's
     deleted once the grace period is over (`delete_due`), and every member is notified. Refused
     (`DeletionRefused`) for a name other than the organisation's, and for one already
     scheduled. Flushed, not committed."""

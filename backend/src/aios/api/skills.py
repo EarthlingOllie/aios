@@ -28,6 +28,7 @@ from aios.datastores.models import (
     agent_version_skills,
 )
 from aios.db import DB, DbId
+from aios.permissions import Action, allow
 from aios.versioning import save_skill_version
 
 router = APIRouter(prefix="/api")
@@ -251,7 +252,7 @@ def skill_out(db: Session, org_id: int, store: Session, skill: Skill) -> SkillOu
     )
 
 
-@router.get("/skills", response_model=list[SkillSummary])
+@router.get("/skills", response_model=list[SkillSummary], dependencies=[allow(Action.read)])
 def list_skills(
     org: CurrentOrganisation,
     db: DB,
@@ -291,7 +292,12 @@ def list_skills(
     ]
 
 
-@router.post("/skills", response_model=SkillOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/skills",
+    response_model=SkillOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.build)],
+)
 def create_skill(
     body: SkillIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -310,12 +316,12 @@ def create_skill(
     return skill_out(db, org.id, store, skill)
 
 
-@router.get("/skills/{skill_id}", response_model=SkillOut)
+@router.get("/skills/{skill_id}", response_model=SkillOut, dependencies=[allow(Action.read)])
 def get_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     return skill_out(db, org.id, store, get_org_skill(store, skill_id))
 
 
-@router.put("/skills/{skill_id}", response_model=SkillOut)
+@router.put("/skills/{skill_id}", response_model=SkillOut, dependencies=[allow(Action.build)])
 def update_skill(
     skill_id: DbId,
     body: SkillIn,
@@ -340,7 +346,9 @@ def update_skill(
     return skill_out(db, org.id, store, skill)
 
 
-@router.post("/skills/{skill_id}/archive", response_model=SkillOut)
+@router.post(
+    "/skills/{skill_id}/archive", response_model=SkillOut, dependencies=[allow(Action.build)]
+)
 def archive_skill(
     skill_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -358,7 +366,9 @@ def archive_skill(
     return skill_out(db, org.id, store, skill)
 
 
-@router.post("/skills/{skill_id}/unarchive", response_model=SkillOut)
+@router.post(
+    "/skills/{skill_id}/unarchive", response_model=SkillOut, dependencies=[allow(Action.build)]
+)
 def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     """Bring the skill back: agent versions can include it again."""
     skill = get_org_skill(store, skill_id)
@@ -369,14 +379,20 @@ def unarchive_skill(skill_id: DbId, org: CurrentOrganisation, db: DB, store: Cur
     return skill_out(db, org.id, store, skill)
 
 
-@router.get("/skills/{skill_id}/used-by", response_model=SkillUsedBy)
+@router.get(
+    "/skills/{skill_id}/used-by", response_model=SkillUsedBy, dependencies=[allow(Action.read)]
+)
 def get_skill_used_by(skill_id: DbId, store: CurrentStore):
     """What uses the skill, for the archive confirmation to show: read-only, as archiving is
     never refused."""
     return SkillUsedBy(agents=skill_usage(store, get_org_skill(store, skill_id).id))
 
 
-@router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionSummary])
+@router.get(
+    "/skills/{skill_id}/versions",
+    response_model=list[SkillVersionSummary],
+    dependencies=[allow(Action.read)],
+)
 def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore):
     skill = get_org_skill(store, skill_id)
     versions = store.scalars(
@@ -388,7 +404,11 @@ def list_skill_versions(skill_id: DbId, org: CurrentOrganisation, db: DB, store:
     return [version_summary(v, known, SkillVersionSummary) for v in versions]
 
 
-@router.get("/skills/{skill_id}/versions/{number}", response_model=SkillVersionOut)
+@router.get(
+    "/skills/{skill_id}/versions/{number}",
+    response_model=SkillVersionOut,
+    dependencies=[allow(Action.read)],
+)
 def get_skill_version_detail(
     skill_id: DbId, number: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
@@ -397,7 +417,11 @@ def get_skill_version_detail(
     return version_summary(version, known, SkillVersionOut)
 
 
-@router.post("/skills/{skill_id}/versions/{number}/restore", response_model=SkillOut)
+@router.post(
+    "/skills/{skill_id}/versions/{number}/restore",
+    response_model=SkillOut,
+    dependencies=[allow(Action.build)],
+)
 def restore_skill_version(
     skill_id: DbId,
     number: DbId,

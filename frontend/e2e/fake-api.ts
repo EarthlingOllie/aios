@@ -309,10 +309,20 @@ type ChatMemberOut = {
   added_at: string;
   archived: boolean;
 };
-export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null };
-/** An open invitation link, with the token the fake keeps (the API keeps only its hash). */
-export type InviteRow = { id: string; creator: ChatUser | null; created_at: string; expires_at: string; token: string };
-export type InvitationRow = { organisation: { id: number; name: string }; expires_at: string };
+export type Role = "admin" | "editor" | "participant";
+/** A member, with their role: the creator's is admin and anyone else's editor unless it's set. */
+export type OrganisationMemberRow = { user: ChatUser; joined_at: string; invite_id: string | null; role?: Role };
+/** An open invitation link, with the token the fake keeps (the API keeps only its hash), and the
+ * role it grants (editor unless it's set). */
+export type InviteRow = {
+  id: string;
+  creator: ChatUser | null;
+  created_at: string;
+  expires_at: string;
+  token: string;
+  role?: Role;
+};
+export type InvitationRow = { organisation: { id: number; name: string }; expires_at: string; role?: Role };
 export type OrganisationRow = {
   id: number;
   name: string;
@@ -516,7 +526,14 @@ export class FakeApi {
    * recently unless a test puts them after it (`joinedEarlier`). Only "me" sees them; every
    * other endpoint is `organisation`'s.
    */
-  otherMemberships: { id: number; name: string; slug: string; is_creator: boolean; deletes_at?: string | null }[] = [];
+  otherMemberships: {
+    id: number;
+    name: string;
+    slug: string;
+    is_creator: boolean;
+    role?: Role;
+    deletes_at?: string | null;
+  }[] = [];
   /** Whether `otherMemberships` were joined before `organisation` (listed after it). */
   joinedEarlier = false;
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
@@ -625,19 +642,50 @@ export class FakeApi {
 
   /** The organisation as `GET /api/organisation` answers. */
   private organisationOut() {
-    return { ...this.organisationSummary(), ...this.organisation, deletion: this.organisation.deletion ?? null };
+    return {
+      ...this.organisationSummary(),
+      ...this.organisation,
+      members: this.organisation.members.map((m) => ({ ...m, role: this.roleOf(m.user.id) })),
+      deletion: this.organisation.deletion ?? null,
+    };
+  }
+
+  /** A member's role in `organisation`: their row's, else admin for its creator, editor for
+   * anyone else. */
+  roleOf(userId: number): Role {
+    const row = this.organisation.members.find((m) => m.user.id === userId);
+    return row?.role ?? (this.organisation.creator?.id === userId ? "admin" : "editor");
+  }
+
+  /** Give `me` this role in `organisation`, as an admin changing it would. */
+  actAs(role: Role) {
+    const row = this.organisation.members.find((m) => m.user.id === this.me.id);
+    if (row) row.role = role;
+  }
+
+  /** As the API refuses an action a role can't take (`aios.permissions`). */
+  private static ADMINS_ONLY = "change the organisation's roles, invitations, name or settings, or delete it";
+
+  private refuseUnlessAdmin(): string | null {
+    const role = this.roleOf(this.me.id);
+    if (role === "admin") return null;
+    return `${role === "editor" ? "Editors" : "Participants"} can't ${FakeApi.ADMINS_ONLY}. Ask an admin.`;
   }
 
   private inviteOut({ token: _token, ...invite }: InviteRow) {
-    return invite;
+    return { ...invite, role: invite.role ?? "editor" };
   }
 
   /** The signed-in user as `/api/me` (and signing in) answers. */
   private meOut(account: Account) {
-    const others = this.otherMemberships.map((o) => ({ ...o, deletes_at: o.deletes_at ?? null }));
+    const others = this.otherMemberships.map((o) => ({
+      ...o,
+      role: o.role ?? (o.is_creator ? "admin" : "editor"),
+      deletes_at: o.deletes_at ?? null,
+    }));
     if (!this.member) return { ...accountOut(account), organisations: others };
-    const { id, name, slug, is_creator } = this.organisationSummary();
-    const own = { id, name, slug, is_creator, deletes_at: this.organisation.deletion?.deletes_at ?? null };
+    const { id, name, slug, is_creator, role } = this.organisationSummary();
+    const own = { id, name, slug, is_creator, role, deletes_at: this.organisation.deletion?.deletes_at ?? null };
     const organisations = this.joinedEarlier ? [own, ...others] : [...others, own];
     return { ...accountOut(account), organisations };
   }
@@ -648,8 +696,8 @@ export class FakeApi {
    */
   private enter(organisation: OrganisationRow) {
     if (this.member) {
-      const { id, name, slug, is_creator } = this.organisationSummary();
-      const earlier = { id, name, slug, is_creator, deletes_at: this.organisation.deletion?.deletes_at ?? null };
+      const { id, name, slug, is_creator, role } = this.organisationSummary();
+      const earlier = { id, name, slug, is_creator, role, deletes_at: this.organisation.deletion?.deletes_at ?? null };
       this.otherMemberships = this.joinedEarlier ? [earlier, ...this.otherMemberships] : [...this.otherMemberships, earlier];
     }
     this.joinedEarlier = true;
@@ -668,7 +716,7 @@ export class FakeApi {
     const other = token ? this.invitations.get(token) : undefined;
     this.otherMemberships = [];
     if (own) {
-      this.organisation.members.push({ user: account, joined_at: now, invite_id: own.id });
+      this.organisation.members.push({ user: account, joined_at: now, invite_id: own.id, role: own.role ?? "editor" });
       this.member = true;
     } else if (other) {
       this.organisation = {
@@ -687,7 +735,7 @@ export class FakeApi {
   /** The organisation as `/api/me` carries it. */
   private organisationSummary() {
     const { id, name, slug, creator } = this.organisation;
-    return { id, name, slug, is_creator: creator?.id === this.me.id };
+    return { id, name, slug, is_creator: creator?.id === this.me.id, role: this.roleOf(this.me.id) };
   }
 
   /**
@@ -1954,6 +2002,7 @@ export class FakeApi {
         this.invitations.get(token) ??
         (own && {
           organisation: { id: this.organisation.id, name: this.organisation.name },
+          role: own.role ?? "editor",
           expires_at: own.expires_at,
         });
       if (!invitation) return fail(404, "This invitation link has expired or been revoked, or never existed.");
@@ -1963,7 +2012,12 @@ export class FakeApi {
       // answered alike, and nothing changes.
       if (invitation.organisation.id === this.organisation.id) {
         if (!this.member) {
-          this.organisation.members.push({ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null });
+          this.organisation.members.push({
+            user: this.me,
+            joined_at: new Date().toISOString(),
+            invite_id: own?.id ?? null,
+            role: own?.role ?? "editor",
+          });
           this.member = true;
         }
         return reply(200, this.organisationOut());
@@ -1974,7 +2028,9 @@ export class FakeApi {
         ...invitation.organisation,
         slug: slugify(invitation.organisation.name),
         creator: null,
-        members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
+        members: [
+          { user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null, role: invitation.role ?? "editor" },
+        ],
         created_at: "2026-10-01T08:00:00Z",
       });
       return reply(200, this.organisationOut());
@@ -2027,9 +2083,8 @@ export class FakeApi {
       path = `/api${scoped[2]}`;
     }
     if (path === "/api/organisation/invites" || (m = path.match(/^\/api\/organisation\/invites\/([\w-]+)$/))) {
-      if (this.organisation.creator?.id !== this.me.id) {
-        return fail(403, "Only the organisation's creator can invite people into it.");
-      }
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
       if (m && method === "DELETE") {
         const id = m[1];
         if (!this.invites.some((i) => i.id === id)) return fail(404, "Not Found");
@@ -2047,6 +2102,7 @@ export class FakeApi {
           created_at: created.toISOString(),
           expires_at: new Date(created.getTime() + days * 86_400_000).toISOString(),
           token: `token-${n}`,
+          role: (body?.role as Role | undefined) ?? "editor",
         };
         this.invites.push(invite);
         return reply(201, { ...this.inviteOut(invite), token: invite.token, url: `http://localhost/invite/${invite.token}` });
@@ -2057,8 +2113,9 @@ export class FakeApi {
       if (this.organisation.members.length <= 1) {
         return fail(409, "You're its only member, so nobody would be left to see what's in it. Delete the organisation instead.");
       }
-      if (this.organisation.creator?.id === this.me.id) {
-        return fail(409, "You created this organisation, and only its creator can invite people into it, so you can't leave while others are still members.");
+      const admins = this.organisation.members.filter((m) => this.roleOf(m.user.id) === "admin");
+      if (admins.length === 1 && admins[0].user.id === this.me.id) {
+        return fail(409, "You're its only admin, and an organisation needs an admin, so you can't leave while others are still members. Make someone else an admin first.");
       }
       // Only the membership goes: `me` is left in the others they're in, or in none.
       this.organisation.members = this.organisation.members.filter((m) => m.user.id !== this.me.id);
@@ -2066,7 +2123,8 @@ export class FakeApi {
       return reply(200, this.meOut(account));
     }
     if (path === "/api/organisation/deletion") {
-      if (this.organisation.creator?.id !== this.me.id) return fail(403, "Only the organisation's creator can delete it.");
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
       if (method === "POST") {
         if (String(body?.name ?? "").trim() !== this.organisation.name) return fail(422, "That isn't the organisation's name.");
         if (this.organisation.deletion) return fail(409, "The organisation is already scheduled for deletion.");
@@ -2082,11 +2140,23 @@ export class FakeApi {
       }
       return reply(200, this.organisationOut());
     }
+    if ((m = path.match(/^\/api\/organisation\/members\/(\d+)\/role$/)) && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      const row = this.organisation.members.find((r) => r.user.id === Number(m![1]));
+      if (!row) return fail(404, "They aren't a member of this organisation.");
+      const role = body?.role as Role;
+      const admins = this.organisation.members.filter((r) => this.roleOf(r.user.id) === "admin");
+      if (role !== "admin" && admins.length === 1 && admins[0] === row) {
+        return fail(409, "An organisation needs an admin");
+      }
+      row.role = role;
+      return reply(200, this.organisationOut());
+    }
     if (path === "/api/organisation") {
       if (method === "PUT") {
-        if (this.organisation.creator?.id !== this.me.id) {
-          return fail(403, "Only the organisation's creator can rename it.");
-        }
+        const refused = this.refuseUnlessAdmin();
+        if (refused) return fail(403, refused);
         const name = String(body?.name ?? "").trim();
         if (!name) return fail(422, "Invalid name");
         this.organisation.name = name;

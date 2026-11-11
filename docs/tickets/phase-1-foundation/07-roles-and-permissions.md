@@ -6,13 +6,13 @@
 
 **Blocked by:** [02: People mirror](02-people-mirror.md), [Phase 0 · 12: Delete an organisation with a grace period; remove unscoped routes](../phase-0-refactor-and-guard-rails/12-delete-organisation.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] "Who am I" returns each organisation with the person's role.
-- [ ] An admin changes a member's role on the Members tab, and role changes reach the store's people mirror.
-- [ ] An invited person joins with the role their link granted.
-- [ ] Demoting the last admin answers 409 "An organisation needs an admin".
-- [ ] A parametrised API test covers every route against the three roles, matching the spec's permission table; a refused action answers 403 naming the action.
-- [ ] Participants can view, search and download documents but get 403 uploading or deleting them.
-- [ ] A participant's mention answers 403 with an explanation until ticket 11 ships.
-- [ ] Browser tests show a participant's view, with edit controls hidden or disabled with an explanation.
+- [x] "Who am I" returns each organisation with the person's role.
+- [x] An admin changes a member's role on the Members tab, and role changes reach the store's people mirror.
+- [x] An invited person joins with the role their link granted.
+- [x] Demoting the last admin answers 409 "An organisation needs an admin".
+- [x] A parametrised API test covers every route against the three roles, matching the spec's permission table; a refused action answers 403 naming the action.
+- [x] Participants can view, search and download documents but get 403 uploading or deleting them.
+- [x] A participant's mention answers 403 with an explanation until ticket 11 ships.
+- [x] Browser tests show a participant's view, with edit controls hidden or disabled with an explanation.

@@ -31,9 +31,11 @@ from aios.models import (
     ChatMemberKind,
     ChatMessage,
     ChatMessageKind,
+    Role,
     TriggerTargetKind,
     WorkflowRun,
 )
+from aios.permissions import MENTIONS_NOT_YET, Action, CurrentRole, allow
 from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
@@ -312,7 +314,9 @@ def resolve_mentions(chat: Chat, mentions: list[MentionIn]) -> list[MentionOut]:
     return list(resolved.values())
 
 
-@router.get("/chats/{chat_id}/messages", response_model=MessagesOut)
+@router.get(
+    "/chats/{chat_id}/messages", response_model=MessagesOut, dependencies=[allow(Action.read)]
+)
 def list_messages(
     chat_id: DbId,
     user: CurrentUser,
@@ -352,7 +356,11 @@ class ReadIn(BaseModel):
     message_id: DbId
 
 
-@router.post("/chats/{chat_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/chats/{chat_id}/read",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[allow(Action.post)],
+)
 def mark_read(
     chat_id: DbId, body: ReadIn, user: CurrentUser, org: CurrentOrganisation, db: DB
 ) -> None:
@@ -378,19 +386,28 @@ def mark_read(
 
 
 @router.post(
-    "/chats/{chat_id}/messages", response_model=MessagesOut, status_code=status.HTTP_201_CREATED
+    "/chats/{chat_id}/messages",
+    response_model=MessagesOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[allow(Action.post)],
 )
 def post_message(
     chat_id: DbId,
     body: MessageIn,
     user: CurrentUser,
     org: CurrentOrganisation,
+    role: CurrentRole,
     db: DB,
     background: BackgroundTasks,
 ):
     """Post a markdown message to the chat as the user, who must be a member of it. Returns it,
     and for each workflow it mentions the workflow's acknowledgement with a card and its queued
-    invocation, whose run starts after the response."""
+    invocation, whose run starts after the response. A participant's mention of an agent or a
+    workflow is refused (403, saying why) until mentions are guarded."""
+    if role == Role.participant and any(
+        m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow) for m in body.mentions
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, MENTIONS_NOT_YET)
     chat = get_visible_chat(db, org, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)

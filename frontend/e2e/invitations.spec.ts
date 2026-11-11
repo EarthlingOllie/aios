@@ -6,7 +6,7 @@ import { fakeApi, inOrg, orgApi } from "./fake-api";
 
 const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
-test("the creator makes a link, copies it once, and revokes it", async ({ page, context }) => {
+test("an admin makes a link, copies it once, and revokes it", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const api = await fakeApi(page);
   await page.goto(inOrg("/organisation/invitations"));
@@ -15,7 +15,7 @@ test("the creator makes a link, copies it once, and revokes it", async ({ page, 
 
   await links.getByRole("combobox", { name: "Lasts" }).selectOption("30");
   await links.getByRole("button", { name: "Make a link" }).click();
-  expect(api.writes).toEqual([["POST", orgApi("/organisation/invites"), { expires_in_days: 30 }]]);
+  expect(api.writes).toEqual([["POST", orgApi("/organisation/invites"), { expires_in_days: 30, role: "editor" }]]);
   const made = links.getByRole("textbox", { name: "New link" });
   await expect(made).toHaveValue("http://localhost/invite/token-100");
   await expect(links.getByText("Copy it now: it won't be shown again.")).toBeVisible();
@@ -72,7 +72,7 @@ test("members show the link they came in through", async ({ page }) => {
   ).toContainText("link 3f2a9c1e");
 });
 
-test("a member who isn't the creator sees no invitation controls", async ({ page }) => {
+test("a member who isn't an admin sees no invitation controls", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation = {
     ...api.organisation,
@@ -102,12 +102,12 @@ test("the last member can't leave, and is told to delete the organisation instea
   await expect(leave.getByRole("button", { name: "Leave organisation" })).toBeDisabled();
 });
 
-test("the creator can't leave while others remain", async ({ page }) => {
+test("the last admin can't leave while others remain", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation.members.push({ user: sam, joined_at: "2026-10-15T09:00:00Z", invite_id: null });
   await page.goto(inOrg("/organisation/settings"));
   const leave = page.getByRole("region", { name: "Leave" });
-  await expect(leave).toContainText("only its creator can invite people");
+  await expect(leave).toContainText("You're its only admin, and an organisation needs an admin");
   await expect(leave.getByRole("button", { name: "Leave organisation" })).toBeDisabled();
 });
 

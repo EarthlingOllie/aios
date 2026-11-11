@@ -2,9 +2,10 @@
 the approval card in an agent's chat (`aios.datastores.schema_changes`).
 
 Only users who pass `can_approve` for a request's store (every member of its organisation) see
-or decide it; to anyone else it doesn't exist (404). Approving queues the change to be applied
-on the provisioning worker, which then resumes the run that asked; rejecting resumes it
-straight away.
+it; to anyone else it doesn't exist (404). Deciding one takes a role that may (editors and
+admins, `aios.permissions`): each request says whether the user may (`can_decide`).
+Approving queues the change to be applied on the provisioning worker, which then resumes the
+run that asked; rejecting resumes it straight away.
 """
 
 import logging
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
+from aios import organisations
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import (
     DataStoreBehind,
@@ -43,6 +45,7 @@ from aios.models import (
     SchemaChangeRequest,
     SchemaChangeStatus,
 )
+from aios.permissions import Action, allow, can
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +151,14 @@ def _query():
     )
 
 
+def may_decide(db: Session, user_id: int, store: DataStore) -> bool:
+    """Whether the user may approve and reject the store's requests: they see them
+    (`can_approve`), and their role may decide them (`aios.permissions`)."""
+    if not can_approve(db, user_id, store):
+        return False
+    return can(organisations.role(db, store.owner_organisation_id, user_id), Action.decide)
+
+
 def run_requests(db: Session, run_id: int, user_id: int) -> list[SchemaChangeOut]:
     """The requests a run made, oldest first (for its chat)."""
     rows = db.execute(
@@ -159,7 +170,7 @@ def run_requests(db: Session, run_id: int, user_id: int) -> list[SchemaChangeOut
     deciders = {}
     for request, _ in rows:
         if request.data_store_id not in deciders:
-            deciders[request.data_store_id] = can_approve(db, user_id, request.data_store)
+            deciders[request.data_store_id] = may_decide(db, user_id, request.data_store)
     return [request_out(request, run, deciders[request.data_store_id]) for request, run in rows]
 
 
@@ -175,7 +186,9 @@ def waiting_on(db: Session, run_id: int) -> bool:
     )
 
 
-@router.get("/schema-changes", response_model=list[SchemaChangeOut])
+@router.get(
+    "/schema-changes", response_model=list[SchemaChangeOut], dependencies=[allow(Action.read)]
+)
 def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
     """The organisation's store's requests: pending first (oldest first), then the decided ones,
     most recently decided first."""
@@ -194,7 +207,8 @@ def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
             func.coalesce(SchemaChangeRequest.decided_at, SchemaChangeRequest.created_at).desc(),
         )
     ).all()
-    return [request_out(request, run, True) for request, run in rows]
+    decides = may_decide(db, user.id, store)
+    return [request_out(request, run, decides) for request, run in rows]
 
 
 def _get(
@@ -213,15 +227,19 @@ def _get(
     return request
 
 
-def _out(db: Session, request: SchemaChangeRequest) -> SchemaChangeOut:
-    """A request `_get` found: the user may decide it."""
+def _out(db: Session, request: SchemaChangeRequest, user_id: int) -> SchemaChangeOut:
+    """A request `_get` found, for the user."""
     run = db.get(AgentRun, request.requested_by_run) if request.requested_by_run else None
-    return request_out(request, run, True)
+    return request_out(request, run, may_decide(db, user_id, request.data_store))
 
 
-@router.get("/schema-changes/{request_id}", response_model=SchemaChangeOut)
+@router.get(
+    "/schema-changes/{request_id}",
+    response_model=SchemaChangeOut,
+    dependencies=[allow(Action.read)],
+)
 def get_request(request_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
-    return _out(db, _get(db, user.id, org, request_id))
+    return _out(db, _get(db, user.id, org, request_id), user.id)
 
 
 def _decide(
@@ -273,7 +291,11 @@ def _queue(db: Session, request: SchemaChangeRequest, queue: Callable[[], None])
         ) from exc
 
 
-@router.get("/schema-changes/{request_id}/impact", response_model=ImpactOut)
+@router.get(
+    "/schema-changes/{request_id}/impact",
+    response_model=ImpactOut,
+    dependencies=[allow(Action.read)],
+)
 def get_impact(request_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisation, db: DB):
     """What the request's drops would remove from the store as it is now (row counts, the
     columns affected), for the member deciding it; nothing for one that drops nothing."""
@@ -288,7 +310,11 @@ def get_impact(request_id: uuid.UUID, user: CurrentUser, org: CurrentOrganisatio
     return ImpactOut(removes=[RemovalOut(**vars(r)) for r in removes])
 
 
-@router.post("/schema-changes/{request_id}/approve", response_model=SchemaChangeOut)
+@router.post(
+    "/schema-changes/{request_id}/approve",
+    response_model=SchemaChangeOut,
+    dependencies=[allow(Action.decide)],
+)
 def approve(
     request_id: uuid.UUID,
     user: CurrentUser,
@@ -309,10 +335,14 @@ def approve(
         )
     request = _decide(db, user.id, org, request_id, status=SchemaChangeStatus.approved)
     _queue(db, request, lambda: apply_schema_change_task.delay(str(request.id)))
-    return _out(db, request)
+    return _out(db, request, user.id)
 
 
-@router.post("/schema-changes/{request_id}/reject", response_model=SchemaChangeOut)
+@router.post(
+    "/schema-changes/{request_id}/reject",
+    response_model=SchemaChangeOut,
+    dependencies=[allow(Action.decide)],
+)
 def reject(
     request_id: uuid.UUID, body: Rejection, user: CurrentUser, org: CurrentOrganisation, db: DB
 ):
@@ -321,4 +351,4 @@ def reject(
     note = (body.note or "").strip() or None
     request = _decide(db, user.id, org, request_id, status=SchemaChangeStatus.rejected, note=note)
     _queue(db, request, lambda: enqueue_resume(request.id))
-    return _out(db, request)
+    return _out(db, request, user.id)
