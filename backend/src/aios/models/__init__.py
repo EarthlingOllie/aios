@@ -47,6 +47,11 @@ from aios.models.triggers import (
     TriggerStatus,
     TriggerTargetKind,
 )
+from aios.models.work import (
+    WorkItem,
+    WorkKind,
+    WorkLane,
+)
 from aios.models.workflows import (
     WorkflowNodeKind,
     WorkflowRunStatus,
@@ -73,6 +78,9 @@ __all__ = [
     "TriggerTargetKind",
     "TriggerStatus",
     "ScheduleDue",
+    "WorkItem",
+    "WorkKind",
+    "WorkLane",
     "SchemaChangeStatus",
     "Notification",
     "ChatVisibility",

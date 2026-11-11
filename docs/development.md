@@ -20,8 +20,9 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 
 The processes:
 
-- **api**: the HTTP API, agent chat turns (streamed), and, in each process, the scheduler and
-  the agent turns that schedules and chat mentions start (see [Triggers](triggers.md)).
+- **api**: the HTTP API, and the agent chat turns of a run's page (streamed).
+- **run-service**: mentioned agents' turns, the handoff before every mention, and the
+  schedules, claimed fairly from a work queue (see [Run service](run-service.md)).
 - **web**: the React SPA, served as static files.
 - **worker**: document ingest (see [Stores](stores.md)) and embedding the search index.
 - **workflow-worker**: workflow runs, and resuming runs once a schema change is decided (see
@@ -118,7 +119,7 @@ infra/terraform/    AWS
 infra/deploy.sh     build → push → create roles → migrate → migrate stores → roll out
 infra/claude/       Claude Code image for debugging the Compose stack
 docker-compose.yml  db, redis, rustfs, files-bucket, db-roles, migrate, migrate-stores, api,
-                    worker, workflow-worker, provisioning-worker, web, sandbox
+                    run-service, worker, workflow-worker, provisioning-worker, web, sandbox
                     (+ claude, docker-proxy with --profile debug)
 docs/               these pages, decision records, roadmap, specs and tickets
 plan/               design plans behind the specs

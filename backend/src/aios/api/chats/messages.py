@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import invocations, search_index, turns
+from aios import invocations, run_service, search_index, turns
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -21,7 +21,6 @@ from aios.api.chats.common import (
     user_member,
     users_by_id,
 )
-from aios.api.chats.invocations import fail_stopped_turns, run_turns
 from aios.api.chats.members import mentionables
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import store_id_of
@@ -46,6 +45,7 @@ from aios.models import (
     InvocationStatus,
     Role,
     TriggerTargetKind,
+    WorkLane,
 )
 from aios.permissions import MENTIONS_NOT_YET, Action, CurrentRole, allow
 from aios.workflows import fail_stopped_runs
@@ -301,8 +301,8 @@ def messages_out(
 
 def catch_up(store: Session, chat_id: int) -> None:
     """Bring the chat's unfinished invocations up to date before they're read: fail their runs
-    whose worker died (which posts their results back), their agent turns whose process died,
-    and those that never started. Commits."""
+    whose worker died, which posts their results back. Commits. (Work on the run service is
+    retried, and failed after a few attempts, there: `aios.run_service`.)"""
     run_ids = store.scalars(
         select(Invocation.workflow_run_id).where(
             Invocation.chat_id == chat_id,
@@ -312,8 +312,7 @@ def catch_up(store: Session, chat_id: int) -> None:
     ).all()
     if run_ids:
         fail_stopped_runs(store, WorkflowRun.id.in_(run_ids))
-    fail_stopped_turns(store, chat_id)
-    invocations.fail_stalled(store, chat_id)
+    store.commit()
 
 
 def resolve_mentions(
@@ -458,11 +457,10 @@ def post_message(
     store.commit()
     store_id = store_id_of(store)
     invocation_ids = [i.id for i in started]
-    if invocation_ids:
-        if workflow_ids := [i.id for i in started if i.target_kind == TriggerTargetKind.workflow]:
-            background.add_task(package.start_invocations, store_id, workflow_ids)
-        if any(i.target_kind == TriggerTargetKind.agent for i in started):
-            background.add_task(run_turns, store_id)
+    if queued := [i.id for i in started if i.status == InvocationStatus.queued]:
+        # On the run service, once the store has them; woken after the response.
+        package.enqueue_starts(db, org.id, store_id, queued)
+        background.add_task(run_service.wake, WorkLane.interactive)
     store.expire_all()
     posted = store.scalars(
         select(ChatMessage)

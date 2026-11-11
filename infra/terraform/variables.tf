@@ -111,6 +111,12 @@ variable "web" {
   default = { cpu = 256, memory = 512, count = 2 }
 }
 
+variable "run_service" {
+  description = "The run service: agent turns, handoffs and schedules, many at once per task (concurrency), mostly waiting on the model."
+  type        = object({ cpu = number, memory = number, count = number, concurrency = number })
+  default     = { cpu = 1024, memory = 2048, count = 2, concurrency = 50 }
+}
+
 variable "worker" {
   description = "Docling is CPU/RAM hungry; give workers room."
   type        = object({ cpu = number, memory = number, count = number, concurrency = number })

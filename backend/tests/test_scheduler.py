@@ -11,13 +11,14 @@ from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
-from aios import checkpoints, firing, scheduler, schedules
+from aios import checkpoints, scheduler, schedules
 from aios.api.agents import new_agent_run
 from aios.cron import next_run
 from aios.datastores import store_session
 from aios.datastores.models import Agent, AgentRun, AgentVersionTool, Trigger, WorkflowRun
 from aios.db import SessionLocal
 from aios.models import ScheduleDue, TriggerStatus, WorkflowRunStatus
+from aios.run_service import executor
 from aios.testing.fake_model import model, replies, use_model
 from aios.worker import run_workflow_task
 from aios.workflows import execute_run
@@ -60,19 +61,23 @@ def sweep_stalled() -> None:
         scheduler.fail_stalled(store)
 
 
+def drain() -> None:
+    """Run what's queued on the run service, as its processes would."""
+    asyncio.run(executor.drain_once())
+
+
 def fire(trigger_id: int, fired_at: datetime) -> None:
+    """Fire the claimed trigger, and run the turn it enqueued."""
     asyncio.run(scheduler.fire(signed_in_store(), trigger_id, fired_at))
+    drain()
 
 
 def tick(now: datetime) -> list[int]:
-    """Runs one scheduler tick and waits for everything it fired."""
-
-    async def go():
-        fired = await scheduler.tick(now)
-        await asyncio.gather(*fired.values())
-        return sorted(ids(fired))
-
-    return asyncio.run(go())
+    """Runs one scheduler tick, and the run service runs everything it enqueued; the trigger
+    ids it claimed."""
+    claimed = asyncio.run(scheduler.tick(now))
+    drain()
+    return sorted(ids(claimed))
 
 
 def test_claim_due_advances_only_due_enabled_schedules(api, db):
@@ -367,49 +372,54 @@ def test_a_trigger_deleted_mid_turn_doesnt_break_the_run(api, db, in_store):
     assert run.message_count == 2
 
 
-def test_the_loop_runs_ticks_until_cancelled(monkeypatch):
+def run_service_for(seconds: float) -> None:
+    """Run a run service process for a moment, then stop it."""
+
+    async def go():
+        stopping = asyncio.Event()
+        task = asyncio.create_task(executor.run_forever(stopping))
+        await asyncio.sleep(seconds)
+        stopping.set()
+        await task
+
+    asyncio.run(go())
+
+
+def test_the_run_service_ticks_the_scheduler_unless_its_turned_off(monkeypatch):
+    from aios.config import get_settings
+
     ticks = []
 
     async def fake_tick(now=None):
         ticks.append(now)
-        return {}
+        return []
 
     monkeypatch.setattr(scheduler, "tick", fake_tick)
-
-    async def go():
-        task = asyncio.create_task(scheduler.run_forever(interval=0.01))
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    asyncio.run(go())
+    monkeypatch.setattr(get_settings(), "scheduler_interval_seconds", 0.01)
+    run_service_for(0.2)
     assert len(ticks) >= 2
 
+    ticks.clear()
+    monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
+    run_service_for(0.1)
+    assert ticks == []
 
-def test_the_api_runs_the_scheduler_while_its_up(monkeypatch):
+
+def test_the_api_runs_no_schedules(monkeypatch):
     from fastapi.testclient import TestClient
 
-    from aios.config import get_settings
     from aios.main import app
 
-    state = {"started": 0, "stopped": 0}
+    ticks = []
 
-    async def fake_run_forever(interval):
-        state["started"] += 1
-        try:
-            await asyncio.Event().wait()
-        finally:
-            state["stopped"] += 1
+    async def fake_tick(now=None):
+        ticks.append(now)
+        return []
 
-    monkeypatch.setattr(scheduler, "run_forever", fake_run_forever)
-    with TestClient(app):
-        pass
-    assert state == {"started": 1, "stopped": 1}
-
-    monkeypatch.setattr(get_settings(), "scheduler_enabled", False)
-    with TestClient(app):
-        pass
-    assert state == {"started": 1, "stopped": 1}
+    monkeypatch.setattr(scheduler, "tick", fake_tick)
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+    assert ticks == []
 
 
 def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db, in_store):
@@ -442,50 +452,6 @@ def test_a_scheduled_run_is_stored_and_continued_like_a_chat_run(api, db, in_sto
 
     assert stored(scheduled) == stored(chatted)
     assert stored(scheduled)[0] == 4
-
-
-def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, monkeypatch):
-    from aios.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 2)
-    agent = make_agent(api, "Bot")
-    now = datetime.now(UTC)
-    trigger_ids = []
-    for i in range(3):
-        t = make_trigger(api, schedule("agent", agent["id"], input=f"job {i}"))
-        make_due(db, t["id"], now - timedelta(seconds=3 - i))
-        trigger_ids.append(t["id"])
-
-    async def go():
-        started = []
-        release = asyncio.Event()
-
-        async def script(messages, info):
-            started.append(messages[-1].content)
-            await release.wait()
-            yield "done"
-
-        with use_model(model(script)):
-            first = await scheduler.tick(now)
-            # Only as many as there are free slots are claimed; the rest stay due, for another
-            # replica or a later tick.
-            assert sorted(ids(first)) == trigger_ids[:2]
-            assert load(db, trigger_ids[2]).next_run_at < now
-            while len(started) < 2:
-                await asyncio.sleep(0.01)
-            # Saturated: a tick claims nothing.
-            assert await scheduler.tick(now) == {}
-            release.set()
-            await asyncio.gather(*first.values())
-            # Slots free again: the one left over fires.
-            later = await scheduler.tick(now)
-            assert sorted(ids(later)) == trigger_ids[2:]
-            await asyncio.gather(*later.values())
-        return started
-
-    assert sorted(asyncio.run(go())) == ["job 0", "job 1", "job 2"]
-    for t_id in trigger_ids:
-        assert load(db, t_id).last_status == TriggerStatus.succeeded
 
 
 def age(db, trigger_id: int) -> None:
@@ -561,68 +527,25 @@ def test_a_tick_cancelled_while_claiming_doesnt_leave_it_running(api, db, monkey
     assert load(db, t["id"]).last_status == TriggerStatus.failed
 
 
-def test_a_fire_in_flight_keeps_its_heartbeat_so_other_replicas_leave_it(api, db):
+def test_a_schedule_whose_run_has_started_isnt_failed_however_long_its_turn(api, db):
     agent = make_agent(api, "Bot")
     t = make_trigger(api, schedule("agent", agent["id"]))
     now = datetime.now(UTC)
     make_due(db, t["id"], now - timedelta(seconds=1))
-    release = None
+    seen = []
 
     async def script(messages, info):
-        await release.wait()
+        # Long past when a claim that never started would count as stopped: the run service has
+        # its turn, and any process's sweep leaves it be.
+        await asyncio.to_thread(age, db, t["id"])
+        await asyncio.to_thread(sweep_stalled)
+        seen.append((await asyncio.to_thread(load, db, t["id"])).last_status)
         yield "done"
 
-    def other_replica_sweeps():
-        sweep_stalled()
-
-    async def go():
-        nonlocal release
-        release = asyncio.Event()
-        fired = await scheduler.tick(now)
-        await asyncio.sleep(0.2)  # mid-turn
-        # Long enough without a beat that it would count as stopped; this process beats it.
-        await asyncio.to_thread(age, db, t["id"])
-        await scheduler.beat()
-        await asyncio.to_thread(other_replica_sweeps)
-        assert (await asyncio.to_thread(load, db, t["id"])).last_status == TriggerStatus.running
-        release.set()
-        await asyncio.gather(*fired.values())
-
     with use_model(model(script)):
-        asyncio.run(go())
+        assert tick(now) == [t["id"]]
+    assert seen == [TriggerStatus.running]
     assert load(db, t["id"]).last_status == TriggerStatus.succeeded
-
-
-def test_the_loop_beats_the_fires_in_flight(api, db, monkeypatch):
-    agent = make_agent(api, "Bot")
-    t = make_trigger(api, schedule("agent", agent["id"]))
-    now = datetime.now(UTC)
-    make_due(db, t["id"], now - timedelta(seconds=1))
-    with SessionLocal() as s:
-        scheduler.claim_due(s, now)
-    age(db, t["id"])
-
-    async def fake_tick(now=None):
-        return {}
-
-    monkeypatch.setattr(scheduler, "tick", fake_tick)
-    monkeypatch.setattr(scheduler, "HEARTBEAT_SECONDS", 0.01)
-
-    async def go():
-        # A fire of this trigger is in flight in this process.
-        in_flight = asyncio.create_task(asyncio.Event().wait())
-        firing._in_flight[in_flight] = firing.Fire(
-            scheduler.ScheduleFiring(signed_in_store(), t["id"], now)
-        )
-        loop = asyncio.create_task(scheduler.run_forever(interval=10))
-        await asyncio.sleep(0.3)
-        loop.cancel()
-        await asyncio.gather(loop, in_flight, return_exceptions=True)
-
-    asyncio.run(go())
-    firing._in_flight.clear()
-    sweep_stalled()
-    assert load(db, t["id"]).last_status == TriggerStatus.running
 
 
 def test_a_schedule_retargeted_as_it_fires_isnt_left_running(
@@ -652,34 +575,6 @@ def test_a_schedule_retargeted_as_it_fires_isnt_left_running(
     assert in_store.scalars(select(AgentRun).where(AgentRun.agent_id == agent["id"])).all() == []
     fired = load(db, t["id"])
     assert (fired.last_fired_at, fired.last_status, fired.last_error) == (None, None, None)
-
-
-def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch, in_store):
-    # The cap stops a busy process claiming, not sweeping: with one replica, nothing else would.
-    from aios.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 1)
-    agent = make_agent(api, "Bot")
-    stopped = make_trigger(api, schedule("agent", agent["id"]))
-    now = datetime.now(UTC)
-    make_due(db, stopped["id"], now - timedelta(seconds=1))
-    with SessionLocal() as s:
-        assert claimed_ids(s, now) == [stopped["id"]]  # by a replica since killed
-    age(db, stopped["id"])
-
-    async def go():
-        busy = asyncio.create_task(asyncio.Event().wait())
-        # This process's one slot is taken.
-        firing._in_flight[busy] = firing.Fire(scheduler.ScheduleFiring(signed_in_store(), 0, now))
-        try:
-            assert await scheduler.tick(now) == {}
-        finally:
-            busy.cancel()
-            await asyncio.gather(busy, return_exceptions=True)
-            firing._in_flight.clear()
-
-    asyncio.run(go())
-    assert load(db, stopped["id"]).last_status == TriggerStatus.failed
 
 
 def claim(db, trigger_id: int, now: datetime) -> None:

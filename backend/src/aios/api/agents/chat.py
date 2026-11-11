@@ -146,11 +146,8 @@ def _start_turn(
     data_store_id: uuid.UUID, run_id: int, prompt: str, *, heartbeat: bool = False
 ) -> int | None:
     """Begin a turn of the store's run (`aios.turns.begin`), and title the run after its first
-    message; the turn's id (None if the run is gone).
-
-    With `heartbeat`, the turn runs outside a request and its process will keep the run's
-    heartbeat (`aios.firing`); without, any earlier one is cleared, so a request's turn isn't
-    failed as stalled."""
+    message; the turn's id (None if the run is gone). Clears the run's old heartbeat, unless
+    `heartbeat`."""
     with store_session(data_store_id) as store:
         store.execute(
             update(AgentRun)
@@ -373,6 +370,32 @@ class Resume:
     dealt_with: list[uuid.UUID] | None = None
 
 
+@dataclass
+class Continue:
+    """A turn that carries on one an earlier attempt began and never finished (its process
+    stopped part way; `aios.run_service`): from the run's last checkpoint, without giving the
+    run its message again. `message` is the turn's, for a run that never got as far as saving
+    it."""
+
+    message: HumanMessage
+
+
+# A turn with nothing (left) to run.
+_NOTHING = object()
+
+
+async def _continue_input(agent, config, turn: Continue):
+    """What carrying on the run takes: its message, if the run never saved it; None (carry on
+    from the last checkpoint) if the graph stopped part way; `_NOTHING` if it had finished, or
+    waits on a schema change request (its resume carries it on)."""
+    state = await agent.aget_state(config)
+    if not state.values.get("messages"):
+        return {"messages": [turn.message]}
+    if state.next and not state.interrupts:
+        return None
+    return _NOTHING
+
+
 def _decided_requests(data_store_id: uuid.UUID, run_id: int) -> dict[str, dict[str, Any]]:
     """The store's run's decided requests it hasn't been given yet, with their outcomes, by
     id."""
@@ -414,7 +437,7 @@ def _check_not_waiting(data_store_id: uuid.UUID, run_id: int) -> None:
 async def turn_stream(
     ctx: ChatContext,
     run_id: int,
-    turn: HumanMessage | Resume,
+    turn: HumanMessage | Resume | Continue,
     lease: turn_lease.Lease | None = None,
     *,
     turn_id: int | None = None,
@@ -435,7 +458,7 @@ async def turn_stream(
     begins one once it has the run and something to run (a resume with nothing decided to give
     the run isn't a turn).
 
-    Shared by the chat endpoint, the scheduler (`aios.scheduler`) and `resume_run`."""
+    Shared by the chat endpoint, the run service (`aios.run_service`) and `resume_run`."""
     config = {
         **checkpoints.thread_config(run_id),
         "callbacks": tracing.callbacks(),
@@ -459,10 +482,19 @@ async def turn_stream(
             )
             if isinstance(turn, Resume):
                 graph_input = await _resume_command(agent, config, store_id, run_id, turn)
+                if graph_input is None:
+                    graph_input = _NOTHING
+            elif isinstance(turn, Continue):
+                graph_input = await _continue_input(agent, config, turn)
             else:
                 await run_in_threadpool(_check_not_waiting, store_id, run_id)
                 graph_input = {"messages": [turn]}
-            if graph_input is not None:
+            if graph_input is _NOTHING and turn_id is not None:
+                # Begun, but the graph had already got to its end: the turn ends here.
+                await package._record_turn(
+                    agent, config, store_id, run_id, turn_id=turn_id, error=None, partial=None
+                )
+            elif graph_input is not _NOTHING:
                 if turn_id is None:
                     turn_id = await run_in_threadpool(_begin_turn, store_id, run_id)
                 # Closed here if the consumer stops the turn, so the turn is recorded while the

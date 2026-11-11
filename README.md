@@ -37,8 +37,9 @@ api, worker ──traces──▶ Langfuse (optional, self-hosted)
 
 The processes:
 
-- **api**: the HTTP API, agent chat turns (streamed), and, in each process, the scheduler and
-  the agent turns that schedules and chat mentions start (see [Triggers](docs/triggers.md)).
+- **api**: the HTTP API, and the agent chat turns of a run's page (streamed).
+- **run-service**: mentioned agents' turns, the handoff before every mention, and the
+  schedules, claimed fairly from a work queue (see [Run service](docs/run-service.md)).
 - **web**: the React SPA, served as static files.
 - **worker**: document ingest (see [Stores](docs/stores.md)) and embedding the search index.
 - **workflow-worker**: workflow runs, and resuming runs once a schema change is decided (see

@@ -230,6 +230,30 @@ services:
       files-bucket:
         condition: service_completed_successfully
 
+  # The run service (aios.run_service): mentioned agents' turns, the handoff before every mention,
+  # and the schedules. On the api image; the web servers run no agent work.
+  run-service:
+    <<: *backend
+    image: aios-api:local
+    pull_policy: never
+    command: ["python", "-m", "aios.run_service"]
+    # Its agents run run_python, so it uses the same sandbox as the api did.
+    environment:
+      <<: *backend-env
+      SANDBOX_BACKEND: dev
+      SANDBOX_DEV_URL: http://sandbox:8080
+      SANDBOX_DEV_TOKEN: dev-sandbox-token
+    # A termination signal lets its items finish for up to RUN_SERVICE_SHUTDOWN_GRACE_SECONDS
+    # (25) before it hands the rest back to the queue.
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_started
+      sandbox:
+        condition: service_started
+
   # Workflow runs, on their own queue so ingests don't wait behind them (see aios.worker).
   # They need no Docling, so this reuses the api image.
   workflow-worker:
@@ -305,6 +329,11 @@ services:
     <<: *fullstack
     command: ["celery", "-A", "aios.worker", "worker", "--loglevel=INFO", "--concurrency=1"]
 
+  fullstack-run-service:
+    <<: *fullstack
+    command: ["python", "-m", "aios.run_service"]
+    stop_grace_period: 30s
+
   fullstack-workflow-worker:
     <<: *fullstack
     command:
@@ -336,6 +365,8 @@ services:
       fullstack-web:
         condition: service_healthy
       fullstack-worker:
+        condition: service_started
+      fullstack-run-service:
         condition: service_started
       fullstack-workflow-worker:
         condition: service_started

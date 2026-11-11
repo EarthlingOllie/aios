@@ -12,17 +12,16 @@ import pytest
 import test_schema_change_requests
 from conftest import store_of
 from pydantic import SecretStr
-from test_chat_agent_invocations import age, replies_from, say
+from test_chat_agent_invocations import replies_from, say
 from test_chats import add, make_chat, messages
 from test_data_tools import as_owner, provisioned
 from test_schema_change_requests import run_queued
 
 from aios import embeddings, handoff, llm, tracing
-from aios.api import chats as chats_api
 from aios.config import get_settings
-from aios.datastores import store_session
 from aios.main import create_app
 from aios.models import DataStore
+from aios.run_service import sweep
 from aios.testing import scenarios
 
 # The tasks the code queued (applying a change, resuming a run), to run as the workers would.
@@ -129,18 +128,18 @@ def test_a_chat_turn_runs_the_core_loop_on_its_scenario_with_no_provider_called(
     assert invocation["agent_run"]["waiting"] is False
 
 
-def test_a_turn_waiting_on_its_request_isnt_failed_as_stopped(
-    api, db, notes_agent, scripted, queued, in_store
+def test_a_turn_waiting_on_its_request_isnt_failed_or_requeued(
+    api, notes_agent, scripted, queued, monkeypatch, run_service
 ):
     chat = make_chat(api, "Notes")
     add(api, chat, "agent", notes_agent)
     say(api, chat, f"@[Notes](agent:{notes_agent['id']}) buy milk", ("agent", notes_agent))
-    [invocation] = messages(api, chat)["invocations"]
 
-    # No process beats a run waiting for a person.
-    age(db, in_store, invocation["id"])
-    with store_session(in_store.store_id) as store:
-        chats_api.fail_stopped_turns(store)
+    # Nothing on the run service holds a run waiting for a person, and the sweep for lost work
+    # leaves it be, however long it waits.
+    monkeypatch.setattr(get_settings(), "queue_requeue_after_seconds", 0.001)
+    assert sweep.requeue() == 0
+    run_service.drain()
 
     [invocation] = messages(api, chat)["invocations"]
     assert invocation["status"] == "running"

@@ -202,18 +202,33 @@ class Settings(BaseSettings):
     sandbox_dev_url: str = "http://localhost:8081"
     sandbox_dev_token: str = ""
 
-    # Schedules (`aios.scheduler`): each API process polls for due ones this often. Replicas share
-    # the work safely (each schedule is claimed by one), so turning it off is only needed to keep
-    # a process from running agents, e.g. one serving requests that must stay light: it then runs
-    # no schedules, nor the turns of agents mentioned in chats (`aios.api.chats.launch_turns`).
+    # Schedules (`aios.scheduler`): each run service process (`aios.run_service`) polls for due
+    # ones this often. Processes share the work safely (each schedule is claimed by one), so
+    # turning it off only keeps schedules from firing at all.
     scheduler_enabled: bool = True
     scheduler_interval_seconds: float = 15
-    # Most schedules and chat mentions' agent turns a process fires at once. An agent's runs its
-    # whole turn in the process, next to the chat it serves, so this keeps a burst (many sharing
-    # `0 9 * * *`, or a busy chat) from crowding chat out of the database pool and threadpool. A
-    # process with no free slot claims nothing, which leaves what's due for another replica or a
-    # later tick.
-    scheduler_max_concurrent_runs: int = Field(default=5, ge=1)
+
+    # The run service (`aios.run_service`): each process runs up to `run_service_concurrency`
+    # items at once, `run_service_interactive_reserve` of them kept for people waiting in chat.
+    # It's woken when work arrives, and polls every `run_service_idle_poll_seconds` regardless.
+    # On a termination signal it stops claiming and lets its items finish for up to
+    # `run_service_shutdown_grace_seconds`, then hands the rest back to the queue.
+    run_service_concurrency: int = Field(default=50, ge=1)
+    run_service_interactive_reserve: int = Field(default=10, ge=0)
+    run_service_idle_poll_seconds: float = Field(default=5, gt=0)
+    run_service_shutdown_grace_seconds: float = Field(default=25, ge=0)
+    # The queue: a claimed item's lease lasts `queue_lease_seconds`, extended while it runs; an
+    # item whose lease lapses (its process died) is claimed again, and after
+    # `queue_max_attempts` claims it fails. An organisation has at most `queue_in_flight_cap`
+    # items running at once unless an admin overrides it (soft: concurrent claimers can
+    # overshoot it by the few each claims). A mention's turn should start within
+    # `queue_chat_start_target_seconds`. The requeue sweep re-enqueues invocations left queued
+    # without a work item for `queue_requeue_after_seconds`.
+    queue_lease_seconds: float = Field(default=90, gt=0)
+    queue_max_attempts: int = Field(default=3, ge=1)
+    queue_in_flight_cap: int = Field(default=20, ge=1)
+    queue_chat_start_target_seconds: float = Field(default=5, gt=0)
+    queue_requeue_after_seconds: float = Field(default=60, gt=0)
 
     # A run's turns take turns through a lease on the run (`aios.turn_lease`): a turn holds it
     # for this long (seconds) at a time, refreshed by its heartbeat while it runs, so a process

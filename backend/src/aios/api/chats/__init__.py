@@ -31,21 +31,21 @@ anyone who isn't a member is a 422.
 
 Mentioning a workflow starts a run of it, with the message as its input (`aios.invocations`): the
 response to the post carries the workflow's acknowledgement and run card with the message, and
-the run starts just after (`InvocationFiring`). Before it does, the handoff (`aios.handoff`)
-briefs it on the chat: the invocation is `briefing`, then its `brief` is kept and prepended to the
-run's input, and its ack replaces the acknowledgement's placeholder (`acknowledgement`, which the
-poll carries, so a card already shown follows it). A read's `invocations` are the state of each
-invocation its messages belong to and of every one in the chat still going, each with its run
-as the run's page shows it, so a chat's live cards cost its one poll. When the run ends, its
-result is posted back as a message from the workflow.
+its start is enqueued on the run service (`enqueue_starts`, `aios.run_service`), which starts
+the run. Before it does, the handoff (`aios.handoff`) briefs it on the chat: the invocation is
+`briefing`, then its `brief` is kept and prepended to the run's input, and its ack replaces the
+acknowledgement's placeholder (`acknowledgement`, which the poll carries, so a card already shown
+follows it). A read's `invocations` are the state of each invocation its messages belong to and
+of every one in the chat still going, each with its run as the run's page shows it, so a chat's
+live cards cost its one poll. When the run ends, its result is posted back as a message from the
+workflow.
 
 Mentioning an agent runs one turn of a new run of it, with the brief and the message as the
-user's, the same way: its acknowledgement and card come with the post, and the turn runs in this
-process through the firing machinery schedules use (`TurnFiring`, `aios.firing`), under its cap:
-it's claimed when there's a free slot (`launch_turns`, just after the post or on a scheduler
-tick), beaten while it runs, and failed if its heartbeat stops (`fail_stopped_turns`), so a turn
-lost with its process fails its card. A read's `invocations` carry an agent run's status, start
-and counters (`agent_run`), and the agent's final reply is posted back when the turn ends.
+user's, the same way: its acknowledgement and card come with the post, and the run service runs
+the handoff and then the turn, in the interactive lane, retrying it elsewhere if its process
+dies, and failing its card after a few attempts. A read's `invocations` carry an agent run's
+status, start and counters (`agent_run`), and the agent's final reply is posted back when the
+turn ends.
 
 Either run is started by the member who mentioned it (its `created_by`) and executes for the
 organisation, over its store, like any other run: it doesn't depend on whoever made the agent or
@@ -53,7 +53,7 @@ workflow, and every member of the organisation reads it, in the chat or not.
 
 The API is split by sub-domain (`crud`, `members`, `messages`, `invocations`) and mounted as one
 router. Every name is re-exported here, where callers import it; `newest_message_id`,
-`start_invocations` and `MESSAGE_PAGE` are read here at call time, so a test that replaces one
+`enqueue_starts` and `MESSAGE_PAGE` are read here at call time, so a test that replaces one
 here replaces it for every part.
 """
 
@@ -99,14 +99,7 @@ from aios.api.chats.crud import (
     list_chats,
     update_chat,
 )
-from aios.api.chats.invocations import (
-    InvocationFiring,
-    TurnFiring,
-    fail_stopped_turns,
-    launch_turns,
-    run_turns,
-    start_invocations,
-)
+from aios.api.chats.invocations import enqueue_starts
 from aios.api.chats.members import (
     MentionableOut,
     MentionablesOut,
@@ -163,7 +156,6 @@ __all__ = [
     "ChatMembersOut",
     "ChatOut",
     "ChatSummary",
-    "InvocationFiring",
     "InvocationOut",
     "LOAD",
     "MEMBER_CONSTRAINTS",
@@ -183,7 +175,6 @@ __all__ = [
     "OWNER_ONLY",
     "ReadIn",
     "TARGET_MODELS",
-    "TurnFiring",
     "add_member",
     "agent_runs_live",
     "author_out",
@@ -192,7 +183,7 @@ __all__ = [
     "chat_summary",
     "create_chat",
     "delete_chat",
-    "fail_stopped_turns",
+    "enqueue_starts",
     "get_chat",
     "get_chat_if_owner",
     "get_visible_chat",
@@ -200,7 +191,6 @@ __all__ = [
     "is_member",
     "is_owner",
     "join_chat",
-    "launch_turns",
     "leave_chat",
     "list_chats",
     "list_mentionable",
@@ -221,8 +211,6 @@ __all__ = [
     "post_message",
     "remove_member",
     "resolve_mentions",
-    "run_turns",
-    "start_invocations",
     "still_owner",
     "take_out",
     "update_chat",

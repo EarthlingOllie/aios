@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -89,6 +90,10 @@ class Organisation(Base):
         ForeignKey("users.id", ondelete="SET NULL")
     )
     deletes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How many of its items the run service runs at once (`aios.run_service`), set by an admin;
+    # null for the default (`run_service_org_in_flight_cap`). Soft: concurrent claimers can
+    # overshoot it by the few items each claims.
+    in_flight_cap: Mapped[int | None] = mapped_column(Integer)
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     members: Mapped[list["OrganisationMember"]] = relationship(

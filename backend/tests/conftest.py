@@ -1,9 +1,11 @@
+import asyncio
 import base64
 import io
 import json
 import os
 import secrets
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -17,6 +19,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from aios import organisations, ratelimits
+from aios import run_service as run_service_package
 from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
@@ -27,6 +30,7 @@ from aios.db import SessionLocal, engine
 from aios.main import app
 from aios.models import DataStore, Organisation, OrganisationMember, User
 from aios.passwords import hash_password
+from aios.run_service import executor
 from aios.sandbox import runner
 from aios.sources import uploads_source_id
 from aios.testing import fake_model
@@ -132,6 +136,45 @@ def provisioning(monkeypatch) -> list[uuid.UUID]:
 def rate_limits() -> None:
     """Every test starts with no attempts counted against the rate limits (in Redis)."""
     ratelimits.reset()
+
+
+class RunService:
+    """The run service as tests run it (`aios.run_service`): whatever a request wakes it for is
+    run in-process once the response is sent, by its drain-once entry point, as if a run
+    service process were always up. With `auto` off, work waits in the queue until the test
+    drains it (`drain`)."""
+
+    def __init__(self) -> None:
+        self.auto = True
+        self._draining = threading.local()
+
+    def drain(self, **kwargs) -> None:
+        """Run every ready item to completion, here and now."""
+        asyncio.run(executor.drain_once(**kwargs))
+
+    def woken(self, *lanes) -> None:
+        # Not within a drain (a request made from inside a turn): that drain picks it up.
+        if not self.auto or getattr(self._draining, "on", False):
+            return
+        self._draining.on = True
+        try:
+            self.drain()
+        finally:
+            self._draining.on = False
+
+
+@pytest.fixture(autouse=True)
+def run_service(monkeypatch) -> RunService:
+    """The run service (see `RunService`), with an empty queue: tests share the database, and
+    each starts with none of another's work."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM work_items"))
+    except (OperationalError, ProgrammingError):
+        pass
+    service = RunService()
+    monkeypatch.setattr(run_service_package, "wake", service.woken)
+    return service
 
 
 @pytest.fixture(autouse=True)

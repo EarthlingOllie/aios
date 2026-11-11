@@ -483,10 +483,9 @@ class AgentRun(StoreBase):
     created_by: Mapped[int | None] = mapped_column(Integer)
     # Messages in the thread as of its last turn, for listing runs without loading history.
     message_count: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
-    # While a turn runs outside a request (`aios.firing`), refreshed by the process running it;
-    # a run whose turn is running but whose heartbeat has stopped has lost its process, and the
-    # turn is failed (`aios.firing.fail_stalled`). Null for a turn bound to a request, which
-    # ends with it.
+    # No longer set: turns outside a request run on the run service (`aios.run_service`), whose
+    # leases and retries replace it. Cleared by a request's turn; goes with the old heartbeat
+    # columns.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The turn lease (`aios.turn_lease`): the token of the turn that holds the run, and when its
     # hold lapses unless refreshed. Both null while no turn holds it; an expired one is free.
@@ -693,8 +692,8 @@ class Trigger(StoreBase):
         Enum(TriggerStatus, name="trigger_status")
     )
     last_error: Mapped[str | None] = mapped_column(Text)
-    # While `last_status` is running, refreshed by the process firing it; one that stops being
-    # refreshed has lost its process, and is failed (`aios.scheduler.fail_stalled`).
+    # When it was claimed, while `last_status` is running: one claimed long ago that never
+    # started its run lost its process, and is failed (`aios.scheduler.fail_stalled`).
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The agent run, or workflow run, it last started; cleared when that run is deleted. A
     # workflow run's status is the schedule's (`api.triggers.trigger_out`), since a worker runs
@@ -932,9 +931,8 @@ class Invocation(StoreBase):
     # When its run started (null if it never did), and when it finished.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # An agent's: set when a process claims it to run its turn (`aios.firing`) and refreshed
-    # while the turn runs; one whose heartbeat has stopped lost its process, and is failed. Null
-    # while it waits for a free slot, and for a workflow's, whose run the worker looks after.
+    # No longer set: an agent invocation's turn runs on the run service (`aios.run_service`),
+    # whose leases and retries replace it. Goes with the old heartbeat columns.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (

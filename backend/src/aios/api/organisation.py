@@ -87,6 +87,10 @@ class OrganisationOut(OrganisationSummaryOut):
     created_at: datetime
     # Its deletion, while one is scheduled; else null.
     deletion: DeletionOut | None
+    # How many of its items the run service runs at once (`aios.run_service`): an admin's
+    # override, else the deployment's default; and whether it's overridden.
+    in_flight_cap: int
+    in_flight_cap_overridden: bool
 
 
 class DeletionIn(BaseModel):
@@ -119,6 +123,8 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         ],
         created_at=org.created_at,
         deletion=deletion_out(db, org),
+        in_flight_cap=org.in_flight_cap or get_settings().queue_in_flight_cap,
+        in_flight_cap_overridden=org.in_flight_cap is not None,
     )
 
 
@@ -163,6 +169,35 @@ def rename_organisation(body: OrganisationIn, user: CurrentUser, org: CurrentOrg
             "organisation",
             org.id,
             {"from": old, "to": new},
+        )
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+class InFlightCapIn(BaseModel):
+    # Null goes back to the deployment's default.
+    in_flight_cap: int | None = Field(ge=1, le=10_000)
+
+
+@router.put(
+    "/organisation/in-flight-cap",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def set_in_flight_cap(body: InFlightCapIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Override how many of the organisation's items the run service runs at once (null: the
+    default). Admins only."""
+    old = org.in_flight_cap
+    org.in_flight_cap = body.in_flight_cap
+    if old != body.in_flight_cap:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "settings.changed",
+            "organisation",
+            org.id,
+            {"setting": "in_flight_cap", "from": old, "to": body.in_flight_cap},
         )
     db.commit()
     return organisation_out(db, org, user)

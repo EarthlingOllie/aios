@@ -1,6 +1,7 @@
 """Mentioning a workflow in a chat starts a run of it, followed by a card and posted back."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from conftest import store_of
@@ -10,10 +11,12 @@ from test_organisation_scoping import member  # noqa: F401
 from test_workflow_runs import Queued, abandon, agents, echo
 from test_workflows import agent_node, make_workflow
 
-from aios import invocations, workflows
+from aios import workflows
 from aios.api import chats
 from aios.api import workflows as workflows_api
+from aios.config import get_settings
 from aios.datastores.models import ChatMessage, Invocation
+from aios.run_service import sweep
 from aios.testing.fake_model import model, use_model
 from aios.tools import TOOLS
 from aios.workflows import execute_run
@@ -276,27 +279,36 @@ def test_a_run_whose_worker_died_fails_its_card_when_the_chat_is_read(api, queue
     assert results(api, chat) == [("Digest", f"The run failed: {workflows.WORKER_STOPPED}")]
 
 
-def test_an_invocation_whose_start_was_lost_fails_when_the_chat_is_read(
-    api, in_store, queued, monkeypatch
+def test_a_lost_enqueue_is_repaired_by_the_requeue_sweep(
+    api, in_store, queued, monkeypatch, run_service
 ):
-    async def lost(store_id, invocation_ids):
-        """The process stops between posting the message and starting the run."""
+    def lost(db, organisation_id, store_id, invocation_ids):
+        """The process stops between posting the message and enqueueing its start."""
 
-    monkeypatch.setattr(chats, "start_invocations", lost)
+    monkeypatch.setattr(chats, "enqueue_starts", lost)
     wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", wf)
     [made] = say(api, chat, "Go", wf)["invocations"]
-    # Not yet: it may simply not have started yet.
+    # Nothing to run: it waits.
+    run_service.drain()
     assert messages(api, chat)["invocations"][0]["status"] == "queued"
+    # Not yet: it may simply not have been enqueued yet.
+    assert sweep.requeue() == 0
     in_store.execute(
         update(Invocation)
         .where(Invocation.id == made["id"])
-        .values(created_at=func.now() - invocations.START_WITHIN)
+        .values(
+            created_at=func.now()
+            - timedelta(seconds=get_settings().queue_requeue_after_seconds + 1)
+        )
     )
+    # The sweep puts it back, once however often it runs; the run service starts it.
+    assert sweep.requeue() == 1
+    assert sweep.requeue() == 0
+    run_service.drain()
     [invocation] = messages(api, chat)["invocations"]
-    assert (invocation["status"], invocation["error"]) == ("failed", invocations.NEVER_STARTED)
-    assert queued == []
+    assert (invocation["status"], invocation["workflow_run_id"]) == ("running", queued[0])
 
 
 def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(

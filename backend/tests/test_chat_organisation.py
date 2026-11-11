@@ -8,12 +8,12 @@ import warnings
 from contextlib import contextmanager
 
 from conftest import delete_user, home_organisation, join_organisation, signed_in_store
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, text
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
 from test_organisations import in_the_background
 
-from aios import invocations, organisations
+from aios import organisations
 from aios.api import chats
 from aios.datastores import store_session
 from aios.datastores.models import Chat, ChatMember, ChatMessage, Invocation
@@ -644,17 +644,14 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
     db,
     user,
     member,  # noqa: F811
-    monkeypatch,
+    run_service,
 ):
     """A chat left with nobody to own it before (its owner left with nobody in it) has nothing to
-    do with Carol's leaving: reading it while her leave is under way, which fails the run its
-    last member's mention never got to start and posts that back into it, doesn't wait for her
-    leave to end. Only the chats she owned can have lost their owner by it."""
+    do with Carol's leaving: reading it while her leave is under way, with the run its last
+    member's mention started still waiting, doesn't wait for her leave to end. Only the chats
+    she owned can have lost their owner by it."""
 
-    async def lost(store_id, invocation_ids):
-        """The process stops between posting the message and starting the run."""
-
-    monkeypatch.setattr(chats, "start_invocations", lost)
+    run_service.auto = False
     carol = join_organisation(db, user, "carol")
     try:
         with signed_in_as(member):
@@ -669,22 +666,14 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
             [invocation] = resp.json()["invocations"]
             assert api.post("/api/organisation/leave").status_code == 200
         assert owners(api, chat) == []
-        with store_session(signed_in_store()) as store:
-            store.execute(
-                update(Invocation)
-                .where(Invocation.id == invocation["id"])
-                .values(created_at=func.now() - invocations.START_WITHIN)
-            )
-            store.commit()
-
         with leaving(carol):
             reading, read = in_the_background(lambda: api.get(f"/api/chats/{chat['id']}/messages"))
             finishes_without_waiting(reading)
 
         assert "error" not in read, read
         assert read["value"].status_code == 200, read["value"].text
-        [failed] = read["value"].json()["invocations"]
-        assert (failed["status"], failed["error"]) == ("failed", invocations.NEVER_STARTED)
+        [waiting] = read["value"].json()["invocations"]
+        assert (waiting["id"], waiting["status"]) == (invocation["id"], "queued")
     finally:
         delete_user(db, carol)
 
