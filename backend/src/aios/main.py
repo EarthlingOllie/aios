@@ -31,7 +31,7 @@ from aios.api import (
 )
 from aios.api import approval_rules as approval_rules_api
 from aios.api import audit as audit_api
-from aios.api import settings as settings_api
+from aios.api import search as search_api
 from aios.api.scoping import mount_organisation_prefix
 from aios.config import get_settings
 from aios.datastores import DataStoreBehind, DataStoreBusy, DataStoreNotReady
@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(dropped.router)
     app.include_router(sources.router)
     app.include_router(notifications.router)
-    app.include_router(settings_api.router)
+    app.include_router(search_api.router)
     app.include_router(organisation.router)
     app.include_router(chats.router)
     if settings.dev_login_enabled:

@@ -59,7 +59,7 @@ from datetime import timedelta
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints
+from aios import checkpoints, search_index
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
@@ -248,6 +248,7 @@ def record_handoff(store: Session, invocation_id: int, ack: str, brief: str) -> 
     if invocation is None or invocation.status != InvocationStatus.briefing:
         return
     invocation.brief = brief
+    search_index.index_brief(store, invocation)
     if ack:
         store.execute(
             update(ChatMessage)
@@ -284,17 +285,17 @@ def _finish(
     invocation.finished_at = func.now()
     if invocation.chat_id is None:
         return
-    store.add(
-        ChatMessage(
-            chat_id=invocation.chat_id,
-            author_kind=ChatAuthorKind(invocation.target_kind.value),
-            author_workflow_id=invocation.workflow_id,
-            author_agent_id=invocation.agent_id,
-            kind=ChatMessageKind.text,
-            body=body,
-            invocation_id=invocation.id,
-        )
+    result = ChatMessage(
+        chat_id=invocation.chat_id,
+        author_kind=ChatAuthorKind(invocation.target_kind.value),
+        author_workflow_id=invocation.workflow_id,
+        author_agent_id=invocation.agent_id,
+        kind=ChatMessageKind.text,
+        body=body,
+        invocation_id=invocation.id,
     )
+    store.add(result)
+    search_index.index_chat_message(store, result)
     # A result is activity.
     store.execute(update(Chat).where(Chat.id == invocation.chat_id).values(updated_at=func.now()))
 

@@ -40,7 +40,7 @@ The processes:
 - **api**: the HTTP API, agent chat turns (streamed), and, in each process, the scheduler and
   the agent turns that schedules and chat mentions start (see [Triggers](docs/triggers.md)).
 - **web**: the React SPA, served as static files.
-- **worker**: document ingest (see [Stores](docs/stores.md)) and the run history export.
+- **worker**: document ingest (see [Stores](docs/stores.md)) and embedding the search index.
 - **workflow-worker**: workflow runs, and resuming runs once a schema change is decided (see
   [Workflows](docs/workflows.md)).
 - **provisioning-worker**: creating, migrating, measuring and deleting each organisation's

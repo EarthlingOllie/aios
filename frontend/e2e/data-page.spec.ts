@@ -326,7 +326,7 @@ test("deleting a document removes it from the list and from search", async ({ pa
   ]);
 
   await page.goto(inOrg("/search?q=drop"));
-  await expect(page.getByText("No passages matched.")).toBeVisible();
+  await expect(page.getByText("Nothing matched.")).toBeVisible();
 });
 
 test("opening Documents reads the list again, picking up changes made elsewhere", async ({
@@ -370,7 +370,7 @@ test("a store that stops being ready is noticed on opening the Data or Search pa
 test("a search that matches nothing points to the Data page's Documents", async ({ page }) => {
   await fakeApi(page);
   await page.goto(inOrg("/search?q=fish"));
-  await expect(page.getByText("No passages matched.")).toBeVisible();
+  await expect(page.getByText("Nothing matched.")).toBeVisible();
 
   await page.getByRole("link", { name: "Data page" }).click();
   await expect(page).toHaveURL(/\/data\/documents$/);

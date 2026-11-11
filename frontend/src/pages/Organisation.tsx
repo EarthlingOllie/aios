@@ -4,7 +4,6 @@ import { Loader2, Pencil } from "lucide-react";
 import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } from "@/components/crud";
 import { ApprovalRulesSection } from "@/components/ApprovalRules";
 import { AuditLogSection } from "@/components/AuditLog";
-import { RunHistoryExportSection } from "@/components/RunHistoryExport";
 import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,9 +22,9 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
 /**
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
  * page: its creator and members with their roles, which admins change (`/organisation`), its
- * invitation links (`/organisation/invitations`, admins' only), its settings, the run history
- * export, the approval rules, leaving it and deleting it (`/organisation/settings`), and its audit
- * log (`/organisation/audit-log`, admins' only).
+ * invitation links (`/organisation/invitations`, admins' only), its settings: the approval rules,
+ * leaving it and deleting it (`/organisation/settings`), and its audit log
+ * (`/organisation/audit-log`, admins' only).
  */
 export function OrganisationPage() {
   const me = useCurrentUser();
@@ -59,7 +58,6 @@ export function OrganisationPage() {
       label: "Settings",
       content: (
         <>
-          <RunHistoryExportSection key={`export-${org.id}`} />
           <ApprovalRulesSection key={`rules-${org.id}`} />
           <LeaveSection
             org={org}

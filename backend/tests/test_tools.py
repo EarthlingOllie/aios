@@ -411,7 +411,5 @@ def test_hybrid_search_fills_a_limit_above_its_candidates(user, documents, monke
     # A query with no keyword matches, so every result comes from the semantic branch.
     monkeypatch.setattr(get_settings(), "search_candidates", 1)
     with store_session(store_of(user), "ro") as store:
-        hits = search.hybrid_search_with_vector(
-            store, query="xylophone", query_vector=unit(0), limit=3
-        )
+        hits = search.search_with_vector(store, query="xylophone", query_vector=unit(0), limit=3)
     assert len(hits) == 3

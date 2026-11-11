@@ -4,9 +4,9 @@ Each organisation has a **store**: a Postgres database of its own, on the same i
 platform database, which holds its agents, skills and workflows, their runs and the runs'
 history, its schedules, its chats with their members, messages and invocations, its agents'
 schema change requests, its documents, the data tables its agents asked for, and, when it's
-switched on, a copy of its run history. The platform database holds no organisation content:
-only identity, organisations, memberships, invitations, the store registry (with its credentials
-and the run history export's outbox), notifications, and the schedule due index. In code and on screen it's a "data store"
+its search index. The platform database holds no organisation content: only identity,
+organisations, memberships, invitations, the store registry (with its credentials),
+notifications, and the schedule due index. In code and on screen it's a "data store"
 (`aios.datastores`, the `data_stores` table, the "Data store" notices); screens show its
 contents as **Data**. See also [Accounts and organisations](accounts-and-organisations.md) and
 [Tools](tools.md), for the tools that read and write it.
@@ -65,7 +65,7 @@ them without it is measured by its database's size until a superuser adds it.
 ## Data stores
 
 Each organisation has a store, which every member reaches: the Data page, uploads and
-downloads, approvals and the run history export all resolve the signed-in user's
+downloads, approvals and search all resolve the signed-in user's
 organisation's store (`aios.datastores.resolve.data_store_for`, the `CurrentDataStore`
 dependency), and a run uses its agent's or workflow's organisation's. A user in another
 organisation finds none of it (404). Each document records who uploaded it (`uploaded_by`, a
@@ -395,66 +395,32 @@ dropped with when it's purged, and restores it (on the provisioning worker,
 beat purges what's older than `DATA_STORE_DROPPED_RETENTION_DAYS` (30) every hour
 (`aios.purge_dropped`). Restores and purges are logged in `aios.schema_history` too.
 
-## Run history export
+## The search index
 
-On the Organisation page's Settings tab (`/organisation/settings`) any member can switch on
-`export_run_history` (on `data_stores`): a one-way copy of the organisation's runs (every
-member's and every schedule's, from the store's `aios` schema) into its `history` schema, keyed
-by the runs' ids and recording who
-started each (`user_id`, the run's `created_by`: null for a schedule's run). Agent runs go in
-`history.agent_runs`, with `history.messages` (role, text, tool calls and usage, flattened from
-the run's checkpoint). Workflow runs go in `history.workflow_runs`, with
-`history.workflow_run_steps`: every step at every depth, with its path, kind, status, input,
-output, error and timings, and its agent run (a `history.agent_runs` id, not a foreign key: the
-two are exported apart). Statuses are copied as text. The runs stay the source of truth
-(`aios.datastores.history`):
+`aios.search_items` (store revision `0015`, `aios.search_index`) holds one item per thing worth
+finding: a document's chunk, a chat message, what the user or the assistant said in a run's turn
+(not tool results), and a handoff's brief. Each writer indexes in the same transaction as its own
+row: ingest its chunks, posting a message (or a run posting its result) the message, `_end_turn`
+the turn's new messages (every turn ends there: chats, schedules, workflow agent nodes), and the
+handoff its brief. `make seed` posts its chat's first message through the same writer. Each kind's
+source is a foreign key that cascades, so an item goes with its document, message, run or chat.
+Items carry their chat, agent, run and author for filters, and no visibility: everyone in the
+organisation can find everything.
 
-- The `history` tables are the store tree's second line (branch label `history`, revisions
-  `h0001`, ...), which a store gets only once the export is first switched on:
-  `aios.set_up_history_export`, on the `provisioning` queue, runs it, and from then on every
-  migration keeps it at its head (`data_stores.history_revision`). The stores' roles get the
-  same default privileges on it as on `aios`. A store behind the line's head isn't exported
-  until it's brought there.
-- Switching it on backfills: every run in the organisation, agent and workflow runs alike, goes
-  in the outbox, `history_exports` (a row per run, by kind, and store). Every agent turn ends in
-  `_end_turn` (chats, schedules and workflow agent nodes alike, failed or stopped too), and
-  every workflow run in `aios.workflows._end_runs` (finished, failed or stopped), each writing
-  the run's row in the same transaction as the run's own update. Deleting a run, its agent or
-  its workflow run writes it too, and deleting an agent writes the workflow runs whose steps
-  held its runs. A workflow run that pauses (goes `waiting` on a schema change request) or
-  resumes isn't written then: it's written when it ends, like any other.
-- `aios.export_history` (default queue: it writes as the store's `_rw`) drains a store's outbox,
-  upserting each run with its messages or steps, or deleting the copy of a run that's gone.
-  It's queued when the outbox is written, and the provisioning worker's beat queues it every
-  minute for any store with rows still pending. A run that fails to export keeps its error on
-  its outbox row and is tried again at its next change, or in an hour, so it doesn't hold up
-  the rest.
-- Switching it off stops the export (after the batch under way) and keeps the copy; runs
-  deleted meanwhile lose their copies once it's back on. "Delete exported history" empties the
-  copy; while the export is on, every run is then exported again.
+Embedding happens in the background: an item is written with no embedding, and found by keyword
+until the store's sweep embeds it (`aios.embed_search_items`, queued for every ready store by
+the provisioning worker's beat every `SEARCH_EMBED_INTERVAL_SECONDS`, on the default queue),
+for at most `SEARCH_EMBED_BUDGET_SECONDS` per store per sweep. An item is embedded by its first
+`EMBED_MAX_CHARS` characters, and never while a store session is held. Its `text_hash` keeps
+unchanged text from being embedded again: an item written again with the same text keeps its
+embedding, and one whose text is already embedded elsewhere in the store takes that embedding.
+Ingest no longer embeds a document's chunks (`chunks.embedding` is nullable and left empty).
 
-### Searchable history
+### The run history export, gone
 
-While the export is on, a second setting, `embed_run_history` (on `data_stores`, off by default,
-and switched off with the export), embeds the exported messages so agents can search past runs:
-
-- `history.messages` has a full-text vector (`tsv`, generated, GIN index) and an `embedding`
-  (HNSW index), from `h0003`. Only what the user and the assistant said is searched or embedded
-  (`EMBEDDABLE` in `aios.datastores.models`): not tool results, nor empty text.
-- The export embeds what it has just exported once it has caught up (after letting go of the
-  export lock, under a lock of its own, so exports and deletes don't wait for it), and a message
-  keeps its embedding while its text is unchanged, so a run exported again is embedded only
-  where it's new. A message is embedded by its first `EMBED_MAX_CHARS` characters. Switching
-  embedding on queues the export, which embeds every message already there (a backfill);
-  `data_stores.history_embedded_at` is when it last caught up. An export embeds for at most
-  `EMBED_BUDGET`, and the every-minute sweep picks up what's left. Embedding that fails (the
-  embedding API is down, say) records why (`history_embed_error`, shown on the Organisation
-  page's Settings tab) and is tried again after `EMBED_RETRY_AFTER`, or at the store's next
-  export. Switching it off stops new embeddings and keeps the existing ones, which are still
-  searched.
-- The **Run history search** tool (`history_search`, the agent's `search_history`) runs the
-  hybrid search over the store's messages (`aios.search.HISTORY_SQL`): by keyword always, and by
-  meaning over what's embedded. If the query can't be embedded, it searches by keyword alone.
-  Each result is a message with its run's id, agent, title and when it started; the run
-  searching is left out. Like document search, it runs in the store's own database as `_ro`, so
-  it never sees another store's runs.
+The run history export (a copy of the organisation's runs in the store's `history` schema, with
+its outbox, tasks, settings and panel) is gone: past runs are searched through the index. A store
+that had it is still on the store tree's `history` line (`data_stores.history_revision`), whose
+head, `h0005`, drops the `history` schema; the line's revisions stay, so a store at any of them is
+brought there as it's migrated. No store gets the line any more. Platform revision `0065` drops
+the outbox and the export's columns on `data_stores`.

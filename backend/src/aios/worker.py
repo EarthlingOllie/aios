@@ -57,10 +57,6 @@ celery_app.conf.update(
         "aios.expire_schema_change_requests": {"queue": "provisioning"},
         # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
         "aios.resume_agent_run": {"queue": "workflows"},
-        # Its `history` tables are migrations, so it's the provisioner's too. The export itself
-        # writes as the store's `rw` role, as ingest does, so it's the app workers' (the
-        # default queue).
-        "aios.set_up_history_export": {"queue": "provisioning"},
     },
 )
 
@@ -75,9 +71,6 @@ DELETE_STORES_EVERY = RETRY_UNFINISHED_EVERY
 MEASURE_USAGE_EVERY = 300
 # Dropped tables and columns past their retention (days) are purged this often (seconds).
 PURGE_DROPPED_EVERY = 3600
-# Stores with runs still waiting to be exported (their export was never queued, or was lost)
-# are queued this often (seconds), by the same beat; the exports go to the app workers.
-EXPORT_PENDING_HISTORY_EVERY = 60
 # The repair sweep (`repair_stores_task`) runs this often (seconds), by the same beat.
 REPAIR_STORES_EVERY = 600
 celery_app.conf.beat_schedule = {
@@ -114,10 +107,12 @@ celery_app.conf.beat_schedule = {
         "schedule": settings.schema_change_expiry_check_seconds,
         "options": {"expires": settings.schema_change_expiry_check_seconds},
     },
-    "export-pending-history": {
-        "task": "aios.export_pending_history",
-        "schedule": EXPORT_PENDING_HISTORY_EVERY,
-        "options": {"expires": EXPORT_PENDING_HISTORY_EVERY},
+    # Every ready store's search items still waiting for an embedding; the embedding goes to
+    # the app workers, as ingest does (it writes as the store's `rw` role).
+    "embed-pending-search": {
+        "task": "aios.embed_pending_search",
+        "schedule": settings.search_embed_interval_seconds,
+        "options": {"expires": settings.search_embed_interval_seconds},
     },
     "repair-stores": {
         "task": "aios.repair_stores",
@@ -259,43 +254,17 @@ def measure_data_store_usage_task() -> None:
     quota.measure_all()
 
 
-@celery_app.task(
-    name="aios.set_up_history_export",
-    soft_time_limit=PROVISION_TIME_LIMIT,
-    time_limit=PROVISION_TIME_LIMIT + 60,
-)
-def set_up_history_export_task(data_store_id: str) -> None:
-    """Give the store its `history` tables, now a member has switched the run history export
-    on, then queue the export of what's waiting (`aios.datastores.history`). Safe to run again.
-
-    A store that isn't ready yet gets them as it's provisioned, and its runs are exported by
-    the periodic sweep (`export_pending_history_task`) once it is; one whose migration fails is
-    tried again by `retry_unfinished_data_stores_task`."""
-    from aios.datastores import history, provision
-
-    store_id = uuid.UUID(data_store_id)
-    try:
-        provision.migrate_store(store_id)
-    except LookupError:
-        return
-    history.enqueue_export(store_id)
-
-
-@celery_app.task(name="aios.export_history", bind=True, max_retries=None)
-def export_history_task(self, data_store_id: str) -> None:
-    """Drain the store's run history outbox into its `history` tables
-    (`aios.datastores.history`). Safe to run again, or at once with another for the store."""
-    from aios.datastores import history
+@celery_app.task(name="aios.embed_search_items")
+def embed_search_items_task(data_store_id: str) -> None:
+    """Embed the store's search items waiting for an embedding, for up to the store's budget
+    (`aios.search_index.embed_pending`); what's left waits for the next sweep. Safe to run
+    again, or at once with another for the store."""
+    from aios import search_index
 
     try:
-        history.export(uuid.UUID(data_store_id))
-    # Before `DataStoreNotReady`, which a store behind is too.
-    except (DataStoreBehind, DataStoreBusy) as exc:
-        # Its rows are still pending; this delivery's retry picks them up (a store behind the
-        # tree's head, on either line, is brought there by `retry_unfinished_data_stores_task`).
-        raise self.retry(countdown=BUSY_RETRY_COUNTDOWN) from exc
-    except (DataStoreNotFound, DataStoreNotReady):
-        # Deleted, or being deleted, since: its outbox goes with it.
+        search_index.embed_pending(uuid.UUID(data_store_id))
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        # Gone, going, behind or busy: the next sweep tries it again, if it's still there.
         return
 
 
@@ -324,13 +293,15 @@ def drain_audit_outbox_task() -> None:
     audit.drain()
 
 
-@celery_app.task(name="aios.export_pending_history")
-def export_pending_history_task() -> None:
-    """Queue the export of every exporting store with runs still waiting."""
-    from aios.datastores import history
+@celery_app.task(name="aios.embed_pending_search")
+def embed_pending_search_task() -> None:
+    """Queue embedding the search items of every ready store (`embed_search_items_task`), each
+    dropped if it hasn't started by the next sweep."""
+    from aios.datastores import ready_stores
 
-    for store_id in history.stores_to_export():
-        history.enqueue_export(store_id)
+    every = settings.search_embed_interval_seconds
+    for store_id, _ in ready_stores():
+        embed_search_items_task.apply_async(args=[str(store_id)], expires=every)
 
 
 @celery_app.task(

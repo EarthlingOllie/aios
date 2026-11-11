@@ -543,8 +543,8 @@ def test_chat_releases_request_session_before_streaming(client, db, user, monkey
     def fake_start(data_store_id, run_id, prompt):
         events.append(("title on loop", on_event_loop()))
 
-    def fake_end(data_store_id, run_id, turn_id, *, error, message_count=None):
-        events.append(("count on loop", on_event_loop(), message_count))
+    def fake_end(data_store_id, run_id, turn_id, *, error, messages=None):
+        events.append(("count on loop", on_event_loop(), len(messages)))
 
     async def script(messages, info):
         events.append("model")

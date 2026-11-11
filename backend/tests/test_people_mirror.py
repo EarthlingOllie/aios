@@ -53,6 +53,9 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("DROP TABLE aios.search_items")
+        conn.execute("DROP TYPE aios.search_item_kind")
+        conn.execute("ALTER TABLE aios.chunks ALTER COLUMN embedding SET NOT NULL")
         conn.execute("DROP SCHEMA reporting CASCADE")
         # The audit log refuses truncation, but not being dropped.
         conn.execute("DROP TABLE aios.audit_log, aios.approval_rules")

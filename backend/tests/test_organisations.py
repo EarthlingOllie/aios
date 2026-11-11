@@ -63,11 +63,22 @@ def before_the_store(db) -> None:
         revision("0060_agents_skills_workflows_to_store").downgrade()
 
 
+def before_the_export_went(db) -> None:
+    """Put the run history export's flags and outbox back on the platform (revision 0065's
+    downgrade), in this test's transaction only, unless they're back already."""
+    if db.scalar(text("SELECT to_regclass('history_exports')")) is not None:
+        return
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0065_drop_history_export").downgrade()
+
+
 def before_the_contract(db) -> None:
     """Put the schema back as it was before the contract step (revision 0048's downgrade), in
     this test's transaction only: each row's owner is back, filled in from who made it. Agents,
-    skills and workflows are back in the platform database first (`before_the_store`)."""
+    skills and workflows are back in the platform database first (`before_the_store`), and the
+    run history export's flags (`before_the_export_went`)."""
     before_the_store(db)
+    before_the_export_went(db)
     with Operations.context(MigrationContext.configure(db.connection())):
         revision("0048_organisations_contract").downgrade()
 

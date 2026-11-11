@@ -15,7 +15,7 @@ from aios.api.agents.common import get_org_agent, lock_live_agent
 from aios.api.provenance import UserOut, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores import history, schema_changes, store_id_of
+from aios.datastores import schema_changes, store_id_of
 from aios.datastores.models import (
     Agent,
     AgentRun,
@@ -355,7 +355,7 @@ def get_run(
     dependencies=[allow(Action.build)],
 )
 def delete_run(
-    agent_id: DbId, run_id: DbId, db: DB, store: CurrentStore, background: BackgroundTasks
+    agent_id: DbId, run_id: DbId, store: CurrentStore, background: BackgroundTasks
 ) -> None:
     run = get_org_run(store, agent_id, run_id)
     store_id = store_id_of(store)
@@ -379,11 +379,6 @@ def delete_run(
     store.commit()
     # Then what the platform says of it: the store is the run's source of truth.
     schema_changes.clear_notifications_of(cancelled)
-    # Its exported copy goes too, and the copy of the workflow run whose step held it.
-    history.enqueue_runs(db, store_id, [run_id], deleting=True)
-    if in_workflow is not None:
-        history.enqueue_workflow_runs(db, store_id, [in_workflow])
-    db.commit()
     # A turn still underway stops now, rather than carrying on for a run that's gone.
     checkpoints.stop_turns(store, store_id, [run_id])
     if sandboxes:

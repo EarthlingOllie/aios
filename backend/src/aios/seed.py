@@ -10,7 +10,8 @@ them), so what it makes is what the app would have made:
   its store provisioned;
 - in the store, a skill, agents that use it, and a workflow that runs one of them inside another
   workflow; and a schedule;
-- a chat with the documents assistant and an agent in it;
+- a chat with the documents assistant and an agent in it, and a first message, which posting
+  indexes for search as it does any (`aios.search_index`);
 - an archived agent, to show what archiving does.
 
 It refuses to run unless the development sign-in picker is on (`DEV_LOGIN_ENABLED`), which no
@@ -22,12 +23,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from aios import organisations
 from aios.api.agents import AgentIn, archive_agent, create_agent
-from aios.api.chats import ChatIn, MemberIn, add_member, create_chat
+from aios.api.chats import ChatIn, MemberIn, MessageIn, add_member, create_chat, post_message
 from aios.api.skills import SkillIn, create_skill
 from aios.api.triggers import TriggerIn, create_trigger
 from aios.api.workflows import WorkflowEdgeIn, WorkflowIn, WorkflowNodeIn, create_workflow
@@ -40,6 +42,7 @@ from aios.models import (
     DataStore,
     DataStoreStatus,
     Organisation,
+    Role,
     TriggerTargetKind,
     User,
     WorkflowNodeKind,
@@ -181,6 +184,16 @@ def build_contents(db: Session, store: Session, user: User, org: Organisation) -
     for member in (writer, old):
         add_member(chat.id, MemberIn(kind=ChatMemberKind.agent, id=member.id), user, org, db, store)
     archive_agent(old.id, user, org, db, store)
+    post_message(
+        chat.id,
+        MessageIn(body="Welcome! Our weekly notes are summarised here every Monday."),
+        user,
+        org,
+        Role.admin,
+        db,
+        store,
+        BackgroundTasks(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

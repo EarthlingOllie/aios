@@ -23,8 +23,8 @@ class HistorySearchConfig(BaseModel):
 
 
 def build(config: HistorySearchConfig) -> list[AgentTool]:
-    # The document search's retrieval, over the run history exported to the run's data store
-    # (`aios.datastores.history`): by keyword always, and by meaning once embedding is on.
+    # The search tool's search (`aios.tools.search`), fixed to past runs' messages, with the
+    # result shape it always had.
     @tool(parse_docstring=True)
     async def search_history(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         """Search the organisation's past runs (earlier conversations with its agents, including
@@ -53,8 +53,7 @@ register(
     ToolSpec(
         key="history_search",
         name="Run history search",
-        description="Search the organisation's past runs exported to its data store, combining"
-        " semantic and keyword matching.",
+        description="Search the organisation's past runs, combining semantic and keyword matching.",
         config_model=HistorySearchConfig,
         build=build,
     )

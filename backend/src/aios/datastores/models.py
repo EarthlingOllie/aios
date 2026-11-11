@@ -1,6 +1,5 @@
-"""The tables every data store has, in its `aios` schema, and the run history export's, in its
-`history` schema once its organisation first switches the export on (the store tree, `migrations/`,
-makes them). Sessions on them come from `store_session`, on the store's own database: they're never
+"""The tables every data store has, in its `aios` schema (the store tree, `migrations/`, makes
+them). Sessions on them come from `store_session`, on the store's own database: they're never
 in the platform database (`aios.models`), and a store's rows are all its own, so nothing here
 says whose they are.
 """
@@ -25,7 +24,6 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
-    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -55,11 +53,6 @@ from aios.models.workflows import WorkflowNodeKind, WorkflowRunStatus, WorkflowS
 EMBEDDING_DIM = 1024
 
 SCHEMA = "aios"
-# The run history export's tables (`aios.datastores.history`).
-HISTORY_SCHEMA = "history"
-# The exported messages worth embedding, and searching: what the user and the assistant said
-# (not tool results, which are the tools' own, nor the empty text of a turn of only tool calls).
-EMBEDDABLE = "role IN ('user', 'assistant') AND btrim(text) <> ''"
 
 
 class StoreBase(DeclarativeBase):
@@ -1197,7 +1190,8 @@ class Chunk(StoreBase):
     text: Mapped[str] = mapped_column(Text)
     contextualized: Mapped[str] = mapped_column(Text)
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)
-    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    # No longer written: its search item (`SearchItem`) is embedded instead.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
     tsv: Mapped[str] = mapped_column(
         TSVECTOR, Computed("to_tsvector('english', contextualized)", persisted=True)
     )
@@ -1216,164 +1210,98 @@ class Chunk(StoreBase):
     )
 
 
-# The run history export: a copy of the organisation's agent and workflow runs, keyed by the
-# platform's ids. The platform database stays the source of truth; these are only ever written by
-# the export.
+class SearchItemKind(enum.StrEnum):
+    document_chunk = "document_chunk"
+    chat_message = "chat_message"
+    run_message = "run_message"
+    brief = "brief"
 
 
-class HistoryAgentRun(StoreBase):
-    __tablename__ = "agent_runs"
-    __table_args__ = {
-        "schema": HISTORY_SCHEMA,
-        "comment": "A copy of an agent run (one conversation with an agent), from the platform.",
-    }
+class SearchItem(StoreBase):
+    """One item of the search index (`aios.search_index`): a document's chunk, a chat message, a
+    user's or assistant's message of a run, or a handoff's brief. Written in the same transaction
+    as its source row, and deleted with it (a foreign key per kind, of which exactly the kind's
+    is set). Embedded in the background (`aios.search_index.embed_pending`): until then it's
+    found by keyword. No visibility: everyone in the organisation can find every item."""
 
-    id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
-    )
-    agent_id: Mapped[int] = mapped_column(BigInteger)
-    agent_name: Mapped[str] = mapped_column(Text)
-    agent_version: Mapped[int] = mapped_column(Integer, comment="The agent version it ran.")
-    model: Mapped[str | None] = mapped_column(
-        Text, comment="The version's model; null means the deployment's default."
-    )
-    title: Mapped[str | None] = mapped_column(Text)
-    user_id: Mapped[int | None] = mapped_column(
-        BigInteger, comment="The member who started it; null for a schedule's run."
-    )
-    trigger_id: Mapped[int | None] = mapped_column(
-        BigInteger, comment="The schedule that started it, if one did."
-    )
-    workflow_run_id: Mapped[int | None] = mapped_column(
-        BigInteger, comment="The workflow run whose agent node it was, if any."
-    )
-    message_count: Mapped[int] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), comment="When its last turn ended."
-    )
-    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __tablename__ = "search_items"
 
-
-class HistoryMessage(StoreBase):
-    __tablename__ = "messages"
-
-    agent_run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{HISTORY_SCHEMA}.agent_runs.id", ondelete="CASCADE")
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    kind: Mapped[SearchItemKind] = mapped_column(
+        Enum(SearchItemKind, name="search_item_kind"),
+        comment="document_chunk, chat_message, run_message or brief.",
     )
-    position: Mapped[int] = mapped_column(Integer, comment="Its place in the run, from 0.")
-    message_id: Mapped[str | None] = mapped_column(Text)
-    role: Mapped[str] = mapped_column(Text, comment="user, assistant, tool or system.")
-    text: Mapped[str] = mapped_column(Text, comment="Its text, without tool calls.")
-    tool_calls: Mapped[list | None] = mapped_column(
-        JSONB, comment="An assistant message's tool calls: [{id, name, args}]."
+    # Its source row: the one matching its kind.
+    chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chunks.id", ondelete="CASCADE"), comment="A document chunk's chunk."
     )
-    tool_call_id: Mapped[str | None] = mapped_column(
-        Text, comment="A tool message's call, in its run's tool_calls."
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE"), comment="A chat message's message."
     )
-    tool_name: Mapped[str | None] = mapped_column(Text)
-    is_error: Mapped[bool | None] = mapped_column(Boolean, comment="A tool message that failed.")
-    usage: Mapped[dict | None] = mapped_column(
-        JSONB, comment="An assistant message's token usage: {input_tokens, output_tokens, ...}."
+    turn_id: Mapped[int | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), comment="A run message's turn."
     )
-    model: Mapped[str | None] = mapped_column(Text, comment="The model that wrote it.")
-    # For searching past runs (`aios.search`): the text's embedding, while the organisation
-    # has embedding on, and its full-text vector, always.
-    embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(EMBEDDING_DIM),
-        comment="Its text's embedding, for search: a user's or assistant's message with text, "
-        "once embedded (only while embedding is on).",
+    position: Mapped[int | None] = mapped_column(
+        Integer, comment="A run message's place in its run's conversation, from 0."
+    )
+    invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invocations.id", ondelete="CASCADE"), comment="A brief's invocation."
+    )
+    # Extra reference data: a chunk's headings and pages, a run message's role.
+    ref: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"), default=dict)
+    # For filters and links: what it belongs to, where there's one.
+    document_id: Mapped[int | None] = mapped_column(Integer)
+    chat_id: Mapped[int | None] = mapped_column(Integer)
+    agent_id: Mapped[int | None] = mapped_column(Integer)
+    agent_run_id: Mapped[int | None] = mapped_column(Integer)
+    author_user_id: Mapped[int | None] = mapped_column(
+        Integer, comment="The person who wrote it, if a person did."
+    )
+    text: Mapped[str] = mapped_column(Text, comment="Its text, as shown.")
+    search_text: Mapped[str | None] = mapped_column(
+        Text, comment="What's searched and embedded instead of its text, if not its text."
     )
     tsv: Mapped[str] = mapped_column(
         TSVECTOR,
-        Computed("to_tsvector('english', text)", persisted=True),
-        comment="Its text's full-text search vector.",
+        Computed("to_tsvector('english', coalesce(search_text, text))", persisted=True),
     )
+    text_hash: Mapped[str] = mapped_column(
+        Text, comment="The SHA-256 (hex) of what's searched: unchanged text isn't re-embedded."
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM), comment="What's searched's embedding; null until embedded."
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("agent_run_id", "position"),
+        CheckConstraint(
+            "(kind = 'document_chunk') = (chunk_id IS NOT NULL)"
+            " AND (kind = 'chat_message') = (message_id IS NOT NULL)"
+            " AND (kind = 'run_message') = (turn_id IS NOT NULL AND position IS NOT NULL)"
+            " AND (kind = 'brief') = (invocation_id IS NOT NULL)",
+            name="ck_search_items_source",
+        ),
+        UniqueConstraint("chunk_id", name="uq_search_items_chunk_id"),
+        UniqueConstraint("message_id", name="uq_search_items_message_id"),
+        UniqueConstraint("turn_id", "position", name="uq_search_items_turn_id_position"),
+        UniqueConstraint("invocation_id", name="uq_search_items_invocation_id"),
         Index(
-            "ix_messages_embedding_hnsw",
+            "ix_search_items_embedding_hnsw",
             "embedding",
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
-        Index("ix_messages_tsv", "tsv", postgresql_using="gin"),
-        # The messages waiting to be embedded (`EMBEDDABLE`), for the embedding to find.
+        Index("ix_search_items_tsv", "tsv", postgresql_using="gin"),
+        # What the embedding sweep picks up, and where it looks for an embedding to reuse.
+        Index("ix_search_items_unembedded", "id", postgresql_where=sql_text("embedding IS NULL")),
         Index(
-            "ix_messages_unembedded",
-            "agent_run_id",
-            "position",
-            postgresql_where=sql_text(f"embedding IS NULL AND {EMBEDDABLE}"),
+            "ix_search_items_text_hash",
+            "text_hash",
+            postgresql_where=sql_text("embedding IS NOT NULL"),
         ),
-        {
-            "schema": HISTORY_SCHEMA,
-            "comment": "The messages of the agent runs in history.agent_runs, in order.",
-        },
+        Index("ix_search_items_created_at", "created_at"),
+        Index("ix_search_items_chat_id", "chat_id"),
+        Index("ix_search_items_agent_id", "agent_id"),
+        Index("ix_search_items_agent_run_id", "agent_run_id"),
+        {"comment": "The search index: documents, chat messages, runs' messages and briefs"},
     )
-
-
-class HistoryWorkflowRun(StoreBase):
-    __tablename__ = "workflow_runs"
-    __table_args__ = {
-        "schema": HISTORY_SCHEMA,
-        "comment": "A copy of a workflow run, from the platform.",
-    }
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=False, comment="The run's id on the platform."
-    )
-    workflow_id: Mapped[int] = mapped_column(BigInteger)
-    workflow_name: Mapped[str] = mapped_column(Text)
-    workflow_version: Mapped[int] = mapped_column(Integer, comment="The workflow version it ran.")
-    user_id: Mapped[int | None] = mapped_column(
-        BigInteger, comment="The member who started it; null for a schedule's run."
-    )
-    # Text, not an enum: a status the platform adds later is copied as it is.
-    status: Mapped[str] = mapped_column(
-        Text, comment="queued, running, succeeded or failed, as on the platform when exported."
-    )
-    input: Mapped[str] = mapped_column(Text, comment="What it was given.")
-    output: Mapped[str | None] = mapped_column(Text, comment="Its final nodes' outputs, once done.")
-    error: Mapped[str | None] = mapped_column(Text, comment="Why it failed.")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-
-
-class HistoryWorkflowRunStep(StoreBase):
-    __tablename__ = "workflow_run_steps"
-    __table_args__ = (
-        Index("ix_workflow_run_steps_workflow_run_id", "workflow_run_id"),
-        {
-            "schema": HISTORY_SCHEMA,
-            "comment": "The steps of the workflow runs in history.workflow_runs: a node, at any "
-            "depth.",
-        },
-    )
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=False, comment="The step's id on the platform."
-    )
-    workflow_run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{HISTORY_SCHEMA}.workflow_runs.id", ondelete="CASCADE")
-    )
-    path: Mapped[list[str]] = mapped_column(
-        ARRAY(Text),
-        comment="Node keys from the run's workflow down to the node: {review,critic} is "
-        "node critic of the subworkflow at node review.",
-    )
-    kind: Mapped[str] = mapped_column(Text, comment="agent or workflow.")
-    status: Mapped[str] = mapped_column(
-        Text, comment="running, succeeded or failed, as on the platform when exported."
-    )
-    input: Mapped[str] = mapped_column(Text)
-    output: Mapped[str | None] = mapped_column(Text)
-    error: Mapped[str | None] = mapped_column(Text)
-    # Not a foreign key: agent runs and workflow runs are exported apart, in either order.
-    agent_run_id: Mapped[int | None] = mapped_column(
-        BigInteger, comment="An agent node's conversation: history.agent_runs.id."
-    )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

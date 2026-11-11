@@ -1,5 +1,5 @@
 """The data store is the organisation's: every member reaches the one store (its documents,
-tables, usage, schema change requests, dropped objects and run history export), each document
+tables, usage, schema change requests and dropped objects), each document
 records who uploaded it, and a user in another organisation reaches none of it."""
 
 # The fixtures imported from other test files are used as arguments, which ruff takes for
@@ -24,7 +24,6 @@ from sqlalchemy.exc import IntegrityError
 from test_agents import chat_body, make_agent
 from test_data_tools import as_owner
 from test_dropped import apply, listed, propose, restores, run_restores, store
-from test_history_export import set_up_and_export, stored
 from test_organisations import before_the_contract, revision
 from test_schema_change_requests import queued
 from test_workflows import agent_node, make_workflow
@@ -111,31 +110,39 @@ def test_the_upgrade_points_each_store_at_its_owners_organisation_with_their_exp
     db.flush()
     for u in (exporting, quiet):
         organisations.create(db, u, f"{u.full_name} {u.id}")
-    on = DataStore(
-        owner_organisation_id=home_organisation(db, exporting.id).id,
-        export_run_history=True,
-        embed_run_history=True,
-    )
+    on = DataStore(owner_organisation_id=home_organisation(db, exporting.id).id)
     off = DataStore(owner_organisation_id=home_organisation(db, quiet.id).id)
     stores = {exporting.id: on, quiet.id: off}
     db.add_all(stores.values())
     db.flush()
-    # As before the upgrade, a store is its user's, with their flags, and has no organisation
-    # (which the check below forbids), in this test's transaction only: the contract's
-    # downgrade gives it back its user and their flags, and the store is then undone.
+    # As before the upgrade, a store is its user's, and the export's flags are the user's
+    # (revision 0065 dropped them since), and the store has no organisation (which the check
+    # below forbids), in this test's transaction only: the contract's downgrade gives it back
+    # its user, and the store is then undone.
     before_the_contract(db)
     db.execute(text(f"ALTER TABLE data_stores DROP CONSTRAINT {step.CHECK}"))
     db.execute(
-        update(DataStore)
-        .where(DataStore.id.in_([s.id for s in stores.values()]))
-        .values(owner_organisation_id=None, export_run_history=False, embed_run_history=False)
+        text("UPDATE users SET export_run_history = true, embed_run_history = true WHERE id = :id"),
+        {"id": exporting.id},
+    )
+    db.execute(
+        text(
+            "UPDATE data_stores SET owner_organisation_id = NULL, export_run_history = false,"
+            " embed_run_history = false WHERE id = ANY(:ids)"
+        ),
+        {"ids": [s.id for s in stores.values()]},
     )
 
     step.backfill(db.connection())
 
     for u, flags in ((exporting, (True, True)), (quiet, (False, False))):
-        row = stores[u.id]
-        db.refresh(row)
+        row = db.execute(
+            text(
+                "SELECT owner_organisation_id, export_run_history, embed_run_history"
+                " FROM data_stores WHERE id = :id"
+            ),
+            {"id": stores[u.id].id},
+        ).one()
         assert row.owner_organisation_id == home_organisation(db, u.id).id
         assert (row.export_run_history, row.embed_run_history) == flags
 
@@ -304,65 +311,14 @@ def test_another_organisation_cant_see_or_decide_the_stores_requests_or_restore_
     assert (queued, restores) == ([], [])
 
 
-# --- The run history export ---------------------------------------------------------------------
-
-
-def test_the_export_is_the_organisations_and_takes_every_members_runs(
-    db, api, user, member, history_tasks, monkeypatch
-):
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
-    store_id = store_of(user)
-    mine = make_agent(api, "Mine")
-    my_run = api.post(f"/api/agents/{mine['id']}/runs").json()
-    with use_model(replies("hi")):
-        url = f"/api/agents/{mine['id']}/runs/{my_run['id']}/chat"
-        assert api.post(url, json=chat_body("from me")).status_code == 200
-    with signed_in_as(member):
-        theirs = make_agent(api, "Theirs")
-        workflow = make_workflow(api, "flow", [agent_node("one", theirs)])
-        flow_run = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"}).json()
-    with use_model(replies("went")):
-        asyncio.run(execute_run(store_id, flow_run["id"]))
-
-    # Switched on by another admin, it's on for the organisation.
-    organisations.change_role(db, org_of(db, user), member.id, Role.admin)
-    db.commit()
-    with signed_in_as(member):
-        r = api.put("/api/organisation/settings", json={"export_run_history": True})
-        assert r.status_code == 200 and r.json()["export_run_history"] is True
-    assert api.get("/api/organisation/settings").json()["export_run_history"] is True
-    db.expire_all()
-    assert db.get(DataStore, store_id).export_run_history is True
-
-    assert history_tasks["set_up"] == [store_id]
-    set_up_and_export(store_id, history_tasks)
-    assert stored(store_id, "SELECT agent_name, title FROM history.agent_runs ORDER BY id") == [
-        ("Mine", "from me"),
-        ("Theirs", "go"),
-    ]
-    assert stored(store_id, "SELECT workflow_name, status FROM history.workflow_runs") == [
-        ("flow", "succeeded")
-    ]
-
-    # And it's the organisation's to switch off, for every member.
-    api.put("/api/organisation/settings", json={"export_run_history": False})
-    with signed_in_as(member):
-        assert api.get("/api/organisation/settings").json()["export_run_history"] is False
-
-
-def test_another_organisations_export_is_its_own(db, api, user, outsider, history_tasks):
-    r = api.put("/api/organisation/settings", json={"export_run_history": True})
-    assert r.status_code == 200
-
-    with signed_in_as(outsider):
-        assert api.get("/api/organisation/settings").json()["export_run_history"] is False
-    assert (
-        db.scalar(select(DataStore.export_run_history).where(DataStore.id == store_of(outsider)))
-        is False
-    )
-    assert history_tasks["set_up"] == [store_of(user)]
-
-
 def test_the_user_settings_endpoint_is_gone(api):
     """The export moved to the organisation's settings; the user has none of their own yet."""
     assert api.get("/api/settings").status_code == 404
+
+
+def test_the_run_history_exports_settings_and_endpoints_are_gone(api):
+    """Past runs are searchable without switching anything on (`test_search`)."""
+    assert api.get("/api/organisation/settings").status_code == 404
+    response = api.put("/api/organisation/settings", json={"export_run_history": True})
+    assert response.status_code in (404, 405)
+    assert api.delete("/api/organisation/settings/exported-history").status_code in (404, 405)

@@ -23,7 +23,7 @@ from aios.api.provenance import (
 from aios.api.skills import lock_live, unique_name
 from aios.api.triggers import disable_triggers, unindex
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores import history, schema_changes, store_id_of
+from aios.datastores import schema_changes, store_id_of
 from aios.datastores.models import (
     Agent,
     AgentRun,
@@ -37,7 +37,7 @@ from aios.datastores.models import (
     WorkflowRunStep,
     WorkflowVersion,
 )
-from aios.db import DB, DbId, SessionLocal
+from aios.db import DB, DbId
 from aios.models import (
     InvocationStatus,
     SchemaChangeStatus,
@@ -1092,10 +1092,6 @@ def queue_workflow_run(store: Session, run: WorkflowRun) -> None:
         )
         store.delete(run)
         store.commit()
-        with SessionLocal() as db:
-            # A backfill since it was committed may have exported it: that copy goes too.
-            history.enqueue_workflow_runs(db, store_id, [run.id], deleting=True)
-            db.commit()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Could not queue the run; please try again shortly.",
@@ -1208,13 +1204,11 @@ def get_run_subworkflow(
 def delete_workflow_run(
     workflow_id: DbId,
     run_id: DbId,
-    db: DB,
     store: CurrentStore,
     background: BackgroundTasks,
 ) -> None:
     """Delete the run, and the agent runs its agent nodes held their conversations in."""
     run = get_org_workflow_run(store, workflow_id, run_id)
-    store_id = store_id_of(store)
     # Locked before its agent runs are read: a node starting meanwhile records its step and
     # agent run in one transaction, which waits for this lock, so it's either seen here or
     # fails once the run has gone (`aios.workflows._start_step`).
@@ -1246,10 +1240,5 @@ def delete_workflow_run(
     store.commit()
     # Then what the platform says of them.
     schema_changes.clear_notifications_of(cancelled)
-    # Their exported copies go too, and its own (its agent runs' rows first, as the export
-    # marks them).
-    history.enqueue_runs(db, store_id, agent_run_ids, deleting=True)
-    history.enqueue_workflow_runs(db, store_id, [run.id], deleting=True)
-    db.commit()
     if sandboxes:
         background.add_task(stop_sandboxes, sandboxes)

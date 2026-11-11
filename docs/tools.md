@@ -1,9 +1,9 @@
 # Tools
 
 A **tool** is a capability from the tool library that an agent version may use, with its
-settings: web search; document search, the hybrid search over the documents of the agent's
-organisation; run history search, the same over its exported past runs (see
-[Stores](stores.md#searchable-history)); Run Python; and the data tools. `GET /api/tools`
+settings: web search; search, the hybrid search over everything in the agent's organisation
+(see [Stores](stores.md#the-search-index)), with document search and run history search, the
+same search fixed to documents or to past runs; Run Python; and the data tools. `GET /api/tools`
 (`aios.api.tools`) lists the library, with each tool's settings schema. See
 [Agents and skills](agents-and-skills.md) for how agents are given them.
 
@@ -26,11 +26,26 @@ restoring and running all load them the same way, and refuse a value the model n
 
 ## Search
 
-Document search is a hybrid search (`aios.search`): pgvector HNSW (cosine) over Voyage
-embeddings, and Postgres full-text search (`tsvector`, GIN), fused with Reciprocal Rank Fusion
-(k=60). It runs in the store's own database as its read-only role. The **Search** page runs
-that hybrid search directly (`GET /api/o/{org}/search`), with no agent in between, and shows each
-passage with how the semantic and keyword branches ranked it.
+Search is one hybrid search (`aios.search`) over the store's search index
+(`aios.search_items`, see [Stores](stores.md#the-search-index)): pgvector HNSW (cosine) over
+Voyage embeddings, and Postgres full-text search (`tsvector`, GIN), fused with Reciprocal Rank
+Fusion (k=60). It runs in the store's own database as its read-only role. Items not yet embedded,
+and every item when the query can't be embedded, are found by keyword alone.
+
+- **Search** (`search`, new): a query, and optionally kinds (`document_chunk`, `chat_message`,
+  `run_message`, `brief`), a time range (`since`, `until`), a chat, an agent and a result count.
+  Its settings are the most results (8 by default, up to 50) and the kinds the agent may find.
+  The run searching is left out. Each result has its kind, text and time, with where it's from.
+- **Document search** (`hybrid_search`, the agent's `search_documents`) and **Run history
+  search** (`history_search`, `search_history`) are the same search fixed to their kind, with the
+  result shapes they always had: a passage's source, headings and text; a past run's message with
+  its run's id, agent, title, when it started and its role (the run searching left out).
+
+The **Search** page runs the search directly (`GET /api/o/{org}/search?q=&limit=&kind=`), with no
+agent in between, over the whole organisation (everyone in it can find everything): each result
+is labelled with its kind and linked to its source (the Data page's documents, the chat, the
+run), can be filtered by kind, and shows how the semantic and keyword branches ranked it behind
+"Show ranking".
 
 ## Web search
 

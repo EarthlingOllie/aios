@@ -116,6 +116,7 @@ STORE_TABLES = {
         "sandbox_sessions",
         "schema_change_requests",
         "schema_history",
+        "search_items",
         "skill_versions",
         "skills",
         "sources",

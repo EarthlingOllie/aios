@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     chunk_max_tokens: int = 512
 
     max_upload_bytes: int = 50 * 1024 * 1024
-    # Per-attempt budget for converting + embedding one document (Celery soft time limit).
+    # Per-attempt budget for converting and chunking one document (Celery soft time limit).
     ingest_time_limit: int = 30 * 60
     # Budget for a whole workflow run, every node at every depth (`aios.workflows.execute_run`).
     workflow_run_time_limit: int = 2 * 60 * 60
@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     # Hybrid search.
     search_candidates: int = 40
     search_rrf_k: int = 60
+    # How long each store's embedding sweep may spend embedding new search items (seconds) each
+    # time it runs (`aios.search_index.embed_pending`, every `search_embed_interval_seconds`):
+    # what's left waits for the next sweep, and is found by keyword meanwhile.
+    search_embed_budget_seconds: float = Field(default=60, ge=0)
+    search_embed_interval_seconds: float = Field(default=60, gt=0)
 
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.

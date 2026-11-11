@@ -2,9 +2,8 @@ import logging
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, HTTPException, UploadFile, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
@@ -18,7 +17,6 @@ from aios.datastores.models import Chunk, Document, DocumentStatus, Source, Sour
 from aios.db import DbId
 from aios.models import DataStoreStatus
 from aios.permissions import Action, allow
-from aios.search import hybrid_search
 from aios.sources import uploads_source_id
 from aios.worker import ingest_document_task
 
@@ -51,17 +49,6 @@ class DocumentOut(BaseModel):
     uploaded_by: UserOut | None
     source: DocumentSourceOut
     created_at: datetime
-
-
-class SearchHitOut(BaseModel):
-    chunk_id: int
-    document_id: int
-    filename: str
-    text: str
-    meta: dict
-    score: float
-    semantic_rank: int | None
-    lexical_rank: int | None
 
 
 class UsageOut(BaseModel):
@@ -265,13 +252,3 @@ def delete_document(document_id: DbId, store_id: CurrentDataStore) -> None:
         db.execute(delete(Document).where(Document.id == document_id))  # its chunks cascade
         db.commit()
         _record_files(store_id, db)
-
-
-@router.get("/search", response_model=list[SearchHitOut], dependencies=[allow(Action.read)])
-async def search(
-    store_id: CurrentDataStore,
-    # At least one non-whitespace character; blank queries would fail at the embedding API.
-    q: Annotated[str, Query(min_length=1, pattern=r"\S")],
-    limit: Annotated[int, Query(ge=1, le=50)] = 8,
-):
-    return await hybrid_search(data_store_id=store_id, query=q, limit=limit)

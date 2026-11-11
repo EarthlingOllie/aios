@@ -119,7 +119,7 @@ page. The Organisation page
 (`GET /api/o/{org}/organisation`): the name and the creator above three tabs, as on the agent page,
 each a route: **Members**, with when each joined and the count (`/organisation`);
 **Invitations**, the links, for the creator only (`/organisation/invitations`); and
-**Settings**, the run history export and leaving (`/organisation/settings`). Only the creator
+**Settings**, the approval rules, leaving and deleting it (`/organisation/settings`). Only the creator
 renames it (`PUT /api/o/{org}/organisation`; a 403 for another member, a 409 for a name another
 organisation has): a stopgap role until roles exist. The **Settings** page is the user's own
 and links to it.
@@ -141,8 +141,7 @@ member"), each version which member saved it,
 and a deleted one records who deleted it (`deleted_by`). A workflow or schedule can only run
 the organisation's agents and workflows, and deleting an agent finds what depends on it across
 the organisation. Nothing answers to whoever made it. The **store** is the organisation's (see
-[Stores](stores.md)), and so is the run history export, on the Organisation page's Settings
-tab.
+[Stores](stores.md)), and so is its search index, which every member searches.
 
 ### Runs belong to the organisation
 

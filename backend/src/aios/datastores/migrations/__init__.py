@@ -5,8 +5,9 @@ It has two lines, each with its own head:
 
 - `aios` (revisions `0001`, `0002`, ...), which every store is at the head of.
 - `history` (the branch labelled `history`, revisions `h0001`, ...): the run history export's
-  tables, which a store gets only once its organisation switches the export on, and is then kept at
-  the head of too (`aios.datastores.history`).
+  tables, which a store got once its organisation switched the export on. The export is gone, and
+  the line's head (`h0005`) drops them: a store at any of its revisions is brought there as it's
+  migrated, and no store gets the line any more.
 
 Its version table is `aios.alembic_version`, in each store: a row per line the store has. `data`,
 the organisation's own tables, is never touched by it. `aios.datastores.provision` runs it, as the
@@ -59,7 +60,7 @@ def context_options() -> dict:
     }
 
 
-# The branch label of the run history export's line.
+# The branch label of the (former) run history export's line.
 HISTORY = "history"
 
 

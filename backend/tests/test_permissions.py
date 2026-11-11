@@ -23,7 +23,7 @@ from test_chats import make_chat, signed_in_as
 from test_invitations import leave_behind, make_link
 from test_people_mirror import mirror
 
-from aios.api import documents
+from aios.api import search as search_api
 from aios.db import SessionLocal
 from aios.main import app
 from aios.models import OrganisationMember, Role, User
@@ -102,9 +102,6 @@ ROUTES = {
     ("DELETE", "/organisation/invites/{invite_id}"): RUN_ORGANISATION,
     ("PUT", "/organisation/members/{user_id}/role"): RUN_ORGANISATION,
     ("POST", "/organisation/leave"): LEAVE,
-    ("GET", "/organisation/settings"): READ,
-    ("PUT", "/organisation/settings"): RUN_ORGANISATION,
-    ("DELETE", "/organisation/settings/exported-history"): RUN_ORGANISATION,
     ("GET", "/schema-changes"): READ,
     ("GET", "/schema-changes/{request_id}"): READ,
     ("GET", "/schema-changes/{request_id}/impact"): READ,
@@ -383,11 +380,11 @@ def test_a_participant_searches_documents(api, user, participant, monkeypatch):
     """The search itself is `test_search`'s; here, that a participant may run one."""
     asked = []
 
-    async def hybrid_search(data_store_id, query, limit):
+    async def search_index(data_store_id, query, limit, filters):
         asked.append((data_store_id, query))
         return []
 
-    monkeypatch.setattr(documents, "hybrid_search", hybrid_search)
+    monkeypatch.setattr(search_api, "search_index", search_index)
     with signed_in_as(participant):
         resp = api.get("/api/search", params={"q": "pricing"})
     assert resp.status_code == 200, resp.text

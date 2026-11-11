@@ -12,8 +12,6 @@ test("the Settings link opens the page, which points to the organisation's setti
   await page.getByRole("link", { name: "Settings" }).first().click();
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  // The run history export is the organisation's now, on its page.
-  await expect(page.getByRole("heading", { name: "Run history export" })).toBeHidden();
 
   await page.getByText("You're in").getByRole("link", { name: "Organisation" }).click();
   await expect(page).toHaveURL(/\/organisation$/);
@@ -22,8 +20,5 @@ test("the Settings link opens the page, which points to the organisation's setti
   await page.goBack();
   await page.getByText("You're in").getByRole("link", { name: "Settings" }).click();
   await expect(page).toHaveURL(/\/organisation\/settings$/);
-  await expect(page.getByRole("heading", { name: "Run history export" })).toBeVisible();
-  await expect(
-    page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" }),
-  ).not.toBeChecked();
+  await expect(page.getByRole("region", { name: "Approval rules" })).toBeVisible();
 });

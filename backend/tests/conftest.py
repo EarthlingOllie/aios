@@ -20,7 +20,7 @@ from aios import organisations, ratelimits
 from aios.api import provenance
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.datastores import data_store_for, files, history, provision, resolve, store_session
+from aios.datastores import data_store_for, files, provision, resolve, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Document
 from aios.db import SessionLocal, engine
@@ -141,16 +141,6 @@ def handoff_model() -> Iterator[None]:
     Not with `monkeypatch`, which a test may undo."""
     with fake_model.use_handoff(fake_model.briefs()):
         yield
-
-
-@pytest.fixture(autouse=True)
-def history_tasks(monkeypatch) -> dict[str, list[uuid.UUID]]:
-    """The run history export's tasks the code queued (by store), instead of sending them to
-    the broker: "export" drains a store's outbox, "set_up" gives it the `history` tables."""
-    queued: dict[str, list[uuid.UUID]] = {"export": [], "set_up": []}
-    monkeypatch.setattr(history, "enqueue_export", queued["export"].append)
-    monkeypatch.setattr(history, "enqueue_set_up", queued["set_up"].append)
-    return queued
 
 
 def delete_user(db, user: User) -> None:

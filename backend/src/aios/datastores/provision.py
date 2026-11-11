@@ -26,8 +26,8 @@ template (`aios.db_roles`), which brings pgvector and pgstattuple (for measuring
 couldn't install them.
 
 Then it runs the store tree to its head, as the owner (`upgrade_store`), and marks the store
-`ready`. The tree's `history` line too, if the store's owner has switched the run history
-export on (`aios.datastores.history`), and from then on whenever the store is migrated.
+`ready`. A store with the tree's `history` line (the run history export's, now gone) is brought
+to that line's head too, which drops the export's copy; no store gets the line any more.
 
 Every step checks what's already there, so after a crash running it again finishes the job;
 runs of the same store wait for each other.
@@ -66,7 +66,6 @@ from sqlalchemy import (
     ColumnElement,
     and_,
     create_engine,
-    delete,
     func,
     or_,
     pool,
@@ -80,7 +79,7 @@ from sqlalchemy.engine import make_url
 from aios.config import get_settings, libpq_conninfo
 from aios.datastores import connections, credentials, files, migrations
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus, HistoryExport
+from aios.models import DataStore, DataStoreStatus
 from alembic import command
 
 log = logging.getLogger(__name__)
@@ -131,7 +130,6 @@ class _Run:
     rw_password: str
     ro_password: str
     server: psycopg.Connection  # the provisioner, on the platform database
-    history: bool = False  # bring the store's `history` line to its head too
     revisions: "Revisions | None" = None
     ready: bool = False  # `_mark_ready` marked it
 
@@ -371,9 +369,9 @@ class Revisions:
     history: str | None = None
 
 
-def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
+def upgrade_store(names: StoreNames) -> Revisions:
     """Run the store tree's `aios` line to its head on the store's database, as its owner, and
-    its `history` line too if `history` is set or the store already has it, and keep `_rw` off
+    its `history` line too if the store has it (at any of its revisions), and keep `_rw` off
     the tree's bookkeeping (`BOOKKEEPING`); returns the revisions it's at."""
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
     engine = create_engine(
@@ -395,7 +393,7 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
             # By revision: the tree has a head per line, so "head" alone is ambiguous.
             command.upgrade(cfg, migrations.head_revision())
             at = conn.scalars(text("SELECT version_num FROM aios.alembic_version")).all()
-            if history or any(migrations.is_history_revision(r) for r in at):
+            if any(migrations.is_history_revision(r) for r in at):
                 command.upgrade(cfg, f"{migrations.HISTORY}@head")
                 at = conn.scalars(text("SELECT version_num FROM aios.alembic_version")).all()
             # Every time, not in a revision: the tree doesn't know the store's role names.
@@ -429,7 +427,7 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
 
 
 def _migrate(run: _Run) -> None:
-    run.revisions = upgrade_store(run.names, history=run.history)
+    run.revisions = upgrade_store(run.names)
 
 
 def _fill_people(run: _Run) -> None:
@@ -545,11 +543,10 @@ def provision(store_id: uuid.UUID, wait: bool = True) -> str | None:
             if store is None or store.status not in PROVISIONABLE:
                 return None
             names = StoreNames.of(store)
-            history = store.export_run_history
         passwords = _passwords(store_id)
         if passwords is None:
             return None
-        run = _Run(store_id, names, *passwords, server=server, history=history)
+        run = _Run(store_id, names, *passwords, server=server)
         for step in STEPS:
             step(run)
     if run.revisions is None:  # a test ran only some of the steps
@@ -615,9 +612,7 @@ def _delete_files(deletion: _Deletion) -> None:
 
 
 def _mark_deleted(deletion: _Deletion) -> None:
-    # Its run history outbox goes too: there's nowhere left to export to.
     with SessionLocal() as db:
-        db.execute(delete(HistoryExport).where(HistoryExport.data_store_id == deletion.store_id))
         db.execute(
             update(DataStore)
             .where(DataStore.id == deletion.store_id, DataStore.status == DataStoreStatus.deleting)
@@ -699,8 +694,8 @@ def fail(store_id: uuid.UUID, error: str) -> None:
 
 
 def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
-    """Bring a ready store to the tree's head (and its `history` line, if it has it or its
-    owner wants it), and its roles to the limits configured now, and record its revisions;
+    """Bring a ready store to the tree's head (and its `history` line, if it has it), and its
+    roles to the limits configured now, and record its revisions;
     returns its `aios` line's. Unless `wait`, does nothing (returns None) if another run is on
     it."""
     with provisioner_locked(store_id, wait) as server:
@@ -711,10 +706,9 @@ def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
             if store is None or store.status != DataStoreStatus.ready:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
-            history = store.export_run_history
         _set_limits(server, names)
         _create_writer(server, names)
-        revisions = upgrade_store(names, history=history)
+        revisions = upgrade_store(names)
         # A store migrated to the mirror's revision gets it filled; one that has it is caught up.
         _sync_people(store_id, names)
         with SessionLocal() as db:
@@ -805,16 +799,11 @@ def _migrate_ready(
 
 
 def _behind_head() -> ColumnElement[bool]:
-    """Stores at an earlier revision of the tree than its head, on either line, or without the
-    `history` line the export wants (its set-up was lost, or failed). Not one it
+    """Stores at an earlier revision of the tree than its head, on either line. Not one it
     doesn't know: the release after this one has already migrated that store."""
     return or_(
         DataStore.schema_revision.in_(migrations.revisions_before_head()),
         DataStore.history_revision.in_(migrations.history_revisions_before_head()),
-        and_(
-            DataStore.history_revision.is_(None),
-            DataStore.export_run_history,
-        ),
     )
 
 

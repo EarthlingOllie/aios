@@ -203,6 +203,24 @@ export type SourceRow = {
   status: "active" | "paused" | "failing" | "needs_reauth" | "removing";
   created_at: string;
 };
+/** An item of the search index (GET /api/search), without its ranking, which the fake makes up. */
+export type SearchItemRow = {
+  id: number;
+  kind: "document_chunk" | "chat_message" | "run_message" | "brief";
+  text: string;
+  created_at: string;
+  ref: { headings?: string[]; pages?: number[]; role?: "user" | "assistant" };
+  document_id?: number | null;
+  filename?: string | null;
+  chat_id?: number | null;
+  chat_name?: string | null;
+  message_id?: number | null;
+  agent_id?: number | null;
+  agent_name?: string | null;
+  agent_run_id?: number | null;
+  run_title?: string | null;
+};
+
 export type DocumentRow = {
   id: number;
   filename: string;
@@ -647,18 +665,12 @@ export class FakeApi {
   dataStoreDelay = 0;
   /** While true, GET /api/data-store answers 500, as if the server can't reach the store. */
   dataStoreFails = false;
-  /** The organisation's settings (`/api/organisation/settings`); switching the export on sets
-   * the store up (`history_ready`) only when a test says so, as the provisioning worker would. */
-  settings = {
-    export_run_history: false,
-    history_ready: false,
-    history_exported_at: null as string | null,
-    embed_run_history: false,
-    history_embedded_at: null as string | null,
-    history_embed_error: null as string | null,
-  };
-  /** Times "delete exported history" was asked for. */
-  exportedHistoryDeletes = 0;
+  /** What the search index holds besides the ready documents' passages (each document is one
+   * passage, found by its name): chat messages, past runs' messages and briefs a test adds. A
+   * search finds those whose text contains its query. */
+  searchItems: SearchItemRow[] = [];
+  /** The query strings of GET /api/search, in order. */
+  searches: string[] = [];
   /** The organisation's sources: Uploads, made with the store, and any `addSource` adds. */
   sources: SourceRow[] = [
     { id: 1, kind: "upload", name: "Uploads", status: "active", created_at: NOW },
@@ -2311,31 +2323,6 @@ export class FakeApi {
       return reply(200, { status: this.dataStoreStatus, usage: this.dataStoreUsage });
     }
     if (path === "/api/documents" && method === "GET") this.documentLists++;
-    if (path === "/api/organisation/settings") {
-      if (method === "PUT") {
-        // As the API: embedding only while the export is on, and off with it.
-        if (body?.export_run_history !== undefined) {
-          this.settings.export_run_history = Boolean(body.export_run_history);
-          if (!this.settings.export_run_history) this.settings.embed_run_history = false;
-        }
-        if (body?.embed_run_history !== undefined) {
-          if (body.embed_run_history && !this.settings.export_run_history) {
-            return reply(409, { detail: "Switch the run history export on first." });
-          }
-          if (body.embed_run_history && !this.settings.embed_run_history) {
-            this.settings.history_embedded_at = null;
-          }
-          this.settings.embed_run_history = Boolean(body.embed_run_history);
-        }
-      }
-      return reply(200, this.settings);
-    }
-    if (path === "/api/organisation/settings/exported-history" && method === "DELETE") {
-      this.exportedHistoryDeletes++;
-      // Emptied: nothing exported since (while it's on, the export starts over).
-      this.settings.history_exported_at = null;
-      return reply(204);
-    }
     if (
       path === "/api/documents" ||
       path.startsWith("/api/documents/") ||
@@ -2360,22 +2347,41 @@ export class FakeApi {
         return reply(status, json);
       }
       if (path === "/api/search") {
-        // A passage from each ready document whose name contains the query.
-        const q = new URL(request.url()).searchParams.get("q")?.toLowerCase() ?? "";
+        const params = new URL(request.url()).searchParams;
+        this.searches.push(params.toString());
+        const q = params.get("q")?.toLowerCase() ?? "";
+        const kinds = params.getAll("kind");
+        const passages: SearchItemRow[] = this.documents
+          .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
+          .map((d) => ({
+            id: d.id * 1000,
+            kind: "document_chunk",
+            text: `A passage from ${d.filename}.`,
+            created_at: d.created_at,
+            ref: {},
+            document_id: d.id,
+            filename: d.filename,
+          }));
+        const items = [...passages, ...this.searchItems.filter((i) => i.text.toLowerCase().includes(q))]
+          .filter((i) => kinds.length === 0 || kinds.includes(i.kind))
+          .slice(0, Number(params.get("limit") ?? 8));
         return reply(
           200,
-          this.documents
-            .filter((d) => d.status === "ready" && d.filename.toLowerCase().includes(q))
-            .map((d, i) => ({
-              chunk_id: d.id * 1000,
-              document_id: d.id,
-              filename: d.filename,
-              text: `A passage from ${d.filename}.`,
-              meta: {},
-              score: 0.03 - i * 0.001,
-              semantic_rank: i + 1,
-              lexical_rank: i + 1,
-            })),
+          items.map((item, i) => ({
+            document_id: null,
+            filename: null,
+            chat_id: null,
+            chat_name: null,
+            message_id: null,
+            agent_id: null,
+            agent_name: null,
+            agent_run_id: null,
+            run_title: null,
+            ...item,
+            score: 0.03 - i * 0.001,
+            semantic_rank: i + 1,
+            lexical_rank: i % 2 === 0 ? i + 1 : null,
+          })),
         );
       }
       if (path === "/api/sources" && method === "GET") {

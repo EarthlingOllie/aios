@@ -19,7 +19,7 @@ from aios import invocations
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
 from aios.config import get_settings
-from aios.datastores import history, schema_changes, store_id_of, store_session
+from aios.datastores import schema_changes, store_id_of, store_session
 from aios.datastores.models import (
     SchemaChangeRequest,
     Workflow,
@@ -463,14 +463,10 @@ def _end_runs(
 
 def _record_ended(ended: Ended) -> None:
     """What the platform records of runs that have ended in their store, once that's committed:
-    the notifications of the requests cancelled with them go, and they go in the run history
-    export's outbox. Commits."""
+    the notifications of the requests cancelled with them go."""
     if not ended.runs:
         return
     schema_changes.clear_notifications_of(ended.cancelled)
-    with SessionLocal() as db:
-        history.enqueue_workflow_runs(db, ended.data_store_id, [r.id for r in ended.runs])
-        db.commit()
 
 
 def close_requests(

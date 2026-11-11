@@ -4,7 +4,7 @@ mention and a resumed run each run it."""
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
@@ -12,12 +12,12 @@ from typing import Any
 from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, tracing, turn_lease, turns, ui_stream
+from aios import checkpoints, invocations, search_index, tracing, turn_lease, turns, ui_stream
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
@@ -25,7 +25,7 @@ from aios.api.agents.common import refuse_if_archived
 from aios.api.agents.runs import build_version_tools
 from aios.api.schema_changes import of_run, waiting_on
 from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores import data_store_for, history, schema_changes, store_session
+from aios.datastores import data_store_for, schema_changes, store_session
 from aios.datastores.models import Agent, AgentRun, AgentVersion, SchemaChangeRequest
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
@@ -194,29 +194,34 @@ def _end_turn(
     turn_id: int | None,
     *,
     error: str | None,
-    message_count: int | None = None,
+    messages: Sequence[BaseMessage] | None = None,
 ) -> None:
     """Record how the turn of the store's run ended (`error` None if it went fine), and finish
-    the run's invocation if no chat follows it (a chat's posts the reply itself);
-    `message_count` is left as it was if the turn never started. `turn_id` None for a turn
-    that never began."""
+    the run's invocation if no chat follows it (a chat's posts the reply itself). `messages` is
+    the run's conversation as the turn left it: its count is the run's, and what the turn added
+    to it (since the run's last count) is indexed for search (`aios.search_index`), in the same
+    transaction; None if the turn never started (both are left as they were). `turn_id` None for
+    a turn that never began.
+
+    Every turn ends here (chats, schedules, workflow agent nodes), however it ended."""
     values: dict[str, Any] = {"updated_at": func.now()}
-    if message_count is not None:
-        values["message_count"] = message_count
+    if messages is not None:
+        values["message_count"] = len(messages)
     with store_session(data_store_id) as store:
-        # A no-op if the run was deleted mid-turn.
-        ended = store.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
+        # Locked, so a turn ending at once in another process doesn't index the same messages.
+        # None if the run was deleted mid-turn: then this is a no-op.
+        before = store.scalar(
+            select(AgentRun.message_count).where(AgentRun.id == run_id).with_for_update()
+        )
+        if before is not None:
+            store.execute(update(AgentRun).where(AgentRun.id == run_id).values(**values))
         if turn_id is not None:
             turns.end(store, turn_id, error)
-            if ended.rowcount:
+            if before is not None:
                 invocations.finish_quietly(store, run_id, error)
+                if messages is not None:
+                    search_index.index_turn(store, run_id, turn_id, messages, before)
         store.commit()
-    if ended.rowcount:
-        # Every turn ends here (chats, schedules, workflow agent nodes), however it ended: once
-        # the run's own update has committed, it goes in the run history export's outbox.
-        with SessionLocal() as db:
-            history.enqueue_runs(db, data_store_id, [run_id])
-            db.commit()
 
 
 def model_responses(mode: str, data: Any) -> list[AIMessage]:
@@ -314,7 +319,7 @@ async def _record_turn(
             run_id,
             turn_id,
             error=error,
-            message_count=len(state.values.get("messages", [])),
+            messages=state.values.get("messages", []),
         )
     except Exception:
         log.exception("couldn't record the end of a turn of run %s", run_id)

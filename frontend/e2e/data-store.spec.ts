@@ -121,7 +121,7 @@ test("search waits for a store that's being set up, then searches", async ({ pag
 
   api.dataStoreStatus = "ready";
   await expect(page.getByRole("status", { name: "Data store" })).toBeHidden();
-  await expect(page.getByText("No passages matched.")).toBeVisible();
+  await expect(page.getByText("Nothing matched.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Search" })).toBeEnabled();
 });
 

@@ -181,11 +181,7 @@ def test_ingest_reads_the_upload_from_s3(api, user, queued, monkeypatch):
         seen.append((filename, data))
         return [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
 
-    async def embed_documents(texts):
-        return [[1.0] + [0.0] * 1023 for _ in texts]
-
     monkeypatch.setattr(ingest, "chunk_document", chunk_document)
-    monkeypatch.setattr(ingest, "embed_documents", embed_documents)
     doc = upload(api).json()
 
     for args in queued:
@@ -215,13 +211,9 @@ def test_ingest_fails_a_document_whose_object_is_gone(api, user, queued, monkeyp
 def offline_chunks(monkeypatch):
     """Ingest with no Docling or embeddings: one chunk per file."""
 
-    async def embed_documents(texts):
-        return [[1.0] + [0.0] * 1023 for _ in texts]
-
     monkeypatch.setattr(
         ingest, "chunk_document", lambda *a: [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
     )
-    monkeypatch.setattr(ingest, "embed_documents", embed_documents)
 
 
 def s3_down_for(monkeypatch, times: int, error: Exception) -> None:

@@ -175,9 +175,7 @@ def test_the_provisioning_workers_beat_drains_the_outbox_every_ten_seconds(monke
     assert entry["schedule"] == 10
 
 
-def test_renames_invitations_joining_leaving_deletion_and_settings_are_audited(
-    api, db, user, new_user
-):
+def test_renames_invitations_joining_leaving_and_deletion_are_audited(api, db, user, new_user):
     org = org_of(db, user)
     api.put("/api/organisation", json={"name": "Renamed Org"})
     link = make_link(api, role="participant")
@@ -186,7 +184,6 @@ def test_renames_invitations_joining_leaving_deletion_and_settings_are_audited(
         assert api.post(f"/api/invites/{link['token']}/accept").status_code == 200
     revoked = make_link(api)
     api.delete(f"/api/organisation/invites/{revoked['id']}")
-    api.put("/api/organisation/settings", json={"export_run_history": True})
     with signed_in_as(joiner):
         left = api.post(f"/api/o/{org.id}/organisation/leave")
     assert left.status_code == 200, left.text
@@ -200,14 +197,12 @@ def test_renames_invitations_joining_leaving_deletion_and_settings_are_audited(
         ("member.joined", joiner.id),
         ("invitation.created", user.id),
         ("invitation.revoked", user.id),
-        ("settings.changed", user.id),
         ("member.left", joiner.id),
         ("organisation.deletion_scheduled", user.id),
         ("organisation.deletion_cancelled", user.id),
     ]
     assert rows[0].details == {"from": user.full_name, "to": "Renamed Org"}
     assert rows[2].details["role"] == "participant"
-    assert rows[5].details == {"export_run_history": {"from": False, "to": True}}
 
 
 # --- Store-side actions ----------------------------------------------------------------------

@@ -134,23 +134,6 @@ export type DataStoreUsage = {
   measured_at: string | null;
 };
 
-/** The organisation's settings (the Organisation page), kept on its data store. */
-export type Settings = {
-  /** Copy agent and workflow runs into the data store's `history` tables. */
-  export_run_history: boolean;
-  /** The data store has its `history` tables (made once the export is first switched on). */
-  history_ready: boolean;
-  /** When the export last copied runs into the data store. */
-  history_exported_at: string | null;
-  /** Embed the exported messages, so agents can search past runs by meaning (only while the
-   * export is on). */
-  embed_run_history: boolean;
-  /** When embedding last caught up (embedded every exported message waiting). */
-  history_embedded_at: string | null;
-  /** Why embedding last failed, if it hasn't caught up since (it's tried again later). */
-  history_embed_error: string | null;
-};
-
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 
 /** What brings content into the store. Every store has exactly one `upload` source, Uploads. */
@@ -226,16 +209,31 @@ export type DataRowsQuery = {
   order?: "asc" | "desc";
 };
 
-/** A passage found by the hybrid (semantic + keyword) document search. */
+/** What the search index holds: a document's passage, a chat message, a past run's message
+ * (what the user or the assistant said), or the brief a handoff gave a run. */
+export type SearchKind = "document_chunk" | "chat_message" | "run_message" | "brief";
+
+/** An item found by the unified hybrid (semantic + keyword) search, labelled with its kind and
+ * linked to its source. */
 export type SearchHit = {
-  chunk_id: number;
-  document_id: number;
-  filename: string;
+  id: number;
+  kind: SearchKind;
   text: string;
-  meta: { headings?: string[]; pages?: number[] };
+  created_at: string;
+  /** A passage's headings and pages; a run message's role. */
+  ref: { headings?: string[]; pages?: number[]; role?: "user" | "assistant" };
+  document_id: number | null;
+  filename: string | null;
+  chat_id: number | null;
+  chat_name: string | null;
+  message_id: number | null;
+  agent_id: number | null;
+  agent_name: string | null;
+  agent_run_id: number | null;
+  run_title: string | null;
   /** Reciprocal Rank Fusion score: higher is better. */
   score: number;
-  /** The passage's rank in each branch, or null if that branch didn't find it. */
+  /** The item's rank in each branch, or null if that branch didn't find it. */
   semantic_rank: number | null;
   lexical_rank: number | null;
 };
@@ -1182,11 +1180,6 @@ export const api = {
     request<Organisation>(`${organisationApi()}/organisation/deletion`, { method: "DELETE" }),
   getDataStore: () =>
     request<{ status: DataStoreStatus; usage: DataStoreUsage }>(`${organisationApi()}/data-store`),
-  getSettings: () => request<Settings>(`${organisationApi()}/organisation/settings`),
-  updateSettings: (body: { export_run_history?: boolean; embed_run_history?: boolean }) =>
-    request<Settings>(`${organisationApi()}/organisation/settings`, json("PUT", body)),
-  deleteExportedHistory: () =>
-    request<void>(`${organisationApi()}/organisation/settings/exported-history`, { method: "DELETE" }),
   listDocuments: () => request<DocumentInfo[]>(`${organisationApi()}/documents`),
   /** Every member may read them; only admins change them, and never Uploads (a 409). */
   listSources: () => request<Source[]>(`${organisationApi()}/sources`),
@@ -1219,8 +1212,15 @@ export const api = {
   listNotifications: () => request<NotificationList>("/api/notifications"),
   markNotificationRead: (id: string) =>
     request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
-  search: (q: string, limit: number) =>
-    request<SearchHit[]>(`${organisationApi()}/search?${new URLSearchParams({ q, limit: String(limit) })}`),
+  /** Every kind if `kinds` is empty. */
+  search: (q: string, limit: number, kinds: SearchKind[] = []) =>
+    request<SearchHit[]>(
+      `${organisationApi()}/search?${new URLSearchParams([
+        ["q", q],
+        ["limit", String(limit)],
+        ...kinds.map((k) => ["kind", k]),
+      ])}`,
+    ),
   listDataTables: () =>
     request<{ tables: DataTable[]; truncated: boolean }>(`${organisationApi()}/data/tables`),
   getDataRows: (table: string, { offset, limit, sort, order }: DataRowsQuery) => {

@@ -23,7 +23,7 @@ The processes:
 - **api**: the HTTP API, agent chat turns (streamed), and, in each process, the scheduler and
   the agent turns that schedules and chat mentions start (see [Triggers](triggers.md)).
 - **web**: the React SPA, served as static files.
-- **worker**: document ingest (see [Stores](stores.md)) and the run history export.
+- **worker**: document ingest (see [Stores](stores.md)) and embedding the search index.
 - **workflow-worker**: workflow runs, and resuming runs once a schema change is decided (see
   [Workflows](workflows.md)).
 - **provisioning-worker**: creating, migrating, measuring and deleting each organisation's
@@ -75,7 +75,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     api/organisation.py POST /api/organisations, GET/PUT /api/o/{org}/organisation (the Organisation page), invitation
                     links (/api/o/{org}/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it
-    api/settings.py GET/PUT /api/o/{org}/organisation/settings (the organisation's: the run history export)
+    api/search.py   GET /api/o/{org}/search (the Search page: the organisation's search index)
     scheduler.py    fires due schedules (runs in each API process)
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
@@ -99,15 +99,16 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     datastores/     stores: data_store_for(organisation), the one place an organisation
                     becomes a store, store_session(id, role), the only way to open a session on
                     an organisation's data,
-                    models.py (the tables every store has: documents, chunks; and the
-                    run history export's), history.py (the run history export),
+                    models.py (the tables every store has: documents, chunks, the
+                    search index, ...),
                     provision.py (creating, migrating and deleting each store's database),
                     people.py (the people mirror, and its repair sweep),
                     files.py (uploaded files in S3, and download links), schema_changes/
                     (schema change requests: spec, compile, apply, expiry), and
                     migrations/ (the store Alembic tree)
-    search.py       hybrid search SQL (RRF)
-    ingest.py       Docling convert → HybridChunker → embed → store
+    search.py       unified hybrid search over the search index (RRF)
+    search_index.py the search index's writers, and its background embedding sweep
+    ingest.py       Docling convert → HybridChunker → store, and index the chunks
     worker.py       Celery app + ingest, workflow run and store provisioning tasks
     db_roles.py     creates the database roles (`aios_app`, `aios_provisioner`) as the master user
   sandbox/          the sandbox image's pinned libraries (requirements.in/.txt)

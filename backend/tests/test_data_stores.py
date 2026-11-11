@@ -187,11 +187,7 @@ def offline_ingest(monkeypatch, files_bucket):
     def chunk_document(filename, data):
         return [{"text": "Hi", "contextualized": "Hi", "meta": {}}]
 
-    async def embed_documents(texts):
-        return [[1.0] + [0.0] * 1023 for _ in texts]
-
     monkeypatch.setattr(ingest, "chunk_document", chunk_document)
-    monkeypatch.setattr(ingest, "embed_documents", embed_documents)
 
 
 def stored_document(store_id: uuid.UUID, document_id: int) -> Document | None:

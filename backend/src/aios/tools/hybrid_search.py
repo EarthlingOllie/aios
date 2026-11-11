@@ -23,7 +23,8 @@ class HybridSearchConfig(BaseModel):
 
 
 def build(config: HybridSearchConfig) -> list[AgentTool]:
-    # Hybrid retrieval over the documents in the run's data store (the run's context).
+    # The search tool's search (`aios.tools.search`), fixed to documents' passages, with the
+    # result shape it always had.
     @tool(parse_docstring=True)
     async def search_documents(query: str, runtime: ToolRuntime[ChatDeps]) -> str:
         """Search the organisation's uploaded documents with hybrid (semantic + keyword) retrieval.

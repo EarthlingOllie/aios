@@ -934,36 +934,22 @@ def test_a_ready_store_left_behind_the_trees_head_is_brought_to_it_on_the_schedu
         delete_user(db, ahead_user)
 
 
-def export(db, store_id: uuid.UUID, on: bool) -> None:
-    """Switch the store's run history export on or off, as the Organisation page does, without
-    what the switch queues."""
-    db.execute(update(DataStore).where(DataStore.id == store_id).values(export_run_history=on))
-    db.commit()
-
-
-def exporting_store(db, new_user) -> uuid.UUID:
-    """A new user's organisation's store (not provisioned yet), with the run history export
-    switched on."""
-    store_id = store_of(new_user())
-    export(db, store_id, True)
-    return store_id
-
-
-# The run history export's tables, at the `history` line's head.
-HISTORY_TABLES = {"agent_runs", "messages", "workflow_runs", "workflow_run_steps"}
-
-
 def store_tables(dbname: str, schema: str) -> set[str]:
     with admin_connect(dbname) as conn:
         rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (schema,))
         return {r[0] for r in rows}
 
 
+def has_schema(dbname: str, schema: str) -> bool:
+    with admin_connect(dbname) as conn:
+        found = conn.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,))
+        return found.fetchone() is not None
+
+
 def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
     """Like `alembic check` for the platform: a provisioned store's tables are what
-    `aios.datastores.models` says, so the models and the tree can't drift apart. On both of
-    the tree's lines: its owner has the run history export on."""
-    store_id = exporting_store(db, new_user)
+    `aios.datastores.models` says, so the models and the tree can't drift apart."""
+    store_id = store_of(new_user())
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
     url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
@@ -978,84 +964,25 @@ def test_the_store_tree_makes_the_tables_the_store_models_define(db, new_user):
             assert compare_metadata(context, StoreBase.metadata) == []
     finally:
         engine.dispose()
-    assert {"documents", "chunks"} <= store_tables(names.dbname, "aios")
-    assert store_tables(names.dbname, "history") == HISTORY_TABLES
+    assert {"documents", "chunks", "search_items"} <= store_tables(names.dbname, "aios")
 
 
-def test_a_store_gets_the_history_tables_only_once_its_owner_switches_the_export_on(db, new_user):
+def test_a_new_store_never_gets_the_history_line(db, new_user):
+    """The run history export, whose tables it was, is gone."""
     store_id = store_of(new_user())
     provision.provision(store_id)
     row = store_row(db, store_id)
     assert (row.schema_revision, row.history_revision) == (head_revision(), None)
-    assert store_tables(row.dbname, "history") == set()
+    assert not has_schema(row.dbname, "history")
     # Migrating it doesn't give it them either.
     provision.migrate_all([store_id])
     assert store_row(db, store_id).history_revision is None
 
-    export(db, store_id, True)
-    provision.migrate_store(store_id)
 
-    row = store_row(db, store_id)
-    assert (row.schema_revision, row.history_revision) == (head_revision(), history_head())
-    assert store_tables(row.dbname, "history") == HISTORY_TABLES
-    # Switched off again, the store keeps them, and they're kept at their head.
-    export(db, store_id, False)
-    assert provision.migrate_all([store_id]) == {store_id: head_revision()}
-    assert store_row(db, store_id).history_revision == history_head()
-
-
-def test_a_store_provisioned_for_an_owner_exporting_history_gets_its_tables(db, new_user):
-    store_id = exporting_store(db, new_user)
-
-    worker.provision_data_store_task.apply(args=[str(store_id)]).get()
-
-    row = store_row(db, store_id)
-    assert (row.status, row.history_revision) == (DataStoreStatus.ready, history_head())
-
-
-def test_a_store_whose_history_set_up_was_lost_gets_it_on_the_schedule(db, new_user, monkeypatch):
-    store_id = store_of(new_user())
-    provision.provision(store_id)
-    # Switched on, but its set-up task never ran.
-    export(db, store_id, True)
-    retry = provision.retry_unfinished
-    monkeypatch.setattr(provision, "retry_unfinished", lambda: retry([store_id]))
-
-    worker.retry_unfinished_data_stores_task.apply().get()
-
-    assert store_row(db, store_id).history_revision == history_head()
-
-
-def test_the_history_set_up_task_migrates_the_store_then_queues_its_export(
-    db, new_user, history_tasks
-):
-    store_id = store_of(new_user())
-    provision.provision(store_id)
-    export(db, store_id, True)
-
-    worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
-
-    assert store_row(db, store_id).history_revision == history_head()
-    assert history_tasks["export"] == [store_id]
-    assert worker.celery_app.conf.task_routes["aios.set_up_history_export"] == {
-        "queue": "provisioning"
-    }
-
-
-def test_the_history_set_up_task_leaves_a_store_not_ready_yet_to_its_provisioning(
-    db, new_user, history_tasks
-):
-    store_id = exporting_store(db, new_user)
-
-    worker.set_up_history_export_task.apply(args=[str(store_id)]).get()
-
-    assert history_tasks["export"] == []
-    assert store_row(db, store_id).status == DataStoreStatus.provisioning
-
-
-def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_user):
-    """A store set up for the export before workflow runs were exported (at h0001) gets their
-    tables as it's migrated."""
+@pytest.mark.parametrize("at", ["h0001", "h0002", "h0003", "h0004"])
+def test_a_store_at_any_history_revision_has_the_exports_copy_dropped(db, new_user, at):
+    """A store set up for the export (at any revision of its line, with what it had copied)
+    loses the copy as it's migrated (h0005), and keeps the rest of its contents."""
     store_id = store_of(new_user())
     provision.provision(store_id)
     names = provision.StoreNames.of(store_row(db, store_id))
@@ -1064,22 +991,55 @@ def test_a_store_with_older_history_tables_is_brought_to_the_lines_head(db, new_
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
-            command.upgrade(migrations.config(conn), "h0001")
+            command.upgrade(migrations.config(conn), at)
+            conn.exec_driver_sql(
+                "INSERT INTO history.agent_runs (id, agent_id, agent_name, agent_version,"
+                " user_id, message_count, created_at, updated_at, exported_at)"
+                " VALUES (1, 1, 'Bot', 1, 1, 0, now(), now(), now())"
+            )
             conn.commit()
     finally:
         engine.dispose()
-    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_revision="h0001"))
+    db.execute(update(DataStore).where(DataStore.id == store_id).values(history_revision=at))
     db.commit()
-    assert store_tables(names.dbname, "history") == {"agent_runs", "messages"}
+    assert "agent_runs" in store_tables(names.dbname, "history")
+    # As for a store behind its line's head after a deploy (`retry_unfinished`).
+    with SessionLocal() as session:
+        behind = session.scalar(
+            select(DataStore.id).where(DataStore.id == store_id, provision._behind_head())
+        )
+    assert behind == store_id
 
     assert provision.migrate_all([store_id]) == {store_id: head_revision()}
 
-    assert store_row(db, store_id).history_revision == history_head() == "h0004"
-    assert store_tables(names.dbname, "history") == HISTORY_TABLES
-    # And the messages' search columns (h0003).
+    row = store_row(db, store_id)
+    assert (row.schema_revision, row.history_revision) == (head_revision(), history_head())
+    assert history_head() == "h0005"
+    assert not has_schema(names.dbname, "history")
     with admin_connect(names.dbname) as conn:
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns"
-            " WHERE table_schema = 'history' AND table_name = 'messages'"
-        )
-        assert {"embedding", "tsv"} <= {r[0] for r in columns}
+        versions = {r[0] for r in conn.execute("SELECT version_num FROM aios.alembic_version")}
+    assert versions == {head_revision(), "h0005"}
+
+
+def test_the_history_drop_can_be_undone_to_empty_tables(db, new_user):
+    """Its downgrade gives a store the line's tables back, empty, as the release before had."""
+    store_id = store_of(new_user())
+    provision.provision(store_id)
+    names = provision.StoreNames.of(store_row(db, store_id))
+    url = make_url(get_settings().data_store_provisioner_url).set(database=names.dbname)
+    engine = create_engine(url, poolclass=pool.NullPool)
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(f'SET ROLE "{names.owner}"')
+            command.upgrade(migrations.config(conn), "h0005")
+            conn.commit()
+            command.downgrade(migrations.config(conn), "h0004")
+            conn.commit()
+    finally:
+        engine.dispose()
+    assert store_tables(names.dbname, "history") == {
+        "agent_runs",
+        "messages",
+        "workflow_runs",
+        "workflow_run_steps",
+    }

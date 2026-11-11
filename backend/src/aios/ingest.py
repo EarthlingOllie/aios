@@ -1,10 +1,11 @@
-"""Document ingestion: the file from S3 -> Docling conversion -> HybridChunker -> embeddings ->
-chunks table, in the document's data store (on a `store_session` the caller gives it).
+"""Document ingestion: the file from S3 -> Docling conversion -> HybridChunker -> chunks table,
+and each chunk into the search index (`aios.search_index`), in the same transaction, in the
+document's data store (on a `store_session` the caller gives it). The chunks are embedded later,
+by the store's embedding sweep: found by keyword until then.
 
 Docling is only installed in the worker image (the `ingest` extra), so it's imported lazily.
 """
 
-import asyncio
 from functools import lru_cache
 from io import BytesIO
 
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from aios.config import get_settings
 from aios.datastores import DataStoreBusy, files
 from aios.datastores.models import Chunk, Document, DocumentStatus
-from aios.embeddings import embed_documents
+from aios.search_index import index_chunks
 
 # Deliveries before giving up; a doc that crashes the worker would otherwise be redelivered forever.
 MAX_ATTEMPTS = 3
@@ -96,12 +97,12 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
 
     try:
         pieces = chunk_document(claimed.filename, files.read(claimed.s3_key))
-        vectors = asyncio.run(embed_documents([p["contextualized"] for p in pieces]))
         db.execute(delete(Chunk).where(Chunk.document_id == document_id))
         db.add_all(
-            Chunk(document_id=document_id, ordinal=i, embedding=vec, **piece)
-            for i, (piece, vec) in enumerate(zip(pieces, vectors, strict=True))
+            Chunk(document_id=document_id, ordinal=i, **piece) for i, piece in enumerate(pieces)
         )
+        db.flush()
+        index_chunks(db, document_id)
         set_status(db, document_id, DocumentStatus.ready, None)
     except DataStoreBusy:
         raise  # Left processing, for the task's retry to claim again (`aios.worker`).

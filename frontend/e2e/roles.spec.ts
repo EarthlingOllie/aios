@@ -87,9 +87,9 @@ test("a participant sees the members' roles but can't change them or invite", as
   );
 
   await page.getByRole("tab", { name: "Settings" }).click();
-  await expect(
-    page.getByRole("checkbox", { name: "Export the organisation's run history to its data store" }),
-  ).toBeDisabled();
+  const rules = page.getByRole("region", { name: "Approval rules" });
+  await expect(rules).toContainText("Drop a column");
+  await expect(rules.getByRole("combobox")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Delete organisation" })).toBeHidden();
 });
 

@@ -43,9 +43,8 @@ call time, so a test that replaces one here replaces it for every part.
 The workflow's graph (its versions, nodes and edges, and the agent versions they pin), the run,
 its steps and its agent nodes' runs are all in the organisation's store, and a run is named by
 its store and its id there (ids repeat across stores): its task carries both. What the platform
-keeps of a run (the chat invocation that started it, the schema change requests its nodes made,
-the run history export's outbox) is written once the store's change has committed
-(`_record_ended`).
+keeps of a run (the notifications of the schema change requests its nodes made) is written once
+the store's change has committed (`_record_ended`).
 """
 
 from aios.workflows.execution import (

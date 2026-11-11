@@ -40,8 +40,6 @@ from aios.models.notifications import (
 from aios.models.stores import (
     DataStore,
     DataStoreStatus,
-    HistoryExport,
-    HistoryExportKind,
 )
 from aios.models.triggers import (
     ScheduleDue,
@@ -67,8 +65,6 @@ __all__ = [
     "Role",
     "DataStoreStatus",
     "DataStore",
-    "HistoryExportKind",
-    "HistoryExport",
     "AgentRunStatus",
     "WorkflowNodeKind",
     "WorkflowRunStatus",

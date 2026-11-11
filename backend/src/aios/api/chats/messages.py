@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import invocations, turns
+from aios import invocations, search_index, turns
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -443,6 +443,7 @@ def post_message(
         mentions=[m.model_dump(mode="json") for m in mentions],
     )
     store.add(message)
+    search_index.index_chat_message(store, message)
     started = invocations.create(
         store,
         message,

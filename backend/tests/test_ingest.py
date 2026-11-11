@@ -1,5 +1,5 @@
-"""End-to-end ingestion, in the organisation's data store, with a whitespace tokenizer and fake
-embeddings (no network)."""
+"""End-to-end ingestion, in the organisation's data store, with a whitespace tokenizer (no
+network). Ingest embeds nothing: the search index's sweep does (`test_search`)."""
 
 import pytest
 
@@ -45,11 +45,6 @@ class WhitespaceTokenizer(BaseTokenizer):
 def offline(monkeypatch):
     chunker = HybridChunker(tokenizer=WhitespaceTokenizer())
     monkeypatch.setattr(ingest, "_chunker", lambda: chunker)
-
-    async def fake_embed(texts):
-        return [[1.0] + [0.0] * 1023 for _ in texts]
-
-    monkeypatch.setattr(ingest, "embed_documents", fake_embed)
 
 
 def test_chunk_document_keeps_headings():
