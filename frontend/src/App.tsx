@@ -21,6 +21,13 @@ import { Button } from "@/components/ui/button";
 import { api, ApiError, describeError, fullName, onSessionEnded, type Me } from "@/lib/api";
 import { nextPath, signInPath, SIGNED_OUT_PATHS } from "@/lib/auth";
 import { CurrentUserContext, ReloadCurrentUserContext, SetCurrentUserContext } from "@/lib/current-user";
+import {
+  inOrganisation,
+  lastOrganisation,
+  organisationBase,
+  organisationToOpen,
+  rememberOrganisation,
+} from "@/lib/organisation-path";
 import { cn } from "@/lib/utils";
 import { ChatDetail, ChatForm, ChatsIndex, ChatsLanding, ChatsSection } from "@/pages/Chats";
 import {
@@ -61,7 +68,12 @@ type AuthState =
   | { status: "error"; message: string }
   | { status: "signed-in"; user: Me };
 
-export default function App() {
+/**
+ * `organisation` is the slug of the organisation the page was opened in (`/o/<slug>/...`, the
+ * router's basename), or null for a page opened without one: signed in, that opens the same page
+ * in the organisation used last (an old bookmark), unless it's an invitation link's.
+ */
+export default function App({ organisation = null }: { organisation?: string | null }) {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
 
   const loadMe = useCallback(() => {
@@ -95,8 +107,23 @@ export default function App() {
   }, [signedIn]);
   const location = useLocation();
   const onSignedOutPage = SIGNED_OUT_PATHS.includes(location.pathname);
+  const user = auth.status === "signed-in" ? auth.user : null;
+  const member = user !== null && organisation !== null && user.organisations.some((o) => o.slug === organisation);
+  useEffect(() => {
+    if (member && organisation !== null) rememberOrganisation(organisation);
+  }, [member, organisation]);
+  // Signed in on a page opened without an organisation: the same page in the one used last.
+  const opening =
+    user !== null && organisation === null && !onSignedOutPage && !location.pathname.startsWith("/invite/")
+      ? organisationToOpen(user.organisations, lastOrganisation())
+      : null;
 
   if (auth.status === "loading") return null;
+  if (auth.status === "anonymous" && organisation !== null) {
+    // Signing in is no organisation's page: the sign-in page itself, coming back to this one.
+    const { pathname, search, hash } = window.location;
+    return <PageLoad to={signInPath(pathname, search, hash)} />;
+  }
   if (auth.status === "anonymous") {
     const onSignedIn = (user: Me) => setAuth({ status: "signed-in", user });
     return (
@@ -141,6 +168,11 @@ export default function App() {
   // Signed in on the sign-in or registration page (just now, or by visiting it): on to where they
   // were headed.
   if (onSignedOutPage) return <AfterSignIn />;
+  // A new page load, as the organisation is the router's basename.
+  if (opening !== null) return <PageLoad to={inOrganisation(opening, location.pathname + location.search + location.hash)} />;
+  // A link to an organisation the user isn't in, or that doesn't exist: alike, so a link can't
+  // tell which.
+  if (organisation !== null && !member) return <OrganisationNotFound user={auth.user} />;
 
   // A fresh page load, so nothing of this user's is left in memory for whoever signs in next.
   const signOut = () => api.logout().then(() => window.location.assign("/login"));
@@ -208,6 +240,30 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
+  );
+}
+
+/** Replaces the page with a new load of `to`: for a page outside the router's basename. */
+function PageLoad({ to }: { to: string }) {
+  useEffect(() => window.location.replace(to), [to]);
+  return null;
+}
+
+function OrganisationNotFound({ user }: { user: Me }) {
+  const yours = organisationToOpen(user.organisations, lastOrganisation());
+  return (
+    <div className="flex min-h-svh flex-col items-center justify-center gap-3 p-4 text-center">
+      <h1 className="text-lg font-medium">Organisation not found</h1>
+      <p className="max-w-sm text-sm text-muted-foreground">
+        This link is to an organisation that doesn't exist, or that you're not a member of.
+      </p>
+      {yours !== null && (
+        // A new page load: the organisation is the router's basename.
+        <Button variant="outline" asChild>
+          <a href={`${organisationBase(yours)}/`}>Go to your organisation</a>
+        </Button>
+      )}
+    </div>
   );
 }
 

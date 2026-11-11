@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { Loader2 } from "lucide-react";
 
 import { useLoad } from "@/components/crud";
@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { api, ApiError, describeError, type Me, type NotEmpty } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { contentLink, notEmpty } from "@/lib/organisation";
+import { openInOrganisation } from "@/lib/organisation-path";
 
 /** The invite page in the shell, for a signed-in user. */
 export function InviteRoute() {
@@ -25,7 +26,6 @@ export function InviteRoute() {
  */
 export function InvitePage({ token, me }: { token: string; me: Me | null }) {
   const reloadMe = useReloadCurrentUser();
-  const navigate = useNavigate();
   const { data: invitation, error } = useLoad(
     useCallback(() => api.getInvitation(token).catch(gone), [token]),
   );
@@ -39,9 +39,9 @@ export function InvitePage({ token, me }: { token: string; me: Me | null }) {
     setRefusal(undefined);
     setMustLeave(false);
     try {
-      await api.acceptInvitation(token);
-      reloadMe();
-      navigate("/organisation");
+      const joined = await api.acceptInvitation(token);
+      // Its page, at its own link.
+      openInOrganisation(joined.slug, "/organisation");
     } catch (err) {
       // The session may be behind (joined meanwhile, in another tab): once it catches up, a
       // refusal for being in the invited organisation already shows as that, not as one to leave.

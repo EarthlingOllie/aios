@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /**
  * Archiving an agent from its page: one confirmation that shows, read-only, what uses it, and is
@@ -31,7 +31,7 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
       { id: 81, enabled: true, cron: "0 * * * *", description: "Every hour", timezone: "UTC", next_run_at: null },
     ],
   });
-  await page.goto(`/agents/${agent.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}`));
 
   await page.getByRole("button", { name: "Archive", exact: true }).click();
   const usedBy = dialog(page).getByLabel("Used by");
@@ -48,7 +48,7 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
   // The default list hides it; the Archived filter shows it.
   await expect(links(page)).toHaveText([/Other/]);
   await show(page, "Archived").click();
-  await expect(page).toHaveURL(`/agents/${agent.id}?filter=archived`);
+  await expect(page).toHaveURL(inOrg(`/agents/${agent.id}?filter=archived`));
   await expect(links(page)).toHaveText([/Builder.*archived/]);
 
   await page.getByRole("button", { name: "Unarchive" }).click();
@@ -74,7 +74,7 @@ test("an archived agent shows as archived among chat members and isn't offered t
   api.addChatTarget(chat, "agent", other);
   archived.archived_at = "2026-11-10T09:00:00Z";
   archived.archived_by = api.me;
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await page.getByRole("textbox", { name: "Message", exact: true }).pressSequentially("hi @");
   const suggestions = page.getByRole("listbox", { name: "Mention" });

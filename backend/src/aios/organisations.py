@@ -6,9 +6,10 @@ taken),
 with the user as its creator and only member; the upgrade did the same for every user from
 before (revision 0030). Membership is a table all the same (`OrganisationMember`), held to one
 per user by a unique index, so several can come later without a schema change; the request's
-organisation is resolved in one place, `aios.auth.current_organisation`, which is where a
-request would then say which of its organisations it means. The organisation is never named in
-a URL or a header.
+organisation is resolved in one place, `aios.auth.current_organisation`, which reads it from
+the organisation prefix in the path (`/api/o/{organisation_id}/...`, `aios.api.scoping`) where
+there is one. Each organisation has a unique slug (`free_slug`), what links in the browser name
+it by, made when it's created and never changed by a rename.
 
 Only the creator renames an organisation and invites into it: a stopgap role until roles exist.
 Everything in an organisation is visible to every member.
@@ -40,7 +41,9 @@ private, as nobody could join it.
 """
 
 import hashlib
+import re
 import secrets
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -82,6 +85,31 @@ def membership_of(db: Session, user_id: int) -> Organisation | None:
     )
 
 
+def membership(db: Session, user_id: int, organisation_id: int) -> Organisation | None:
+    """The organisation, if the user is a member of it: None alike when they aren't and when it
+    doesn't exist."""
+    return db.scalar(
+        select(Organisation)
+        .join(OrganisationMember)
+        .where(
+            OrganisationMember.user_id == user_id,
+            OrganisationMember.organisation_id == organisation_id,
+        )
+    )
+
+
+def memberships(db: Session, user_id: int) -> list[Organisation]:
+    """Every organisation the user is in, the one they joined most recently first."""
+    return list(
+        db.scalars(
+            select(Organisation)
+            .join(OrganisationMember)
+            .where(OrganisationMember.user_id == user_id)
+            .order_by(OrganisationMember.joined_at.desc(), Organisation.id.desc())
+        )
+    )
+
+
 def personal_name(db: Session, base: str) -> str:
     """The name for a personal organisation: `base` (the user's full name), or `base` with the
     first free `-2`, `-3`, ... suffix when that's taken (as the data migration named them).
@@ -106,20 +134,53 @@ def personal_name(db: Session, base: str) -> str:
     return name
 
 
+# A slug's longest base, before any suffix; and the base of one whose name leaves nothing.
+SLUG_MAX = 60
+SLUG_FALLBACK = "organisation"
+
+
+def slugify(name: str) -> str:
+    """The base of an organisation's slug: its name in lower-case ASCII words (accents dropped)
+    joined by `-`, at most `SLUG_MAX` characters, or `organisation` when nothing's left."""
+    ascii_ = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    words = re.sub(r"[^a-z0-9]+", "-", ascii_.lower()).strip("-")
+    return words[:SLUG_MAX].rstrip("-") or SLUG_FALLBACK
+
+
+def free_slug(db: Session, name: str) -> str:
+    """The slug for a new organisation named `name`: `slugify(name)`, or that with the first
+    free `-2`, `-3`, ... suffix when another organisation has it. Reads only the slugs it could
+    pick (the base has no `_` or `%`, so `startswith` matches literally)."""
+    base = slugify(name)
+    taken = set(
+        db.scalars(
+            select(Organisation.slug).where(
+                (Organisation.slug == base) | Organisation.slug.startswith(f"{base}{SUFFIX}")
+            )
+        ).all()
+    )
+    slug, n = base, 2
+    while slug in taken:
+        slug, n = f"{base}{SUFFIX}{n}", n + 1
+    return slug
+
+
 def create_personal(db: Session, user: User) -> Organisation:
     """A personal organisation for the user, with them as creator and member. Flushed, not
     committed: the caller's transaction commits it with the user.
 
     The name `personal_name` found free can be taken before it's inserted, by a sign-up, a
-    leave or a rename at the same moment. So the insert does nothing on a clash (waiting for
-    the other's transaction if it's still open) and the name is picked again, which sees the
-    other's now it's committed. A unique violation would instead fail the caller's whole
+    leave or a rename at the same moment, and the slug `free_slug` found by a sign-up or a
+    leave. So the insert does nothing on a clash of either (waiting for the other's
+    transaction if it's still open) and both are picked again, which sees the other's now it's
+    committed. A unique violation would instead fail the caller's whole
     transaction (signing in, leaving), where this carries on in it, with no savepoint."""
     while True:
+        name = personal_name(db, user.full_name)
         org_id = db.scalar(
             insert(Organisation)
-            .values(name=personal_name(db, user.full_name), personal=True, created_by=user.id)
-            .on_conflict_do_nothing(index_elements=[Organisation.name])
+            .values(name=name, slug=free_slug(db, name), personal=True, created_by=user.id)
+            .on_conflict_do_nothing()
             .returning(Organisation.id)
         )
         if org_id is not None:

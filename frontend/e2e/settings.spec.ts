@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The Settings page: the user's own, which points to the organisation's. */
 
@@ -8,7 +8,7 @@ test("the Settings link opens the page, which points to the organisation's setti
   page,
 }) => {
   await fakeApi(page);
-  await page.goto("/");
+  await page.goto(inOrg("/"));
   await page.getByRole("link", { name: "Settings" }).first().click();
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();

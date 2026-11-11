@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The development "sign in as" picker, which the API offers only when DEV_LOGIN_ENABLED is on. */
 
@@ -38,7 +38,7 @@ test("picking a user signs in as them, then goes where they were headed", async 
 
   await picker(page).selectOption({ label: "Alice Smith (alice@example.com)" });
 
-  await expect(page).toHaveURL("/settings?tab=x");
+  await expect(page).toHaveURL(inOrg("/settings?tab=x"));
   await expect(page.locator("aside")).toContainText("Alice Smith");
   expect(api.signedInAs).toBe(2);
 });

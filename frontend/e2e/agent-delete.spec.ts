@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { fakeApi, type AgentDependentsRow, type FakeApi } from "./fake-api";
+import { fakeApi, type AgentDependentsRow, type FakeApi, inOrg } from "./fake-api";
 
 /**
  * Deleting an agent first checks what depends on it. With nothing, it's a simple confirm;
@@ -61,7 +61,7 @@ function seed(api: FakeApi) {
 }
 
 async function open(page: Page, agentId: number) {
-  await page.goto(`/agents/${agentId}`);
+  await page.goto(inOrg(`/agents/${agentId}`));
   await page.getByRole("button", { name: "Delete agent" }).click();
   await expect(dialog(page)).toBeVisible();
 }
@@ -123,7 +123,7 @@ test("each thing that depends on it links to where it's seen or managed, in a ne
     [d.getByRole("link", { name: "Schedule: Every hour (UTC)" }), `/agents/${agent.id}/schedule`],
   ];
   for (const [link, href] of links) {
-    await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("href", inOrg(href));
     await expect(link).toHaveAttribute("target", "_blank");
   }
   await expect(runs).toContainText("Waiting at review/build");
@@ -136,7 +136,7 @@ test("each thing that depends on it links to where it's seen or managed, in a ne
     runs.getByRole("link", { name: "Nightly build · run 501" }).click(),
   ]);
   await tab.waitForLoadState();
-  expect(new URL(tab.url()).pathname).toBe("/workflows/51/runs/501");
+  expect(new URL(tab.url()).pathname).toBe(inOrg("/workflows/51/runs/501"));
   await expect(dialog(page)).toBeVisible();
   await expect(d.getByRole("checkbox", { name: "Cancel these runs" })).toBeChecked();
 });
@@ -186,7 +186,7 @@ test("a workflow left to edit keeps Delete disabled until it no longer runs the 
   await expect(release).toContainText("Edit it to stop running this agent");
   await expect(release.getByRole("link", { name: "Open the editor" })).toHaveAttribute(
     "href",
-    "/workflows/52/edit",
+    inOrg("/workflows/52/edit"),
   );
   await expect(deleteButton(page)).toBeDisabled();
 

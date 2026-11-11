@@ -334,6 +334,8 @@ export type InvitationRow = { organisation: { id: number; name: string }; expire
 export type OrganisationRow = {
   id: number;
   name: string;
+  /** What links name it by (`/o/<slug>/`); a rename leaves it unchanged. */
+  slug: string;
   personal: boolean;
   creator: ChatUser | null;
   members: OrganisationMemberRow[];
@@ -415,6 +417,20 @@ function byKind<T extends { kind: ChatMention["kind"] }>(members: T[]) {
 /** How many messages a read returns at most, as the API's `MESSAGE_PAGE`. */
 export const MESSAGE_PAGE = 50;
 
+/** The slug of the fake's organisation, as a new fake has it: its pages are under `/o/tester/`. */
+export const ORGANISATION_SLUG = "tester";
+
+/** A page's path in the fake's organisation, as the app's links have it: `/o/tester/agents`. */
+export function inOrg(path: string): string {
+  return `/o/${ORGANISATION_SLUG}${path}`;
+}
+
+/** A slug as the API makes one from a name (`aios.organisations.slugify`). */
+function slugify(name: string): string {
+  const ascii = name.normalize("NFKD").replace(/[^\x00-\x7f]/g, "");
+  return ascii.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "organisation";
+}
+
 const NOW = "2026-10-14T09:00:00Z";
 
 /** How a mentioned agent's scripted turn goes: how many reads it runs for (each a model step
@@ -491,11 +507,20 @@ export class FakeApi {
   organisation: OrganisationRow = {
     id: 1,
     name: "tester",
+    slug: ORGANISATION_SLUG,
     personal: true,
     creator: this.me,
     members: [{ user: this.me, joined_at: "2026-10-14T08:00:00Z", invite_id: null }],
     created_at: "2026-10-14T08:00:00Z",
   };
+  /**
+   * Other organisations `me` is in, as `/api/me` lists them, before `organisation`: joined more
+   * recently unless a test puts them after it (`joinedEarlier`). Only "me" sees them; every
+   * other endpoint is `organisation`'s.
+   */
+  otherMemberships: { id: number; name: string; slug: string; is_creator: boolean }[] = [];
+  /** Whether `otherMemberships` were joined before `organisation` (listed after it). */
+  joinedEarlier = false;
   /** Names other organisations have: renaming to one answers 409, as the API does. */
   organisationNamesTaken = new Set<string>();
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
@@ -627,7 +652,10 @@ export class FakeApi {
 
   /** The signed-in user as `/api/me` (and signing in) answers. */
   private meOut(account: Account) {
-    return { ...accountOut(account), organisation: this.organisationSummary() };
+    const { id, name, slug, is_creator } = this.organisationSummary();
+    const own = { id, name, slug, is_creator };
+    const organisations = this.joinedEarlier ? [own, ...this.otherMemberships] : [...this.otherMemberships, own];
+    return { ...accountOut(account), organisation: this.organisationSummary(), organisations };
   }
 
   /**
@@ -644,6 +672,7 @@ export class FakeApi {
     } else if (other) {
       this.organisation = {
         ...other.organisation,
+        slug: slugify(other.organisation.name),
         personal: false,
         creator: null,
         members: [{ user: account, joined_at: now, invite_id: null }],
@@ -653,6 +682,7 @@ export class FakeApi {
       this.organisation = {
         id: this.id(),
         name: fullName(account),
+        slug: slugify(fullName(account)),
         personal: true,
         creator: account,
         members: [{ user: account, joined_at: now, invite_id: null }],
@@ -664,8 +694,8 @@ export class FakeApi {
 
   /** The organisation as `/api/me` carries it. */
   private organisationSummary() {
-    const { id, name, personal, creator } = this.organisation;
-    return { id, name, personal, is_creator: creator?.id === this.me.id };
+    const { id, name, slug, personal, creator } = this.organisation;
+    return { id, name, slug, personal, is_creator: creator?.id === this.me.id };
   }
 
   /**
@@ -1934,6 +1964,7 @@ export class FakeApi {
       }
       this.organisation = {
         ...invitation.organisation,
+        slug: slugify(invitation.organisation.name),
         personal: false,
         creator: null,
         members: [{ user: this.me, joined_at: new Date().toISOString(), invite_id: own?.id ?? null }],
@@ -2000,6 +2031,7 @@ export class FakeApi {
       this.organisation = {
         id: this.id(),
         name: fullName(this.me),
+        slug: slugify(fullName(this.me)),
         personal: true,
         creator: this.me,
         members: [{ user: this.me, joined_at: now, invite_id: null }],

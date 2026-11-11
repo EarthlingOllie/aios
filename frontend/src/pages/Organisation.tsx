@@ -12,6 +12,7 @@ import { InvitesSection } from "@/components/OrganisationInvites";
 import { api, describeError, type Me, type Organisation } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
+import { openInOrganisation } from "@/lib/organisation-path";
 
 /**
  * The user's organisation: its name (the creator renames it) above three tabs, as on the agent
@@ -54,10 +55,9 @@ export function OrganisationPage() {
           <RunHistoryExportSection key={`export-${org.id}`} />
           <LeaveSection
             org={org}
-            onLeft={async () => {
-              // Into a new personal organisation, which the shell names.
-              reloadMe();
-              await reload();
+            onLeft={(landed) => {
+              // Into a new personal organisation: its page, at its own link.
+              openInOrganisation(landed.slug, "/organisation");
             }}
           />
         </>

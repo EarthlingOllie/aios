@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /**
  * A smoke test of the whole workflows feature in one pass: list → view → edit → run → watch it
@@ -62,14 +62,14 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
   );
 
   // 1. The list shows the workflows; open one.
-  await page.goto("/workflows");
+  await page.goto(inOrg("/workflows"));
   await expect(page.getByRole("link", { name: /Triage/ })).toBeVisible();
   const listed = page.getByRole("link", { name: /Weekly report/ });
   await expect(listed).toContainText("4 nodes");
   await listed.click();
 
   // 2. The viewer draws the graph, and the inspector describes what's selected.
-  await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}`));
   await expect(page.getByRole("heading", { name: "Weekly report" })).toBeVisible();
   for (const key of ["research", "draft", "fact_check", "review"]) {
     await expect(node(page, key)).toBeVisible();
@@ -83,7 +83,7 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
 
   // 3. Edit: add a node from the picker and connect it; the change is unsaved until saved.
   await page.getByRole("link", { name: "Edit" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}/edit`));
   await node(page, "review").click();
   await addNode(page, "Publisher");
   await expect(node(page, "publisher")).toContainText("Publisher");
@@ -94,10 +94,10 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
     void dialog.dismiss();
   });
   await page.getByRole("link", { name: "Agents" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}/edit`));
   await page.getByLabel("Change note").fill("Publish when reviewed");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}`));
   await expect(edge(page, "review", "publisher")).toBeAttached();
   await page.getByRole("tab", { name: /Versions/ }).click();
   await expect(page.getByText("Publish when reviewed")).toBeVisible();
@@ -150,12 +150,12 @@ test("lists, views, edits, runs and follows a workflow end to end", async ({ pag
 
   // 6. Back on the workflow, the finished run is listed; open it again.
   await page.getByRole("heading").getByRole("link", { name: "Weekly report" }).click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}/runs`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}/runs`));
   const latest = page.getByRole("list", { name: "Runs" }).getByRole("listitem").first();
   await expect(latest).toContainText("Write this week's report");
   await expect(latest).toContainText("Succeeded");
   await latest.getByRole("link").click();
-  await expect(page).toHaveURL(`/workflows/${weekly.id}/runs/${run.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${weekly.id}/runs/${run.id}`));
   await expect(status).toHaveText("Succeeded");
   await node(page, "publisher").click();
   await expect(inspector(page).getByRole("region", { name: "Step output" })).toContainText(

@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The Settings page's Profile section: editing your name. */
 
 test("editing your name saves it and the sidebar shows it straight away", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const profile = page.getByRole("region", { name: "Profile" });
   const first = profile.getByLabel("First name");
@@ -37,7 +37,7 @@ test("editing your name saves it and the sidebar shows it straight away", async 
 
 test("an empty name is refused next to its field, and nothing changes", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const profile = page.getByRole("region", { name: "Profile" });
   const last = profile.getByLabel("Last name");
@@ -59,7 +59,7 @@ test("an empty name is refused next to its field, and nothing changes", async ({
 
 test("changing your email needs your current password, then signs you in with the new one", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const form = page.getByRole("form", { name: "Email" });
   await expect(form.getByText("Currently tester@example.com.")).toBeVisible();
@@ -69,7 +69,7 @@ test("changing your email needs your current password, then signs you in with th
 
   // A wrong password is refused above the form: it doesn't sign you out.
   await expect(form.getByRole("alert")).toHaveText("Current password is incorrect");
-  await expect(page).toHaveURL("/settings");
+  await expect(page).toHaveURL(inOrg("/settings"));
   expect(api.accounts[0].email).toBe("tester@example.com");
 
   await form.getByLabel("Current password").fill("correct horse battery");
@@ -104,7 +104,7 @@ test("changing your email needs your current password, then signs you in with th
 test("an email that's taken or invalid is refused, and nothing changes", async ({ page }) => {
   const api = await fakeApi(page);
   api.accounts.push({ id: 2, first_name: "Alice", last_name: "Smith", email: "alice@example.com", password: "alice's passphrase" });
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const form = page.getByRole("form", { name: "Email" });
   const email = form.getByLabel("New email");
@@ -125,7 +125,7 @@ test("an email that's taken or invalid is refused, and nothing changes", async (
 
 test("changing your password keeps you signed in here and says you're signed out elsewhere", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const form = page.getByRole("form", { name: "Password" });
   const current = form.getByLabel("Current password");
@@ -154,12 +154,12 @@ test("changing your password keeps you signed in here and says you're signed out
   // Still signed in here.
   await page.reload();
   await expect(page.getByText("Terry Tester")).toBeVisible();
-  await expect(page).toHaveURL("/settings");
+  await expect(page).toHaveURL(inOrg("/settings"));
 });
 
 test("a new password that doesn't match, is too short or comes with a wrong current one is refused", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const form = page.getByRole("form", { name: "Password" });
   const current = form.getByLabel("Current password");
@@ -189,7 +189,7 @@ test("a new password that doesn't match, is too short or comes with a wrong curr
   await confirm.fill("a brand new passphrase");
   await submit.click();
   await expect(form.getByRole("alert")).toHaveText("Current password is incorrect");
-  await expect(page).toHaveURL("/settings");
+  await expect(page).toHaveURL(inOrg("/settings"));
 
   expect(api.accounts[0].password).toBe("correct horse battery");
 });
@@ -197,7 +197,7 @@ test("a new password that doesn't match, is too short or comes with a wrong curr
 test("too many wrong current passwords say to try again later", async ({ page }) => {
   const api = await fakeApi(page);
   api.authThrottled = true;
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
 
   const email = page.getByRole("form", { name: "Email" });
   await email.getByLabel("New email").fill("terry@new.example");

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** Agent runs show how they went and what they cost: status, duration, tool calls and tokens.
  * Runs from before this was kept say so, rather than showing zero. */
@@ -28,7 +28,7 @@ test("the run list shows each run's status, duration, tool calls and tokens", as
     output_tokens: 5,
   });
   api.addAgentRun(agent, "Still going", 1, { status: "running", started_at });
-  await page.goto(`/agents/${agent.id}/runs`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs`));
 
   const row = (title: string) => page.getByRole("link", { name: new RegExp(title) });
   await expect(row("Find sources")).toContainText("Succeeded");
@@ -54,7 +54,7 @@ test("the run page shows the run's counters, and keeps its totals from the messa
     input_tokens: 1200,
     output_tokens: 34,
   });
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
   await expect(page.getByTestId("run-counters")).toHaveText("4.2s · 2 tool calls · 1,234 tokens");
@@ -67,7 +67,7 @@ test("a run from before counters were kept is shown as not tracked", async ({ pa
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher");
   const run = api.addAgentRun(agent, "Old chat", 4);
-  await page.goto(`/agents/${agent.id}/runs/${run.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs/${run.id}`));
 
   await expect(page.getByTestId("run-counters")).toHaveText("Not tracked");
   await expect(page.getByTestId("run-status")).toHaveCount(0);

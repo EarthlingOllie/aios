@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 /**
  * Every tabbed page keeps its open tab in the route: the first tab is the page's own path and
@@ -79,7 +79,7 @@ for (const { name, seed, tabs } of pages) {
   test(`the ${name} page opens each tab from its route, and a click moves to the tab's route`, async ({
     page,
   }) => {
-    const path = seed(await fakeApi(page));
+    const path = inOrg(seed(await fakeApi(page)));
 
     // Each tab's own URL opens on it, also after a reload.
     for (const [id, label] of tabs) {
@@ -101,7 +101,7 @@ for (const { name, seed, tabs } of pages) {
   });
 
   test(`the ${name} page sends non-canonical tab URLs to the canonical one`, async ({ page }) => {
-    const path = seed(await fakeApi(page));
+    const path = inOrg(seed(await fakeApi(page)));
     const [second, secondLabel] = tabs[1];
 
     await page.goto(`${path}/${first}`);
@@ -125,19 +125,19 @@ test("another item opens on its first tab, and Back leaves the page rather than 
   const api = await fakeApi(page);
   const one = api.addAgent("Researcher");
   const two = api.addAgent("Writer");
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
   await page.getByRole("list", { name: "Agents" }).getByRole("link", { name: /Researcher/ }).click();
 
   await tab(page, /Runs/).click();
   await tab(page, /Versions/).click();
-  await expect(page).toHaveURL(`/agents/${one.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/agents/${one.id}/versions`));
 
   await page.getByRole("list", { name: "Agents" }).getByRole("link", { name: /Writer/ }).click();
-  await expect(page).toHaveURL(`/agents/${two.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents/${two.id}`));
   await expect(selected(page)).toHaveText(/Context/);
 
   await page.goBack();
-  await expect(page).toHaveURL(`/agents/${one.id}/versions`);
+  await expect(page).toHaveURL(inOrg(`/agents/${one.id}/versions`));
   await page.goBack();
-  await expect(page).toHaveURL("/agents");
+  await expect(page).toHaveURL(inOrg("/agents"));
 });

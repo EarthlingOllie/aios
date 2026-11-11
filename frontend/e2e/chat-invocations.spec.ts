@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 import { setHidden } from "./visibility";
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
@@ -37,7 +37,7 @@ async function mention(page: Page, workflow: { id: number; name: string }, text:
 test("mentioning a workflow shows its card at once, follows the run and posts the result", async ({ page }) => {
   const api = await fakeApi(page);
   const { chat, report } = seed(api);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(messageList(page)).toContainText("No messages yet");
 
   await mention(page, report, "Summarise the week");
@@ -75,11 +75,11 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
 
   // Clicking the card opens the run's page.
   await card(page).click();
-  await expect(page).toHaveURL(`/workflows/${report.id}/runs/${run.id}`);
+  await expect(page).toHaveURL(inOrg(`/workflows/${report.id}/runs/${run.id}`));
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
 
   // Where the run is listed with the workflow's others, marked as started from the chat.
-  await page.goto(`/workflows/${report.id}/runs`);
+  await page.goto(inOrg(`/workflows/${report.id}/runs`));
   await expect(page.getByTestId("started-from-chat")).toHaveText(/Started from the chat Design/);
 });
 
@@ -87,7 +87,7 @@ test("a run that can't start fails its card with the reason", async ({ page }) =
   const api = await fakeApi(page);
   const { chat, report } = seed(api);
   api.refuseStart.set(report.id, "This workflow has no nodes");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await mention(page, report, "Go");
   await expect(card(page)).toContainText("Couldn't start the run: This workflow has no nodes");
@@ -103,7 +103,7 @@ test("several workflows mentioned in one message each get a card", async ({ page
   const { chat, report } = seed(api);
   const digest = api.addWorkflow("Digest", [{ key: "sum", agent: api.addAgent("Summer") }]);
   api.addChatTarget(chat, "workflow", digest);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await composer(page).fill(`@[Report](workflow:${report.id}) and @[Digest](workflow:${digest.id}), please`);
   await composer(page).press("Enter");
@@ -116,7 +116,7 @@ test("several workflows mentioned in one message each get a card", async ({ page
 test("a card whose run has been deleted says so", async ({ page }) => {
   const api = await fakeApi(page);
   const { chat, report } = seed(api);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await mention(page, report, "Go");
   // A poll a second, a node a poll.
   await expect(message(page, "review done")).toBeVisible({ timeout: 10_000 });
@@ -134,7 +134,7 @@ test("a card whose run has been deleted says so", async ({ page }) => {
 test("a live run is followed every second even while the tab is hidden", async ({ page }) => {
   const api = await fakeApi(page);
   const { chat, report } = seed(api);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await mention(page, report, "Go");
   await expect(card(page)).toBeVisible();
   await setHidden(page, true);

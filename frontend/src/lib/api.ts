@@ -47,14 +47,26 @@ export type Provenance = { created_by: User | null; updated_by: User | null };
 export type OrganisationSummary = {
   id: number;
   name: string;
+  /** What links in the browser name it by (`/o/<slug>/`); a rename leaves it unchanged. */
+  slug: string;
   /** Made for one user on sign-up (or on leaving another organisation). */
   personal: boolean;
   /** Whether the signed-in user created it; the creator alone can rename it. */
   is_creator: boolean;
 };
 
-/** The signed-in user (`GET /api/me`), with their organisation. */
-export type Me = Account & { organisation: OrganisationSummary };
+/** One of the organisations the signed-in user is in, as `/api/me` lists them. */
+export type Membership = {
+  id: number;
+  name: string;
+  slug: string;
+  /** Whether the signed-in user created it. */
+  is_creator: boolean;
+};
+
+/** The signed-in user (`GET /api/me`), with their organisation, and every organisation they're
+ * in, the one joined most recently first. */
+export type Me = Account & { organisation: OrganisationSummary; organisations: Membership[] };
 
 export type OrganisationMember = {
   user: User;

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg } from "./fake-api";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 // How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
@@ -17,7 +17,7 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
   api.addChatMessage(chat, "Welcome, all", sam);
   // A private one of theirs isn't there to find.
   api.addChat("Secret", { visibility: "private", owner: sam });
-  await page.goto("/chats");
+  await page.goto(inOrg("/chats"));
 
   await expect(chatList(page).getByRole("link")).toHaveCount(1);
   await expect(listItem(page, "Design")).toContainText("Not joined");
@@ -52,7 +52,7 @@ test("a public chat I'm not in is listed, read, and joined in one click", async 
 test("the owner is offered no Leave", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Mine", { visibility: "public" });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(page.getByRole("heading", { name: "Mine", level: 2 })).toBeVisible();
   await expect(composer(page)).toBeVisible();
   await expect(page.getByRole("button", { name: "Leave" })).toHaveCount(0);
@@ -63,12 +63,12 @@ test("a joined chat counts what's new in the list, and reading it clears the cou
   const api = await fakeApi(page);
   const design = api.addChat("Design", { visibility: "public", owner: sam });
   const other = api.addChat("Other");
-  await page.goto(`/chats/${design.id}`);
+  await page.goto(inOrg(`/chats/${design.id}`));
   await page.getByRole("button", { name: "Join", exact: true }).click();
   await expect(composer(page)).toBeVisible();
   // Another chat open, Sam posts in this one: the list's next read counts it.
   await listItem(page, "Other").click();
-  await expect(page).toHaveURL(`/chats/${other.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${other.id}`));
   api.addChatMessage(design, "Anyone around?", sam);
   api.addChatMessage(design, "Hello?", sam);
   await expect(listItem(page, "Design").getByLabel("unread")).toHaveText("2", { timeout: LIST_POLL_MS + 2000 });

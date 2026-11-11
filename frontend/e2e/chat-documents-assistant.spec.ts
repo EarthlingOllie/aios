@@ -1,17 +1,17 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The documents assistant joins each new chat, and `/` opens the Chats section. */
 
 test("a new chat has the documents assistant as a member, to mention like any agent", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/chats/new");
+  await page.goto(inOrg("/chats/new"));
   await page.getByLabel("Name").fill("Design");
   await page.getByRole("button", { name: "Create chat" }).click();
 
   const [chat] = [...api.chats.values()];
-  await expect(page).toHaveURL(`/chats/${chat.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${chat.id}`));
   const assistant = api.documentsAssistant();
   api.agentTurns.set(assistant.id, { steps: 1, tokensPerStep: 100, reply: "Your notes are about fish." });
   await page.getByRole("tab", { name: /Members/ }).click();
@@ -52,9 +52,9 @@ test("/ opens the most recent chat I'm in", async ({ page }) => {
   const newer = api.addChat("Newer");
   // A public chat I'm not in isn't one to land on.
   api.addChat("Theirs", { visibility: "public", owner: { id: 2, first_name: "Sam", last_name: "Jones" } });
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
-  await expect(page).toHaveURL(`/chats/${newer.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${newer.id}`));
   await expect(page.getByRole("heading", { name: "Newer", level: 2 })).toBeVisible();
   // There's one place to chat.
   await expect(page.getByRole("link", { name: "Chat", exact: true })).toHaveCount(0);
@@ -63,8 +63,8 @@ test("/ opens the most recent chat I'm in", async ({ page }) => {
 
 test("/ opens the new-chat form when I'm in no chat yet", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/");
+  await page.goto(inOrg("/"));
 
-  await expect(page).toHaveURL("/chats/new");
+  await expect(page).toHaveURL(inOrg("/chats/new"));
   await expect(page.getByRole("heading", { name: "New chat" })).toBeVisible();
 });

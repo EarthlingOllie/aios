@@ -1,0 +1,136 @@
+"""The organisation prefix (`/api/o/{organisation_id}/...`): a request names the organisation it
+means by its id, and `aios.auth.current_organisation` checks the signed-in user is a member.
+
+The scoping tests are generated from the app's routes, so a route added later is covered
+without listing it here."""
+
+import re
+import uuid
+
+import pytest
+from conftest import delete_user, join_organisation, make_user, org_of
+from fastapi.routing import APIRoute, iter_route_contexts
+from sqlalchemy import func, select
+from test_chats import signed_in_as
+
+from aios.auth import current_organisation
+from aios.main import app
+from aios.models import Organisation
+
+PREFIX = "/api/o/{organisation_id}"
+
+
+def resolves(dependant, call) -> bool:
+    """Whether `call` is anywhere in the route's dependency tree."""
+    return dependant.call is call or any(resolves(d, call) for d in dependant.dependencies)
+
+
+def api_routes() -> list:
+    return [
+        c for c in iter_route_contexts(app.router.routes) if isinstance(c.original_route, APIRoute)
+    ]
+
+
+def prefixed_routes() -> list[tuple[str, str, object]]:
+    """(method, path, route) for every route under the prefix."""
+    return [
+        (method, c.path, c)
+        for c in api_routes()
+        if c.path.startswith(f"{PREFIX}/")
+        for method in sorted(c.methods)
+    ]
+
+
+PREFIXED = prefixed_routes()
+
+
+def path_value(dependant, name: str) -> str:
+    """A well-formed value for a path parameter, so only the organisation can refuse it."""
+    stack = [dependant]
+    while stack:
+        d = stack.pop()
+        if any(p.name == name and p.field_info.annotation is uuid.UUID for p in d.path_params):
+            return str(uuid.uuid4())
+        stack.extend(d.dependencies)
+    return "1"
+
+
+def url(route, organisation_id) -> str:
+    def fill(match: re.Match) -> str:
+        name = match.group(1).split(":")[0]
+        if name == "organisation_id":
+            return str(organisation_id)
+        return path_value(route.dependant, name)
+
+    return re.sub(r"\{([^}]+)\}", fill, route.path)
+
+
+@pytest.fixture
+def outsider(db):
+    """A user in an organisation of their own."""
+    u = make_user(db, "outsider")
+    yield u
+    delete_user(db, u)
+
+
+def test_there_are_prefixed_routes():
+    assert len(PREFIXED) > 50
+
+
+def test_every_route_that_resolves_the_organisation_is_also_under_the_prefix():
+    scoped = {(m, c.path) for c in api_routes() for m in c.methods}
+    for c in api_routes():
+        unprefixed = c.path.startswith("/api/") and not c.path.startswith(f"{PREFIX}/")
+        if unprefixed and resolves(c.dependant, current_organisation):
+            for method in c.methods:
+                assert (method, PREFIX + c.path.removeprefix("/api")) in scoped
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "route"), PREFIXED, ids=[f"{m} {p}" for m, p, _ in PREFIXED]
+)
+def test_every_prefixed_route_resolves_the_organisation_from_the_path(method, path, route):
+    assert resolves(route.dependant, current_organisation)
+    # And only there: nothing else in the route takes the id from the path.
+    stack = [route.dependant]
+    while stack:
+        d = stack.pop()
+        assert "organisation_id" not in [p.name for p in d.path_params]
+        stack.extend(d.dependencies)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "route"), PREFIXED, ids=[f"{m} {p}" for m, p, _ in PREFIXED]
+)
+def test_a_non_member_gets_404_as_for_an_organisation_that_doesnt_exist(
+    api, db, outsider, method, path, route
+):
+    missing = (db.scalar(select(func.max(Organisation.id))) or 0) + 1000
+    theirs = org_of(db, outsider).id
+    answers = []
+    for organisation_id in (theirs, missing, "not-an-id", 2**40):
+        resp = api.request(method, url(route, organisation_id))
+        answers.append((resp.status_code, resp.json()))
+    assert answers == [(404, {"detail": "Organisation not found"})] * 4
+
+
+def test_a_member_reaches_their_organisation_through_the_prefix(api, db, user):
+    org = org_of(db, user)
+    resp = api.get(f"/api/o/{org.id}/organisation")
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["id"], resp.json()["slug"]) == (org.id, org.slug)
+    made = api.post(f"/api/o/{org.id}/skills", json={"name": "Prefixed", "content": "Do it."})
+    assert made.status_code == 201, made.text
+    assert [s["name"] for s in api.get("/api/skills").json()] == ["Prefixed"]
+
+
+def test_another_member_reaches_it_too(api, db, user):
+    member = join_organisation(db, user, "member")
+    try:
+        with signed_in_as(member):
+            resp = api.get(f"/api/o/{org_of(db, user).id}/organisation")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["is_creator"] is False
+    finally:
+        db.delete(member)
+        db.commit()

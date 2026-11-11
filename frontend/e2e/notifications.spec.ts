@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 import { setHidden } from "./visibility";
 
 /**
@@ -19,7 +19,7 @@ const card = (page: Page, summary = "Create table data.contacts") =>
 test("a new request shows an unread badge without a reload", async ({ page }) => {
   await page.clock.install();
   const api = await fakeApi(page);
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
   await expect(bell(page)).toHaveAccessibleName("Notifications");
 
   api.addSchemaChange();
@@ -32,7 +32,7 @@ test("a new request shows an unread badge without a reload", async ({ page }) =>
 test("a hidden tab stops asking, and asks again as soon as it's shown", async ({ page }) => {
   await page.clock.install();
   const api = await fakeApi(page);
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
   await expect(bell(page)).toHaveAccessibleName("Notifications");
   const asked = api.notificationLists;
 
@@ -57,14 +57,14 @@ test("an item opens the request on the Data page, and deciding it clears the bad
   const api = await fakeApi(page);
   api.addSchemaChange({ summary: "Create table data.places" });
   const request = api.addSchemaChange();
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
 
   await bell(page).click();
   const item = list(page).getByRole("link", { name: /Create table data\.contacts/ });
   await expect(item).toContainText("A schema change is waiting for you");
   await item.click();
 
-  await expect(page).toHaveURL(`/data/changes?request=${request.id}`);
+  await expect(page).toHaveURL(inOrg(`/data/changes?request=${request.id}`));
   await expect(list(page)).toBeHidden();
   await expect(card(page)).toHaveAttribute("aria-current", "true");
   await expect(card(page, "Create table data.places")).not.toHaveAttribute("aria-current", "true");
@@ -79,7 +79,7 @@ test("an item opens the request on the Data page, and deciding it clears the bad
 test("rejecting clears the badge too", async ({ page }) => {
   const api = await fakeApi(page);
   const request = api.addSchemaChange();
-  await page.goto(`/data/changes?request=${request.id}`);
+  await page.goto(inOrg(`/data/changes?request=${request.id}`));
   await expect(bell(page)).toHaveAccessibleName("Notifications, 1 unread");
 
   await card(page).getByRole("button", { name: "Reject…" }).click();
@@ -92,7 +92,7 @@ test("marking one read clears it from the badge and keeps it in the list", async
   const api = await fakeApi(page);
   api.addSchemaChange();
   const [notification] = api.notifications;
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
 
   await bell(page).click();
   const item = list(page).getByRole("link", { name: /Create table data\.contacts/ });
@@ -110,7 +110,7 @@ test("marking one read clears it from the badge and keeps it in the list", async
 test("another user's notifications never show", async ({ page }) => {
   const api = await fakeApi(page);
   api.addNotification({ mine: false, ref: { request_id: "theirs" } });
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
 
   await expect(bell(page)).toHaveAccessibleName("Notifications");
   await bell(page).click();

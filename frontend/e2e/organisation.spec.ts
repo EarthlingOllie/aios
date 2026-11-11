@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /** The Organisation page: the organisation's name, creator and members, and renaming it. */
 
@@ -11,7 +11,7 @@ test("the shell names the organisation, and opens its page with the members", as
     joined_at: "2026-10-15T09:00:00Z",
     invite_id: null,
   });
-  await page.goto("/");
+  await page.goto(inOrg("/"));
   await page.getByRole("link", { name: "tester" }).first().click();
   await expect(page).toHaveURL(/\/organisation$/);
 
@@ -29,7 +29,7 @@ test("the shell names the organisation, and opens its page with the members", as
 
 test("the creator renames it, and the shell follows", async ({ page }) => {
   const api = await fakeApi(page);
-  await page.goto("/organisation");
+  await page.goto(inOrg("/organisation"));
   await page.getByRole("button", { name: "Rename" }).click();
   const name = page.getByRole("textbox", { name: "Name" });
   await expect(name).toHaveValue("tester");
@@ -45,7 +45,7 @@ test("the creator renames it, and the shell follows", async ({ page }) => {
 test("a name another organisation has is refused, and the name stays", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisationNamesTaken.add("Acme");
-  await page.goto("/organisation");
+  await page.goto(inOrg("/organisation"));
   await page.getByRole("button", { name: "Rename" }).click();
   await page.getByRole("textbox", { name: "Name" }).fill("Acme");
   await page.getByRole("button", { name: "Save" }).click();
@@ -63,7 +63,7 @@ test("another member sees who created it, and can't rename it", async ({ page })
   api.organisation.personal = false;
   api.organisation.creator = sam;
   api.organisation.members.unshift({ user: sam, joined_at: "2026-10-10T09:00:00Z", invite_id: null });
-  await page.goto("/organisation");
+  await page.goto(inOrg("/organisation"));
   await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible();
   await expect(page.getByText("Created by Sam Jones.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Rename" })).toBeHidden();
@@ -74,7 +74,7 @@ test("another member sees who created it, and can't rename it", async ({ page })
 
 test("the Settings page links to it", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/settings");
+  await page.goto(inOrg("/settings"));
   await page.getByRole("main").getByRole("link", { name: "Organisation" }).click();
   await expect(page).toHaveURL(/\/organisation$/);
   await expect(page.getByRole("heading", { name: "tester" })).toBeVisible();

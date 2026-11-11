@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg } from "./fake-api";
 
 /** The chat page splits into tabs: Chat (the room) and Members. */
 
@@ -21,7 +21,7 @@ test("opens on the Chat tab, with the header and actions above the tabs", async 
   const chat = api.addChat("Design", { description: "Where design happens" });
   api.addChatMember(chat, sam);
   api.addChatMessage(chat, "Welcome, all", sam);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await expect(tabs(page)).toBeVisible();
   await expect(tab(page, "Chat")).toHaveAttribute("aria-selected", "true");
@@ -44,7 +44,7 @@ test("switches to Members, keeps the tab in the URL, and a deep link opens it", 
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   api.addChatMember(chat, sam);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await tab(page, /Members/).click();
   await expect(tab(page, /Members/)).toHaveAttribute("aria-selected", "true");
@@ -59,7 +59,7 @@ test("switches to Members, keeps the tab in the URL, and a deep link opens it", 
   // A reload, or a shared link, opens on the same tab.
   await page.reload();
   await expect(tab(page, /Members/)).toHaveAttribute("aria-selected", "true");
-  await page.goto(`/chats/${chat.id}/members`);
+  await page.goto(inOrg(`/chats/${chat.id}/members`));
   await expect(panel(page).getByRole("list", { name: "Users" })).toBeVisible();
 
   // Back to the first tab drops the parameter.
@@ -74,7 +74,7 @@ test("an unsent message survives switching to Members and back, but not to anoth
   const api = await fakeApi(page);
   const design = api.addChat("Design");
   const other = api.addChat("Other");
-  await page.goto(`/chats/${design.id}`);
+  await page.goto(inOrg(`/chats/${design.id}`));
 
   await composer(page).fill("Half a thought");
   await tab(page, /Members/).click();
@@ -84,7 +84,7 @@ test("an unsent message survives switching to Members and back, but not to anoth
 
   // Another chat starts with an empty composer, and coming back still has the draft.
   await chatLink(page, "Other").click();
-  await expect(page).toHaveURL(`/chats/${other.id}`);
+  await expect(page).toHaveURL(inOrg(`/chats/${other.id}`));
   await expect(composer(page)).toHaveValue("");
   await chatLink(page, "Design").click();
   await expect(composer(page)).toHaveValue("Half a thought");
@@ -103,16 +103,16 @@ test("an unsent message survives the chat's Edit page, another section and a rel
 }) => {
   const api = await fakeApi(page);
   const design = api.addChat("Design");
-  await page.goto(`/chats/${design.id}`);
+  await page.goto(inOrg(`/chats/${design.id}`));
   await composer(page).fill("Half a thought");
 
   await page.getByRole("link", { name: "Edit" }).click();
-  await expect(page).toHaveURL(`/chats/${design.id}/edit`);
+  await expect(page).toHaveURL(inOrg(`/chats/${design.id}/edit`));
   await page.goBack();
   await expect(composer(page)).toHaveValue("Half a thought");
 
-  await page.goto("/agents");
-  await page.goto(`/chats/${design.id}`);
+  await page.goto(inOrg("/agents"));
+  await page.goto(inOrg(`/chats/${design.id}`));
   await expect(composer(page)).toHaveValue("Half a thought");
 
   await page.reload();
@@ -136,7 +136,7 @@ test("a message still sending when switching to Members and back isn't offered t
     if (route.request().method() === "POST") await released;
     await route.fallback();
   });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await composer(page).fill("Hello");
   await composer(page).press("Enter");
@@ -161,7 +161,7 @@ test("a message that fails to send is back in the composer, with why", async ({ 
       ? route.fulfill({ status: 503, json: { detail: "Try again later." } })
       : route.fallback(),
   );
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await composer(page).fill("Hello");
   await composer(page).press("Enter");
@@ -175,7 +175,7 @@ test("messages aren't marked read while Members is open; back on Chat they are",
   const chat = api.addChat("Design", { owner: sam });
   api.addChatMessage(chat, "Welcome, all", sam);
   api.addChatMember(chat, api.me).last_read = chat.messages.at(-1)!.id;
-  await page.goto(`/chats/${chat.id}/members`);
+  await page.goto(inOrg(`/chats/${chat.id}/members`));
   await expect(panel(page).getByRole("list", { name: "Users" })).toBeVisible();
 
   // Sam posts while Members is open: the list counts it, and nothing reads it.

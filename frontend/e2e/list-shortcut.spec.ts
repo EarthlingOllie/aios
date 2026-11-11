@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi } from "./fake-api";
+import { fakeApi, inOrg } from "./fake-api";
 
 /**
  * Pressing `/` anywhere in a section jumps to its list's search box, unless you're already
@@ -13,7 +13,7 @@ const composer = (page: Page) => page.getByRole("textbox", { name: "Message", ex
 test("/ focuses the agents search and selects its text, without typing a /", async ({ page }) => {
   const api = await fakeApi(page);
   api.addAgent("Researcher");
-  await page.goto("/agents");
+  await page.goto(inOrg("/agents"));
 
   // The empty box says how to get to it.
   await expect(page.getByTitle("Press / to search")).toHaveText("/");
@@ -36,7 +36,7 @@ test("/ focuses the agents search and selects its text, without typing a /", asy
 test("/ types as usual in the chat composer", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await composer(page).click();
   await page.keyboard.type("a/b");
@@ -47,7 +47,7 @@ test("/ types as usual in the chat composer", async ({ page }) => {
 
 test("/ types as usual in a form field", async ({ page }) => {
   await fakeApi(page);
-  await page.goto("/agents/new");
+  await page.goto(inOrg("/agents/new"));
 
   const name = page.getByLabel("Name");
   await name.click();
@@ -59,7 +59,7 @@ test("on a small screen showing only the item, / does nothing", async ({ page })
   await page.setViewportSize({ width: 500, height: 800 });
   const api = await fakeApi(page);
   const agent = api.addAgent("Researcher");
-  await page.goto(`/agents/${agent.id}`);
+  await page.goto(inOrg(`/agents/${agent.id}`));
   await expect(page.getByRole("heading", { name: "Researcher" })).toBeVisible();
 
   await page.keyboard.press("/");

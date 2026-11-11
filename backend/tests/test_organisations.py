@@ -42,6 +42,15 @@ def before_the_contract(db) -> None:
         revision("0048_organisations_contract").downgrade()
 
 
+def backfill_before_slugs(db) -> None:
+    """Run revision 0030's data step as it ran, before organisations had slugs (revision 0055),
+    then give what it made slugs as 0055 does. In this test's transaction only."""
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0055_organisation_slugs").downgrade()
+        revision("0030_personal_organisations").backfill(db.connection())
+        revision("0055_organisation_slugs").upgrade()
+
+
 def before_native_auth(db) -> None:
     """Put the schema back as it was before native auth (revision 0052's downgrade): GitHub's
     columns on `users`. In this test's transaction only, and with every user and organisation
@@ -67,7 +76,9 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     # the contract's downgrade makes theirs to own, and the organisation then undone.
     made = []
     for user_id in (first, second):
-        org = Organisation(name=f"made-{user_id}", personal=True, created_by=user_id)
+        org = Organisation(
+            name=f"made-{user_id}", slug=f"made-{user_id}", personal=True, created_by=user_id
+        )
         db.add(org)
         db.flush()
         db.add(OrganisationMember(organisation_id=org.id, user_id=user_id))
@@ -90,7 +101,7 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
         )
     db.execute(delete(Organisation).where(Organisation.id.in_([o.id for o in made])))
 
-    revision("0030_personal_organisations").backfill(db.connection())
+    backfill_before_slugs(db)
 
     def organisation_of(user_id: int) -> Organisation:
         return db.scalar(
@@ -115,7 +126,7 @@ def test_the_upgrade_gives_each_user_a_personal_organisation_and_stamps_what_the
     assert (agent.updated_by, agent.archived_by) == (None, None)
 
     # Run again (a user already in an organisation), it makes no second one.
-    revision("0030_personal_organisations").backfill(db.connection())
+    backfill_before_slugs(db)
     assert (
         db.scalar(
             select(OrganisationMember.organisation_id).where(OrganisationMember.user_id == first)
@@ -229,7 +240,7 @@ def test_a_name_with_like_wildcards_or_a_backslash_is_suffixed_on_its_own_names_
     others = ["wxdyc\\ Tester", "wxdyc\\ Tester-3", f"{name}-2"]
     made: list[User] = []
     try:
-        db.add_all(Organisation(name=n) for n in others)
+        db.add_all(Organisation(name=n, slug=f"wildcards-{i}") for i, n in enumerate(others))
         db.commit()
         # One pick for each registration: no clash to pick again after.
         picking_names_at_most(monkeypatch, 2)
@@ -249,6 +260,7 @@ def test_me_says_which_organisation_the_user_is_in(api, user):
     assert me["organisation"] == {
         "id": me["organisation"]["id"],
         "name": "Test User",
+        "slug": "test-user",
         "personal": True,
         "is_creator": True,
     }
@@ -335,3 +347,90 @@ def test_a_name_another_organisation_has_is_refused(api, new_user):
     assert api.get("/api/organisation").json()["name"] == "Test User"
     # Its own name again is fine.
     assert api.put("/api/organisation", json={"name": "Test User"}).status_code == 200
+
+
+# Slugs: what a link in the browser names an organisation by (the API uses the id).
+
+
+def test_organisations_whose_names_make_the_same_slug_get_distinct_ones(client, db):
+    """A slug is made from the name, and suffixed when another organisation has it."""
+    made = [
+        registered(db, register(client, first, last))
+        for first, last in (("Acme", "Tester"), ("ACME", "tester!"), ("Acme", "Tester"))
+    ]
+    try:
+        orgs = [organisations.membership_of(db, u.id) for u in made]
+        assert [(o.name, o.slug) for o in orgs] == [
+            ("Acme Tester", "acme-tester"),
+            ("ACME tester!", "acme-tester-2"),
+            ("Acme Tester-2", "acme-tester-2-2"),
+        ]
+    finally:
+        for u in made:
+            delete_user(db, u)
+
+
+def test_a_second_organisation_named_acme_gets_its_own_slug(db):
+    """Names are unique for now, but slugs don't rely on it: a new organisation whose name
+    another has gets the next free suffix."""
+    try:
+        db.add(Organisation(name="Acme", slug=organisations.free_slug(db, "Acme")))
+        db.flush()
+        assert organisations.free_slug(db, "Acme") == "acme-2"
+        db.add(Organisation(name="acme!", slug=organisations.free_slug(db, "acme!")))
+        db.flush()
+        assert organisations.free_slug(db, "Acme") == "acme-3"
+    finally:
+        db.rollback()
+
+
+def test_a_slug_is_made_of_plain_lower_case_words(client, db):
+    made = [
+        registered(db, register(client, first, last))
+        for first, last in (("Zoë", "Ångström"), ("日本", "語"), ("--", "__"))
+    ]
+    try:
+        slugs = [organisations.membership_of(db, u.id).slug for u in made]
+        assert slugs == ["zoe-angstrom", "organisation", "organisation-2"]
+    finally:
+        for u in made:
+            delete_user(db, u)
+
+
+def test_renaming_an_organisation_leaves_its_slug_unchanged(api, user):
+    before = api.get("/api/me").json()["organisation"]
+    assert before["slug"] == "test-user"
+    resp = api.put("/api/organisation", json={"name": "Acme"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["slug"] == "test-user"
+    assert api.get("/api/me").json()["organisation"] == {**before, "name": "Acme"}
+
+
+def test_the_upgrade_gives_every_organisation_a_slug_oldest_first(db):
+    """Revision 0055 gives the organisations from before it theirs, as a new one would get
+    it, in this test's transaction only."""
+    with Operations.context(MigrationContext.configure(db.connection())):
+        revision("0055_organisation_slugs").downgrade()
+        ids = [
+            db.execute(
+                text("INSERT INTO organisations (name) VALUES (:name) RETURNING id"),
+                {"name": name},
+            ).scalar_one()
+            for name in ("Upgraded Acme", "UPGRADED acme", "Zoë & Upgraded", "!!!")
+        ]
+        revision("0055_organisation_slugs").upgrade()
+    slugs = db.execute(
+        text("SELECT slug FROM organisations WHERE id = ANY(:ids) ORDER BY id"), {"ids": ids}
+    ).scalars()
+    made = list(slugs)
+    assert made[:3] == ["upgraded-acme", "upgraded-acme-2", "zoe-upgraded"]
+    # Nothing left of the name: suffixed after any other organisation's like it.
+    assert made[3] == "organisation" or made[3].startswith("organisation-")
+
+
+def test_me_lists_the_users_organisations_and_whether_they_created_each(api, user, member):
+    mine = api.get("/api/me").json()["organisation"]
+    expected = {"id": mine["id"], "name": "Test User", "slug": "test-user"}
+    assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": True}]
+    with signed_in_as(member):
+        assert api.get("/api/me").json()["organisations"] == [{**expected, "is_creator": False}]

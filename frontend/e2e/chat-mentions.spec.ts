@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type ChatUser } from "./fake-api";
+import { fakeApi, type ChatUser, inOrg } from "./fake-api";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
@@ -16,7 +16,7 @@ test("the owner adds the organisation's agents and workflows, grouped by kind", 
   const agent = api.addAgent("Review");
   const workflow = api.addWorkflow("Review");
   api.addWorkflow("Digest");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
@@ -46,7 +46,7 @@ test("a member who isn't the owner can't add agents or workflows", async ({ page
   const chat = api.addChat("Design", { owner: sam });
   api.addChatMember(chat, api.me);
   api.addAgent("Review");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await page.getByRole("tab", { name: /Members/ }).click();
   const members = page.getByRole("tabpanel", { name: /Members/ });
   await expect(members.getByText("No agents yet")).toBeVisible();
@@ -63,7 +63,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
   api.addChatTarget(chat, "workflow", workflow);
   // Not a member, so never offered.
   api.addAgent("Outsider");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(messageList(page)).toContainText("No messages yet");
 
   await composer(page).pressSequentially("Please @");
@@ -112,7 +112,7 @@ test("@ offers the chat's members by kind and inserts a mention shown as a chip"
 test("Escape closes the suggestions, and Enter then sends", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await composer(page).pressSequentially("mail @tes");
   await expect(suggestions(page).getByRole("option")).toHaveText(["Terry Tester user"]);
   await composer(page).press("Escape");
@@ -126,7 +126,7 @@ test("a token for someone who isn't a member is plain text, not a mention", asyn
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   const outsider = api.addAgent("Outsider");
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   const typed = `ping @[Outsider](agent:${outsider.id})`;
   await composer(page).fill(typed);
   await composer(page).press("Enter");
@@ -142,7 +142,7 @@ test("a message that mentions me is highlighted", async ({ page }) => {
   api.addChatMember(chat, sam);
   api.addChatMessage(chat, "@[Terry Tester](user:1) can you look?", sam, [{ kind: "user", id: 1, name: "Terry Tester" }]);
   api.addChatMessage(chat, "@[Sam Jones](user:2) and you?", api.me, [{ kind: "user", id: 2, name: "Sam Jones" }]);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   const mine = message(page, "can you look?");
   await expect(mine.getByTitle("User: Terry Tester")).toHaveText("Terry Tester");

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { fakeApi, type FakeApi } from "./fake-api";
+import { fakeApi, type FakeApi, inOrg } from "./fake-api";
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
 const message = (page: Page, text: string | RegExp) =>
@@ -28,7 +28,7 @@ test("mentioning an agent shows its card at once, ticking and counting, then pos
   const { chat, agent } = seed(api);
   // Long enough to watch the clock tick: a model step a poll, a poll a second.
   api.agentTurns.set(agent.id, { steps: 4, tokensPerStep: 600, reply: "Three **sources** found." });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Scout](agent:${agent.id}) find sources`);
   // The acknowledgement and its card come with the message, before any poll.
@@ -62,11 +62,11 @@ test("mentioning an agent shows its card at once, ticking and counting, then pos
   const [run] = [...api.agentRuns.values()];
   expect(run.title).toBe("@Scout find sources");
   await card(page).click();
-  await expect(page).toHaveURL(`/agents/${agent.id}/runs/${run.id}`);
+  await expect(page).toHaveURL(inOrg(`/agents/${agent.id}/runs/${run.id}`));
   await expect(page.getByTestId("run-status")).toHaveText("Succeeded");
 
   // Where the run is listed with the agent's others, marked as started from the chat.
-  await page.goto(`/agents/${agent.id}/runs`);
+  await page.goto(inOrg(`/agents/${agent.id}/runs`));
   await expect(page.getByTestId("started-from-chat")).toHaveText(/Started from the chat Design/);
 });
 
@@ -74,7 +74,7 @@ test("a failed turn posts its error and fails the card", async ({ page }) => {
   const api = await fakeApi(page);
   const { chat, agent } = seed(api);
   api.agentTurns.set(agent.id, { steps: 1, tokensPerStep: 100, error: "model overloaded" });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Scout](agent:${agent.id}) go`);
   await expect(message(page, "The run failed: model overloaded")).toBeVisible();
@@ -86,7 +86,7 @@ test("an agent and a workflow mentioned together each get a card", async ({ page
   const { chat, agent } = seed(api);
   const digest = api.addWorkflow("Digest", [{ key: "sum", agent: api.addAgent("Summer") }]);
   api.addChatTarget(chat, "workflow", digest);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Scout](agent:${agent.id}) and @[Digest](workflow:${digest.id}), please`);
   await expect(card(page)).toHaveCount(2);
@@ -97,7 +97,7 @@ test("an agent and a workflow mentioned together each get a card", async ({ page
 test("an agent's card whose run has been deleted says so", async ({ page }) => {
   const api = await fakeApi(page);
   const { chat, agent } = seed(api);
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
   await post(page, `@[Scout](agent:${agent.id}) go`);
   await expect(message(page, "Done: @Scout go")).toBeVisible({ timeout: 10_000 });
 
@@ -116,7 +116,7 @@ test("an agent's card whose turn ended asking for a schema change shows the run 
   const invocation = api.addChatRunCard(chat, "agent", agent, run.id);
   invocation.status = "running";
   const request = api.addSchemaChange({ run_id: run.id, summary: "Create table data.notes" });
-  await page.goto(`/chats/${chat.id}`);
+  await page.goto(inOrg(`/chats/${chat.id}`));
 
   await expect(page.getByTestId("run-card-status")).toHaveText("Waiting for you");
 

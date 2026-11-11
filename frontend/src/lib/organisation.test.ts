@@ -8,6 +8,7 @@ const sam: User = { id: 2, name: "Sam Jones" };
 const base: Organisation = {
   id: 1,
   name: "Terry Tester",
+  slug: "terry-tester",
   personal: true,
   is_creator: true,
   creator: me,
