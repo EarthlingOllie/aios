@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import invocations
+from aios import invocations, turns
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -232,15 +232,7 @@ def agent_runs_live(store: Session, run_ids: list[int]) -> dict[int, AgentRunLiv
     if not run_ids:
         return {}
     rows = store.execute(
-        select(
-            AgentRun.id,
-            AgentRun.status,
-            AgentRun.started_at,
-            AgentRun.finished_at,
-            AgentRun.tool_call_count,
-            AgentRun.input_tokens,
-            AgentRun.output_tokens,
-        ).where(AgentRun.id.in_(run_ids))
+        turns.run_columns(select(AgentRun.id)).where(AgentRun.id.in_(run_ids))
     ).all()
     waiting = set(
         store.scalars(

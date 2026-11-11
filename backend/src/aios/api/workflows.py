@@ -9,7 +9,7 @@ from sqlalchemy import Row, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from aios import checkpoints, invocations, used_by
-from aios.api.agents.runs import run_chats
+from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
     Archived,
     Provenance,
@@ -39,7 +39,9 @@ from aios.datastores.models import (
 )
 from aios.db import DB, DbId, SessionLocal
 from aios.models import (
+    InvocationStatus,
     SchemaChangeStatus,
+    TriggerTargetKind,
     WorkflowNodeKind,
     WorkflowRunStatus,
     WorkflowStepStatus,
@@ -797,6 +799,8 @@ class WorkflowRunOut(WorkflowRunSummary):
     steps: list[WorkflowRunStepOut]
     # While it waits: the pins, at any depth, it would resume on that are no longer current.
     stale_pins: list[StalePin]
+    # Why it ran (`aios.invocations`).
+    invocation: InvocationRecordOut | None = None
 
 
 def stale_pins(db: Session, version_id: int) -> list[StalePin]:
@@ -1008,6 +1012,7 @@ def new_workflow_run(
     *,
     created_by: int | None,
     trigger_id: int | None = None,
+    by_mention: bool = False,
 ) -> WorkflowRun:
     """Add (and flush, not commit) a run of the workflow's current version to the store of the
     organisation `organisation_id` (`store`, where the workflow is), given `input`, started by
@@ -1019,6 +1024,10 @@ def new_workflow_run(
     run; 422 if it has no nodes. Commit with `queue_workflow_run`; the share lock taken here
     keeps a concurrent archive waiting until the run counts as already going. Also how a
     schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
+
+    Its invocation is made with it (`invocations.for_run`): a schedule's, or one started by hand
+    by `created_by`, running from when the run is queued. A mention's run (`by_mention`) has its
+    mention's, which the caller links.
     """
     lock_live_workflow(store, workflow)
     version = workflow.current_version
@@ -1041,6 +1050,17 @@ def new_workflow_run(
     )
     store.add(run)
     store.flush()
+    if not by_mention:
+        invocation = invocations.for_run(
+            store,
+            TriggerTargetKind.workflow,
+            workflow.id,
+            requested_by=created_by,
+            trigger_id=trigger_id,
+            status=InvocationStatus.running,
+        )
+        invocation.workflow_run_id = run.id
+        store.flush()
     return run
 
 
@@ -1055,7 +1075,13 @@ def queue_workflow_run(store: Session, run: WorkflowRun) -> None:
         run_workflow_task.delay(str(store_id), run.id)
     except Exception as exc:
         # Nothing would ever pick up a committed-but-unqueued run; drop it so the client can
-        # simply retry without leaving one stuck in `queued`.
+        # simply retry without leaving one stuck in `queued`: with the invocation made for it (a
+        # mention's stays, and is failed by its caller).
+        store.execute(
+            delete(Invocation).where(
+                Invocation.workflow_run_id == run.id, Invocation.chat_id.is_(None)
+            )
+        )
         store.delete(run)
         store.commit()
         with SessionLocal() as db:
@@ -1130,11 +1156,13 @@ def workflow_run_out(
         if summary.status == WorkflowRunStatus.waiting
         else []
     )
+    invocation = invocations.of_workflow_run(store, run_id)
     return WorkflowRunOut(
         **summary.model_dump(),
         version=version_out(db, organisation_id, version),
         steps=steps_out,
         stale_pins=stale,
+        invocation=None if invocation is None else InvocationRecordOut.model_validate(invocation),
     )
 
 

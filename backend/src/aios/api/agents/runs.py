@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, ui_stream
+from aios import checkpoints, invocations, turns, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
 from aios.api.provenance import UserOut, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
@@ -23,10 +23,11 @@ from aios.datastores.models import (
     Chat,
     Invocation,
     SchemaChangeRequest,
+    Turn,
     WorkflowRunStep,
 )
 from aios.db import DB, DbId
-from aios.models import AgentRunStatus
+from aios.models import AgentRunStatus, InvocationCause, InvocationStatus, TriggerTargetKind
 from aios.permissions import Action, allow
 from aios.runner import version_tools
 from aios.sandbox.sessions import (
@@ -52,7 +53,7 @@ class RunSummary(BaseModel):
     # The trigger that started the run (e.g. a schedule), if one did and it still exists.
     trigger_id: int | None
     # How its latest turn is going or went, and when it began and ended; the model's tool calls
-    # and tokens over all its turns. All null for a run from before these were kept.
+    # and tokens over all its turns (`aios.turns`). All null for a run with no turns yet.
     status: AgentRunStatus | None
     started_at: datetime | None
     finished_at: datetime | None
@@ -70,6 +71,82 @@ class RunSummary(BaseModel):
     updated_at: datetime
 
 
+class InvocationRecordOut(BaseModel):
+    """Why a run ran (`aios.invocations`)."""
+
+    id: int
+    cause: InvocationCause
+    status: InvocationStatus
+    # Who or what caused it: the member, the schedule (while it exists), the parent invocation
+    # (a workflow agent node's: its workflow run's).
+    requested_by: int | None
+    trigger_id: int | None
+    parent_id: int | None
+    # Its ancestors' ids, the root first, and how many there are.
+    ancestor_ids: list[int]
+    depth: int
+    chat_id: int | None
+    message_id: int | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class TurnOut(BaseModel):
+    """One turn of the run (`aios.turns`)."""
+
+    id: int
+    invocation_id: int | None
+    # The agent version it ran on, by id and number.
+    agent_version_id: int
+    agent_version: int
+    status: AgentRunStatus
+    error: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    model_calls: int
+    tool_calls: int
+    input_tokens: int
+    output_tokens: int
+
+
+def run_invocation(store: Session, run_id: int) -> InvocationRecordOut | None:
+    """The invocation of the store's agent run."""
+    invocation = store.scalars(
+        select(Invocation).where(Invocation.agent_run_id == run_id).order_by(Invocation.id)
+    ).first()
+    return None if invocation is None else InvocationRecordOut.model_validate(invocation)
+
+
+def run_turns(store: Session, run_id: int) -> list[TurnOut]:
+    """The store's agent run's turns, oldest first."""
+    rows = store.execute(
+        select(Turn, AgentVersion.version)
+        .join(AgentVersion, AgentVersion.id == Turn.agent_version_id)
+        .where(Turn.agent_run_id == run_id)
+        .order_by(Turn.id)
+    ).all()
+    return [
+        TurnOut(
+            id=turn.id,
+            invocation_id=turn.invocation_id,
+            agent_version_id=turn.agent_version_id,
+            agent_version=version,
+            status=turn.status,
+            error=turn.error,
+            started_at=turn.started_at,
+            finished_at=turn.finished_at,
+            model_calls=turn.model_calls,
+            tool_calls=turn.tool_calls,
+            input_tokens=turn.input_tokens,
+            output_tokens=turn.output_tokens,
+        )
+        for turn, version in rows
+    ]
+
+
 class RunOut(RunSummary):
     # The agent's name, so the page needn't read the agent as well.
     agent_name: str
@@ -83,6 +160,9 @@ class RunOut(RunSummary):
     schema_change_requests: list[SchemaChangeOut]
     # Whether it waits on one of them, and takes no new messages until it's resumed.
     waiting: bool
+    # Why it ran; and its turns, oldest first.
+    invocation: InvocationRecordOut | None
+    turns: list[TurnOut]
 
 
 def get_org_run(store: Session, agent_id: int, run_id: int) -> AgentRun:
@@ -98,25 +178,21 @@ def get_org_run(store: Session, agent_id: int, run_id: int) -> AgentRun:
 
 def run_summary_query():
     """The store's runs, as summaries' columns (`run_summaries` adds the rest)."""
-    return select(
-        AgentRun.id,
-        AgentRun.agent_id,
-        AgentRun.agent_version_id,
-        AgentVersion.version.label("agent_version"),
-        AgentRun.title,
-        AgentRun.message_count,
-        AgentRun.trigger_id,
-        AgentRun.status,
-        AgentRun.started_at,
-        AgentRun.finished_at,
-        AgentRun.tool_call_count,
-        AgentRun.input_tokens,
-        AgentRun.output_tokens,
-        # As the user, by `run_summaries` (`provenance.started_by`).
-        AgentRun.created_by.label("created_by_id"),
-        AgentRun.created_at,
-        AgentRun.updated_at,
-    ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
+    return turns.run_columns(
+        select(
+            AgentRun.id,
+            AgentRun.agent_id,
+            AgentRun.agent_version_id,
+            AgentVersion.version.label("agent_version"),
+            AgentRun.title,
+            AgentRun.message_count,
+            AgentRun.trigger_id,
+            # As the user, by `run_summaries` (`provenance.started_by`).
+            AgentRun.created_by.label("created_by_id"),
+            AgentRun.created_at,
+            AgentRun.updated_at,
+        ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
+    )
 
 
 def run_chats(store: Session, invocation_run, run_ids: Sequence[int]) -> dict[int, tuple[int, str]]:
@@ -190,6 +266,7 @@ def new_agent_run(
     *,
     created_by: int | None,
     trigger_id: int | None = None,
+    by_mention: bool = False,
 ) -> AgentRun:
     """Add (and flush, not commit) a run of the agent's current version to the store of the
     organisation `organisation_id` (`store`, where the agent is), started by the member
@@ -200,6 +277,9 @@ def new_agent_run(
     archived.") or its version can't be built. The caller commits `store`; the share lock taken
     here, held until then, keeps a concurrent archive from missing the run. Also how a schedule
     starts one (`aios.scheduler`), passing its `trigger_id` and no member.
+
+    Its invocation is made with it (`invocations.for_run`): a schedule's, or one started by hand
+    by `created_by`. A mention's run (`by_mention`) has its mention's, which the caller links.
     """
     lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
@@ -213,6 +293,16 @@ def new_agent_run(
     )
     store.add(run)
     store.flush()
+    if not by_mention:
+        invocation = invocations.for_run(
+            store,
+            TriggerTargetKind.agent,
+            agent.id,
+            requested_by=created_by,
+            trigger_id=trigger_id,
+        )
+        invocation.agent_run_id = run.id
+        store.flush()
     return run
 
 
@@ -254,6 +344,8 @@ def get_run(
         instructions=store.get_one(AgentVersion, run.agent_version_id).instructions,
         schema_change_requests=run_requests(db, store, run, user.id),
         waiting=waiting_on(store, run.id),
+        invocation=run_invocation(store, run.id),
+        turns=run_turns(store, run.id),
     )
 
 
@@ -279,6 +371,7 @@ def delete_run(
     # A request its turn is recording meanwhile has been waited for by the lock above
     # (`schema_changes.lock_run`), and is seen here.
     cancelled = [] if in_workflow is not None else cancel_chat_requests(store, [run_id])
+    invocations.fail_deleted_agent_run(store, run.id)
     checkpoints.delete_threads(store, [run.id])
     # And its sandbox session; what names it (its requests, its invocation, its schedule)
     # stops naming it.

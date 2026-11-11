@@ -231,6 +231,22 @@ were, owner and visibility included. Beside the runs they name, they do so by fo
 run deleted clears a schedule's last run, an invocation's run and a request's run; a schedule
 deleted clears its runs' `trigger_id`; a waiting step names its request.
 
+Every run then got an invocation, and its turns became records (store revision `0013`). A run
+started by hand has a `manual` invocation, a schedule's a `schedule` one naming its trigger, and
+a workflow agent node's is a child of its workflow run's (`parent_id`, with the chain of its
+ancestors' ids and its depth), taking its cause (`aios.invocations.for_run`). Each turn of an
+agent run is a row of `aios.turns`: its run, invocation, agent version, status and error, times,
+and model calls, tool calls and tokens (`aios.turns`). A run's status, times and counters are
+derived from its turns (its latest turn's status and times, the counters summed), so the run's
+own columns for them were dropped. The run page lists the turns.
+
+The `reporting` schema holds read-only views for agents to query with `query_data`:
+`reporting.runs` (agent and workflow runs: kind, ids, cause, status, times and summed counters)
+and `reporting.turns` (each turn's ids, cause, status, times, duration and counters). They hold
+identifiers, counts, times and statuses only, never text: no messages, titles, inputs, outputs
+or errors. Both roles read them through the store's default privileges; neither may write
+through them (`upgrade_store` revokes it each migration).
+
 - **Named by store and id.** Ids repeat across stores, so everything outside the store that
   names a row of it carries the store too: worker task arguments (`run_workflow_task`,
   `resume_agent_run_task`, `apply_schema_change_task`), the turn lease's Redis channels, a

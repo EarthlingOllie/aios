@@ -269,6 +269,10 @@ BOOKKEEPING = (
 )
 
 
+# Read-only views for agents to query (runs, turns): read by both roles, written by neither.
+REPORTING = "reporting"
+
+
 # The read-write role's search path in its store: the database's (`_set_up_database`), then the
 # checkpointer's schema (`aios.checkpoints.SCHEMA`), whose tables no other schema's names clash
 # with.
@@ -389,6 +393,13 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
             conn.exec_driver_sql(
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
             )
+            # Nor does anyone write through the reporting views (a view of one table would let
+            # the default privileges' writes through to it).
+            if conn.scalar(text(f"SELECT to_regnamespace('{REPORTING}') IS NOT NULL")):
+                conn.exec_driver_sql(
+                    f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {REPORTING}"
+                    f" FROM {quote(names.rw)}, {quote(names.ro)}"
+                )
             pg = conn.connection.driver_connection
             # Every time too: a newer LangGraph's checkpointer migrations, for every store.
             from aios import checkpoints

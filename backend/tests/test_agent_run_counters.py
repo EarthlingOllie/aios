@@ -1,5 +1,6 @@
 """Agent runs record how they went and what they cost: status, times, tool calls and tokens,
-written from the turn loop at each model step (see `aios.api.agents.turn_stream`)."""
+their turns' (`aios.turns`), written from the turn loop at each model step (see
+`aios.api.agents.turn_stream`)."""
 
 from datetime import datetime
 
@@ -112,7 +113,7 @@ def test_a_failed_turn_is_marked_failed_when_it_ends(api):
     assert run["status"] == "failed"
     assert run["finished_at"] is not None
     # The call never finished, so its usage never arrived: nothing was counted.
-    assert (run["tool_call_count"], run["input_tokens"], run["output_tokens"]) == (None,) * 3
+    assert (run["tool_call_count"], run["input_tokens"], run["output_tokens"]) == (0,) * 3
 
 
 def test_counters_add_up_over_a_runs_turns(api, monkeypatch):

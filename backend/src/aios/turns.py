@@ -1,0 +1,139 @@
+"""The turns of agent runs, as records (`aios.datastores.models.Turn`).
+
+A turn begins when a run is given a message (or carries on after a schema change request is
+decided) and ends with the agent's reply, or why it failed. Each records the invocation its run
+ran for, the agent version it ran on, how it went, when it began and ended, and its model calls,
+tool calls and tokens (`count`, once per model call).
+
+A run's status, times and counters are its turns' (`run_columns`): its status and times are its
+latest turn's, its counters add up over all of them. A run with no turns yet has none of them.
+
+Every turn runs under its run's turn lease (`aios.turn_lease`), so a run's turns don't overlap,
+but each is still written by its own id: a turn that couldn't take the lease ends without
+touching the one that held it.
+
+Everything here is on a session on the run's store, in the caller's transaction.
+"""
+
+from sqlalchemy import Select, func, select, true, update
+from sqlalchemy.orm import Session
+
+from aios import invocations
+from aios.datastores.models import AgentRun, Invocation, Turn
+from aios.models import AgentRunStatus
+
+
+def begin(store: Session, run_id: int) -> int | None:
+    """Begin a turn of the store's run, on the version it's pinned to, for its invocation (which
+    is running from now, if it was waiting to); its id, or None if the run is gone."""
+    run = store.execute(
+        select(AgentRun.id, AgentRun.agent_version_id).where(AgentRun.id == run_id)
+    ).one_or_none()
+    if run is None:
+        return None
+    invocation_id = store.scalar(
+        select(Invocation.id).where(Invocation.agent_run_id == run_id).order_by(Invocation.id)
+    )
+    turn = Turn(
+        agent_run_id=run_id,
+        invocation_id=invocation_id,
+        agent_version_id=run.agent_version_id,
+        status=AgentRunStatus.running,
+    )
+    store.add(turn)
+    if invocation_id is not None:
+        invocations.mark_running(store, invocation_id)
+    store.flush()
+    return turn.id
+
+
+def count(store: Session, turn_id: int, *, tool_calls: int, input_tokens: int, output_tokens: int):
+    """Add a model call to the turn's counters."""
+    store.execute(
+        update(Turn)
+        .where(Turn.id == turn_id)
+        .values(
+            model_calls=Turn.model_calls + 1,
+            tool_calls=Turn.tool_calls + tool_calls,
+            input_tokens=Turn.input_tokens + input_tokens,
+            output_tokens=Turn.output_tokens + output_tokens,
+        )
+    )
+
+
+def end(store: Session, turn_id: int, error: str | None) -> bool:
+    """End the running turn: succeeded, or failed with `error`. Whether it was still running (a
+    turn failed as stalled stays failed)."""
+    ended = store.execute(
+        update(Turn)
+        .where(Turn.id == turn_id, Turn.status == AgentRunStatus.running)
+        .values(
+            status=AgentRunStatus.failed if error is not None else AgentRunStatus.succeeded,
+            error=error,
+            finished_at=func.now(),
+        )
+    )
+    return bool(ended.rowcount)
+
+
+def fail_running(store: Session, *where, error: str) -> list[int]:
+    """Fail the running turns of the runs matching `where` (conditions on `AgentRun`), with
+    `error`; the ids of the runs whose turns were failed."""
+    failed = store.execute(
+        update(Turn)
+        .where(
+            Turn.status == AgentRunStatus.running,
+            Turn.agent_run_id.in_(select(AgentRun.id).where(*where)),
+        )
+        .values(status=AgentRunStatus.failed, error=error, finished_at=func.now())
+        .returning(Turn.agent_run_id)
+    ).scalars()
+    return sorted(set(failed))
+
+
+def running(run_id):
+    """Whether the agent run (an id, or a column of one) has a turn running."""
+    return (
+        select(Turn.id)
+        .where(Turn.agent_run_id == run_id, Turn.status == AgentRunStatus.running)
+        .exists()
+    )
+
+
+def run_columns(query: Select) -> Select:
+    """`query` on `AgentRun` with its run's derived columns: `status`, `started_at` and
+    `finished_at` (its latest turn's) and `tool_call_count`, `input_tokens` and `output_tokens`
+    (summed over its turns); all null for a run with no turns."""
+    latest = (
+        select(Turn.status, Turn.started_at, Turn.finished_at)
+        .where(Turn.agent_run_id == AgentRun.id)
+        .order_by(Turn.id.desc())
+        .limit(1)
+        .lateral("latest_turn")
+    )
+    totals = (
+        select(
+            func.sum(Turn.tool_calls).label("tool_calls"),
+            func.sum(Turn.input_tokens).label("input_tokens"),
+            func.sum(Turn.output_tokens).label("output_tokens"),
+        )
+        .where(Turn.agent_run_id == AgentRun.id)
+        .lateral("turn_totals")
+    )
+    return (
+        query.add_columns(
+            latest.c.status,
+            latest.c.started_at,
+            latest.c.finished_at,
+            totals.c.tool_calls.label("tool_call_count"),
+            totals.c.input_tokens,
+            totals.c.output_tokens,
+        )
+        .outerjoin_from(AgentRun, latest, true())
+        .outerjoin_from(AgentRun, totals, true())
+    )
+
+
+def of_run(store: Session, run_id: int) -> list[Turn]:
+    """The store's run's turns, oldest first."""
+    return list(store.scalars(select(Turn).where(Turn.agent_run_id == run_id).order_by(Turn.id)))

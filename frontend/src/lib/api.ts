@@ -406,7 +406,7 @@ export type RunSummary = {
   /** The trigger (e.g. a schedule) that started the run, if one did and it still exists. */
   trigger_id: number | null;
   /** How its latest turn is going or went, and when it began and ended. Null, with the
-   * counters, for a run from before these were kept (see `lib/agent-runs`). */
+   * counters, for a run with no turns yet (see `lib/agent-runs`). */
   status: AgentRunStatus | null;
   started_at: string | null;
   finished_at: string | null;
@@ -535,6 +535,43 @@ export type NotificationList = {
   notifications: Notification[];
 };
 
+export type InvocationCause = "mention" | "schedule" | "manual";
+
+/** Why a run ran: a mention, a schedule, or a person starting it by hand. A workflow agent
+ * node's is a child of its workflow run's. */
+export type InvocationRecord = {
+  id: number;
+  cause: InvocationCause;
+  status: "queued" | "briefing" | "running" | "succeeded" | "failed";
+  requested_by: number | null;
+  trigger_id: number | null;
+  parent_id: number | null;
+  /** Its ancestors' ids, the root first; `depth` is how many. */
+  ancestor_ids: number[];
+  depth: number;
+  chat_id: number | null;
+  message_id: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+/** One turn of an agent run: the version it ran on, how it went, and what it cost. */
+export type Turn = {
+  id: number;
+  invocation_id: number | null;
+  agent_version_id: number;
+  agent_version: number;
+  status: AgentRunStatus;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  model_calls: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+};
+
 export type Run = RunSummary & {
   /** The agent's name, so the page needn't read the agent as well. */
   agent_name: string;
@@ -546,6 +583,10 @@ export type Run = RunSummary & {
   schema_change_requests: SchemaChangeRequest[];
   /** Whether it waits on one of them: it takes no new messages until it's resumed. */
   waiting: boolean;
+  /** Why it ran. */
+  invocation: InvocationRecord | null;
+  /** Its turns, oldest first. */
+  turns: Turn[];
 };
 
 export type WorkflowNodeKind = "agent" | "workflow";
