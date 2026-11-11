@@ -42,12 +42,14 @@ def revision(name: str):
 
 
 def before_the_store(db) -> None:
-    """Put agents, skills and workflows back in the platform database, empty, as they were
-    before they moved to the stores (revision 0060's downgrade), in this test's transaction only,
-    unless they're back already."""
+    """Put runs, and then agents, skills and workflows, back in the platform database, empty, as
+    they were before they moved to the stores (revisions 0062's and 0060's downgrades), in this
+    test's transaction only, unless they're back already."""
     if db.scalar(text("SELECT to_regclass('agents')")) is not None:
         return
     with Operations.context(MigrationContext.configure(db.connection())):
+        if db.scalar(text("SELECT to_regclass('agent_runs')")) is None:
+            revision("0062_runs_to_store").downgrade()
         revision("0060_agents_skills_workflows_to_store").downgrade()
 
 

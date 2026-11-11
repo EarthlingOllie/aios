@@ -350,13 +350,13 @@ def test_a_resume_that_cant_start_keeps_the_run_waiting_and_is_tried_again(
     turn, waiting_between = checkpoints.turn, []
 
     @asynccontextmanager
-    async def down_the_first_time(run_id, lease=None):
+    async def down_the_first_time(data_store_id, run_id, lease=None):
         if not waiting_between:
             waiting_between.append(None)
             raise OperationalError("the database is down")
         with SessionLocal() as db:
-            waiting_between.append(waiting_on(db, run_id))
-        async with turn(run_id, lease) as saver:
+            waiting_between.append(waiting_on(db, data_store_id, run_id))
+        async with turn(data_store_id, run_id, lease) as saver:
             yield saver
 
     monkeypatch.setattr(checkpoints, "turn", down_the_first_time)
@@ -473,4 +473,4 @@ def test_an_apply_whose_resume_cant_be_queued_is_tried_again(api, agent, queued,
 
     task.apply(args=args)  # as the worker runs it, retries and all
 
-    assert resumes == ["refused", (request["run"]["run_id"],)]
+    assert resumes == ["refused", (request["data_store_id"], request["run"]["run_id"])]

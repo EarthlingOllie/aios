@@ -69,9 +69,10 @@ never blocked, by any member.
 
 ## Runs
 
-- A **run** (`workflow_runs`) is given one text input and pins the version that's current when it
-  starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the `workflows`
-  queue, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`),
+- A **run** (`workflow_runs`, in the organisation's store with its steps and its agent nodes'
+  runs: see [Stores](stores.md#runs)) is given one text input and pins the version that's
+  current when it starts. A worker of its own runs it (`aios.run_workflow`, a Celery task on the
+  `workflows` queue, given the run's store and its id there, so ingests don't wait behind runs, with its own time limit, `WORKFLOW_RUN_TIME_LIMIT`),
   refreshing its heartbeat (`heartbeat_at`) as it goes; a run whose heartbeat has stopped (its
   worker died) is failed when it's next read or its task comes round again, and one whose
   worker's event loop has made no progress for `WORKFLOW_RUN_NO_PROGRESS_LIMIT` (5 minutes;

@@ -1,46 +1,46 @@
-"""Agent run history, kept by LangGraph's Postgres checkpointer: one thread per run.
+"""Agent run history, kept by LangGraph's Postgres checkpointer: one thread per run,
+`agent-run-<id>`, in the run's organisation's store, beside the run (`aios.datastores.models`).
 
-The checkpointer's tables live in their own schema (`langgraph`), which LangGraph creates and
-migrates itself (`setup`); Alembic manages the `public` schema only and doesn't see them,
-except that downgrading past 0005 drops the schema along with the runs its threads belong to.
+Each store has its own checkpointer, its tables in the store's `langgraph` schema. The store's
+roles can't create anything, so its setup runs as the store's owner, and before the store's
+first use: from the store tree's revision 0010, and again each time the store is migrated
+(`set_up_store`, from `aios.datastores.provision.upgrade_store`), so a newer LangGraph's
+migrations reach every store with the deploy that brings it.
+
+The checkpointer connects to the store as its read-write role, through the pooler when one is
+configured (`aios.datastores.store_conninfo`), leaving no session state behind: no prepared
+statements, and nothing set at connection startup. The search path that finds its tables is the
+role's default in the store (`aios.datastores.provision.upgrade_store`). Like any table of the
+store's, they're readable by its read-only role: conversations are the organisation's.
 """
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
+import psycopg
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, Connection
-from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from aios import turn_lease
-from aios.config import get_settings, libpq_conninfo
+from aios.datastores.connections import store_conninfo
 from aios.turn_lease import Lease, LeaseLost, RunBusy, RunGone
 
 __all__ = ["Lease", "LeaseLost", "RunBusy", "RunGone"]
 
+# Where the checkpointer's tables are in each store; the runs are in `aios`.
 SCHEMA = "langgraph"
+TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
-# The setup's lock key (the first of the two-int form of a transaction's advisory lock).
-_SETUP_LOCK = 0x6C67
-
-_ready = False
-
-
-def conninfo() -> str:
-    """DATABASE_URL as plain libpq connection info (it's written for SQLAlchemy)."""
-    return libpq_conninfo(get_settings().database_url)
-
-
-# No session state, so the connections work through a pooler in transaction mode: no prepared
-# statements, and nothing set at connection startup. The search path that finds the
-# checkpointer's tables is the app's role's default on the database (migration 0057).
+# No session state, so the connections work through a pooler in transaction mode.
 _CONNECT_KWARGS = {
     "autocommit": True,
     "prepare_threshold": None,
@@ -49,6 +49,7 @@ _CONNECT_KWARGS = {
 
 
 def thread_id(run_id: int) -> str:
+    """The run's thread, in its store: ids are the store's own, so the name needn't say whose."""
     return f"agent-run-{run_id}"
 
 
@@ -56,44 +57,34 @@ def thread_config(run_id: int) -> RunnableConfig:
     return {"configurable": {"thread_id": thread_id(run_id)}}
 
 
-class _SetupSaver(AsyncPostgresSaver):
-    # LangGraph builds its indexes CONCURRENTLY, which can't run inside a transaction; the setup
-    # runs in one, so the indexes are built plainly (only ever on the first setup, on tables
-    # still empty, since each migration runs once).
-    MIGRATIONS = [m.replace(" CONCURRENTLY", "") for m in AsyncPostgresSaver.MIGRATIONS]
+# LangGraph builds its indexes CONCURRENTLY, which can't run inside a transaction; the setup runs
+# in the migration's, so they're built plainly (on tables still empty, the first time).
+MIGRATIONS = [m.replace(" CONCURRENTLY", "") for m in PostgresSaver.MIGRATIONS]
 
 
-async def setup(conn: AsyncConnection) -> None:
-    """Create or migrate the checkpointer's tables, once per process (it's idempotent).
-
-    In one transaction, under a lock that lasts only as long as it, so replicas starting
-    together don't migrate at the same time."""
-    global _ready
-    if _ready:
-        return
-    async with conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock(%s, 0)", (_SETUP_LOCK,))
-        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-        # Where its tables are created: the role's default puts `public` first.
-        await conn.execute(f"SET LOCAL search_path TO {SCHEMA}")
-        await _SetupSaver(conn).setup()
-    _ready = True
-
-
-async def ensure_ready() -> None:
-    """Set up the checkpointer's tables now, if this process hasn't yet, rather than in its
-    first turn (see `setup`)."""
-    if _ready:
-        return
-    conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
-    async with conn:
-        await setup(conn)
+def set_up_store(conn: psycopg.Connection) -> None:
+    """Create the checkpointer's schema and tables in a store, or bring them up to this
+    LangGraph's, as the store's owner (`conn`); in the caller's transaction. Does nothing once
+    they're up to date."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        # LangGraph's statements name its tables unqualified: in its schema, for this transaction.
+        was = cur.execute("SELECT current_setting('search_path') AS path").fetchone()["path"]
+        cur.execute(f"SET LOCAL search_path TO {SCHEMA}")
+        cur.execute(MIGRATIONS[0])
+        row = cur.execute("SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1").fetchone()
+        version = -1 if row is None else row["v"]
+        for v in range(version + 1, len(MIGRATIONS)):
+            cur.execute(MIGRATIONS[v])
+            cur.execute("INSERT INTO checkpoint_migrations (v) VALUES (%s)", (v,))
+        cur.execute("SELECT set_config('search_path', %s, true)", (was,))
 
 
 # Whether the lease still holds, in the write's transaction: the row stays locked (shared) until
-# the write commits, so stopping the turn (which clears the token) waits for a write underway.
+# the write commits, so stopping the turn (which clears the token), or deleting the run, waits for
+# a write underway.
 _FENCE = (
-    "SELECT 1 FROM public.agent_runs WHERE id = %s AND lease_token = %s"
+    "SELECT 1 FROM aios.agent_runs WHERE id = %s AND lease_token = %s"
     " AND lease_until > now() FOR SHARE"
 )
 
@@ -129,72 +120,74 @@ class FencedSaver(AsyncPostgresSaver):
 
 
 @asynccontextmanager
-async def turn(run_id: int, lease: Lease | None = None) -> AsyncIterator[FencedSaver]:
-    """A checkpointer for one turn of a run, on a connection of its own, holding the run's turn
-    lease (`aios.turn_lease`) until the turn ends: turns of the same run (two tabs, two replicas)
-    take turns, each starting from the history the previous one left.
+async def turn(
+    data_store_id: uuid.UUID, run_id: int, lease: Lease | None = None
+) -> AsyncIterator[FencedSaver]:
+    """A checkpointer for one turn of a run in the store `data_store_id`, on a connection of its
+    own, holding the run's turn lease (`aios.turn_lease`) until the turn ends: turns of the same
+    run (two tabs, two replicas) take turns, each starting from the history the previous one
+    left.
 
     `lease` is one the caller already took (the chat endpoint, to answer 409 before streaming);
     otherwise this waits for it. Raises `RunBusy` if the run stays busy past the wait, and
-    `RunGone` if it has been deleted (its thread has been deleted, or will be, so nothing
-    written now would be kept). One deleted or stopped later ends the turn (`stop_turns`)."""
-    await ensure_ready()
+    `RunGone` if it has been deleted (its thread has gone with it, so nothing written now would
+    be kept). One deleted or stopped later ends the turn (`stop_turns`)."""
     if lease is None:
-        lease = await turn_lease.acquire(run_id)
+        lease = await turn_lease.acquire(data_store_id, run_id)
     async with turn_lease.held(lease):
-        conn = await AsyncConnection.connect(conninfo(), **_CONNECT_KWARGS)
+        conninfo = await asyncio.to_thread(store_conninfo, data_store_id)
+        conn = await AsyncConnection.connect(conninfo, **_CONNECT_KWARGS)
         async with conn:
             yield FencedSaver(conn, lease)
 
 
-def stop_turns(db: Session, run_ids: list[int]) -> None:
-    """End the turns underway of these runs (deleted, say), wherever they run: see
-    `turn_lease.stop`. Commits."""
-    turn_lease.stop(db, run_ids)
+def stop_turns(store: Session, data_store_id: uuid.UUID, run_ids: list[int]) -> None:
+    """End the turns underway of these runs of the store (`store`, a session on it) wherever
+    they run: see `turn_lease.stop`. Commits."""
+    turn_lease.stop(store, data_store_id, run_ids)
 
 
-def turns_underway(db: Session, run_ids: list[int]) -> set[int]:
-    """Those of these runs with a turn underway, in any process: their lease is held."""
-    return turn_lease.underway(db, run_ids)
+def turns_underway(store: Session, run_ids: list[int]) -> set[int]:
+    """Those of these runs (in the store `store` is a session on) with a turn underway, in any
+    process: their lease is held."""
+    return turn_lease.underway(store, run_ids)
 
 
 @contextmanager
-def sync_saver() -> Iterator[PostgresSaver]:
-    """A checkpointer outside a turn, on a connection of its own (e.g. to read many runs'
-    histories on one)."""
-    with Connection.connect(conninfo(), **_CONNECT_KWARGS) as conn:
+def sync_saver(data_store_id: uuid.UUID) -> Iterator[PostgresSaver]:
+    """A checkpointer on the store outside a turn, on a connection of its own (e.g. to read many
+    runs' histories on one)."""
+    with Connection.connect(store_conninfo(data_store_id), **_CONNECT_KWARGS) as conn:
         yield PostgresSaver(conn)
 
 
-def history(run_id: int, saver: PostgresSaver | None = None) -> list[BaseMessage]:
-    """The run's conversation as of its latest checkpoint (empty before its first turn); read
-    with `saver` (see `sync_saver`), or on a connection of its own."""
+def history(
+    data_store_id: uuid.UUID, run_id: int, saver: PostgresSaver | None = None
+) -> list[BaseMessage]:
+    """The conversation of the store's run as of its latest checkpoint (empty before its first
+    turn); read with `saver` (see `sync_saver`), or on a connection of its own."""
     if saver is None:
-        with sync_saver() as saver:
-            return history(run_id, saver)
-    try:
-        checkpoint = saver.get_tuple(thread_config(run_id))
-    except UndefinedTable:  # no turn has run anywhere yet (see `setup`)
-        return []
+        with sync_saver(data_store_id) as saver:
+            return history(data_store_id, run_id, saver)
+    checkpoint = saver.get_tuple(thread_config(run_id))
     if checkpoint is None:
         return []
     return list(checkpoint.checkpoint["channel_values"].get("messages", []))
 
 
-def delete_threads(run_ids: list[int]) -> None:
-    """Delete the runs' checkpoints. They aren't tied to `agent_runs`, so they don't cascade.
-
-    Only once the runs' deletion is committed: a turn still running can't write the thread back,
-    as its writes check its lease on the run's row (`FencedSaver`), and a write underway holds
-    that row until it commits, so the deletion waited for it."""
+def delete_threads(store: Session, run_ids: list[int]) -> None:
+    """Delete the runs' threads, in the transaction of `store` (a session on their store) that
+    deletes the runs: a turn still running can't write the thread back, as its writes check its
+    lease on the run's row (`FencedSaver`), and a write underway holds that row until it commits,
+    so the deletion waits for it."""
     if not run_ids:
         return
-    with sync_saver() as saver:
-        try:
-            for run_id in run_ids:
-                saver.delete_thread(thread_id(run_id))
-        except UndefinedTable:
-            pass
+    threads = [thread_id(run_id) for run_id in run_ids]
+    for table in TABLES:
+        store.execute(
+            text(f"DELETE FROM {SCHEMA}.{table} WHERE thread_id = ANY(:threads)"),
+            {"threads": threads},
+        )
 
 
 def messages_out(messages: list[BaseMessage]) -> list[dict[str, Any]]:

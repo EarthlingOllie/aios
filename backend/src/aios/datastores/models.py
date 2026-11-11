@@ -17,6 +17,7 @@ from sqlalchemy import (
     Column,
     Computed,
     DateTime,
+    Double,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -36,7 +37,8 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from aios.models.workflows import WorkflowNodeKind
+from aios.models.agents import AgentRunStatus
+from aios.models.workflows import WorkflowNodeKind, WorkflowRunStatus, WorkflowStepStatus
 
 EMBEDDING_DIM = 1024
 
@@ -443,6 +445,173 @@ class WorkflowEdge(StoreBase):
             name="fk_workflow_edges_target",
         ),
         {"comment": "Each workflow version's edges: control passes from source to target"},
+    )
+
+
+# Runs: the organisation's agent runs, with their sandboxes, and workflow runs, with their steps.
+# A run's conversation is its checkpointer thread (`aios.checkpoints`), in the same store.
+
+
+class AgentRun(StoreBase):
+    """One conversation with an agent. Its history is the checkpointer thread `agent-run-<id>`,
+    in this store (`aios.checkpoints`).
+
+    How it went and what it cost are written by its turns (`aios.api.agents.turn_stream`): the
+    status and times are its latest turn's, the counters add up over all of them.
+    """
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"))
+    # Pinned when the run starts: editing the agent mid-conversation doesn't change the run.
+    agent_version_id: Mapped[int] = mapped_column(ForeignKey("agent_versions.id"))
+    title: Mapped[str | None] = mapped_column(String(255))
+    # The schedule (a platform trigger, by id) that started the run, if one did; not a foreign
+    # key, so it may name one deleted since.
+    trigger_id: Mapped[int | None] = mapped_column(Integer)
+    # The member who started it (a platform user id, resolved through the people mirror); null
+    # for a schedule's run.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    # Messages in the thread as of its last turn, for listing runs without loading history.
+    message_count: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+    # Running while a turn of it is in progress, then how that turn ended.
+    status: Mapped[AgentRunStatus | None] = mapped_column(
+        Enum(AgentRunStatus, name="agent_run_status")
+    )
+    # When its latest turn began and ended.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The model's tool calls, and the tokens of each model call, summed: input tokens count the
+    # context again at each step, as bills do.
+    tool_call_count: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # While a turn runs outside a request (`aios.firing`), refreshed by the process running it;
+    # a running run whose heartbeat has stopped has lost its process, and is failed
+    # (`aios.firing.fail_stalled`). Null for a turn bound to a request, which ends with it.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The turn lease (`aios.turn_lease`): the token of the turn that holds the run, and when its
+    # hold lapses unless refreshed. Both null while no turn holds it; an expired one is free.
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_agent_runs_agent_id", "agent_id"),
+        Index("ix_agent_runs_agent_version_id", "agent_version_id"),
+        # What the stall sweep looks at.
+        Index(
+            "ix_agent_runs_running_heartbeat",
+            "heartbeat_at",
+            postgresql_where=sql_text("status = 'running' AND heartbeat_at IS NOT NULL"),
+        ),
+        {"comment": "Conversations with agents: each run's history is its checkpointer thread"},
+    )
+
+
+class SandboxSession(StoreBase):
+    """The sandbox an agent run's `run_python` calls go to (see `aios.sandbox`)."""
+
+    __tablename__ = "sandbox_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_run_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), unique=True
+    )
+    # The backend's id for the sandbox (a task ARN, a broker session id).
+    ref: Mapped[str] = mapped_column(String(512))
+    # Where exec calls go, and the bearer token they need (on the deny list,
+    # `aios.datastores.provision.DENIED_COLUMNS`).
+    endpoint: Mapped[str] = mapped_column(String(512))
+    secret: Mapped[str] = mapped_column(String(255))
+    # This sandbox replaced one that had gone, and no call has run since: the next call's result
+    # tells the model that /work was reset.
+    replaced: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = ({"comment": "The sandbox each agent run's Python runs in"},)
+
+
+class WorkflowRun(StoreBase):
+    """One run of a workflow, on the version that was current when it started
+    (`aios.workflows.execute_run`)."""
+
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"))
+    # Pinned when the run starts: editing the workflow mid-run doesn't change the run.
+    workflow_version_id: Mapped[int] = mapped_column(ForeignKey("workflow_versions.id"))
+    # The member who started it (a platform user id); null for a schedule's run.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    # The schedule (a platform trigger, by id) that started it, if one did.
+    trigger_id: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[WorkflowRunStatus] = mapped_column(
+        Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
+    )
+    # Given to the nodes with no incoming edge.
+    input: Mapped[str] = mapped_column(Text)
+    # The sink nodes' outputs once it has succeeded; the first error once it has failed.
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Refreshed by the worker while it runs the run, so a run whose worker died can be told from
+    # one still going (`aios.workflows.alive`).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # While it's waiting, since when; and how long it has waited in all before that. Waiting
+    # doesn't count towards the run's time limit.
+    waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    waited_seconds: Mapped[float] = mapped_column(Double, server_default=sql_text("0"))
+
+    __table_args__ = (
+        Index("ix_workflow_runs_workflow_id", "workflow_id"),
+        Index("ix_workflow_runs_workflow_version_id", "workflow_version_id"),
+        {"comment": "Runs of workflows: each walks its pinned version's graph"},
+    )
+
+
+class WorkflowRunStep(StoreBase):
+    """A node of a run's graph, at any depth, from when it starts."""
+
+    __tablename__ = "workflow_run_steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"))
+    # Node keys from the run's workflow down to the node: ["review", "critic"] is node "critic"
+    # of the subworkflow at top-level node "review".
+    path: Mapped[list[str]] = mapped_column(ARRAY(String(64)))
+    kind: Mapped[WorkflowNodeKind] = mapped_column(
+        Enum(WorkflowNodeKind, name="workflow_node_kind")
+    )
+    status: Mapped[WorkflowStepStatus] = mapped_column(
+        Enum(WorkflowStepStatus, name="workflow_step_status"), default=WorkflowStepStatus.running
+    )
+    input: Mapped[str] = mapped_column(Text)
+    output: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    # An agent node's conversation. Deleting the workflow run deletes it (`delete_workflow_run`).
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL")
+    )
+    # While an agent node waits: the schema change request (on the platform, by id) it waits on.
+    waiting_on_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_workflow_run_steps_run_id", "run_id"),
+        Index("ix_workflow_run_steps_agent_run_id", "agent_run_id"),
+        Index("ix_workflow_run_steps_waiting_on_request_id", "waiting_on_request_id"),
+        {"comment": "Each workflow run's steps: a node of its graph, at any depth"},
     )
 
 

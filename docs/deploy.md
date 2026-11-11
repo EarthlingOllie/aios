@@ -49,7 +49,8 @@ master user is a member of `aios_app`.
 
 The app reaches data stores through PgBouncer in transaction mode (`infra/terraform/pooler.tf`):
 the `pooler` ECS service, at `pooler.<name>.internal:6432` (`DATA_STORE_POOLER_ADDRESS` in every
-backend task). The platform database, the provisioner and the checkpointer connect directly.
+backend task), the runs' checkpointers among them. The platform database and the provisioner
+connect directly.
 RDS Proxy isn't used: it pins sessions that use advisory locks or session settings, and has no
 per-database pools.
 

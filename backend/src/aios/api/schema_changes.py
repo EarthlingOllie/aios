@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select, update
+from sqlalchemy import ColumnElement, case, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import organisations
@@ -29,7 +29,9 @@ from aios.datastores import (
     can_approve,
     data_store_for,
     dropped,
+    store_session,
 )
+from aios.datastores.models import AgentRun
 from aios.datastores.schema_changes import (
     SchemaChange,
     clear_notifications,
@@ -39,7 +41,6 @@ from aios.datastores.schema_changes import (
 )
 from aios.db import DB
 from aios.models import (
-    AgentRun,
     DataStore,
     Organisation,
     SchemaChangeRequest,
@@ -116,7 +117,7 @@ class Rejection(BaseModel):
 
 
 def request_out(
-    request: SchemaChangeRequest, run: AgentRun | None, can_decide: bool
+    request: SchemaChangeRequest, run: RequestRun | None, can_decide: bool
 ) -> SchemaChangeOut:
     """The request; `can_decide` is whether the user may decide its store's requests
     (`can_approve`), which it can be only while it's pending."""
@@ -128,7 +129,7 @@ def request_out(
         reason=request.reason,
         sql=request.sql,
         ops=request.ops,
-        run=RequestRun(agent_id=run.agent_id, run_id=run.id, title=run.title) if run else None,
+        run=run,
         tool_call_id=request.tool_call_id,
         note=request.note,
         error=request.error,
@@ -145,10 +146,24 @@ def confirmation_for(request: SchemaChangeRequest) -> str | None:
     return confirmation(SchemaChange.model_validate({"ops": request.ops}))
 
 
-def _query():
-    return select(SchemaChangeRequest, AgentRun).outerjoin(
-        AgentRun, AgentRun.id == SchemaChangeRequest.requested_by_run
-    )
+def request_run(run: AgentRun) -> RequestRun:
+    return RequestRun(agent_id=run.agent_id, run_id=run.id, title=run.title)
+
+
+def request_runs(
+    data_store_id: uuid.UUID, requests: list[SchemaChangeRequest]
+) -> dict[int, RequestRun]:
+    """The runs, in the store, that made these requests (all the store's), by id: those that
+    still exist; none while the store can't be read (the requests show without them)."""
+    ids = {r.requested_by_run for r in requests if r.requested_by_run is not None}
+    if not ids:
+        return {}
+    try:
+        with store_session(data_store_id, "ro") as store:
+            runs = store.scalars(select(AgentRun).where(AgentRun.id.in_(ids))).all()
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        return {}
+    return {run.id: request_run(run) for run in runs}
 
 
 def may_decide(db: Session, user_id: int, store: DataStore) -> bool:
@@ -159,28 +174,37 @@ def may_decide(db: Session, user_id: int, store: DataStore) -> bool:
     return can(organisations.role(db, store.owner_organisation_id, user_id), Action.decide)
 
 
-def run_requests(db: Session, run_id: int, user_id: int) -> list[SchemaChangeOut]:
-    """The requests a run made, oldest first (for its chat)."""
-    rows = db.execute(
-        _query()
-        .where(SchemaChangeRequest.requested_by_run == run_id)
+def of_run(data_store_id: uuid.UUID, run_id: int) -> tuple[ColumnElement[bool], ...]:
+    """Requests the store's run made: run ids are the store's own, so it's named with it."""
+    return (
+        SchemaChangeRequest.data_store_id == data_store_id,
+        SchemaChangeRequest.requested_by_run == run_id,
+    )
+
+
+def run_requests(
+    db: Session, data_store_id: uuid.UUID, run: AgentRun, user_id: int
+) -> list[SchemaChangeOut]:
+    """The requests the store's run made, oldest first (for its chat)."""
+    requests = db.scalars(
+        select(SchemaChangeRequest)
+        .where(*of_run(data_store_id, run.id))
         .order_by(SchemaChangeRequest.created_at)
     ).all()
+    if not requests:
+        return []
     # One run's requests are all on its store: whether the user may decide them is asked once.
-    deciders = {}
-    for request, _ in rows:
-        if request.data_store_id not in deciders:
-            deciders[request.data_store_id] = may_decide(db, user_id, request.data_store)
-    return [request_out(request, run, deciders[request.data_store_id]) for request, run in rows]
+    decides = may_decide(db, user_id, requests[0].data_store)
+    return [request_out(request, request_run(run), decides) for request in requests]
 
 
-def waiting_on(db: Session, run_id: int) -> bool:
-    """Whether the run waits on a request: not yet resumed with its outcome."""
+def waiting_on(db: Session, data_store_id: uuid.UUID, run_id: int) -> bool:
+    """Whether the store's run waits on a request: not yet resumed with its outcome."""
     return (
         db.scalar(
             select(func.count())
             .select_from(SchemaChangeRequest)
-            .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
+            .where(*of_run(data_store_id, run_id), *not_given())
         )
         > 0
     )
@@ -198,8 +222,8 @@ def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
     if not can_approve(db, user.id, store):
         return []
     pending = SchemaChangeRequest.status == SchemaChangeStatus.pending
-    rows = db.execute(
-        _query()
+    requests = db.scalars(
+        select(SchemaChangeRequest)
         .where(SchemaChangeRequest.data_store_id == store_id)
         .order_by(
             case((pending, 0), else_=1),
@@ -208,7 +232,10 @@ def list_requests(user: CurrentUser, org: CurrentOrganisation, db: DB):
         )
     ).all()
     decides = may_decide(db, user.id, store)
-    return [request_out(request, run, decides) for request, run in rows]
+    runs = request_runs(store_id, list(requests))
+    return [
+        request_out(request, runs.get(request.requested_by_run), decides) for request in requests
+    ]
 
 
 def _get(
@@ -229,7 +256,7 @@ def _get(
 
 def _out(db: Session, request: SchemaChangeRequest, user_id: int) -> SchemaChangeOut:
     """A request `_get` found, for the user."""
-    run = db.get(AgentRun, request.requested_by_run) if request.requested_by_run else None
+    run = request_runs(request.data_store_id, [request]).get(request.requested_by_run)
     return request_out(request, run, may_decide(db, user_id, request.data_store))
 
 

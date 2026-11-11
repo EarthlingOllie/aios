@@ -307,8 +307,7 @@ def test_another_organisation_cant_see_or_decide_the_stores_requests_or_restore_
 def test_the_export_is_the_organisations_and_takes_every_members_runs(
     db, api, user, member, history_tasks, monkeypatch
 ):
-    started: list[int] = []
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", started.append)
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
     store_id = store_of(user)
     mine = make_agent(api, "Mine")
     my_run = api.post(f"/api/agents/{mine['id']}/runs").json()
@@ -320,7 +319,7 @@ def test_the_export_is_the_organisations_and_takes_every_members_runs(
         workflow = make_workflow(api, "flow", [agent_node("one", theirs)])
         flow_run = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": "go"}).json()
     with use_model(replies("went")):
-        asyncio.run(execute_run(flow_run["id"]))
+        asyncio.run(execute_run(store_id, flow_run["id"]))
 
     # Switched on by another admin, it's on for the organisation.
     organisations.change_role(db, org_of(db, user), member.id, Role.admin)

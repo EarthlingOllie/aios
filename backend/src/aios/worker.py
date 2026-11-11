@@ -321,16 +321,18 @@ def export_pending_history_task() -> None:
     soft_time_limit=settings.workflow_run_time_limit + 60,
     time_limit=settings.workflow_run_time_limit + 120,
 )
-def run_workflow_task(run_id: int) -> None:
+def run_workflow_task(data_store_id: str, run_id: int) -> None:
+    """Run (or carry on) the store's workflow run `run_id`: ids are each store's own."""
     from aios import tracing
     from aios.workflows import execute_run, fail_run, time_limit_error
 
+    store_id = uuid.UUID(data_store_id)
     try:
         # Only a queued or waiting run starts, so a redelivered message doesn't run it twice;
         # one left running by a worker that died (its heartbeat stopped) is failed instead.
-        asyncio.run(execute_run(run_id))
+        asyncio.run(execute_run(store_id, run_id))
     except SoftTimeLimitExceeded:
-        fail_run(run_id, time_limit_error())
+        fail_run(store_id, run_id, time_limit_error())
     finally:
         # A worker has no app shutdown to flush traces on (see `aios.main`).
         tracing.flush()
@@ -419,11 +421,12 @@ def enqueue_resume(request_id: uuid.UUID) -> None:
         if request is None or not request.status.decided or request.resumed_at is not None:
             return
         run_id = request.requested_by_run
-        workflow_run_id = workflow_run_waiting_on(db, request)
+        store_id = request.data_store_id
+    workflow_run_id = workflow_run_waiting_on(request)
     if workflow_run_id is not None:
-        run_workflow_task.delay(workflow_run_id)
+        run_workflow_task.delay(str(store_id), workflow_run_id)
     elif run_id is not None:
-        resume_agent_run_task.delay(run_id)
+        resume_agent_run_task.delay(str(store_id), run_id)
 
 
 @celery_app.task(
@@ -434,13 +437,13 @@ def enqueue_resume(request_id: uuid.UUID) -> None:
     max_retries=DECISION_RETRIES,
     retry_backoff=True,
 )
-def resume_agent_run_task(run_id: int) -> None:
-    """Resume an agent run waiting on schema change requests, with the outcomes of those that
-    are decided (`aios.api.agents.resume_run`)."""
+def resume_agent_run_task(data_store_id: str, run_id: int) -> None:
+    """Resume the store's agent run waiting on schema change requests, with the outcomes of
+    those that are decided (`aios.api.agents.resume_run`)."""
     from aios import tracing
     from aios.api.agents import resume_run
 
     try:
-        asyncio.run(resume_run(run_id))
+        asyncio.run(resume_run(uuid.UUID(data_store_id), run_id))
     finally:
         tracing.flush()

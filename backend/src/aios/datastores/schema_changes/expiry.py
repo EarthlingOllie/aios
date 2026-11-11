@@ -5,13 +5,20 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, or_, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
 
 from aios import notifications
 from aios.config import get_settings
+from aios.datastores.connections import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    store_session,
+)
+from aios.datastores.models import WorkflowRunStep
 from aios.db import SessionLocal
-from aios.models import SchemaChangeRequest, SchemaChangeStatus, WorkflowRunStep
+from aios.models import SchemaChangeRequest, SchemaChangeStatus
 
 
 def _notification_ref(request: SchemaChangeRequest) -> dict[str, str]:
@@ -105,18 +112,37 @@ def expired_not_resumed() -> list[uuid.UUID]:
         SchemaChangeRequest.status == SchemaChangeStatus.expired,
         SchemaChangeRequest.resumed_at.is_(None),
     ]
-    resumable = or_(
-        SchemaChangeRequest.requested_by_run.is_not(None),
-        SchemaChangeRequest.id.in_(
-            select(WorkflowRunStep.waiting_on_request_id).where(
-                WorkflowRunStep.waiting_on_request_id.is_not(None)
-            )
-        ),
-    )
     with SessionLocal() as db:
-        db.execute(
-            update(SchemaChangeRequest).where(*not_given, ~resumable).values(resumed_at=func.now())
-        )
+        runless = db.execute(
+            select(SchemaChangeRequest.id, SchemaChangeRequest.data_store_id).where(
+                *not_given, SchemaChangeRequest.requested_by_run.is_(None)
+            )
+        ).all()
+    by_store: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for request_id, store_id in runless:
+        by_store.setdefault(store_id, set()).add(request_id)
+    # Those no workflow step waits on, in their store (left be while it can't be read).
+    gone: set[uuid.UUID] = set()
+    for store_id, ids in by_store.items():
+        try:
+            with store_session(store_id, "ro") as store:
+                waited = set(
+                    store.scalars(
+                        select(WorkflowRunStep.waiting_on_request_id).where(
+                            WorkflowRunStep.waiting_on_request_id.in_(ids)
+                        )
+                    )
+                )
+        except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+            continue
+        gone |= ids - waited
+    with SessionLocal() as db:
+        if gone:
+            db.execute(
+                update(SchemaChangeRequest)
+                .where(*not_given, SchemaChangeRequest.id.in_(gone))
+                .values(resumed_at=func.now())
+            )
         ids = list(db.scalars(select(SchemaChangeRequest.id).where(*not_given)))
         db.commit()
     return ids

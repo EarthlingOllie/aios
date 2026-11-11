@@ -224,7 +224,31 @@ def store_session(data_store_id: uuid.UUID, role: Role = "rw") -> Iterator[Sessi
     Raises as `store_engine` does, and `DataStoreBusy` if the role has no connections free."""
     # Like the platform's sessions (`aios.db`), rows stay readable after a commit.
     with Session(store_engine(data_store_id, role), expire_on_commit=False) as session:
+        session.info[_STORE_ID] = data_store_id
         yield session
+
+
+_STORE_ID = "aios.data_store_id"
+
+
+def store_id_of(session: Session) -> uuid.UUID:
+    """The id of the data store a `store_session` is a session on: e.g. to name a run of it
+    outside the store, where ids repeat across stores."""
+    return session.info[_STORE_ID]
+
+
+def store_conninfo(data_store_id: uuid.UUID, role: Role = "rw") -> str:
+    """Where to connect to the data store's database as its `role`, as libpq connection info,
+    for what connects with psycopg rather than through an engine (the checkpointer,
+    `aios.checkpoints`): through the pooler when one is configured, as `store_url` says. Its
+    caller mustn't leave session state behind (see the module docstring).
+
+    Raises as `store_engine` does."""
+    _check_role(role)
+    with SessionLocal() as db:
+        store = _ready_store(db, data_store_id)
+    url = store_url(store, role).set(drivername="postgresql")
+    return url.render_as_string(hide_password=False)
 
 
 def store_status(data_store_id: uuid.UUID) -> DataStoreStatus:

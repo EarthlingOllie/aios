@@ -127,7 +127,7 @@ def test_a_run_already_going_finishes(api, queued):  # noqa: F811
 
     archive(api, workflow)
     with use_model(echo()):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
 
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"]) == ("succeeded", "build(it)")

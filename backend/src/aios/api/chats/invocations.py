@@ -11,7 +11,7 @@ from aios import firing, handoff, invocations
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
-from aios.datastores import organisation_store
+from aios.datastores import organisation_store, store_id_of
 from aios.datastores.models import Agent, Workflow
 from aios.db import SessionLocal
 from aios.models import (
@@ -44,18 +44,19 @@ class InvocationFiring:
             if workflow is None:
                 raise firing.CantStart("The workflow has been deleted.")
             run = workflows_api.new_workflow_run(
-                db,
                 store,
-                organisation_id,
                 workflow,
                 invocations.run_input(invocation.brief, message.body),
                 created_by=invocation.requested_by,
             )
-            invocation.workflow_run_id = run.id
-            # Commits the run and the link to it; if it can't be queued the run is deleted, and
-            # the link with it (SET NULL). Then the workflow's share lock in the store goes.
-            workflows_api.queue_workflow_run(db, run)
-            store.commit()
+
+            def link() -> None:
+                invocation.workflow_run_id = run.id
+                db.commit()
+
+            # Commits the run in the store (ending the workflow's share lock), then the link to
+            # it, and queues it; if it can't be queued the run is deleted, and the link with it.
+            workflows_api.queue_workflow_run(store, run, link)
         invocations.mark_running(db, self.invocation_id)
         db.commit()
         return None
@@ -96,19 +97,21 @@ class TurnFiring:
             if agent is None:
                 raise firing.CantStart("The agent has been deleted.")
             # The agent's share lock (in the store) first, then the invocation's.
-            run = agents_api.new_agent_run(
-                db, store, organisation_id, agent, created_by=invocation.requested_by
-            )
+            run = agents_api.new_agent_run(store, agent, created_by=invocation.requested_by)
             invocation = invocations.lock(db, self.invocation_id)
             if invocation is None or invocation.status != ChatInvocationStatus.briefing:
                 db.rollback()
                 return None
+            # The run first, in its store, then the invocation's link to it.
+            store.commit()
             invocation.agent_run_id = run.id
             invocations.mark_running(db, self.invocation_id)
             db.commit()
-            store.commit()
+            data_store_id = store_id_of(store)
         # Titled after what was asked.
-        return firing.Turn(agent.id, run.id, prompt, title=invocations.message_text(body))
+        return firing.Turn(
+            data_store_id, agent.id, run.id, prompt, title=invocations.message_text(body)
+        )
 
     def beat(self, db: Session) -> None:
         invocations.beat(db, self.invocation_id)

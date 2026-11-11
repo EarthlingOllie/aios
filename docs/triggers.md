@@ -55,5 +55,6 @@ request: a schedule, and a mention of an agent in a chat (`aios.api.chats.TurnFi
 the stall sweep, and "start a run and run one turn of it"; what's the cause's own (what it
 claims and how it starts the run, where its heartbeat and outcome live) is a small object the
 caller supplies (an `aios.firing.Cause`). While a fire runs, the process keeps a heartbeat on
-the run itself (`agent_runs.heartbeat_at`) as well as the cause's, so a run whose process died
-is failed on its own page too, and not only on its schedule or its chat card.
+the run itself (`agent_runs.heartbeat_at`, in the store) as well as the cause's, so a run whose
+process died is failed on its own page too, and not only on its schedule or its chat card: a
+cause's sweep fails its runs whose heartbeat has stopped as well as its own rows.

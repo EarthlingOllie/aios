@@ -75,11 +75,12 @@ def build(config: RunPythonConfig) -> list[AgentTool]:
     async def run_python(
         code: Annotated[str, "A complete Python program."], runtime: ToolRuntime[ChatDeps]
     ) -> dict:
-        run_id = runtime.context.run_id
-        if run_id is None:
+        run_id, data_store_id = runtime.context.run_id, runtime.context.data_store_id
+        if run_id is None or data_store_id is None:
             return {"error": "Running Python is only available in agent runs."}
         try:
             outcome = await manager.run(
+                data_store_id=data_store_id,
                 run_id=run_id,
                 code=code,
                 timeout=config.timeout_seconds,

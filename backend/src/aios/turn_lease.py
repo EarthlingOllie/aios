@@ -2,8 +2,10 @@
 schedule and a chat), so each starts from the history the previous one left rather than both
 forking from the same checkpoint.
 
-It's a lease on the run's row (`agent_runs.lease_token`, `lease_until`), not a database session
-lock, so it works through a connection pooler in transaction mode:
+It's a lease on the run's row in its organisation's store (`agent_runs.lease_token`,
+`lease_until`), not a database session lock, so it works through a connection pooler in
+transaction mode. A run is named by its store and its id there, as ids repeat across stores; so
+are its Redis channels.
 
 - **Acquire.** A conditional update that succeeds only if the lease is free or expired, and sets
   a new token and a time it lasts until (`turn_lease_seconds`).
@@ -36,8 +38,8 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
-from aios.db import SessionLocal
-from aios.models import AgentRun
+from aios.datastores.connections import store_session
+from aios.datastores.models import AgentRun
 
 log = logging.getLogger(__name__)
 
@@ -60,19 +62,20 @@ class LeaseLost(Exception):
     """A write by a turn whose lease no longer holds (it lapsed, or the turn was stopped)."""
 
 
-def released_channel(run_id: int) -> str:
-    return f"aios:turn-lease:{run_id}:released"
+def released_channel(data_store_id: uuid.UUID, run_id: int) -> str:
+    return f"aios:turn-lease:{data_store_id}:{run_id}:released"
 
 
-def stop_channel(run_id: int) -> str:
-    return f"aios:turn-lease:{run_id}:stop"
+def stop_channel(data_store_id: uuid.UUID, run_id: int) -> str:
+    return f"aios:turn-lease:{data_store_id}:{run_id}:stop"
 
 
 @dataclass(eq=False)
 class Lease:
-    """A turn's hold on its run. `on_stop` is what the holder does when the turn is stopped
-    (cancel it); `stop` calls it once."""
+    """A turn's hold on its run (in the store `data_store_id`). `on_stop` is what the holder
+    does when the turn is stopped (cancel it); `stop` calls it once."""
 
+    data_store_id: uuid.UUID
     run_id: int
     token: uuid.UUID
     on_stop: Callable[[], object] | None = None
@@ -94,11 +97,11 @@ def _holding(lease: Lease):
     return (AgentRun.id == lease.run_id, AgentRun.lease_token == lease.token)
 
 
-def try_acquire(run_id: int) -> Lease | None:
+def try_acquire(data_store_id: uuid.UUID, run_id: int) -> Lease | None:
     """The run's lease, if it's free or expired; None if another turn holds it. Raises
     `RunGone` if the run has been deleted."""
     token = uuid.uuid4()
-    with SessionLocal() as db:
+    with store_session(data_store_id) as db:
         got = db.execute(
             update(AgentRun)
             .where(
@@ -117,12 +120,12 @@ def try_acquire(run_id: int) -> Lease | None:
         db.commit()
     if not exists:
         raise RunGone(f"Agent run {run_id} has been deleted")
-    return Lease(run_id, token) if got is not None else None
+    return Lease(data_store_id, run_id, token) if got is not None else None
 
 
 def refresh(lease: Lease) -> bool:
     """Extend the lease while it's still this turn's; whether it was."""
-    with SessionLocal() as db:
+    with store_session(lease.data_store_id) as db:
         got = db.execute(
             update(AgentRun)
             .where(*_holding(lease))
@@ -135,7 +138,7 @@ def refresh(lease: Lease) -> bool:
 
 def holds(lease: Lease) -> bool:
     """Whether the lease is still this turn's, and unexpired."""
-    with SessionLocal() as db:
+    with store_session(lease.data_store_id) as db:
         return (
             db.scalar(
                 select(AgentRun.id).where(*_holding(lease), AgentRun.lease_until > func.now())
@@ -145,7 +148,7 @@ def holds(lease: Lease) -> bool:
 
 
 def _clear(lease: Lease) -> None:
-    with SessionLocal() as db:
+    with store_session(lease.data_store_id) as db:
         db.execute(
             update(AgentRun)
             .where(*_holding(lease))
@@ -202,20 +205,20 @@ async def _next_message(pubsub: aioredis.client.PubSub | None, timeout: float) -
 POLL_SECONDS = 1.0
 
 
-async def acquire(run_id: int, wait: float | None = None) -> Lease:
+async def acquire(data_store_id: uuid.UUID, run_id: int, wait: float | None = None) -> Lease:
     """The run's lease, waiting up to `wait` seconds (`turn_wait_seconds`) for the turn that
     holds it to release it. Raises `RunBusy` past that, and `RunGone` if the run is deleted."""
     if wait is None:
         wait = get_settings().turn_wait_seconds
     loop = asyncio.get_running_loop()
     deadline = loop.time() + wait
-    lease = await asyncio.to_thread(try_acquire, run_id)
+    lease = await asyncio.to_thread(try_acquire, data_store_id, run_id)
     if lease is not None:
         return lease
     # Subscribed before trying again, so a release between the two isn't missed.
-    async with _subscribed(released_channel(run_id)) as pubsub:
+    async with _subscribed(released_channel(data_store_id, run_id)) as pubsub:
         while True:
-            lease = await asyncio.to_thread(try_acquire, run_id)
+            lease = await asyncio.to_thread(try_acquire, data_store_id, run_id)
             if lease is not None:
                 return lease
             remaining = deadline - loop.time()
@@ -227,7 +230,7 @@ async def acquire(run_id: int, wait: float | None = None) -> Lease:
 async def release(lease: Lease) -> None:
     """Let go of the run (if the lease is still this turn's), and tell any turn waiting."""
     await asyncio.to_thread(_clear, lease)
-    await _publish(released_channel(lease.run_id))
+    await _publish(released_channel(lease.data_store_id, lease.run_id))
 
 
 async def _heartbeat(lease: Lease) -> None:
@@ -247,7 +250,7 @@ async def _heartbeat(lease: Lease) -> None:
 
 
 async def _listen_for_stop(lease: Lease, subscribed: asyncio.Event) -> None:
-    async with _subscribed(stop_channel(lease.run_id)) as pubsub:
+    async with _subscribed(stop_channel(lease.data_store_id, lease.run_id)) as pubsub:
         subscribed.set()
         if pubsub is None:
             return
@@ -297,11 +300,11 @@ async def held(lease: Lease) -> AsyncIterator[Lease]:
                 log.exception("couldn't release the turn lease of run %s", lease.run_id)
 
 
-def stop(db: Session, run_ids: list[int]) -> None:
-    """Stop the turns underway of these runs, wherever they run: their leases are cleared, so
-    each turn's next write fails, and a stop signal tells the process holding each to cancel it
-    (a model or tool call already underway ends, unrecorded). No pooled connection is ended.
-    Commits."""
+def stop(db: Session, data_store_id: uuid.UUID, run_ids: list[int]) -> None:
+    """Stop the turns underway of these runs of the store `data_store_id` (`db`, a session on
+    it), wherever they run: their leases are cleared, so each turn's next write fails, and a stop
+    signal tells the process holding each to cancel it (a model or tool call already underway
+    ends, unrecorded). No pooled connection is ended. Commits."""
     if not run_ids:
         return
     db.execute(
@@ -316,14 +319,15 @@ def stop(db: Session, run_ids: list[int]) -> None:
         )
         with client:
             for run_id in run_ids:
-                client.publish(stop_channel(run_id), "1")
+                client.publish(stop_channel(data_store_id, run_id), "1")
     except (redis.RedisError, OSError) as exc:
         # Their next write fails on fencing regardless.
         log.warning("couldn't signal runs %s to stop: %s", run_ids, exc)
 
 
 def underway(db: Session, run_ids: list[int]) -> set[int]:
-    """Those of these runs with a turn underway, in any process: an unexpired lease."""
+    """Those of these runs (of the store `db` is a session on) with a turn underway, in any
+    process: an unexpired lease."""
     if not run_ids:
         return set()
     return set(

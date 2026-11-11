@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -59,9 +60,8 @@ class SchemaChangeRequest(Base):
     reason: Mapped[str] = mapped_column(Text)
     # The agent run that asked, and the tool call it asked in (so the call, run again when the
     # run resumes, finds its request rather than making another).
-    requested_by_run: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
-    )
+    # By id in the store's `agent_runs` (not a foreign key); cleared when the run is deleted.
+    requested_by_run: Mapped[int | None] = mapped_column(Integer, index=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(255))
     # The store's data schema revision it was checked against (`schema_changes.read_revision`).
     base_revision: Mapped[int] = mapped_column(BigInteger)
@@ -85,4 +85,11 @@ class SchemaChangeRequest(Base):
 
     data_store: Mapped[DataStore] = relationship()
 
-    __table_args__ = (UniqueConstraint("requested_by_run", "tool_call_id"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "data_store_id",
+            "requested_by_run",
+            "tool_call_id",
+            name="uq_schema_change_requests_run_tool_call",
+        ),
+    )

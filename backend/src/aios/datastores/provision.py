@@ -264,7 +264,15 @@ BOOKKEEPING = (
     "aios.schema_history",
     "aios.embedding_columns",
     "aios.dropped_objects",
+    # The checkpointer's own record of its migrations (`aios.checkpoints.set_up_store`).
+    "langgraph.checkpoint_migrations",
 )
+
+
+# The read-write role's search path in its store: the database's (`_set_up_database`), then the
+# checkpointer's schema (`aios.checkpoints.SCHEMA`), whose tables no other schema's names clash
+# with.
+RW_SEARCH_PATH = ("aios", "extensions", "langgraph")
 
 
 # The deny list: columns of the platform's tables in the store that neither the read-only role
@@ -272,6 +280,8 @@ BOOKKEEPING = (
 # though the read-write role, the platform's own, may. Each table's other columns stay readable.
 DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
     "aios.people": ("email",),
+    # The bearer token a run's sandbox takes.
+    "aios.sandbox_sessions": ("secret",),
 }
 
 # What the writer may read besides `data`: what `write_data` plans a write with.
@@ -359,6 +369,13 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
     try:
         with engine.connect() as conn:
             quote = conn.dialect.identifier_preparer.quote
+            # As the provisioner, which made the role: the search path that finds the
+            # checkpointer's tables (`aios.checkpoints`), the read-write role's default in the
+            # store, as nothing may be set at connection startup through the pooler.
+            conn.exec_driver_sql(
+                f"ALTER ROLE {quote(names.rw)} IN DATABASE {quote(names.dbname)}"
+                f" SET search_path = {', '.join(RW_SEARCH_PATH)}"
+            )
             conn.exec_driver_sql(f"SET ROLE {quote(names.owner)}")
             conn.commit()
             cfg = migrations.config(conn)
@@ -373,6 +390,10 @@ def upgrade_store(names: StoreNames, *, history: bool = False) -> Revisions:
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
             )
             pg = conn.connection.driver_connection
+            # Every time too: a newer LangGraph's checkpointer migrations, for every store.
+            from aios import checkpoints
+
+            checkpoints.set_up_store(pg)
             _grant_writer(pg, names)
             _apply_deny_list(pg, names)
             conn.commit()

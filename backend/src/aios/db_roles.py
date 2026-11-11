@@ -294,7 +294,8 @@ def ensure_roles(
         # only creates it if it's missing).
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         # The app's role owns the platform schema but not the database, which would let it drop
-        # or reconfigure it. CREATE on the database is for the checkpointer's `langgraph` schema.
+        # or reconfigure it. CREATE on the database was for the checkpointer's `langgraph` schema,
+        # which is in each store now (migration 0062): kept for a downgrade past that.
         conn.execute(
             sql.SQL("GRANT CREATE ON DATABASE {} TO {}").format(sql.Identifier(dbname), app)
         )

@@ -21,9 +21,10 @@ from aios.datastores import (
     store_session,
 )
 from aios.datastores.connections import dispose_engines
+from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, DataStore, DataStoreStatus
+from aios.models import DataStore, DataStoreStatus
 from aios.testing.fake_model import (
     ToolCall,
     last_tool_results,
@@ -337,7 +338,7 @@ def past_runs(api, store_id, history_tasks, embedded) -> dict:
 
 
 def test_an_agent_finds_a_passage_from_an_earlier_run_by_meaning_and_by_keyword(
-    api, past_runs, query_meaning
+    api, past_runs, query_meaning, in_store
 ):
     agent = make_agent(api, "Rememberer")
     agent = api.put(
@@ -345,8 +346,7 @@ def test_an_agent_finds_a_passage_from_an_earlier_run_by_meaning_and_by_keyword(
     ).json()
     run = new_run(api, agent)
     baking = past_runs["baking"]
-    with SessionLocal() as db:
-        started = db.get(AgentRun, baking["id"]).created_at
+    started = in_store.get(AgentRun, baking["id"]).created_at
 
     # By meaning: "bread" shares no word with the run, only its meaning.
     seen = ask(api, agent, run, "bread")
@@ -522,7 +522,7 @@ def test_embedding_holds_up_neither_exports_nor_deleting_exported_history(
     async def embed_documents(batch):
         # A run changed meanwhile: its export goes in.
         with SessionLocal() as db:
-            history.enqueue_runs(db, AgentRun.id == run["id"])
+            history.enqueue_runs(db, store_id, [run["id"]])
             db.commit()
         during["exported"] = history.export(store_id)
         history.delete_exported(store_id)

@@ -44,8 +44,9 @@ def config(connection: Connection | None = None) -> Config:
 
 
 def include_name(name, type_, parent_names) -> bool:
-    # The organisation's tables (`data`) are changed only by approved schema change requests.
-    return not (type_ == "schema" and name == "data")
+    # The organisation's tables (`data`) are changed only by approved schema change requests,
+    # and the checkpointer's (`langgraph`) by LangGraph's own migrations (`aios.checkpoints`).
+    return not (type_ == "schema" and name in ("data", "langgraph"))
 
 
 def context_options() -> dict:

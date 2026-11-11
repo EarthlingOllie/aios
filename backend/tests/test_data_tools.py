@@ -97,6 +97,7 @@ def data_agent(api) -> dict:
 STORE_TABLES = {
     ("aios", name)
     for name in (
+        "agent_runs",
         "agent_version_skills",
         "agent_version_tools",
         "agent_versions",
@@ -105,11 +106,14 @@ STORE_TABLES = {
         "documents",
         "embedding_columns",
         "people",
+        "sandbox_sessions",
         "schema_history",
         "skill_versions",
         "skills",
         "workflow_edges",
         "workflow_nodes",
+        "workflow_run_steps",
+        "workflow_runs",
         "workflow_versions",
         "workflows",
     )

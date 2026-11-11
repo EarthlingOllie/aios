@@ -37,18 +37,18 @@ mentioned it, executed for the organisation, and read by every member (`aios.api
 """
 
 import re
-from collections.abc import Sequence
+import uuid
+from collections.abc import Iterable, Sequence
 from datetime import timedelta
 
-from sqlalchemy import func, select, true, update
+from sqlalchemy import ColumnElement, func, select, true, update
 from sqlalchemy.orm import Session
 
 from aios import checkpoints
-from aios.datastores import organisation_store
-from aios.datastores.models import Agent, Workflow
+from aios.datastores import organisation_store, store_session
+from aios.datastores.models import Agent, AgentRun, Workflow, WorkflowRun
 from aios.datastores.schema_changes import not_given
 from aios.models import (
-    AgentRun,
     AgentRunStatus,
     Chat,
     ChatAuthorKind,
@@ -56,9 +56,10 @@ from aios.models import (
     ChatInvocationStatus,
     ChatMessage,
     ChatMessageKind,
+    DataStore,
     SchemaChangeRequest,
+    Trigger,
     TriggerTargetKind,
-    WorkflowRun,
     WorkflowRunStatus,
 )
 
@@ -168,6 +169,80 @@ def organisation_of(db: Session, invocation: ChatInvocation) -> int:
     return db.scalar(select(Chat.organisation_id).where(Chat.id == invocation.chat_id))
 
 
+def chat_store(chat_id) -> ColumnElement:
+    """The data store of the chat (an id, or a column of one): its organisation's, where the runs
+    its invocations started are. Run ids are each store's own, so an invocation's run is named
+    by both."""
+    return (
+        select(DataStore.id)
+        .join(Chat, Chat.organisation_id == DataStore.owner_organisation_id)
+        .where(Chat.id == chat_id)
+        .scalar_subquery()
+    )
+
+
+def store_of(db: Session, invocation: ChatInvocation) -> uuid.UUID | None:
+    """The data store the invocation's runs are in."""
+    return db.scalar(select(chat_store(invocation.chat_id)))
+
+
+def in_store(data_store_id: uuid.UUID) -> ColumnElement[bool]:
+    """Whether an invocation is of a chat whose runs are in the store."""
+    return chat_store(ChatInvocation.chat_id) == data_store_id
+
+
+def forget_runs(
+    db: Session,
+    data_store_id: uuid.UUID,
+    *,
+    agent_run_ids: Iterable[int] = (),
+    workflow_run_ids: Iterable[int] = (),
+) -> None:
+    """What on the platform names these runs of the store, which have been deleted there, stops
+    naming them (there's no foreign key to do it): the invocations that started them (whose
+    cards then say the run was deleted), the schedules that last started them, and the schema
+    change requests they made. In the caller's transaction, once the deletion has committed in
+    the store."""
+    agent_run_ids, workflow_run_ids = list(agent_run_ids), list(workflow_run_ids)
+    organisation_id = select(DataStore.owner_organisation_id).where(DataStore.id == data_store_id)
+    if agent_run_ids:
+        db.execute(
+            update(ChatInvocation)
+            .where(ChatInvocation.agent_run_id.in_(agent_run_ids), in_store(data_store_id))
+            .values(agent_run_id=None)
+        )
+        db.execute(
+            update(Trigger)
+            .where(
+                Trigger.last_run_id.in_(agent_run_ids),
+                Trigger.organisation_id.in_(organisation_id),
+            )
+            .values(last_run_id=None)
+        )
+        db.execute(
+            update(SchemaChangeRequest)
+            .where(
+                SchemaChangeRequest.data_store_id == data_store_id,
+                SchemaChangeRequest.requested_by_run.in_(agent_run_ids),
+            )
+            .values(requested_by_run=None)
+        )
+    if workflow_run_ids:
+        db.execute(
+            update(ChatInvocation)
+            .where(ChatInvocation.workflow_run_id.in_(workflow_run_ids), in_store(data_store_id))
+            .values(workflow_run_id=None)
+        )
+        db.execute(
+            update(Trigger)
+            .where(
+                Trigger.last_workflow_run_id.in_(workflow_run_ids),
+                Trigger.organisation_id.in_(organisation_id),
+            )
+            .values(last_workflow_run_id=None)
+        )
+
+
 def lock(db: Session, invocation_id: int) -> ChatInvocation | None:
     """The invocation, locked until commit, if it hasn't finished."""
     return db.scalars(
@@ -262,20 +337,26 @@ def fail_unstarted(db: Session, invocation_id: int, error: str) -> None:
     )
 
 
-def finish_workflow_runs(db: Session, run_ids: Sequence[int]) -> None:
-    """Finish the invocations of these workflow runs, which have just ended, with how each went;
-    in the caller's transaction."""
-    rows = db.execute(
-        select(ChatInvocation, WorkflowRun)
-        .join(WorkflowRun, WorkflowRun.id == ChatInvocation.workflow_run_id)
+def finish_workflow_runs(
+    db: Session, data_store_id: uuid.UUID, runs: Sequence[WorkflowRun]
+) -> None:
+    """Finish the invocations of these workflow runs of the store, which have just ended (as
+    they are now there), with how each went; in the caller's transaction."""
+    by_id = {run.id: run for run in runs}
+    if not by_id:
+        return
+    invocations = db.scalars(
+        select(ChatInvocation)
         .where(
-            ChatInvocation.workflow_run_id.in_(run_ids),
+            ChatInvocation.workflow_run_id.in_(list(by_id)),
+            in_store(data_store_id),
             ChatInvocation.status.in_(UNFINISHED),
         )
-        .with_for_update(of=ChatInvocation)
+        .with_for_update()
         .execution_options(populate_existing=True)
     ).all()
-    for invocation, run in rows:
+    for invocation in invocations:
+        run = by_id[invocation.workflow_run_id]
         # Started, even if it ended before it was marked running.
         invocation.started_at = func.coalesce(ChatInvocation.started_at, run.started_at, func.now())
         if run.status == WorkflowRunStatus.succeeded:
@@ -284,13 +365,14 @@ def finish_workflow_runs(db: Session, run_ids: Sequence[int]) -> None:
             failed(db, invocation, run.error or "The run failed.")
 
 
-def fail_deleted_run(db: Session, workflow_run_id: int) -> None:
-    """Fail the invocation of a workflow run being deleted before it finished; in the caller's
-    transaction, before the run goes."""
+def fail_deleted_run(db: Session, data_store_id: uuid.UUID, workflow_run_id: int) -> None:
+    """Fail the invocation of the store's workflow run, deleted before it finished; in the
+    caller's transaction."""
     for invocation in db.scalars(
         select(ChatInvocation)
         .where(
             ChatInvocation.workflow_run_id == workflow_run_id,
+            in_store(data_store_id),
             ChatInvocation.status.in_(UNFINISHED),
         )
         .with_for_update()
@@ -349,9 +431,9 @@ def beat(db: Session, invocation_id: int) -> None:
     )
 
 
-def last_reply(run_id: int) -> str:
-    """The agent's final reply in the run: its last message, if that's the model's."""
-    history = checkpoints.history(run_id)
+def last_reply(data_store_id: uuid.UUID, run_id: int) -> str:
+    """The agent's final reply in the store's run: its last message, if that's the model's."""
+    history = checkpoints.history(data_store_id, run_id)
     if history and history[-1].type == "ai" and history[-1].text.strip():
         return history[-1].text
     return NO_REPLY
@@ -377,28 +459,37 @@ def finish_turn(db: Session, invocation_id: int, error: str | None) -> None:
         failed(db, invocation, RUN_DELETED)
     elif error is not None:
         failed(db, invocation, error)
-    elif not db.scalar(select(waiting_on_a_request(invocation.agent_run_id))):
-        _finish(db, invocation, ChatInvocationStatus.succeeded, last_reply(invocation.agent_run_id))
+    else:
+        store_id = store_of(db, invocation)
+        if not db.scalar(select(waiting_on_a_request(invocation.agent_run_id, store_id))):
+            reply = last_reply(store_id, invocation.agent_run_id)
+            _finish(db, invocation, ChatInvocationStatus.succeeded, reply)
     # Otherwise it waits, running, for the run's resume to finish it (`finish_resumed`).
 
 
-def waiting_on_a_request(run_id):
-    """Whether the agent run (an id, or a column of one) waits on a schema change request: not
-    yet resumed with its outcome."""
+def waiting_on_a_request(run_id, data_store_id):
+    """Whether the agent run (an id, or a column of one) of the store (an id, or an expression
+    of one) waits on a schema change request: not yet resumed with its outcome."""
     return (
         select(SchemaChangeRequest.id)
-        .where(SchemaChangeRequest.requested_by_run == run_id, *not_given())
+        .where(
+            SchemaChangeRequest.data_store_id == data_store_id,
+            SchemaChangeRequest.requested_by_run == run_id,
+            *not_given(),
+        )
         .exists()
     )
 
 
-def finish_resumed(db: Session, run_id: int, error: str | None) -> None:
-    """Finish the agent invocation whose run waited on a schema change request, now the run has
-    been resumed (`error` None if it went fine), as `finish_turn` does: unless it waits on
-    another. In the caller's transaction; nothing for a run no invocation is waiting on."""
+def finish_resumed(db: Session, data_store_id: uuid.UUID, run_id: int, error: str | None) -> None:
+    """Finish the agent invocation whose run (the store's) waited on a schema change request,
+    now the run has been resumed (`error` None if it went fine), as `finish_turn` does: unless it
+    waits on another. In the caller's transaction; nothing for a run no invocation is waiting
+    on."""
     invocation_id = db.scalar(
         select(ChatInvocation.id).where(
             ChatInvocation.agent_run_id == run_id,
+            in_store(data_store_id),
             ChatInvocation.status == ChatInvocationStatus.running,
         )
     )
@@ -419,18 +510,22 @@ def fail_stopped_turns(
             ChatInvocation.status.in_(UNFINISHED),
             ChatInvocation.heartbeat_at < func.now() - stale_after,
             # No process beats a run waiting for a member's decision.
-            ~waiting_on_a_request(ChatInvocation.agent_run_id),
+            ~waiting_on_a_request(ChatInvocation.agent_run_id, chat_store(ChatInvocation.chat_id)),
             true() if chat_id is None else ChatInvocation.chat_id == chat_id,
         )
         .with_for_update(skip_locked=True)
     ):
-        if invocation.agent_run_id is not None:
-            db.execute(
-                update(AgentRun)
-                .where(
-                    AgentRun.id == invocation.agent_run_id,
-                    AgentRun.status == AgentRunStatus.running,
-                )
-                .values(status=AgentRunStatus.failed, finished_at=func.now())
-            )
+        if invocation.agent_run_id is not None and (store_id := store_of(db, invocation)):
+            _fail_running(store_id, invocation.agent_run_id)
         failed(db, invocation, error)
+
+
+def _fail_running(data_store_id: uuid.UUID, run_id: int) -> None:
+    """Fail the store's run, if it's still marked running (its process has gone)."""
+    with store_session(data_store_id) as store:
+        store.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id, AgentRun.status == AgentRunStatus.running)
+            .values(status=AgentRunStatus.failed, finished_at=func.now())
+        )
+        store.commit()

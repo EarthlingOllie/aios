@@ -7,6 +7,7 @@ import asyncio
 
 from conftest import store_of
 from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
 
 from aios import checkpoints
 from aios.config import get_settings
@@ -29,6 +30,17 @@ def test_store_sessions_are_reached_at_the_pooler_when_one_is_configured(db, use
     assert direct.port != 6432
 
 
+def test_the_checkpointer_reaches_the_store_at_the_pooler_when_one_is_configured(
+    db, user, monkeypatch
+):
+    with SessionLocal() as session:
+        store = session.scalar(select(DataStore).where(DataStore.id == store_of(user)))
+    monkeypatch.setattr(get_settings(), "data_store_pooler_address", "pooler.internal:6432")
+    conninfo = make_url(connections.store_conninfo(store.id))
+    assert (conninfo.host, conninfo.port) == ("pooler.internal", 6432)
+    assert (conninfo.database, conninfo.username) == (store.dbname, f"{store.role_prefix}_rw")
+
+
 def test_frequently_run_store_queries_prepare_no_statements(db, user):
     store_id = store_of(user)
     for role in ("rw", "ro"):
@@ -46,11 +58,11 @@ def test_store_engines_pool_one_connection_and_four_more_while_busy(db, user):
     assert (engine.pool.size(), engine.pool._max_overflow) == (1, 4)
 
 
-def test_the_checkpointer_prepares_no_statements_and_sets_nothing_at_startup(db):
+def test_the_checkpointer_prepares_no_statements_and_sets_nothing_at_startup(db, user):
     async def check() -> tuple[int, str]:
-        with checkpoints.sync_saver() as saver:
+        with checkpoints.sync_saver(store_of(user)) as saver:
             for _ in range(20):
-                checkpoints.history(0, saver)
+                checkpoints.history(store_of(user), 0, saver)
             row = saver.conn.execute("SELECT count(*) AS n FROM pg_prepared_statements").fetchone()
             options = saver.conn.info.get_parameters().get("options", "")
         return row["n"], options

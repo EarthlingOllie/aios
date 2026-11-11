@@ -15,13 +15,19 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from aios import cron, stored
 from aios.api.provenance import Provenance, UserOut, made_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores.models import Agent, Workflow
+from aios.datastores import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    organisation_store,
+)
+from aios.datastores.models import Agent, AgentRun, Workflow, WorkflowRun
 from aios.db import DB, DbId
 from aios.models import (
     Organisation,
@@ -29,7 +35,6 @@ from aios.models import (
     TriggerKind,
     TriggerStatus,
     TriggerTargetKind,
-    WorkflowRun,
     WorkflowRunStatus,
 )
 from aios.permissions import Action, allow
@@ -95,12 +100,39 @@ RUN_STATUS = {
 }
 
 
-def last_outcome(trigger: Trigger) -> tuple[TriggerStatus | None, str | None]:
-    """How the trigger last went: once it has started a workflow run, how that run is going."""
-    run = trigger.last_workflow_run
+# A workflow run's status and error, by its id in the organisation's store.
+LastRuns = dict[int, tuple[WorkflowRunStatus, str | None]]
+
+
+def last_workflow_runs(organisation_id: int, triggers: Sequence[Trigger]) -> LastRuns:
+    """How the workflow runs these triggers of the organisation's last started are going, from
+    its store. Those whose worker died are failed first, so they aren't shown running for ever
+    (as `api.workflows.get_workflow_run` does). None while the store can't be read: the
+    triggers then show their own outcomes."""
+    ids = [t.last_workflow_run_id for t in triggers if t.last_workflow_run_id is not None]
+    if not ids:
+        return {}
+    try:
+        with organisation_store(organisation_id) as store:
+            fail_stopped_runs(store, WorkflowRun.id.in_(ids))
+            rows = store.execute(
+                select(WorkflowRun.id, WorkflowRun.status, WorkflowRun.error).where(
+                    WorkflowRun.id.in_(ids)
+                )
+            ).all()
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        return {}
+    return {run_id: (status, error) for run_id, status, error in rows}
+
+
+def last_outcome(trigger: Trigger, runs: LastRuns) -> tuple[TriggerStatus | None, str | None]:
+    """How the trigger last went: once it has started a workflow run, how that run is going
+    (from `runs`, `last_workflow_runs`)."""
+    run = runs.get(trigger.last_workflow_run_id)
     if run is None:
         return trigger.last_status, trigger.last_error
-    return RUN_STATUS[run.status], run.error if run.status == WorkflowRunStatus.failed else None
+    status, error = run
+    return RUN_STATUS[status], error if status == WorkflowRunStatus.failed else None
 
 
 def target_id(trigger: Trigger) -> int:
@@ -127,12 +159,16 @@ def trigger_out(
     trigger: Trigger,
     known: dict[int, UserOut] | None = None,
     names: dict[tuple[TriggerTargetKind, int], str] | None = None,
+    runs: LastRuns | None = None,
 ) -> TriggerOut:
-    """The trigger, with who made and last changed it from `known` (`provenance.people`) and its
-    target's name from `names` (`target_names`), else read now."""
+    """The trigger, with who made and last changed it from `known` (`provenance.people`), its
+    target's name from `names` (`target_names`) and its last workflow run from `runs`
+    (`last_workflow_runs`), else read now."""
     if names is None:
         names = target_names(trigger.organisation_id, [trigger])
-    last_status, last_error = last_outcome(trigger)
+    if runs is None:
+        runs = last_workflow_runs(trigger.organisation_id, [trigger])
+    last_status, last_error = last_outcome(trigger, runs)
     return TriggerOut(
         id=trigger.id,
         kind=trigger.kind,
@@ -214,15 +250,6 @@ def apply(db: Session, store: Session, user_id: int, trigger: Trigger, body: Tri
     trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
 
 
-LOAD = (selectinload(Trigger.last_workflow_run),)
-
-
-def fail_stopped_last_runs(db: Session, *where) -> None:
-    """Fail the last workflow runs of the triggers matching `where` whose worker died, so they
-    aren't shown running for ever (as `api.workflows.get_workflow_run` does); commits."""
-    fail_stopped_runs(db, WorkflowRun.id.in_(select(Trigger.last_workflow_run_id).where(*where)))
-
-
 def cancel_unstarted_firing(db: Session, *where) -> None:
     """Drop the firing of each trigger matching `where` if it has been claimed but hasn't
     started its run, as it's edited: that firing was for the old settings, and pausing must stop it.
@@ -246,9 +273,8 @@ def cancel_unstarted_firing(db: Session, *where) -> None:
 
 
 def load(db: Session, trigger_id: int) -> Trigger:
-    fail_stopped_last_runs(db, Trigger.id == trigger_id)
     db.expire_all()
-    return db.scalars(select(Trigger).where(Trigger.id == trigger_id).options(*LOAD)).one()
+    return db.scalars(select(Trigger).where(Trigger.id == trigger_id)).one()
 
 
 def disable_triggers(db: Session, condition, user_id: int) -> None:
@@ -278,11 +304,9 @@ def list_triggers(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Filter by both target_kind and target_id, or neither",
         )
-    fail_stopped_last_runs(db, Trigger.organisation_id == org.id)
     query = (
         select(Trigger)
         .where(Trigger.organisation_id == org.id)
-        .options(*LOAD)
         .order_by(Trigger.next_run_at.asc().nulls_last(), Trigger.id)
     )
     if target_kind == TriggerTargetKind.agent:
@@ -292,7 +316,8 @@ def list_triggers(
     triggers = db.scalars(query).all()
     known = people(db, org.id, [i for t in triggers for i in (t.created_by, t.updated_by)])
     names = target_names(org.id, triggers)
-    return [trigger_out(db, t, known, names) for t in triggers]
+    runs = last_workflow_runs(org.id, triggers)
+    return [trigger_out(db, t, known, names, runs) for t in triggers]
 
 
 @router.post(
@@ -356,6 +381,17 @@ def update_trigger(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.build)],
 )
-def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB) -> None:
+def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentStore) -> None:
     db.delete(get_org_trigger(db, org, trigger_id))
     db.commit()
+    # The runs it started (in the store, naming it by id) no longer name it; not a change to an
+    # agent run itself, so its `updated_at` stays (listings sort by it).
+    store.execute(
+        update(AgentRun)
+        .where(AgentRun.trigger_id == trigger_id)
+        .values(trigger_id=None, updated_at=AgentRun.updated_at)
+    )
+    store.execute(
+        update(WorkflowRun).where(WorkflowRun.trigger_id == trigger_id).values(trigger_id=None)
+    )
+    store.commit()

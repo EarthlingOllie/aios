@@ -2,6 +2,7 @@
 
 import asyncio
 
+from conftest import store_of
 from langchain_core.callbacks import BaseCallbackHandler
 from test_chat_agent_invocations import replies_from, say
 from test_chat_invocations import echo_agent, queued  # noqa: F401 (a fixture)
@@ -33,7 +34,7 @@ def card_of(api, chat: dict) -> dict:
     return card
 
 
-def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api):
+def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api, user):
     agent = make_agent(api, "Bot")
     chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
@@ -65,7 +66,7 @@ def test_the_handoff_briefs_an_agent_and_its_ack_replaces_the_placeholder(api):
     assert (invocation["status"], invocation["brief"]) == ("succeeded", brief)
     assert invocation["acknowledgement"] == ack
     # The run was told the brief, a blank line, then the message.
-    history = checkpoints.history(invocation["agent_run_id"])
+    history = checkpoints.history(store_of(user), invocation["agent_run_id"])
     assert history[0].text == f"{brief}\n\n@Bot check them"
     # Named after what was asked, not the brief.
     [run] = api.get(f"/api/agents/{agent['id']}/runs").json()

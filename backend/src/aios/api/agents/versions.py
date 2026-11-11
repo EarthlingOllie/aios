@@ -22,9 +22,8 @@ from aios.api.agents.runs import build_version_tools
 from aios.api.provenance import UserOut, people
 from aios.api.skills import lock_skills
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores.models import AgentVersion
+from aios.datastores.models import AgentRun, AgentVersion
 from aios.db import DB, DbId
-from aios.models import AgentRun
 from aios.permissions import Action, allow
 from aios.versioning import save_agent_version
 
@@ -55,7 +54,7 @@ def list_agent_versions(agent_id: DbId, org: CurrentOrganisation, db: DB, store:
         .where(AgentVersion.agent_id == agent.id)
         .order_by(AgentVersion.version.desc())
     ).all()
-    runs = run_counts(db, org.id, AgentRun.agent_version_id, [v.id for v, *_ in rows])
+    runs = run_counts(store, AgentRun.agent_version_id, [v.id for v, *_ in rows])
     known = people(db, org.id, [v.created_by for v, *_ in rows])
     return [
         AgentVersionSummary(

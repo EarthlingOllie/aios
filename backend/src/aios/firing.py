@@ -12,16 +12,18 @@ Running turns in a process that also serves requests needs:
   a caller starts no more than there are free slots for (`launch` counts each until its task is
   done). What it can't start is left for another replica or a later try.
 - A heartbeat: a process that dies (killed, OOM, a deploy) can't record how its fires went. So
-  while a fire runs, the process refreshes its run's heartbeat (`agent_runs.heartbeat_at`) and
-  the cause's own every `HEARTBEAT_SECONDS` (`beat`), and any process fails the runs whose
-  heartbeat has stopped for `STALE_AFTER` (`fail_stalled`). A cause that's stored as running
-  before its run exists (a claimed schedule) sweeps its own rows too, by the same measure.
+  while a fire runs, the process refreshes its run's heartbeat (`agent_runs.heartbeat_at`, in
+  the run's store) and the cause's own (on the platform) every `HEARTBEAT_SECONDS` (`beat`).
+  Each cause sweeps its own rows whose heartbeat has stopped for `STALE_AFTER`, and fails their
+  runs too if still marked running with a stale heartbeat (`fail_stalled`): runs are in each
+  organisation's store, and a cause names its run.
 - Stopping: a fire in flight when the process stops is cancelled, which stops its turn like a chat
   turn the client abandons (what the agent got to is kept) and records that it was `STOPPED`.
 """
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import NamedTuple, Protocol
@@ -35,8 +37,10 @@ from sqlalchemy.orm import Session
 
 from aios.api import agents as agents_api
 from aios.config import get_settings
+from aios.datastores import DataStoreBusy, DataStoreNotFound, DataStoreNotReady, store_session
+from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
-from aios.models import AgentRun, AgentRunStatus
+from aios.models import AgentRunStatus
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +55,12 @@ STOPPED = "The service stopped mid-run."
 
 
 class Turn(NamedTuple):
-    """What a cause's run starts with: the run, the user's message, and what to title the run
-    after if not that (a chat mention's request, rather than its brief). Whoever started the
-    run, it executes for its agent's organisation (`aios.api.agents.load_chat_context`)."""
+    """What a cause's run starts with: the run (in the store `data_store_id`), the user's
+    message, and what to title the run after if not that (a chat mention's request, rather than
+    its brief). Whoever started the run, it executes for its agent's organisation
+    (`aios.api.agents.load_chat_context`)."""
 
+    data_store_id: uuid.UUID
     agent_id: int
     run_id: int
     message: str
@@ -92,8 +98,8 @@ class Fire:
     """One cause being fired: in flight from `launch` until its task is done."""
 
     cause: Cause
-    # The run it started, once it has: beaten while the fire runs.
-    run_id: int | None = None
+    # The run it started (its store and id there), once it has: beaten while the fire runs.
+    run: tuple[uuid.UUID, int] | None = None
 
 
 # Fires in flight: kept so their tasks aren't garbage-collected, can be stopped on shutdown
@@ -107,26 +113,38 @@ def free_slots() -> int:
     return get_settings().scheduler_max_concurrent_runs - in_flight
 
 
-def fail_stalled(db: Session) -> None:
-    """Fail the runs stored as running whose heartbeat has stopped: the process firing them has
-    gone (see the module docstring). A run with no heartbeat is a request's, left to it (a null
-    heartbeat is never stale). Commits."""
-    db.execute(
-        update(AgentRun)
-        .where(
-            AgentRun.status == AgentRunStatus.running,
-            AgentRun.heartbeat_at < func.now() - STALE_AFTER,
-        )
-        .values(status=AgentRunStatus.failed, finished_at=func.now(), updated_at=func.now())
-    )
-    db.commit()
+def fail_stalled(data_store_id: uuid.UUID, run_ids: list[int]) -> None:
+    """Fail those of these runs of the store stored as running whose heartbeat has stopped: the
+    process firing them has gone (see the module docstring); for a cause sweeping its own rows.
+    A run with no heartbeat is a request's, left to it (a null heartbeat is never stale). A
+    store that can't be reached now is left for the next sweep."""
+    if not run_ids:
+        return
+    try:
+        with store_session(data_store_id) as store:
+            store.execute(
+                update(AgentRun)
+                .where(
+                    AgentRun.id.in_(run_ids),
+                    AgentRun.status == AgentRunStatus.running,
+                    AgentRun.heartbeat_at < func.now() - STALE_AFTER,
+                )
+                .values(status=AgentRunStatus.failed, finished_at=func.now(), updated_at=func.now())
+            )
+            store.commit()
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
+        log.warning("couldn't fail the stalled runs of data store %s: %s", data_store_id, exc)
 
 
 def _beat(flights: list[Fire]) -> None:
-    with SessionLocal() as db:
-        if run_ids := [flight.run_id for flight in flights if flight.run_id is not None]:
+    runs: dict[uuid.UUID, list[int]] = {}
+    for flight in flights:
+        if flight.run is not None:
+            runs.setdefault(flight.run[0], []).append(flight.run[1])
+    for data_store_id, run_ids in runs.items():
+        with store_session(data_store_id) as store:
             # Not once its turn has ended, nor one a chat turn has since taken over.
-            db.execute(
+            store.execute(
                 update(AgentRun)
                 .where(
                     AgentRun.id.in_(run_ids),
@@ -135,6 +153,8 @@ def _beat(flights: list[Fire]) -> None:
                 )
                 .values(heartbeat_at=func.now())
             )
+            store.commit()
+    with SessionLocal() as db:
         for flight in flights:
             flight.cause.beat(db)
         db.commit()
@@ -163,9 +183,11 @@ def _start(flight: Fire) -> tuple[Turn, agents_api.ChatContext] | None:
         turn = flight.cause.start(db)
         if turn is None:
             return None
-        ctx = agents_api.load_chat_context(db, turn.agent_id, turn.run_id)
-    agents_api._start_turn(turn.run_id, turn.title or turn.message, heartbeat=True)
-    flight.run_id = turn.run_id
+        ctx = agents_api.load_chat_context(db, turn.data_store_id, turn.agent_id, turn.run_id)
+    agents_api._start_turn(
+        turn.data_store_id, turn.run_id, turn.title or turn.message, heartbeat=True
+    )
+    flight.run = (turn.data_store_id, turn.run_id)
     return turn, ctx
 
 

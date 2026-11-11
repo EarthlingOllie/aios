@@ -10,7 +10,7 @@ import pytest
 import test_workflow_runs as workflow_runs
 from conftest import delete_user, home_organisation, make_user, org_of, store_of
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from test_agents import chat_body, make_agent, stop_during_searches
 from test_workflows import agent_node, make_workflow, workflow_node
 
@@ -26,9 +26,10 @@ from aios.datastores import (
     provision,
     store_session,
 )
+from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
 from aios.main import app
-from aios.models import AgentRun, DataStore, HistoryExport, WorkflowRun
+from aios.models import DataStore, HistoryExport
 from aios.testing.fake_model import model, replies, use_model
 from aios.workflows import execute_run
 
@@ -166,7 +167,7 @@ def test_exporting_again_gives_no_duplicates_and_catches_up_with_new_turns(
     switch(api, True)
     history.export(store_id)
     with SessionLocal() as db:
-        history.enqueue_runs(db, AgentRun.id == run["id"])
+        history.enqueue_runs(db, store_id, [run["id"]])
         db.commit()
     history.export(store_id)
 
@@ -455,8 +456,7 @@ def test_the_store_roles_may_read_the_history_tables_and_only_rw_write_them(
 def test_a_workflow_runs_agent_turns_are_exported_and_go_with_the_workflow_run(
     api, user, store_id, history_tasks, monkeypatch
 ):
-    queued = []
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", queued.append)
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", lambda *args: None)
     switch(api, True)
     set_up_and_export(store_id, history_tasks)
     agent = make_agent(api, "Echo")
@@ -465,7 +465,7 @@ def test_a_workflow_runs_agent_turns_are_exported_and_go_with_the_workflow_run(
     history_tasks["export"].clear()
 
     with use_model(replies("went")):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(store_id, started["id"]))
 
     assert set(history_tasks["export"]) == {store_id}
     history.export(store_id)
@@ -523,7 +523,7 @@ def test_a_change_that_is_rolled_back_queues_no_export(api, user, store_id, hist
     history_tasks["export"].clear()
 
     with SessionLocal() as db:
-        history.enqueue_runs(db, AgentRun.id == run["id"])
+        history.enqueue_runs(db, store_id, [run["id"]])
         db.rollback()
         db.commit()
 
@@ -613,15 +613,15 @@ def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go
     broken, fine = new_run(api, agent), new_run(api, agent)
     chat(api, agent, broken, "first")
     # Its checkpoint no longer loads (not valid msgpack), so it can't be flattened.
-    with SessionLocal() as db:
-        db.execute(
+    with store_session(store_id) as store:
+        store.execute(
             text(
                 "UPDATE langgraph.checkpoint_blobs SET blob = '\\xc1'::bytea"
                 " WHERE thread_id = :thread AND channel = 'messages'"
             ),
             {"thread": f"agent-run-{broken['id']}"},
         )
-        db.commit()
+        store.commit()
     chat(api, agent, fine, "second", "hello")
 
     # The broken run is first in line; the task still succeeds and the next run goes in.
@@ -638,7 +638,7 @@ def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go
 
     # Until the run changes again.
     with SessionLocal() as db:
-        history.enqueue_runs(db, AgentRun.id == broken["id"])
+        history.enqueue_runs(db, store_id, [broken["id"]])
         db.commit()
         row = db.query(HistoryExport).filter_by(source_id=broken["id"]).one()
         assert row.error is None
@@ -646,8 +646,9 @@ def test_a_run_that_cant_be_exported_is_set_aside_with_its_error_and_the_rest_go
 
 
 def test_a_run_deleted_as_its_turn_ends_doesnt_deadlock(api, user, store_id, history_tasks):
-    """Deleting a run writes its outbox row, then deletes it; a turn ending writes both too. In
-    the same order, or each holds the row the other waits for."""
+    """Deleting a run and a turn ending each write the run (in its store) and then its outbox row
+    (on the platform), each committed before the next: neither holds a row the other waits for,
+    and however they interleave, the copy goes."""
     agent = make_agent(api, "Bot")
     run = new_run(api, agent)
     chat(api, agent, run, "hi")
@@ -657,24 +658,22 @@ def test_a_run_deleted_as_its_turn_ends_doesnt_deadlock(api, user, store_id, his
 
     def end_turn():
         try:
-            agents_api._end_turn(run["id"], failed=False, message_count=2)
+            agents_api._end_turn(store_id, run["id"], failed=False, message_count=2)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    with SessionLocal() as deleting:
-        # delete_run, up to deleting the run: its outbox row is written (and locked).
-        history.enqueue_runs(deleting, AgentRun.id == run["id"], deleting=True)
+    with store_session(store_id) as store:
+        # A turn ending as the run is deleted: it waits on the run's row, which the delete has
+        # locked.
+        store.execute(select(AgentRun.id).where(AgentRun.id == run["id"]).with_for_update())
         ending = threading.Thread(target=end_turn)
         ending.start()
-        time.sleep(0.5)  # it's waiting on the outbox row, or holding the run's
-        try:
-            deleting.delete(deleting.get(AgentRun, run["id"]))
-            deleting.commit()
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
-        ending.join(10)
+        time.sleep(0.5)
+        store.rollback()
+    resp = api.delete(f"/api/agents/{agent['id']}/runs/{run['id']}")
+    ending.join(10)
 
-    assert errors == []
+    assert errors == [] and resp.status_code == 204
     history.export(store_id)
     assert stored(store_id, "SELECT count(*) FROM history.agent_runs") == [(0,)]
 
@@ -808,10 +807,12 @@ def test_an_export_under_way_leaves_no_platform_transaction_open(
 
 
 @pytest.fixture
-def started(monkeypatch) -> list[int]:
-    """The ids of the workflow runs the API starts, instead of sending them to the worker."""
-    ids = []
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", ids.append)
+def started(monkeypatch, user) -> workflow_runs.Queued:
+    """The workflow runs the API starts, instead of sending them to the worker."""
+    ids = workflow_runs.Queued(store_of(user))
+    monkeypatch.setattr(
+        workflows_api.run_workflow_task, "delay", lambda store_id, run_id: ids.append(run_id)
+    )
     return ids
 
 
@@ -935,7 +936,7 @@ def test_a_workflow_run_exported_midway_is_updated_as_it_goes_and_finishes(
 
     def export_now() -> None:
         with SessionLocal() as db:
-            history.enqueue_workflow_runs(db, WorkflowRun.id == run["id"])
+            history.enqueue_workflow_runs(db, store_id, [run["id"]])
             db.commit()
         history.export(store_id)
         midway.append(
@@ -954,7 +955,7 @@ def test_a_workflow_run_exported_midway_is_updated_as_it_goes_and_finishes(
         yield f"{name}({text})"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(run["id"]))
+        asyncio.run(execute_run(store_id, run["id"]))
 
     assert midway == [
         [
@@ -1051,7 +1052,7 @@ def test_a_workflow_run_that_cant_be_queued_leaves_no_copy(
     set_up_and_export(store_id, history_tasks)
     workflow = nested_workflow(api)
 
-    def broker_down(run_id: int) -> None:
+    def broker_down(data_store_id: str, run_id: int) -> None:
         # Committed, so a backfill (or delete exported history) meanwhile exports it.
         with SessionLocal() as db:
             history.enqueue_everything(db, home_organisation(db, user.id).id)
@@ -1173,11 +1174,11 @@ def test_a_run_ended_while_a_node_runs_starts_no_more_steps_than_its_copy_has(
     async def script(messages, info):
         name, text = messages[0].content, messages[-1].content
         if name == "draft":
-            await asyncio.to_thread(workflows.fail_run, run["id"], "Stopped elsewhere")
+            await asyncio.to_thread(workflows.fail_run, store_id, run["id"], "Stopped elsewhere")
         yield f"{name}({text})"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(run["id"]))
+        asyncio.run(execute_run(store_id, run["id"]))
     history.export(store_id)
 
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{run['id']}").json()
@@ -1196,7 +1197,7 @@ def test_a_batch_of_workflow_runs_alone_reads_no_checkpoints(
     run = workflow_runs.run(api, started, nested_workflow(api), "topic")
     history.export(store_id)
     with SessionLocal() as db:
-        history.enqueue_workflow_runs(db, WorkflowRun.id == run["id"])
+        history.enqueue_workflow_runs(db, store_id, [run["id"]])
         db.commit()
     connects = []
     connect = history.checkpoints.Connection.connect

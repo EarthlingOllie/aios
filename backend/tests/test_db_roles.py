@@ -7,8 +7,6 @@ don't touch the real `aios_app` and `aios_provisioner`. They need the master use
 it.
 """
 
-import asyncio
-import contextlib
 import os
 import subprocess
 import sys
@@ -22,7 +20,6 @@ from psycopg import errors, sql
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from aios import checkpoints
 from aios.config import get_settings, libpq_conninfo
 from aios.db_roles import _BootstrapSettings, ensure_roles
 
@@ -645,22 +642,9 @@ def _migrate(database_url: str) -> subprocess.CompletedProcess:
     )
 
 
-def _setup_checkpointer(database_url: str, monkeypatch) -> None:
-    """A turn's checkpointer, as `database_url`'s user: sets up its schema the first time."""
-    monkeypatch.setattr(checkpoints, "_ready", False)
-    monkeypatch.setattr(get_settings(), "database_url", database_url)
-
-    async def turn() -> None:
-        # Run 0 doesn't exist, so the turn itself is refused, once the setup has run.
-        with contextlib.suppress(checkpoints.RunGone):
-            async with checkpoints.turn(run_id=0):
-                pass
-
-    asyncio.run(turn())
-
-
 def _table_owners(url: str) -> list[tuple[str, str]]:
-    """(schema, owner) for every owner of a table in the app's and the checkpointer's schemas."""
+    """(schema, owner) for every owner of a table in the app's schema (the checkpointer's, which
+    was beside it, is in each store now)."""
     with _connect(url) as conn:
         return conn.execute(
             "SELECT DISTINCT schemaname::text, tableowner::text FROM pg_tables"
@@ -670,16 +654,15 @@ def _table_owners(url: str) -> list[tuple[str, str]]:
 
 def _owned_by_app(app_url: str) -> list[tuple[str, str]]:
     app = make_url(app_url).username
-    return [("langgraph", app), ("public", app)]
+    return [("public", app)]
 
 
-def test_migrations_and_checkpointer_setup_run_as_app_role(cluster, monkeypatch):
+def test_migrations_run_as_app_role(cluster):
     admin_url, app_url, prov_url = cluster
     ensure_roles(admin_url, app_url, prov_url)
 
     result = _migrate(app_url)
     assert result.returncode == 0, result.stderr
-    _setup_checkpointer(app_url, monkeypatch)
 
     assert _table_owners(app_url) == _owned_by_app(app_url)
 
@@ -720,13 +703,12 @@ ORDER BY 1, 2
 """
 
 
-def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, monkeypatch):
+def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster):
     admin_url, app_url, prov_url = cluster
     admin = make_url(admin_url).username
-    # As deployed before this role existed: migrated and checkpointed as the master user, with
-    # a view and a function of its own besides.
+    # As deployed before this role existed: migrated as the master user, with a view and a
+    # function of its own besides.
     assert _migrate(admin_url).returncode == 0
-    _setup_checkpointer(admin_url, monkeypatch)
     with _connect(admin_url) as conn:
         conn.execute("CREATE VIEW recent_users AS SELECT id FROM users")
         conn.execute("CREATE FUNCTION one() RETURNS int LANGUAGE sql AS 'SELECT 1'")
@@ -738,7 +720,7 @@ def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, m
         assert conn.execute(_OWNED_BY, (admin,)).fetchall() == []
     # The app's role can change what it now owns: drop the master user's view and function, then
     # migrate all the way down (to `base`, not a revision that a squash would rename) and up
-    # again, and the checkpointer's setup.
+    # again.
     with _connect(app_url) as conn:
         conn.execute("DROP VIEW recent_users")
         conn.execute("DROP FUNCTION one()")
@@ -752,5 +734,4 @@ def test_a_database_migrated_as_the_master_user_is_handed_to_app_role(cluster, m
     assert down.returncode == 0, down.stderr
     up = _migrate(app_url)
     assert up.returncode == 0, up.stderr
-    _setup_checkpointer(app_url, monkeypatch)
     assert _table_owners(app_url) == _owned_by_app(app_url)

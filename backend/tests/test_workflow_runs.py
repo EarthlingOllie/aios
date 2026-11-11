@@ -1,11 +1,12 @@
 import asyncio
 import threading
 import time
+import uuid
 from datetime import timedelta
 
 import pytest
 import test_agents
-from conftest import delete_user, provisioned_user, store_of
+from conftest import delete_user, org_of, provisioned_user, store_of
 from sqlalchemy import delete, func, update
 from test_agents import agent_body, chat_body, make_skill, spy_run
 from test_workflows import (
@@ -21,19 +22,34 @@ from aios import checkpoints, workflows
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
 from aios.config import get_settings
-from aios.db import SessionLocal
+from aios.datastores import store_session
+from aios.datastores.models import AgentRun, WorkflowRun, WorkflowRunStep
 from aios.main import app
-from aios.models import AgentRun, WorkflowRun, WorkflowRunStatus, WorkflowRunStep
+from aios.models import WorkflowRunStatus
 from aios.testing.fake_model import ToolCall, last_tool_results, model, replies, use_model
 from aios.tools import TOOLS, hybrid_search
 from aios.workflows import execute_run, fail_run
 
 
+class Queued(list):
+    """The ids of the runs the API starts, and the store they're in (`store`): the signed-in
+    user's organisation's."""
+
+    def __init__(self, store: uuid.UUID) -> None:
+        super().__init__()
+        self.store = store
+
+
 @pytest.fixture
-def queued(monkeypatch) -> list[int]:
-    """The ids of the runs the API starts, instead of sending them to the worker."""
-    ids = []
-    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", ids.append)
+def queued(monkeypatch, user) -> Queued:
+    """The runs the API starts, instead of sending them to the worker."""
+    ids = Queued(store_of(user))
+
+    def delay(data_store_id: str, run_id: int) -> None:
+        assert uuid.UUID(data_store_id) == ids.store
+        ids.append(run_id)
+
+    monkeypatch.setattr(workflows_api.run_workflow_task, "delay", delay)
     return ids
 
 
@@ -78,7 +94,7 @@ def run(api, queued: list[int], workflow: dict, text: str = "x", **script) -> di
     started = start(api, workflow, text)
     assert queued[-1] == started["id"]
     with use_model(echo(**script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     resp = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}")
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -105,7 +121,7 @@ def test_a_chain_passes_each_output_to_the_next_node(api, queued):
     )
 
     with use_model(echo()):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"], out["error"]) == (
         "succeeded",
@@ -132,7 +148,7 @@ def test_a_chain_passes_each_output_to_the_next_node(api, queued):
 
     # Running it again doesn't start the run twice (e.g. a redelivered task).
     with use_model(echo(fail={"first"})):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     again = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert again["status"] == "succeeded" and len(again["steps"]) == 2
 
@@ -258,7 +274,7 @@ def test_a_subworkflow_stopped_by_another_branchs_failure_fails_cleanly(api, que
         yield f"{name}({messages[-1].content})"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(url).json()
     assert (out["status"], out["error"]) == ("failed", "boom: boom broke")
     by_path = steps(out)
@@ -286,11 +302,11 @@ def test_a_run_stopped_midway_fails_the_steps_still_running(api, queued):
     async def stopped():
         # As the worker's time limit stops it.
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(execute_run(started["id"]), 5)
+            await asyncio.wait_for(execute_run(queued.store, started["id"]), 5)
 
     with use_model(model(script)):
         asyncio.run(stopped())
-    fail_run(started["id"], "Too slow")
+    fail_run(queued.store, started["id"], "Too slow")
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert (out["status"], out["error"]) == ("failed", "Too slow")
     by_path = steps(out)
@@ -311,7 +327,7 @@ def test_a_run_that_cant_load_fails_with_a_clear_error(api, queued, monkeypatch)
     started = start(api, wf)
     # The tool leaves the library between starting the run and the worker picking it up.
     monkeypatch.delitem(TOOLS, "web_search")
-    asyncio.run(execute_run(started["id"]))
+    asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert out["status"] == "failed"
     assert "Unknown tool: web_search" in out["error"]
@@ -325,9 +341,9 @@ def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, q
     def broken(*args):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(workflows, "data_store_for", broken)
+    monkeypatch.setattr(workflows, "_organisation", broken)
     # Failed then and there, not left running without a worker until it's failed as stopped.
-    asyncio.run(execute_run(started["id"]))
+    asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert out["status"] == "failed"
     assert out["error"] == "store unavailable"
@@ -335,7 +351,9 @@ def test_a_run_whose_data_store_cant_be_resolved_fails_with_a_clear_error(api, q
     assert out["steps"] == []
 
 
-def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, queued, monkeypatch):
+def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(
+    api, db, user, queued, monkeypatch
+):
     poet = test_agents.make_agent(api, "Poet", "Write.", [make_skill(api, "Haiku", "5-7-5")])
     url = f"/api/agents/{poet['id']}"
     tools = [{"key": "web_search", "config": {}}]
@@ -357,7 +375,7 @@ def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(api, que
         assert api.post(f"{url}/runs/{chat['id']}/chat", json=chat_body("hi")).status_code == 200
     agent_run_id = out["steps"][0]["agent_run_id"]
     assert node == seen["metadata"] | {
-        "langfuse_session_id": checkpoints.thread_id(agent_run_id),
+        "langfuse_session_id": f"agent-run-{org_of(db, user).id}-{agent_run_id}",
         "langfuse_tags": [*seen["metadata"]["langfuse_tags"], "workflow:poems"],
         "agent_run_id": agent_run_id,
         "workflow_id": wf["id"],
@@ -391,7 +409,7 @@ def test_an_agent_nodes_tools_search_the_owners_data_store(api, user, queued, mo
     wf = make_workflow(api, "lookup", [agent_node("l", librarian)])
     started = start(api, wf)
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
 
     assert searched == [store_of(user)]
 
@@ -446,22 +464,21 @@ def test_runs_belong_to_the_workflows_owner(api, client, db, queued):
     assert queued == [started["id"]]
 
 
-def test_deleting_a_run_deletes_its_agent_runs(api, db, queued, monkeypatch):
+def test_deleting_a_run_deletes_its_agent_runs(api, db, queued, monkeypatch, in_store):
     a = agents(api, "one", "two")
     wf = make_workflow(
         api, "pair", [agent_node("one", a["one"]), agent_node("two", a["two"])], [("one", "two")]
     )
     out = run(api, queued, wf)
     agent_run_ids = [s["agent_run_id"] for s in out["steps"]]
-    assert all(agent_run_ids) and checkpoints.history(agent_run_ids[0])
+    assert all(agent_run_ids) and checkpoints.history(queued.store, agent_run_ids[0])
 
     url = f"/api/workflows/{wf['id']}/runs/{out['id']}"
     assert api.delete(url).status_code == 204
     assert api.get(url).status_code == 404
     assert api.get(f"/api/workflows/{wf['id']}/runs").json() == []
-    db.expire_all()
-    assert all(db.get(AgentRun, i) is None for i in agent_run_ids)
-    assert checkpoints.history(agent_run_ids[0]) == []
+    assert all(in_store.get(AgentRun, i) is None for i in agent_run_ids)
+    assert checkpoints.history(queued.store, agent_run_ids[0]) == []
     assert api.get(f"/api/agents/{a['one']['id']}/runs").json() == []
 
 
@@ -578,7 +595,7 @@ def test_progress_is_visible_while_the_run_goes(api, queued):
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     (during,) = seen
     assert (during["status"], during["started_at"] is not None) == ("running", True)
     assert [(s["path"], s["status"], s["output"]) for s in during["steps"]] == [
@@ -606,7 +623,7 @@ def test_a_run_that_takes_too_long_is_stopped(api, queued, monkeypatch):
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"]) == ("failed", None)
     assert out["error"].startswith("The run took longer than")
@@ -642,7 +659,7 @@ def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued,
     # Killed while node two is running.
     monkeypatch.setattr(workflows, "_finish_step", finish_or_die)
     with use_model(model(script)), pytest.raises(WorkerDied):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     dying.clear()
     url = f"/api/workflows/{wf['id']}/runs/{started['id']}"
     assert api.get(url).json()["status"] == "running"
@@ -650,15 +667,15 @@ def test_a_run_whose_worker_died_fails_when_its_task_is_redelivered(api, queued,
     # The message wasn't acked, so the task comes round again. Straight away (the worker was
     # lost), its heartbeat is still fresh: it could be a live run's, so it's left alone.
     with use_model(echo()):
-        asyncio.run(execute_run(started["id"]))
-    assert run_status(started["id"]) == WorkflowRunStatus.running
+        asyncio.run(execute_run(queued.store, started["id"]))
+    assert run_status(queued.store, started["id"]) == WorkflowRunStatus.running
 
     # Once the heartbeat has stopped, the run can't be going: rather than leave it running
     # forever, it fails, and the step that was cut off.
-    age_heartbeat(started["id"])
+    age_heartbeat(queued.store, started["id"])
     with use_model(echo()):
-        asyncio.run(execute_run(started["id"]))
-    assert run_status(started["id"]) == WorkflowRunStatus.failed
+        asyncio.run(execute_run(queued.store, started["id"]))
+    assert run_status(queued.store, started["id"]) == WorkflowRunStatus.failed
     out = api.get(url).json()
     assert (out["status"], out["output"], out["error"]) == (
         "failed",
@@ -683,12 +700,12 @@ def test_a_live_run_isnt_failed_when_its_task_is_redelivered(api, queued):
     seen = []
 
     async def script(messages, info):
-        await asyncio.to_thread(execute_redelivered, started["id"])
-        seen.append(run_status(started["id"]))
+        await asyncio.to_thread(execute_redelivered, queued.store, started["id"])
+        seen.append(run_status(queued.store, started["id"]))
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     assert seen == [WorkflowRunStatus.running]
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"]) == ("succeeded", "done")
@@ -701,7 +718,7 @@ def test_a_run_whose_worker_stopped_is_shown_failed(api, queued):
     wf = make_workflow(api, "flow", [agent_node("solo", a["solo"])])
     listed, got = start(api, wf), start(api, wf)
     for run_id in (listed["id"], got["id"]):
-        abandon(run_id)
+        abandon(queued.store, run_id)
     url = f"/api/workflows/{wf['id']}/runs"
 
     by_id = {r["id"]: r for r in api.get(url).json()}
@@ -726,12 +743,12 @@ def test_a_run_refreshes_its_heartbeat_while_it_goes(api, queued, monkeypatch):
 
     async def script(messages, info):
         for _ in range(2):
-            beats.append(await asyncio.to_thread(heartbeat, started["id"]))
+            beats.append(await asyncio.to_thread(heartbeat, queued.store, started["id"]))
             await asyncio.sleep(0.5)
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     first, second = beats
     assert first is not None and second > first
 
@@ -739,7 +756,7 @@ def test_a_run_refreshes_its_heartbeat_while_it_goes(api, queued, monkeypatch):
 def test_a_heartbeat_that_cant_be_written_doesnt_stop_the_run(api, queued, monkeypatch, caplog):
     monkeypatch.setattr(workflows, "HEARTBEAT_SECONDS", 0.05)
 
-    def broken(run_id: int) -> None:
+    def broken(store_id, run_id: int) -> None:
         raise ConnectionError("db is down")
 
     monkeypatch.setattr(workflows, "_beat", broken)
@@ -752,7 +769,7 @@ def test_a_heartbeat_that_cant_be_written_doesnt_stop_the_run(api, queued, monke
 
     started = start(api, wf)
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert out["status"] == "succeeded"
     # Logged, not fatal: a run outlives a blip, and fails only once beats have been missed long
@@ -784,56 +801,56 @@ def test_a_run_keeps_its_heartbeat_while_its_event_loop_is_busy(api, queued, mon
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     assert seen == ["running"]
     out = api.get(url).json()
     assert (out["status"], out["output"], out["error"]) == ("succeeded", "done", None)
 
 
-def run_status(run_id: int) -> WorkflowRunStatus:
+def run_status(store_id: uuid.UUID, run_id: int) -> WorkflowRunStatus:
     """As stored, without reading it through the API (which fails a run whose worker stopped)."""
-    with SessionLocal() as db:
-        return db.get(WorkflowRun, run_id).status
+    with store_session(store_id) as store:
+        return store.get(WorkflowRun, run_id).status
 
 
-def heartbeat(run_id: int):
-    with SessionLocal() as db:
-        return db.get(WorkflowRun, run_id).heartbeat_at
+def heartbeat(store_id: uuid.UUID, run_id: int):
+    with store_session(store_id) as store:
+        return store.get(WorkflowRun, run_id).heartbeat_at
 
 
-def age_heartbeat(run_id: int) -> None:
+def age_heartbeat(store_id: uuid.UUID, run_id: int) -> None:
     """As if its worker had stopped beating a day ago."""
-    with SessionLocal() as db:
-        db.execute(
+    with store_session(store_id) as store:
+        store.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id)
             .values(heartbeat_at=func.now() - timedelta(days=1))
         )
-        db.commit()
+        store.commit()
 
 
-def abandon(run_id: int) -> None:
+def abandon(store_id: uuid.UUID, run_id: int) -> None:
     """A queued run as a worker that died a day into it, mid-node, leaves it."""
-    with SessionLocal() as db:
-        db.execute(
+    with store_session(store_id) as store:
+        store.execute(
             update(WorkflowRun)
             .where(WorkflowRun.id == run_id)
             .values(status=WorkflowRunStatus.running, started_at=func.now() - timedelta(days=1))
         )
-        db.add(WorkflowRunStep(run_id=run_id, path=["solo"], kind="agent", input="x"))
-        db.commit()
-    age_heartbeat(run_id)
+        store.add(WorkflowRunStep(run_id=run_id, path=["solo"], kind="agent", input="x"))
+        store.commit()
+    age_heartbeat(store_id, run_id)
 
 
-def execute_redelivered(run_id: int) -> None:
+def execute_redelivered(store_id: uuid.UUID, run_id: int) -> None:
     """The run's task, delivered again to another worker."""
-    asyncio.run(execute_run(run_id))
+    asyncio.run(execute_run(store_id, run_id))
 
 
-def delete_run(run_id: int) -> None:
-    with SessionLocal() as db:
-        db.execute(delete(WorkflowRun).where(WorkflowRun.id == run_id))
-        db.commit()
+def delete_run(store_id: uuid.UUID, run_id: int) -> None:
+    with store_session(store_id) as store:
+        store.execute(delete(WorkflowRun).where(WorkflowRun.id == run_id))
+        store.commit()
 
 
 def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, monkeypatch):
@@ -855,9 +872,9 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     tried = []
     start_step = workflows._start_step
 
-    def trying(run_id, created_by, path, node, text):
+    def trying(store_id, run_id, created_by, path, node, text):
         tried.append("/".join(path))
-        return start_step(run_id, created_by, path, node, text)
+        return start_step(store_id, run_id, created_by, path, node, text)
 
     monkeypatch.setattr(workflows, "_start_step", trying)
 
@@ -866,14 +883,14 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
         if name == "left":
             # As deleting it does, less its agent runs: the API's delete would wait for this
             # turn to end before it returned (`checkpoints.delete_threads`).
-            await asyncio.to_thread(delete_run, started["id"])
+            await asyncio.to_thread(delete_run, queued.store, started["id"])
         if name == "right":
             # Still going once the other branch has found the run gone.
             await asyncio.sleep(0.5)
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     # The other branch's next node isn't tried once the first found the run gone.
     # (left and right start together, so in either order.)
     assert tried[0] == "start" and sorted(tried[1:3]) == ["left", "right"]
@@ -883,7 +900,7 @@ def test_a_run_deleted_while_it_goes_starts_nothing_more(api, queued, caplog, mo
     assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
 
-def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
+def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued, in_store):
     a = agents(api, "slow")
     wf = make_workflow(api, "flow", [agent_node("slow", a["slow"])])
     started = start(api, wf)
@@ -896,7 +913,7 @@ def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     (resp,) = refused
     assert (resp.status_code, resp.json()["detail"]) == (
         409,
@@ -908,7 +925,7 @@ def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
     # However long a run has been going, it can't go while its worker is beating; once that
     # has stopped (the worker died), it can.
     stuck = start(api, wf)
-    db.execute(
+    in_store.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == stuck["id"])
         .values(
@@ -917,10 +934,9 @@ def test_a_running_run_cant_be_deleted_until_it_finishes(api, db, queued):
             heartbeat_at=func.now(),
         )
     )
-    db.commit()
     stuck_url = f"/api/workflows/{wf['id']}/runs/{stuck['id']}"
     assert api.delete(stuck_url).status_code == 409
-    age_heartbeat(stuck["id"])
+    age_heartbeat(queued.store, stuck["id"])
     assert api.delete(stuck_url).status_code == 204
 
 
@@ -930,7 +946,7 @@ def test_a_queued_run_can_be_deleted_and_then_never_starts(api, queued):
     started = start(api, wf)
     assert api.delete(f"/api/workflows/{wf['id']}/runs/{started['id']}").status_code == 204
     with use_model(echo()):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     assert api.get(f"/api/workflows/{wf['id']}/runs").json() == []
 
 
@@ -965,13 +981,13 @@ def test_a_run_ended_elsewhere_stops_its_worker(api, queued, monkeypatch):
 
     async def script(messages, info):
         if messages[0].content == "slow":
-            await asyncio.to_thread(fail_run, started["id"], "Stopped elsewhere")
+            await asyncio.to_thread(fail_run, queued.store, started["id"], "Stopped elsewhere")
             await asyncio.sleep(30)
         yield "done"
 
     async def timed():
         async with asyncio.timeout(5):
-            await execute_run(started["id"])
+            await execute_run(queued.store, started["id"])
 
     with use_model(model(script)):
         asyncio.run(timed())
@@ -981,7 +997,9 @@ def test_a_run_ended_elsewhere_stops_its_worker(api, queued, monkeypatch):
     assert out["steps"][0]["status"] == "failed"
 
 
-def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(api, queued, monkeypatch):
+def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(
+    api, queued, monkeypatch, in_store
+):
     # A worker whose event loop is stuck still beats (from its own thread), so it would stay
     # running until Celery's hard time limit; once the loop has made no progress for long
     # enough, the run fails instead, and stops as soon as the loop gets going again.
@@ -999,9 +1017,8 @@ def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(api, que
 
     def read_later():
         time.sleep(1.0)
-        with SessionLocal() as db:
-            run = db.get(WorkflowRun, started["id"])
-            seen.append((run.status, run.error))
+        run = in_store.get(WorkflowRun, started["id"])
+        seen.append((run.status, run.error))
 
     async def script(messages, info):
         if messages[0].content == "stuck":
@@ -1012,7 +1029,7 @@ def test_a_run_whose_event_loop_makes_no_progress_is_failed_and_stopped(api, que
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     # Failed while the loop was still stuck, with an error saying why.
     assert seen == [(WorkflowRunStatus.failed, workflows.no_progress_error())]
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
@@ -1043,7 +1060,7 @@ def test_a_run_awaiting_a_slow_node_isnt_failed_for_making_no_progress(api, queu
         yield "done"
 
     with use_model(model(script)):
-        asyncio.run(execute_run(started["id"]))
+        asyncio.run(execute_run(queued.store, started["id"]))
     out = api.get(f"/api/workflows/{wf['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"], out["error"]) == ("succeeded", "done", None)
 

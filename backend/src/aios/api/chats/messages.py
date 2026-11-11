@@ -18,10 +18,17 @@ from aios.api.chats.common import get_visible_chat, is_member, lock_chat, user_m
 from aios.api.chats.invocations import fail_stopped_turns, run_turns
 from aios.api.chats.members import mentionables
 from aios.auth import CurrentOrganisation, CurrentUser
-from aios.datastores.models import Agent, Workflow
+from aios.datastores import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    organisation_store,
+    store_id_of,
+)
+from aios.datastores.models import Agent, AgentRun, Workflow, WorkflowRun
+from aios.datastores.schema_changes import not_given
 from aios.db import DB, DbId
 from aios.models import (
-    AgentRun,
     AgentRunStatus,
     Chat,
     ChatAuthorKind,
@@ -32,8 +39,8 @@ from aios.models import (
     ChatMessage,
     ChatMessageKind,
     Role,
+    SchemaChangeRequest,
     TriggerTargetKind,
-    WorkflowRun,
 )
 from aios.permissions import MENTIONS_NOT_YET, Action, CurrentRole, allow
 from aios.workflows import fail_stopped_runs
@@ -218,11 +225,12 @@ def invocation_out(invocation: ChatInvocation, acknowledgement: str) -> Invocati
     )
 
 
-def agent_runs_live(db: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
-    """How each of these agent runs is going, by id; without a query when there are none."""
+def agent_runs_live(db: Session, store: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOut]:
+    """How each of these agent runs (in the store `store` is a session on) is going, by id;
+    without a query when there are none."""
     if not run_ids:
         return {}
-    rows = db.execute(
+    rows = store.execute(
         select(
             AgentRun.id,
             AgentRun.status,
@@ -231,21 +239,43 @@ def agent_runs_live(db: Session, run_ids: list[int]) -> dict[int, AgentRunLiveOu
             AgentRun.tool_call_count,
             AgentRun.input_tokens,
             AgentRun.output_tokens,
-            invocations.waiting_on_a_request(AgentRun.id).label("waiting"),
         ).where(AgentRun.id.in_(run_ids))
+    ).all()
+    waiting = set(
+        db.scalars(
+            select(SchemaChangeRequest.requested_by_run).where(
+                SchemaChangeRequest.data_store_id == store_id_of(store),
+                SchemaChangeRequest.requested_by_run.in_(run_ids),
+                *not_given(),
+            )
+        )
     )
-    return {row.id: AgentRunLiveOut.model_validate(row, from_attributes=True) for row in rows}
+    return {
+        row.id: AgentRunLiveOut.model_validate({**row._mapping, "waiting": row.id in waiting})
+        for row in rows
+    }
 
 
-def with_runs(db: Session, outs: list[InvocationOut]) -> list[InvocationOut]:
-    """The invocations with their runs as the run page shows them. Read once the rest has been,
+def with_runs(db: Session, chat_id: int, outs: list[InvocationOut]) -> list[InvocationOut]:
+    """The chat's invocations with their runs as the run page shows them, from its
+    organisation's store (without them while it can't be read). Read once the rest has been,
     since reading a run expires the session's rows."""
-    agent_runs = agent_runs_live(db, [o.agent_run_id for o in outs if o.agent_run_id is not None])
-    for out in outs:
-        if out.agent_run_id is not None:
-            out.agent_run = agent_runs.get(out.agent_run_id)
-        if out.workflow_run_id is not None:
-            out.workflow_run = workflows_api.workflow_run_out(db, out.workflow_run_id)
+    agent_run_ids = [o.agent_run_id for o in outs if o.agent_run_id is not None]
+    if not agent_run_ids and not any(o.workflow_run_id is not None for o in outs):
+        return outs
+    organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
+    try:
+        with organisation_store(organisation_id, "ro") as store:
+            agent_runs = agent_runs_live(db, store, agent_run_ids)
+            for out in outs:
+                if out.agent_run_id is not None:
+                    out.agent_run = agent_runs.get(out.agent_run_id)
+                if out.workflow_run_id is not None and store.get(WorkflowRun, out.workflow_run_id):
+                    out.workflow_run = workflows_api.workflow_run_out(
+                        db, organisation_id, store, out.workflow_run_id
+                    )
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+        pass
     return outs
 
 
@@ -274,7 +304,9 @@ def messages_out(db: Session, chat_id: int, messages: list[ChatMessage]) -> Mess
     )
     return MessagesOut(
         messages=out,
-        invocations=with_runs(db, [invocation_out(i, acknowledgements[i.id]) for i in found]),
+        invocations=with_runs(
+            db, chat_id, [invocation_out(i, acknowledgements[i.id]) for i in found]
+        ),
     )
 
 
@@ -282,15 +314,21 @@ def catch_up(db: Session, chat_id: int) -> None:
     """Bring the chat's unfinished invocations up to date before they're read: fail their runs
     whose worker died (which posts their results back), their agent turns whose process died,
     and those that never started. Commits."""
-    fail_stopped_runs(
-        db,
-        WorkflowRun.id.in_(
-            select(ChatInvocation.workflow_run_id).where(
-                ChatInvocation.chat_id == chat_id,
-                ChatInvocation.status.in_(invocations.UNFINISHED),
-            )
-        ),
-    )
+    run_ids = db.scalars(
+        select(ChatInvocation.workflow_run_id).where(
+            ChatInvocation.chat_id == chat_id,
+            ChatInvocation.status.in_(invocations.UNFINISHED),
+            ChatInvocation.workflow_run_id.is_not(None),
+        )
+    ).all()
+    if run_ids:
+        organisation_id = db.scalar(select(Chat.organisation_id).where(Chat.id == chat_id))
+        db.commit()
+        try:
+            with organisation_store(organisation_id) as store:
+                fail_stopped_runs(store, WorkflowRun.id.in_(run_ids))
+        except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
+            pass
     fail_stopped_turns(db, chat_id)
     invocations.fail_stalled(db, chat_id)
 

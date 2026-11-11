@@ -26,23 +26,21 @@ from aios.api.provenance import archived, built_by, people, provenance
 from aios.api.skills import unique_name
 from aios.api.triggers import disable_triggers
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores.models import Agent, AgentVersion
+from aios.datastores.models import Agent, AgentRun, AgentVersion
 from aios.db import DB, DbId
-from aios.models import AgentRun, Trigger
+from aios.models import Trigger
 from aios.permissions import Action, allow
 from aios.versioning import save_agent_version
 
 router = APIRouter(prefix="/api")
 
 
-def run_counts(db: Session, org_id: int, column, ids) -> dict[int, int]:
-    """How many runs (on the platform) each of the organisation's agents or agent versions in
-    `ids` has had, by `column` (`AgentRun.agent_id` or `AgentRun.agent_version_id`)."""
+def run_counts(store: Session, column, ids) -> dict[int, int]:
+    """How many runs each of the organisation's agents or agent versions in `ids` has had, by
+    `column` (`AgentRun.agent_id` or `AgentRun.agent_version_id`), in its store (`store`)."""
     return dict(
-        db.execute(
-            select(column, func.count(AgentRun.id))
-            .where(AgentRun.organisation_id == org_id, column.in_(list(ids)))
-            .group_by(column)
+        store.execute(
+            select(column, func.count(AgentRun.id)).where(column.in_(list(ids))).group_by(column)
         ).all()
     )
 
@@ -68,7 +66,7 @@ def list_agents(
         .where(Agent.archived_at.is_not(None) if archived_only else Agent.archived_at.is_(None))
         .order_by(Agent.name)
     ).all()
-    runs = run_counts(db, org.id, AgentRun.agent_id, [a.id for a, *_ in rows])
+    runs = run_counts(store, AgentRun.agent_id, [a.id for a, *_ in rows])
     known = people(
         db, org.id, [i for a, *_ in rows for i in (a.created_by, a.updated_by, a.archived_by)]
     )

@@ -9,10 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
 
 from aios import notifications
 from aios.config import get_settings
 from aios.datastores.connections import store_session
+from aios.datastores.models import AgentRun
 from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
 from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
@@ -91,11 +93,26 @@ def read_revision(pg: psycopg.Connection) -> int:
 # --- Requests -----------------------------------------------------------------------------------
 
 
-def find(run_id: int, tool_call_id: str) -> SchemaChangeRequest | None:
-    """The request a run's tool call made, if it made one."""
+def lock_run(db: Session, data_store_id: uuid.UUID, run_id: int) -> None:
+    """Take the platform's lock on the store's run's requests, until `db`'s transaction ends:
+    recording one (`propose`) and deleting the run (which then cancels them,
+    `aios.api.agents.cancel_chat_requests`) take turns, so a request is never recorded for a
+    run that's gone. (The run is in its store, so no foreign key does this.)"""
+    db.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtextextended(f"aios.run:{data_store_id}:{run_id}", 0)
+            )
+        )
+    )
+
+
+def find(data_store_id: uuid.UUID, run_id: int, tool_call_id: str) -> SchemaChangeRequest | None:
+    """The request a tool call of the store's run made, if it made one."""
     with SessionLocal() as db:
         return db.scalar(
             select(SchemaChangeRequest).where(
+                SchemaChangeRequest.data_store_id == data_store_id,
                 SchemaChangeRequest.requested_by_run == run_id,
                 SchemaChangeRequest.tool_call_id == tool_call_id,
             )
@@ -137,6 +154,12 @@ def propose(
         base_revision=revision,
     )
     with SessionLocal() as db:
+        if run_id is not None:
+            lock_run(db, data_store_id, run_id)
+            # Not for a run deleted meanwhile, whose requests have been cancelled already.
+            with store_session(data_store_id, "ro") as store:
+                if store.get(AgentRun, run_id) is None:
+                    raise Invalid("The run has been deleted")
         db.add(request)
         db.flush()
         data_store = db.get_one(DataStore, data_store_id)

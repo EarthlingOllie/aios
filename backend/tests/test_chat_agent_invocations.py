@@ -3,6 +3,7 @@
 import asyncio
 from datetime import timedelta
 
+from conftest import store_of
 from sqlalchemy import func, update
 from test_agent_run_counters import searching_agent
 from test_chat_invocations import echo_agent, queued  # noqa: F401 (a fixture)
@@ -12,7 +13,8 @@ from test_workflows import agent_node, make_workflow
 
 from aios import checkpoints, firing, scheduler
 from aios.config import get_settings
-from aios.models import AgentRun, ChatInvocation
+from aios.datastores.models import AgentRun
+from aios.models import ChatInvocation
 from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
 from aios.tools import TOOLS
 
@@ -97,7 +99,7 @@ def test_mentioning_an_agent_runs_a_turn_followed_by_its_card_and_posts_the_repl
 
     # The run is the agent's, run with the message (a mention as `@name`), marked as from the chat.
     run_id = live["agent_run_id"]
-    history = checkpoints.history(run_id)
+    history = checkpoints.history(store_of(user), run_id)
     assert history[0].text == "@Bot find fruit"
     [listed] = api.get(runs_url).json()
     assert (listed["id"], listed["chat_id"], listed["chat_name"]) == (run_id, chat["id"], "Design")
@@ -121,21 +123,20 @@ def test_a_failed_turn_posts_its_error_and_fails_the_card(api):
     assert replies_from(api, chat) == [("Bot", "The run failed: model overloaded")]
 
 
-def age(db, invocation_id: int) -> None:
+def age(db, in_store, invocation_id: int) -> None:
     """Make the invocation's and its run's heartbeats older than a live process lets them get."""
     stale = func.now() - firing.STALE_AFTER - timedelta(seconds=1)
-    db.execute(
-        update(ChatInvocation).where(ChatInvocation.id == invocation_id).values(heartbeat_at=stale)
-    )
-    db.execute(
-        update(AgentRun)
-        .where(AgentRun.id == ChatInvocation.agent_run_id, ChatInvocation.id == invocation_id)
+    run_id = db.scalar(
+        update(ChatInvocation)
+        .where(ChatInvocation.id == invocation_id)
         .values(heartbeat_at=stale)
+        .returning(ChatInvocation.agent_run_id)
     )
     db.commit()
+    in_store.execute(update(AgentRun).where(AgentRun.id == run_id).values(heartbeat_at=stale))
 
 
-def test_a_turn_whose_heartbeat_stops_is_failed_when_the_chat_is_read(api, db):
+def test_a_turn_whose_heartbeat_stops_is_failed_when_the_chat_is_read(api, db, in_store):
     agent = make_agent(api, "Bot")
     chat = make_chat(api, "Design")
     add(api, chat, "agent", agent)
@@ -144,7 +145,7 @@ def test_a_turn_whose_heartbeat_stops_is_failed_when_the_chat_is_read(api, db):
     async def script(msgs, info):
         # Its process looks dead to a reader: nothing has beaten it for too long.
         [invocation] = (await asyncio.to_thread(messages, api, chat))["invocations"]
-        await asyncio.to_thread(age, db, invocation["id"])
+        await asyncio.to_thread(age, db, in_store, invocation["id"])
         seen.append(await asyncio.to_thread(messages, api, chat))
         yield "Too late."
 
