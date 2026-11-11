@@ -621,6 +621,8 @@ export class FakeApi {
   }[] = [];
   /** Whether `otherMemberships` were joined before `organisation` (listed after it). */
   joinedEarlier = false;
+  /** How long runs and chat history are kept (`PUT /api/organisation/retention`). */
+  retention: { run_days: number | null; chat_days: number | null } = { run_days: null, chat_days: null };
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
   deletionGraceDays = 14;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
@@ -734,6 +736,7 @@ export class FakeApi {
       ...this.organisation,
       members: this.organisation.members.map((m) => ({ ...m, role: this.roleOf(m.user.id) })),
       deletion: this.organisation.deletion ?? null,
+      retention: { ...this.retention },
     };
   }
 
@@ -2275,6 +2278,14 @@ export class FakeApi {
       this.organisation.members = this.organisation.members.filter((m) => m.user.id !== this.me.id);
       this.member = false;
       return reply(200, this.meOut(account));
+    }
+    if (path === "/api/organisation/retention" && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      const valid = (d: unknown) => d === null || (Number.isInteger(d) && (d as number) >= 1 && (d as number) <= 36_500);
+      if (!valid(body?.run_days) || !valid(body?.chat_days)) return fail(422, "Invalid retention");
+      this.retention = { run_days: body.run_days, chat_days: body.chat_days };
+      return reply(200, this.organisationOut());
     }
     if (path === "/api/organisation/deletion") {
       const refused = this.refuseUnlessAdmin();

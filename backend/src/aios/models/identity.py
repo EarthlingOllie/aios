@@ -94,6 +94,10 @@ class Organisation(Base):
     # null for the default (`run_service_org_in_flight_cap`). Soft: concurrent claimers can
     # overshoot it by the few items each claims.
     in_flight_cap: Mapped[int | None] = mapped_column(Integer)
+    # Retention (`aios.retention`): how many days its runs, and its chats' messages, are kept
+    # once they've finished. Null keeps them indefinitely, the default. Only admins set them.
+    run_retention_days: Mapped[int | None] = mapped_column(Integer)
+    chat_retention_days: Mapped[int | None] = mapped_column(Integer)
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     members: Mapped[list["OrganisationMember"]] = relationship(
@@ -107,6 +111,12 @@ class Organisation(Base):
         CheckConstraint(
             "(deletion_scheduled_at IS NULL) = (deletes_at IS NULL)",
             name="ck_organisations_deletion_scheduled",
+        ),
+        CheckConstraint(
+            "run_retention_days BETWEEN 1 AND 36500", name="ck_organisations_run_retention_days"
+        ),
+        CheckConstraint(
+            "chat_retention_days BETWEEN 1 AND 36500", name="ck_organisations_chat_retention_days"
         ),
         # The sweep's: those whose grace period is over.
         Index(

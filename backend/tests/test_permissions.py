@@ -95,6 +95,7 @@ ROUTES = {
     ("POST", "/dropped/{dropped_id}/restore"): RESTORE,
     ("GET", "/organisation"): READ,
     ("PUT", "/organisation"): RUN_ORGANISATION,
+    ("PUT", "/organisation/retention"): RUN_ORGANISATION,
     ("POST", "/organisation/deletion"): RUN_ORGANISATION,
     ("DELETE", "/organisation/deletion"): RUN_ORGANISATION,
     ("GET", "/organisation/invites"): RUN_ORGANISATION,

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { DeleteSection } from "@/components/DeleteOrganisation";
 import { LeaveSection } from "@/components/LeaveOrganisation";
 import { InvitesSection } from "@/components/OrganisationInvites";
+import { RetentionSection } from "@/components/Retention";
 import { api, describeError, type Me, type Organisation, type Role } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
@@ -23,7 +24,7 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
  * page: its creator and members with their roles, which admins change (`/organisation`), its
  * invitation links (`/organisation/invitations`, admins' only), its settings: the approval rules,
- * leaving it and deleting it (`/organisation/settings`), and its audit log
+ * retention, leaving it and deleting it (`/organisation/settings`), and its audit log
  * (`/organisation/audit-log`, admins' only).
  */
 export function OrganisationPage() {
@@ -59,6 +60,7 @@ export function OrganisationPage() {
       content: (
         <>
           <ApprovalRulesSection key={`rules-${org.id}`} />
+          <RetentionSection key={`retention-${org.id}`} org={org} onChanged={reload} />
           <LeaveSection
             org={org}
             onLeft={(after) => {
