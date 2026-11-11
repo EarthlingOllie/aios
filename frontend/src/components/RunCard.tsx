@@ -56,12 +56,17 @@ function Brief({ brief }: { brief: string }) {
   );
 }
 
-/** A card with no run to show: briefing or starting, couldn't start, or deleted since. */
+/** A card with no run to show: briefing or starting, refused (who may invoke it), couldn't
+ * start, or deleted since. */
 function Unstarted({ invocation }: { invocation: ChatInvocation }) {
   return (
     <Frame status={<RunStatusBadge status={invocation.status} data-testid="run-card-status" />}>
       {invocation.run_deleted ? (
         <p className="text-muted-foreground">The run has been deleted.</p>
+      ) : invocation.status === "refused" ? (
+        <p role="alert" data-testid="run-card-refused" className="text-destructive break-words">
+          Not run: {invocation.refusal_reason}
+        </p>
       ) : invocation.status === "failed" ? (
         <p role="alert" className="text-destructive break-words">
           Couldn't start the run: {invocation.error}

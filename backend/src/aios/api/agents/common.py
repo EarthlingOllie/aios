@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by, array_agg
 from sqlalchemy.orm import Session, object_session
 
+from aios import limits
 from aios.api.provenance import Archived, Provenance, UserOut, archived, people, provenance
 from aios.api.skills import lock_skills
 from aios.datastores.models import (
@@ -19,6 +20,8 @@ from aios.datastores.models import (
     agent_version_skills,
 )
 from aios.db import DbId
+from aios.limits import TurnLimits
+from aios.models import InvocableBy, Organisation
 from aios.tools import (
     TOOLS,
     ToolError,
@@ -48,6 +51,12 @@ class AgentIn(BaseModel):
     tools: list[AgentToolIn] = []
     # Optional "what changed", stored on the new version if one is created.
     note: str | None = None
+    # Who may invoke it by mentioning it (`aios.guards`); None keeps it as it is (everyone, for
+    # a new agent).
+    invocable_by: InvocableBy | None = None
+    # Its own turn caps (`aios.limits`), each null to follow the organisation's; None keeps them
+    # as they are. Only admins may set one above the organisation's (403).
+    limits: TurnLimits | None = None
 
 
 class AgentSkillOut(BaseModel):
@@ -114,6 +123,28 @@ class AgentOut(Provenance, Archived):
     created_at: datetime
     updated_at: datetime
     current_version: AgentVersionOut
+    invocable_by: InvocableBy
+    # Its own turn caps (null follows the organisation's), and the caps in force for its turns.
+    limits: TurnLimits
+    limits_in_force: TurnLimits
+
+
+def organisation_limits(db: Session, org_id: int) -> dict:
+    """The organisation's own caps (its overrides), from the platform database."""
+    return db.scalar(select(Organisation.limits).where(Organisation.id == org_id)) or {}
+
+
+def apply_guards(
+    db: Session, org_id: int, role, target: Any, invocable_by: InvocableBy | None, new_limits
+) -> None:
+    """Set an agent's or workflow's invocable-by and own caps from a request (None leaves each
+    as it is): a 403 if a non-admin sets a cap above the organisation's (`aios.limits`)."""
+    if invocable_by is not None:
+        target.invocable_by = invocable_by
+    if new_limits is not None:
+        values = limits.overrides(new_limits.model_dump())
+        limits.refuse_raise(role, organisation_limits(db, org_id), target.limits, values)
+        target.limits = values
 
 
 def get_org_agent(store: Session, agent_id: int) -> Agent:
@@ -293,6 +324,11 @@ def agent_out(db: Session, org_id: int, agent: Agent) -> AgentOut:
         created_at=agent.created_at,
         updated_at=agent.updated_at,
         current_version=version_out(version, known, ToolOrganisation(org_id, store)),
+        invocable_by=agent.invocable_by,
+        limits=TurnLimits.model_validate(agent.limits or {}),
+        limits_in_force=TurnLimits.model_validate(
+            limits.in_force(organisation_limits(db, org_id), agent.limits)
+        ),
         **provenance(db, agent, known),
         **archived(agent, known),
     )

@@ -18,7 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from aios.models.base import Base
@@ -98,6 +98,9 @@ class Organisation(Base):
     # once they've finished. Null keeps them indefinitely, the default. Only admins set them.
     run_retention_days: Mapped[int | None] = mapped_column(Integer)
     chat_retention_days: Mapped[int | None] = mapped_column(Integer)
+    # Its caps on turns and workflow runs (`aios.limits`), where an admin overrode the
+    # deployment's, by name; empty for all the defaults.
+    limits: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     members: Mapped[list["OrganisationMember"]] = relationship(

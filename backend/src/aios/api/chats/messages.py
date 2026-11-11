@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import invocations, run_service, search_index, turns
+from aios import guards, invocations, run_service, search_index, turns
 
 # Read on the package at call time, where tests replace them.
 from aios.api import chats as package
@@ -43,11 +43,10 @@ from aios.models import (
     ChatMemberKind,
     ChatMessageKind,
     InvocationStatus,
-    Role,
     TriggerTargetKind,
     WorkLane,
 )
-from aios.permissions import MENTIONS_NOT_YET, Action, CurrentRole, allow
+from aios.permissions import Action, CurrentRole, allow
 from aios.workflows import fail_stopped_runs
 
 router = APIRouter(prefix="/api")
@@ -130,6 +129,8 @@ class InvocationOut(BaseModel):
     status: InvocationStatus
     # Why it failed: the run's error, or why it couldn't start.
     error: str | None
+    # Why the mention guards refused it (`aios.guards`): who may invoke the target.
+    refusal_reason: str | None
     # The acknowledgement's text as it is now: its placeholder until the handoff writes what the
     # member understood it's being asked to do (the run card's message has the same).
     acknowledgement: str
@@ -213,6 +214,7 @@ def invocation_out(invocation: Invocation, acknowledgement: str) -> InvocationOu
         target_id=invocation.workflow_id or invocation.agent_id,
         status=invocation.status,
         error=invocation.error,
+        refusal_reason=invocation.refusal_reason,
         acknowledgement=acknowledgement,
         brief=invocation.brief,
         workflow_run_id=invocation.workflow_run_id,
@@ -420,19 +422,30 @@ def post_message(
     background: BackgroundTasks,
 ):
     """Post a markdown message to the chat as the user, who must be a member of it. Returns it,
-    and for each workflow it mentions the workflow's acknowledgement with a card and its queued
-    invocation, whose run starts after the response. A participant's mention of an agent or a
-    workflow is refused (403, saying why) until mentions are guarded."""
-    if role == Role.participant and any(
-        m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow) for m in body.mentions
-    ):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, MENTIONS_NOT_YET)
+    and for each agent or workflow it mentions its acknowledgement with a card and its queued
+    invocation, whose run starts after the response.
+
+    The mention guards (`aios.guards`) come first, in order: more agents and workflows than a
+    message may mention is a 422; a mention the poster may not make (its target's invocable-by)
+    is posted refused, its card saying why; past the poster's mention rate, a 429 with when to
+    try again. Neither a 422 nor a 429 writes anything."""
+    targets = list(
+        dict.fromkeys(
+            (TriggerTargetKind(m.kind.value), m.id)
+            for m in body.mentions
+            if m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow)
+        )
+    )
+    guards.check_count(targets)
     chat = get_visible_chat(store, user.id, chat_id)
     if not is_member(chat, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_A_MEMBER)
     # Its owner leaving the organisation may be deleting it (`lock_chat`).
     lock_chat(store, chat)
     mentions = resolve_mentions(db, store, chat, body.mentions)
+    refused = guards.refusals(store, role, targets)
+    guards.check_rate(org.id, user.id, len([t for t in targets if t not in refused]))
+    guards.check_budget()
     message = ChatMessage(
         chat_id=chat.id,
         author_kind=ChatAuthorKind.user,
@@ -451,6 +464,7 @@ def post_message(
             for m in mentions
             if m.kind in (ChatMemberKind.agent, ChatMemberKind.workflow)
         ],
+        refused,
     )
     # Posting is activity.
     chat.updated_at = func.now()

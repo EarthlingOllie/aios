@@ -25,20 +25,23 @@ def _limiter() -> MovingWindowRateLimiter:
     )
 
 
-def throttle(name: str, rate: str, key: str) -> None:
+def throttle(
+    name: str, rate: str, key: str, *, cost: int = 1, detail: str = TOO_MANY_ATTEMPTS
+) -> None:
     """Count an attempt at `name` (e.g. "login-email") by `key` (an IP, a user id, or a
-    `hashed` email) against `rate`, a `limits` string such as "10/15 minutes" (from settings).
-    Past it, the attempt isn't counted and the request is refused: 429, with `Retry-After` saying
-    when the oldest counted attempt leaves the window."""
+    `hashed` email) against `rate`, a `limits` string such as "10/15 minutes" (from settings),
+    as `cost` attempts. Past it, the attempt isn't counted and the request is refused: 429, with
+    `Retry-After` saying when the oldest counted attempt leaves the window, and `detail` (which
+    may say when, as `{retry}` seconds)."""
     limit = parse(rate)
     limiter = _limiter()
-    if limiter.hit(limit, name, key):
+    if limiter.hit(limit, name, key, cost=cost):
         return
     reset_at, _ = limiter.get_window_stats(limit, name, key)
     retry_after = max(1, math.ceil(reset_at - time.time()))
     raise HTTPException(
         status.HTTP_429_TOO_MANY_REQUESTS,
-        TOO_MANY_ATTEMPTS,
+        detail.format(retry=retry_after),
         headers={"Retry-After": str(retry_after)},
     )
 

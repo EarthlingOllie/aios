@@ -18,8 +18,7 @@ from conftest import (
 )
 from fastapi.routing import APIRoute, iter_route_contexts
 from sqlalchemy import select, update
-from test_agents import make_agent
-from test_chats import make_chat, signed_in_as
+from test_chats import signed_in_as
 from test_invitations import leave_behind, make_link
 from test_people_mirror import mirror
 
@@ -44,6 +43,7 @@ RESTORE = (ADMINS, "restore")  # restores need an admin
 SOURCES = (ADMINS, "sources")  # add, change, pause or remove sources
 LEAVE = (EVERYONE, None)
 AUDIT = (ADMINS, "audit log")  # read the audit log
+USAGE = (ADMINS, "usage")  # read usage totals
 RELEASE = (ADMINS, "flagged")  # see flagged content, release it
 
 # Every route under the organisation prefix, by method and path after it, and its row.
@@ -52,6 +52,7 @@ ROUTES = {
     ("GET", "/approval-rules"): READ,
     ("PUT", "/approval-rules/{kind}"): RUN_ORGANISATION,
     ("GET", "/audit-log"): AUDIT,
+    ("GET", "/usage"): USAGE,
     ("GET", "/flagged"): RELEASE,
     ("POST", "/flagged/{document_id}/release"): RELEASE,
     ("GET", "/jev-status"): READ,
@@ -101,6 +102,7 @@ ROUTES = {
     ("GET", "/organisation"): READ,
     ("PUT", "/organisation"): RUN_ORGANISATION,
     ("PUT", "/organisation/retention"): RUN_ORGANISATION,
+    ("PUT", "/organisation/limits"): RUN_ORGANISATION,
     ("POST", "/organisation/deletion"): RUN_ORGANISATION,
     ("DELETE", "/organisation/deletion"): RUN_ORGANISATION,
     ("GET", "/organisation/invites"): RUN_ORGANISATION,
@@ -398,25 +400,3 @@ def test_a_participant_searches_documents(api, user, participant, monkeypatch):
         resp = api.get("/api/search", params={"q": "pricing"})
     assert resp.status_code == 200, resp.text
     assert asked == [(store_of(user), "pricing")]
-
-
-# Mentions.
-
-
-def test_a_participants_mention_of_an_agent_answers_403_with_an_explanation(
-    api, db, user, participant
-):
-    agent = make_agent(api, "Helper")
-    chat = make_chat(api, "Ops", visibility="public")
-    api.post(f"/api/chats/{chat['id']}/members", json={"kind": "agent", "id": agent["id"]})
-    with signed_in_as(participant):
-        assert api.post(f"/api/chats/{chat['id']}/join").is_success
-        mention = {"kind": "agent", "id": agent["id"]}
-        resp = api.post(
-            f"/api/chats/{chat['id']}/messages",
-            json={"body": "@agent hi", "mentions": [mention]},
-        )
-        assert resp.status_code == 403
-        assert "mention" in resp.json()["detail"].lower()
-        plain = api.post(f"/api/chats/{chat['id']}/messages", json={"body": "just saying"})
-        assert plain.status_code == 201, plain.text

@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from aios import audit, organisations
+from aios import audit, limits, organisations
 from aios.api.provenance import UserOut, people
 from aios.auth import (
     CurrentOrganisation,
@@ -49,6 +49,7 @@ from aios.auth import (
 from aios.config import get_settings
 from aios.datastores import data_store_for
 from aios.db import DB, SessionLocal
+from aios.limits import OrganisationLimits
 from aios.models import (
     DataStore,
     Organisation,
@@ -99,6 +100,16 @@ class RetentionIn(BaseModel):
     chat_days: RetentionDays | None
 
 
+class LimitsOut(BaseModel):
+    """The caps on turns and workflow runs (`aios.limits`): the deployment's defaults, the
+    organisation's overrides (null keeps the default), and so those in force, which agents and
+    workflows follow unless they set their own."""
+
+    defaults: OrganisationLimits
+    overrides: OrganisationLimits
+    in_force: OrganisationLimits
+
+
 class OrganisationOut(OrganisationSummaryOut):
     # Null once the creator's account is deleted.
     creator: UserOut | None
@@ -113,6 +124,8 @@ class OrganisationOut(OrganisationSummaryOut):
     in_flight_cap_overridden: bool
     # Every member sees it; admins change it.
     retention: RetentionOut
+    # Every member sees them; admins change them.
+    limits: LimitsOut
 
 
 class DeletionIn(BaseModel):
@@ -148,6 +161,15 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         in_flight_cap=org.in_flight_cap or get_settings().queue_in_flight_cap,
         in_flight_cap_overridden=org.in_flight_cap is not None,
         retention=retention_out(org),
+        limits=limits_out(org),
+    )
+
+
+def limits_out(org: Organisation) -> LimitsOut:
+    return LimitsOut(
+        defaults=OrganisationLimits.model_validate(limits.deployment()),
+        overrides=OrganisationLimits.model_validate(limits.overrides(org.limits)),
+        in_force=OrganisationLimits.model_validate(limits.organisation(org.limits)),
     )
 
 
@@ -250,6 +272,31 @@ def set_retention(body: RetentionIn, user: CurrentUser, org: CurrentOrganisation
             "organisation",
             org.id,
             {"setting": "retention", "from": old.model_dump(), "to": new.model_dump()},
+        )
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+@router.put(
+    "/organisation/limits",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def set_limits(body: OrganisationLimits, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    """Override the deployment's caps for the organisation (each null: the default), audited
+    when they change. Admins only."""
+    old = limits.overrides(org.limits)
+    new = limits.overrides(body.model_dump())
+    org.limits = new
+    if new != old:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "settings.changed",
+            "organisation",
+            org.id,
+            {"setting": "limits", "from": old, "to": new},
         )
     db.commit()
     return organisation_out(db, org, user)

@@ -97,6 +97,62 @@ export type Organisation = OrganisationSummary & {
   deletion: OrganisationDeletion | null;
   /** How long runs and chat history are kept; every member sees it, admins change it. */
   retention: Retention;
+  /** The caps on turns and workflow runs; every member sees them, admins change them. */
+  limits: OrganisationLimits;
+};
+
+/** Who may invoke an agent or workflow by mentioning it. */
+export type InvocableBy = "everyone" | "editors" | "admins";
+
+/** An agent's caps on each of its turns; null follows the organisation's. Costs are in GBP. */
+export type TurnLimits = {
+  turn_model_calls: number | null;
+  turn_tokens: number | null;
+  turn_cost: number | null;
+};
+
+/** A workflow's caps on each of its runs; null follows the organisation's. Costs are in GBP. */
+export type RunLimits = {
+  run_model_calls: number | null;
+  run_cost: number | null;
+};
+
+export type Limits = TurnLimits & RunLimits;
+export type LimitName = keyof Limits;
+
+/** The deployment's defaults, the organisation's overrides (null keeps the default), and so
+ * the caps in force, which agents and workflows follow unless they set their own. */
+export type OrganisationLimits = {
+  defaults: Limits;
+  overrides: Limits;
+  in_force: Limits;
+};
+
+export type UsageGroup = "agent" | "workflow" | "person" | "day";
+
+/** Usage totals for one agent, workflow, person or day. */
+export type UsageTotal = {
+  /** The id, or the day (YYYY-MM-DD); null for usage with none (a schedule's run has no person). */
+  key: number | string | null;
+  name: string | null;
+  model_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  embedded_texts: number;
+  web_searches: number;
+  sandbox_seconds: number;
+  /** Estimated, in GBP; null if nothing in it was priced. */
+  cost: number | null;
+  /** Entries with no price. */
+  unpriced: number;
+};
+
+export type UsageReport = {
+  currency: "GBP";
+  group: UsageGroup;
+  start: string;
+  end: string;
+  totals: UsageTotal[];
 };
 
 /** How many days finished runs, and chats' messages, are kept (1 to 36,500); null keeps them
@@ -409,6 +465,10 @@ export type Agent = Provenance & Archived & {
   created_at: string;
   updated_at: string;
   current_version: AgentVersion;
+  invocable_by: InvocableBy;
+  /** Its own caps (null follows the organisation's), and those in force for its turns. */
+  limits: TurnLimits;
+  limits_in_force: TurnLimits;
 };
 
 export type AgentInput = {
@@ -420,6 +480,9 @@ export type AgentInput = {
   /** Tools from the library, in order, each with its settings. */
   tools: AgentToolInput[];
   note?: string;
+  /** Omitted: kept as they are. Only admins may set a cap above the organisation's (403). */
+  invocable_by?: InvocableBy;
+  limits?: TurnLimits;
 };
 
 export type AgentRunStatus = "running" | "succeeded" | "failed";
@@ -750,6 +813,10 @@ export type Workflow = Provenance & Archived & {
   current_version: WorkflowVersion;
   /** Saved positions by node key; nodes without one are laid out automatically. */
   layout: Record<string, NodePosition>;
+  invocable_by: InvocableBy;
+  /** Its own caps (null follows the organisation's), and those in force for its runs. */
+  limits: RunLimits;
+  limits_in_force: RunLimits;
 };
 
 export type WorkflowInput = {
@@ -762,6 +829,9 @@ export type WorkflowInput = {
   note?: string;
   /** The version the edit started from; a 409 if the workflow has moved on. Omitted: no check. */
   base_version?: number;
+  /** Omitted: kept as they are. Only admins may set a cap above the organisation's (403). */
+  invocable_by?: InvocableBy;
+  limits?: RunLimits;
 };
 
 /** waiting: paused until the user decides a schema change request one of its nodes made. */
@@ -1021,8 +1091,9 @@ export type ChatMessage = {
   created_at: string;
 };
 
-/** queued: waiting to start; briefing: the handoff is briefing its run on the chat, which starts next. */
-export type ChatInvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed";
+/** queued: waiting to start; briefing: the handoff is briefing its run on the chat, which starts next;
+ * refused: the poster may not invoke it (its invocable-by), so nothing ran. */
+export type ChatInvocationStatus = "queued" | "briefing" | "running" | "succeeded" | "failed" | "refused";
 
 /** A run a mention in a chat started, as its card follows it. */
 export type ChatInvocation = {
@@ -1037,6 +1108,8 @@ export type ChatInvocation = {
   status: ChatInvocationStatus;
   /** Why it failed: the run's error, or why it couldn't start. */
   error: string | null;
+  /** Why the mention was refused: who may invoke it. */
+  refusal_reason: string | null;
   /** Its acknowledgement's text as it is now: a placeholder until the handoff writes what the
    * member understood it's being asked to do. */
   acknowledgement: string;
@@ -1204,6 +1277,16 @@ export const api = {
   /** Admins only: how long runs and chat history are kept (null: indefinitely). */
   setRetention: (retention: Retention) =>
     request<Organisation>(`${organisationApi()}/organisation/retention`, json("PUT", retention)),
+  /** Admins only: override the deployment's caps (null: the default). */
+  setLimits: (limits: Limits) =>
+    request<Organisation>(`${organisationApi()}/organisation/limits`, json("PUT", limits)),
+  /** Admins only: usage totals by agent, workflow, person or day, from `start` to `end`. */
+  usage: (group: UsageGroup, start?: string, end?: string) => {
+    const params = new URLSearchParams({ group });
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    return request<UsageReport>(`${organisationApi()}/usage?${params}`);
+  },
   /** Admins only (a 403 otherwise); demoting the last admin is a 409. Answers with the
    * Organisation page. */
   changeRole: (userId: number, role: Role) =>

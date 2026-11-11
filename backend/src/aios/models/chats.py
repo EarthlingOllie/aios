@@ -56,7 +56,14 @@ class InvocationStatus(enum.StrEnum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+    # A mention the poster may not make (the target's invocable-by, `aios.guards`): posted with
+    # its card saying why, and nothing ever ran.
+    refused = "refused"
 
     @property
     def finished(self) -> bool:
-        return self in (InvocationStatus.succeeded, InvocationStatus.failed)
+        return self in (
+            InvocationStatus.succeeded,
+            InvocationStatus.failed,
+            InvocationStatus.refused,
+        )

@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field, FiniteFloat
 from sqlalchemy import Row, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
-from aios import audit, checkpoints, invocations, used_by
+from aios import audit, checkpoints, invocations, limits, used_by
+from aios.api.agents.common import apply_guards, organisation_limits
 from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
     Archived,
@@ -39,7 +40,9 @@ from aios.datastores.models import (
     WorkflowVersion,
 )
 from aios.db import DB, DbId
+from aios.limits import RunLimits
 from aios.models import (
+    InvocableBy,
     InvocationStatus,
     SchemaChangeStatus,
     TriggerTargetKind,
@@ -47,7 +50,7 @@ from aios.models import (
     WorkflowRunStatus,
     WorkflowStepStatus,
 )
-from aios.permissions import Action, allow
+from aios.permissions import Action, CurrentRole, allow
 from aios.sandbox.sessions import run_sandboxes, stop_sandboxes
 from aios.tools import ToolOrganisation, unusable_tools
 from aios.versioning import NodeSpec, save_workflow_version
@@ -99,6 +102,12 @@ class WorkflowIn(BaseModel):
     # The version number the edit started from: if the workflow has moved on since, the save is
     # refused rather than overwriting that version. None saves regardless.
     base_version: int | None = None
+    # Who may invoke it by mentioning it (`aios.guards`); None keeps it as it is (everyone, for
+    # a new workflow).
+    invocable_by: InvocableBy | None = None
+    # Its own run caps (`aios.limits`), each null to follow the organisation's; None keeps them
+    # as they are. Only admins may set one above the organisation's (403).
+    limits: RunLimits | None = None
 
 
 class WorkflowNodeOut(BaseModel):
@@ -166,6 +175,10 @@ class WorkflowOut(Provenance, Archived):
     # Positions by node key, for the current version's nodes as of the last save that sent
     # them; older versions' nodes may be missing, and the editor lays those out itself.
     layout: dict[str, NodePosition]
+    invocable_by: InvocableBy
+    # Its own run caps (null follows the organisation's), and the caps in force for its runs.
+    limits: RunLimits
+    limits_in_force: RunLimits
 
 
 def get_org_workflow(store: Session, workflow_id: int) -> Workflow:
@@ -439,6 +452,11 @@ def workflow_out(db: Session, org_id: int, store: Session, workflow: Workflow) -
         updated_at=workflow.updated_at,
         current_version=version_out(db, org_id, load_version(store, workflow.current_version_id)),
         layout=workflow.layout,
+        invocable_by=workflow.invocable_by,
+        limits=RunLimits.model_validate(workflow.limits or {}),
+        limits_in_force=RunLimits.model_validate(
+            limits.in_force(organisation_limits(db, org_id), workflow.limits)
+        ),
         **provenance(db, workflow, known),
         **archived(workflow, known),
     )
@@ -537,7 +555,12 @@ def list_workflows(
     dependencies=[allow(Action.build)],
 )
 def create_workflow(
-    body: WorkflowIn, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
+    body: WorkflowIn,
+    user: CurrentUser,
+    org: CurrentOrganisation,
+    role: CurrentRole,
+    db: DB,
+    store: CurrentStore,
 ):
     nodes, edges = resolve_graph(store, body)
     lock_new_graph(store, nodes, None)
@@ -546,7 +569,10 @@ def create_workflow(
         name=body.name,
         description=body.description,
         layout={},
+        invocable_by=InvocableBy.everyone,
+        limits={},
     )
+    apply_guards(db, org.id, role, workflow, body.invocable_by, body.limits)
     apply_layout(workflow, body)
     store.add(workflow)
     with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
@@ -588,10 +614,13 @@ def update_workflow(
     body: WorkflowIn,
     user: CurrentUser,
     org: CurrentOrganisation,
+    role: CurrentRole,
     db: DB,
     store: CurrentStore,
 ):
-    """Rename/describe the workflow; a changed graph creates a new version."""
+    """Rename/describe the workflow; a changed graph creates a new version. Who may invoke it and
+    its caps are the workflow's, not versioned: only admins raise a cap above the
+    organisation's (403)."""
     workflow = get_org_workflow(store, workflow_id)
     # Before checking the graph: an edit of an older version may be invalid only because of what
     # has changed since, and reloading is what fixes it.
@@ -605,6 +634,7 @@ def update_workflow(
     workflow.name = body.name
     workflow.description = body.description
     workflow.updated_by = user.id
+    apply_guards(db, org.id, role, workflow, body.invocable_by, body.limits)
     apply_layout(workflow, body)
     with unique_name(store, "a workflow", WORKFLOW_NAME_INDEX):
         save_workflow_version(

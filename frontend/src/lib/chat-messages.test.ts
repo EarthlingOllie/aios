@@ -90,6 +90,7 @@ function invocation(id: number, status: ChatInvocation["status"], extra: Partial
     target_id: 5,
     status,
     error: null,
+    refusal_reason: null,
     acknowledgement: "Reading the chat…",
     brief: null,
     workflow_run_id: null,
@@ -126,8 +127,10 @@ describe("mergeInvocations", () => {
 describe("isLive", () => {
   it("is an invocation that hasn't finished: queued, briefing or running", () => {
     expect(
-      (["queued", "briefing", "running", "succeeded", "failed"] as const).map((s) => isLive(invocation(1, s))),
-    ).toEqual([true, true, true, false, false]);
+      (["queued", "briefing", "running", "succeeded", "failed", "refused"] as const).map((s) =>
+        isLive(invocation(1, s)),
+      ),
+    ).toEqual([true, true, true, false, false, false]);
   });
 });
 

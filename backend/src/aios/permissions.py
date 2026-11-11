@@ -7,9 +7,9 @@ dependency, so it runs before anything else the route does), and it answers 403 
 action for a role that may not (`refusal`). A route under the organisation prefix that doesn't
 declare exactly one stops the app starting (`aios.api.scoping`), so none is left unguarded.
 
-What a route does beyond its action is checked in it: a chat's owner, a participant's mention
-(refused, with an explanation, until mentions are guarded: `MENTIONS_NOT_YET`), and an
-organisation keeping an admin (`aios.organisations.change_role`, `leave_refusal`).
+What a route does beyond its action is checked in it: a chat's owner, a mention's guards
+(`aios.guards`), and an organisation keeping an admin (`aios.organisations.change_role`,
+`leave_refusal`).
 """
 
 import enum
@@ -36,6 +36,7 @@ class Action(enum.StrEnum):
     )
     leave = "leave the organisation"
     audit = "read the audit log"
+    usage = "read usage totals"
     release = "see flagged content or release it"
 
 
@@ -56,6 +57,7 @@ TABLE: dict[Action, frozenset[Role]] = {
     Action.run_organisation: ADMINS,
     Action.leave: EVERYONE,
     Action.audit: ADMINS,
+    Action.usage: ADMINS,
     Action.release: ADMINS,
 }
 
@@ -119,9 +121,3 @@ def allow(action: Action) -> Any:
 def permit_of(call: Any) -> Permit | None:
     """The `Permit` a dependency is, if it's one `allow` made."""
     return call if isinstance(call, Permit) else None
-
-
-MENTIONS_NOT_YET = (
-    "Participants can't mention agents or workflows yet: that's coming once mentions have "
-    "their guards. Ask an editor or an admin to mention it for you."
-)

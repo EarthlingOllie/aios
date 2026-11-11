@@ -13,6 +13,7 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Workflows](workflows.md) | Graphs of agents and workflows: the editor, versions, nesting, and how a workflow run is run. |
 | [Chats](chats.md) | Group conversations: chat members, visibility, unread counts, messages, mentions, invocations and the handoff brief. |
 | [Triggers](triggers.md) | Schedules and the scheduler. |
+| [Usage, limits and mention guards](usage-and-limits.md) | The usage ledger in GBP and its reporting view, caps on turns and workflow runs, and the checks a mention passes before it runs. |
 | [Run service](run-service.md) | The service that runs mentioned turns, handoffs and schedules: its fair work queue, leases, retries and the in-flight cap. |
 | [Development](development.md) | Prerequisites, the code layout, running the stack in Docker or locally, debugging with Claude Code, checks and tests, the dependency policy, changing models, and image size notes. |
 | [Deploy](deploy.md) | Deploying to AWS with Terraform and `infra/deploy.sh`, the database secrets, and sandboxes on Fargate. |
