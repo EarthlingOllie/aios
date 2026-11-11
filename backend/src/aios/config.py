@@ -41,15 +41,19 @@ class Settings(BaseSettings):
     data_store_statement_timeout: int = Field(default=30_000, ge=1)
     data_store_idle_in_transaction_timeout: int = Field(default=60_000, ge=1)
     #
-    # The connection limit's budget: `store_session` pools up to 3 connections per (store, role)
-    # in each process (`pool_size=1, max_overflow=2`), so a role can be asked for 3 x the
-    # processes that use it. On ECS both roles are used by the 2 API tasks and the workflow
-    # worker's 2 processes (the data tools), so 12; the read-write one also by the ingest
-    # worker's 2 (one ingest, so one connection, each), so 14, and the read-only one by the
-    # provisioning worker (measuring one store at a time), so 13. A rolling deploy starts the new
-    # tasks before stopping the old, which doubles that: 28 at most. Keep it at least that when
-    # adding processes. Past it, a connection is refused, which answers 503 (try again).
-    data_store_connection_limit: int = Field(default=30, ge=1)
+    # Stores are reached through a connection pooler (PgBouncer, in transaction mode) at this
+    # address, "host:port", as the app reaches it: e.g. Compose's `pgbouncer:5432`. Empty means
+    # directly, at the store's own address. Only the app's store sessions go through it: the
+    # platform database, and the provisioner, stay directly connected. Through it, a store
+    # connection carries no session state from one transaction to the next: no prepared
+    # statements, no settings at connection startup and no session advisory locks.
+    data_store_pooler_address: str = ""
+    # A backstop, not the budget: the pooler's own pools (per store database and role) decide how
+    # many server connections a store gets. `store_session` pools one connection per (store,
+    # role) in each process, plus four while busy (`aios.datastores.connections`), and a direct
+    # connection (no pooler) counts against this. Past it, a connection is refused, which
+    # answers 503 (try again).
+    data_store_connection_limit: int = Field(default=100, ge=1)
     # The most a `query_data` call returns: rows, and bytes of them as JSON. A result past
     # either is cut short there, and says so (`truncated`).
     query_data_max_rows: int = Field(default=200, ge=1)
@@ -197,6 +201,14 @@ class Settings(BaseSettings):
     # process with no free slot claims nothing, which leaves what's due for another replica or a
     # later tick.
     scheduler_max_concurrent_runs: int = Field(default=5, ge=1)
+
+    # A run's turns take turns through a lease on the run (`aios.turn_lease`): a turn holds it
+    # for this long (seconds) at a time, refreshed by its heartbeat while it runs, so a process
+    # that dies mid-turn frees its runs once this passes. A turn waits up to `turn_wait_seconds`
+    # for the run's previous turn to end; past it, a run-page post answers 409 "This run is
+    # busy".
+    turn_lease_seconds: float = Field(default=90, gt=0)
+    turn_wait_seconds: float = Field(default=120, ge=0)
 
 
 @lru_cache

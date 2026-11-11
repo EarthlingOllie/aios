@@ -206,7 +206,9 @@ workflow nested in another, a schedule, a public chat, and an archived agent. It
   `DATABASE_ADMIN_URL`, from the environment or `.env`, and skip without it, and the documents
   tests need RustFS, at `DATA_STORE_FILES_ENDPOINT` with
   `DATA_STORE_FILES_ACCESS_KEY`/`_SECRET_KEY`, as in `backend/.env.example`; every test also
-  needs Redis, at `REDIS_URL`, whose rate limits it resets. The tests run in random order, and
+  needs Redis, at `REDIS_URL`, whose rate limits it resets (and through which a run's waiting
+  turns hear its lease released). CI reaches stores through PgBouncer
+  (`DATA_STORE_POOLER_ADDRESS`): [Testing](testing.md#through-the-pooler). The tests run in random order, and
   CI shards them: [Testing](testing.md) covers reproducing a seed and running one shard.
 - **Infrastructure**: `terraform test` in `infra/terraform` (it plans and applies against a
   mocked AWS, so needs no account).

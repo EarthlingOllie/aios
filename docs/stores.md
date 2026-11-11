@@ -129,11 +129,20 @@ database. A store is reached at `DATABASE_URL`'s address (and with its options, 
 another name (Compose's `db`, with the API on the host). A row's `host` and `port` are for a
 store moved to another instance later; they're empty until then.
 
-Each role may hold `DATA_STORE_CONNECTION_LIMIT` connections (default 30), and each process
-pools up to 3 per store and role, so the limit must be at least 3 x the processes that use a
-role, counted twice for a rolling deploy's old and new tasks (28 at most on AWS: see
-`config.py`). A connection past the limit is refused: the API answers 503 to try again, the
-ingest task retries, and the search and data tools tell the model.
+**Stores are reached through a connection pooler** (PgBouncer, in transaction mode) at
+`DATA_STORE_POOLER_ADDRESS` (Compose's `pgbouncer`, CI's service container, the `pooler` ECS
+service on AWS; empty means directly). It may hand each transaction a different server
+connection, so store connections carry no session state: psycopg prepares no statements, nothing
+is set at connection startup (statement timeouts are the roles' defaults), and nothing takes a
+session advisory lock (a `query_data` statement that does is let go of before its transaction
+ends). The platform database, the provisioner and the checkpointer stay directly connected.
+Sizing: [Deploy](deploy.md#connection-pooler).
+
+Each process pools one connection per store and role, plus four more while busy. The pooler's
+pools bound what reaches a store; each role's `DATA_STORE_CONNECTION_LIMIT` (default 100) is a
+backstop behind them, for connections that skip the pooler. A connection past it is refused:
+the API answers 503 to try again, the ingest task retries, and the search and data tools tell the
+model. Through the pooler, a client past a store's pool waits for a server connection instead.
 
 ### One store per organisation
 

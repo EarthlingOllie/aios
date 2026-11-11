@@ -83,6 +83,8 @@ def test_a_store_is_reached_at_the_platform_databases_address_not_the_provisione
 
 
 def test_a_store_moved_to_another_instance_is_reached_there_with_the_apps_options(monkeypatch):
+    # Without a pooler, which would be reached instead (test_pooler).
+    monkeypatch.setattr(get_settings(), "data_store_pooler_address", "")
     monkeypatch.setattr(
         get_settings(),
         "database_url",

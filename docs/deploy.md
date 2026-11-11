@@ -45,6 +45,35 @@ these roles existed, the first deploy hands the schema to `aios_app`. Services s
 previous release connect as the master user until they're replaced, which keeps working: the
 master user is a member of `aios_app`.
 
+## Connection pooler
+
+The app reaches data stores through PgBouncer in transaction mode (`infra/terraform/pooler.tf`):
+the `pooler` ECS service, at `pooler.<name>.internal:6432` (`DATA_STORE_POOLER_ADDRESS` in every
+backend task). The platform database, the provisioner and the checkpointer connect directly.
+RDS Proxy isn't used: it pins sessions that use advisory locks or session settings, and has no
+per-database pools.
+
+- **Pools.** One per (store database, role): `default_pool_size` server connections each (5),
+  and at most `max_db_connections` per store database (10), whatever the number of app
+  processes. `max_client_conn` (2,000) bounds the app's side: each process pools at most 5
+  connections per store and role (1 kept, 4 while busy), and idle ones are cheap here. So the
+  instance sees at most about 10 connections per active store, plus the platform's. Raise
+  `max_db_connections` with the instance's `max_connections`, not with the number of tasks.
+- **Connection limit.** Each store role's `CONNECTION LIMIT` (`DATA_STORE_CONNECTION_LIMIT`,
+  100) is a backstop behind the pools, applied to existing stores at their next migration.
+- **No session state.** Through a transaction-mode pooler, store connections prepare no
+  statements (`MAX_PREPARED_STATEMENTS=0`), pass no startup settings and take no session
+  advisory locks; a run's turns take turns through a lease on the run's row
+  ([Agents](agents-and-skills.md)), and stopping a turn signals it rather than ending a
+  connection.
+- **Authentication.** Clients log in as their own store roles; PgBouncer looks up each role's
+  password with its auth query, as an auth user, on the platform database (`AUTH_DBNAME`), and
+  logs in to the store with it (`<name>/pooler` holds that user's DSN, readable only by the
+  pooler's execution role). In Compose and CI the auth user is the master user, a superuser,
+  which can read `pg_shadow`. **Not yet deployed:** on RDS the master user can't read
+  `pg_shadow`, so the auth query needs another source of the roles' secrets before the first
+  apply. Until then, leave `DATA_STORE_POOLER_ADDRESS` empty on AWS, which connects directly.
+
 ## Sandboxes on Fargate (`run_python`)
 
 On AWS, `SANDBOX_BACKEND=fargate` (`aios.sandbox.fargate`, `infra/terraform/sandbox.tf`): each

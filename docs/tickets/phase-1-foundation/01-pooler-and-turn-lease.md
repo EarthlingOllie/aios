@@ -10,14 +10,19 @@
 
 **Blocked by:** [Phase 0 · 02: Models split into a package by domain](../phase-0-refactor-and-guard-rails/02-models-package.md), [Phase 0 · 05: Backend suite sharded, in random order, with one checks job](../phase-0-refactor-and-guard-rails/05-sharded-backend-suite.md), [Phase 0 · 07: Archive agents](../phase-0-refactor-and-guard-rails/07-archive-agents.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The backend suite and the full-stack test pass with stores reached through the pooler, run as a CI service container.
-- [ ] Two turns posted to one run at once serialise, and the second starts from the history the first left.
-- [ ] A holder whose lease has lapsed can't write a checkpoint: its write fails and nothing is stored.
-- [ ] A run that stays busy past the configured wait answers 409 "This run is busy".
-- [ ] Stopping a turn ends it within a second; with Redis unavailable, the holder's next write fails on fencing.
-- [ ] Archiving an agent mid-turn lets the turn finish, as phase 0 decided.
-- [ ] No pooled connection is ever terminated to stop a turn, and frequently run queries prepare no statements.
-- [ ] The advisory turn lock is gone; the checkpointer's setup lock is held for one transaction only.
-- [ ] The deploy docs describe the pooler and its sizing.
+  (CI-only to confirm. PgBouncer is a service container of each backend shard and a Compose
+  service the full-stack stack's backend reaches stores through. Locally, the backend suite
+  passed through PgBouncer 1.22 in transaction mode, apart from the known environment-only
+  failures; the full-stack test needs Docker, which wasn't available. The AWS `pooler` service
+  is written (`infra/terraform/pooler.tf`) but not applied: see docs/deploy.md on its auth user.)
+- [x] Two turns posted to one run at once serialise, and the second starts from the history the first left.
+- [x] A holder whose lease has lapsed can't write a checkpoint: its write fails and nothing is stored.
+- [x] A run that stays busy past the configured wait answers 409 "This run is busy".
+- [x] Stopping a turn ends it within a second; with Redis unavailable, the holder's next write fails on fencing.
+- [x] Archiving an agent mid-turn lets the turn finish, as phase 0 decided.
+- [x] No pooled connection is ever terminated to stop a turn, and frequently run queries prepare no statements.
+- [x] The advisory turn lock is gone; the checkpointer's setup lock is held for one transaction only.
+- [x] The deploy docs describe the pooler and its sizing.

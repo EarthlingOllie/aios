@@ -17,7 +17,7 @@ from langgraph.types import Command
 from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, tracing, ui_stream
+from aios import checkpoints, invocations, tracing, turn_lease, ui_stream
 
 # Read on the package at call time, where tests replace them.
 from aios.api import agents as package
@@ -267,10 +267,14 @@ def _cancel_requests(run_id: int, tool_call_ids: list[str]) -> None:
 
 
 async def _record_turn(agent, config, run_id: int, *, finished: bool, partial) -> None:
-    try:
-        if not finished:
+    if not finished:
+        try:
             stopped = await _keep_unfinished_turn(agent, config, partial)
             await run_in_threadpool(_cancel_requests, run_id, stopped)
+        except Exception:
+            # E.g. a stopped turn, whose lease is gone: it can't write the run's history.
+            log.exception("couldn't keep the unfinished turn of run %s", run_id)
+    try:
         state = await agent.aget_state(config)
         await run_in_threadpool(
             package._end_turn,
@@ -365,7 +369,10 @@ def _check_not_waiting(run_id: int) -> None:
 
 
 async def turn_stream(
-    ctx: ChatContext, run_id: int, turn: HumanMessage | Resume
+    ctx: ChatContext,
+    run_id: int,
+    turn: HumanMessage | Resume,
+    lease: turn_lease.Lease | None = None,
 ) -> AsyncIterator[ui_stream.Chunk]:
     """One turn of a run, as AI SDK UI message chunks: the user's message is checkpointed before
     the model is called, and whatever the reply got to is kept however the turn ends (it
@@ -374,6 +381,9 @@ async def turn_stream(
     `turn` is the user's message, or `Resume` to carry on a run that waits on schema change
     requests now they're decided; a message to a run still waiting is refused (an `error`
     chunk), checked once the turn has the run to itself.
+
+    The turn holds the run's turn lease (`checkpoints.turn`): `lease`, if the caller took it
+    already, else it waits for it, and reports a run that stays busy as an `error` chunk.
 
     Shared by the chat endpoint, the scheduler (`aios.scheduler`) and `resume_run`."""
     config = {
@@ -389,7 +399,7 @@ async def turn_stream(
         prewarm_sandbox(run_id, ctx.sandbox_domains)
     try:
         # Waits for any other turn of this run to finish (see `checkpoints.turn`).
-        async with checkpoints.turn(run_id) as saver:
+        async with checkpoints.turn(run_id, lease) as saver:
             agent = build_agent(
                 model=ctx.model,
                 instructions=ctx.instructions,
@@ -404,14 +414,14 @@ async def turn_stream(
             if graph_input is not None:
                 # Closed here if the consumer stops the turn, so the turn is recorded while the
                 # checkpointer's connection is still open.
-                turn_chunks = _run_turn(agent, config, ctx, ui, run_id, graph_input)
+                turn_chunks = _run_turn(agent, config, ctx, ui, run_id, graph_input, saver.lease)
                 async with aclosing(turn_chunks):
                     async for chunk in turn_chunks:
                         yield chunk
     except Exception as exc:
-        # The turn couldn't start: the run waits on schema change requests, or e.g. the
-        # database or the model's configuration failed.
-        if not isinstance(exc, RunWaiting):
+        # The turn couldn't start: the run waits on schema change requests, or stayed busy, or
+        # e.g. the database or the model's configuration failed.
+        if not isinstance(exc, RunWaiting | turn_lease.RunBusy):
             log.exception("agent run %s couldn't start a turn", run_id)
         with CancelScope(shield=True):
             try:
@@ -424,13 +434,25 @@ async def turn_stream(
         yield chunk
 
 
+class _Stopped(Exception):
+    """The turn was stopped (`aios.turn_lease.stop`)."""
+
+    def __init__(self) -> None:
+        super().__init__(turn_lease.STOPPED)
+
+
 async def _run_turn(
-    agent, config, ctx: ChatContext, ui: ui_stream.UIStream, run_id: int, graph_input
+    agent,
+    config,
+    ctx: ChatContext,
+    ui: ui_stream.UIStream,
+    run_id: int,
+    graph_input,
+    lease: turn_lease.Lease,
 ) -> AsyncIterator[ui_stream.Chunk]:
     finished = False
-    # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool call)
-    # before the turn is recorded: a stopped turn's response can be dropped while this waits at
-    # a `yield`, which doesn't close the stream itself.
+    # The graph runs in a task of its own, which stopping the turn cancels (`lease.on_stop`), so
+    # a model or tool call underway ends at once rather than at the turn's next write.
     events = agent.astream(
         graph_input,
         config,
@@ -442,22 +464,46 @@ async def _run_turn(
         # the model is called.
         durability="sync",
     )
-    try:
+    queue: asyncio.Queue = asyncio.Queue()
+    done = object()
+
+    async def produce() -> None:
+        # Closed however the turn ends, which cancels the graph's running tasks (e.g. a tool
+        # call) before the turn is recorded.
         async with aclosing(events):
-            async for mode, data in events:
-                for chunk in ui.feed(mode, data):
-                    yield chunk
-                # One small update per model step, so the run's counters are live.
-                for response in model_responses(mode, data):
-                    await run_in_threadpool(_count_step, run_id, response)
+            async for item in events:
+                queue.put_nowait(item)
+
+    producer = asyncio.create_task(produce())
+    producer.add_done_callback(lambda _: queue.put_nowait(done))
+    lease.on_stop = producer.cancel
+    if lease.stopped:
+        producer.cancel()
+    try:
+        while (item := await queue.get()) is not done:
+            mode, data = item
+            for chunk in ui.feed(mode, data):
+                yield chunk
+            # One small update per model step, so the run's counters are live.
+            for response in model_responses(mode, data):
+                await run_in_threadpool(_count_step, run_id, response)
+        if producer.cancelled():
+            raise _Stopped
+        if (exc := producer.exception()) is not None:
+            raise exc
         finished = True
     except Exception as exc:
-        log.exception("agent run %s failed", run_id)
+        if not isinstance(exc, _Stopped):
+            log.exception("agent run %s failed", run_id)
         for chunk in ui.error(exc):
             yield chunk
     finally:
-        # Also when the client stops the turn, which cancels this task.
+        # Also when the client stops the turn, which cancels this task (or closes this stream
+        # at a `yield`): the graph's task is cancelled and waited for before the turn is
+        # recorded.
         with CancelScope(shield=True):
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
             await package._record_turn(
                 agent, config, run_id, finished=finished, partial=ui.partial_reply()
             )
@@ -561,6 +607,19 @@ async def run_chat(
         await run_in_threadpool(_check_not_waiting, run_id)
     except RunWaiting as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, WAITING) from exc
-    await run_in_threadpool(package._start_turn, run_id, prompt.text)
+    # The run's turn lease, before the response starts, so a run that stays busy past the wait
+    # (another tab's turn, a schedule's) can still be answered 409.
+    try:
+        lease = await turn_lease.acquire(run_id)
+    except turn_lease.RunBusy as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, turn_lease.BUSY) from exc
+    except turn_lease.RunGone as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from exc
+    try:
+        await run_in_threadpool(package._start_turn, run_id, prompt.text)
+    except BaseException:
+        with CancelScope(shield=True):
+            await turn_lease.release(lease)
+        raise
 
-    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt))
+    return ui_stream.streaming_response(turn_stream(ctx, run_id, prompt, lease))

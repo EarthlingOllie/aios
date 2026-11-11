@@ -221,6 +221,8 @@ def delete_run(
     history.enqueue_runs(db, AgentRun.id == run.id, deleting=True)
     db.delete(run)
     db.commit()
+    # A turn still underway stops now, rather than carrying on for a run that's gone.
+    checkpoints.stop_turns(db, [run_id])
     background.add_task(checkpoints.delete_threads, [run_id])
     if sandboxes:
         background.add_task(stop_sandboxes, sandboxes)

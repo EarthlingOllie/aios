@@ -77,12 +77,21 @@ still totals the stored messages for them.
   checkpoint. The user's message is checkpointed before the model is called; if a turn fails or
   is stopped, the reply's text so far (or an error result for each tool call that hadn't
   finished) is added to the thread, so the next turn sees what the user saw. Turns of the same
-  run are serialized by a Postgres advisory lock: a second tab's turn waits for the first, then
-  builds on it. `agent_runs` keeps a message count and title for listings, and the run's status,
+  run are serialized by a **turn lease** on the run's row (`aios.turn_lease`): a second tab's
+  turn waits for the first (on the run's release channel in Redis, polling each second as a
+  fallback), then builds on it. A turn holds the lease for `TURN_LEASE_SECONDS` (90) at a time,
+  refreshed by its heartbeat, so a process that dies frees its runs once that passes; one that
+  waits past `TURN_WAIT_SECONDS` (120) answers 409 "This run is busy" on the run page. Every
+  checkpoint write first checks, in its own transaction, that its turn's lease still holds
+  (`checkpoints.FencedSaver`), so a turn that lost it (frozen past its expiry, or stopped) can't
+  write the run's history. No database session state is involved, so it works through the
+  connection pooler. `agent_runs` keeps a message count and title for listings, and the run's status,
   times and counters, written by each turn.
 - **The checkpointer's tables are LangGraph's, not Alembic's.** They live in the `langgraph`
-  schema, created and migrated by `AsyncPostgresSaver.setup()` (under an advisory lock) the
-  first time a process runs a turn. Alembic only compares the `public` schema, so `alembic
+  schema, created and migrated by `AsyncPostgresSaver.setup()` (in one transaction, under a lock
+  that lasts only as long as it) the first time a process runs a turn. Its connections set
+  nothing at startup and prepare no statements: the app's role finds the schema through its
+  default search path on the platform database (`"$user", public, langgraph`, migration 0056). Alembic only compares the `public` schema, so `alembic
   check` doesn't see them. Deleting a run or agent deletes its threads too (they aren't foreign
   keys, so this is done explicitly). The app's role (`aios_app`) can create that schema: it has
   `CREATE` on the database.
@@ -160,10 +169,12 @@ failed first, as reading it would.
   worker running it stops at its next beat. A chat run is deleted with the agent, as before,
   cancelling its requests.
 - Any turn still underway on the agent's runs (a chat's, a schedule's, a cancelled workflow
-  run's node) is stopped: the connection holding its turn lock is ended
-  (`checkpoints.stop_turns`), so it fails at its next write, and a model or tool call already
-  underway finishes unrecorded. A turn that only takes its run's lock after the run has gone
-  finds it gone and does nothing, so no thread is left behind.
+  run's node) is stopped (`checkpoints.stop_turns`): its lease is cleared and a stop signal is
+  published, which the process holding it acts on by cancelling the turn, so a model or tool
+  call underway ends at once. If the signal doesn't arrive (Redis down), the turn fails at its
+  next write, on fencing. No connection is ended: through the pooler that would break another
+  turn's. A turn that only takes its run's lease after the run has gone finds it gone and does
+  nothing, so no thread is left behind. Deleting one run stops its turn the same way.
 - **Deactivating** a workflow turns off its schedules (as pausing each would, dropping a firing
   claimed but not started), and with the agent gone no run of it can start, by hand or by
   schedule: starting one is refused as running a deleted agent. It stays, to be edited

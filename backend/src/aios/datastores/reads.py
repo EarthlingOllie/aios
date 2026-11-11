@@ -5,8 +5,9 @@ through here, so both get the same guards:
 
 - `read_only` opens a `READ ONLY` transaction on the store's own database, as its `ro` role,
   under the role's statement timeout (`DATA_STORE_STATEMENT_TIMEOUT`). It's always rolled
-  back, and the connection is reset (`DISCARD ALL`) before it goes back to the pool, so
-  nothing a statement set (settings, prepared statements, advisory locks) carries over.
+  back, any advisory lock a statement took is let go first, and the connection is reset
+  (`DISCARD ALL`) before it goes back to the pool, so nothing a statement set (settings,
+  prepared statements, advisory locks) carries over, through the pooler or not.
 - `read_capped` sends one statement with the extended query protocol, which takes exactly one,
   streams its rows, and stops at a number of rows or bytes, saying the result was `truncated`.
   A row is refused before the value that takes it past the byte cap is loaded.
@@ -59,9 +60,16 @@ def read_only(data_store_id: uuid.UUID) -> Iterator[psycopg.Connection]:
         pg: psycopg.Connection = conn.connection.driver_connection
         try:
             pg.execute("BEGIN READ ONLY")
+            # Back to here before the transaction ends, even if a statement failed it, to let go
+            # of any session advisory lock a statement took while still on the same server
+            # connection: through the pooler, `DISCARD ALL` after the transaction may run on
+            # another (and nothing it would reset otherwise outlives a rolled-back transaction).
+            pg.execute("SAVEPOINT reading")
             yield pg
         finally:
             try:
+                pg.execute("ROLLBACK TO SAVEPOINT reading")
+                pg.execute("SELECT pg_advisory_unlock_all()")
                 pg.execute("ROLLBACK")
                 pg.execute("DISCARD ALL")
             except psycopg.Error:

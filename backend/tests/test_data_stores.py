@@ -3,7 +3,7 @@ import asyncio
 import re
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import psycopg
@@ -454,8 +454,12 @@ def test_a_store_rolled_back_with_its_callers_transaction_is_never_queued(
 
 
 @pytest.fixture
-def busy_store(db, user) -> Iterator[uuid.UUID]:
-    """`user`'s store, with its roles holding every connection they may."""
+def busy_store(db, user, monkeypatch) -> Iterator[uuid.UUID]:
+    """`user`'s store, with its roles holding every connection they may. Reached directly: the
+    roles' connection limit is the backstop for connections that skip the pooler, which queues
+    a client past its pools rather than refusing it."""
+    monkeypatch.setattr(get_settings(), "data_store_pooler_address", "")
+    store_connections.dispose_engines()
     store = db.scalar(select(DataStore).where(DataStore.id == store_of(user)))
     names = provision.StoreNames.of(store)
     url = get_settings().data_store_provisioner_url
@@ -561,7 +565,9 @@ def test_a_store_whose_pool_in_this_process_is_full_answers_503(api, user, monke
     monkeypatch.setattr(store_connections, "POOL_TIMEOUT", 0.1)
     store_connections.dispose_engines()
     ro = store_engine(store_of(user), "ro")
-    with ro.connect(), ro.connect(), ro.connect():
+    with ExitStack() as held:
+        for _ in range(store_connections.MAX_CONNECTIONS):
+            held.enter_context(ro.connect())
         r = api.get("/api/documents")
 
     assert r.status_code == 503, r.text
