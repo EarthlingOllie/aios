@@ -414,10 +414,12 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     leaving (handing over the chats a leaver owned)
     api/documents.py upload/list/download/delete, GET /api/search
     api/skills.py   CRUD /api/skills
-    api/agents.py   CRUD /api/agents, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+    api/agents/     CRUD /api/agents, versions, runs: /api/agents/{id}/runs[/{run_id}[/chat]]
+                    (crud, versions, runs, chat: a run's chat stream)
     api/workflows.py CRUD /api/workflows, versions and restore, runs: /api/workflows/{id}/runs
     api/triggers.py CRUD /api/triggers (schedules), schedule preview, timezones
-    api/chats.py    CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
+    api/chats/      CRUD /api/chats, members: /api/chats/{id}/members[/{member_id}], mentionable, messages
+                    (crud, members, messages, invocations)
     api/organisation.py GET /api/me, GET/PUT /api/organisation (the Organisation page), invitation
                     links (/api/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it
@@ -426,7 +428,7 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
     firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
-    workflows.py    workflow graph validation, and running workflows
+    workflows/      workflow graph validation, and running workflows (validation, execution, steps)
     dependents.py   what depends on an agent (runs, workflows, schedules), checked before deleting it
     runner.py       builds the LangGraph agent for a turn of a user-defined agent's run
     checkpoints.py  run history: LangGraph's Postgres checkpointer, one thread per run
@@ -446,7 +448,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     models.py (the tables every store has: documents, chunks; and the
                     run history export's), history.py (the run history export),
                     provision.py (creating, migrating and deleting each store's database),
-                    files.py (uploaded files in S3, and download links), and
+                    files.py (uploaded files in S3, and download links), schema_changes/
+                    (schema change requests: spec, compile, apply, expiry), and
                     migrations/ (the store Alembic tree)
     search.py       hybrid search SQL (RRF)
     ingest.py       Docling convert → HybridChunker → embed → store

@@ -1,6 +1,6 @@
 import type { ChatInvocation, ChatListed, ChatMessage } from "@/lib/api";
 
-/** How many messages the API returns at most per read (`MESSAGE_PAGE` in `api/chats.py`). */
+/** How many messages the API returns at most per read (`MESSAGE_PAGE` in `api/chats/messages.py`). */
 export const MESSAGE_PAGE = 50;
 
 /**
