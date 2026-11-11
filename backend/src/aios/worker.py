@@ -44,6 +44,8 @@ celery_app.conf.update(
         "aios.delete_data_stores": {"queue": "provisioning"},
         # The repair sweep: upkeep of what the platform copies into stores.
         "aios.repair_stores": {"queue": "provisioning"},
+        # Delivering the audit outbox to stores: quick, and never behind long ingests.
+        "aios.drain_audit_outbox": {"queue": "provisioning"},
         # Run by the provisioning worker's beat; it queues the stores' teardown there too.
         "aios.delete_due_organisations": {"queue": "provisioning"},
         # Not for the credentials: it's quick, and there it never waits behind long ingests.
@@ -121,6 +123,12 @@ celery_app.conf.beat_schedule = {
         "task": "aios.repair_stores",
         "schedule": REPAIR_STORES_EVERY,
         "options": {"expires": REPAIR_STORES_EVERY},
+    },
+    # Platform-side audit entries, to their stores (`aios.audit.drain`).
+    "drain-audit-outbox": {
+        "task": "aios.drain_audit_outbox",
+        "schedule": settings.audit_drain_seconds,
+        "options": {"expires": settings.audit_drain_seconds},
     },
 }
 
@@ -306,6 +314,14 @@ def repair_stores_task() -> None:
 
     people.repair()
     schedules.repair()
+
+
+@celery_app.task(name="aios.drain_audit_outbox")
+def drain_audit_outbox_task() -> None:
+    """Deliver the platform's audit outbox to each organisation's store (`aios.audit.drain`)."""
+    from aios import audit
+
+    audit.drain()
 
 
 @celery_app.task(name="aios.export_pending_history")

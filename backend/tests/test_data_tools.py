@@ -93,7 +93,8 @@ def data_agent(api) -> dict:
     return api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=DATA_TOOLS)).json()
 
 
-# The platform-managed tables every store has, which the read-only role reads.
+# The platform-managed tables every store has, which the read-only role reads, and the reporting
+# views.
 STORE_TABLES = {
     ("aios", name)
     for name in (
@@ -102,6 +103,8 @@ STORE_TABLES = {
         "agent_version_tools",
         "agent_versions",
         "agents",
+        "approval_rules",
+        "audit_log",
         "chat_members",
         "chat_messages",
         "chats",
@@ -124,7 +127,7 @@ STORE_TABLES = {
         "workflow_versions",
         "workflows",
     )
-}
+} | {("reporting", "audit_log")}
 
 
 def set_status(store_id, status: DataStoreStatus) -> None:

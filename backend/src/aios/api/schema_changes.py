@@ -3,8 +3,9 @@ the approval card in an agent's chat (`aios.datastores.schema_changes`).
 
 Requests are in the organisation's store. Only users who pass `can_approve` for a request's
 store (every member of its organisation) see it; to anyone else it doesn't exist (404).
-Deciding one takes a role that may (editors and admins, `aios.permissions`): each request says
-whether the user may (`can_decide`).
+Deciding one takes a role that may (editors and admins, `aios.permissions`), and at least the
+role its operations need (`aios.approval_rules`): each request says which (`needs_role`), and
+whether the user may (`can_decide`). Each decision is audited (`aios.audit`).
 Approving queues the change to be applied on the provisioning worker, which then resumes the
 run that asked; rejecting resumes it straight away.
 """
@@ -20,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, case, func, select, update
 from sqlalchemy.orm import Session
 
-from aios import organisations
+from aios import approval_rules, audit, organisations
 from aios.auth import CurrentStore, CurrentUser
 from aios.datastores import (
     DataStoreBehind,
@@ -42,6 +43,7 @@ from aios.datastores.schema_changes import (
 from aios.db import DB
 from aios.models import (
     DataStore,
+    Role,
     SchemaChangeStatus,
 )
 from aios.permissions import Action, allow, can
@@ -78,6 +80,8 @@ class SchemaChangeOut(BaseModel):
     applied_at: datetime | None
     # When the run that asked was given the outcome.
     resumed_at: datetime | None
+    # The least role that may decide it: the highest its operations need (`aios.approval_rules`).
+    needs_role: Role
     # Whether the signed-in user may approve or reject it (and it's still pending).
     can_decide: bool
     # What approving it takes typed, if it drops anything: the names of the tables it drops
@@ -118,10 +122,13 @@ def request_out(
     data_store_id: uuid.UUID,
     request: SchemaChangeRequest,
     run: RequestRun | None,
-    can_decide: bool,
+    role: Role | None,
+    rules: dict[str, Role],
 ) -> SchemaChangeOut:
-    """The request; `can_decide` is whether the user may decide its store's requests
-    (`can_approve`), which it can be only while it's pending."""
+    """The request, for a member with `role` (None for one who may decide none of its store's
+    requests), under the store's approval `rules`: they may decide it only while it's pending,
+    and if their role is at least what it needs."""
+    needs = approval_rules.needed(rules, request.ops)
     return SchemaChangeOut(
         id=request.id,
         data_store_id=data_store_id,
@@ -138,7 +145,8 @@ def request_out(
         decided_at=request.decided_at,
         applied_at=request.applied_at,
         resumed_at=request.resumed_at,
-        can_decide=request.status == SchemaChangeStatus.pending and can_decide,
+        needs_role=needs,
+        can_decide=request.status == SchemaChangeStatus.pending and decides(role, needs),
         confirm_with=confirmation_for(request),
     )
 
@@ -161,12 +169,19 @@ def request_runs(store: Session, requests: list[SchemaChangeRequest]) -> dict[in
     return {run.id: request_run(run) for run in runs}
 
 
-def may_decide(db: Session, user_id: int, store: DataStore) -> bool:
-    """Whether the user may approve and reject the store's requests: they see them
-    (`can_approve`), and their role may decide them (`aios.permissions`)."""
+def decider_role(db: Session, user_id: int, store: DataStore) -> Role | None:
+    """The user's role, if they may approve and reject the store's requests at all: they see
+    them (`can_approve`), and their role may decide some (`aios.permissions`). Which they may
+    decide is each request's `needs_role` (`decides`)."""
     if not can_approve(db, user_id, store):
-        return False
-    return can(organisations.role(db, store.owner_organisation_id, user_id), Action.decide)
+        return None
+    role = organisations.role(db, store.owner_organisation_id, user_id)
+    return role if can(role, Action.decide) else None
+
+
+def decides(role: Role | None, needs: Role) -> bool:
+    """Whether a member with `role` (from `decider_role`) may decide a request needing `needs`."""
+    return role is not None and approval_rules.at_least(role, needs)
 
 
 def of_run(run_id: int) -> tuple[ColumnElement[bool], ...]:
@@ -184,8 +199,9 @@ def run_requests(db: Session, store: Session, run: AgentRun, user_id: int) -> li
         return []
     store_id = store_id_of(store)
     # One run's requests are all on its store: whether the user may decide them is asked once.
-    decides = may_decide(db, user_id, db.get_one(DataStore, store_id))
-    return [request_out(store_id, request, request_run(run), decides) for request in requests]
+    role = decider_role(db, user_id, db.get_one(DataStore, store_id))
+    rules = approval_rules.current(store)
+    return [request_out(store_id, request, request_run(run), role, rules) for request in requests]
 
 
 def waiting_on(store: Session, run_id: int) -> bool:
@@ -219,10 +235,11 @@ def list_requests(user: CurrentUser, db: DB, store: CurrentStore):
             func.coalesce(SchemaChangeRequest.decided_at, SchemaChangeRequest.created_at).desc(),
         )
     ).all()
-    decides = may_decide(db, user.id, data_store)
+    role = decider_role(db, user.id, data_store)
+    rules = approval_rules.current(store)
     runs = request_runs(store, list(requests))
     return [
-        request_out(store_id, request, runs.get(request.requested_by_run), decides)
+        request_out(store_id, request, runs.get(request.requested_by_run), role, rules)
         for request in requests
     ]
 
@@ -247,9 +264,8 @@ def _out(
     """A request `_get` found, for the user."""
     store_id = store_id_of(store)
     run = request_runs(store, [request]).get(request.requested_by_run)
-    return request_out(
-        store_id, request, run, may_decide(db, user_id, db.get_one(DataStore, store_id))
-    )
+    role = decider_role(db, user_id, db.get_one(DataStore, store_id))
+    return request_out(store_id, request, run, role, approval_rules.current(store))
 
 
 @router.get(
@@ -262,7 +278,16 @@ def get_request(request_id: uuid.UUID, user: CurrentUser, db: DB, store: Current
 
 
 def _undo(store: Session, request: SchemaChangeRequest) -> None:
-    """Put a decision nothing else has seen through back to pending; commits the store."""
+    """Put a decision nothing else has seen through back to pending, auditing that it was;
+    commits the store."""
+    audit.record(
+        store,
+        audit.SYSTEM,
+        "approval.undone",
+        "schema_change_request",
+        request.id,
+        {"decision": request.status.value, "reason": "It couldn't be passed on"},
+    )
     store.execute(
         update(SchemaChangeRequest)
         .where(
@@ -289,10 +314,24 @@ def _decide(
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"This request has already been {request.status.value}"
         )
+    needs = _refuse_unless_decides(db, store, user_id, request)
     for key, value in values.items():
         setattr(request, key, value)
     request.decided_by_user_id = user_id
     request.decided_at = func.now()
+    audit.record(
+        store,
+        audit.person(user_id),
+        "approval.decided",
+        "schema_change_request",
+        request.id,
+        {
+            "decision": request.status.value,
+            "summary": request.summary,
+            **({"note": request.note} if request.note else {}),
+            "needs_role": needs.value,
+        },
+    )
     # The store, the source of truth, first; then its notifications are cleared, as of the
     # decision (so undoing it can tell them apart from those a user read). If they can't be,
     # the decision is undone: they're cleared if and only if it's made.
@@ -306,6 +345,21 @@ def _decide(
         _undo(store, request)
         raise
     return request
+
+
+def _refuse_unless_decides(
+    db: Session, store: Session, user_id: int, request: SchemaChangeRequest
+) -> Role:
+    """The role the request needs, if the user's is at least that; a 403 naming it otherwise."""
+    needs = approval_rules.needed_for(store, request.ops)
+    role = decider_role(db, user_id, db.get_one(DataStore, store_id_of(store)))
+    if not decides(role, needs):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"This request needs {approval_rules.a(needs)} to approve or reject it"
+            " (the organisation's approval rules). Ask one.",
+        )
+    return needs
 
 
 def _queue(
@@ -362,7 +416,10 @@ def approve(
 
     # Typed by the member deciding it, so a drop is never approved by a stray click (its ops
     # never change).
-    required = confirmation_for(_get(db, store, user.id, request_id))
+    found = _get(db, store, user.id, request_id)
+    # Before asking for the confirmation: a member who can't decide it is told so first.
+    _refuse_unless_decides(db, store, user.id, found)
+    required = confirmation_for(found)
     typed = ((body.confirm if body else None) or "").strip()
     if required is not None and typed != required:
         raise HTTPException(

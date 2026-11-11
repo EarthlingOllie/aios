@@ -43,10 +43,14 @@ RUN_ORGANISATION = (ADMINS, "organisation")  # roles, invitations, name, setting
 RESTORE = (ADMINS, "restore")  # restores need an admin
 SOURCES = (ADMINS, "sources")  # add, change, pause or remove sources
 LEAVE = (EVERYONE, None)
+AUDIT = (ADMINS, "audit log")  # read the audit log
 
 # Every route under the organisation prefix, by method and path after it, and its row.
 ROUTES = {
     ("GET", "/agents"): READ,
+    ("GET", "/approval-rules"): READ,
+    ("PUT", "/approval-rules/{kind}"): RUN_ORGANISATION,
+    ("GET", "/audit-log"): AUDIT,
     ("POST", "/agents"): BUILD,
     ("GET", "/agents/{agent_id}"): READ,
     ("PUT", "/agents/{agent_id}"): BUILD,

@@ -473,10 +473,54 @@ export type SchemaChangeRequest = {
   applied_at: string | null;
   /** When the run that asked was given the outcome. */
   resumed_at: string | null;
+  /** The least role that may decide it: the highest its operations need (the approval rules). */
+  needs_role: Role;
   /** Whether the signed-in user may approve or reject it (it's still pending). */
   can_decide: boolean;
   /** What approving it takes typed, if it drops anything: the tables' names. */
   confirm_with: string | null;
+};
+
+/** The least role that may decide a kind of schema change: an admin may raise it, never lower it
+ * below its default. */
+export type ApprovalRule = {
+  kind: string;
+  label: string;
+  role: Role;
+  default_role: Role;
+  updated_at: string | null;
+};
+
+/** One entry of the organisation's audit log: who did what, to what, and when. */
+export type AuditEntry = {
+  id: number;
+  at: string;
+  actor: {
+    kind: "person" | "agent" | "system";
+    user: User | null;
+    agent: { id: number; name: string | null } | null;
+    run_id: number | null;
+  };
+  /** Dotted: "agent.archived", "approval.decided", "data.written". */
+  action: string;
+  target_kind: string | null;
+  target_id: string | null;
+  details: Record<string, unknown>;
+};
+
+export type AuditPage = {
+  entries: AuditEntry[];
+  /** The cursor of the next, older, page; null on the last. */
+  next: string | null;
+};
+
+/** What the audit log is filtered by: a person (user id), an action or its family ("agent"),
+ * and days (YYYY-MM-DD, UTC), each left out to match any. */
+export type AuditFilters = {
+  actor?: number;
+  action?: string;
+  since?: string;
+  until?: string;
 };
 
 /** What one of a request's drops would remove, as the store is now. */
@@ -1029,6 +1073,17 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+/** The audit log's query string: the filters given, and the page's cursor. */
+export function auditQuery(filters: AuditFilters, before?: string): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.actor !== undefined) params.set("actor", String(filters.actor));
+  if (filters.action?.trim()) params.set("action", filters.action.trim());
+  if (filters.since) params.set("since", filters.since);
+  if (filters.until) params.set("until", filters.until);
+  if (before) params.set("before", before);
+  return params;
+}
+
 export const api = {
   me: () => request<Me>("/api/me"),
   register: (body: Registration) => request<Me>("/api/auth/register", json("POST", body)),
@@ -1110,6 +1165,11 @@ export const api = {
     ),
   schemaChangeImpact: (id: string) =>
     request<{ removes: Removal[] }>(`${organisationApi()}/schema-changes/${id}/impact`),
+  listApprovalRules: () => request<ApprovalRule[]>(`${organisationApi()}/approval-rules`),
+  setApprovalRule: (kind: string, role: Role) =>
+    request<ApprovalRule[]>(`${organisationApi()}/approval-rules/${kind}`, json("PUT", { role })),
+  auditLog: (filters: AuditFilters, before?: string) =>
+    request<AuditPage>(`${organisationApi()}/audit-log?${auditQuery(filters, before)}`),
   listDropped: () => request<DroppedObject[]>(`${organisationApi()}/dropped`),
   restoreDropped: (id: number) =>
     request<DroppedObject>(`${organisationApi()}/dropped/${id}/restore`, { method: "POST" }),

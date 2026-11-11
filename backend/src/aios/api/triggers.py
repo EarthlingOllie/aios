@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from aios import cron, schedules
+from aios import audit, cron, schedules
 from aios.api.provenance import Provenance, UserOut, built_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
@@ -299,6 +299,17 @@ def reindex(store: Session, triggers: Sequence[Trigger]) -> None:
     schedules.index(store_id_of(store), [(t.id, schedules.due_at(t)) for t in triggers])
 
 
+def _described(trigger: Trigger) -> dict:
+    """What an audit entry says of a schedule: what it starts, when, and whether it's on."""
+    return {
+        "target_kind": trigger.target_kind.value,
+        "target_id": trigger.agent_id or trigger.workflow_id,
+        "cron": trigger.cron,
+        "timezone": trigger.timezone,
+        "enabled": trigger.enabled,
+    }
+
+
 def unindex(store: Session, trigger_ids: Sequence[int]) -> None:
     """Take these triggers (disabled or deleted, committed in the store) out of the due
     index."""
@@ -344,6 +355,7 @@ def create_trigger(
     trigger = Trigger(**built_by(user.id))
     apply(store, user.id, trigger, body)
     store.add(trigger)
+    audit.configured(store, user.id, "schedule", trigger, "created", **_described(trigger))
     store.commit()
     reindex(store, [trigger])
     return trigger_out(db, store, org.id, load(store, trigger.id))
@@ -386,6 +398,7 @@ def update_trigger(
     apply(store, user.id, trigger, body)
     store.flush()
     cancel_unstarted_firing(store, Trigger.id == trigger.id)
+    audit.configured(store, user.id, "schedule", trigger, "updated", **_described(trigger))
     store.commit()
     reindex(store, [trigger])
     return trigger_out(db, store, org.id, load(store, trigger.id))
@@ -396,9 +409,13 @@ def update_trigger(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[allow(Action.build)],
 )
-def delete_trigger(trigger_id: DbId, org: CurrentOrganisation, store: CurrentStore) -> None:
+def delete_trigger(
+    trigger_id: DbId, user: CurrentUser, org: CurrentOrganisation, store: CurrentStore
+) -> None:
     """Delete the trigger. The runs it started stay, no longer naming it (their foreign key
     clears it, leaving their `updated_at`, which listings sort by)."""
-    store.delete(get_org_trigger(store, trigger_id, lock=True))
+    trigger = get_org_trigger(store, trigger_id, lock=True)
+    audit.configured(store, user.id, "schedule", trigger, "deleted", **_described(trigger))
+    store.delete(trigger)
     store.commit()
     unindex(store, [trigger_id])

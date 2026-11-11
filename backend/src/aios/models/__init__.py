@@ -10,6 +10,10 @@ from aios.models.agents import (
 from aios.models.approvals import (
     SchemaChangeStatus,
 )
+from aios.models.audit import (
+    AuditActorKind,
+    AuditOutbox,
+)
 from aios.models.base import (
     Base,
 )
@@ -53,6 +57,8 @@ from aios.models.workflows import (
 
 __all__ = [
     "Base",
+    "AuditActorKind",
+    "AuditOutbox",
     "User",
     "Organisation",
     "OrganisationDeletion",

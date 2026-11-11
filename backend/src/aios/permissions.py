@@ -35,6 +35,7 @@ class Action(enum.StrEnum):
         "change the organisation's roles, invitations, name or settings, or delete it"
     )
     leave = "leave the organisation"
+    audit = "read the audit log"
 
 
 EVERYONE = frozenset(Role)
@@ -47,13 +48,13 @@ TABLE: dict[Action, frozenset[Role]] = {
     Action.post: EVERYONE,
     Action.build: BUILDERS,
     Action.documents: BUILDERS,
-    # The least role for a kind of change is the approval rules' (phase 1, step 1.5); until then
-    # editors decide, as they did.
+    # And at least the role the request needs, by the approval rules (`aios.approval_rules`).
     Action.decide: BUILDERS,
     Action.restore: ADMINS,
     Action.sources: ADMINS,
     Action.run_organisation: ADMINS,
     Action.leave: EVERYONE,
+    Action.audit: ADMINS,
 }
 
 _A = {Role.admin: "an admin", Role.editor: "an editor", Role.participant: "a participant"}

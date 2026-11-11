@@ -213,7 +213,7 @@ def notified(api, request: SchemaChangeRequest) -> bool:
     return any(n["ref"]["request_id"] == str(request.id) and not n["read_at"] for n in listed)
 
 
-def test_a_schema_change_request_notifies_every_member_and_any_member_decides_it(
+def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_them_decides_it(
     db,
     api,
     user,
@@ -221,6 +221,9 @@ def test_a_schema_change_request_notifies_every_member_and_any_member_decides_it
     store,
     queued,
 ):
+    # A drop needs an admin (`aios.approval_rules`): the member is made one.
+    organisations.change_role(db, org_of(db, user), member.id, Role.admin)
+    db.commit()
     drop = propose(store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
     assert notified(api, drop)
 

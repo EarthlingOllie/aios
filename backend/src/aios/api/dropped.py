@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
+from aios import audit
 from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import (
     DataStoreBehind,
@@ -22,6 +23,7 @@ from aios.datastores import (
     can_approve,
     data_store_for,
     dropped,
+    store_session,
 )
 from aios.db import DB
 from aios.models import DataStore
@@ -118,4 +120,14 @@ def restore(dropped_id: int, user: CurrentUser, org: CurrentOrganisation, db: DB
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "It couldn't be restored just now. Try again."
         ) from exc
+    with store_session(store_id) as store:
+        audit.record(
+            store,
+            audit.person(user.id),
+            "data.restore_requested",
+            "column" if item.column else "table",
+            dropped_id,
+            {"table": item.table, "column": item.column},
+        )
+        store.commit()
     return _out(item, None)

@@ -44,6 +44,8 @@ PLATFORM_TABLES = {
     "history_exports",
     "notifications",
     "schedule_due",
+    # Platform-side audit entries on their way to their store's audit log (`aios.audit`).
+    "audit_outbox",
 }
 MOVED = (
     "triggers",

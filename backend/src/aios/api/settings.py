@@ -13,7 +13,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from aios.auth import CurrentOrganisation
+from aios import audit
+from aios.auth import CurrentOrganisation, CurrentUser
 from aios.datastores import data_store_for, history
 from aios.db import DB
 from aios.models import DataStore
@@ -78,7 +79,8 @@ def get_settings(org: CurrentOrganisation, db: DB):
     response_model=SettingsOut,
     dependencies=[allow(Action.run_organisation)],
 )
-def update_settings(body: SettingsIn, org: CurrentOrganisation, db: DB):
+def update_settings(body: SettingsIn, user: CurrentUser, org: CurrentOrganisation, db: DB):
+    before = settings_out(db, org.id)
     set_up = None
     if body.export_run_history is not None:
         set_up = history.set_exporting(db, org.id, body.export_run_history)
@@ -90,6 +92,17 @@ def update_settings(body: SettingsIn, org: CurrentOrganisation, db: DB):
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Switch the run history export on first."
             ) from None
+    db.flush()
+    after = settings_out(db, org.id)
+    changes = {
+        name: {"from": getattr(before, name), "to": getattr(after, name)}
+        for name in body.model_fields_set
+        if getattr(body, name) is not None and getattr(before, name) != getattr(after, name)
+    }
+    if changes:
+        audit.enqueue(
+            db, org.id, audit.person(user.id), "settings.changed", "organisation", org.id, changes
+        )
     db.commit()
     if set_up is not None:
         try:

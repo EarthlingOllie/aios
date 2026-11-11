@@ -90,7 +90,7 @@ def _store_limiter(store_id: uuid.UUID) -> CapacityLimiter:
 
 # The store's tables, with their columns: the organisation's (`data`) first, then the platform's
 # (`aios`) the read-only role may read, but not Alembic's bookkeeping, nor partitions, nor what
-# a request dropped.
+# a request dropped; then the reporting views (`reporting`).
 DESCRIBE_SQL = text(
     f"""
     SELECT n.nspname AS schema, c.relname AS name,
@@ -100,7 +100,7 @@ DESCRIBE_SQL = text(
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-    WHERE n.nspname IN ('data', 'aios')
+    WHERE n.nspname IN ('data', 'aios', 'reporting')
       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
       -- A partitioned table is one table: its partitions are how it's stored.
       AND NOT c.relispartition
@@ -275,8 +275,10 @@ def _describe_description() -> str:
     return f"""List the tables in the organisation's data store, with their columns, types and
 descriptions.
 
-The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only).
-Use the names it gives, schema-qualified (e.g. `data.contacts`), in `query_data`. A column
+The `data` schema holds the user's own tables; the `aios` schema, the platform's (read-only);
+the `reporting` schema, simple read-only views of the platform's records (such as
+`reporting.audit_log`: who did what, to what, and when). Use the names it gives,
+schema-qualified (e.g. `data.contacts`), in `query_data`. A column
 with `embedding_of` is the embedding of that text column, which `write_data` fills itself. If
 there are too many to describe at once, `truncated` is true and the rest are left out.
 

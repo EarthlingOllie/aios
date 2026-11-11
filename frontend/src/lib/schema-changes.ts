@@ -1,4 +1,5 @@
 import type { SchemaChangeRequest } from "@/lib/api";
+import { aRole } from "@/lib/permissions";
 
 export type RequestSummary = {
   label: string;
@@ -86,4 +87,12 @@ function describe(request: SchemaChangeRequest): Omit<RequestSummary, "decidedLa
         inFlight: false,
       };
   }
+}
+
+/** Who may decide a pending request, by the approval rules: "Needs an admin to approve". Null
+ * once it's decided. */
+export function approvalNeeds(request: SchemaChangeRequest): string | null {
+  if (request.status !== "pending") return null;
+  const who = request.needs_role === "admin" ? aRole("admin") : `${aRole("editor")} or ${aRole("admin")}`;
+  return `Needs ${who} to approve`;
 }

@@ -259,9 +259,9 @@ Uploads. Uploads can't be paused, changed or removed (409).
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so
-out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror
-and a run's sandbox's bearer token (`sandbox_sessions.secret`), for now (later: audit log
-details, other secrets and credentials). The role keeps the table's other
+out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror,
+a run's sandbox's bearer token (`sandbox_sessions.secret`) and the audit log's details
+(`audit_log.details`), for now (later: other secrets and credentials). The role keeps the table's other
 columns. It's a few grant lines, applied every time a store is migrated (the default
 privileges would otherwise give a new table's every column).
 
@@ -272,6 +272,42 @@ read, insert, update and delete in `data` (dropped tables and columns aside, as 
 bookkeeping it plans with (`aios.embedding_columns`, `aios.dropped_objects`) and nothing else:
 it writes only in the `data` schema, and can't read the deny list either. Provisioning creates
 it, and migrating a store made before it creates it and gives it its grants.
+
+### The audit log
+
+Each store has an audit log (`aios.audit_log`, store revision `0013`; module `aios.audit`): who
+did what (a dotted action such as `agent.archived`, `approval.decided`, `member.role_changed`
+or `data.written`), to what (a target's kind and id), when, and details. The actor is a
+person, an agent in a run, or the platform itself. It's append-only: a trigger refuses updates,
+deletes and truncation whoever asks, the store's owner included, and `_rw` may only insert and
+read it (`provision.APPEND_ONLY`). Its details are on the deny list.
+
+- **Store-side actions** record their entry in the store transaction that acts: configuration
+  changes, archiving and unarchiving (agents, skills, workflows, schedules, sources), version
+  restores, approval decisions, approval rule changes, restores asked for, and each
+  `write_data` call (its table, operation, row count, run and agent).
+- **Platform-side actions** (role changes, joining and leaving, invitation links, renames,
+  settings, deletion scheduled or cancelled) write an outbox row on the platform
+  (`audit_outbox`) in their own transaction. The provisioning worker's beat drains it into each
+  store every `AUDIT_DRAIN_SECONDS` (10), idempotently by outbox id (`audit_log.outbox_id` is
+  unique), so a store that's briefly unavailable gets its entries once it's back, each once.
+
+Admins read it on the Organisation page's **Audit log** tab (`GET /api/o/{org}/audit-log`,
+filtered by actor, action or its family, and days; newest first; cursor-paged). Agents read the
+**reporting view** `reporting.audit_log` (who, what, to what and when, without details): the
+`reporting` schema holds read-only views for agents, which `describe_data` lists.
+
+### Approval rules
+
+Who may decide each kind of schema change is a store table (`aios.approval_rules`; module
+`aios.approval_rules`): creating tables, adding columns and creating indexes need an editor by
+default; drops, restores, purges and ownership changes an admin. Admins may raise a kind's role
+on the Organisation page's Settings tab (`PUT /api/o/{org}/approval-rules/{kind}`), never lower it
+below its default (422); each change is audited. A request needs the highest role among its
+operations: one adding a column and dropping another needs an admin. Only members with that
+role are notified of it, and only they may approve or reject it (403 otherwise); the Data page's
+Changes tab shows every member the role each request needs, with Approve disabled for those
+who can't decide it.
 
 ### Uploaded files
 

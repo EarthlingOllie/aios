@@ -236,11 +236,42 @@ test("the history shows expired and cancelled requests, with no controls", async
   );
 });
 
-test("a request the user may not decide has no controls", async ({ page }) => {
+test("a request the user may not decide shows who may, with Approve disabled", async ({ page }) => {
   const api = await fakeApi(page);
   api.addSchemaChange({ decider: false });
   await page.goto(inOrg("/data/changes"));
 
   await expect(card(page)).toBeVisible();
-  await expect(card(page).getByRole("button")).toHaveCount(0);
+  await expect(card(page).getByRole("note", { name: "Who may approve" })).toHaveText(
+    "Needs an editor or an admin to approve",
+  );
+  await expect(card(page).getByRole("button", { name: "Approve" })).toBeDisabled();
+  await expect(card(page).getByRole("button", { name: "Reject…" })).toBeDisabled();
+});
+
+test("an editor sees a request that needs an admin, with Approve disabled", async ({ page }) => {
+  const api = await fakeApi(page);
+  api.actAs("editor");
+  api.addSchemaChange({
+    summary: "Add column data.fish.note; drop column data.fish.weight_kg",
+    needs_role: "admin",
+  });
+  const mine = api.addSchemaChange({ summary: "Create table data.contacts" });
+  await page.goto(inOrg("/data/changes"));
+
+  const mixed = card(page, "Add column data.fish.note; drop column data.fish.weight_kg");
+  await expect(mixed.getByRole("note", { name: "Who may approve" })).toHaveText("Needs an admin to approve");
+  await expect(mixed.getByRole("button", { name: "Approve" })).toBeDisabled();
+  await expect(mixed.getByRole("button", { name: "Approve" })).toHaveAttribute(
+    "title",
+    "Needs an admin to approve",
+  );
+
+  // One editors may decide stays theirs.
+  await expect(card(page).getByRole("note", { name: "Who may approve" })).toHaveText(
+    "Needs an editor or an admin to approve",
+  );
+  await card(page).getByRole("button", { name: "Approve" }).click();
+  await expect(card(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
+  expect(api.writes).toContainEqual(["POST", orgApi(`/schema-changes/${mine.id}/approve`), null]);
 });
