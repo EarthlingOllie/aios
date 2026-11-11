@@ -239,7 +239,8 @@ def test_agents_read_runs_and_turns_from_reporting_views_without_any_text(
     texts = {
         c["name"]
         for t in described["tables"]
-        if t["schema"] == "reporting"
+        # The views of runs and turns (the audit log's has its own test, in test_audit_log.py).
+        if t["schema"] == "reporting" and t["name"] in ("runs", "turns")
         for c in t["columns"]
         if c["type"] == "text"
     }
