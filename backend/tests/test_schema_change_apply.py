@@ -6,14 +6,15 @@ import threading
 
 import psycopg
 import pytest
-from conftest import store_of
+from conftest import StoreRows, store_of
 from sqlalchemy import update
 from test_data_tools import as_owner, provisioned
 
 from aios.config import get_settings
 from aios.datastores import schema_changes
+from aios.datastores.models import SchemaChangeRequest
 from aios.datastores.schema_changes import Invalid, SchemaChange
-from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import DataStore, SchemaChangeStatus
 
 
 @pytest.fixture
@@ -42,20 +43,28 @@ CONTACTS = {
 }
 
 
+# The store each request `propose` made is in, by the request's id.
+STORE_OF: dict = {}
+
+
 def propose(store: DataStore, *ops: dict) -> SchemaChangeRequest:
-    return schema_changes.propose(store.id, spec(*ops), "Because", run_id=None, tool_call_id=None)
+    request = schema_changes.propose(
+        store.id, spec(*ops), "Because", run_id=None, tool_call_id=None
+    )
+    STORE_OF[request.id] = store.id
+    return request
 
 
 def approve(db, request: SchemaChangeRequest) -> SchemaChangeRequest:
-    db.execute(
+    """Approve the request behind the API's back and apply it; returns it as it is then."""
+    rows = StoreRows(STORE_OF[request.id])
+    rows.execute(
         update(SchemaChangeRequest)
         .where(SchemaChangeRequest.id == request.id)
         .values(status=SchemaChangeStatus.approved)
     )
-    db.commit()
-    schema_changes.apply(request.id)
-    db.expire_all()
-    return db.get(SchemaChangeRequest, request.id)
+    schema_changes.apply(rows.store_id, request.id)
+    return rows.get(SchemaChangeRequest, request.id)
 
 
 def tables(store: DataStore) -> dict[str, list[str]]:
@@ -235,8 +244,9 @@ def test_an_apply_waits_for_a_lock_no_longer_than_its_timeout(db, store, monkeyp
 def test_only_an_approved_request_is_applied(db, store):
     request = propose(store, CONTACTS)
 
-    schema_changes.apply(request.id)
+    schema_changes.apply(store.id, request.id)
 
-    db.expire_all()
-    assert db.get(SchemaChangeRequest, request.id).status == SchemaChangeStatus.pending
+    assert StoreRows(store.id).get(SchemaChangeRequest, request.id).status == (
+        SchemaChangeStatus.pending
+    )
     assert tables(store) == {"fish": ["id", "name"]}

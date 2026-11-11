@@ -14,6 +14,7 @@ from conftest import (
     org_of,
     provisioned_user,
     register,
+    rows_of,
     store_of,
 )
 from sqlalchemy import delete, func, select, update
@@ -24,10 +25,10 @@ from test_schema_change_requests import CONTACTS
 from aios import notifications
 from aios.auth import current_user
 from aios.datastores import schema_changes
+from aios.datastores.models import ChatMember
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
 from aios.models import (
-    ChatMember,
     Notification,
     Organisation,
     OrganisationInvite,
@@ -424,8 +425,9 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
         db.commit()
         with signed_in_as(member):
             assert api.post(f"/api/chats/{ours['id']}/join").status_code == 200
-        db.add(ChatMember(chat_id=theirs["id"], kind="user", user_id=member.id, role="member"))
-        db.commit()
+        rows_of(elsewhere).add(
+            ChatMember(chat_id=theirs["id"], kind="user", user_id=member.id, role="member")
+        )
 
         with signed_in_as(member):
             resp = api.post("/api/organisation/leave")
@@ -442,8 +444,9 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
         members = api.get("/api/organisation").json()["members"]
         assert [m["user"]["id"] for m in members] == [user.id]
         db.expire_all()
-        chats = db.scalars(select(ChatMember.chat_id).where(ChatMember.user_id == member.id))
-        assert list(chats) == [theirs["id"]]
+        theirs_now = select(ChatMember.chat_id).where(ChatMember.user_id == member.id)
+        assert rows_of(user).scalars(theirs_now) == []
+        assert rows_of(elsewhere).scalars(theirs_now) == [theirs["id"]]
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == member.id))
         assert sorted(r["request_id"] for r in refs) == ["2", "3"]
         # The members who stay are still notified of it.

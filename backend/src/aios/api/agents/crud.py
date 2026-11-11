@@ -24,11 +24,10 @@ from aios.api.agents.common import (
 )
 from aios.api.provenance import archived, built_by, people, provenance
 from aios.api.skills import unique_name
-from aios.api.triggers import disable_triggers
+from aios.api.triggers import disable_triggers, unindex
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores.models import Agent, AgentRun, AgentVersion
+from aios.datastores.models import Agent, AgentRun, AgentVersion, Trigger
 from aios.db import DB, DbId
-from aios.models import Trigger
 from aios.permissions import Action, allow
 from aios.tools import ToolOrganisation
 from aios.versioning import save_agent_version
@@ -186,14 +185,11 @@ def archive_agent(
     if agent.archived_at is None:
         agent.archived_at = func.now()
         agent.archived_by = user.id
-        # The store is the source of truth, so it commits first; its schedules (on the
-        # platform) are paused after. A schedule saved meanwhile waited for the lock, and is
-        # paused here too; one saved after sees the agent archived.
+        # Its schedules are paused with it. A schedule saved meanwhile waited for the lock, and
+        # is paused here too; one saved after sees the agent archived.
+        paused = disable_triggers(store, Trigger.agent_id == agent.id, user.id)
         store.commit()
-        disable_triggers(
-            db, (Trigger.organisation_id == org.id) & (Trigger.agent_id == agent.id), user.id
-        )
-        db.commit()
+        unindex(store, paused)
     return agent_out(db, org.id, agent)
 
 
@@ -220,4 +216,4 @@ def get_agent_used_by(
 ):
     """What uses the agent, for the archive confirmation to show: read-only, as archiving is
     never refused."""
-    return used_by.agent(db, store, org.id, get_org_agent(store, agent_id), user.id)
+    return used_by.agent(store, get_org_agent(store, agent_id), user.id)

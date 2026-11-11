@@ -5,7 +5,7 @@ tools' access to it, while its data stays; the owner can restore it until it's p
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import store_of
+from conftest import StoreRows, store_of
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
@@ -16,9 +16,10 @@ from aios import worker
 from aios.auth import current_user
 from aios.config import get_settings
 from aios.datastores import dropped, schema_changes
+from aios.datastores.models import SchemaChangeRequest
 from aios.datastores.schema_changes import SchemaChange
 from aios.main import app
-from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import DataStore, SchemaChangeStatus
 from aios.testing.fake_model import ToolCall, model, use_model
 from aios.tools import build_tool
 
@@ -62,18 +63,21 @@ def propose(store: DataStore, *ops: dict) -> SchemaChangeRequest:
     return schema_changes.propose(store.id, spec, "Tidy up", run_id=None, tool_call_id=None)
 
 
-def apply(db, store: DataStore, *ops: dict) -> SchemaChangeRequest:
-    """Propose, approve and apply a request, as the owner approving it would."""
-    request = propose(store, *ops)
-    db.execute(
+def approve(store: DataStore, request: SchemaChangeRequest) -> None:
+    """Approve the request behind the API's back."""
+    StoreRows(store.id).execute(
         update(SchemaChangeRequest)
         .where(SchemaChangeRequest.id == request.id)
         .values(status=SchemaChangeStatus.approved)
     )
-    db.commit()
-    schema_changes.apply(request.id)
-    db.expire_all()
-    applied = db.get(SchemaChangeRequest, request.id)
+
+
+def apply(db, store: DataStore, *ops: dict) -> SchemaChangeRequest:
+    """Propose, approve and apply a request, as the owner approving it would."""
+    request = propose(store, *ops)
+    approve(store, request)
+    schema_changes.apply(store.id, request.id)
+    applied = StoreRows(store.id).get(SchemaChangeRequest, request.id)
     assert applied.status == SchemaChangeStatus.applied, applied.error
     return applied
 
@@ -188,14 +192,9 @@ def test_a_drop_whose_table_has_changed_since_it_was_asked_for_is_stale(db, stor
     request = propose(store, {"op": "drop_table", "table": "fish"})
     # Meanwhile, the table gets a dropped column, which the drop would have to carry along.
     apply(db, store, {"op": "drop_column", "table": "fish", "column": "weight_kg"})
-    db.execute(
-        update(SchemaChangeRequest)
-        .where(SchemaChangeRequest.id == request.id)
-        .values(status=SchemaChangeStatus.approved)
-    )
-    db.commit()
+    approve(store, request)
 
-    assert schema_changes.apply(request.id) == SchemaChangeStatus.stale
+    assert schema_changes.apply(store.id, request.id) == SchemaChangeStatus.stale
     with as_owner(store) as conn:
         assert conn.execute("SELECT to_regclass('data.fish') IS NOT NULL").fetchone()[0]
 
@@ -215,7 +214,11 @@ def test_the_model_cant_name_what_a_drop_renames_to(db, store):
 def queued(monkeypatch) -> list:
     """The schema changes queued to be applied, instead of sent to the broker."""
     applies: list = []
-    monkeypatch.setattr(worker.apply_schema_change_task, "delay", applies.append)
+    monkeypatch.setattr(
+        worker.apply_schema_change_task,
+        "delay",
+        lambda store_id, request_id: applies.append(request_id),
+    )
     return applies
 
 

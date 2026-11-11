@@ -14,10 +14,10 @@ from sqlalchemy.orm import Session
 from aios import notifications
 from aios.config import get_settings
 from aios.datastores.connections import store_session
-from aios.datastores.models import AgentRun
+from aios.datastores.models import AgentRun, SchemaChangeRequest
 from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
-from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus
+from aios.models import DataStore, SchemaChangeStatus
 
 if TYPE_CHECKING:
     from aios.datastores.provision import StoreNames
@@ -93,26 +93,25 @@ def read_revision(pg: psycopg.Connection) -> int:
 # --- Requests -----------------------------------------------------------------------------------
 
 
-def lock_run(db: Session, data_store_id: uuid.UUID, run_id: int) -> None:
-    """Take the platform's lock on the store's run's requests, until `db`'s transaction ends:
-    recording one (`propose`) and deleting the run (which then cancels them,
-    `aios.api.agents.cancel_chat_requests`) take turns, so a request is never recorded for a
-    run that's gone. (The run is in its store, so no foreign key does this.)"""
-    db.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtextextended(f"aios.run:{data_store_id}:{run_id}", 0)
-            )
+def lock_run(store: Session, run_ids: list[int]) -> None:
+    """Lock these runs of the store (in id order) until `store`'s transaction ends, for deleting
+    them: recording a request (`propose`) holds its run's key share while it does, so the two take
+    turns, and a request is never recorded for a run that's gone: deleting the run then cancels
+    the requests it sees (`aios.api.agents.cancel_chat_requests`)."""
+    if run_ids:
+        store.execute(
+            select(AgentRun.id)
+            .where(AgentRun.id.in_(run_ids))
+            .order_by(AgentRun.id)
+            .with_for_update()
         )
-    )
 
 
 def find(data_store_id: uuid.UUID, run_id: int, tool_call_id: str) -> SchemaChangeRequest | None:
     """The request a tool call of the store's run made, if it made one."""
-    with SessionLocal() as db:
-        return db.scalar(
+    with store_session(data_store_id, "ro") as store:
+        return store.scalar(
             select(SchemaChangeRequest).where(
-                SchemaChangeRequest.data_store_id == data_store_id,
                 SchemaChangeRequest.requested_by_run == run_id,
                 SchemaChangeRequest.tool_call_id == tool_call_id,
             )
@@ -127,9 +126,9 @@ def propose(
     run_id: int | None,
     tool_call_id: str | None,
 ) -> SchemaChangeRequest:
-    """Check `change` against the store's schema and record it as a pending request; raises
-    `Invalid` if the schema doesn't take it, and as `store_session` does if the store can't be
-    read."""
+    """Check `change` against the store's schema and record it as a pending request in the
+    store; then notify those who can decide it, on the platform. Raises `Invalid` if the schema
+    doesn't take it, and as `store_session` does if the store can't be read."""
     with store_session(data_store_id, "ro") as session:
         pg = session.connection().connection.driver_connection
         # The revision first: a change committed in between makes the schema newer than the
@@ -144,7 +143,6 @@ def propose(
     ]
     checked = check(SchemaChange(ops=fresh), schema)
     request = SchemaChangeRequest(
-        data_store_id=data_store_id,
         ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
         sql=compile_sql(checked),
         summary=summarize(checked),
@@ -153,24 +151,30 @@ def propose(
         tool_call_id=tool_call_id,
         base_revision=revision,
     )
-    with SessionLocal() as db:
+    with store_session(data_store_id) as store:
         if run_id is not None:
-            lock_run(db, data_store_id, run_id)
-            # Not for a run deleted meanwhile, whose requests have been cancelled already.
-            with store_session(data_store_id, "ro") as store:
-                if store.get(AgentRun, run_id) is None:
-                    raise Invalid("The run has been deleted")
-        db.add(request)
-        db.flush()
-        data_store = db.get_one(DataStore, data_store_id)
-        notifications.notify(
-            db,
-            approvers(db, data_store),
-            data_store.owner_organisation_id,
-            notifications.SCHEMA_CHANGE_REQUEST,
-            _notification_ref(request),
-        )
-        db.commit()
+            # Its run's key share, until the request commits: not for a run deleted meanwhile,
+            # whose requests have been cancelled already (`lock_run`).
+            held = store.scalar(
+                select(AgentRun.id)
+                .where(AgentRun.id == run_id)
+                .with_for_update(read=True, key_share=True)
+            )
+            if held is None:
+                raise Invalid("The run has been deleted")
+        store.add(request)
+        store.commit()
+    with SessionLocal() as db:
+        data_store = db.get(DataStore, data_store_id)
+        if data_store is not None and data_store.owner_organisation_id is not None:
+            notifications.notify(
+                db,
+                approvers(db, data_store),
+                data_store.owner_organisation_id,
+                notifications.SCHEMA_CHANGE_REQUEST,
+                _notification_ref(data_store_id, request.id),
+            )
+            db.commit()
     return request
 
 
@@ -261,21 +265,21 @@ def table_exists(pg: psycopg.Connection, table: str) -> bool:
     return pg.execute("SELECT to_regclass(%s) IS NOT NULL", (qualified,)).fetchone()[0]
 
 
-def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
+def apply(data_store_id: uuid.UUID, request_id: uuid.UUID) -> SchemaChangeStatus | None:
     """Apply an approved request to its store and record how it went (`applied`, `failed` or
     `stale`); returns that, or None if the request isn't approved (there's nothing to do)."""
     from aios.datastores.provision import StoreNames, provisioner_locked
 
-    with SessionLocal() as db:
-        request = db.get(SchemaChangeRequest, request_id)
+    with store_session(data_store_id, "ro") as store:
+        request = store.get(SchemaChangeRequest, request_id)
         if request is None or request.status != SchemaChangeStatus.approved:
             return None
-        store = db.get(DataStore, request.data_store_id)
-        names = StoreNames.of(store)
+    with SessionLocal() as db:
+        names = StoreNames.of(db.get_one(DataStore, data_store_id))
     error = None
     try:
         # Not while the store is being migrated or provisioned.
-        with provisioner_locked(request.data_store_id):
+        with provisioner_locked(data_store_id):
             _run(names, request)
         status = SchemaChangeStatus.applied
     except _Stale as exc:
@@ -285,8 +289,8 @@ def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
     except Exception:
         log.exception("Applying schema change request %s failed", request_id)
         status, error = SchemaChangeStatus.failed, "Applying it failed unexpectedly"
-    with SessionLocal() as db:
-        db.execute(
+    with store_session(data_store_id) as store:
+        store.execute(
             update(SchemaChangeRequest)
             .where(
                 SchemaChangeRequest.id == request_id,
@@ -298,7 +302,7 @@ def apply(request_id: uuid.UUID) -> SchemaChangeStatus | None:
                 applied_at=func.now() if status == SchemaChangeStatus.applied else None,
             )
         )
-        db.commit()
+        store.commit()
     return status
 
 

@@ -20,6 +20,7 @@ from test_schema_change_requests import run_queued
 from aios import embeddings, handoff, llm, tracing
 from aios.api import chats as chats_api
 from aios.config import get_settings
+from aios.datastores import store_session
 from aios.main import create_app
 from aios.models import DataStore
 from aios.testing import scenarios
@@ -138,7 +139,8 @@ def test_a_turn_waiting_on_its_request_isnt_failed_as_stopped(
 
     # No process beats a run waiting for a person.
     age(db, in_store, invocation["id"])
-    chats_api.fail_stopped_turns(db)
+    with store_session(in_store.store_id) as store:
+        chats_api.fail_stopped_turns(store)
 
     [invocation] = messages(api, chat)["invocations"]
     assert invocation["status"] == "running"

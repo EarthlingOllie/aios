@@ -38,6 +38,17 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from aios.models.agents import AgentRunStatus
+from aios.models.approvals import SchemaChangeStatus
+from aios.models.chats import (
+    ChatAuthorKind,
+    ChatMemberKind,
+    ChatMemberRole,
+    ChatMessageKind,
+    ChatVisibility,
+    InvocationCause,
+    InvocationStatus,
+)
+from aios.models.triggers import TriggerKind, TriggerStatus, TriggerTargetKind
 from aios.models.workflows import WorkflowNodeKind, WorkflowRunStatus, WorkflowStepStatus
 
 EMBEDDING_DIM = 1024
@@ -61,7 +72,8 @@ class SchemaHistory(StoreBase):
     __tablename__ = "schema_history"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    # The schema change request it applied (in the platform database), if any.
+    # The schema change request it applied (`schema_change_requests`), if any. Not a foreign
+    # key: the log outlives what it records.
     request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     summary: Mapped[str] = mapped_column(Text)
     # The statements that ran.
@@ -467,9 +479,10 @@ class AgentRun(StoreBase):
     # Pinned when the run starts: editing the agent mid-conversation doesn't change the run.
     agent_version_id: Mapped[int] = mapped_column(ForeignKey("agent_versions.id"))
     title: Mapped[str | None] = mapped_column(String(255))
-    # The schedule (a platform trigger, by id) that started the run, if one did; not a foreign
-    # key, so it may name one deleted since.
-    trigger_id: Mapped[int | None] = mapped_column(Integer)
+    # The schedule that started the run, if one did; cleared when it's deleted.
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey("triggers.id", ondelete="SET NULL", name="fk_agent_runs_trigger_id")
+    )
     # The member who started it (a platform user id, resolved through the people mirror); null
     # for a schedule's run.
     created_by: Mapped[int | None] = mapped_column(Integer)
@@ -551,8 +564,10 @@ class WorkflowRun(StoreBase):
     workflow_version_id: Mapped[int] = mapped_column(ForeignKey("workflow_versions.id"))
     # The member who started it (a platform user id); null for a schedule's run.
     created_by: Mapped[int | None] = mapped_column(Integer)
-    # The schedule (a platform trigger, by id) that started it, if one did.
-    trigger_id: Mapped[int | None] = mapped_column(Integer)
+    # The schedule that started it, if one did; cleared when it's deleted.
+    trigger_id: Mapped[int | None] = mapped_column(
+        ForeignKey("triggers.id", ondelete="SET NULL", name="fk_workflow_runs_trigger_id")
+    )
     status: Mapped[WorkflowRunStatus] = mapped_column(
         Enum(WorkflowRunStatus, name="workflow_run_status"), default=WorkflowRunStatus.queued
     )
@@ -602,8 +617,14 @@ class WorkflowRunStep(StoreBase):
     agent_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="SET NULL")
     )
-    # While an agent node waits: the schema change request (on the platform, by id) it waits on.
-    waiting_on_request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # While an agent node waits: the schema change request it waits on.
+    waiting_on_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "schema_change_requests.id",
+            ondelete="SET NULL",
+            name="fk_workflow_run_steps_waiting_on_request_id",
+        )
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -612,6 +633,352 @@ class WorkflowRunStep(StoreBase):
         Index("ix_workflow_run_steps_agent_run_id", "agent_run_id"),
         Index("ix_workflow_run_steps_waiting_on_request_id", "waiting_on_request_id"),
         {"comment": "Each workflow run's steps: a node of its graph, at any depth"},
+    )
+
+
+# Schedules, chats, invocations and schema change requests: what starts runs, and what the
+# organisation's people say to each other and to its agents and workflows. Who made, posted or
+# asked for each is a platform user id, resolved through the people mirror (no foreign key).
+
+
+class Trigger(StoreBase):
+    """Starts an agent (a new run of its current version) or a workflow when it fires. The
+    only kind so far is a schedule: a cron expression in a timezone. The platform keeps a thin
+    index of when each is next due (`aios.models.ScheduleDue`, `aios.schedules`), written
+    whenever one is saved and rebuilt from these by the repair sweep."""
+
+    __tablename__ = "triggers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Which member made it and which last changed it.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[TriggerKind] = mapped_column(Enum(TriggerKind, name="trigger_kind"))
+    target_kind: Mapped[TriggerTargetKind] = mapped_column(
+        Enum(TriggerTargetKind, name="trigger_target_kind")
+    )
+    # Exactly one is set, matching `target_kind`. They're archived, never deleted.
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"))
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"))
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=sql_text("true"))
+    # The message an agent run starts with, or a workflow run's input.
+    input: Mapped[str] = mapped_column(Text, server_default="")
+    # Schedules: a 5-field cron expression (or a macro like @daily), in an IANA timezone.
+    cron: Mapped[str | None] = mapped_column(String(255))
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    # When it next fires; null while disabled. Missed runs aren't caught up: a schedule that's
+    # overdue (the service was down) fires once, then moves on from now.
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[TriggerStatus | None] = mapped_column(
+        Enum(TriggerStatus, name="trigger_status")
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    # While `last_status` is running, refreshed by the process firing it; one that stops being
+    # refreshed has lost its process, and is failed (`aios.scheduler.fail_stalled`).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The agent run, or workflow run, it last started; cleared when that run is deleted. A
+    # workflow run's status is the schedule's (`api.triggers.trigger_out`), since a worker runs
+    # it after the schedule has fired.
+    last_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "agent_runs.id", ondelete="SET NULL", use_alter=True, name="fk_triggers_last_run_id"
+        )
+    )
+    last_workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "workflow_runs.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_triggers_last_workflow_run_id",
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL)"
+            " OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
+            name="ck_triggers_target",
+        ),
+        CheckConstraint(
+            "kind <> 'schedule' OR (cron IS NOT NULL AND timezone IS NOT NULL)",
+            name="ck_triggers_schedule",
+        ),
+        Index("ix_triggers_agent_id", "agent_id"),
+        Index("ix_triggers_workflow_id", "workflow_id"),
+        # What the stall sweep looks at.
+        Index(
+            "ix_triggers_running",
+            "heartbeat_at",
+            postgresql_where=sql_text("last_status = 'running'"),
+        ),
+        {"comment": "Schedules: what starts the organisation's agents and workflows by itself"},
+    )
+
+
+# Chats are group conversations between people, agents and workflows. A member row says who is
+# in a chat; which kind it is decides which id column is set, like a trigger's target. Only
+# people have a role: the owner (one per chat: who made it, or whom it was handed to when they
+# left the organisation) can change the chat, remove members and delete it.
+
+
+class Chat(StoreBase):
+    """A group conversation. Its members are `ChatMember` rows, its messages `ChatMessage`s."""
+
+    __tablename__ = "chats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Which member made it and which last changed it.
+    created_by: Mapped[int | None] = mapped_column(Integer)
+    updated_by: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, server_default="")
+    # A private chat doesn't exist for a member who isn't in it.
+    visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When it was last active: when it was last changed, or a message was last posted.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    members: Mapped[list["ChatMember"]] = relationship(
+        back_populates="chat",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ChatMember.id",
+    )
+
+    __table_args__ = (
+        # Named like a channel: unique among the organisation's chats.
+        Index("uq_chats_name", "name", unique=True),
+        {"comment": "Chats: group conversations between people, agents and workflows"},
+    )
+
+
+class ChatMember(StoreBase):
+    """Who is in a chat: a person, an agent or a workflow of the organisation."""
+
+    __tablename__ = "chat_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"))
+    kind: Mapped[ChatMemberKind] = mapped_column(Enum(ChatMemberKind, name="chat_member_kind"))
+    # Exactly one is set, matching `kind`: a person (a platform user id), or an agent or
+    # workflow, which are archived, never deleted.
+    user_id: Mapped[int | None] = mapped_column(Integer)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"))
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"))
+    # People only: the chat's owner, or an ordinary member.
+    role: Mapped[ChatMemberRole | None] = mapped_column(
+        Enum(ChatMemberRole, name="chat_member_role")
+    )
+    added_by: Mapped[int | None] = mapped_column(Integer)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # People only: the id of the last of the chat's messages they've seen (null: none yet), from
+    # which their unread count is counted. A cursor, not a reference: it only goes up.
+    last_read_message_id: Mapped[int | None] = mapped_column(Integer)
+
+    chat: Mapped[Chat] = relationship(back_populates="members")
+
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'user' AND user_id IS NOT NULL AND agent_id IS NULL AND workflow_id IS NULL)"
+            " OR (kind = 'agent' AND agent_id IS NOT NULL AND user_id IS NULL"
+            " AND workflow_id IS NULL)"
+            " OR (kind = 'workflow' AND workflow_id IS NOT NULL AND user_id IS NULL"
+            " AND agent_id IS NULL)",
+            name="ck_chat_members_target",
+        ),
+        CheckConstraint("(kind = 'user') = (role IS NOT NULL)", name="ck_chat_members_role"),
+        UniqueConstraint("chat_id", "user_id", name="uq_chat_members_chat_id_user_id"),
+        UniqueConstraint("chat_id", "agent_id", name="uq_chat_members_chat_id_agent_id"),
+        UniqueConstraint("chat_id", "workflow_id", name="uq_chat_members_chat_id_workflow_id"),
+        # One owner at most: none only while nobody is left in it to hand the chat to.
+        Index(
+            "uq_chat_members_chat_id_owner",
+            "chat_id",
+            unique=True,
+            postgresql_where=sql_text("role = 'owner'"),
+        ),
+        Index("ix_chat_members_user_id", "user_id"),
+        Index("ix_chat_members_agent_id", "agent_id"),
+        Index("ix_chat_members_workflow_id", "workflow_id"),
+        {"comment": "Who is in each chat: people, agents and workflows"},
+    )
+
+
+class ChatMessage(StoreBase):
+    """A message in a chat, read in id order: `?after=` and `?before=` page by id."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"))
+    author_kind: Mapped[ChatAuthorKind] = mapped_column(
+        Enum(ChatAuthorKind, name="chat_author_kind")
+    )
+    # At most one is set, matching `author_kind`; none for a system message.
+    author_user_id: Mapped[int | None] = mapped_column(Integer)
+    author_agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"))
+    author_workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"))
+    kind: Mapped[ChatMessageKind] = mapped_column(Enum(ChatMessageKind, name="chat_message_kind"))
+    body: Mapped[str] = mapped_column(Text)
+    # Who the message mentions, `[{kind, id, name}]`, with the names as they were when posted.
+    mentions: Mapped[list] = mapped_column(JSONB, server_default=sql_text("'[]'::jsonb"))
+    # The invocation it's part of: a run card's, or the result the run posted back.
+    invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "invocations.id",
+            ondelete="CASCADE",
+            use_alter=True,
+            name="fk_chat_messages_invocation_id",
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "(author_kind = 'user' OR author_user_id IS NULL)"
+            " AND (author_kind = 'agent' OR author_agent_id IS NULL)"
+            " AND (author_kind = 'workflow' OR author_workflow_id IS NULL)",
+            name="ck_chat_messages_author",
+        ),
+        CheckConstraint(
+            "kind <> 'run_card' OR invocation_id IS NOT NULL", name="ck_chat_messages_run_card"
+        ),
+        # A chat's messages in order, for the cursor reads.
+        Index("ix_chat_messages_chat_id_id", "chat_id", "id"),
+        Index("ix_chat_messages_invocation_id", "invocation_id"),
+        Index("ix_chat_messages_author_user_id", "author_user_id"),
+        {"comment": "Each chat's messages, in id order"},
+    )
+
+
+class Invocation(StoreBase):
+    """Why a run of an agent or workflow ran (`aios.invocations`): so far, always a mention in
+    a chat (`cause` mention). Its card follows the run; when the run ends, its result is posted
+    back and it finishes."""
+
+    __tablename__ = "invocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cause: Mapped[InvocationCause] = mapped_column(
+        Enum(InvocationCause, name="invocation_cause"),
+        default=InvocationCause.mention,
+        server_default=InvocationCause.mention.value,
+    )
+    # Where from: a mention's chat, and the message that mentioned it.
+    chat_id: Mapped[int | None] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"))
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="CASCADE")
+    )
+    # Who caused it: the member who mentioned it, and so started its run (its `created_by`).
+    requested_by: Mapped[int | None] = mapped_column(Integer)
+    target_kind: Mapped[TriggerTargetKind] = mapped_column(
+        Enum(TriggerTargetKind, name="trigger_target_kind")
+    )
+    # Exactly one is set, matching `target_kind`.
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"))
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"))
+    status: Mapped[InvocationStatus] = mapped_column(
+        Enum(InvocationStatus, name="invocation_status"), default=InvocationStatus.queued
+    )
+    # Why it failed: the run's error, or why it couldn't start.
+    error: Mapped[str | None] = mapped_column(Text)
+    # What the handoff told its run of the chat (`aios.handoff`); null until it has.
+    brief: Mapped[str | None] = mapped_column(Text)
+    # The run it started; null until it has, and once that run has been deleted (the card says
+    # so). Deleting the chat leaves the run.
+    agent_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL")
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When its run started (null if it never did), and when it finished.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # An agent's: set when a process claims it to run its turn (`aios.firing`) and refreshed
+    # while the turn runs; one whose heartbeat has stopped lost its process, and is failed. Null
+    # while it waits for a free slot, and for a workflow's, whose run the worker looks after.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "(target_kind = 'agent' AND agent_id IS NOT NULL AND workflow_id IS NULL)"
+            " OR (target_kind = 'workflow' AND workflow_id IS NOT NULL AND agent_id IS NULL)",
+            name="ck_invocations_target",
+        ),
+        CheckConstraint(
+            "cause <> 'mention' OR (chat_id IS NOT NULL AND message_id IS NOT NULL)",
+            name="ck_invocations_mention",
+        ),
+        Index("ix_invocations_chat_id", "chat_id"),
+        Index("ix_invocations_message_id", "message_id"),
+        Index("ix_invocations_agent_run_id", "agent_run_id"),
+        Index("ix_invocations_workflow_run_id", "workflow_run_id"),
+        # The unfinished ones: what a chat's poll reports on, and what waits for a turn.
+        Index(
+            "ix_invocations_unfinished",
+            "chat_id",
+            postgresql_where=sql_text("status IN ('queued', 'briefing', 'running')"),
+        ),
+        {"comment": "Why each run ran: so far, a mention in a chat"},
+    )
+
+
+class SchemaChangeRequest(StoreBase):
+    """An agent's request to change the store's `data` schema (`aios.datastores.schema_changes`):
+    the spec it asked for, the SQL it compiles to, and what a member and the platform did with
+    it. The run that asked waits on it (a LangGraph interrupt) until it's decided."""
+
+    __tablename__ = "schema_change_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()")
+    )
+    # The spec (`SchemaChange`, checked), and the SQL it compiles to: what's approved, and run.
+    ops: Mapped[list] = mapped_column(JSONB)
+    sql: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text)
+    # The agent's explanation, for the members.
+    reason: Mapped[str] = mapped_column(Text)
+    # The agent run that asked, and the tool call it asked in (so the call, run again when the
+    # run resumes, finds its request rather than making another); cleared when the run goes.
+    requested_by_run: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL")
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(String(255))
+    # The store's data schema revision it was checked against (`schema_changes.read_revision`).
+    base_revision: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[SchemaChangeStatus] = mapped_column(
+        Enum(SchemaChangeStatus, name="schema_change_status"),
+        default=SchemaChangeStatus.pending,
+        server_default=SchemaChangeStatus.pending.value,
+    )
+    # The member who decided it.
+    decided_by_user_id: Mapped[int | None] = mapped_column(Integer)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The note of the member who rejected it.
+    note: Mapped[str | None] = mapped_column(Text)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why applying it failed, or why it's stale.
+    error: Mapped[str | None] = mapped_column(Text)
+    # When the run that asked was given the outcome, after which it takes new messages again.
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "requested_by_run", "tool_call_id", name="uq_schema_change_requests_run_tool_call"
+        ),
+        Index("ix_schema_change_requests_requested_by_run", "requested_by_run"),
+        {"comment": "Agents' requests to change the data schema, and what was decided"},
     )
 
 

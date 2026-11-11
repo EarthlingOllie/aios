@@ -10,17 +10,16 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
 from test_agents import chat_body
 from test_chat_agent_invocations import say
 from test_chats import add, make_chat, messages, signed_in_as
 from test_organisation_scoping import member, outsider  # noqa: F401 (fixtures)
-from test_scheduler import load, make_due, tick
+from test_scheduler import change, load, make_due, tick
 from test_triggers import make_trigger, schedule
 from test_workflow_runs import echo, queued, start, steps  # noqa: F401 (a fixture)
 from test_workflows import agent_node, make_agent, make_workflow, workflow_node
 
-from aios.models import Trigger, TriggerStatus
+from aios.models import TriggerStatus
 from aios.testing.fake_model import model, replies, use_handoff, use_model
 from aios.workflows import execute_run
 
@@ -147,7 +146,7 @@ def test_a_schedule_firing_is_refused_naming_the_agent(api, db):
     archive(api, agent)
     # Turned back on behind the API's back, it still can't start a run.
     now = datetime.now(UTC)
-    db.execute(update(Trigger).where(Trigger.id == daily["id"]).values(enabled=True))
+    change(daily["id"], enabled=True)
     make_due(db, daily["id"], now - timedelta(seconds=1))
 
     with use_model(replies("never")):

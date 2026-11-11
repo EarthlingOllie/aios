@@ -27,9 +27,10 @@ else the person is in; accepting one into an organisation they're in already add
 **Leaving** (`leave`) is refused for the last member, who should delete the organisation instead,
 and for the last admin while others remain, since nobody would be left to run it
 (`leave_refusal`).
-Otherwise only the membership goes: the person drops out of the organisation's chats (adding
-them to one, or their making or joining one, waits for a leave under way and is then refused:
-`holds_member`) and their unread notifications about its schema change requests go. Nothing is
+Otherwise only the membership goes: the person drops out of the organisation's chats, in its
+store (`leave_chats`; adding them to one, or their making or joining one, waits for a leave
+under way and is then refused: `holds_member`) and their unread notifications about its schema
+change requests go. Nothing is
 made for them: they're left in the organisations they're still in, or in none. What they made
 stays in the organisation, and a chat they owned goes to its member added first
 (`hand_over_chats`); one with nobody left in it goes to whoever joins it next if it's public, and
@@ -57,18 +58,24 @@ import re
 import secrets
 import unicodedata
 import uuid
+from contextlib import ExitStack
 from datetime import timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import notifications
 from aios.config import get_settings
-from aios.datastores import people
+from aios.datastores import (
+    DataStoreBusy,
+    DataStoreNotFound,
+    DataStoreNotReady,
+    people,
+    store_session,
+)
+from aios.datastores.models import Chat, ChatMember
 from aios.models import (
-    Chat,
-    ChatMember,
     ChatMemberKind,
     ChatMemberRole,
     ChatVisibility,
@@ -378,23 +385,15 @@ def holds_member(db: Session, org: Organisation, user_id: int) -> bool:
 
 def leave(db: Session, org: Organisation, user: User) -> None:
     """Take the user out of the organisation (`leave_refusal` said they may): only their
-    membership goes, and nothing is made for them. Flushed, not committed."""
+    membership goes, and nothing is made for them; and out of its chats, in its store
+    (`leave_chats`), which commits there as `db` commits. Flushed, not committed."""
     db.execute(
         delete(OrganisationMember).where(
             OrganisationMember.organisation_id == org.id,
             OrganisationMember.user_id == user.id,
         )
     )
-    left = db.execute(
-        delete(ChatMember)
-        .where(
-            ChatMember.kind == ChatMemberKind.user,
-            ChatMember.user_id == user.id,
-            ChatMember.chat_id.in_(select(Chat.id).where(Chat.organisation_id == org.id)),
-        )
-        .returning(ChatMember.chat_id, ChatMember.role)
-    ).all()
-    hand_over_chats(db, [chat_id for chat_id, role in left if role == ChatMemberRole.owner])
+    leave_chats(db, org.id, user.id)
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
         _forget_requests(db, user, store_id)
@@ -404,7 +403,57 @@ def leave(db: Session, org: Organisation, user: User) -> None:
     db.expire_all()
 
 
-def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
+# The store sessions taking a leaver out of the organisation's chats, open on the platform session
+# making the leave until it commits (`leave_chats`).
+_STORE_WORK = "aios.leave_chats"
+
+
+def leave_chats(db: Session, organisation_id: int, user_id: int) -> None:
+    """Take the user out of the organisation's chats, in its store, handing those they owned
+    over (`hand_over_chats`): flushed there, in a store transaction that commits as `db`'s
+    does, just before it, so the chats it changed stay locked as long as the leave is under way.
+    Nothing if the store has none to take them out of (it isn't provisioned yet); one that can't
+    be reached now is logged, and they stay in its chats (which only its members can reach)."""
+    store_id = db.scalar(
+        select(DataStore.id).where(DataStore.owner_organisation_id == organisation_id)
+    )
+    if store_id is None:
+        return
+    work = ExitStack()
+    try:
+        store = work.enter_context(store_session(store_id))
+        left = store.execute(
+            delete(ChatMember)
+            .where(ChatMember.kind == ChatMemberKind.user, ChatMember.user_id == user_id)
+            .returning(ChatMember.chat_id, ChatMember.role)
+        ).all()
+        hand_over_chats(store, [chat_id for chat_id, role in left if role == ChatMemberRole.owner])
+    except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
+        work.close()
+        if not isinstance(exc, DataStoreNotFound):
+            log.warning("couldn't take user %s out of the chats: %s", user_id, exc)
+        return
+    except BaseException:
+        work.close()
+        raise
+    db.info.setdefault(_STORE_WORK, []).append((store, work))
+
+
+@event.listens_for(Session, "before_commit")
+def _commit_store_work(session: Session) -> None:
+    for store, _ in session.info.get(_STORE_WORK, ()):
+        store.commit()
+
+
+@event.listens_for(Session, "after_commit")
+@event.listens_for(Session, "after_rollback")
+def _close_store_work(session: Session) -> None:
+    for _, work in session.info.pop(_STORE_WORK, ()):
+        # Rolls back what wasn't committed.
+        work.close()
+
+
+def hand_over_chats(store: Session, chat_ids: list[int]) -> None:
     """Give each of these chats, the ones a leaver owned, to its user member added first, so a
     chat is never left that nobody can change or delete. A public one with nobody left in it goes
     to whoever joins it next (`api.chats.join_chat`): the organisation keeps it and its history,
@@ -423,7 +472,7 @@ def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
     it, or waits and sees the owner this gives it, or that the chat is gone."""
     if not chat_ids:
         return
-    db.execute(select(Chat.id).where(Chat.id.in_(chat_ids)).with_for_update())
+    store.execute(select(Chat.id).where(Chat.id.in_(chat_ids)).with_for_update())
     owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
     first = (
         select(func.min(ChatMember.id))
@@ -434,8 +483,10 @@ def hand_over_chats(db: Session, chat_ids: list[int]) -> None:
         )
         .group_by(ChatMember.chat_id)
     )
-    db.execute(update(ChatMember).where(ChatMember.id.in_(first)).values(role=ChatMemberRole.owner))
-    db.execute(
+    store.execute(
+        update(ChatMember).where(ChatMember.id.in_(first)).values(role=ChatMemberRole.owner)
+    )
+    store.execute(
         delete(Chat).where(
             Chat.id.in_(chat_ids),
             Chat.id.not_in(owned),

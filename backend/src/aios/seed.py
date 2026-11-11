@@ -98,7 +98,7 @@ def build(db: Session) -> None:
 
 def build_contents(db: Session, store: Session, user: User, org: Organisation) -> None:
     """What the organisation has, made through the API's handlers: its agents, skills and
-    workflows in its store (`store`), and its schedule and chat on the platform (`db`)."""
+    workflows, its schedule and its chat in its store (`store`)."""
     skill = create_skill(
         SkillIn(
             name="Plain English",

@@ -5,8 +5,9 @@ from conftest import delete_user, join_organisation, provisioned_user
 
 from aios.api import chats
 from aios.auth import current_user
+from aios.datastores.models import ChatMessage
 from aios.main import app
-from aios.models import ChatAuthorKind, ChatMessage, ChatMessageKind, User
+from aios.models import ChatAuthorKind, ChatMessageKind, User
 
 
 def make_chat(api, name: str, **extra) -> dict:
@@ -468,15 +469,15 @@ def test_an_archived_agent_or_workflow_stays_a_member_shown_archived(api):
     assert api.get("/api/chats").json()[0]["member_count"] == 4
 
 
-def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):
+def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, in_store):
     chat = make_chat(api, "Design")
     agent = make_agent(api, "Review")
     workflow = make_workflow(api, "Digest")
     add(api, chat, "agent", agent)
     chat = add(api, chat, "workflow", workflow)
     # Agents and workflows post only when a mention runs them, which comes later; as if they had.
-    db.add_all(
-        [
+    in_store.add(
+        *[
             ChatMessage(
                 chat_id=chat["id"],
                 author_kind=ChatAuthorKind.agent,
@@ -493,7 +494,6 @@ def test_removing_an_agent_or_workflow_leaves_what_it_posted(api, db):
             ),
         ]
     )
-    db.commit()
     for member in chat["members"]["agents"] + chat["members"]["workflows"]:
         resp = api.delete(f"/api/chats/{chat['id']}/members/{member['id']}")
         assert resp.status_code == 204

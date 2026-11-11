@@ -111,7 +111,7 @@ def test_a_decision_and_clearing_its_notifications_commit_together(
     request (which a retry answers 409) and its notification unread."""
     _, request = start(api, agent, Script(CONTACTS))
 
-    def lost_connection(db, request_id):
+    def lost_connection(*args, **kwargs):
         raise RuntimeError("lost the connection")
 
     monkeypatch.setattr(schema_changes_api, "clear_notifications", lost_connection)

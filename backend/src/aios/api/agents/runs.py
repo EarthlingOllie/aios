@@ -10,20 +10,23 @@ from pydantic import BaseModel
 from sqlalchemy import Row, select
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, invocations, ui_stream
+from aios import checkpoints, ui_stream
 from aios.api.agents.common import get_org_agent, lock_live_agent
 from aios.api.provenance import UserOut, started_by
 from aios.api.schema_changes import SchemaChangeOut, run_requests, waiting_on
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores import history, schema_changes, store_id_of
-from aios.datastores.models import Agent, AgentRun, AgentVersion, WorkflowRunStep
-from aios.db import DB, DbId
-from aios.models import (
-    AgentRunStatus,
+from aios.datastores.models import (
+    Agent,
+    AgentRun,
+    AgentVersion,
     Chat,
-    ChatInvocation,
+    Invocation,
     SchemaChangeRequest,
+    WorkflowRunStep,
 )
+from aios.db import DB, DbId
+from aios.models import AgentRunStatus
 from aios.permissions import Action, allow
 from aios.runner import version_tools
 from aios.sandbox.sessions import (
@@ -116,25 +119,25 @@ def run_summary_query():
     ).join(AgentVersion, AgentVersion.id == AgentRun.agent_version_id)
 
 
-def run_chats(
-    db: Session, organisation_id: int, invocation_run, run_ids: Sequence[int]
-) -> dict[int, tuple[int, str]]:
-    """The chats whose mentions started these runs of the organisation's (by the invocation's
-    column naming them, `invocation_run`), while the chat exists: (id, name) by run id."""
+def run_chats(store: Session, invocation_run, run_ids: Sequence[int]) -> dict[int, tuple[int, str]]:
+    """The chats whose mentions started these runs of the store's (by the invocation's column
+    naming them, `invocation_run`), while the chat exists: (id, name) by run id."""
     if not run_ids:
         return {}
-    rows = db.execute(
+    rows = store.execute(
         select(invocation_run, Chat.id, Chat.name)
-        .join(Chat, Chat.id == ChatInvocation.chat_id)
-        .where(Chat.organisation_id == organisation_id, invocation_run.in_(list(run_ids)))
+        .join(Chat, Chat.id == Invocation.chat_id)
+        .where(invocation_run.in_(list(run_ids)))
     ).all()
     return {run_id: (chat_id, name) for run_id, chat_id, name in rows}
 
 
-def run_summaries(db: Session, organisation_id: int, rows: Sequence[Row]) -> list[RunSummary]:
-    """Rows of `run_summary_query` for the organisation's runs as summaries: with the chats
-    that started them and who started each, from the platform."""
-    chats = run_chats(db, organisation_id, ChatInvocation.agent_run_id, [r.id for r in rows])
+def run_summaries(
+    db: Session, organisation_id: int, store: Session, rows: Sequence[Row]
+) -> list[RunSummary]:
+    """Rows of `run_summary_query` for the organisation's runs (in its store, `store`) as
+    summaries: with the chats that started them, and who started each."""
+    chats = run_chats(store, Invocation.agent_run_id, [r.id for r in rows])
     return started_by(
         db,
         organisation_id,
@@ -152,7 +155,7 @@ def run_summaries(db: Session, organisation_id: int, rows: Sequence[Row]) -> lis
 
 def run_summary(db: Session, organisation_id: int, store: Session, run_id: int) -> RunSummary:
     row = store.execute(run_summary_query().where(AgentRun.id == run_id)).one()
-    return run_summaries(db, organisation_id, [row])[0]
+    return run_summaries(db, organisation_id, store, [row])[0]
 
 
 def build_version_tools(
@@ -177,7 +180,7 @@ def list_runs(agent_id: DbId, org: CurrentOrganisation, db: DB, store: CurrentSt
         .where(AgentRun.agent_id == agent.id)
         .order_by(AgentRun.updated_at.desc())
     ).all()
-    return run_summaries(db, org.id, rows)
+    return run_summaries(db, org.id, store, rows)
 
 
 def new_agent_run(
@@ -249,8 +252,8 @@ def get_run(
         ui_messages=ui_stream.to_ui_messages(messages),
         messages=checkpoints.messages_out(messages),
         instructions=store.get_one(AgentVersion, run.agent_version_id).instructions,
-        schema_change_requests=run_requests(db, store_id, run, user.id),
-        waiting=waiting_on(db, store_id, run.id),
+        schema_change_requests=run_requests(db, store, run, user.id),
+        waiting=waiting_on(store, run.id),
     )
 
 
@@ -273,19 +276,20 @@ def delete_run(
     in_workflow = store.scalar(
         select(WorkflowRunStep.run_id).where(WorkflowRunStep.agent_run_id == run.id).limit(1)
     )
+    # A request its turn is recording meanwhile has been waited for by the lock above
+    # (`schema_changes.lock_run`), and is seen here.
+    cancelled = [] if in_workflow is not None else cancel_chat_requests(store, [run_id])
     checkpoints.delete_threads(store, [run.id])
-    store.delete(run)  # and its sandbox session
+    # And its sandbox session; what names it (its requests, its invocation, its schedule)
+    # stops naming it.
+    store.delete(run)
     store.commit()
-    # Then what the platform says of it: the store is the run's source of truth. A request its
-    # turn is recording meanwhile is waited for (`schema_changes.lock_run`), and then seen.
-    schema_changes.lock_run(db, store_id, run_id)
-    if in_workflow is None:
-        cancel_chat_requests(db, store_id, [run_id])
+    # Then what the platform says of it: the store is the run's source of truth.
+    schema_changes.clear_notifications_of(cancelled)
     # Its exported copy goes too, and the copy of the workflow run whose step held it.
     history.enqueue_runs(db, store_id, [run_id], deleting=True)
     if in_workflow is not None:
         history.enqueue_workflow_runs(db, store_id, [in_workflow])
-    invocations.forget_runs(db, store_id, agent_run_ids=[run_id])
     db.commit()
     # A turn still underway stops now, rather than carrying on for a run that's gone.
     checkpoints.stop_turns(store, store_id, [run_id])
@@ -293,18 +297,15 @@ def delete_run(
         background.add_task(stop_sandboxes, sandboxes)
 
 
-def cancel_chat_requests(db: Session, data_store_id: uuid.UUID, run_ids: list[int]) -> None:
-    """Once these agent runs of the store are deleted (not workflow nodes' runs: their workflow
+def cancel_chat_requests(store: Session, run_ids: list[int]) -> list[uuid.UUID]:
+    """As these agent runs of the store are deleted (not workflow nodes' runs: their workflow
     runs still wait on their requests, and resume on their decisions,
     `aios.workflows.workflow_run_waiting_on`; ending or deleting the workflow run closes them
     out, `aios.workflows.close_requests`): cancel the pending requests their chats waited on, so
-    none can be approved with nothing left to resume. In the caller's transaction, before
-    `invocations.forget_runs` clears the requests' runs.
+    none can be approved with nothing left to resume. In the caller's transaction, before the
+    runs' deletion clears the requests' runs; returns their ids, whose notifications to clear
+    once it commits.
 
     Take the runs' locks first (`schema_changes.lock_run`): a request being recorded for one
     is waited for, and then seen, and none can be recorded once it's gone."""
-    schema_changes.cancel(
-        db,
-        SchemaChangeRequest.data_store_id == data_store_id,
-        SchemaChangeRequest.requested_by_run.in_(run_ids),
-    )
+    return schema_changes.cancel(store, SchemaChangeRequest.requested_by_run.in_(run_ids))

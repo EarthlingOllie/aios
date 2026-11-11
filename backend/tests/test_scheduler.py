@@ -5,31 +5,63 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
-from conftest import home_organisation, user_store
+from conftest import home_organisation, signed_in_store, user_store
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
-from aios import checkpoints, firing, scheduler
+from aios import checkpoints, firing, scheduler, schedules
 from aios.api.agents import new_agent_run
 from aios.cron import next_run
-from aios.datastores.models import Agent, AgentRun, AgentVersionTool, WorkflowRun
+from aios.datastores import store_session
+from aios.datastores.models import Agent, AgentRun, AgentVersionTool, Trigger, WorkflowRun
 from aios.db import SessionLocal
-from aios.models import Trigger, TriggerStatus, WorkflowRunStatus
+from aios.models import ScheduleDue, TriggerStatus, WorkflowRunStatus
 from aios.testing.fake_model import model, replies, use_model
 from aios.worker import run_workflow_task
 from aios.workflows import execute_run
 
 
 def make_due(db, trigger_id: int, at: datetime) -> None:
-    db.execute(update(Trigger).where(Trigger.id == trigger_id).values(next_run_at=at))
-    db.commit()
+    """Make the signed-in user's trigger due at `at`, in its store and in the due index, as
+    saving it then would."""
+    store_id = signed_in_store()
+    with store_session(store_id) as store:
+        store.execute(update(Trigger).where(Trigger.id == trigger_id).values(next_run_at=at))
+        store.commit()
+    schedules.index(store_id, [(trigger_id, at)])
 
 
-def load(db, trigger_id: int) -> Trigger:
-    db.expire_all()
-    return db.get(Trigger, trigger_id)
+def change(trigger_id: int, **values) -> None:
+    """Change the signed-in user's trigger behind the API's back."""
+    with store_session(signed_in_store()) as store:
+        store.execute(update(Trigger).where(Trigger.id == trigger_id).values(**values))
+        store.commit()
+
+
+def load(db, trigger_id: int) -> Trigger | None:
+    with store_session(signed_in_store()) as store:
+        return store.get(Trigger, trigger_id)
+
+
+def ids(claimed) -> list[int]:
+    """The trigger ids of what `claim_due` or `tick` claimed, in order."""
+    return [trigger_id for _, trigger_id in claimed]
+
+
+def claimed_ids(db, now: datetime) -> list[int]:
+    return ids(scheduler.claim_due(db, now))
+
+
+def sweep_stalled() -> None:
+    """Fail the signed-in user's store's stalled schedules, as any replica's tick does."""
+    with store_session(signed_in_store()) as store:
+        scheduler.fail_stalled(store)
+
+
+def fire(trigger_id: int, fired_at: datetime) -> None:
+    asyncio.run(scheduler.fire(signed_in_store(), trigger_id, fired_at))
 
 
 def tick(now: datetime) -> list[int]:
@@ -38,7 +70,7 @@ def tick(now: datetime) -> list[int]:
     async def go():
         fired = await scheduler.tick(now)
         await asyncio.gather(*fired.values())
-        return sorted(fired)
+        return sorted(ids(fired))
 
     return asyncio.run(go())
 
@@ -54,7 +86,7 @@ def test_claim_due_advances_only_due_enabled_schedules(api, db):
     make_due(db, not_yet["id"], now + timedelta(minutes=1))
 
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == [due["id"]]
+        assert claimed_ids(s, now) == [due["id"]]
     t = load(db, due["id"])
     assert t.next_run_at == datetime(2030, 1, 1, 12, 5, tzinfo=UTC)
     assert t.last_fired_at == now
@@ -63,7 +95,7 @@ def test_claim_due_advances_only_due_enabled_schedules(api, db):
     assert load(db, off["id"]).next_run_at is None
     # Claimed once: it isn't due again until its next run.
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == []
+        assert claimed_ids(s, now) == []
 
 
 def test_a_schedule_locked_by_another_replica_is_skipped(api, db):
@@ -73,12 +105,14 @@ def test_a_schedule_locked_by_another_replica_is_skipped(api, db):
     make_due(db, t["id"], now - timedelta(seconds=1))
     with SessionLocal() as other:
         # Another replica is mid-claim.
-        other.execute(select(Trigger).where(Trigger.id == t["id"]).with_for_update())
+        other.execute(
+            select(ScheduleDue).where(ScheduleDue.trigger_id == t["id"]).with_for_update()
+        )
         with SessionLocal() as s:
-            assert scheduler.claim_due(s, now) == []
+            assert claimed_ids(s, now) == []
         other.rollback()
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == [t["id"]]
+        assert claimed_ids(s, now) == [t["id"]]
 
 
 def test_firing_an_agent_schedule_starts_a_run_with_its_message(api, db, in_store):
@@ -416,11 +450,11 @@ def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, 
     monkeypatch.setattr(get_settings(), "scheduler_max_concurrent_runs", 2)
     agent = make_agent(api, "Bot")
     now = datetime.now(UTC)
-    ids = []
+    trigger_ids = []
     for i in range(3):
         t = make_trigger(api, schedule("agent", agent["id"], input=f"job {i}"))
         make_due(db, t["id"], now - timedelta(seconds=3 - i))
-        ids.append(t["id"])
+        trigger_ids.append(t["id"])
 
     async def go():
         started = []
@@ -435,8 +469,8 @@ def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, 
             first = await scheduler.tick(now)
             # Only as many as there are free slots are claimed; the rest stay due, for another
             # replica or a later tick.
-            assert sorted(first) == ids[:2]
-            assert load(db, ids[2]).next_run_at < now
+            assert sorted(ids(first)) == trigger_ids[:2]
+            assert load(db, trigger_ids[2]).next_run_at < now
             while len(started) < 2:
                 await asyncio.sleep(0.01)
             # Saturated: a tick claims nothing.
@@ -445,23 +479,24 @@ def test_a_process_fires_at_most_its_cap_and_leaves_the_rest_unclaimed(api, db, 
             await asyncio.gather(*first.values())
             # Slots free again: the one left over fires.
             later = await scheduler.tick(now)
-            assert sorted(later) == ids[2:]
+            assert sorted(ids(later)) == trigger_ids[2:]
             await asyncio.gather(*later.values())
         return started
 
     assert sorted(asyncio.run(go())) == ["job 0", "job 1", "job 2"]
-    for t_id in ids:
+    for t_id in trigger_ids:
         assert load(db, t_id).last_status == TriggerStatus.succeeded
 
 
 def age(db, trigger_id: int) -> None:
     """Make the trigger's heartbeat older than a live process would let it get."""
-    db.execute(
-        update(Trigger)
-        .where(Trigger.id == trigger_id)
-        .values(heartbeat_at=func.now() - scheduler.STALE_AFTER - timedelta(seconds=1))
-    )
-    db.commit()
+    with store_session(signed_in_store()) as store:
+        store.execute(
+            update(Trigger)
+            .where(Trigger.id == trigger_id)
+            .values(heartbeat_at=func.now() - scheduler.STALE_AFTER - timedelta(seconds=1))
+        )
+        store.commit()
 
 
 def test_a_claim_whose_process_died_is_failed_once_its_heartbeat_stops(api, db):
@@ -471,7 +506,7 @@ def test_a_claim_whose_process_died_is_failed_once_its_heartbeat_stops(api, db):
     make_due(db, t["id"], now - timedelta(seconds=1))
     # Claimed by a replica that is then killed before it fires (or finishes) the run.
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == [t["id"]]
+        assert claimed_ids(s, now) == [t["id"]]
     next_run_at = load(db, t["id"]).next_run_at
 
     # Recently claimed, so it may still be going: the next tick, on any replica, leaves it be.
@@ -538,8 +573,7 @@ def test_a_fire_in_flight_keeps_its_heartbeat_so_other_replicas_leave_it(api, db
         yield "done"
 
     def other_replica_sweeps():
-        with SessionLocal() as s:
-            scheduler.fail_stalled(s)
+        sweep_stalled()
 
     async def go():
         nonlocal release
@@ -577,7 +611,9 @@ def test_the_loop_beats_the_fires_in_flight(api, db, monkeypatch):
     async def go():
         # A fire of this trigger is in flight in this process.
         in_flight = asyncio.create_task(asyncio.Event().wait())
-        firing._in_flight[in_flight] = firing.Fire(scheduler.ScheduleFiring(t["id"], now))
+        firing._in_flight[in_flight] = firing.Fire(
+            scheduler.ScheduleFiring(signed_in_store(), t["id"], now)
+        )
         loop = asyncio.create_task(scheduler.run_forever(interval=10))
         await asyncio.sleep(0.3)
         loop.cancel()
@@ -585,8 +621,7 @@ def test_the_loop_beats_the_fires_in_flight(api, db, monkeypatch):
 
     asyncio.run(go())
     firing._in_flight.clear()
-    with SessionLocal() as s:
-        scheduler.fail_stalled(s)
+    sweep_stalled()
     assert load(db, t["id"]).last_status == TriggerStatus.running
 
 
@@ -598,15 +633,17 @@ def test_a_schedule_retargeted_as_it_fires_isnt_left_running(
     t = make_trigger(api, schedule("agent", agent["id"]))
     now = datetime.now(UTC)
     make_due(db, t["id"], now - timedelta(seconds=1))
-    target = scheduler._target
+    claimed = scheduler._claimed
 
-    def retargeted_meanwhile(trigger_id, fired_at):
-        kind = target(trigger_id, fired_at)
-        resp = api.put(f"/api/triggers/{t['id']}", json=schedule("workflow", workflow["id"]))
-        assert resp.status_code == 200, resp.text
-        return kind
+    def retargeted_meanwhile(store, trigger_id, fired_at, kind=None, *, lock=False):
+        trigger = claimed(store, trigger_id, fired_at, kind, lock=lock)
+        if not lock:
+            # Read as the agent's schedule, then retargeted before its run starts.
+            resp = api.put(f"/api/triggers/{t['id']}", json=schedule("workflow", workflow["id"]))
+            assert resp.status_code == 200, resp.text
+        return trigger
 
-    monkeypatch.setattr(scheduler, "_target", retargeted_meanwhile)
+    monkeypatch.setattr(scheduler, "_claimed", retargeted_meanwhile)
     with use_model(replies("hi")):
         assert tick(now) == [t["id"]]
     # Neither target runs this time (the new one does next time), and it isn't left running:
@@ -627,13 +664,13 @@ def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch,
     now = datetime.now(UTC)
     make_due(db, stopped["id"], now - timedelta(seconds=1))
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == [stopped["id"]]  # by a replica since killed
+        assert claimed_ids(s, now) == [stopped["id"]]  # by a replica since killed
     age(db, stopped["id"])
 
     async def go():
         busy = asyncio.create_task(asyncio.Event().wait())
         # This process's one slot is taken.
-        firing._in_flight[busy] = firing.Fire(scheduler.ScheduleFiring(0, now))
+        firing._in_flight[busy] = firing.Fire(scheduler.ScheduleFiring(signed_in_store(), 0, now))
         try:
             assert await scheduler.tick(now) == {}
         finally:
@@ -648,7 +685,7 @@ def test_a_saturated_process_still_fails_stopped_schedules(api, db, monkeypatch,
 def claim(db, trigger_id: int, now: datetime) -> None:
     make_due(db, trigger_id, now - timedelta(seconds=1))
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, now) == [trigger_id]
+        assert claimed_ids(s, now) == [trigger_id]
 
 
 def put(api, trigger_id: int, body: dict) -> dict:
@@ -680,7 +717,7 @@ def test_editing_an_agent_schedule_after_its_claimed_cancels_that_firing(api, db
     shown = put(api, t["id"], {**body, **edit})
     assert (shown["last_fired_at"], shown["last_status"]) == (None, None)
 
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
 
     assert agent_runs(in_store, agent["id"]) == []
     after = api.get(f"/api/triggers/{t['id']}").json()
@@ -696,7 +733,7 @@ def test_retargeting_an_agent_schedule_after_its_claimed_starts_neither_agent(ap
     claim(db, t["id"], now)
     put(api, t["id"], {**body, "target_id": new["id"]})
 
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
 
     assert agent_runs(in_store, old["id"]) == [] and agent_runs(in_store, new["id"]) == []
     assert load(db, t["id"]).last_status is None
@@ -712,7 +749,7 @@ def test_pausing_a_workflow_schedule_after_its_claimed_cancels_that_firing(
     claim(db, t["id"], now)
     put(api, t["id"], {**body, "enabled": False})
 
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
 
     assert queued == []
     assert (
@@ -736,7 +773,7 @@ def test_a_pause_landing_as_the_run_is_being_created_drops_it(api, db, monkeypat
         return new_agent_run(store, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.agents_api, "new_agent_run", pause_then_create)
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
 
     # The run it had added is rolled back with the firing.
     assert agent_runs(in_store, agent["id"]) == []
@@ -779,13 +816,12 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db, user, 
     org_id = home_organisation(db, user.id).id
 
     async def go():
-        with SessionLocal() as s, user_store(user) as store:
+        with user_store(user) as store:
             # Mid-start, as the scheduler starts a run: the agent share-locked, then the
-            # trigger row locked, until the run (in the store) and then the link to it are
-            # committed.
+            # trigger row locked, until the run and the link to it are committed.
             agent_row = store.get(Agent, agent["id"])
             run = new_agent_run(store, org_id, agent_row, created_by=None, trigger_id=t["id"])
-            trigger = s.scalars(
+            trigger = store.scalars(
                 select(Trigger).where(Trigger.id == t["id"]).with_for_update()
             ).one()
             pausing = asyncio.create_task(
@@ -793,9 +829,8 @@ def test_a_pause_waiting_on_a_run_being_started_doesnt_cancel_it(api, db, user, 
             )
             await asyncio.sleep(0.3)
             assert not pausing.done()
-            store.commit()
             trigger.last_run_id = run.id
-            s.commit()
+            store.commit()
             run_id = run.id
         return await pausing, run_id
 
@@ -810,7 +845,7 @@ def reclaim(trigger_id: int, now: datetime) -> list[int]:
     (or this one's next tick) would."""
     with SessionLocal() as s:
         make_due(s, trigger_id, now - timedelta(seconds=1))
-        return scheduler.claim_due(s, now)
+        return claimed_ids(s, now)
 
 
 def workflow_runs(in_store, workflow_id: int) -> list[WorkflowRun]:
@@ -832,7 +867,7 @@ def test_an_agent_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
         return new_agent_run(store, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.agents_api, "new_agent_run", reclaim_then_create)
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
     monkeypatch.setattr(scheduler.agents_api, "new_agent_run", new_agent_run)
 
     # The superseded firing's run is rolled back, and the trigger isn't pointed at it: it
@@ -847,7 +882,7 @@ def test_an_agent_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
 
     # The newer firing starts its own run, and is linked to it.
     with use_model(replies("hi")):
-        asyncio.run(scheduler.fire(t["id"], later))
+        fire(t["id"], later)
     (run,) = agent_runs(in_store, agent["id"])
     t2 = load(db, t["id"])
     assert (t2.last_fired_at, t2.last_status, t2.last_run_id) == (
@@ -872,7 +907,7 @@ def test_a_workflow_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
         return new_workflow_run(store, *args, **kwargs)
 
     monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", reclaim_then_create)
-    asyncio.run(scheduler.fire(t["id"], now))
+    fire(t["id"], now)
     monkeypatch.setattr(scheduler.workflows_api, "new_workflow_run", new_workflow_run)
 
     # Neither committed nor queued; the trigger shows the newer firing.
@@ -884,7 +919,7 @@ def test_a_workflow_schedule_reclaimed_as_its_run_starts_drops_the_old_firing(
         None,
     )
 
-    asyncio.run(scheduler.fire(t["id"], later))
+    fire(t["id"], later)
     (run,) = workflow_runs(in_store, workflow["id"])
     assert queued == [run.id]
     t2 = load(db, t["id"])
@@ -904,7 +939,7 @@ def test_a_reclaim_while_a_run_is_being_started_waits_for_the_next_tick(
     claimed = scheduler._claimed
     attempts = []
 
-    def claimed_then_reclaim(db, trigger_id, fired_at, kind, *, lock=False):
+    def claimed_then_reclaim(db, trigger_id, fired_at, kind=None, *, lock=False):
         if lock:
             # Due again by the time this firing locks the trigger to link its run.
             with SessionLocal() as s:
@@ -912,12 +947,12 @@ def test_a_reclaim_while_a_run_is_being_started_waits_for_the_next_tick(
         trigger = claimed(db, trigger_id, fired_at, kind, lock=lock)
         if lock:
             with SessionLocal() as s:
-                attempts.append(scheduler.claim_due(s, later))
+                attempts.append(claimed_ids(s, later))
         return trigger
 
     monkeypatch.setattr(scheduler, "_claimed", claimed_then_reclaim)
     with use_model(replies("hi")):
-        asyncio.run(scheduler.fire(t["id"], now))
+        fire(t["id"], now)
     monkeypatch.setattr(scheduler, "_claimed", claimed)
 
     # Skipped while locked, so this firing keeps its run and the link to it...
@@ -936,6 +971,6 @@ def test_a_reclaim_while_a_run_is_being_started_waits_for_the_next_tick(
         assert queued == [run.id]
     # ...and the schedule is still due: claimed on the next tick, not lost.
     with SessionLocal() as s:
-        assert scheduler.claim_due(s, later) == [t["id"]]
+        assert claimed_ids(s, later) == [t["id"]]
     reclaimed = load(db, t["id"])
     assert (reclaimed.last_fired_at, reclaimed.last_run_id) == (later, None)

@@ -251,6 +251,23 @@ def store_conninfo(data_store_id: uuid.UUID, role: Role = "rw") -> str:
     return url.render_as_string(hide_password=False)
 
 
+def ready_stores() -> list[tuple[uuid.UUID, int]]:
+    """Every ready store with an organisation, (id, organisation id), the oldest first: for the
+    sweeps that visit each store in turn."""
+    with SessionLocal() as db:
+        return [
+            (store_id, organisation_id)
+            for store_id, organisation_id in db.execute(
+                select(DataStore.id, DataStore.owner_organisation_id)
+                .where(
+                    DataStore.status == DataStoreStatus.ready,
+                    DataStore.owner_organisation_id.is_not(None),
+                )
+                .order_by(DataStore.created_at)
+            )
+        ]
+
+
 def store_status(data_store_id: uuid.UUID) -> DataStoreStatus:
     """The store's status. Raises `DataStoreNotFound` if there's no such store."""
     with SessionLocal() as db:

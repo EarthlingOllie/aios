@@ -30,9 +30,8 @@ from test_workflows import (
 from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import store_session
-from aios.datastores.models import Agent, AgentRun, WorkflowRun
-from aios.db import SessionLocal
-from aios.models import DataStore, SchemaChangeRequest, SchemaChangeStatus, WorkflowRunStatus
+from aios.datastores.models import Agent, AgentRun, SchemaChangeRequest, WorkflowRun
+from aios.models import DataStore, SchemaChangeStatus, WorkflowRunStatus
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import TOOLS as TOOL_LIBRARY
 from aios.workflows import execute_run
@@ -415,7 +414,7 @@ def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
     waiting = start(api, queued, workflow, flow)
     [request] = api.get("/api/schema-changes").json()
     age = timedelta(days=get_settings().schema_change_request_expiry_days, minutes=1)
-    with SessionLocal() as db:
+    with store_session(store.id) as db:
         db.execute(
             update(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
@@ -602,9 +601,8 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     waiting = start(api, queued, workflow, flow)
     build = steps(waiting)["build"]
     [pending] = api.get("/api/schema-changes").json()
-    with SessionLocal() as db:
+    with store_session(store.id) as db:
         orphan = SchemaChangeRequest(
-            data_store_id=store.id,
             ops=[{**CONTACTS, "name": "gone"}],
             sql="",
             summary="Create table data.gone",

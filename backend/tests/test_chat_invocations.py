@@ -13,7 +13,7 @@ from test_workflows import agent_node, make_workflow
 from aios import invocations, workflows
 from aios.api import chats
 from aios.api import workflows as workflows_api
-from aios.models import ChatInvocation, ChatMessage
+from aios.datastores.models import ChatMessage, Invocation
 from aios.testing.fake_model import model, use_model
 from aios.tools import TOOLS
 from aios.workflows import execute_run
@@ -277,9 +277,9 @@ def test_a_run_whose_worker_died_fails_its_card_when_the_chat_is_read(api, queue
 
 
 def test_an_invocation_whose_start_was_lost_fails_when_the_chat_is_read(
-    api, db, queued, monkeypatch
+    api, in_store, queued, monkeypatch
 ):
-    async def lost(invocation_ids):
+    async def lost(store_id, invocation_ids):
         """The process stops between posting the message and starting the run."""
 
     monkeypatch.setattr(chats, "start_invocations", lost)
@@ -289,18 +289,19 @@ def test_an_invocation_whose_start_was_lost_fails_when_the_chat_is_read(
     [made] = say(api, chat, "Go", wf)["invocations"]
     # Not yet: it may simply not have started yet.
     assert messages(api, chat)["invocations"][0]["status"] == "queued"
-    db.execute(
-        update(ChatInvocation)
-        .where(ChatInvocation.id == made["id"])
+    in_store.execute(
+        update(Invocation)
+        .where(Invocation.id == made["id"])
         .values(created_at=func.now() - invocations.START_WITHIN)
     )
-    db.commit()
     [invocation] = messages(api, chat)["invocations"]
     assert (invocation["status"], invocation["error"]) == ("failed", invocations.NEVER_STARTED)
     assert queued == []
 
 
-def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(api, db, queued):
+def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(
+    api, in_store, queued
+):
     wf = make_workflow(api, "Digest", [agent_node("one", echo_agent(api, "first"))])
     chat = make_chat(api, "Design")
     add(api, chat, "workflow", wf)
@@ -308,15 +309,15 @@ def test_deleting_a_chat_deletes_its_messages_and_invocations_but_not_the_runs(a
     with use_model(echo()):
         asyncio.run(execute_run(queued.store, queued[0]))
     assert api.delete(f"/api/chats/{chat['id']}").status_code == 204
-    assert db.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
-    assert db.scalar(select(func.count()).where(ChatInvocation.chat_id == chat["id"])) == 0
+    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
+    assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
     [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
     assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
 
 
 def test_a_run_going_in_a_private_chat_deleted_as_its_owner_leaves_goes_on_without_it(
     api,
-    db,
+    in_store,
     user,
     member,  # noqa: F811
     queued,
@@ -330,11 +331,11 @@ def test_a_run_going_in_a_private_chat_deleted_as_its_owner_leaves_goes_on_witho
         add(api, chat, "workflow", wf)
         say(api, chat, "Go", wf)
         assert api.post("/api/organisation/leave").status_code == 200
-    assert db.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
-    assert db.scalar(select(func.count()).where(ChatInvocation.chat_id == chat["id"])) == 0
+    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
+    assert in_store.scalar(select(func.count()).where(Invocation.chat_id == chat["id"])) == 0
 
     with use_model(echo()):
         asyncio.run(execute_run(queued.store, queued[0]))
     [run] = api.get(f"/api/workflows/{wf['id']}/runs").json()
     assert (run["id"], run["status"], run["chat_id"]) == (queued[0], "succeeded", None)
-    assert db.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0
+    assert in_store.scalar(select(func.count()).where(ChatMessage.chat_id == chat["id"])) == 0

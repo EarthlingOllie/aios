@@ -82,7 +82,8 @@ a message that mentions you is highlighted. Mentioning anyone who isn't a chat m
 
 ### Mentioning a workflow
 
-Mentioning a **workflow** starts a run of it (`aios.invocations`, `chat_invocations`). The post
+Mentioning a **workflow** starts a run of it (`aios.invocations`, the store's `invocations`,
+with mention as their cause). The post
 creates, in the message's own transaction, a queued invocation per workflow mentioned and the
 workflow's acknowledgement with a **run card** under it, and returns them with the message
 (`{messages, invocations}`), so the chat never shows a mention without its card. Just after the

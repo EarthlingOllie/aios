@@ -16,6 +16,7 @@ from conftest import (
     join_organisation,
     org_of,
     provisioned_user,
+    rows_of,
     store_of,
 )
 from sqlalchemy import select, text, update
@@ -32,12 +33,12 @@ from aios import organisations
 from aios.api import documents
 from aios.api import workflows as workflows_api
 from aios.auth import current_user
+from aios.datastores.models import SchemaChangeRequest
 from aios.main import app
 from aios.models import (
     DataStore,
     OrganisationMember,
     Role,
-    SchemaChangeRequest,
     SchemaChangeStatus,
     User,
 )
@@ -237,7 +238,7 @@ def test_a_schema_change_request_notifies_every_member_and_any_member_decides_it
         # Decided, it's read for everyone it notified.
         assert not notified(api, drop)
     assert not notified(api, drop)
-    assert db.get(SchemaChangeRequest, drop.id).decided_by_user_id == member.id
+    assert rows_of(user).get(SchemaChangeRequest, drop.id).decided_by_user_id == member.id
 
     add = propose(
         store, {"op": "add_column", "table": "fish", "column": {"name": "colour", "type": "text"}}
@@ -245,8 +246,7 @@ def test_a_schema_change_request_notifies_every_member_and_any_member_decides_it
     with signed_in_as(member):
         rejected = api.post(f"/api/schema-changes/{add.id}/reject", json={"note": "Not now"})
         assert rejected.status_code == 200, rejected.text
-    db.expire_all()
-    assert db.get(SchemaChangeRequest, add.id).status == SchemaChangeStatus.rejected
+    assert rows_of(user).get(SchemaChangeRequest, add.id).status == SchemaChangeStatus.rejected
 
 
 def test_any_admin_restores_a_dropped_table_and_an_editor_cant(

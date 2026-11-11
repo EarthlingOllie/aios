@@ -2,8 +2,11 @@
 
 Each organisation has a **store**: a Postgres database of its own, on the same instance as the
 platform database, which holds its agents, skills and workflows, their runs and the runs'
-history, its documents, the data tables its agents asked for, and, when it's switched on, a copy
-of its run history. In code and on screen it's a "data store"
+history, its schedules, its chats with their members, messages and invocations, its agents'
+schema change requests, its documents, the data tables its agents asked for, and, when it's
+switched on, a copy of its run history. The platform database holds no organisation content:
+only identity, organisations, memberships, invitations, the store registry (with its credentials
+and the run history export's outbox), notifications, and the schedule due index. In code and on screen it's a "data store"
 (`aios.datastores`, the `data_stores` table, the "Data store" notices); screens show its
 contents as **Data**. See also [Accounts and organisations](accounts-and-organisations.md) and
 [Tools](tools.md), for the tools that read and write it.
@@ -215,24 +218,34 @@ in (`aios.sandbox_sessions`), workflow runs (`aios.workflow_runs`) and their ste
 (`aios.workflow_run_steps`) are in the store too (store revision `0010`), as is each run's
 history: the store's own checkpointer's tables, in its `langgraph` schema (see
 [Agents and skills](agents-and-skills.md#runs)). Runs name the agent or workflow and the version
-they ran by foreign key; who started them, the schedule that did and the schema change request a
-step waits on are platform ids, with no foreign key. The platform's tables for them, and its
-checkpointer schema, went in the same change (platform revision `0062`); nothing was copied.
+they ran by foreign key; who started them is a platform user id, with no foreign key. The
+platform's tables for them, and its checkpointer schema, went in the same change (platform
+revision `0062`); nothing was copied.
 
-- **Named by store and id.** Run ids repeat across stores, so everything outside the store that
-  names a run carries the store too: worker task arguments (`run_workflow_task`,
-  `resume_agent_run_task`), the turn lease's Redis channels, a sandbox's session key, and the
-  platform rows that name one (schedules' last runs, chat invocations, schema change requests,
-  whose tool call is unique per store). Trace sessions are `agent-run-<organisation>-<id>`.
-- **Writes across the two databases.** The store is the run's source of truth and commits
-  first; what the platform records of it is written after, idempotently: a schedule's or
-  chat invocation's link to the run it started (committed before a workflow run is queued, so
-  the worker finds it), a workflow run's end (its invocation finished, its requests closed
-  out, its outbox row), a turn's end (its outbox row). Deleting a run deletes it, its steps,
-  sandbox session and thread in the store, then clears what on the platform named it
-  (`invocations.forget_runs`); deleting a schedule clears its id from its runs. A run's schema
-  change requests are recorded and cancelled under the run's lock on the platform
-  (`schema_changes.lock_run`), so none is recorded for a run that's gone.
+Schedules (`aios.triggers`), chats (`aios.chats`, `aios.chat_members`, `aios.chat_messages`),
+invocations (`aios.invocations`: chat invocations became the store's general invocations, with
+a cause, so far always a mention) and schema change requests (`aios.schema_change_requests`)
+followed (store revision `0012`, platform revision `0063`, which drops the platform's tables;
+nothing was copied, and development data is rebuilt with `make seed`). Chats moved as they
+were, owner and visibility included. Beside the runs they name, they do so by foreign key: a
+run deleted clears a schedule's last run, an invocation's run and a request's run; a schedule
+deleted clears its runs' `trigger_id`; a waiting step names its request.
+
+- **Named by store and id.** Ids repeat across stores, so everything outside the store that
+  names a row of it carries the store too: worker task arguments (`run_workflow_task`,
+  `resume_agent_run_task`, `apply_schema_change_task`), the turn lease's Redis channels, a
+  sandbox's session key, the firing of a schedule or an invocation, the schedule due index and
+  notifications (a request's id and its store's). Trace sessions are
+  `agent-run-<organisation>-<id>`, and a chat's handoffs `chat-<organisation>-<id>`.
+- **Writes across the two databases.** The store is the source of truth for everything it holds
+  and commits first; the platform's derived copies are written after, idempotently: the people
+  mirror the other way round (see [Accounts and organisations](accounts-and-organisations.md)),
+  a schedule's due index row (`aios.schedules`, see [Triggers](triggers.md#the-scheduler)), a
+  request's notifications (made once it's recorded, cleared once it's decided, cancelled or
+  expired), and a run's outbox row. A run's schema change requests are recorded holding its
+  key share and cancelled under its lock (`schema_changes.lock_run`), both in the store, so none
+  is recorded for a run that's gone. Leaving an organisation takes the leaver out of its chats
+  in a store transaction that commits as the leave does (`organisations.leave_chats`).
 
 ### Sources
 

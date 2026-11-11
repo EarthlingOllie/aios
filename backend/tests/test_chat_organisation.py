@@ -7,24 +7,19 @@ import time
 import warnings
 from contextlib import contextmanager
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from conftest import delete_user, home_organisation, join_organisation
-from sqlalchemy import delete, func, select, text, update
+from conftest import delete_user, home_organisation, join_organisation, signed_in_store
+from sqlalchemy import func, select, text, update
 from test_chats import add, add_user, make_agent, make_chat, make_workflow, post, signed_in_as
 from test_organisation_scoping import member, outsider, person  # noqa: F401
-from test_organisations import in_the_background, revision
+from test_organisations import in_the_background
 
 from aios import invocations, organisations
 from aios.api import chats
+from aios.datastores import store_session
+from aios.datastores.models import Chat, ChatMember, ChatMessage, Invocation
 from aios.db import SessionLocal, engine
 from aios.models import (
-    Chat,
-    ChatInvocation,
-    ChatMember,
     ChatMemberKind,
-    ChatMemberRole,
-    ChatMessage,
     User,
 )
 
@@ -53,13 +48,13 @@ def every_endpoint(api, chat: dict, user_id: int, member_id: int = 1) -> dict[st
 
 
 def is_gone(db, chat: dict) -> bool:
-    """Whether the chat is gone from the database, and its members, messages and invocations."""
-    db.expire_all()
-    left = [
-        db.scalar(select(func.count()).where(model.chat_id == chat["id"]))
-        for model in (ChatMember, ChatMessage, ChatInvocation)
-    ]
-    return db.get(Chat, chat["id"]) is None and left == [0, 0, 0]
+    """Whether the chat is gone from its store, and its members, messages and invocations."""
+    with store_session(signed_in_store()) as store:
+        left = [
+            store.scalar(select(func.count()).where(model.chat_id == chat["id"]))
+            for model in (ChatMember, ChatMessage, Invocation)
+        ]
+        return store.get(Chat, chat["id"]) is None and left == [0, 0, 0]
 
 
 def test_another_organisation_cant_reach_a_chat_public_or_private(api, user, outsider):  # noqa: F811
@@ -190,36 +185,6 @@ def test_a_chat_says_who_made_it_and_who_last_changed_it(api, user, member):  # 
     assert api.get(f"/api/chats/{chat['id']}").json()["created_by"] == person(user)
 
 
-def test_the_upgrade_takes_users_of_other_organisations_out_of_chats(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-    outsider,  # noqa: F811
-):
-    """Revision 0043, on a chat joined while "public" meant every user of the deployment."""
-    chat = make_chat(api, "Open", visibility="public")
-    add_user(api, chat, member)
-    db.add(
-        ChatMember(
-            chat_id=chat["id"],
-            kind=ChatMemberKind.user,
-            user_id=outsider.id,
-            role=ChatMemberRole.member,
-        )
-    )
-    db.commit()
-    # Seated, but the chat doesn't exist for them: it's another organisation's.
-    with signed_in_as(outsider):
-        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
-
-    revision("0043_chat_names_unique_per_organisation").drop_outsiders(db.connection())
-    db.commit()
-
-    users = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
-    assert [m["target_id"] for m in users] == [user.id, member.id]
-
-
 def owners(api, chat: dict) -> list[int]:
     """The users who hold the chat's owner role, as its members list says."""
     users = api.get(f"/api/chats/{chat['id']}").json()["members"]["users"]
@@ -305,64 +270,19 @@ def test_a_private_chat_with_another_user_in_it_stays_private_when_its_owner_lea
     assert (got["visibility"], got["is_owner"]) == ("private", True)
 
 
-def test_the_upgrade_hands_a_chat_whose_owner_left_to_the_member_added_first(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-):
-    """Revision 0048, on a chat whose owner left the organisation before leaving handed it over:
-    their member row went with their membership, and nobody held the owner role."""
-    with signed_in_as(member):
-        chat = make_chat(api, "Left behind", visibility="private")
-        add_user(api, chat, user)
-    db.execute(
-        delete(ChatMember).where(ChatMember.chat_id == chat["id"], ChatMember.user_id == member.id)
-    )
-    db.commit()
-    assert owners(api, chat) == []
-
-    revision("0048_organisations_contract").hand_over(db.connection())
-    db.commit()
-
-    assert owners(api, chat) == [user.id]
-
-
-def test_the_upgrade_deletes_a_private_chat_with_nobody_to_own_it(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-):
-    """Revision 0049, on chats their owner left before leaving handed them over or deleted them:
-    0048's hand-over found nobody to give them to. A private one with nobody in it existed for
-    nobody, and goes; a public one stays for whoever joins it, and a private one with someone in it
-    stays theirs."""
-    with signed_in_as(member):
-        abandoned = make_chat(api, "Abandoned", visibility="private")
-        post(api, abandoned, "Notes for the team")
-        open_ = make_chat(api, "Open", visibility="public")
-        kept = make_chat(api, "Kept", visibility="private")
-        add_user(api, kept, user)
-    # As leaving left them before: the leaver's member rows gone, and nothing handed over.
-    db.execute(delete(ChatMember).where(ChatMember.user_id == member.id))
-    db.commit()
-
-    revision("0049_ownerless_private_chats").delete_abandoned(db.connection())
-    db.commit()
-
-    assert is_gone(db, abandoned)
-    got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
-    assert got == {"Open": "public", "Kept": "private"}
-    assert api.post(f"/api/chats/{open_['id']}/join").json()["is_owner"] is True
-    assert api.post("/api/chats", json={"name": "Abandoned"}).status_code == 201
-
-
-# Another backend waiting on a lock: a request waiting on the transaction a test holds open.
+# Another backend waiting on a lock: a request waiting on the transaction a test holds open, in
+# the platform database or in one of its organisations' stores. From `pg_locks`, which shows
+# every backend's (`pg_stat_activity` hides what other roles' backends, the stores', wait on).
 WAITING_ON_A_LOCK = text(
-    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-    "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+    "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid"
+    " WHERE NOT l.granted AND l.pid <> pg_backend_pid()"
+    " AND (a.datname = current_database() OR a.datname IN (SELECT dbname FROM data_stores))"
 )
+
+
+def lock_waits(conn) -> int:
+    """How many backends wait on a lock in the platform database or one of its stores."""
+    return conn.execute(WAITING_ON_A_LOCK).scalar()
 
 
 def waits_on_a_lock(request: threading.Thread) -> None:
@@ -372,7 +292,7 @@ def waits_on_a_lock(request: threading.Thread) -> None:
     while True:
         # A transaction of its own each time: one sees the activity as it was when it began.
         with engine.connect() as conn:
-            if conn.execute(WAITING_ON_A_LOCK).scalar():
+            if lock_waits(conn):
                 return
         assert request.is_alive(), "the request should wait on the transaction held open"
         assert time.monotonic() < deadline, "the request never waited on a lock"
@@ -385,7 +305,7 @@ def finishes_without_waiting(request: threading.Thread) -> None:
     deadline = time.monotonic() + 10
     while request.is_alive():
         with engine.connect() as conn:
-            assert not conn.execute(WAITING_ON_A_LOCK).scalar(), "the request waited on a lock"
+            assert not lock_waits(conn), "the request waited on a lock"
         assert time.monotonic() < deadline, "the request never finished"
         time.sleep(0.02)
 
@@ -576,14 +496,14 @@ def test_a_member_cant_leave_a_chat_just_handed_to_them(
 
 def users_in(db, chat: dict) -> list[int]:
     """The chat's user members, in the order they were added, whoever can see it."""
-    db.expire_all()
-    return list(
-        db.scalars(
-            select(ChatMember.user_id)
-            .where(ChatMember.chat_id == chat["id"], ChatMember.kind == ChatMemberKind.user)
-            .order_by(ChatMember.id)
+    with store_session(signed_in_store()) as store:
+        return list(
+            store.scalars(
+                select(ChatMember.user_id)
+                .where(ChatMember.chat_id == chat["id"], ChatMember.kind == ChatMemberKind.user)
+                .order_by(ChatMember.id)
+            )
         )
-    )
 
 
 def test_a_member_added_to_a_chat_as_they_leave_the_organisation_isnt_added(
@@ -719,51 +639,6 @@ def test_a_member_who_leaves_as_theyre_added_to_a_chat_is_taken_out_of_it(
         delete_user(db, carol)
 
 
-def test_the_upgrade_takes_members_who_left_out_of_chats_and_hands_theirs_over(
-    api,
-    db,
-    user,
-    member,  # noqa: F811
-    outsider,  # noqa: F811
-):
-    """Revision 0051, on what adding, making or joining a chat as its user left the organisation
-    left before: a chat with someone (`outsider`) who left in it, handed to them as its member
-    added first when its owner left, and a private one they made as they left, which goes."""
-    with signed_in_as(member):
-        plans = make_chat(api, "Plans", visibility="private")
-        theirs = make_chat(api, "Theirs", visibility="private")
-    db.add(
-        ChatMember(
-            chat_id=plans["id"],
-            kind=ChatMemberKind.user,
-            user_id=outsider.id,
-            role=ChatMemberRole.member,
-        )
-    )
-    db.execute(
-        update(ChatMember)
-        .where(ChatMember.chat_id == theirs["id"], ChatMember.user_id == member.id)
-        .values(user_id=outsider.id)
-    )
-    db.commit()
-    with signed_in_as(member):
-        add_user(api, plans, user)
-        assert api.post("/api/organisation/leave").status_code == 200
-    # Handed to the one who left: nobody still here can manage it.
-    assert owners(api, plans) == [outsider.id]
-
-    with Operations.context(MigrationContext.configure(db.connection())):
-        revision("0051_chat_members_who_left").upgrade()
-    db.commit()
-
-    assert users_in(db, plans) == [user.id]
-    assert owners(api, plans) == [user.id]
-    # Theirs, private with nobody left in it, is gone, as leaving now deletes such a chat.
-    assert is_gone(db, theirs)
-    got = {c["name"]: c["visibility"] for c in api.get("/api/chats").json()}
-    assert got == {"Plans": "private"}
-
-
 def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
     api,
     db,
@@ -776,7 +651,7 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
     last member's mention never got to start and posts that back into it, doesn't wait for her
     leave to end. Only the chats she owned can have lost their owner by it."""
 
-    async def lost(invocation_ids):
+    async def lost(store_id, invocation_ids):
         """The process stops between posting the message and starting the run."""
 
     monkeypatch.setattr(chats, "start_invocations", lost)
@@ -794,12 +669,13 @@ def test_a_leave_holds_up_nothing_in_a_chat_the_leaver_didnt_own(
             [invocation] = resp.json()["invocations"]
             assert api.post("/api/organisation/leave").status_code == 200
         assert owners(api, chat) == []
-        db.execute(
-            update(ChatInvocation)
-            .where(ChatInvocation.id == invocation["id"])
-            .values(created_at=func.now() - invocations.START_WITHIN)
-        )
-        db.commit()
+        with store_session(signed_in_store()) as store:
+            store.execute(
+                update(Invocation)
+                .where(Invocation.id == invocation["id"])
+                .values(created_at=func.now() - invocations.START_WITHIN)
+            )
+            store.commit()
 
         with leaving(carol):
             reading, read = in_the_background(lambda: api.get(f"/api/chats/{chat['id']}/messages"))

@@ -298,10 +298,14 @@ def export_history_task(self, data_store_id: str) -> None:
 )
 def repair_stores_task() -> None:
     """The repair sweep: bring every ready store's people mirror back in line with its
-    organisation's memberships, logging what it fixed (`aios.datastores.people.repair`)."""
+    organisation's memberships (`aios.datastores.people.repair`), and the schedule due index
+    back in line with every ready store's triggers (`aios.schedules.repair`), logging what it
+    fixed."""
+    from aios import schedules
     from aios.datastores import people
 
     people.repair()
+    schedules.repair()
 
 
 @celery_app.task(name="aios.export_pending_history")
@@ -356,14 +360,15 @@ DECISION_RETRIES = 5
     max_retries=DECISION_RETRIES,
     retry_backoff=True,
 )
-def apply_schema_change_task(request_id: str) -> None:
+def apply_schema_change_task(data_store_id: str, request_id: str) -> None:
     """Apply an approved schema change request to its store, then resume the run that asked
     with how it went (`aios.datastores.schema_changes.apply`). Run again (redelivered), it
     applies nothing twice, and queues the resume if the run hasn't been given the outcome."""
     from aios.datastores import schema_changes
 
-    schema_changes.apply(uuid.UUID(request_id))
-    enqueue_resume(uuid.UUID(request_id))
+    store_id, request = uuid.UUID(data_store_id), uuid.UUID(request_id)
+    schema_changes.apply(store_id, request)
+    enqueue_resume(store_id, request)
 
 
 @celery_app.task(
@@ -402,31 +407,30 @@ def expire_schema_change_requests_task() -> None:
     from aios.datastores import schema_changes
 
     schema_changes.expire()
-    for request_id in schema_changes.expired_not_resumed():
-        enqueue_resume(request_id)
+    for store_id, request_id in schema_changes.expired_not_resumed():
+        enqueue_resume(store_id, request_id)
 
 
-def enqueue_resume(request_id: uuid.UUID) -> None:
-    """Queue resuming the run that made a request, if it's decided and the run (if a run made
-    it) hasn't been given the outcome yet.
+def enqueue_resume(data_store_id: uuid.UUID, request_id: uuid.UUID) -> None:
+    """Queue resuming the run that made a request of the store, if it's decided and the run (if
+    a run made it) hasn't been given the outcome yet.
 
     An agent node's run is resumed through its workflow run, which carries on from where it
     waited (`aios.workflows`): queued again, it's claimed if it's waiting."""
-    from aios.db import SessionLocal
-    from aios.models import SchemaChangeRequest
+    from aios.datastores import store_session
+    from aios.datastores.models import SchemaChangeRequest
     from aios.workflows import workflow_run_waiting_on
 
-    with SessionLocal() as db:
-        request = db.get(SchemaChangeRequest, request_id)
+    with store_session(data_store_id, "ro") as store:
+        request = store.get(SchemaChangeRequest, request_id)
         if request is None or not request.status.decided or request.resumed_at is not None:
             return
         run_id = request.requested_by_run
-        store_id = request.data_store_id
-    workflow_run_id = workflow_run_waiting_on(request)
+        workflow_run_id = workflow_run_waiting_on(store, request)
     if workflow_run_id is not None:
-        run_workflow_task.delay(str(store_id), workflow_run_id)
+        run_workflow_task.delay(str(data_store_id), workflow_run_id)
     elif run_id is not None:
-        resume_agent_run_task.delay(str(store_id), run_id)
+        resume_agent_run_task.delay(str(data_store_id), run_id)
 
 
 @celery_app.task(
