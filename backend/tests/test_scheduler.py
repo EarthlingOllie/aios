@@ -1,17 +1,24 @@
 import asyncio
 import threading
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import test_workflows as workflow_tests
-from conftest import home_organisation, signed_in_store, user_store
+from conftest import (
+    QueuedRuns,
+    capture_runs,
+    drain_run,
+    home_organisation,
+    signed_in_store,
+    user_store,
+)
 from sqlalchemy import func, select, update
 from test_agents import chat_body
 from test_triggers import make_agent, make_trigger, schedule
 from test_workflow_runs import echo
 
 from aios import checkpoints, scheduler, schedules
+from aios.api import workflows as workflows_api
 from aios.api.agents import new_agent_run
 from aios.cron import next_run
 from aios.datastores import store_session
@@ -20,8 +27,6 @@ from aios.db import SessionLocal
 from aios.models import ScheduleDue, TriggerStatus, WorkflowRunStatus
 from aios.run_service import executor
 from aios.testing.fake_model import model, replies, use_model
-from aios.worker import run_workflow_task
-from aios.workflows import execute_run
 
 
 def make_due(db, trigger_id: int, at: datetime) -> None:
@@ -205,23 +210,10 @@ def test_an_agent_that_cant_run_fails_without_a_run(api, db, user, in_store):
     assert fired.last_error == by_hand.json()["detail"]
 
 
-class Queued(list):
-    """The ids of the workflow runs started, and the store they're in (`store`)."""
-
-    store: uuid.UUID | None = None
-
-
 @pytest.fixture
-def queued(monkeypatch) -> Queued:
-    """The workflow runs started, instead of sending them to the worker."""
-    ids = Queued()
-
-    def delay(data_store_id: str, run_id: int) -> None:
-        ids.store = uuid.UUID(data_store_id)
-        ids.append(run_id)
-
-    monkeypatch.setattr(run_workflow_task, "delay", delay)
-    return ids
+def queued(monkeypatch) -> QueuedRuns:
+    """The workflow runs started, for the test to run (`drain_run`)."""
+    return capture_runs(monkeypatch, None)
 
 
 def make_runnable_workflow(api, name: str = "Flow") -> dict:
@@ -242,7 +234,7 @@ def test_firing_a_workflow_schedule_starts_a_run_with_its_input(api, db, queued,
     assert fired.last_error is None and fired.last_run_id is None
     run = in_store.get(WorkflowRun, fired.last_workflow_run_id)
     # Started as `POST /api/workflows/{id}/runs` starts one: on the current version, queued
-    # for the worker.
+    # for the run service.
     assert run.workflow_id == workflow["id"]
     assert run.workflow_version_id == workflow["current_version"]["id"]
     assert run.input == "Today's tickets"
@@ -250,11 +242,11 @@ def test_firing_a_workflow_schedule_starts_a_run_with_its_input(api, db, queued,
     assert queued == [run.id]
     assert fired.next_run_at == next_run("0 9 * * *", "Europe/London", now)
 
-    # The worker runs it; the schedule shows how the run is going, and then how it went.
+    # The run service runs it; the schedule shows how the run is going, and then how it went.
     shown = api.get(f"/api/triggers/{t['id']}").json()
     assert (shown["last_status"], shown["last_workflow_run_id"]) == ("running", run.id)
     with use_model(echo()):
-        asyncio.run(execute_run(in_store.store_id, run.id))
+        drain_run(in_store.store_id, run.id)
     shown = api.get(f"/api/triggers/{t['id']}").json()
     assert (shown["last_status"], shown["last_error"]) == ("succeeded", None)
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{run.id}").json()
@@ -268,7 +260,7 @@ def test_a_failed_workflow_run_shows_on_its_schedule(api, db, queued):
     make_due(db, t["id"], now - timedelta(seconds=1))
     tick(now)
     with use_model(echo(fail={"echo"})):
-        asyncio.run(execute_run(queued.store, queued[-1]))
+        drain_run(queued.store, queued[-1])
     shown = api.get(f"/api/triggers/{t['id']}").json()
     assert shown["last_status"] == "failed"
     assert "echo broke" in shown["last_error"]
@@ -316,10 +308,10 @@ def test_a_workflow_that_cant_run_fails_without_a_run(api, db, queued, in_store)
 
 
 def test_a_workflow_run_that_cant_be_queued_fails_without_a_run(api, db, monkeypatch, in_store):
-    def broker_down(data_store_id, run_id):
-        raise ConnectionError("redis is down")
+    def queue_down(work):
+        raise ConnectionError("the platform database is down")
 
-    monkeypatch.setattr(run_workflow_task, "delay", broker_down)
+    monkeypatch.setattr(workflows_api, "enqueue_run", queue_down)
     workflow = make_runnable_workflow(api)
     t = make_trigger(api, schedule("workflow", workflow["id"]))
     now = datetime.now(UTC)
@@ -340,7 +332,7 @@ def test_a_later_firing_that_fails_isnt_shown_as_the_earlier_run(api, db, queued
     make_due(db, t["id"], now - timedelta(seconds=1))
     tick(now)
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, queued[-1]))
+        drain_run(queued.store, queued[-1])
     assert api.get(f"/api/triggers/{t['id']}").json()["last_status"] == "succeeded"
 
     # Its current version now can't run.

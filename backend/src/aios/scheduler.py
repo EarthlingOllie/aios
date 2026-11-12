@@ -25,10 +25,11 @@ trigger (`aios.run_service.work`).
   the schedule has fired again since.
 - Firing a workflow's schedule starts a run of the workflow's current version, with the
   trigger's `input` as the run's input, exactly as `POST /api/workflows/{id}/runs` does
-  (`aios.api.workflows.new_workflow_run`), and queues it for the worker. The trigger records the
-  run (`last_workflow_run_id`) and, once it's queued, that it fired; from then on it shows how the
-  run is going (`aios.api.triggers.last_outcome`). One that can't start (no nodes, an agent
-  that can't run, the queue down) records that it failed, without a run.
+  (`aios.api.workflows.new_workflow_run`), and enqueues its first advance on the run service.
+  The trigger records the run (`last_workflow_run_id`) and, once it's queued, that it fired;
+  from then on it shows how the run is going (`aios.api.triggers.last_outcome`). One that can't
+  start (no nodes, an agent that can't run, the queue down) records that it failed, without a
+  run.
 - A schedule's run is started by no member (its `created_by` is null): it executes for its
   agent's or workflow's organisation, over the organisation's store, so it goes on working
   whoever made the schedule or its target, and whether or not they're still a member.
@@ -279,8 +280,9 @@ def _start_agent_run(store: Session, trigger: Trigger, fired_at: datetime) -> _S
     return _Started(organisation_id, invocation_id)
 
 
-def _start_workflow_run(store: Session, trigger: Trigger, fired_at: datetime) -> None:
-    """Start a run for a workflow's schedule, and queue it for the worker (`aios.workflows`).
+def _start_workflow_run(store: Session, trigger: Trigger, fired_at: datetime) -> queue.Work:
+    """Start a run for a workflow's schedule, and enqueue its first advance (`aios.workflows`);
+    the item, to wake the run service for.
 
     Raises `HTTPException` as starting one by hand would, if it can't start or be queued."""
     organisation_id = _organisation(store_id_of(store))
@@ -294,14 +296,14 @@ def _start_workflow_run(store: Session, trigger: Trigger, fired_at: datetime) ->
     trigger.last_workflow_run_id = run.id
     # Commits the run and the trigger's link to it, and queues it; if queueing fails, the run
     # is deleted, and the link with it.
-    workflows_api.queue_workflow_run(store, run)
+    return workflows_api.queue_workflow_run(store, run, organisation_id)
 
 
 def _start(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime) -> queue.Work | None:
-    """Start the claimed schedule's run: the agent's turn to enqueue, or None for a workflow
-    (queued for the worker, so the trigger shows how the run goes from here) or a trigger that's
-    gone or fired again. Raises `CantStart` to record why it couldn't, or `HTTPException` as
-    starting a run by hand would."""
+    """Start the claimed schedule's run: the agent's turn to enqueue, or None for a workflow (its
+    first advance enqueued, so the trigger shows how the run goes from here) or a trigger that's
+    gone or fired again. Raises `CantStart` to record why it couldn't, or
+    `HTTPException` as starting a run by hand would."""
     with store_session(data_store_id) as store:
         try:
             trigger = _claimed(store, trigger_id, fired_at)
@@ -310,8 +312,9 @@ def _start(data_store_id: uuid.UUID, trigger_id: int, fired_at: datetime) -> que
         message = trigger.input
         try:
             if trigger.target_kind == TriggerTargetKind.workflow:
-                _start_workflow_run(store, trigger, fired_at)
+                advance = _start_workflow_run(store, trigger, fired_at)
                 _record(data_store_id, trigger_id, fired_at, None)
+                queue.wake(advance.lane)
                 return None
             started = _start_agent_run(store, trigger, fired_at)
         except _Gone as exc:

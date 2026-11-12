@@ -195,14 +195,15 @@ class Settings(BaseSettings):
     export_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
     # Per-attempt budget for converting and chunking one document (Celery soft time limit).
     ingest_time_limit: int = 30 * 60
-    # Budget for a whole workflow run, every node at every depth (`aios.workflows.execute_run`).
+    # Budget for a whole workflow run, every node at every depth, counting active time only:
+    # time waiting on a decision doesn't count (`aios.workflows.advance`).
     workflow_run_time_limit: int = 2 * 60 * 60
-    # A run fails once its worker's event loop has made no progress for this long: something
-    # (a blocking call, CPU-bound work, a deadlock) has held the loop, so none of the run's nodes
-    # can move. A node awaiting a slow model or tool call leaves the loop free, so it isn't
-    # affected. Well over a dead worker's lease (`aios.workflows.STALE_AFTER`, 90s), so a node
-    # can hold the loop for a minute or two and still finish (`aios.workflows._Heartbeat`).
-    workflow_run_no_progress_limit: int = 5 * 60
+    # The run service's watchdog: a process whose event loop has made no progress for this long
+    # (a blocking call, CPU-bound work or a deadlock has held it, so none of its items can move)
+    # exits, and its items' leases lapse, so they're claimed elsewhere. An item awaiting a slow
+    # model or tool call leaves the loop free, so it isn't affected. Well over a lease
+    # (`queue_lease_seconds`), so an item can hold the loop for a minute or two and carry on.
+    workflow_run_no_progress_limit: float = 5 * 60
 
     # Hybrid search.
     search_candidates: int = 40

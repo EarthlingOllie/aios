@@ -593,8 +593,8 @@ class SandboxSession(StoreBase):
 
 
 class WorkflowRun(StoreBase):
-    """One run of a workflow, on the version that was current when it started
-    (`aios.workflows.execute_run`)."""
+    """One run of a workflow, on the version that was current when it started, advanced node by
+    node on the run service (`aios.workflows.advance`)."""
 
     __tablename__ = "workflow_runs"
 
@@ -619,8 +619,8 @@ class WorkflowRun(StoreBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Refreshed by the worker while it runs the run, so a run whose worker died can be told from
-    # one still going (`aios.workflows.alive`).
+    # No longer written: runs on the run service hold no process, so beat no heartbeat. Dropped
+    # with the other heartbeat columns.
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # While it's waiting, since when; and how long it has waited in all before that. Waiting
     # doesn't count towards the run's time limit.

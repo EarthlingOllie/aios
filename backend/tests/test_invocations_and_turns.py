@@ -4,11 +4,11 @@ went, when, and what it cost. A run's status and counters are its turns'.
 
 Through the API, as a signed-in member, with the scripted model."""
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
 import test_workflow_runs as workflow_runs
+from conftest import drain_run
 from sqlalchemy import func, select
 from test_agent_run_counters import searching_agent
 from test_agents import agent_body, chat_body, make_agent
@@ -23,7 +23,6 @@ from test_workflows import agent_node, make_workflow, workflow_node
 
 from aios.datastores.models import Invocation
 from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
-from aios.workflows import execute_run
 
 
 def run_invocations(in_store, run_id: int) -> list[Invocation]:
@@ -121,7 +120,7 @@ def test_a_workflow_schedules_run_has_a_schedule_invocation(api, db, queued, in_
 
     (run,) = api.get(f"/api/workflows/{workflow['id']}/runs").json()
     with use_model(workflow_runs.echo()):
-        asyncio.run(execute_run(queued.store, run["id"]))
+        drain_run(queued.store, run["id"])
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{run['id']}").json()
     invocation = out["invocation"]
     assert (invocation["cause"], invocation["trigger_id"]) == ("schedule", t["id"])

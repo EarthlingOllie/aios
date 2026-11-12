@@ -42,7 +42,6 @@ from aios.models import (
     User,
 )
 from aios.testing.fake_model import replies, use_model
-from aios.workflows import execute_run
 
 
 @pytest.fixture

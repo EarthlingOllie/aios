@@ -348,3 +348,60 @@ def test_a_schedules_turn_whose_attempts_run_out_fails_its_firing(api, db, in_st
         select(Invocation).where(Invocation.trigger_id == t["id"])
     ).all()
     assert (invocation.status, invocation.error) == ("failed", STOPPED)
+
+
+def test_an_item_enqueued_again_while_it_runs_runs_once_more(db, user, recorder):
+    """For work that must see what changed since it began (a workflow advance, after a node
+    finishes): enqueued again while it runs, it runs again once it's done, rather than being
+    dropped; enqueued again while it waits, it's still queued once."""
+    org = org_and_store(db, user)
+    again = queue.Work(
+        *org,
+        WorkLane.background,
+        WorkKind.agent_turn,
+        {"tag": "advance"},
+        dedup_key=f"advance:{uuid.uuid4()}",
+        again_if_running=True,
+    )
+    enqueue([again, again])
+    assert queued_with(again.dedup_key) == 1
+    recorder.blocking = True
+    draining = threading.Thread(target=lambda: asyncio.run(executor.drain_once()))
+    draining.start()
+    for _ in range(500):
+        if recorder.started.get("advance"):
+            break
+        time.sleep(0.01)
+    # While it runs, twice: it runs once more, not twice more.
+    enqueue([again, again])
+    recorder.release.set()
+    draining.join(10)
+    assert len(recorder.started["advance"]) == 2
+    assert queued_with(again.dedup_key) == 0
+
+
+def queued_with(key: str) -> int:
+    with SessionLocal() as s:
+        return s.scalar(select(func.count()).where(WorkItem.dedup_key == key))
+
+
+def test_the_watchdog_exits_a_process_whose_event_loop_is_stuck():
+    """An item holding the event loop (a blocking call) holds every other item in the process:
+    past the limit, the process exits, and its items' leases lapse so they're claimed
+    elsewhere. Awaiting a slow call doesn't count."""
+    exited = threading.Event()
+
+    async def go(stuck: bool) -> None:
+        watchdog = executor.Watchdog(0.3, interval=0.05, exit=exited.set)
+        try:
+            if stuck:
+                time.sleep(1.0)  # holds the loop
+            else:
+                await asyncio.sleep(1.0)
+        finally:
+            watchdog.stop()
+
+    asyncio.run(go(stuck=False))
+    assert not exited.is_set()
+    asyncio.run(go(stuck=True))
+    assert exited.is_set()

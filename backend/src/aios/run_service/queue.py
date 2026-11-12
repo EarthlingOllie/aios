@@ -16,7 +16,8 @@
   makes the item claimable again; one claimed more than `queue_max_attempts` times is given up
   on (`Claimed.exhausted`), and the work fails its invocation.
 - **Done** items are deleted (`complete`), with whatever they enqueue next in the same
-  transaction. An item handed back (`release`) is ready again at once or after a delay, counting
+  transaction; one enqueued again while it ran (`Work.again_if_running`) runs once more
+  instead. An item handed back (`release`) is ready again at once or after a delay, counting
   the attempt or not.
 """
 
@@ -53,6 +54,10 @@ class Work:
     payload: dict[str, Any]
     dedup_key: str | None = None
     delay_seconds: float = 0
+    # Enqueued while an item with its key is running, that item runs once more when it's done
+    # (`complete`), rather than this being dropped: for work that must see what changed since
+    # it began, such as a workflow advance after a node finishes.
+    again_if_running: bool = False
 
 
 def enqueue(db: Session, works: list[Work]) -> None:
@@ -62,19 +67,24 @@ def enqueue(db: Session, works: list[Work]) -> None:
         ready_at = func.now()
         if work.delay_seconds:
             ready_at = func.now() + timedelta(seconds=work.delay_seconds)
-        db.execute(
-            insert(WorkItem)
-            .values(
-                organisation_id=work.organisation_id,
-                data_store_id=work.data_store_id,
-                lane=work.lane,
-                kind=work.kind,
-                payload=work.payload,
-                dedup_key=work.dedup_key,
-                ready_at=ready_at,
-            )
-            .on_conflict_do_nothing(index_elements=[WorkItem.dedup_key])
+        statement = insert(WorkItem).values(
+            organisation_id=work.organisation_id,
+            data_store_id=work.data_store_id,
+            lane=work.lane,
+            kind=work.kind,
+            payload=work.payload,
+            dedup_key=work.dedup_key,
+            ready_at=ready_at,
         )
+        if work.again_if_running:
+            statement = statement.on_conflict_do_update(
+                index_elements=[WorkItem.dedup_key],
+                set_={"again": True},
+                where=WorkItem.lease_token.is_not(None),
+            )
+        else:
+            statement = statement.on_conflict_do_nothing(index_elements=[WorkItem.dedup_key])
+        db.execute(statement)
 
 
 def wake(*lanes: WorkLane) -> None:
@@ -228,8 +238,20 @@ def extend(db: Session, items: list[Claimed]) -> set[int]:
 
 def complete(db: Session, item: Claimed, then: list[Work] | None = None) -> None:
     """The item is done: delete it (if still this process's), and enqueue what follows it, in
-    one transaction. Commits."""
-    db.execute(delete(WorkItem).where(_held(item)))
+    one transaction. Commits. One enqueued again while it ran (`Work.again_if_running`) is
+    instead ready to run again at once, with its attempts starting over."""
+    db.execute(delete(WorkItem).where(_held(item), WorkItem.again.is_(False)))
+    db.execute(
+        update(WorkItem)
+        .where(_held(item))
+        .values(
+            again=False,
+            lease_token=None,
+            leased_until=None,
+            ready_at=func.now(),
+            attempts=0,
+        )
+    )
     enqueue(db, then or [])
     db.commit()
 

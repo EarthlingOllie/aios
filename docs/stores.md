@@ -248,8 +248,8 @@ or errors. Both roles read them through the store's default privileges; neither 
 through them (`upgrade_store` revokes it each migration).
 
 - **Named by store and id.** Ids repeat across stores, so everything outside the store that
-  names a row of it carries the store too: worker task arguments (`run_workflow_task`,
-  `resume_agent_run_task`, `apply_schema_change_task`), the turn lease's Redis channels, a
+  names a row of it carries the store too: worker task arguments (`apply_schema_change_task`),
+  the run service's work items, the turn lease's Redis channels, a
   sandbox's session key, the firing of a schedule or an invocation, the schedule due index and
   notifications (a request's id and its store's). Trace sessions are
   `agent-run-<organisation>-<id>`, and a chat's handoffs `chat-<organisation>-<id>`.

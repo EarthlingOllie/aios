@@ -10,6 +10,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import drain_run
 from test_agents import chat_body
 from test_chat_agent_invocations import say
 from test_chats import add, make_chat, messages, signed_in_as
@@ -21,7 +22,6 @@ from test_workflows import agent_node, make_agent, make_workflow, workflow_node
 
 from aios.models import TriggerStatus
 from aios.testing.fake_model import model, replies, use_handoff, use_model
-from aios.workflows import execute_run
 
 
 def archive(api, agent: dict) -> dict:
@@ -181,7 +181,7 @@ def test_a_workflow_run_past_its_start_still_runs_the_agents_node(api, queued): 
 
     archive(api, agent)
     with use_model(echo()):
-        asyncio.run(execute_run(queued.store, started["id"]))
+        drain_run(queued.store, started["id"])
 
     out = api.get(f"/api/workflows/{workflow['id']}/runs/{started['id']}").json()
     assert (out["status"], out["output"]) == ("succeeded", "build(it)")

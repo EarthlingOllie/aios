@@ -1,8 +1,6 @@
-import asyncio
 import uuid
 
 from celery import Celery
-from celery.exceptions import SoftTimeLimitExceeded
 from celery.schedules import crontab
 
 from aios.config import get_settings
@@ -16,8 +14,8 @@ from aios.datastores import (
 
 settings = get_settings()
 
-# Fire-and-forget tasks: no result backend; progress lives on the documents (in data stores) and
-# workflow_runs tables.
+# Fire-and-forget tasks: no result backend; progress lives on the documents (in data stores).
+# Agents' turns and workflow runs are the run service's (`aios.run_service`), not Celery's.
 celery_app = Celery("aios", broker=settings.redis_url)
 celery_app.conf.update(
     task_acks_late=True,
@@ -26,19 +24,14 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     # Soft limit raises inside the task (so ingest marks the row failed); the hard limit kills
-    # a stuck child shortly after. These are ingest's; workflow runs set their own. Redis
+    # a stuck child shortly after. These are ingest's. Redis
     # redelivers unacked messages after visibility_timeout, so it must exceed the longest a
     # message can be held: up to one hard limit waiting behind the running task (prefetch) plus
     # its own run. Otherwise a slow doc is ingested twice at once.
     task_soft_time_limit=settings.ingest_time_limit,
     task_time_limit=settings.ingest_time_limit + 60,
     broker_transport_options={"visibility_timeout": 2 * (settings.ingest_time_limit + 60) + 600},
-    # Runs take hours, so they get their own queue and worker (`-Q workflows`): an ingest never
-    # waits behind one. The timeout above is broker-wide and shorter than a run, which is fine:
-    # a redelivered run doesn't start again, and is only failed if its heartbeat has stopped
-    # (see `aios.workflows._claim`).
     task_routes={
-        "aios.run_workflow": {"queue": "workflows"},
         # Only the provisioning worker has the provisioner's credentials (`aios.datastores`).
         "aios.provision_data_store": {"queue": "provisioning"},
         "aios.retry_unfinished_data_stores": {"queue": "provisioning"},
@@ -58,8 +51,6 @@ celery_app.conf.update(
         "aios.expire_schema_change_requests": {"queue": "provisioning"},
         # Nightly, by the same beat; it deletes in small batches, so it's never in the way.
         "aios.prune_retention": {"queue": "provisioning"},
-        # An agent's turn, as a workflow's agent nodes are: the workflow worker runs agents.
-        "aios.resume_agent_run": {"queue": "workflows"},
     },
 )
 
@@ -388,38 +379,13 @@ def embed_pending_search_task() -> None:
         embed_search_items_task.apply_async(args=[str(store_id)], expires=every)
 
 
-@celery_app.task(
-    name="aios.run_workflow",
-    # A run times itself (`execute_run`); these are backstops, should its event loop be stuck.
-    # The run itself is failed long before (`workflow_run_no_progress_limit`); these free the
-    # worker process if its loop never comes back.
-    soft_time_limit=settings.workflow_run_time_limit + 60,
-    time_limit=settings.workflow_run_time_limit + 120,
-)
-def run_workflow_task(data_store_id: str, run_id: int) -> None:
-    """Run (or carry on) the store's workflow run `run_id`: ids are each store's own."""
-    from aios import tracing
-    from aios.workflows import execute_run, fail_run, time_limit_error
-
-    store_id = uuid.UUID(data_store_id)
-    try:
-        # Only a queued or waiting run starts, so a redelivered message doesn't run it twice;
-        # one left running by a worker that died (its heartbeat stopped) is failed instead.
-        asyncio.run(execute_run(store_id, run_id))
-    except SoftTimeLimitExceeded:
-        fail_run(store_id, run_id, time_limit_error())
-    finally:
-        # A worker has no app shutdown to flush traces on (see `aios.main`).
-        tracing.flush()
-
-
 # Applying a schema change takes seconds, but waits on locks (each up to its lock timeout).
 APPLY_TIME_LIMIT = 5 * 60
 
 
-# Applying a request, or resuming the run that made it, is tried this many times more if it
-# fails (the database or broker unreachable, say), further apart each time: both can be run
-# again safely.
+# Applying a request (then enqueueing the resume of the run that made it) is tried this many
+# times more if it fails (the database unreachable, say), further apart each time: both can be
+# run again safely.
 DECISION_RETRIES = 5
 
 
@@ -492,42 +458,9 @@ def expire_schema_change_requests_task() -> None:
 
 
 def enqueue_resume(data_store_id: uuid.UUID, request_id: uuid.UUID) -> None:
-    """Queue resuming the run that made a request of the store, if it's decided and the run (if
-    a run made it) hasn't been given the outcome yet.
+    """Enqueue on the run service carrying on the run that made a request of the store, if it's
+    decided and the run hasn't been given the outcome yet (`aios.run_service.work`): a workflow
+    run's advance, which resumes its waiting node, or an agent run's resume turn."""
+    from aios.run_service import work
 
-    An agent node's run is resumed through its workflow run, which carries on from where it
-    waited (`aios.workflows`): queued again, it's claimed if it's waiting."""
-    from aios.datastores import store_session
-    from aios.datastores.models import SchemaChangeRequest
-    from aios.workflows import workflow_run_waiting_on
-
-    with store_session(data_store_id, "ro") as store:
-        request = store.get(SchemaChangeRequest, request_id)
-        if request is None or not request.status.decided or request.resumed_at is not None:
-            return
-        run_id = request.requested_by_run
-        workflow_run_id = workflow_run_waiting_on(store, request)
-    if workflow_run_id is not None:
-        run_workflow_task.delay(str(data_store_id), workflow_run_id)
-    elif run_id is not None:
-        resume_agent_run_task.delay(str(data_store_id), run_id)
-
-
-@celery_app.task(
-    name="aios.resume_agent_run",
-    soft_time_limit=settings.workflow_run_time_limit + 60,
-    time_limit=settings.workflow_run_time_limit + 120,
-    autoretry_for=(Exception,),
-    max_retries=DECISION_RETRIES,
-    retry_backoff=True,
-)
-def resume_agent_run_task(data_store_id: str, run_id: int) -> None:
-    """Resume the store's agent run waiting on schema change requests, with the outcomes of
-    those that are decided (`aios.api.agents.resume_run`)."""
-    from aios import tracing
-    from aios.api.agents import resume_run
-
-    try:
-        asyncio.run(resume_run(uuid.UUID(data_store_id), run_id))
-    finally:
-        tracing.flush()
+    work.enqueue_resume(data_store_id, request_id)

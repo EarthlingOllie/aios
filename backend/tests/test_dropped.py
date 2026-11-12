@@ -5,7 +5,7 @@ tools' access to it, while its data stays; the owner can restore it until it's p
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import StoreRows, store_of
+from conftest import StoreRows, capture_resumes, store_of
 from sqlalchemy import update
 from test_agents import agent_body, make_agent
 from test_data_tools import as_owner, provisioned, run_tools
@@ -299,8 +299,9 @@ def test_an_agent_asks_from_its_chat_to_drop_a_table_and_is_told_it_can_be_resto
     api, store, monkeypatch
 ):
     tasks: list = []
-    for task in (worker.apply_schema_change_task, worker.resume_agent_run_task):
-        monkeypatch.setattr(task, "delay", lambda *args, task=task: tasks.append((task, args)))
+    task = worker.apply_schema_change_task
+    monkeypatch.setattr(task, "delay", lambda *args: tasks.append((task, args)))
+    capture_resumes(monkeypatch, tasks)
     agent = make_agent(api, "Tidier")
     agent = api.put(
         f"/api/agents/{agent['id']}", json=agent_body(agent, tools=REQUEST_TOOLS)

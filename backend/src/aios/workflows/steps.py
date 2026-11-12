@@ -1,17 +1,17 @@
-"""Running a run's graph, node by node: each node's step, recorded as it starts, finishes, waits
-and resumes, and an agent node's turn."""
+"""A run's steps, recorded as they start, finish and wait, and an agent node's turn: what the
+run service's workflow node item runs (`aios.workflows.advance`)."""
 
 import asyncio
 import logging
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from anyio import CancelScope
 from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from aios import checkpoints, invocations, tracing, usage
 
@@ -19,30 +19,22 @@ from aios import checkpoints, invocations, tracing, usage
 from aios import workflows as package
 from aios.agent import ChatDeps
 from aios.datastores import store_session
-from aios.datastores.models import AgentRun, WorkflowRun, WorkflowRunStep
+from aios.datastores.models import AgentRun, Turn, WorkflowRunStep
 from aios.models import (
+    AgentRunStatus,
     InvocationStatus,
     TriggerTargetKind,
-    WorkflowRunStatus,
     WorkflowStepStatus,
 )
 from aios.runner import build_agent, run_title
 from aios.ui_stream import error_text
-from aios.workflows.validation import AgentNode, Graph, Node, RunError
+from aios.workflows.validation import AgentNode, Node, RunError
 
 log = logging.getLogger(__package__)
 
 
 def join_outputs(outputs: Sequence[str]) -> str:
     return "\n\n".join(outputs)
-
-
-class StepFailed(Exception):
-    """A node failed, and its step (if it got one) has been recorded as failed with `error`."""
-
-    def __init__(self, error: str) -> None:
-        super().__init__(error)
-        self.error = error
 
 
 @dataclass
@@ -60,23 +52,6 @@ class RunState:
     workflow_version: int
     # The data store its agents' tools use: the organisation's.
     data_store_id: uuid.UUID
-    # The steps it recorded before it last paused, by path: a run resuming carries on from
-    # them (see `_run_node`). Empty for a run starting.
-    recorded: dict[tuple[str, ...], "RecordedStep"] = field(default_factory=dict)
-    # The first node to fail, and why. Once set, no more nodes start.
-    error: str | None = None
-    failed_path: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class RecordedStep:
-    """A step a run recorded before it paused: succeeded, or waiting."""
-
-    id: int
-    status: WorkflowStepStatus
-    input: str
-    output: str | None
-    agent_run_id: int | None
 
 
 class NodeWaiting(Exception):
@@ -90,77 +65,53 @@ class NodeWaiting(Exception):
 
 
 def _start_step(
-    data_store_id: uuid.UUID,
+    store: Session,
     run_id: int,
     created_by: int | None,
     path: tuple[str, ...],
     node: Node,
     text: str,
-) -> tuple[int, int | None]:
-    """Record that a node of the store's run has started; return its step's id and, for an
-    agent node, the agent run it's given (in the same store), started by whoever started the
-    workflow run (`created_by`), with its invocation, a child of the workflow run's. Its agent
-    may have been archived since the run started: a run already going still runs it.
-
-    The step and its agent run are committed together. Inserting the step share-locks the run's
-    row, which deleting the run locks first, so a delete either waits and then sees this step's
-    agent run, or wins and this fails (a `RunError`), leaving no agent run behind. Nor does a
-    node start once the run has ended without it: the run's row is share-locked, so an end being
-    committed is waited for and then seen.
-    """
-    with store_session(data_store_id) as db:
-        live = node.agent is not None
-        # Nor once the run has ended without it (`_end_runs`: e.g. failed as stopped while its
-        # worker went on), whose steps, and their exported copy, are final. Share-locked, so
-        # ending it waits for this, or this for that.
-        status = db.scalar(
-            select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
+) -> WorkflowRunStep:
+    """Record, in `store`'s transaction (an advance's, which holds the run's row lock), that a
+    node of the store's running run has started; return its step. An agent node is given an
+    agent run (in the same store), started by whoever started the workflow run (`created_by`),
+    with its invocation, a child of the workflow run's. Its agent may have been archived since
+    the run started: a run already going still runs it."""
+    agent_run_id = None
+    if node.agent is not None:
+        agent_run = AgentRun(
+            agent_id=node.agent.agent_id,
+            agent_version_id=node.agent.agent_version_id,
+            # Titled after its message, like a run after its first turn.
+            title=run_title(text),
+            created_by=created_by,
         )
-        if status is None:
-            raise RunError("The run has been deleted")
-        if status != WorkflowRunStatus.running:
-            raise RunError("The run has ended")
-        agent_run_id = None
-        if live:
-            agent_run = AgentRun(
-                agent_id=node.agent.agent_id,
-                agent_version_id=node.agent.agent_version_id,
-                # Titled after its message, like a run after its first turn.
-                title=run_title(text),
-                created_by=created_by,
-            )
-            db.add(agent_run)
-            db.flush()
-            agent_run_id = agent_run.id
-            # Its invocation: a child of the workflow run's, at any depth of subworkflow (they're
-            # part of the same run).
-            parent = invocations.of_workflow_run(db, run_id)
-            invocation = invocations.for_run(
-                db,
-                TriggerTargetKind.agent,
-                node.agent.agent_id,
-                requested_by=created_by,
-                parent=parent,
-                status=InvocationStatus.running,
-            )
-            invocation.agent_run_id = agent_run_id
-        step = WorkflowRunStep(
-            run_id=run_id,
-            path=list(path),
-            kind=node.kind,
-            status=WorkflowStepStatus.running,
-            input=text,
-            agent_run_id=agent_run_id,
+        store.add(agent_run)
+        store.flush()
+        agent_run_id = agent_run.id
+        # Its invocation: a child of the workflow run's, at any depth of subworkflow (they're
+        # part of the same run).
+        parent = invocations.of_workflow_run(store, run_id)
+        invocation = invocations.for_run(
+            store,
+            TriggerTargetKind.agent,
+            node.agent.agent_id,
+            requested_by=created_by,
+            parent=parent,
+            status=InvocationStatus.running,
         )
-        db.add(step)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            if db.get(WorkflowRun, run_id) is None:
-                raise RunError("The run has been deleted") from None
-            raise
-        return step.id, agent_run_id
+        invocation.agent_run_id = agent_run_id
+    step = WorkflowRunStep(
+        run_id=run_id,
+        path=list(path),
+        kind=node.kind,
+        status=WorkflowStepStatus.running,
+        input=text,
+        agent_run_id=agent_run_id,
+    )
+    store.add(step)
+    store.flush()
+    return step
 
 
 def _finish_step(
@@ -192,19 +143,6 @@ def _wait_step(data_store_id: uuid.UUID, step_id: int, request_id: uuid.UUID | N
                 WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
             )
             .values(status=WorkflowStepStatus.waiting, waiting_on_request_id=request_id)
-        )
-        db.commit()
-
-
-def _resume_step(data_store_id: uuid.UUID, step_id: int) -> None:
-    """Record that a waiting step is running again."""
-    with store_session(data_store_id) as db:
-        db.execute(
-            update(WorkflowRunStep)
-            .where(
-                WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.waiting
-            )
-            .values(status=WorkflowStepStatus.running, waiting_on_request_id=None)
         )
         db.commit()
 
@@ -247,9 +185,14 @@ async def _run_agent(
     (`request_schema_change`). `resuming`, the turn carries on from where it waited instead, on
     the same thread: each waiting tool call whose request is decided gets its outcome, as a chat
     resumes (`aios.api.agents.resume_run`), and the agent goes on from there.
+
+    Run again for the same node (its process stopped part way, and the run service retried it),
+    a turn an earlier attempt began carries on from the run's last checkpoint without the
+    message being given twice, and one that ended gives what it ended with.
     """
     # Imported here: the agents API imports this module.
     from aios.api.agents import (
+        Continue,
         Resume,
         _begin_turn,
         _mark_resumed,
@@ -257,6 +200,7 @@ async def _run_agent(
         _resume_command,
         _start_turn,
     )
+    from aios.api.agents.chat import _NOTHING, _continue_input
 
     config = {
         **checkpoints.thread_config(agent_run_id),
@@ -273,21 +217,47 @@ async def _run_agent(
             checkpointer=saver,
         )
         resume = Resume()
-        if resuming:
+        latest = await asyncio.to_thread(_latest_turn, store_id, agent_run_id)
+        turn_id = None
+        if latest is not None and latest.status == AgentRunStatus.running:
+            # Begun by an earlier attempt that stopped part way: carried on.
+            turn_id = latest.id
+            graph_input = await _continue_input(graph, config, Continue(HumanMessage(text)))
+            if graph_input is _NOTHING:
+                graph_input = _SKIP
+        elif resuming:
             # None if none of its requests has been decided: it goes on waiting.
             graph_input = await _resume_command(graph, config, store_id, agent_run_id, resume)
+            if graph_input is None:
+                graph_input = _SKIP
+        elif latest is not None:
+            # Ended in an earlier attempt, which stopped before recording how the node went.
+            if latest.error is not None:
+                raise RunError(latest.error)
+            graph_input = _SKIP
         else:
             graph_input = {"messages": [HumanMessage(text)]}
-        if graph_input is None and resume.dealt_with:
+        if graph_input is _SKIP and turn_id is not None:
+            # Begun, but the graph had already got to its end: the turn ends here.
+            await _record_turn(
+                graph, config, store_id, agent_run_id, turn_id=turn_id, error=None, partial=None
+            )
+        if graph_input is _SKIP and resume.dealt_with:
             # Decided, but no call waits on them any more (given just before a worker died,
             # say): they count as given, rather than having the run queued again for them.
             await asyncio.to_thread(_mark_resumed, store_id, agent_run_id, resume.dealt_with)
-        if graph_input is not None:
-            if resuming:
+        if graph_input is not _SKIP:
+            if turn_id is not None:
+                pass  # carrying on the turn an earlier attempt began
+            elif resuming:
                 turn_id = await asyncio.to_thread(_begin_turn, store_id, agent_run_id)
             else:
                 turn_id = await asyncio.to_thread(_start_turn, store_id, agent_run_id, text)
             error: str | None = "The turn was stopped."
+            # Cancelled with its run service item (its process stopping, or its run's time
+            # running out): the turn stays running, for a later attempt to carry on, or for
+            # whoever ended the run to fail.
+            cancelled = False
             # Charged to the turn, and capped by its caps and its workflow run's
             # (`aios.usage`).
             charge = None
@@ -309,6 +279,9 @@ async def _run_agent(
                         durability="sync",
                     )
                 error = None
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
             except Exception as exc:
                 error = error_text(exc)
                 raise
@@ -321,20 +294,43 @@ async def _run_agent(
                         )
                     # The message count for listings, and, if the turn failed, a thread the user
                     # can carry on from on the run's page (see `_keep_unfinished_turn`).
-                    await _record_turn(
-                        graph,
-                        config,
-                        store_id,
-                        agent_run_id,
-                        turn_id=turn_id,
-                        error=error,
-                        partial=None,
-                    )
+                    if not cancelled:
+                        await _record_turn(
+                            graph,
+                            config,
+                            store_id,
+                            agent_run_id,
+                            turn_id=turn_id,
+                            error=error,
+                            partial=None,
+                        )
         state = await graph.aget_state(config)
     request_id = _waits_on(state)
     if request_id is not None:
         raise NodeWaiting(request_id)
     return state.values["messages"][-1].text
+
+
+# Nothing (left) for a turn to run.
+_SKIP = object()
+
+
+@dataclass(frozen=True)
+class _Turn:
+    id: int
+    status: AgentRunStatus
+    error: str | None
+
+
+def _latest_turn(data_store_id: uuid.UUID, agent_run_id: int) -> _Turn | None:
+    with store_session(data_store_id, "ro") as store:
+        row = store.execute(
+            select(Turn.id, Turn.status, Turn.error)
+            .where(Turn.agent_run_id == agent_run_id)
+            .order_by(Turn.id.desc())
+            .limit(1)
+        ).one_or_none()
+    return None if row is None else _Turn(*row)
 
 
 def _waits_on(state) -> uuid.UUID | None:
@@ -346,122 +342,3 @@ def _waits_on(state) -> uuid.UUID | None:
         if isinstance(waiting.value, dict) and REQUEST_KEY in waiting.value:
             return uuid.UUID(waiting.value[REQUEST_KEY])
     return None
-
-
-async def _run_node(run: RunState, node: Node, path: tuple[str, ...], text: str) -> str:
-    """Run a node, recording its step; its output, `NodeWaiting` or `StepFailed`.
-
-    For a run resuming, a node whose step succeeded before it paused gives that step's output
-    again, and one whose step waited carries on: an agent node on its agent run's thread, a
-    workflow node through its own graph. Either fails if its pinned agent version can't run any
-    more (`Node.error`).
-    """
-    recorded = run.recorded.get(path)
-    if recorded is not None and recorded.status == WorkflowStepStatus.succeeded:
-        return recorded.output or ""
-    step_id = None
-    try:
-        if recorded is None:
-            step_id, agent_run_id = await asyncio.to_thread(
-                package._start_step, run.data_store_id, run.id, run.created_by, path, node, text
-            )
-        else:
-            step_id, agent_run_id, text = recorded.id, recorded.agent_run_id, recorded.input
-            await asyncio.to_thread(_resume_step, run.data_store_id, step_id)
-        if node.error is not None:
-            raise RunError(node.error)
-        if node.graph is not None:
-            output = await _run_graph(run, node.graph, path, text)
-        elif agent_run_id is None:
-            raise RunError(f"Agent {node.agent.agent_name} has been deleted")
-        else:
-            output = await _run_agent(
-                run, node.agent, agent_run_id, path, text, resuming=recorded is not None
-            )
-    except NodeWaiting as exc:
-        await asyncio.to_thread(_wait_step, run.data_store_id, step_id, exc.request_id)
-        raise NodeWaiting from None
-    except Exception as exc:
-        if isinstance(exc, StepFailed):
-            # A node of this subgraph failed; its step has the details.
-            error = exc.error
-        else:
-            if not isinstance(exc, RunError):
-                log.exception("workflow run %s: node %s failed", run.id, "/".join(path))
-            error = error_text(exc)
-            if run.error is None:
-                run.error, run.failed_path = error, path
-        # None if the step couldn't be recorded (e.g. the run has been deleted).
-        if step_id is not None:
-            await asyncio.to_thread(
-                package._finish_step,
-                run.data_store_id,
-                step_id,
-                WorkflowStepStatus.failed,
-                None,
-                error,
-            )
-        raise StepFailed(error) from exc
-    await asyncio.to_thread(
-        package._finish_step,
-        run.data_store_id,
-        step_id,
-        WorkflowStepStatus.succeeded,
-        output,
-        None,
-    )
-    return output
-
-
-async def _run_graph(run: RunState, graph: Graph, path: tuple[str, ...], text: str) -> str:
-    """Run a graph's nodes, each once its predecessors have succeeded; its sinks' outputs.
-
-    Raises the first of its nodes' failures, once the nodes already running have finished, or
-    `StepFailed` if a failure elsewhere in the run stopped some of them from starting. Without a
-    failure, raises `NodeWaiting` if any of its nodes waits, once nothing else of it can run:
-    nodes that don't depend on a waiting one still start.
-    """
-    outputs: dict[str, str] = {}
-    waiting = {key: len(sources) for key, sources in graph.sources.items()}
-    by_key = {node.key: node for node in graph.nodes}
-    running: dict[asyncio.Task[str], str] = {}
-    failures: list[BaseException] = []
-    paused = False
-
-    def start(node: Node) -> None:
-        sources = graph.sources[node.key]
-        given = join_outputs([outputs[s] for s in sources]) if sources else text
-        running[asyncio.create_task(_run_node(run, node, (*path, node.key), given))] = node.key
-
-    for node in graph.nodes:
-        if not waiting[node.key]:
-            start(node)
-    try:
-        while running:
-            done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                key = running.pop(task)
-                if isinstance(task.exception(), NodeWaiting):
-                    paused = True
-                    continue
-                if task.exception() is not None:
-                    failures.append(task.exception())
-                    continue
-                outputs[key] = task.result()
-                for target in graph.targets[key]:
-                    waiting[target] -= 1
-                    # Once any node of the run has failed, nothing more starts.
-                    if not waiting[target] and run.error is None:
-                        start(by_key[target])
-    finally:
-        # Only if this was cancelled itself: the nodes it started go with it.
-        for task in running:
-            task.cancel()
-    if failures:
-        raise failures[0]
-    if paused:
-        raise NodeWaiting
-    if len(outputs) < len(graph.nodes):
-        # A node elsewhere in the run failed, so some of these never started.
-        raise StepFailed("Stopped: another node failed")
-    return join_outputs([outputs[n.key] for n in graph.nodes if not graph.targets[n.key]])

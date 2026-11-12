@@ -1,20 +1,19 @@
 """Workflow runs that pause for a schema change request and resume once it's decided.
 
-An agent node that calls `request_schema_change` waits for the owner, without holding a worker:
-its step and then (once nothing else can run) the run become `waiting`, and its task returns.
-A decision queues the run again; the worker rebuilds its graph from the steps it recorded and
-gives the waiting node its outcome on its own thread.
+An agent node that calls `request_schema_change` waits for the owner, holding nothing: its step
+and then (once nothing else can run) the run become `waiting`. A decision enqueues an advance of
+the run on the run service, which rebuilds its state from the steps it recorded and resumes the
+waiting node on its own thread with the outcome.
 
-The queued tasks are run here by hand, in order, standing in for the workers."""
+The run service's queue is drained here by its drain-once entry point, and the provisioning
+worker's queued tasks run by hand, standing in for the services."""
 
 import asyncio
-import threading
-import uuid
 from datetime import timedelta
 
 import pytest
-from conftest import store_of
-from sqlalchemy import delete, func, update
+from conftest import enqueue_advance, store_of
+from sqlalchemy import delete, func, select, update
 from test_agents import agent_body
 from test_data_tools import provisioned
 from test_schema_change_requests import CONTACTS, TOOLS, data_tables
@@ -31,7 +30,9 @@ from aios import worker, workflows
 from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import Agent, AgentRun, SchemaChangeRequest, WorkflowRun
-from aios.models import DataStore, SchemaChangeStatus, WorkflowRunStatus
+from aios.db import SessionLocal
+from aios.models import DataStore, SchemaChangeStatus, WorkflowRunStatus, WorkItem
+from aios.run_service import executor
 from aios.testing.fake_model import (
     ToolCall,
     instructions,
@@ -41,7 +42,6 @@ from aios.testing.fake_model import (
     use_model,
 )
 from aios.tools import TOOLS as TOOL_LIBRARY
-from aios.workflows import execute_run
 
 
 @pytest.fixture
@@ -50,23 +50,32 @@ def store(db, user) -> DataStore:
 
 
 @pytest.fixture
-def queued(monkeypatch) -> list:
-    """The tasks queued, as (task, args), instead of sent to the broker."""
+def queued(monkeypatch, run_service) -> list:
+    """The provisioning worker's tasks queued, as (task, args), instead of sent to the broker;
+    and the run service's queue left for the test to drain (`run_queued`)."""
     tasks: list = []
-    for task in (
-        worker.apply_schema_change_task,
-        worker.resume_agent_run_task,
-        worker.run_workflow_task,
-    ):
-        monkeypatch.setattr(task, "delay", lambda *args, task=task: tasks.append((task, args)))
+    task = worker.apply_schema_change_task
+    monkeypatch.setattr(task, "delay", lambda *args: tasks.append((task, args)))
+    run_service.auto = False
     return tasks
 
 
 def run_queued(queued: list) -> None:
-    """Run the queued tasks (and those they queue) as the workers would."""
-    while queued:
-        task, args = queued.pop(0)
-        task.run(*args)
+    """Run the queued tasks, and drain the run service's queue (and what each queues), as the
+    services would."""
+    while True:
+        while queued:
+            task, args = queued.pop(0)
+            task.run(*args)
+        asyncio.run(executor.drain_once())
+        if not queued:
+            return
+
+
+def nothing_queued(queued: list) -> bool:
+    """No task queued, and nothing in the run service's queue: nothing is held."""
+    with SessionLocal() as db:
+        return not queued and db.scalar(select(func.count()).select_from(WorkItem)) == 0
 
 
 class Flow:
@@ -100,15 +109,13 @@ def builder(api, store) -> dict:
 
 
 def start(api, queued: list, workflow: dict, script, text: str = "go") -> dict:
-    """Start a run and run it as the worker would (on `script`, e.g. a `Flow`), up to where it
+    """Start a run and run it on the run service (on `script`, e.g. a `Flow`), up to where it
     ends or waits."""
     resp = api.post(f"/api/workflows/{workflow['id']}/runs", json={"input": text})
     assert resp.status_code == 201, resp.text
-    task, (store_id, run_id) = queued.pop()
-    assert task is worker.run_workflow_task
     with use_model(model(script)):
-        asyncio.run(execute_run(uuid.UUID(store_id), run_id))
-    return read(api, workflow, run_id)
+        run_queued(queued)
+    return read(api, workflow, resp.json()["id"])
 
 
 def read(api, workflow: dict, run_id: int) -> dict:
@@ -141,8 +148,8 @@ def test_a_requesting_node_waits_while_an_independent_branch_finishes(
     [request] = api.get("/api/schema-changes").json()
     assert request["status"] == "pending"
     assert build["waiting_on_request_ids"] == [request["id"]]
-    # Nothing is queued: the run holds no worker until it's decided.
-    assert queued == []
+    # Nothing is queued: the run holds nothing until it's decided.
+    assert nothing_queued(queued)
 
 
 def chain(api, builder: dict) -> dict:
@@ -192,6 +199,34 @@ def test_approving_resumes_the_waiting_node_and_the_run_completes(api, builder, 
     assert [m["type"] for m in conversation["messages"]] == ["human", "ai", "tool", "ai"]
 
 
+def test_a_decided_run_goes_from_waiting_to_running_and_holds_nothing_until_then(
+    api, builder, store, queued
+):
+    workflow = chain(api, builder)
+    flow = Flow()
+    waiting = start(api, queued, workflow, flow)
+    assert waiting["status"] == "waiting"
+    assert nothing_queued(queued)
+    [request] = api.get("/api/schema-changes").json()
+    seen = []
+
+    async def watched(messages, info):
+        if instructions(messages) == "builder":
+            # The resumed node's turn: its run is running again, and so is its step.
+            out = await asyncio.to_thread(read, api, workflow, waiting["id"])
+            seen.append((out["status"], steps(out)["build"]["status"], out["waiting_since"]))
+        async for item in flow(messages, info):
+            yield item
+
+    api.post(f"/api/schema-changes/{request['id']}/reject", json={})
+    with use_model(model(watched)):
+        run_queued(queued)
+    assert seen == [("running", "running", None)]
+    out = read(api, workflow, waiting["id"])
+    assert out["status"] == "succeeded", out["error"]
+    assert nothing_queued(queued)
+
+
 def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, store, queued):
     workflow = chain(api, builder)
     flow = Flow()
@@ -211,29 +246,26 @@ def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, sto
     assert steps(out)["after"]["input"] == "builder:built(rejected)"
 
 
-def test_a_long_wait_isnt_failed_for_its_heartbeat_or_the_time_limit(
-    api, db, builder, store, queued, in_store
-):
-    """Waiting holds no worker, so it beats no heartbeat; and only running counts towards the
-    run's time limit. How long it waited is recorded."""
+def test_a_long_wait_isnt_failed_for_the_time_limit(api, db, builder, store, queued, in_store):
+    """Waiting holds nothing, and only running counts towards the run's time limit. How long it
+    waited is recorded."""
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     assert waiting["waiting_since"] is not None
     limit = get_settings().workflow_run_time_limit
-    # It ran for a minute, then waited far longer than the heartbeat's lease and the limit.
+    # It ran for a minute, then waited far longer than the limit.
     in_store.execute(
         update(WorkflowRun)
         .where(WorkflowRun.id == waiting["id"])
         .values(
             started_at=func.now() - timedelta(seconds=2 * limit + 60),
             waiting_since=func.now() - timedelta(seconds=2 * limit),
-            heartbeat_at=func.now() - timedelta(seconds=2 * limit),
         )
     )
     db.commit()
 
-    # Read (which fails runs whose worker stopped) and listed: still waiting.
+    # Read and listed: still waiting.
     assert read(api, workflow, waiting["id"])["status"] == "waiting"
     listed = api.get(f"/api/workflows/{workflow['id']}/runs").json()
     assert [r["status"] for r in listed] == ["waiting"]
@@ -392,7 +424,7 @@ def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store,
     assert request["status"] == "cancelled"
     assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
     assert api.get("/api/notifications").json()["unread"] == 0
-    assert queued == []
+    assert nothing_queued(queued)
     assert data_tables(store) == []
 
 
@@ -504,11 +536,12 @@ def test_a_node_failing_while_another_waits_fails_the_run_and_cancels_the_reques
     assert request["status"] == "cancelled"
     conversation = api.get(f"/api/agents/{build['agent_id']}/runs/{build['agent_run_id']}").json()
     assert conversation["waiting"] is False
-    assert queued == []
+    assert nothing_queued(queued)
 
 
 def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, store, queued):
-    """Its queuing finds the run running, and leaves it; the run, pausing, queues itself."""
+    """Decided while the run's other node is running: its advance is enqueued then, and finds
+    the decision once it runs."""
     places = make_agent(api, "Places", base_prompt="builder-places")
     places = api.put(f"/api/agents/{places['id']}", json=agent_body(places, tools=TOOLS)).json()
     workflow = make_workflow(
@@ -526,12 +559,9 @@ def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, stor
         if instructions(messages) == "builder" and last_tool_results(messages):
             # The places node has found nothing decided, and waits again, by now.
             await asyncio.sleep(0.5)
-            api.post(f"/api/schema-changes/{places_request['id']}/reject", json={})
-            # That decision's task, run now: it finds the run running, and does nothing.
-            task, args = queued.pop()
-            thread = threading.Thread(target=task.run, args=args)
-            thread.start()
-            thread.join()
+            await asyncio.to_thread(
+                api.post, f"/api/schema-changes/{places_request['id']}/reject", json={}
+            )
         async for item in flow(messages, info):
             yield item
 
@@ -601,8 +631,8 @@ def test_a_run_shows_no_stale_pins_unless_its_waiting(api, builder, store, queue
 def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the_run(
     api, builder, store, queued
 ):
-    """E.g. one whose outcome its call was given just before a worker died: resuming finds no
-    call waiting for it, and counts it given rather than queuing the run again and again."""
+    """E.g. one whose outcome its call was given just before a process died: resuming finds no
+    call waiting for it, and counts it given rather than advancing the run again and again."""
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
@@ -622,7 +652,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
         db.add(orphan)
         db.commit()
         orphan_id = orphan.id
-    queued.append((worker.run_workflow_task, (str(store.id), waiting["id"])))
+    enqueue_advance(store.id, waiting["id"])
 
     with use_model(model(flow)):
         run_queued(queued)
@@ -631,7 +661,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     assert out["status"] == "waiting"
     assert steps(out)["build"]["waiting_on_request_ids"] == [pending["id"]]
     assert api.get(f"/api/schema-changes/{orphan_id}").json()["resumed_at"] is not None
-    assert queued == []
+    assert nothing_queued(queued)
 
 
 def test_a_node_asking_twice_shows_both_requests_and_resumes_once_both_are_decided(

@@ -6,7 +6,19 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Identity, Index, Integer, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    Text,
+    false,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,7 +27,7 @@ from aios.models.base import Base
 
 class WorkLane(enum.StrEnum):
     """Who waits on an item: people in a chat (`interactive`, mentions) or nobody
-    (`background`: schedules, and later workflow nodes, resumes and embedding sweeps). Claiming
+    (`background`: schedules, workflow advances and nodes, resumes). Claiming
     serves interactive work first."""
 
     interactive = "interactive"
@@ -30,6 +42,13 @@ class WorkKind(enum.StrEnum):
     invocation_start = "invocation_start"
     # One turn of an agent run: a mentioned agent's first turn, or a schedule's.
     agent_turn = "agent_turn"
+    # A workflow run's coordinator step: rebuilds its state from its recorded steps, records
+    # what's finished, and starts the nodes now ready (`aios.workflows.advance`).
+    workflow_advance = "workflow_advance"
+    # One agent node of a workflow run: its turn, as a child invocation of the run's.
+    workflow_node = "workflow_node"
+    # A standalone agent run waiting on schema change requests, carried on once one is decided.
+    resume_turn = "resume_turn"
 
 
 class WorkItem(Base):
@@ -59,6 +78,8 @@ class WorkItem(Base):
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Enqueueing the same work twice adds it once (`aios.run_service.enqueue`).
     dedup_key: Mapped[str | None] = mapped_column(Text, unique=True)
+    # Enqueued again while it ran (`Work.again_if_running`): it runs once more when it's done.
+    again: Mapped[bool] = mapped_column(Boolean, server_default=false(), default=False)
 
     __table_args__ = (
         # What claiming scans: the ready items.

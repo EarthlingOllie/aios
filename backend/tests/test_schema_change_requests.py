@@ -7,12 +7,13 @@ are run here by hand, in order, standing in for the workers."""
 
 import asyncio
 import contextlib
+import uuid
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import delete_user, org_of, provisioned_user, store_of
+from conftest import RESUME, capture_resumes, delete_user, org_of, provisioned_user, store_of
 from psycopg import OperationalError
-from sqlalchemy import event
+from sqlalchemy import event, func, update
 from test_agents import agent_body, chat_body, make_agent
 from test_data_tools import as_owner, provisioned
 
@@ -22,9 +23,10 @@ from aios.api.schema_changes import waiting_on
 from aios.auth import current_user
 from aios.datastores import can_approve, schema_changes, store_session
 from aios.datastores.schema_changes import SchemaChange
-from aios.db import engine
+from aios.db import SessionLocal, engine
 from aios.main import app
-from aios.models import DataStore, User
+from aios.models import DataStore, User, WorkItem
+from aios.run_service import executor, work
 from aios.testing.fake_model import ToolCall, last_tool_results, model, tool_output, use_model
 from aios.tools import build_tool, hybrid_search
 
@@ -56,8 +58,9 @@ def agent(api, store) -> dict:
 def queued(monkeypatch) -> list:
     """The tasks queued, as (task, args), instead of sent to the broker."""
     tasks: list = []
-    for task in (worker.apply_schema_change_task, worker.resume_agent_run_task):
-        monkeypatch.setattr(task, "delay", lambda *args, task=task: tasks.append((task, args)))
+    task = worker.apply_schema_change_task
+    monkeypatch.setattr(task, "delay", lambda *args: tasks.append((task, args)))
+    capture_resumes(monkeypatch, tasks)
     return tasks
 
 
@@ -254,11 +257,11 @@ def test_a_decision_that_cant_be_queued_is_undone_to_try_again(
     """Rather than leave the request decided with nothing to apply it or resume the run."""
     _, request = start(api, agent, Script(CONTACTS))
 
-    def broker_down(*args):
+    def queue_down(*args):
         raise ConnectionError("Redis is down")
 
-    for task in (worker.apply_schema_change_task, worker.resume_agent_run_task):
-        monkeypatch.setattr(task, "delay", broker_down)
+    monkeypatch.setattr(worker.apply_schema_change_task, "delay", queue_down)
+    monkeypatch.setattr(work, "enqueue_resume", queue_down)
     r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
 
     assert r.status_code == 503
@@ -278,7 +281,7 @@ def test_a_redelivered_apply_still_resumes_the_run(api, agent, store, queued):
 
     task.run(*args)
 
-    assert [t for t, _ in queued] == [worker.resume_agent_run_task]
+    assert [t for t, _ in queued] == [RESUME]
     with use_model(model(script)):
         run_queued(queued)
     (_, outcome), _ = script.results
@@ -367,7 +370,13 @@ def test_a_resume_that_cant_start_keeps_the_run_waiting_and_is_tried_again(
 
     monkeypatch.setattr(checkpoints, "turn", down_the_first_time)
     with use_model(model(script)):
-        task.apply(args=args)  # as the worker runs it, retries and all
+        task.run(*args)
+        # Handed back to the run service's queue, to be tried again a little later: now.
+        assert run_of(api, agent, run)["waiting"] is True
+        with SessionLocal() as db:
+            db.execute(update(WorkItem).values(ready_at=func.now()))
+            db.commit()
+        asyncio.run(executor.drain_once())
 
     assert waiting_between == [None, True]
     (_, outcome), _ = script.results
@@ -475,8 +484,11 @@ def test_an_apply_whose_resume_cant_be_queued_is_tried_again(api, agent, queued,
             raise ConnectionError("Redis is down")
         resumes.append(args)
 
-    monkeypatch.setattr(worker.resume_agent_run_task, "delay", down_the_first_time)
+    monkeypatch.setattr(work, "enqueue_resume", down_the_first_time)
 
     task.apply(args=args)  # as the worker runs it, retries and all
 
-    assert resumes == ["refused", (request["data_store_id"], request["run"]["run_id"])]
+    assert resumes == [
+        "refused",
+        (uuid.UUID(request["data_store_id"]), uuid.UUID(request["id"])),
+    ]

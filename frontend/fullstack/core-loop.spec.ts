@@ -5,7 +5,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
  * agent in a chat; the agent, on the scripted model's `core-loop` scenario
  * (backend/src/aios/testing/scenarios.py), asks for a `notes` table and its card shows the run
  * waiting; the person approves on the Data page; the provisioning worker applies the change, the
- * workflow worker resumes the run, which writes a row and replies "Saved." in the chat; and each
+ * run service resumes the run, which writes a row and replies "Saved." in the chat; and each
  * of its model calls wrote a row of the usage ledger.
  *
  * Later steps add their stories here, each a scenario of the scripted model.

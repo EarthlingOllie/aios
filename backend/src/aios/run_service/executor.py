@@ -12,6 +12,9 @@
 - On a termination signal it stops claiming, lets its items finish for up to
   `run_service_shutdown_grace_seconds`, then cancels the rest and hands them back to the queue
   without counting the attempt.
+- A watchdog thread exits the process if its event loop makes no progress for
+  `workflow_run_no_progress_limit` (`Watchdog`): its items' leases lapse, and they're claimed
+  elsewhere.
 
 `drain_once` runs every ready item to completion in-process (and what they enqueue), for tests.
 """
@@ -19,12 +22,17 @@
 import asyncio
 import contextlib
 import logging
+import os
 import signal
+import threading
+import time
 
 import redis
 import redis.asyncio as aioredis
 from anyio import CancelScope
 from fastapi.concurrency import run_in_threadpool
+from psycopg import errors
+from sqlalchemy.exc import OperationalError
 
 from aios.config import get_settings
 from aios.db import SessionLocal
@@ -44,9 +52,23 @@ def _claim(limit: int, background_limit: int) -> list[queue.Claimed]:
         return queue.claim(db, limit, background_limit)
 
 
+# How many times completing an item is tried when the database picks it to break a deadlock:
+# completions running at once lock each other's items (an advance's node items, their advance).
+COMPLETE_TRIES = 5
+
+
 def _complete(item: queue.Claimed, then: list[queue.Work]) -> None:
-    with SessionLocal() as db:
-        queue.complete(db, item, then)
+    for attempt in range(COMPLETE_TRIES):
+        try:
+            with SessionLocal() as db:
+                queue.complete(db, item, then)
+            break
+        except OperationalError as exc:
+            if not isinstance(exc.orig, errors.DeadlockDetected | errors.SerializationFailure):
+                raise
+            if attempt == COMPLETE_TRIES - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
     if then:
         queue.wake(*{w.lane for w in then})
 
@@ -101,8 +123,7 @@ class Executor:
     async def _run(self, item: queue.Claimed) -> None:
         try:
             if item.exhausted:
-                await work.fail(item)
-                outcome: work.Outcome = work.Done()
+                outcome: work.Outcome = await work.fail(item)
             else:
                 outcome = await work.HANDLERS[item.kind](item)
         except asyncio.CancelledError:
@@ -161,6 +182,41 @@ async def drain_once(concurrency: int | None = None, reserve: int | None = None)
         await asyncio.gather(extending, return_exceptions=True)
 
 
+class Watchdog:
+    """Exits the process (`exit`) once its event loop has made no progress for `limit` seconds:
+    each `interval` it hands the loop a callback that notes when it ran, which the loop only
+    does once it's free. An item awaiting a slow call leaves the loop free; one holding it (a
+    blocking call, CPU-bound work, a deadlock) doesn't, and nothing else on it can move."""
+
+    def __init__(self, limit: float, interval: float | None = None, exit=None) -> None:
+        self.limit = limit
+        self.interval = interval if interval is not None else min(limit / 4, 15.0)
+        self.exit = exit or (lambda: os._exit(1))
+        self.loop = asyncio.get_running_loop()
+        self.progressed_at = time.monotonic()
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self._watch, name="run-service-watchdog", daemon=True)
+        self.thread.start()
+
+    def _progressed(self) -> None:
+        self.progressed_at = time.monotonic()
+
+    def _watch(self) -> None:
+        while not self.stopping.wait(self.interval):
+            if time.monotonic() - self.progressed_at > self.limit:
+                log.critical(
+                    "run service: its event loop has made no progress for %ss; exiting",
+                    self.limit,
+                )
+                self.exit()
+                return
+            with contextlib.suppress(RuntimeError):
+                self.loop.call_soon_threadsafe(self._progressed)
+
+    def stop(self) -> None:
+        self.stopping.set()
+
+
 async def _listen(woken: asyncio.Event) -> None:
     """Set `woken` whenever work is enqueued in any lane; reconnects if Redis goes away (the
     poll covers the gap)."""
@@ -202,6 +258,7 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
         with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, stopping.set)
     executor = Executor()
+    watchdog = Watchdog(settings.workflow_run_no_progress_limit)
     woken = asyncio.Event()
     helpers = [
         asyncio.create_task(_listen(woken), name="wake"),
@@ -241,4 +298,5 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
             task.cancel()
         await asyncio.gather(*helpers, return_exceptions=True)
         await executor.stop(settings.run_service_shutdown_grace_seconds)
+        watchdog.stop()
         log.info("run service stopped")

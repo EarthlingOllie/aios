@@ -279,10 +279,10 @@ test("a failed run shows the error, where it happened, and what didn't run", asy
 test("a run that failed before it started says so, not that it's queued", async ({ page }) => {
   const api = await fakeApi(page);
   const { report } = seed(api);
-  // Its worker died while it was still queued.
+  // Its run service items kept stopping while it was still queued.
   const run = api.addRun(report, {
     status: "failed",
-    error: "The run's worker stopped.",
+    error: "The service stopped mid-run.",
     started_at: null,
     finished_at: "2026-10-14T09:05:00Z",
   });
