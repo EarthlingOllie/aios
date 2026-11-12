@@ -1,26 +1,27 @@
 import asyncio
 import json
 import threading
-import uuid
 from dataclasses import dataclass
 
 import psycopg
-import pytest
-from conftest import build_user, delete_user, org_of, provisioned_user, store_of, user_store
+from conftest import (
+    delete_user,
+    provisioned_user,
+    run_turn,
+    store_of,
+    take_turn,
+    user_store,
+)
 from sqlalchemy import func
 
-from aios import checkpoints, turn_lease, ui_stream
+from aios import checkpoints
 from aios.agent import ChatDeps
 from aios.api import agents as agents_api
 from aios.api.skills import lock_live
-from aios.auth import current_organisation, current_user
+from aios.auth import current_user
 from aios.datastores.models import Agent
-from aios.db import SessionLocal, get_db
 from aios.main import app
-from aios.models import Role
-from aios.permissions import current_role
-from aios.testing.fake_model import ToolCall, model, replies, use_model
-from aios.tools import hybrid_search
+from aios.testing.fake_model import model, replies, use_model
 from aios.versioning import save_agent_version
 
 
@@ -210,8 +211,7 @@ def test_skill_rename_is_pinned_like_content(api, monkeypatch):
 
     seen = spy_run(monkeypatch)
     with use_model(replies("ok")):
-        resp = api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi"))
-    assert resp.status_code == 200
+        take_turn(api, agent["id"], run["id"], "hi")
     assert seen["metadata"]["skill_versions"][0]["name"] == "Haiku"
 
     # Taking the update sends the new name.
@@ -361,7 +361,6 @@ def test_ids_beyond_the_integer_columns_are_invalid_not_server_errors(api):
     ]:
         assert api.get(url).status_code == 422, url
     assert api.delete(f"/api/documents/{huge}").status_code == 422
-    assert api.post(f"/api/agents/{agent['id']}/runs/{huge}/chat", json={}).status_code == 422
     body = agent_body(agent, skill_version_ids=[huge])
     assert api.post("/api/agents", json={**body, "name": "Huge"}).status_code == 422
     assert api.put(f"/api/agents/{agent['id']}", json=body).status_code == 422
@@ -388,10 +387,9 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
         yield "arr"
 
     with use_model(model(script)):
-        first = api.post(f"{url}/chat", json=chat_body("hello there"))
-        second = api.post(f"{url}/chat", json=chat_body("again"))
-    assert first.status_code == second.status_code == 200
-    assert text_deltas(second) == "arr"
+        take_turn(api, agent["id"], run["id"], "hello there")
+        second = take_turn(api, agent["id"], run["id"], "again")
+    assert second.text_deltas() == "arr"
     assert seen["metadata"]["agent_version"] == 1
     assert seen["metadata"]["skill_versions"][0]["name"] == "Pirate"
     # Named by its organisation too: run ids are each store's own.
@@ -423,21 +421,6 @@ def test_run_is_pinned_to_its_version_and_persists_history(api, monkeypatch):
     assert api.get(url).status_code == 404
 
 
-def test_blank_message_is_rejected_before_it_reaches_the_thread(api):
-    agent = make_agent(api, "Bot")
-    run = api.post(f"/api/agents/{agent['id']}/runs").json()
-    url = f"/api/agents/{agent['id']}/runs/{run['id']}"
-
-    assert api.post(f"{url}/chat", json=chat_body("  ")).status_code == 422
-    with use_model(replies("hi")):
-        assert text_deltas(api.post(f"{url}/chat", json=chat_body("hello"))) == "hi"
-    assert [m["type"] for m in api.get(url).json()["messages"]] == ["human", "ai"]
-
-
-async def consume(response) -> str:
-    return "".join([chunk async for chunk in response.body_iterator])
-
-
 def test_concurrent_turns_on_a_run_take_turns(api, user):
     """Two tabs: the second turn waits for the first, and builds on all of it."""
     agent = make_agent(api, "Bot")
@@ -455,11 +438,7 @@ def test_concurrent_turns_on_a_run_take_turns(api, user):
     async def two_tabs():
         async def turn(text, delay):
             await asyncio.sleep(delay)
-            with SessionLocal() as db:
-                response = await agents_api.run_chat(
-                    agent["id"], run["id"], chat_body(text), user, db, org_of(db, user)
-                )
-            return await consume(response)
+            return await run_turn(store_of(user), agent["id"], run["id"], text)
 
         return await asyncio.gather(turn("from this tab", 0), turn("from the other tab", 0.1))
 
@@ -493,11 +472,7 @@ def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
         yield "still going"
 
     async def delete_mid_turn():
-        with SessionLocal() as db:
-            response = await agents_api.run_chat(
-                agent["id"], run["id"], chat_body("hello"), user, db, org_of(db, user)
-            )
-        turn = asyncio.create_task(consume(response))
+        turn = asyncio.create_task(run_turn(store_of(user), agent["id"], run["id"], "hello"))
         await started.wait()
         resp = await asyncio.to_thread(api.delete, url)
         await turn
@@ -507,82 +482,6 @@ def test_deleting_a_run_mid_turn_deletes_all_its_checkpoints(api, user):
         assert asyncio.run(delete_mid_turn()).status_code == 204
 
     assert checkpoints.history(store_of(user), run["id"]) == []
-
-
-def on_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-def test_chat_releases_request_session_before_streaming(client, db, user, monkeypatch):
-    """DB work runs off the event loop, and the request's session is closed before the stream."""
-    events = []
-    org = org_of(db, user)
-
-    def forget_run_1() -> None:
-        with user_store(user) as store:
-            checkpoints.delete_threads(store, [1])
-            store.commit()
-
-    forget_run_1()
-
-    def fake_db():
-        events.append("db opened")
-        yield object()
-        events.append("db closed")
-
-    def fake_load(db, data_store_id, agent_id, run_id, *, by_hand=False):
-        events.append(("load on loop", on_event_loop()))
-        return agents_api.ChatContext(
-            data_store_id=data_store_id, model=None, instructions="Hi.", metadata={}
-        )
-
-    def fake_start(data_store_id, run_id, prompt):
-        events.append(("title on loop", on_event_loop()))
-
-    def fake_end(data_store_id, run_id, turn_id, *, error, messages=None):
-        events.append(("count on loop", on_event_loop(), len(messages)))
-
-    async def script(messages, info):
-        events.append("model")
-        yield "arr"
-
-    monkeypatch.setattr(agents_api, "load_chat_context", fake_load)
-    monkeypatch.setattr(agents_api, "_start_turn", fake_start)
-    monkeypatch.setattr(agents_api, "_end_turn", fake_end)
-    # Run 1 is made up, like the rest of what the turn loads (but its store, the user's): so is
-    # its turn lease, which holds.
-    monkeypatch.setattr(
-        turn_lease,
-        "try_acquire",
-        lambda store_id, run_id: turn_lease.Lease(store_id, run_id, uuid.uuid4()),
-    )
-    monkeypatch.setattr(turn_lease, "holds", lambda lease: True)
-    monkeypatch.setattr(checkpoints, "_FENCE", "SELECT %s::bigint, %s::uuid")
-    app.dependency_overrides[current_user] = lambda: build_user("t", id=1)
-    app.dependency_overrides[current_organisation] = lambda: org
-    app.dependency_overrides[current_role] = lambda: Role.admin
-    app.dependency_overrides[get_db] = fake_db
-    try:
-        with use_model(model(script)):
-            resp = client.post(f"/api/o/{org.id}/agents/1/runs/1/chat", json=chat_body("hello"))
-    finally:
-        app.dependency_overrides.clear()
-        forget_run_1()
-
-    assert resp.status_code == 200
-    assert text_deltas(resp) == "arr"
-    assert events == [
-        "db opened",
-        ("load on loop", False),
-        ("title on loop", False),
-        "db closed",
-        "model",
-        ("count on loop", False, 2),
-    ]
 
 
 def stored_turns(api, url) -> list[tuple[str, str]]:
@@ -605,8 +504,7 @@ def test_failed_turn_keeps_the_users_message_and_partial_reply(api):
         raise RuntimeError("model fell over")
 
     with use_model(model(fails_midway)):
-        resp = api.post(f"{url}/chat", json=chat_body("hello"))
-    assert resp.status_code == 200
+        resp = take_turn(api, agent["id"], run["id"], "hello")
     assert '"type":"error"' in resp.text
 
     assert stored_turns(api, url) == [("user", "hello"), ("assistant", "half an ")]
@@ -620,7 +518,7 @@ def test_failed_turn_keeps_the_users_message_and_partial_reply(api):
         yield "ok"
 
     with use_model(model(records_history)):
-        assert api.post(f"{url}/chat", json=chat_body("again")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "again")
     assert [(m.type, m.content) for m in seen[1:]] == [
         ("human", "hello"),
         ("ai", "half an "),
@@ -638,143 +536,25 @@ def test_database_error_text_isnt_sent_to_the_client(api, monkeypatch):
         raise psycopg.OperationalError('connection to server at "10.0.0.5" failed for user "aios"')
 
     monkeypatch.setattr(checkpoints.AsyncConnection, "connect", connect)
-    resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hello"))
+    resp = take_turn(api, agent["id"], run["id"], "hello")
     assert '"errorText":"Database error"' in resp.text
     assert "10.0.0.5" not in resp.text
 
 
-def test_stopped_turn_keeps_the_users_message_and_partial_reply(api, user, db):
-    """Stop in the UI aborts the fetch; the server sees it as the response task being cancelled."""
+def test_run_pages_are_read_only_and_the_web_server_runs_no_turns(api):
+    """People talk to agents by mentioning them in chats, and the run service runs every turn:
+    a run's page reads it, and nothing posts to it."""
     agent = make_agent(api, "Bot")
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     url = f"/api/agents/{agent['id']}/runs/{run['id']}"
 
-    async def slow(messages, info):
-        yield "partial "
-        await asyncio.sleep(60)
-        yield "never sent"
-
-    async def stop_after_first_text():
-        response = await agents_api.run_chat(
-            agent["id"], run["id"], chat_body("stop me"), user, db, org_of(db, user)
-        )
-        got_text = asyncio.Event()
-
-        async def consume():
-            async for chunk in response.body_iterator:
-                if "partial" in chunk:
-                    got_text.set()
-
-        task = asyncio.create_task(consume())
-        await asyncio.wait_for(got_text.wait(), 10)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    with use_model(model(slow)):
-        asyncio.run(stop_after_first_text())
-
-    assert stored_turns(api, url) == [("user", "stop me"), ("assistant", "partial ")]
-
-
-def stop_during_searches(
-    api, user, db, monkeypatch, events: list, queries=("slow", "quick")
-) -> str:
-    """Run a turn whose model makes a search for each of `queries` at once, and drop its
-    response once a result is streamed (a "slow" search is still running). Returns the run's
-    URL."""
-    agent = make_agent(api, "Bot")
-    tool = {"key": "hybrid_search", "config": {}}
-    api.put(f"/api/agents/{agent['id']}", json=agent_body(agent, tools=[tool]))
-    run = api.post(f"/api/agents/{agent['id']}/runs").json()
-
-    async def search(data_store_id, query, limit):
-        if query == "slow":
-            events.append("search started")
-            try:
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                events.append("search stopped")
-                raise
-        return [{"source": f"{query}.md", "headings": [], "text": query}]
-
-    async def script(messages, info):
-        for query in queries:
-            yield ToolCall("search_documents", {"query": query}, id=f"call-{query}")
-
-    monkeypatch.setattr(hybrid_search, "document_search_results", search)
-    # The chunks themselves, rather than a response streaming them.
-    monkeypatch.setattr(ui_stream, "streaming_response", lambda chunks: chunks)
-
-    async def drop_while_searching():
-        chunks = await agents_api.run_chat(
-            agent["id"], run["id"], chat_body("find"), user, db, org_of(db, user)
-        )
-        async for chunk in chunks:
-            if chunk["type"] == "tool-output-available":
-                break
-        await chunks.aclose()
-
-    with use_model(model(script)):
-        asyncio.run(drop_while_searching())
-    return f"/api/agents/{agent['id']}/runs/{run['id']}"
-
-
-def test_dropped_stream_stops_the_agent_before_the_turn_is_recorded(api, user, db, monkeypatch):
-    """The server can drop the response while it's waiting on the client rather than the agent,
-    which closes the stream rather than cancelling it. The agent's tool calls must still stop
-    before the turn is recorded, or one could answer a call the record says went unanswered."""
-    record_turn = agents_api._record_turn
-    events = []
-
-    async def spy_record_turn(*args, **kwargs):
-        events.append("turn recorded")
-        await record_turn(*args, **kwargs)
-
-    monkeypatch.setattr(agents_api, "_record_turn", spy_record_turn)
-    stop_during_searches(api, user, db, monkeypatch, events)
-    assert events == ["search started", "search stopped", "turn recorded"]
-
-
-def test_turn_stopped_during_parallel_tool_calls_keeps_their_results(api, user, db, monkeypatch):
-    """The quick search finished in the step the turn stopped in, so its result was only a
-    pending write: it's kept along with the slow one's, and the next turn is sent both."""
-    url = stop_during_searches(api, user, db, monkeypatch, [])
-
-    messages = api.get(url).json()["messages"]
-    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
-        ("human", None, None),
-        ("ai", None, None),
-        ("tool", "call-quick", "success"),
-        ("tool", "call-slow", "error"),
-    ]
-
-    seen = []
-
-    async def records_history(messages, info):
-        seen.extend(messages)
-        yield "ok"
-
-    monkeypatch.undo()  # a response again
-    with use_model(model(records_history)):
-        assert api.post(f"{url}/chat", json=chat_body("again")).status_code == 200
-    assert [(m.type, getattr(m, "tool_call_id", None)) for m in seen[1:]] == [
-        ("human", None),
-        ("ai", None),
-        ("tool", "call-quick"),
-        ("tool", "call-slow"),
-        ("human", None),
-    ]
-
-
-def test_turn_stopped_once_its_tool_calls_finished_keeps_their_results(api, user, db, monkeypatch):
-    """Both searches finished, but the turn stopped before their step was checkpointed."""
-    url = stop_during_searches(api, user, db, monkeypatch, [], queries=("one", "two"))
-
-    messages = api.get(url).json()["messages"]
-    assert [(m["type"], m.get("tool_call_id"), m.get("status")) for m in messages] == [
-        ("human", None, None),
-        ("ai", None, None),
-        ("tool", "call-one", "success"),
-        ("tool", "call-two", "success"),
-    ]
+    assert api.post(f"{url}/chat", json={"messages": []}).status_code in (404, 405)
+    paths = app.openapi()["paths"]
+    run_routes = {
+        method
+        for path, methods in paths.items()
+        if "/agents/{agent_id}/runs/{run_id}" in path
+        for method in methods
+    }
+    assert run_routes == {"get", "delete"}
+    assert api.get(url).status_code == 200

@@ -2,7 +2,7 @@
 refreshed by the turn's heartbeat, waited on through Redis, and fenced, so a turn that lost it
 can't write the run's history. Stopping a turn signals its holder; no connection is ended.
 
-Two turns posted to one run at once are in test_agents (`test_concurrent_turns_on_a_run_take_
+Two turns of one run at once are in test_agents (`test_concurrent_turns_on_a_run_take_
 turns`), and a turn going on while its agent is archived in test_agent_archive."""
 
 import asyncio
@@ -10,12 +10,11 @@ import json
 import time
 
 import pytest
-from conftest import org_of, store_of, user_store
+from conftest import run_turn, store_of, take_turn, user_store
 from sqlalchemy import func, select, text, update
-from test_agents import chat_body, make_agent
+from test_agents import make_agent
 
 from aios import checkpoints, turn_lease
-from aios.api import agents as agents_api
 from aios.config import get_settings
 from aios.datastores.models import AgentRun
 from aios.db import SessionLocal
@@ -34,10 +33,6 @@ def chunks_of(body: str) -> list[dict]:
         for line in body.splitlines()
         if line.startswith("data: {")
     ]
-
-
-async def consume(response) -> list[dict]:
-    return chunks_of("".join([chunk async for chunk in response.body_iterator]))
 
 
 def history(user, run: dict) -> list[str]:
@@ -73,8 +68,7 @@ def test_the_lease_is_free_after_a_turn_and_no_advisory_lock_is_taken(api, user)
         yield "hi"
 
     with use_model(model(script)):
-        resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
-    assert resp.status_code == 200, resp.text
+        take_turn(api, agent["id"], run["id"], "hi")
 
     token, until = seen["lease"]
     assert token is not None and until is not None
@@ -83,17 +77,17 @@ def test_the_lease_is_free_after_a_turn_and_no_advisory_lock_is_taken(api, user)
     assert history(user, run) == ["hi", "hi"]
 
 
-def test_a_run_busy_past_the_wait_answers_409(api, user, monkeypatch):
-    agent, run = new_run(api)
+def test_a_run_busy_past_the_wait_is_refused(api, user, monkeypatch):
+    """The run service then hands the turn's item back, to be tried again later."""
+    _, run = new_run(api)
     monkeypatch.setattr(get_settings(), "turn_wait_seconds", 0.5)
-    # Another turn (another replica's, say) holds the run.
+    # Another turn (another process's, say) holds the run.
     assert turn_lease.try_acquire(store_of(user), run["id"]) is not None
 
     started = time.monotonic()
-    resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
+    with pytest.raises(turn_lease.RunBusy):
+        asyncio.run(turn_lease.acquire(store_of(user), run["id"]))
 
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == "This run is busy"
     assert time.monotonic() - started >= 0.5
     assert history(user, run) == []
 
@@ -157,10 +151,10 @@ def test_a_holder_whose_lease_lapsed_cant_write_a_checkpoint(api, user):
         yield "too late"
 
     with use_model(model(script)):
-        resp = api.post(f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi"))
+        turn = take_turn(api, agent["id"], run["id"], "hi")
 
     assert taken["lease"] is not None
-    assert any(c["type"] == "error" for c in chunks_of(resp.text))
+    assert turn.error is not None
     # The user's message was checkpointed before the model was called, while it held the lease;
     # the reply, and the record of the unfinished turn, weren't.
     assert history(user, run) == ["hi"]
@@ -211,16 +205,12 @@ def test_stopping_a_turn_ends_it_within_a_second(api, user):
     seen = {}
 
     async def scenario() -> list[dict]:
-        with SessionLocal() as db:
-            response = await agents_api.run_chat(
-                agent["id"], run["id"], chat_body("hi"), user, db, org_of(db, user)
-            )
-        turn = asyncio.create_task(consume(response))
+        turn = asyncio.create_task(run_turn(store_of(user), agent["id"], run["id"], "hi"))
         await started.wait()
         with user_store(user) as store:
             stopped_at = time.monotonic()
             await asyncio.to_thread(checkpoints.stop_turns, store, store_of(user), [run["id"]])
-        chunks = await asyncio.wait_for(turn, timeout=5)
+        chunks = (await asyncio.wait_for(turn, timeout=5)).chunks
         seen["took"] = time.monotonic() - stopped_at
         return chunks
 
@@ -275,18 +265,14 @@ def test_with_redis_down_a_stopped_holders_next_write_fails_on_fencing(api, user
     monkeypatch.setattr(get_settings(), "redis_url", "redis://127.0.0.1:1/0")
 
     async def scenario() -> list[dict]:
-        with SessionLocal() as db:
-            response = await agents_api.run_chat(
-                agent["id"], run["id"], chat_body("hi"), user, db, org_of(db, user)
-            )
-        turn = asyncio.create_task(consume(response))
+        turn = asyncio.create_task(run_turn(store_of(user), agent["id"], run["id"], "hi"))
         await started.wait()
         with user_store(user) as store:
             await asyncio.to_thread(checkpoints.stop_turns, store, store_of(user), [run["id"]])
         await asyncio.sleep(0.2)
         assert not turn.done(), "nothing told the holder"
         go_on.set()
-        return await asyncio.wait_for(turn, timeout=10)
+        return (await asyncio.wait_for(turn, timeout=10)).chunks
 
     with use_model(slow_turn(run, started, go_on)):
         chunks = asyncio.run(scenario())

@@ -14,9 +14,10 @@ from conftest import (
     provisioned_user,
     run_workflow,
     store_of,
+    take_turn,
 )
 from sqlalchemy import delete, func, select, update
-from test_agents import agent_body, chat_body, make_skill, spy_run
+from test_agents import agent_body, make_skill, spy_run
 from test_workflows import (
     agent_node,
     count_queries,
@@ -374,7 +375,7 @@ def test_an_agent_nodes_trace_has_its_agents_metadata_and_the_workflows(
     seen = spy_run(monkeypatch)
     chat = api.post(f"{url}/runs").json()
     with use_model(replies("ok")):
-        assert api.post(f"{url}/runs/{chat['id']}/chat", json=chat_body("hi")).status_code == 200
+        take_turn(api, poet["id"], chat["id"], "hi")
     agent_run_id = out["steps"][0]["agent_run_id"]
     assert node == seen["metadata"] | {
         "langfuse_session_id": f"agent-run-{org_of(db, user).id}-{agent_run_id}",

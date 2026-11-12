@@ -8,8 +8,9 @@ import json
 
 import anthropic
 import httpx2 as httpx
+from conftest import take_turn
 from langchain_anthropic import ChatAnthropic
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 
 from aios import llm
 from aios.tools import hybrid_search
@@ -130,13 +131,7 @@ def test_anthropic_stream_round_trip(api, monkeypatch):
     requests = []
     model = anthropic_model(requests)
     monkeypatch.setattr(llm, "chat_model", lambda name=None: model)
-    resp = api.post(f"{url}/chat", json=chat_body("zebrafish?"))
-    assert resp.status_code == 200
-    chunks = [
-        json.loads(line.removeprefix("data: "))
-        for line in resp.text.splitlines()
-        if line.startswith("data: {")
-    ]
+    chunks = take_turn(api, agent["id"], run["id"], "zebrafish?").chunks
     assert not [c for c in chunks if c["type"] == "error"], chunks
 
     def summary(c: dict) -> str:

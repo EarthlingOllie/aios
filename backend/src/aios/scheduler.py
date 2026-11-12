@@ -38,7 +38,7 @@ trigger (`aios.run_service.work`).
   (`aios.api.triggers.cancel_unstarted_firing`). Firing re-reads the trigger under its row lock
   (`_claimed`) and sees that. Once the run has started, it finishes.
 - A process that dies between claiming a schedule and starting its run can't record that. So a
-  schedule is stored as running from its claim (`heartbeat_at` set then), and each tick fails in
+  schedule is stored as running from its claim (`claimed_at` set then), and each tick fails in
   every store those claimed `STALE_AFTER` ago that never started a run (`fail_stalled`). Once
   its run has started, its turn is the run service's: retried if its process dies, and failed
   after a few attempts (`aios.run_service.work`), which the trigger records.
@@ -130,7 +130,7 @@ def _claim_one(store: Session, trigger_id: int, now: datetime):
         return False, None
     trigger.last_status = TriggerStatus.running
     trigger.last_error = None
-    trigger.heartbeat_at = func.now()
+    trigger.claimed_at = func.now()
     store.commit()
     return True, trigger.next_run_at
 
@@ -182,7 +182,7 @@ def fail_stalled(store: Session) -> None:
             Trigger.last_status == TriggerStatus.running,
             Trigger.last_run_id.is_(None),
             Trigger.last_workflow_run_id.is_(None),
-            or_(Trigger.heartbeat_at.is_(None), Trigger.heartbeat_at < func.now() - STALE_AFTER),
+            or_(Trigger.claimed_at.is_(None), Trigger.claimed_at < func.now() - STALE_AFTER),
         )
         .values(last_status=TriggerStatus.failed, last_error=STOPPED)
     )

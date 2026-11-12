@@ -27,10 +27,10 @@ from aios.models.base import Base
 
 class WorkLane(enum.StrEnum):
     """Who waits on an item: people in a chat (`interactive`, mentions) or nobody
-    (`background`: schedules, events, workflow advances and nodes, resumes; `sources`: phase
-    4's syncs, so a big sync waits on its own share). Claiming serves interactive work first,
-    and fairly between organisations within each lane; background and sources work never take
-    interactive work's reserved capacity."""
+    (`background`: schedules, events, workflow advances and nodes, resumes, embedding sweeps;
+    `sources`: phase 4's syncs, so a big sync waits on its own share). Claiming serves
+    interactive work first, and fairly between organisations within each lane; background and
+    sources work never take interactive work's reserved capacity."""
 
     interactive = "interactive"
     background = "background"
@@ -52,6 +52,9 @@ class WorkKind(enum.StrEnum):
     workflow_node = "workflow_node"
     # A standalone agent run waiting on schema change requests, carried on once one is decided.
     resume_turn = "resume_turn"
+    # Embedding a store's search items still waiting for an embedding, under a time budget
+    # (`aios.search_index.embed_pending`): background work, one queued per store at a time.
+    embedding_sweep = "embedding_sweep"
 
 
 class WorkItem(Base):

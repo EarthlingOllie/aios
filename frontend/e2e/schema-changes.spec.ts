@@ -63,8 +63,8 @@ test("a run's turn ends with a card of the exact SQL, and waits for a decision",
   await expect(page.getByRole("status", { name: "Waiting" })).toContainText(
     "waiting for you to approve or reject",
   );
-  await page.locator("#run-input").fill("hello?");
-  await expect(page.locator("form:has(#run-input) button[type=submit]")).toBeDisabled();
+  // Run pages are read-only: nothing to post while it waits, or after.
+  await expect(page.getByRole("textbox")).toHaveCount(0);
 });
 
 test("approving in the chat applies it, and the run carries on", async ({ page }) => {
@@ -83,8 +83,6 @@ test("approving in the chat applies it, and the run carries on", async ({ page }
   await expect(page.getByText("The contacts table is ready.")).toBeVisible();
   await expect(card(page)).toContainText("Applied to the organisation's data store.");
   await expect(page.getByRole("status", { name: "Waiting" })).toHaveCount(0);
-  await page.locator("#run-input").fill("thanks");
-  await expect(page.locator("form:has(#run-input) button[type=submit]")).toBeEnabled();
 });
 
 test("a run that carries on into another request shows that request's card", async ({ page }) => {

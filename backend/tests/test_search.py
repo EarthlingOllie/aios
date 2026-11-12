@@ -10,24 +10,36 @@ search and history search tools (the same search, fixed to their kind)."""
 import asyncio
 import math
 import re
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import build_user, delete_user, join_organisation, provisioned_user, store_of
-from sqlalchemy import select, text
-from test_agents import agent_body, chat_body, make_agent
+from conftest import (
+    build_user,
+    delete_user,
+    join_organisation,
+    org_of,
+    provisioned_user,
+    store_of,
+    take_turn,
+)
+from sqlalchemy import delete, func, select, text, update
+from test_agents import agent_body, make_agent
 from test_chats import add, make_chat, messages, post, signed_in_as
 
-from aios import ingest, search, search_index, worker
+from aios import ingest, search, search_index
 from aios.auth import current_data_store, current_user
-from aios.datastores import store_engine, store_session
+from aios.config import get_settings
+from aios.datastores import data_store_for, store_engine, store_session
 from aios.datastores.connections import dispose_engines
 from aios.datastores.models import Chunk, Document, DocumentStatus, SearchItem
+from aios.db import SessionLocal
 from aios.jev import Verdict
 from aios.main import app
-from aios.models import Role, User
+from aios.models import Role, User, WorkItem, WorkKind, WorkLane
 from aios.permissions import current_role
+from aios.run_service import executor, queue, sweep, work
 from aios.search import Filters, search_with_vector
 from aios.sources import uploads_source_id
 from aios.testing.fake_model import (
@@ -150,10 +162,7 @@ def found(api, q: str, *kinds: str, limit: int | None = None) -> list[dict]:
 
 def chat_turn(api, agent: dict, run: dict, message: str, reply: str = "ok") -> None:
     with use_model(replies(reply)):
-        response = api.post(
-            f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body(message)
-        )
-    assert response.status_code == 200, response.text
+        take_turn(api, agent["id"], run["id"], message)
 
 
 def new_run(api, agent: dict) -> dict:
@@ -327,8 +336,7 @@ def test_a_turn_indexes_what_the_user_and_the_assistant_said_not_tool_results(
             yield ToolCall("search_documents", {"query": "purr"})
 
     with use_model(model(uses_a_tool)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("Why do cats purr?")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "Why do cats purr?")
     chat_turn(api, agent, run, "And kittens?", "Kittens purr too.")
 
     said = [(h["ref"]["role"], h["text"]) for h in found(api, "purr", "run_message", limit=50)]
@@ -486,26 +494,101 @@ def test_embedding_holds_no_store_session_while_the_embedding_api_answers(
     assert evicted.pool.checkedin() == 0
 
 
-def test_the_embedding_sweep_runs_in_the_background_for_every_ready_store(store_id, monkeypatch):
-    queued = []
-    monkeypatch.setattr(
-        worker.embed_search_items_task,
-        "apply_async",
-        lambda args, expires: queued.append((args, expires)),
-    )
-    worker.embed_pending_search_task.apply().get()
-    assert ([str(store_id)], 60) in queued
-    (entry,) = [
-        e
-        for e in worker.celery_app.conf.beat_schedule.values()
-        if e["task"] == "aios.embed_pending_search"
-    ]
-    assert entry["schedule"] == 60
+def embedding_sweeps(store_id: uuid.UUID) -> list[WorkItem]:
+    with SessionLocal() as s:
+        return s.scalars(
+            select(WorkItem).where(
+                WorkItem.kind == WorkKind.embedding_sweep, WorkItem.data_store_id == store_id
+            )
+        ).all()
 
-    done = []
-    monkeypatch.setattr(search_index, "embed_pending", done.append)
-    worker.embed_search_items_task.apply(args=[str(store_id)]).get()
-    assert done == [store_id]
+
+def test_unembedded_items_are_embedded_by_a_background_sweep_on_the_run_service(
+    api, store_id, embedded
+):
+    post(api, make_chat(api, "Notes"), "One cat.")
+    assert embedded == []
+
+    # What each run service process does every `search_embed_interval_seconds`: an item per
+    # ready store, in the background lane, queued once however many processes ask.
+    asyncio.run(sweep.enqueue_embedding())
+    asyncio.run(sweep.enqueue_embedding())
+    [item] = embedding_sweeps(store_id)
+    assert item.lane == WorkLane.background
+    # Only this store's, here: the test database has many.
+    with SessionLocal() as s:
+        s.execute(delete(WorkItem).where(WorkItem.id != item.id))
+        s.commit()
+
+    asyncio.run(executor.drain_once())
+    assert embedded == ["One cat."]
+    assert embedding_sweeps(store_id) == []
+
+
+def test_an_embedding_sweep_whose_attempts_run_out_is_dropped_for_the_next(db, user, caplog):
+    org = org_of(db, user).id
+    store = data_store_for(org)
+    with SessionLocal() as s:
+        queue.enqueue(s, [work.embedding_work(org, store)])
+        s.commit()
+    for _ in range(get_settings().queue_max_attempts):
+        with SessionLocal() as s:
+            [claimed] = queue.claim(s, 1, 1)
+            s.execute(
+                update(WorkItem)
+                .where(WorkItem.id == claimed.id)
+                .values(leased_until=func.now() - timedelta(seconds=1))
+            )
+            s.commit()
+
+    asyncio.run(executor.drain_once())
+
+    assert embedding_sweeps(store) == []
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+def test_embedding_sweeps_never_take_the_slots_kept_for_chat(db, user, monkeypatch):
+    org = org_of(db, user).id
+    store = data_store_for(org)
+    release = threading.Event()
+    sweeping: list[int] = []
+
+    async def slow_sweep(item):
+        sweeping.append(item.id)
+        await asyncio.to_thread(release.wait, 10)
+        return work.Done()
+
+    async def mention(item):
+        return work.Done()
+
+    monkeypatch.setitem(work.HANDLERS, WorkKind.embedding_sweep, slow_sweep)
+    monkeypatch.setitem(work.HANDLERS, WorkKind.invocation_start, mention)
+    sweeps = [
+        queue.Work(org, store, WorkLane.background, WorkKind.embedding_sweep, {}, dedup_key=f"s{i}")
+        for i in range(4)
+    ]
+    with SessionLocal() as s:
+        queue.enqueue(s, sweeps)
+        s.commit()
+
+    async def scenario() -> tuple[int, int]:
+        process = executor.Executor(concurrency=3, reserve=2)
+        await process.claim()
+        await asyncio.sleep(0.1)
+        busy = len(sweeping)
+        with SessionLocal() as s:
+            queue.enqueue(
+                s, [queue.Work(org, store, WorkLane.interactive, WorkKind.invocation_start, {})]
+            )
+            s.commit()
+        claimed = await process.claim()
+        release.set()
+        await process.stop(grace=10)
+        return busy, len(claimed)
+
+    busy, chat = asyncio.run(scenario())
+    # One background slot of three: one sweep at a time, and a mention still starts at once.
+    assert (busy, chat) == (1, 1)
 
 
 def test_ingest_indexes_a_documents_chunks_without_embedding_them(
@@ -581,10 +664,7 @@ def ask(api, agent: dict, tool: str, run: dict | None = None, **args) -> dict:
     fake, seen = searches_with(tool, **args)
     run = run or new_run(api, agent)
     with use_model(fake):
-        response = api.post(
-            f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("look it up")
-        )
-    assert response.status_code == 200, response.text
+        take_turn(api, agent["id"], run["id"], "look it up")
     return seen
 
 

@@ -1,26 +1,29 @@
 # Run service
 
-The **run service** (`aios.run_service`) runs agent work outside the web servers: mentioned
-agents' turns, the handoff before every mention (see [Chats](chats.md#the-handoff-brief)),
-workflow runs node by node (see [Workflows](workflows.md#runs)), resuming runs once a schema
-change they asked for is decided, and the schedules (see [Triggers](triggers.md)). It's its own service on the API image
-(`python -m aios.run_service`; Compose's `run-service`, ECS's `run-service`), and each of its
-processes runs many items at once in one event loop. A run's page still runs its own chat turns
-in the API process.
+The **run service** (`aios.run_service`) runs all agent work, and the web servers run none:
+mentioned agents' turns, the handoff before every mention (see
+[Chats](chats.md#the-handoff-brief)), workflow runs node by node (see
+[Workflows](workflows.md#runs)), resuming runs once a schema change they asked for is decided,
+the schedules (see [Triggers](triggers.md)) and the background embedding of the search index
+(see [Stores](stores.md)). It's its own service on the API image (`python -m aios.run_service`;
+Compose's `run-service`, ECS's `run-service`), and each of its processes runs many items at once
+in one event loop. Run pages are read-only (a run's conversation, turns and event log): people
+talk to agents by mentioning them in chats.
 
 ## The queue
 
 Work waits in a queue in the platform database (`work_items`, `aios.run_service.queue`). Each
 item records its organisation and store, its **lane** (`interactive`: people waiting in a chat,
-i.e. mentions; `background`: schedules, events, workflow advances and nodes, resumes;
-`sources`: phase 4's syncs, so a big sync waits on its own share), its **kind** (an
-invocation start, an agent turn, a workflow advance, a workflow node, or a resume turn), a
+i.e. mentions; `background`: schedules, events, workflow advances and nodes, resumes, embedding
+sweeps; `sources`: phase 4's syncs, so a big sync waits on its own share), its **kind** (an
+invocation start, an agent turn, a workflow advance, a workflow node, a resume turn, or an
+embedding sweep), a
 payload of store ids, when it became ready and was enqueued, its attempts and lease, and an
 optional deduplication key. Items are deleted when done: their outcome lives in the store.
 
 - **Enqueueing** happens after the store commits, and is idempotent by the deduplication key
   (one start and one turn per invocation, one advance per workflow run, one item per workflow
-  step, one resume per agent run). An advance or resume enqueued while its key's item is running
+  step, one resume per agent run, one embedding sweep per store). An advance or resume enqueued while its key's item is running
   marks that item to run once more when it's done (`work_items.again`), so it sees what changed. Processes are woken through a Redis channel per lane,
   with a poll every `RUN_SERVICE_IDLE_POLL_SECONDS` (5) as a fallback.
 - **The requeue sweep** (every 30 seconds, on every process) re-enqueues invocations left
@@ -71,8 +74,9 @@ to (`aios.run_service.work`):
 | Invocation start | A mention's: runs the handoff, then enqueues the agent's first turn, or starts the workflow's run and enqueues its first advance. A handoff already done isn't asked again; one that fails fails the invocation. |
 | Workflow advance | Moves a workflow run on under its row lock: rebuilds its state from its recorded steps, checks its active time against its limit, starts the nodes now ready (expanding subworkflows) and enqueues their items, resumes a waiting node whose request has been decided or has expired, and ends the run once nothing is ready or running. Its attempts running out fail the run. |
 | Workflow node | One agent node's turn, as a child invocation of the run's, then an advance. A turn an earlier attempt began carries on from its last checkpoint. Its attempts running out fail its step, and then the run. |
-| Resume turn | An agent run waiting on schema change requests, once one is decided or has expired: its waiting tool calls get their outcomes and the turn goes on. |
-| Agent turn | Starts the mentioned agent's run, if it hasn't one yet, and runs one turn of it under the run's turn lease, through the chat endpoint's turn code. A schedule's run was started when it fired. A turn an earlier attempt began carries on from the run's last checkpoint without giving the run its message again. The reply, or why it failed, goes back to the chat, or onto the schedule. |
+| Resume turn | An agent run waiting on schema change requests, once one is decided or has expired: its waiting tool calls get their outcomes and the turn goes on. One an earlier attempt handed back part way carries on from the run's last checkpoint. |
+| Embedding sweep | Embeds a store's search items still waiting for an embedding, for up to `SEARCH_EMBED_BUDGET_SECONDS` (`aios.search_index.embed_pending`); what's left waits for the next sweep, and is found by keyword meanwhile. Every process enqueues one per ready store each `SEARCH_EMBED_INTERVAL_SECONDS`, queued once however many ask. Background work: it never takes the slots kept for chat. Its attempts running out drop it for the next sweep. |
+| Agent turn | Starts the mentioned agent's run, if it hasn't one yet, and runs one turn of it under the run's turn lease, through the turn code every turn shares (`aios.api.agents.turn_stream`). A schedule's run was started when it fired. A turn an earlier attempt began carries on from the run's last checkpoint without giving the run its message again. The reply, or why it failed, goes back to the chat, or onto the schedule. |
 
 A turn whose run is held by another turn (past `TURN_WAIT_SECONDS`) is handed back to run again
 a few seconds later, without counting an attempt; so is an item a stopping process hands back.
@@ -87,11 +91,31 @@ turn in the background lane (a workflow's run gets its first advance there). Eac
 schedule fires exactly once across processes, and missed runs aren't caught up. See
 [Triggers](triggers.md#the-scheduler).
 
+## The model rate limit
+
+`MODEL_RATE_LIMITS` sets each model's provider limits, requests and tokens per minute, as JSON
+(`{"anthropic:claude-sonnet-5-5": {"requests_per_minute": 4000, "tokens_per_minute":
+2000000}}`). A token bucket per model in Redis (`aios.model_rate_limit`), holding a minute's
+worth and refilling continuously, keeps every process's calls to the model within them: each
+call of a turn, and the handoff's, takes a request before it's made and needs tokens left, and
+the tokens it used are taken once it's answered. Calls waiting are served in the order claims
+are: the interactive lane first, then the oldest. A model with no limit set (the default) isn't
+paced, and nothing is read from Redis for it. If Redis can't be reached, calls go ahead unpaced.
+
 ## Stopping
 
 On a termination signal a process stops claiming, lets its items finish for up to
 `RUN_SERVICE_SHUTDOWN_GRACE_SECONDS` (25), then cancels the rest and hands them back to the
-queue without counting the attempt. Compose and ECS give it 30 seconds before killing it.
+queue without counting the attempt. A cancelled turn records nothing: it stays underway, and
+whoever claims its item next carries it on from the run's last checkpoint (its message already
+saved), so a deploy mid-reply never posts "The service stopped mid-run." Compose and ECS give
+it 30 seconds before killing it.
+
+A **watchdog** thread exits a process whose event loop has made no progress for
+`WORKFLOW_RUN_NO_PROGRESS_LIMIT` (300 seconds): a blocking call, CPU-bound work or a deadlock
+holding the loop holds every item in the process. Its items' leases lapse, and they're claimed
+elsewhere. An item awaiting a slow model or tool call leaves the loop free, so it isn't
+affected.
 
 ## In tests
 

@@ -42,7 +42,7 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
   await expect(dialog(page)).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /Builder/ }).getByText("archived")).toBeVisible();
   await expect(page.getByRole("status")).toContainText("This agent is archived by Terry Tester");
-  await expect(page.getByRole("button", { name: "New run" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toHaveCount(0);
   // The default list hides it; the Archived filter shows it.
   await expect(links(page)).toHaveText([/Other/]);
   await show(page, "Archived").click();
@@ -50,7 +50,7 @@ test("an agent is archived in one confirmation that lists what uses it, and unar
   await expect(links(page)).toHaveText([/Builder.*archived/]);
 
   await page.getByRole("button", { name: "Unarchive" }).click();
-  await expect(page.getByRole("button", { name: "New run" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
   await expect(page.getByRole("status")).toHaveCount(0);
   await expect(links(page)).toHaveCount(0);
   await show(page, "All").click();

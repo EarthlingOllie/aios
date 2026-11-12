@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import type { UIMessage } from "ai";
 import { ArrowLeft, Brain, Trash2, Wrench } from "lucide-react";
 
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
@@ -15,7 +14,6 @@ import {
   usePoll,
   type ListContext,
 } from "@/components/crud";
-import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/Markdown";
 import { Notice } from "@/components/Notice";
 import { StartedBy } from "@/components/provenance";
@@ -24,8 +22,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   api,
-  apiFetch,
-  organisationApi,
   describeError,
   type ContentBlock,
   type ModelMessage,
@@ -50,9 +46,10 @@ export function RunPage() {
   const [tab, setTab] = useState<Tab>("conversation");
   const [deleteError, setDeleteError] = useState<string>();
   const deleteRefusal = useRefusal("build");
-  // While the run waits on a schema change request, read it again: to see the request
-  // decided, and the rest of the turn once the run carries on.
-  usePoll(!!run.data?.waiting, run.reload, 2000);
+  // While a turn of the run is going on the run service, or the run waits on a schema change
+  // request, read it again: to see the turn's reply, the request decided, and the rest of the
+  // turn once the run carries on.
+  usePoll(!!run.data?.waiting || run.data?.status === "running", run.reload, 2000);
 
   if (run.error) return <Placeholder>{run.error}</Placeholder>;
   if (!run.data) return null;
@@ -122,18 +119,11 @@ export function RunPage() {
           <ErrorBanner message={deleteError} onDismiss={() => setDeleteError(undefined)} />
         </div>
       )}
-      {/* Keep the chat mounted while viewing the log so an in-flight stream isn't dropped. */}
-      <div className={cn("min-h-0 flex-1", tab !== "conversation" && "hidden")}>
-        <RunChat
-          key={runId}
-          run={run.data}
-          onFinish={() => {
-            run.reload();
-            reloadList();
-          }}
-          onDecided={() => run.reload()}
-        />
-      </div>
+      {tab === "conversation" && (
+        <div className="min-h-0 flex-1">
+          <RunConversation run={run.data} onDecided={() => run.reload()} />
+        </div>
+      )}
       {tab === "turns" && (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <TurnList turns={run.data.turns} />
@@ -148,65 +138,23 @@ export function RunPage() {
   );
 }
 
-function RunChat({
-  run,
-  onFinish,
-  onDecided,
-}: {
-  run: Run;
-  onFinish: () => void;
-  onDecided: () => void;
-}) {
-  const [transport] = useState(
-    () =>
-      new DefaultChatTransport({
-        api: `${organisationApi()}/agents/${run.agent_id}/runs/${run.id}/chat`,
-        fetch: apiFetch,
-        // The server keeps the run's history; send only the new message.
-        prepareSendMessagesRequest: ({ id, messages, trigger }) => ({
-          body: { id, trigger, messages: messages.slice(-1) },
-        }),
-      }),
-  );
-  const { messages, setMessages, sendMessage, status, stop, error } = useChat({
-    id: `run-${run.id}`,
-    messages: run.ui_messages,
-    transport,
-    onFinish,
-  });
-  const [input, setInput] = useState("");
+/** The run's conversation as it is stored, read-only: the run service runs its turns (for a
+ * mention in a chat, a schedule or a workflow), and this shows what they said. A schema change
+ * request its turn is waiting on can be decided from its card. */
+function RunConversation({ run, onDecided }: { run: Run; onDecided: () => void }) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const busy = status === "submitted" || status === "streaming";
-
-  // Each time a run that waited on a schema change request has carried on (on the server, not
-  // in this chat's stream), show the conversation as it is now: also when it carried on into
-  // another request, and so is waiting still.
-  const resumed = run.schema_change_requests.filter((r) => r.resumed_at).length;
-  const shownResumed = useRef(resumed);
-  useEffect(() => {
-    if (resumed > shownResumed.current) setMessages(run.ui_messages);
-    shownResumed.current = resumed;
-  }, [resumed, run.ui_messages, setMessages]);
+  const messages = run.ui_messages;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  function submit() {
-    const text = input.trim();
-    if (!text || busy || run.waiting) return;
-    sendMessage({ text });
-    setInput("");
-  }
+  }, [messages.length]);
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+        <div role="log" aria-label="Conversation" className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
           {messages.length === 0 && (
-            <p className="text-muted-foreground mt-24 text-center">
-              Send a message to start this run.
-            </p>
+            <p className="text-muted-foreground mt-24 text-center">Nothing has happened in this run yet.</p>
           )}
           {messages.map((message) => (
             <MessageView
@@ -216,30 +164,21 @@ function RunChat({
               onDecided={onDecided}
             />
           ))}
-          {status === "submitted" && <p className="text-muted-foreground text-sm">Thinking…</p>}
-          {error && <p className="text-destructive text-sm">Something went wrong: {error.message}</p>}
           <div ref={bottomRef} />
         </div>
       </div>
-      {run.waiting && !busy && (
-        <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-3">
+        {run.waiting && (
           <Notice label="Waiting" busy className="px-3 py-2">
             {run.schema_change_requests.some((r) => r.status === "pending")
               ? "The agent is waiting for you to approve or reject its schema change."
               : "The agent will carry on in a moment."}
           </Notice>
-        </div>
-      )}
-      <ChatComposer
-        id="run-input"
-        disabled={run.waiting}
-        placeholder="Message this agent…"
-        value={input}
-        onChange={setInput}
-        busy={busy}
-        onStop={stop}
-        onSubmit={submit}
-      />
+        )}
+        <p role="note" aria-label="Read-only" className="text-muted-foreground text-center text-xs">
+          This run is read-only. To talk to {run.agent_name}, mention {run.agent_name} in a chat.
+        </p>
+      </div>
     </div>
   );
 }

@@ -27,7 +27,7 @@ ROUTINE = {
     "aios.drain_audit_outbox",
     "aios.publish_queue_metrics",
 }
-INGEST = {"aios.ingest_document", "aios.check_document", "aios.embed_search_items"}
+INGEST = {"aios.ingest_document", "aios.check_document"}
 
 
 def queue_of(task: str) -> str:

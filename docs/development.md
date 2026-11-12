@@ -25,8 +25,7 @@ The processes:
   node by node, resuming runs once a schema change is decided, and the schedules, claimed
   fairly from a work queue (see [Run service](run-service.md), [Workflows](workflows.md)).
 - **web**: the React SPA, served as static files.
-- **ingest-worker**: Celery's `ingest` queue: document ingest (see [Stores](stores.md)) and
-  embedding the search index.
+- **ingest-worker**: Celery's `ingest` queue: document ingest (see [Stores](stores.md)).
 - **urgent-worker**: Celery's `urgent` queue: applying approved schema changes, and restores, which
   never wait behind routine maintenance.
 - **routine-worker**: Celery's `routine` queue: creating, migrating, measuring and deleting each
@@ -71,8 +70,8 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     leaving (handing over the chats a leaver owned)
     api/documents.py upload/list/download/delete, GET /api/o/{org}/search
     api/skills.py   CRUD /api/o/{org}/skills
-    api/agents/     CRUD /api/o/{org}/agents, versions, runs: /api/o/{org}/agents/{id}/runs[/{run_id}[/chat]]
-                    (crud, versions, runs, chat: a run's chat stream)
+    api/agents/     CRUD /api/o/{org}/agents, versions, runs (read-only): /api/o/{org}/agents/{id}/runs[/{run_id}]
+                    (crud, versions, runs; chat: one turn of a run, as the run service runs it)
     api/workflows.py CRUD /api/o/{org}/workflows, versions and restore, runs: /api/o/{org}/workflows/{id}/runs
     api/triggers.py CRUD /api/o/{org}/triggers (schedules), schedule preview, timezones
     api/chats/      CRUD /api/o/{org}/chats, members: /api/o/{org}/chats/{id}/members[/{member_id}], mentionable, messages
@@ -81,8 +80,9 @@ backend/            FastAPI app, Celery worker, Alembic migrations, tests
                     links (/api/o/{org}/organisation/invites, /api/invites/{token}[/accept]), leaving
     api/provenance.py who made and last changed an organisation's things, as the API reports it
     api/search.py   GET /api/o/{org}/search (the Search page: the organisation's search index)
-    scheduler.py    fires due schedules (runs in each API process)
-    firing.py       runs an agent's turn for a cause outside a request: the cap, heartbeat, stall sweep
+    scheduler.py    fires due schedules (on every run service process)
+    run_service/    the run service: its queue, executor (claiming, shutdown, watchdog), work and sweeps
+    model_rate_limit.py the shared per-model rate limit (a token bucket in Redis)
     invocations.py  what a mention in a chat starts: invocations, their cards and results posted back
     cron.py         cron expressions in a timezone (cronsim)
     workflows/      workflow graph validation, and running workflows (validation, execution, steps)

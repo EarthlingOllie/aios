@@ -19,8 +19,8 @@ posted), and the rest `derived` (what agents wrote). Search finds only clean, re
 derived items.
 
 **Embedding** is deferred: an item is written without one, and found by keyword until the
-store's sweep (`embed_pending`, the `aios.embed_search_items` task, on a schedule) embeds it,
-under a time budget per store per sweep. An item whose text is already embedded elsewhere in the
+store's sweep (`embed_pending`, background work on the run service, `aios.run_service`) embeds
+it, under a time budget per store per sweep. An item whose text is already embedded elsewhere in the
 store (by its hash) takes that embedding instead of calling the embedding API again, and an item
 written again with unchanged text keeps its embedding.
 """

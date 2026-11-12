@@ -12,7 +12,7 @@ const BUILD_REFUSAL =
 const DOCUMENTS_REFUSAL = "Participants can't upload or delete documents. Ask an editor or an admin.";
 const SAM = { id: 2, first_name: "Sam", last_name: "Jones" };
 
-test("a participant can run an agent but not change it, and is told why", async ({ page }) => {
+test("a participant can see an agent but not change it, and is told why", async ({ page }) => {
   const api = await fakeApi(page);
   api.actAs("participant");
   const agent = api.addAgent("Triage");
@@ -21,7 +21,6 @@ test("a participant can run an agent but not change it, and is told why", async 
 
   await expect(page.getByRole("heading", { name: /Triage/ })).toBeVisible();
   await expect(page.getByRole("note", { name: "What your role allows" }).first()).toHaveText(BUILD_REFUSAL);
-  await expect(page.getByRole("button", { name: "New run" })).toBeEnabled();
   await expect(page.getByRole("link", { name: "Edit", exact: true })).toBeHidden();
   await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeHidden();
   const create = page.getByRole("button", { name: "New", exact: true });

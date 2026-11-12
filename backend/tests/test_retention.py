@@ -270,7 +270,7 @@ def test_finished_workflow_runs_go_with_their_steps_and_agent_runs_but_live_ones
             store.execute(
                 update(WorkflowRun)
                 .where(WorkflowRun.id == started["id"])
-                .values(status=WorkflowRunStatus(status), heartbeat_at=func.now())
+                .values(status=WorkflowRunStatus(status))
             )
         store.commit()
     age(store_id, 10)

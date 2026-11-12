@@ -5,9 +5,9 @@ and delete them on the agent's Memory tab (`/api/agents/{id}/memories`)."""
 # ruff: noqa: F811
 
 import pytest
-from conftest import join_organisation, store_of
+from conftest import join_organisation, store_of, take_turn
 from sqlalchemy import text
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_chats import add, make_chat, signed_in_as
 from test_permissions import set_role
 from test_search import embedded  # noqa: F401  (a fixture)
@@ -61,10 +61,7 @@ def in_run(api, agent: dict, *tool_calls, run: dict | None = None) -> dict:
     fake, seen = calls(*tool_calls)
     run = run or new_run(api, agent)
     with use_model(fake):
-        response = api.post(
-            f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("go")
-        )
-    assert response.status_code == 200, response.text
+        take_turn(api, agent["id"], run["id"], "go")
     seen["run"] = run
     return seen
 

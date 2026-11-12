@@ -4,8 +4,9 @@ their turns' (`aios.turns`), written from the turn loop at each model step (see
 
 from datetime import datetime
 
+from conftest import take_turn
 from langchain_core.messages import AIMessage
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 
 from aios.api.agents import tool_call_count
 from aios.testing.fake_model import ToolCall, Usage, model, use_model
@@ -57,8 +58,7 @@ def test_a_turn_with_tool_calls_records_its_counters_and_outcome(api, monkeypatc
             yield Usage(250, 5)
 
     with use_model(model(script)):
-        resp = api.post(f"{runs_url}/{run_id}/chat", json=chat_body("Search for fruit"))
-        assert resp.status_code == 200
+        take_turn(api, agent["id"], run_id, "Search for fruit")
 
     run = api.get(f"{runs_url}/{run_id}").json()
     assert counters(run) == {
@@ -86,7 +86,7 @@ def test_a_run_is_running_from_when_its_turn_begins(api):
         yield "hi"
 
     with use_model(model(script)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("hello"))
+        take_turn(api, agent["id"], run_id, "hello")
 
     (mid_turn,) = seen
     assert mid_turn["status"] == "running"
@@ -107,7 +107,7 @@ def test_a_failed_turn_is_marked_failed_when_it_ends(api):
         raise RuntimeError("model overloaded")
 
     with use_model(model(script)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("hello"))
+        take_turn(api, agent["id"], run_id, "hello")
 
     run = api.get(f"{runs_url}/{run_id}").json()
     assert run["status"] == "failed"
@@ -129,9 +129,9 @@ def test_counters_add_up_over_a_runs_turns(api, monkeypatch):
             yield Usage(20, 2)
 
     with use_model(model(script)):
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("first"))
+        take_turn(api, agent["id"], run_id, "first")
         first = api.get(f"{runs_url}/{run_id}").json()
-        api.post(f"{runs_url}/{run_id}/chat", json=chat_body("second"))
+        take_turn(api, agent["id"], run_id, "second")
         second = api.get(f"{runs_url}/{run_id}").json()
 
     assert counters(first) == {

@@ -74,7 +74,6 @@ ROUTES = {
     ("GET", "/agents/{agent_id}/memories"): READ,
     ("PATCH", "/agents/{agent_id}/memories/{memory_id}"): BUILD,
     ("DELETE", "/agents/{agent_id}/memories/{memory_id}"): BUILD,
-    ("POST", "/agents/{agent_id}/runs/{run_id}/chat"): POST,
     ("GET", "/chats"): READ,
     ("POST", "/chats"): POST,
     ("GET", "/chats/{chat_id}"): READ,

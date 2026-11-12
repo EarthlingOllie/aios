@@ -4,9 +4,10 @@ agent version is saved, restored or run, naming the tool and the reason. Tools w
 (every tool in the library today) save, restore and run as before."""
 
 import pytest
-from conftest import org_of
+from conftest import org_of, take_turn
+from fastapi import HTTPException
 from pydantic import BaseModel
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 from aios.tools import TOOLS, ToolOrganisation, ToolSpec
@@ -100,8 +101,9 @@ def test_a_version_whose_settings_now_belong_elsewhere_cant_be_restored_or_run(
         409,
         f"That version can't be restored: {REFUSAL}",
     )
-    turn = api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi"))
-    assert (turn.status_code, turn.json()["detail"]) == (
+    with pytest.raises(HTTPException) as refused:
+        take_turn(api, agent["id"], run["id"], "hi")
+    assert (refused.value.status_code, refused.value.detail) == (
         409,
         f"This agent version can't be run: {REFUSAL}",
     )

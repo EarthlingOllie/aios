@@ -7,7 +7,8 @@ version uses it says so.
 """
 
 import pytest
-from test_agents import agent_body, chat_body, make_agent, make_skill
+from conftest import take_turn
+from test_agents import agent_body, make_agent, make_skill
 from test_chats import signed_in_as
 from test_organisation_scoping import member, outsider  # noqa: F401 (fixtures)
 
@@ -72,7 +73,6 @@ def test_archiving_is_never_refused_and_used_by_lists_the_agents_using_it(api):
 
     archive(api, skill)
     resp = api.get(f"/api/skills/{skill['id']}/used-by")
-
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
         "agents": [
@@ -94,11 +94,7 @@ def test_an_agent_pinning_an_archived_skill_still_runs_with_it(api, monkeypatch)
     run = api.post(f"/api/agents/{agent['id']}/runs")
     assert run.status_code == 201, run.text
     with use_model(model(script)):
-        resp = api.post(
-            f"/api/agents/{agent['id']}/runs/{run.json()['id']}/chat", json=chat_body("hi")
-        )
-
-    assert resp.status_code == 200, resp.text
+        take_turn(api, agent["id"], run.json()["id"], "hi")
     assert "Talk like pirates." in sent[0][0].content
 
 

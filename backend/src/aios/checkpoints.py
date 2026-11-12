@@ -128,7 +128,7 @@ async def turn(
     run (two tabs, two replicas) take turns, each starting from the history the previous one
     left.
 
-    `lease` is one the caller already took (the chat endpoint, to answer 409 before streaming);
+    `lease` is one the caller already took (the run service, to hand a busy run's turn back);
     otherwise this waits for it. Raises `RunBusy` if the run stays busy past the wait, and
     `RunGone` if it has been deleted (its thread has gone with it, so nothing written now would
     be kept). One deleted or stopped later ends the turn (`stop_turns`)."""

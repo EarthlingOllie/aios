@@ -1,9 +1,10 @@
 from dataclasses import replace
 
 import pytest
-from conftest import delete_user, provisioned_user, store_of, user_store
+from conftest import delete_user, provisioned_user, store_of, take_turn, user_store
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from test_agents import agent_body, chat_body, make_agent, spy_run, text_deltas
+from test_agents import agent_body, make_agent, spy_run, text_deltas
 from test_search import add_chunks, unit
 
 from aios import llm, search
@@ -247,8 +248,7 @@ def test_run_is_given_its_versions_tools(api, monkeypatch):
         yield "ok"
 
     with use_model(model(script)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("search")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "search")
     # Anthropic's server-side web search, in the version the default model supports.
     assert native_tools == [
         {
@@ -304,7 +304,9 @@ def test_tool_removed_from_the_library(api, monkeypatch):
     shown = api.get(f"{url}/versions/2").json()["tools"][0]
     assert (shown["name"], shown["available"]) == ("web_search", False)
     assert api.post(f"{url}/versions/2/restore").status_code == 409
-    assert api.post(f"{url}/runs/{run['id']}/chat", json=chat_body("hi")).status_code == 409
+    with pytest.raises(HTTPException) as refused:
+        take_turn(api, agent["id"], run["id"], "hi")
+    assert refused.value.status_code == 409
 
 
 def test_no_new_run_while_the_current_version_uses_a_removed_tool(api, monkeypatch):
@@ -371,9 +373,7 @@ def test_hybrid_search_tool_searches_the_users_documents(api, user, documents, m
     spy = spy_run(monkeypatch)
     fake, seen = search_once("zebrafish")
     with use_model(fake):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        resp = api.post(url, json=chat_body("what about zebrafish?"))
-    assert resp.status_code == 200
+        resp = take_turn(api, agent["id"], run["id"], "what about zebrafish?")
     assert spy["deps"] == ChatDeps(user_id=user.id, data_store_id=store_of(user), run_id=run["id"])
     assert seen["tools"] == ["search_documents"]
     assert "hybrid (semantic + keyword)" in seen["description"]
@@ -402,8 +402,7 @@ def test_hybrid_search_tool_ignores_blank_queries(api, monkeypatch):
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     fake, seen = search_once("  ")
     with use_model(fake):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert text_deltas(api.post(url, json=chat_body("hi"))) == "found 0"
+        assert text_deltas(take_turn(api, agent["id"], run["id"], "hi")) == "found 0"
     assert seen["results"] == []
 
 

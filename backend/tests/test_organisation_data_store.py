@@ -21,7 +21,7 @@ from conftest import (
 )
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
-from test_agents import chat_body, make_agent
+from test_agents import make_agent
 from test_data_tools import as_owner
 from test_dropped import apply, listed, propose, restores, run_restores, store
 from test_organisations import before_the_contract, revision

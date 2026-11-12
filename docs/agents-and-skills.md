@@ -1,8 +1,10 @@
 # Agents and skills
 
 An **agent** is a base prompt plus a set of **skills** (reusable instructions) and **tools** from
-a built-in library (see [Tools](tools.md)), and you chat with it. Each conversation with an
-agent is a **run**. Agents are LangGraph agents (LangChain's `create_agent`, on Anthropic).
+a built-in library (see [Tools](tools.md)), and you talk to it by mentioning it in a chat (see
+[Chats](chats.md)). Each conversation with an agent is a **run**, which the
+[run service](run-service.md) runs turn by turn; a run's page is read-only: its conversation,
+its turns and its event log. Agents are LangGraph agents (LangChain's `create_agent`, on Anthropic).
 Agents, skills and the runs of agents belong to the organisation (see
 [Accounts and organisations](accounts-and-organisations.md#what-the-organisation-owns)).
 
@@ -78,15 +80,16 @@ still totals the stored messages for them.
 
 - Each run is a LangGraph thread (`agent-run-<id>`) kept by its organisation's store's own
   Postgres checkpointer, beside the run (runs, their sandbox sessions, workflow runs and their
-  steps are all in the store: see [Stores](stores.md#runs)), the client sends only its new message, and the agent continues from the thread's latest
-  checkpoint. The user's message is checkpointed before the model is called; if a turn fails or
-  is stopped, the reply's text so far (or an error result for each tool call that hadn't
+  steps are all in the store: see [Stores](stores.md#runs)), and each turn continues from the
+  thread's latest checkpoint. The user's message is checkpointed before the model is called; if
+  a turn fails or is stopped, the reply's text so far (or an error result for each tool call that hadn't
   finished) is added to the thread, so the next turn sees what the user saw. Turns of the same
-  run are serialized by a **turn lease** on the run's row (`aios.turn_lease`): a second tab's
-  turn waits for the first (on the run's release channel in Redis, polling each second as a
+  run are serialized by a **turn lease** on the run's row (`aios.turn_lease`): a second turn
+  waits for the first (on the run's release channel in Redis, polling each second as a
   fallback), then builds on it. A turn holds the lease for `TURN_LEASE_SECONDS` (90) at a time,
   refreshed by its heartbeat, so a process that dies frees its runs once that passes; one that
-  waits past `TURN_WAIT_SECONDS` (120) answers 409 "This run is busy" on the run page. Every
+  waits past `TURN_WAIT_SECONDS` (120) is handed back to the run service's queue, to be tried
+  again a few seconds later. Every
   checkpoint write first checks, in its own transaction, that its turn's lease still holds
   (`checkpoints.FencedSaver`), so a turn that lost it (frozen past its expiry, or stopped) can't
   write the run's history. No database session state is involved, so it works through the
@@ -105,7 +108,7 @@ still totals the stored messages for them.
   transaction (they aren't foreign keys, so this is done explicitly), after locking the run's
   row, which a checkpoint write being made holds until it commits.
 
-Runs start by hand, from a chat mention (see [Chats](chats.md)), from a schedule (see
+Runs start from a chat mention (see [Chats](chats.md)), from a schedule (see
 [Triggers](triggers.md)) or as a workflow's agent node (see [Workflows](workflows.md)).
 
 ## The documents assistant
@@ -139,7 +142,7 @@ give this to editors and admins. Workflows and skills are archived on the same t
   its own schedules, the chats it's in (those the member may see) and the data tables it will
   leave read-only, which stays empty until tables have owners.
 - An archived agent starts no new turns. Each start path refuses with 409 "The agent <name> is
-  archived.": a run or a turn started by hand (`POST .../runs`, `POST .../runs/{id}/chat`), a
+  archived.": a run started by hand (`POST .../runs`), a
   schedule firing (recorded on the schedule as its error), and a workflow run whose pinned graph
   runs it at any depth (`aios.workflows.archived_in_graph`, which also refuses an archived
   nested workflow). A mention posts the message, and its invocation fails at once with "The

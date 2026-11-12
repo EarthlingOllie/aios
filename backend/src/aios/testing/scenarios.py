@@ -11,6 +11,7 @@ deployment's model can be the handoff's too. Later steps add scenarios here, one
 full-stack test tells.
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 
 from langchain_core.messages import BaseMessage
@@ -40,6 +41,12 @@ NOTES = {
     "columns": [{"name": "body", "type": "text", "nullable": False}],
 }
 SAVED = "Saved."
+# A message asking the agent to take its time (`SLOWLY` in it) is answered after `SLOW_SECONDS`,
+# longer than the full-stack run service's shutdown grace: so restarting the run service then
+# finds the turn mid-call, and hands it back.
+SLOWLY = "slowly"
+SLOW_SECONDS = 6.0
+WRITTEN_SLOWLY = "Written, slowly."
 
 
 def human_text(messages: list[BaseMessage]) -> str:
@@ -53,8 +60,13 @@ def human_text(messages: list[BaseMessage]) -> str:
 
 async def core_loop(messages: list[BaseMessage], info: Info) -> AsyncIterator[str | ToolCall]:
     """Asks for a `notes` table; once it's applied, writes the message to it as a note and
-    replies "Saved."; says why if the table was refused or the write failed."""
+    replies "Saved."; says why if the table was refused or the write failed. Asked to take its
+    time, it does, and replies "Written, slowly." (asking for nothing)."""
     results = last_tool_results(messages)
+    if SLOWLY in human_text(messages):
+        await asyncio.sleep(SLOW_SECONDS)
+        yield WRITTEN_SLOWLY
+        return
     if not results:
         yield ToolCall(
             "request_schema_change", {"ops": [NOTES], "reason": "To keep the chat's notes"}

@@ -358,9 +358,14 @@ services:
     <<: *fullstack
     command: ["celery", "-A", "aios.worker", "worker", "-Q", "ingest", "--loglevel=INFO", "--concurrency=1"]
 
+  # Every turn and workflow node. Its shutdown grace is short, so the test that restarts it
+  # mid-turn (a deploy) finds the turn underway, and sees it handed back and carried on.
   fullstack-run-service:
     <<: *fullstack
     command: ["python", "-m", "aios.run_service"]
+    environment:
+      <<: *fullstack-env
+      RUN_SERVICE_SHUTDOWN_GRACE_SECONDS: "1"
     stop_grace_period: 30s
 
   fullstack-web:

@@ -16,11 +16,12 @@ from conftest import (
     home_organisation,
     provisioned_user,
     store_of,
+    take_turn,
 )
 from psycopg import sql
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import OperationalError
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_workflows import agent_node, make_workflow
 
 import aios
@@ -144,8 +145,7 @@ def search_tool_results(api, user, status: DataStoreStatus) -> list:
             yield ToolCall("search_documents", {"query": "fish"})
 
     with use_model(model(search_then_answer_seeing)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("fish?")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "fish?")
     return seen
 
 
@@ -298,8 +298,7 @@ def test_an_agent_run_searches_the_users_store(api, user, searches):
     agent = librarian(api)
     run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(search_then_answer)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("fish?")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "fish?")
 
     assert searches == [{"data_store_id": store_of(user), "query": "fish", "limit": 3}]
 

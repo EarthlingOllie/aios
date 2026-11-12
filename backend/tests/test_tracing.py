@@ -1,6 +1,7 @@
+from conftest import take_turn
 from langfuse.langchain import CallbackHandler
 from pydantic import SecretStr
-from test_agents import chat_body, make_agent, text_deltas
+from test_agents import make_agent, text_deltas
 
 from aios import tracing
 from aios.config import get_settings
@@ -32,9 +33,7 @@ def test_runs_are_traced_when_configured(api, monkeypatch):
         agent = make_agent(api, "Traced")
         run = api.post(f"/api/agents/{agent['id']}/runs").json()
         with use_model(replies("ok")):
-            resp = api.post(
-                f"/api/agents/{agent['id']}/runs/{run['id']}/chat", json=chat_body("hi")
-            )
+            resp = take_turn(api, agent["id"], run["id"], "hi")
         assert text_deltas(resp) == "ok"
         assert [type(h) for h in handlers] == [CallbackHandler]
     finally:

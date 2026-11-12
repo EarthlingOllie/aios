@@ -12,9 +12,10 @@ import asyncio
 import json
 
 import pytest
+from conftest import take_turn
 from langchain_core.messages import SystemMessage, ToolMessage
 from sqlalchemy import update
-from test_agents import agent_body, chat_body, make_agent
+from test_agents import agent_body, make_agent
 from test_run_python import backend, python_agent  # noqa: F401
 from test_search import add_chunks, embedded, everything, meaning, store_id  # noqa: F401
 
@@ -56,8 +57,7 @@ def turn(api, agent: dict, run: dict | None, *calls: ToolCall) -> dict:
     if run is None:
         run = api.post(f"/api/agents/{agent['id']}/runs").json()
     with use_model(model(script)):
-        url = f"/api/agents/{agent['id']}/runs/{run['id']}/chat"
-        assert api.post(url, json=chat_body("go")).status_code == 200
+        take_turn(api, agent["id"], run["id"], "go")
     return seen
 
 
