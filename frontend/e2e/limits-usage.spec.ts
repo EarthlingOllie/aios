@@ -90,9 +90,9 @@ test("an admin may set a workflow's limit above the organisation's", async ({ pa
 
 test("an admin reads usage totals by agent, then by day", async ({ page }) => {
   const api = await fakeApi(page);
-  const row = { embedded_texts: 0, web_searches: 0, sandbox_seconds: 0, unpriced: 0 };
+  const row = { embedded_texts: 0, web_searches: 0, tool_calls: 0, sandbox_seconds: 0, unpriced: 0 };
   api.usage.agent = [
-    { ...row, key: 1, name: "Researcher", model_calls: 12, input_tokens: 34_000, output_tokens: 2_100, cost: 1.25 },
+    { ...row, key: 1, name: "Researcher", tool_calls: 3_456, model_calls: 12, input_tokens: 34_000, output_tokens: 2_100, cost: 1.25 },
     { ...row, key: null, name: null, model_calls: 2, input_tokens: 800, output_tokens: 40, cost: 0.0031 },
   ];
   api.usage.day = [{ ...row, key: "2026-10-13", name: "2026-10-13", model_calls: 14, input_tokens: 34_800, output_tokens: 2_140, cost: null, unpriced: 14 }];
@@ -102,6 +102,9 @@ test("an admin reads usage totals by agent, then by day", async ({ page }) => {
   await expect(table.getByRole("row")).toHaveCount(4);
   await expect(table.getByRole("row", { name: /Researcher/ })).toContainText("34,000");
   await expect(table.getByRole("row", { name: /Researcher/ })).toContainText("£1.25");
+  // Its posts into other chats, as tool calls.
+  await expect(table.getByRole("columnheader", { name: "Tool calls" })).toBeVisible();
+  await expect(table.getByRole("row", { name: /Researcher/ })).toContainText("3,456");
   await expect(table.getByRole("row", { name: /No agent/ })).toContainText("£0.0031");
   await expect(page.getByTestId("usage-total")).toHaveText("£1.25");
 

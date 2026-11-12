@@ -33,6 +33,8 @@ class UsageTotalOut(BaseModel):
     output_tokens: int
     embedded_texts: float
     web_searches: float
+    # Tool calls the ledger counts (each `post_message` post).
+    tool_calls: float
     sandbox_seconds: float
     # Estimated, in GBP; null if nothing in it was priced.
     cost: float | None

@@ -6,7 +6,8 @@ holds content: what a notification says is read from the organisation's store wh
 **Kinds**, each with what its reference names, who gets it, and what marks it read:
 
 - `mention`: the message (`chat_id`, `message_id`); the people a person's message mentions,
-  never its poster; reading the chat past it.
+  never its poster, or an agent's post mentions (`aios.tools.post_message`); reading the chat
+  past it.
 - `reply`: the result posted (`chat_id`, `message_id`); whoever mentioned the agent or
   workflow, unless they're watching the chat's stream in a visible tab; reading past it.
 - `run_failed`: the failure posted, as a reply's; for a run started by hand, the run

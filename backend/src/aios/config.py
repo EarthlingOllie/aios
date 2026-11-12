@@ -199,6 +199,9 @@ class Settings(BaseSettings):
     # `limits` string counted in Redis (a 429 past it).
     mentions_per_message: int = Field(default=5, ge=1)
     mention_rate_per_person: str = "60/minute"
+    # How many messages one turn may post into other chats with `post_message`
+    # (`aios.tools.post_message`); it's refused past it.
+    post_message_posts_per_turn: int = Field(default=20, ge=1)
     # Caps (`aios.limits`): a turn stops before a model call that would pass one, and so does a
     # workflow run's agent node. Admins override them for an organisation; agents and workflows
     # may lower them (and an admin raise them). Costs are in pounds sterling.

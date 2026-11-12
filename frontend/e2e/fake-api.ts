@@ -280,6 +280,7 @@ export type UsageTotalRow = {
   output_tokens: number;
   embedded_texts: number;
   web_searches: number;
+  tool_calls: number;
   sandbox_seconds: number;
   cost: number | null;
   unpriced: number;

@@ -11,11 +11,11 @@ Posts come from the agent, belong to the turn's invocation, and appear live on t
 
 **Blocked by:** [02: Chats without owners, and archiving chats](02-chats-without-owners.md), [07: Notifications across organisations: mentions, replies, failures](07-notifications.md), [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] With the scripted model, a turn started in a chat posts into another chat the agent is in, and the post appears on that chat's stream, from the agent.
-- [ ] Posting into the chat being answered, into an archived chat, or into one the agent isn't a chat member of is refused, with a clear reason.
-- [ ] The per-turn cap refuses posts beyond it.
-- [ ] People mentioned in a post are notified. Agents and workflows mentioned start nothing.
-- [ ] Each post is recorded in the usage ledger as a tool call.
-- [ ] A post carries the verdict `derived`, and a later turn receives it inside an untrusted block.
+- [x] With the scripted model, a turn started in a chat posts into another chat the agent is in, and the post appears on that chat's stream, from the agent.
+- [x] Posting into the chat being answered, into an archived chat, or into one the agent isn't a chat member of is refused, with a clear reason.
+- [x] The per-turn cap refuses posts beyond it.
+- [x] People mentioned in a post are notified. Agents and workflows mentioned start nothing.
+- [x] Each post is recorded in the usage ledger as a tool call.
+- [x] A post carries the verdict `derived`, and a later turn receives it inside an untrusted block.

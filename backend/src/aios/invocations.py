@@ -14,7 +14,8 @@ What a mention in a chat starts:
 Posting a message that mentions an agent or workflow member creates, in the message's own
 transaction, a queued invocation and the member's acknowledgement: a run card (`create`), so the
 chat never shows a mention without its card. Only a user's message does this: what an agent or
-workflow posts (a result) starts nothing, whatever it mentions, so a chat can't loop.
+workflow posts (a result, or an agent's `post_message` post) starts nothing, whatever it
+mentions, so a chat can't loop.
 
 Its start is then enqueued on the run service (`aios.run_service`). First the handoff
 (`aios.handoff`) briefs it: the invocation goes `briefing` (`begin_briefing`), and one model call

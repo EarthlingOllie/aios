@@ -12,7 +12,7 @@ class UsageKind(enum.StrEnum):
     embedding = "embedding"
     # Web searches the model's provider ran in one response: how many.
     web_search = "web_search"
-    # A tool call a later phase prices (none yet).
+    # A tool call the ledger counts: a `post_message` post (free).
     tool_call = "tool_call"
     # A sandbox session's time, in seconds, recorded when it ends.
     sandbox_seconds = "sandbox_seconds"

@@ -177,6 +177,19 @@ back as a message from the agent (or the turn's error, failing the card). Severa
 workflows mentioned in one message each start; mentions in an agent's reply start nothing. Runs
 started from a chat are listed with the agent's others, marked with the chat.
 
+### Agents posting into other chats
+
+An agent given the **Post message** tool (`post_message`, `aios.tools.post_message`) posts
+markdown into other chats it's a chat member of, by name, to report where people will see it.
+It's refused, with a reason the agent is told and nothing written, for the chat its turn is
+answering (its reply is for that), an archived chat, a chat it isn't in (naming those it is),
+past `POST_MESSAGE_POSTS_PER_TURN` (20) posts in one turn, and a mention of anyone or anything
+that isn't in the chat. A post is from the agent, belongs to the turn's invocation and arrives
+on the chat's stream like any message. It's derived text: stored `derived`, never checked by
+Jev, and wrapped as untrusted wherever it enters model context. The people it mentions are
+notified (`mention`); the agents and workflows it mentions start nothing. Each post is a tool
+call in the [usage ledger](usage-and-limits.md#the-usage-ledger).
+
 ## Live updates
 
 Nothing polls. Conversations and the chat list update live over server-sent events, fed through
