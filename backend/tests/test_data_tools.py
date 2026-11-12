@@ -113,6 +113,7 @@ STORE_TABLES = {
         "embedding_columns",
         "events",
         "invocations",
+        "memories",
         "people",
         "sandbox_sessions",
         "schema_change_requests",

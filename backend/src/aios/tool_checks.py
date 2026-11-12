@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 
 # The platform's own tools, whose output doesn't come from outside: the store's schema listing,
 # search (whose items carry their stored verdicts, and only clean, released and derived ones are
-# found), and writes and schema change requests (their outcome and approval status).
+# found), writes and schema change requests (their outcome and approval status), and
+# remembering and forgetting (which memory, or why not).
 TRUSTED = frozenset(
     {
         "describe_data",
@@ -40,6 +41,8 @@ TRUSTED = frozenset(
         "search_history",
         "write_data",
         "request_schema_change",
+        "remember",
+        "forget",
     }
 )
 # Tools that check their own output, cell by cell (`aios.tools.data`).

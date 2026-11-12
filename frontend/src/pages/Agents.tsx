@@ -30,6 +30,7 @@ import { ProvenanceLine, StartedBy, useSavedBy } from "@/components/provenance";
 import { AgentRunStatusBadge, RunCountersLine } from "@/components/agent-runs";
 import { ExportLink, ImportButton, UnrunnableNotice } from "@/components/ImportDialog";
 import { GuardFields, guardsValid } from "@/components/Limits";
+import { AgentMemories } from "@/components/memories";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -269,6 +270,7 @@ export function AgentDetail() {
   const agent = useLoad(useCallback(() => api.getAgent(id), [id]));
   const versions = useLoad(useCallback(() => api.listAgentVersions(id), [id]));
   const runs = useLoad(useCallback(() => api.listRuns(id), [id]));
+  const memories = useLoad(useCallback(() => api.listMemories(id), [id]));
   const catalog = useLoad(api.listTools);
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -526,6 +528,21 @@ export function AgentDetail() {
                   </ul>
                 )}
               </>
+            ),
+          },
+          {
+            id: "memory",
+            label: "Memory",
+            count: memories.data?.length,
+            content: (
+              <AgentMemories
+                agentId={id}
+                memories={memories.data}
+                error={memories.error}
+                canEdit={!buildRefusal}
+                runHref={(runId) => listHref(`/agents/${id}/runs/${runId}`)}
+                reload={memories.reload}
+              />
             ),
           },
           {

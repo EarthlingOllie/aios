@@ -205,6 +205,11 @@ class Settings(BaseSettings):
     # (`queue_lease_seconds`), so an item can hold the loop for a minute or two and carry on.
     workflow_run_no_progress_limit: float = 5 * 60
 
+    # Agents' memories (`aios.memory`): the longest one `remember` stores (characters), and how
+    # many each agent may keep.
+    memory_max_chars: int = Field(default=2000, ge=1)
+    memory_max_per_agent: int = Field(default=5000, ge=1)
+
     # Hybrid search.
     search_candidates: int = 40
     search_rrf_k: int = 60

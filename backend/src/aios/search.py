@@ -1,14 +1,17 @@
 """Unified search: hybrid retrieval (pgvector cosine search + Postgres full-text search, fused
 with RRF) over a data store's search index (`aios.search_index`): its documents' chunks, its
-chat messages, its runs' messages and its briefs, in its own database, as its read-only role.
+chat messages, its runs' messages, its briefs and its agents' memories, in its own database, as
+its read-only role.
 
-Everyone in the organisation can find everything, so nothing here filters by who's asking. But
-it finds only items whose Jev verdict is clean, released or derived (`aios.verdicts`): flagged
-items, and items still awaiting Jev's check, are left out. An
-item not yet embedded is found by keyword alone, and so is everything when the query can't be
-embedded (the embedding API is down): an outage doesn't blind search.
+Everyone in the organisation can find everything but memories, so nothing else here filters by
+who's asking. A memory is found only by its own agent's runs (`Filters.memories_of_run`): never
+by the Search page, nor by another agent. And it finds only items whose Jev verdict is clean,
+released or derived (`aios.verdicts`): flagged items, and items still awaiting Jev's check, are
+left out. An item not yet embedded is found by keyword alone, and so is everything when the
+query can't be embedded (the embedding API is down): an outage doesn't blind search.
 
-The search tool (`aios.tools.search`) and the Search page's endpoint search every kind; the
+The search tool (`aios.tools.search`) and the Search page's endpoint search every kind (the
+Search page's but memories); the
 document search and history search tools are the same search fixed to their kind, with their
 own result shapes (`document_search_results`, `history_search_results`).
 """
@@ -72,7 +75,7 @@ SEARCH_SQL = """
     )
     SELECT f.id, f.score, f.semantic_rank, f.lexical_rank,
            i.kind, i.text, i.ref, i.created_at, i.document_id, i.chat_id, i.agent_id,
-           i.agent_run_id, i.message_id, i.invocation_id, i.author_user_id,
+           i.agent_run_id, i.message_id, i.invocation_id, i.author_user_id, i.memory_id,
            d.filename, c.name AS chat_name, a.name AS agent_name,
            r.title AS run_title, r.created_at AS run_created_at
     FROM fused f
@@ -96,7 +99,8 @@ STORE_BUSY = store_busy("the search")
 class Filters:
     """What a search is narrowed to: any of these kinds (all, if none), written in this time
     range, in this chat, by or for this agent; and never this run's messages (the run
-    searching: it's not a past run)."""
+    searching: it's not a past run). Memories only of the agent of the run `memories_of_run`
+    (the run searching); none without one."""
 
     kinds: Sequence[SearchItemKind] = ()
     since: datetime | None = None
@@ -104,11 +108,21 @@ class Filters:
     chat_id: int | None = None
     agent_id: int | None = None
     exclude_run_id: int | None = None
+    memories_of_run: int | None = None
 
     def sql(self) -> tuple[str, dict[str, Any]]:
         # Only what may reach a model: never flagged items, nor any Jev hasn't checked yet.
         where = ["i.verdict::text = ANY(:visible)"]
         params: dict[str, Any] = {"visible": [v.value for v in VISIBLE]}
+        # An agent's memories are its own.
+        if self.memories_of_run is None:
+            where.append("i.kind::text <> 'memory'")
+        else:
+            where.append(
+                "(i.kind::text <> 'memory' OR i.agent_id ="
+                " (SELECT r.agent_id FROM aios.agent_runs r WHERE r.id = :memories_of_run))"
+            )
+            params["memories_of_run"] = self.memories_of_run
         if self.kinds:
             where.append("i.kind::text = ANY(:kinds)")
             params["kinds"] = [SearchItemKind(k).value for k in self.kinds]
@@ -161,6 +175,7 @@ class SearchHit:
     run_created_at: datetime | None = None
     invocation_id: int | None = None
     author_user_id: int | None = None
+    memory_id: int | None = None
 
 
 def vector_literal(vec: list[float]) -> str:
@@ -232,6 +247,7 @@ def search_with_vector(
             run_created_at=r["run_created_at"],
             invocation_id=r["invocation_id"],
             author_user_id=r["author_user_id"],
+            memory_id=r["memory_id"],
         )
         for r in rows
     ]
@@ -284,7 +300,10 @@ def item_result(hit: SearchHit) -> dict:
     """An item as the search tool returns it to the model: its kind, text and when it was
     written, with where it's from."""
     result: dict[str, Any] = {"kind": hit.kind.value, "text": hit.text}
-    if hit.kind == SearchItemKind.document_chunk:
+    if hit.kind == SearchItemKind.memory:
+        # Its id, for `forget`.
+        result["memory_id"] = hit.memory_id
+    elif hit.kind == SearchItemKind.document_chunk:
         result |= {"source": hit.filename, "headings": hit.ref.get("headings", [])}
     elif hit.kind == SearchItemKind.run_message:
         result |= {

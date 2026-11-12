@@ -9,7 +9,9 @@ source is a foreign key that cascades):
 - posting a chat message indexes it, and so does a run posting its result (`index_chat_message`);
 - ending a turn indexes the user's and the assistant's text of it, not tool results
   (`index_turn`);
-- the handoff indexes its brief (`index_brief`).
+- the handoff indexes its brief (`index_brief`);
+- remembering, or a person's edit, indexes a memory (`index_memory`), found only by its own
+  agent (`aios.search.Filters`).
 
 **Verdicts.** Each item carries its source's Jev verdict (`aios.verdicts`): a chunk its
 document's, a chat message its message's (`clean` for a person's, which Jev checks as it's
@@ -45,6 +47,7 @@ from aios.datastores.models import (
     Chunk,
     Document,
     Invocation,
+    Memory,
     SearchItem,
     SearchItemKind,
 )
@@ -149,6 +152,20 @@ def index_brief(store: Session, invocation: Invocation) -> None:
         chat_id=invocation.chat_id,
         agent_id=invocation.agent_id,
         text=invocation.brief,
+        verdict=Verdict.derived,
+    )
+
+
+def index_memory(store: Session, memory: Memory) -> None:
+    """Index an agent's memory (flushed): by its agent, with no run or chat, so the agent
+    recalls it wherever it works; `derived`, like everything agents write."""
+    _write(
+        store,
+        ["memory_id"],
+        kind=SearchItemKind.memory,
+        memory_id=memory.id,
+        agent_id=memory.agent_id,
+        text=memory.content,
         verdict=Verdict.derived,
     )
 

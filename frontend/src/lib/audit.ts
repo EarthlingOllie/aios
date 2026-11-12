@@ -47,6 +47,7 @@ export const AUDIT_ACTIONS = [
   "organisation",
   "settings",
   "data",
+  "memory",
   "runs",
   "messages",
   "agent.created",
@@ -68,6 +69,9 @@ export const AUDIT_ACTIONS = [
   "organisation.deletion_scheduled",
   "settings.changed",
   "data.written",
+  "memory.edited",
+  "memory.deleted",
+  "memory.forgotten",
   "runs.pruned",
   "messages.pruned",
 ];

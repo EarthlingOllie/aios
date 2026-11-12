@@ -53,6 +53,7 @@ def test_an_existing_store_gets_the_mirror_from_the_store_migration_command(db, 
     store = store_row(db, store_id)
     with as_owner(store) as conn:
         # What the revisions after it made, then the mirror.
+        conn.execute("DROP TABLE aios.memories CASCADE")
         conn.execute("DROP TABLE aios.events CASCADE")
         conn.execute("ALTER TABLE aios.chat_messages DROP COLUMN verdict")
         conn.execute("DROP TABLE aios.table_shares, aios.table_owners")
