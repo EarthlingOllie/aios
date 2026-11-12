@@ -127,6 +127,7 @@ STORE_TABLES = {
         "table_owners",
         "table_shares",
         "triggers",
+        "turn_tool_calls",
         "turns",
         "usage",
         "workflow_edges",

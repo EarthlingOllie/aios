@@ -49,6 +49,8 @@ PLATFORM_TABLES = {
     # Agents' login roles in their stores (`aios.datastores.agent_roles`): names and encrypted
     # passwords, credentials like the stores' own.
     "agent_store_roles",
+    # What each store used when measured (`aios.datastores.quota`): sizes, for Insights.
+    "store_usage_samples",
 }
 MOVED = (
     "triggers",
