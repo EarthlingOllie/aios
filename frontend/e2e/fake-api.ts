@@ -312,6 +312,10 @@ export type SourceRow = {
   /** Its syncs, newest first. */
   syncs?: SyncRow[];
   created_at: string;
+  /** A URL source's page; an email source's allowed senders; a webhook source's endpoint. */
+  url?: string;
+  allowed_senders?: string[];
+  webhook_url?: string;
 };
 
 /** Something a connector can sync; `restricted` at its source. */
@@ -816,7 +820,7 @@ const FILTER_FIELDS: Record<string, string[]> = {
   table_written: ["tables", "operations"],
   schema_change_applied: ["tables"],
   chat_message: ["chat_id", "author_kinds", "mentions", "keywords"],
-  webhook_received: [],
+  webhook_received: ["sources"],
 };
 
 /** What an event trigger fires on, as the API describes it. */
@@ -990,6 +994,14 @@ export class FakeApi {
   sources: SourceRow[] = [
     { id: 1, kind: "upload", name: "Uploads", status: "active", created_at: NOW },
   ];
+  /** The kinds of source an admin can add (GET /api/source-kinds). */
+  sourceKinds: { kind: "url" | "webhook" | "email"; unavailable: string | null }[] = [
+    { kind: "url", unavailable: null },
+    { kind: "webhook", unavailable: null },
+    { kind: "email", unavailable: null },
+  ];
+  /** How many webhook secrets and email addresses have been made, so each is new. */
+  private secrets = 0;
   /** The providers a source can be added with (GET /api/source-providers). */
   sourceProviders: { provider: string; unavailable: string | null }[] = [{ provider: "test", unavailable: null }];
   /** The providers a connector can be made with (GET /api/connector-providers). */
@@ -1499,12 +1511,13 @@ export class FakeApi {
 
   private sourceOut(source: SourceRow) {
     const document_count = this.documents.filter((d) => d.source.id === source.id).length;
-    const { syncs = [], ...rest } = source;
-    const upload = source.kind === "upload";
+    const { syncs = [], webhook_url: _url, ...rest } = source;
+    // Uploads, webhook and email sources don't sync.
+    const unsynced = ["upload", "webhook", "email"].includes(source.kind);
     return {
       health: "healthy",
       provider: null,
-      interval_seconds: upload ? null : 900,
+      interval_seconds: unsynced ? null : 900,
       item_count: 0,
       next_sync_at: null,
       ...rest,
@@ -1514,7 +1527,17 @@ export class FakeApi {
   }
 
   private sourceDetail(source: SourceRow) {
-    return { ...this.sourceOut(source), syncs: source.syncs ?? [] };
+    return { ...this.sourceOut(source), syncs: source.syncs ?? [], webhook_url: source.webhook_url ?? null };
+  }
+
+  /** A new webhook secret (with its URL) or email address for the source, answered once. */
+  private rotate(source: SourceRow) {
+    this.secrets += 1;
+    if (source.kind === "webhook") {
+      source.webhook_url = `http://localhost:5173/api/webhooks/token${this.secrets}`;
+      return { ...this.sourceDetail(source), webhook_secret: `whsec_secret${this.secrets}` };
+    }
+    return { ...this.sourceDetail(source), email_address: `in-address${this.secrets}@in.aios.test` };
   }
 
   addDocument(filename: string, fields: Partial<DocumentRow> = {}): DocumentRow {
@@ -1732,7 +1755,13 @@ export class FakeApi {
       filter: isEvent ? normalisedFilter(body.filter as Record<string, unknown>) : {},
       fire_on_own_events: isEvent ? !!body.fire_on_own_events : false,
       debounce_seconds: isEvent ? ((body.debounce_seconds as number | null | undefined) ?? null) : null,
-      webhook_url: isEvent && body.event_type === "webhook_received" ? `${WEBHOOK_URL}token-${id}` : null,
+      // Listening to webhook sources, a webhook trigger has no URL of its own.
+      webhook_url:
+        isEvent &&
+        body.event_type === "webhook_received" &&
+        !((body.filter as { sources?: number[] } | undefined)?.sources ?? []).length
+          ? `${WEBHOOK_URL}token-${id}`
+          : null,
       disabled_reason: null,
       next_run_at: isEvent || !body.enabled ? null : NOW,
       last_fired_at: null,
@@ -3435,6 +3464,7 @@ export class FakeApi {
       path === "/api/sources" ||
       path.startsWith("/api/sources/") ||
       path === "/api/source-providers" ||
+      path === "/api/source-kinds" ||
       path === "/api/connector-providers" ||
       path === "/api/connectors" ||
       path.startsWith("/api/connectors/") ||
@@ -3503,6 +3533,7 @@ export class FakeApi {
         return reply(200, this.sources.map((s) => this.sourceOut(s)));
       }
       if (path === "/api/source-providers" && method === "GET") return reply(200, this.sourceProviders);
+      if (path === "/api/source-kinds" && method === "GET") return reply(200, this.sourceKinds);
       const notAdmin = () => {
         const who = this.roleOf(this.me.id) === "editor" ? "Editors" : "Participants";
         return fail(403, `${who} can't add, change, sync, pause or remove sources. Ask an admin.`);
@@ -3577,6 +3608,51 @@ export class FakeApi {
         typeof seconds === "number" && seconds < 300
           ? fail(422, "A source can sync at most every 5 minutes (300 seconds).")
           : null;
+      // As `aios.url_fetch` refuses: not HTTP(S) on 80 or 443, or a private, loopback or
+      // link-local address.
+      const unreachable = (url: string) => {
+        try {
+          const parsed = new URL(url);
+          return (
+            !["http:", "https:"].includes(parsed.protocol) ||
+            !["", "80", "443"].includes(parsed.port) ||
+            /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/.test(parsed.hostname)
+          );
+        } catch {
+          return true;
+        }
+      };
+      if (path === "/api/sources" && method === "POST" && body.kind && body.kind !== "connector") {
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        const kind = body.kind as "url" | "webhook" | "email";
+        const offered = this.sourceKinds.find((k) => k.kind === kind);
+        if (offered?.unavailable) return fail(422, offered.unavailable);
+        if (kind === "url") {
+          if (unreachable(String(body.url ?? ""))) return fail(422, "This address isn't reachable from aios");
+          const refused = tooOften(body.interval_seconds);
+          if (refused) return refused;
+          const source = this.addSource(String(body.name), "url", {
+            url: String(body.url),
+            interval_seconds: (body.interval_seconds as number | undefined) ?? 900,
+            syncs: [this.sync({ kind: "full" })],
+          });
+          return reply(201, this.sourceDetail(source));
+        }
+        const source = this.addSource(String(body.name), kind, {
+          interval_seconds: null,
+          ...(kind === "email" ? { allowed_senders: (body.allowed_senders as string[] | undefined) ?? [] } : {}),
+        });
+        return reply(201, this.rotate(source));
+      }
+      if ((m = path.match(/^\/api\/sources\/(\d+)\/secret$/)) && method === "POST") {
+        const source = this.sources.find((s) => s.id === Number(m![1]));
+        if (!source) return fail(404, "Not Found");
+        if (this.roleOf(this.me.id) !== "admin") return notAdmin();
+        if (source.kind !== "webhook" && source.kind !== "email") {
+          return fail(409, "Only a webhook or email source has a secret or address to rotate.");
+        }
+        return reply(200, this.rotate(source));
+      }
       if (path === "/api/sources" && method === "POST") {
         if (this.roleOf(this.me.id) !== "admin") return notAdmin();
         const provider = this.sourceProviders.find((p) => p.provider === body.provider);
@@ -3627,6 +3703,13 @@ export class FakeApi {
           if (body.paused === false && source.status === "paused") source.status = "active";
           if (typeof body.name === "string") source.name = body.name;
           if (typeof body.interval_seconds === "number") source.interval_seconds = body.interval_seconds;
+          if (Array.isArray(body.allowed_senders)) {
+            source.allowed_senders = (body.allowed_senders as string[]).map((x) => x.toLowerCase());
+          }
+          if (typeof body.url === "string") {
+            if (unreachable(body.url)) return fail(422, "This address isn't reachable from aios");
+            source.url = body.url;
+          }
           return reply(200, this.sourceDetail(source));
         }
         return fail(404, "Not Found");

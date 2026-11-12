@@ -49,6 +49,7 @@ from aios.models.stores import (
 )
 from aios.models.triggers import (
     EventType,
+    InboundAddress,
     ScheduleDue,
     TriggerKind,
     TriggerStatus,
@@ -97,6 +98,7 @@ __all__ = [
     "TriggerStatus",
     "ScheduleDue",
     "WebhookToken",
+    "InboundAddress",
     "WorkItem",
     "WorkKind",
     "WorkLane",

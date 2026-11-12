@@ -8,7 +8,8 @@
   it again. `drain_once` is the same pass, run once, for tests and tools.
 - **Draining a store.** In order, it claims undispatched events (`event_dispatch_batch` at a
   time, skipping those another process holds), matches each against the store's enabled event
-  triggers of its type and their filters (`outbox.matches`; a webhook's only its own trigger),
+  triggers of its type and their filters (`outbox.matches`; a webhook's call only its own
+  trigger, a webhook source's delivery the triggers listening to the source),
   applies the loop rules to each match, fires those that pass (or gathers them, `_gather`), and
   marks the events dispatched: all in one transaction, so an event is dispatched exactly when
   its firings and refusals are recorded.
@@ -292,8 +293,14 @@ def _matches(trigger: Trigger, event: Event) -> bool:
     webhook's only if it came to its own endpoint."""
     if trigger.event_type != event.type:
         return False
-    if event.type == EventType.webhook_received and event.payload.get("trigger_id") != trigger.id:
-        return False
+    if event.type == EventType.webhook_received:
+        # A trigger's own endpoint's call fires it alone; a webhook source's delivery fires the
+        # triggers listening to that source.
+        if "source_id" in event.payload:
+            if event.payload["source_id"] not in (trigger.filter or {}).get("sources", []):
+                return False
+        elif event.payload.get("trigger_id") != trigger.id:
+            return False
     return outbox.matches(event.type, trigger.filter or {}, event.payload)
 
 

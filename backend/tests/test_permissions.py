@@ -114,6 +114,8 @@ ROUTES = {
     ("GET", "/sources"): READ,
     ("POST", "/sources"): SOURCES,
     ("GET", "/source-providers"): READ,
+    ("GET", "/source-kinds"): READ,
+    ("POST", "/sources/{source_id}/secret"): SOURCES,
     ("GET", "/sources/{source_id}"): READ,
     ("POST", "/sources/{source_id}/sync"): SOURCES,
     ("PATCH", "/sources/{source_id}"): SOURCES,

@@ -323,6 +323,21 @@ class Settings(BaseSettings):
     # The test provider (`aios.source_providers.test`): a source fed from in-process feeds, for
     # development and tests only. Compose turns it on; production never does.
     sources_test_provider_enabled: bool = False
+    # URL sources (`aios.url_fetch`): a page is fetched with at most `url_fetch_max_redirects`
+    # redirects, `url_fetch_max_bytes` of body and `url_fetch_timeout_seconds` in all.
+    url_fetch_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
+    url_fetch_max_redirects: int = Field(default=5, ge=0)
+    url_fetch_timeout_seconds: float = Field(default=20, gt=0)
+    # Email sources (`aios.email_sources`): each has an address on `inbound_mail_domain`, whose
+    # receiving service posts mail to `/api/inbound-mail` with `inbound_mail_secret` as its
+    # bearer token. With no domain, email sources are unavailable (they're on the roadmap for
+    # deployments without an inbound mail service). An attachment past
+    # `email_attachment_max_bytes` is dropped; a posted message is at most
+    # `inbound_mail_body_limit_bytes`.
+    inbound_mail_domain: str | None = None
+    inbound_mail_secret: SecretStr = SecretStr("")
+    email_attachment_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+    inbound_mail_body_limit_bytes: int = Field(default=40 * 1024 * 1024, ge=1)
 
     # Connectors (`aios.connectors`): connections to Slack, Google Drive, GitHub (and, where the
     # test provider is on, the test provider). Their credentials are kept in the platform

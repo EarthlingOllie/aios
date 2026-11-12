@@ -19,6 +19,7 @@ from aios.api import (
     documents,
     dropped,
     exports,
+    inbound_mail,
     me,
     notifications,
     organisation,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(chats.router)
     app.include_router(streams.router)
     app.include_router(webhooks.router)
+    app.include_router(inbound_mail.router)
     if settings.dev_login_enabled:
         log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
         app.include_router(dev_auth.router)

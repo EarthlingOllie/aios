@@ -16,7 +16,9 @@ current version). Two kinds:
   that chat, as delivery does to the chat it delivers to.
 - **Webhook triggers** fire on calls to their own public endpoint (`aios.api.webhooks`). Made,
   they're given its URL and signing secret, the secret only then and when it's rotated
-  (`rotate_webhook_secret`), which changes the URL too (`aios.webhooks`).
+  (`rotate_webhook_secret`), which changes the URL too (`aios.webhooks`). One whose filter
+  names webhook sources (`filter.sources`) instead fires on their deliveries
+  (`aios.push_sources`), with no endpoint of its own.
 
 A trigger is its organisation's, like its target, and is in its store beside it: every member
 sees, changes and deletes every one, and each says which member made it and which last changed
@@ -413,7 +415,8 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> Ap
     if event_type == EventType.chat_message:
         listen_to(store, user_id, trigger, event_filter["chat_id"], listened)
     applied = Applied()
-    if event_type == EventType.webhook_received:
+    # A webhook trigger listening to webhook sources has no endpoint of its own.
+    if event_type == EventType.webhook_received and not event_filter.get("sources"):
         if trigger.webhook_secret is None:
             applied.secret = new_webhook_secret(trigger)
     elif trigger.webhook_token_hash is not None:

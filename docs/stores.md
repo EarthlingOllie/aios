@@ -363,12 +363,49 @@ once, and leaves their content searchable), and one without its app settings is 
 
 Connecting, scope changes and removal (with the keep-or-delete choice) are in the audit log.
 
+**URL, webhook and email sources** (`aios.url_sources`, `aios.push_sources`, store revision
+`0033`, platform revision `0081`). Admins add them on the Sources tab (`GET .../source-kinds` says
+which this deployment offers, and why any isn't).
+
+- **A URL source** fetches one web page on its interval as a file item (a document), through
+  `aios.url_fetch`: HTTP or HTTPS on ports 80 and 443 only, every address the host resolves to
+  must be public (no private, loopback, link-local, metadata, shared or IPv4-mapped private
+  address), checked again after every redirect, and the connection is made to the address that
+  was checked, so a DNS answer that changes in between is never used. At most
+  `URL_FETCH_MAX_REDIRECTS` (5) redirects, `URL_FETCH_MAX_BYTES` (5 MiB) and
+  `URL_FETCH_TIMEOUT_SECONDS` (20). Saving an address that fails the check is a 422, "This
+  address isn't reachable from aios"; one that turns unreachable later fails its syncs with that.
+  Fetches are conditional (the ETag, Last-Modified and content hash are the source's cursor): an
+  unchanged page isn't ingested again, a changed one replaces its document's content, and "not
+  found" or "gone" removes the document while the source stays active.
+- **A webhook source** is a webhook that keeps its deliveries: the same endpoint, signature and
+  checks as webhook triggers (see [Triggers](triggers.md)), with its secret encrypted on the
+  source and shown once (rotating it changes the URL too). A delivery Jev finds clean is stored
+  as a searchable message item, named by its delivery id, and fires webhook received for the
+  triggers listening to the source (`filter.sources`); a flagged one is stored flagged (not
+  searchable), fires nothing and answers 422; one Jev can't check answers 503 and isn't stored.
+- **An email source** has an unguessable address on `INBOUND_MAIL_DOMAIN`, shown once (rotating
+  it cuts the old one off). The receiving mail service posts each message to
+  `/api/inbound-mail` with `INBOUND_MAIL_SECRET` as its bearer token. A message is kept only from
+  an allowed sender (none at first: nothing is kept) that passed SPF or DKIM; anything else is
+  dropped and counted on a sync record. Kept, it's a message item threaded under the first
+  message of its thread (by `In-Reply-To` and `References`), with its attachments (each within
+  `EMAIL_ATTACHMENT_MAX_BYTES`) as file items. Without an inbound mail domain, email sources are
+  unavailable. Items Jev can't check yet are checked again by the awaiting-check sweep.
+
+Webhook and email sources never sync, so their items are never reconciled away; what arrives is
+recorded as a sync of its own. Only the hash of a webhook source's token, or an email source's
+address, is kept (`sources.token_hash`, with the encrypted `sources.secret` on the deny list), and
+in the platform's `webhook_tokens` and `inbound_addresses` indexes.
+
 ### The deny list
 
 A few columns are left out of the read-only role's grants (`provision.DENIED_COLUMNS`), and so
 out of `query_data`, `describe_data` and the Tables view: people's emails in the people mirror,
-a run's sandbox's bearer token (`sandbox_sessions.secret`) and the audit log's details
-(`audit_log.details`), for now (later: other secrets and credentials). The role keeps the table's other
+a run's sandbox's bearer token (`sandbox_sessions.secret`), the audit log's details
+(`audit_log.details`), webhook triggers' and webhook and email sources' secrets and token hashes
+(`triggers.webhook_secret`, `triggers.webhook_token_hash`, `sources.secret`,
+`sources.token_hash`), for now (later: other secrets and credentials). The role keeps the table's other
 columns. It's a few grant lines, applied every time a store is migrated (the default
 privileges would otherwise give a new table's every column).
 

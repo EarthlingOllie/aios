@@ -1,6 +1,7 @@
-"""Webhook triggers' public endpoint: `POST /api/webhooks/{token}`, called by systems outside,
-signed with the trigger's secret (`aios.webhooks`), with no session and no organisation in the
-path: the token leads to the trigger's store (`WebhookToken`).
+"""Webhooks' public endpoint: `POST /api/webhooks/{token}`, called by systems outside, signed
+with the webhook's secret (`aios.webhooks`), with no session and no organisation in the path:
+the token leads to its store (`WebhookToken`), and there to a webhook trigger, or a webhook
+source, which keeps its deliveries (`aios.push_sources`).
 
 In order, before anything is written:
 
@@ -21,6 +22,15 @@ In order, before anything is written:
 Then the delivery id and a webhook received event (its delivery id and body, for this trigger
 alone) are written in one transaction, and the answer is **202** with the delivery id: the
 dispatcher fires the trigger on its own time (`aios.dispatcher`).
+
+**A webhook source** takes the same checks up to the signature (a paused or removed one is a
+404), then:
+
+- a delivery id it has stored is a **202** again (or a **422** again, if it was flagged);
+- Jev checks the body: unchecked is a **503**, and nothing is stored; flagged is stored as a
+  flagged message item (not searchable), audited, fires nothing and is a **422**; clean is
+  stored as a searchable message item with a webhook received event (its source, delivery id,
+  item and body), for the triggers listening to the source, and is a **202**.
 """
 
 import json
@@ -36,12 +46,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from aios import audit, dispatcher, jev, outbox, ratelimits, webhooks
+from aios import audit, dispatcher, jev, outbox, push_sources, ratelimits, webhooks
 from aios.api.workflows import run_input
 from aios.config import get_settings
 from aios.datastores import store_session
 from aios.datastores.models import Trigger, WebhookDelivery, Workflow
 from aios.db import SessionLocal
+from aios.jev import Verdict
 from aios.models import EventType, TriggerKind, TriggerTargetKind, WebhookToken
 
 router = APIRouter(prefix="/api")
@@ -69,6 +80,8 @@ def _token(token_hash: str) -> WebhookToken | None:
 
 def _trigger(index: WebhookToken, token_hash: str) -> _Found | None:
     """The enabled webhook trigger the token leads to, from its store."""
+    if index.trigger_id is None:
+        return None
     with store_session(index.data_store_id) as store:
         trigger = store.scalar(
             select(Trigger).where(
@@ -192,7 +205,13 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
     settings = get_settings()
     token_hash = webhooks.token_hash(token)
     index = await run_in_threadpool(_token, token_hash)
-    found = await run_in_threadpool(_trigger, index, token_hash) if index is not None else None
+    found: _Found | push_sources.FoundSource | None = None
+    if index is not None and index.source_id is not None:
+        found = await run_in_threadpool(
+            push_sources.webhook_source, index.data_store_id, index.source_id, token_hash
+        )
+    elif index is not None:
+        found = await run_in_threadpool(_trigger, index, token_hash)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await run_in_threadpool(ratelimits.throttle, "webhook", settings.webhook_rate, token_hash)
@@ -219,6 +238,8 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"A delivery id is at most {MAX_DELIVERY_ID} characters."
         )
+    if isinstance(found, push_sources.FoundSource):
+        return await _keep(found, delivery_id or str(uuid.uuid4()), raw, body)
     if delivery_id and await run_in_threadpool(_seen, found, delivery_id):
         return _accepted(delivery_id)
     delivery_id = delivery_id or str(uuid.uuid4())
@@ -239,6 +260,44 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
             {"message": FLAGGED, "reason": judgement.reason or ""},
         )
     await run_in_threadpool(_received, found, delivery_id, body)
+    return _accepted(delivery_id)
+
+
+async def _keep(
+    found: push_sources.FoundSource, delivery_id: str, raw: bytes, body: Any
+) -> JSONResponse:
+    """A webhook source's delivery, past the signature check (see the module)."""
+    settings = get_settings()
+    seen = await run_in_threadpool(push_sources.delivery_verdict, found, delivery_id)
+    if seen == Verdict.flagged:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"message": FLAGGED})
+    if seen is not None:
+        return _accepted(delivery_id)
+    text = raw.decode("utf-8", "replace")
+    try:
+        judgement = await jev.check(text, SOURCE)
+    except jev.JevUnavailable:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            UNCHECKED,
+            headers={"Retry-After": str(settings.webhook_retry_after_seconds)},
+        ) from None
+    verdict = Verdict.flagged if judgement.flagged else Verdict.clean
+    stored = await run_in_threadpool(
+        push_sources.store_delivery,
+        found,
+        delivery_id,
+        text,
+        body,
+        verdict,
+        judgement.reason,
+        judgement.version,
+    )
+    if verdict == Verdict.flagged and stored:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"message": FLAGGED, "reason": judgement.reason or ""},
+        )
     return _accepted(delivery_id)
 
 

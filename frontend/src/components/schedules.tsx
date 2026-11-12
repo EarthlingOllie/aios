@@ -199,7 +199,8 @@ export function filterFor(
         keywords: listOf(typed.keywords),
       };
     case "webhook_received":
-      return {};
+      // Listening to webhook sources, it has no URL of its own.
+      return filter.sources?.length ? { sources: filter.sources } : {};
   }
 }
 
@@ -671,10 +672,32 @@ export function EventTriggerEditor({
         </>
       )}
       {eventType === "webhook_received" && (
-        <p className="text-muted-foreground text-sm">
-          It gets its own URL and signing secret, shown once it's created. Callers sign each call;
-          Jev checks every body before anything fires.
-        </p>
+        <>
+          <p className="text-muted-foreground text-sm">
+            It gets its own URL and signing secret, shown once it's created, unless it listens to webhook sources.
+            Callers sign each call; Jev checks every body before anything fires.
+          </p>
+          {sources.data?.some((s) => s.kind === "webhook") && (
+            <fieldset className="flex flex-col gap-1">
+              <legend className="mb-1 text-sm font-medium">Webhook sources</legend>
+              <p className="text-muted-foreground text-xs">
+                Ticked, it fires on their deliveries instead, and has no URL of its own.
+              </p>
+              {sources.data
+                .filter((s) => s.kind === "webhook")
+                .map((source) => (
+                  <label key={source.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={chosenSources.includes(source.id)}
+                      onChange={(e) => toggleSource(source.id, e.target.checked)}
+                    />
+                    {source.name}
+                  </label>
+                ))}
+            </fieldset>
+          )}
+        </>
       )}
       <Field
         label="Gather events for (seconds)"

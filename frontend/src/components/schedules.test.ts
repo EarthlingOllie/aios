@@ -46,7 +46,8 @@ describe("event trigger filters", () => {
       mentions: ["agent:3"],
       keywords: ["outage"],
     });
-    expect(filterFor("webhook_received", filter, typed)).toEqual({});
+    expect(filterFor("webhook_received", filter, typed)).toEqual({ sources: [1] });
+    expect(filterFor("webhook_received", {}, typed)).toEqual({});
   });
 });
 

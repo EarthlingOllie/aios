@@ -106,6 +106,8 @@ UNSCOPED = {
     ("GET", "/api/connectors/callback"),
     # Webhook triggers' public endpoint: callers outside, keyed by the token.
     ("POST", "/api/webhooks/{token}"),
+    # The receiving mail service's: each recipient's address leads to the organisation.
+    ("POST", "/api/inbound-mail"),
 }
 DEV = {("GET", "/api/dev/users"), ("POST", "/api/dev/session")}
 

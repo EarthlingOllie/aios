@@ -10,7 +10,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -74,8 +74,9 @@ class ScheduleDue(Base):
 
 
 class WebhookToken(Base):
-    """Where a webhook trigger's token leads: the store and trigger it belongs to, by the
-    token's hash (the token itself isn't kept). The public endpoint (`aios.api.webhooks`) is
+    """Where a webhook's token leads: the store and the trigger, or webhook source (a webhook
+    that keeps its deliveries, `aios.push_sources`), it belongs to, by the token's hash (the
+    token itself isn't kept). The public endpoint (`aios.api.webhooks`) is
     keyed by the token alone, so this is how it finds the organisation. Written before the store
     commits the trigger's hash, and removed after it drops it: a row whose trigger no longer has
     that hash leads nowhere (the store, which the endpoint checks too, is the source of truth)."""
@@ -86,7 +87,34 @@ class WebhookToken(Base):
     data_store_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="CASCADE"), index=True
     )
-    trigger_id: Mapped[int] = mapped_column(Integer)
+    # The trigger's id in that store, or the source's: exactly one of the two.
+    trigger_id: Mapped[int | None] = mapped_column(Integer)
+    source_id: Mapped[int | None] = mapped_column(Integer)
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "(trigger_id IS NULL) <> (source_id IS NULL)", name="ck_webhook_tokens_one_target"
+        ),
+    )
+
+
+class InboundAddress(Base):
+    """Where an email source's address leads: the store and source it belongs to, by the
+    address's hash (the address itself isn't kept), so inbound mail (`aios.api.inbound_mail`)
+    finds them. Written before the store commits the source's hash, removed after it drops it:
+    the store, which inbound mail checks too, is the source of truth."""
+
+    __tablename__ = "inbound_addresses"
+
+    address_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    data_store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_stores.id", ondelete="CASCADE"), index=True
+    )
+    source_id: Mapped[int] = mapped_column(Integer)
     organisation_id: Mapped[int] = mapped_column(
         ForeignKey("organisations.id", ondelete="CASCADE"), index=True
     )
