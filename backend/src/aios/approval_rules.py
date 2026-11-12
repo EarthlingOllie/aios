@@ -10,7 +10,7 @@ A kind with no row has its default. Admins may raise a kind's role, never lower 
 default (`Lowered`). A request needs the highest role among its operations (`needed`): one that
 adds a column and drops another needs an admin. Whom a new request notifies, who may decide one,
 and what the Data page shows each member all read these (`aios.datastores.resolve.approvers`,
-`aios.api.schema_changes`).
+`aios.api.approvals`).
 """
 
 from collections.abc import Iterable

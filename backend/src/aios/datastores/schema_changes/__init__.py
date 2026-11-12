@@ -14,7 +14,7 @@ to it away (`aios.datastores.dropped`), so the data tools no longer see it. Any 
 restore it until it's purged, `DATA_STORE_DROPPED_RETENTION_DAYS` later. Approving a request
 that drops anything takes the names of the tables it drops from, typed (`confirmation`).
 
-The flow (see `aios.tools.schema_change` and `aios.api.schema_changes`):
+The flow (see `aios.tools.schema_change` and `aios.api.approvals`):
 
 1. `propose` checks a spec against the store's schema (read as its read-only role), compiles
    it, and records a `SchemaChangeRequest` (in the store, `aios.schema_change_requests`) at the
