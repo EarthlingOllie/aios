@@ -11,8 +11,9 @@ holds content: what a notification says is read from the organisation's store wh
   workflow, unless they're watching the chat's stream in a visible tab; reading past it.
 - `run_failed`: the failure posted, as a reply's; for a run started by hand, the run
   (`agent_id` or `workflow_id`, and `run_id`); whoever caused it; reading past it, or opening it.
-- `approval_needed`: the approval (`approval_id`, a schema change request's id); whoever may
-  decide it; its being decided, cancelled or expired, for everyone.
+- `approval_needed`: the approval (`approval_id`: a schema change, or a workflow approval
+  step, `aios.approvals`); whoever may decide it, and only them; its being decided, cancelled
+  or expired, for everyone.
 - `released_document_changed`: the document (`document_id`); the admin who released it.
 - `organisation_deletion_scheduled` and `_cancelled`: the organisation itself (`{}`); every
   member.

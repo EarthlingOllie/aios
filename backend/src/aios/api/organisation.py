@@ -100,6 +100,11 @@ class RetentionIn(BaseModel):
     chat_days: RetentionDays | None
 
 
+class ApprovalExpiryIn(BaseModel):
+    # How many days an approval waits undecided before it expires (`aios.approvals`).
+    days: int = Field(strict=True, ge=1, le=365)
+
+
 class LimitsOut(BaseModel):
     """The caps on turns and workflow runs (`aios.limits`): the deployment's defaults, the
     organisation's overrides (null keeps the default), and so those in force, which agents and
@@ -124,6 +129,9 @@ class OrganisationOut(OrganisationSummaryOut):
     in_flight_cap_overridden: bool
     # Every member sees it; admins change it.
     retention: RetentionOut
+    # How many days an approval waits undecided before it expires (`aios.approvals`): every
+    # member sees it; admins change it.
+    approval_expiry_days: int
     # Every member sees them; admins change them.
     limits: LimitsOut
 
@@ -161,6 +169,7 @@ def organisation_out(db: Session, org: Organisation, user: User) -> Organisation
         in_flight_cap=org.in_flight_cap or get_settings().queue_in_flight_cap,
         in_flight_cap_overridden=org.in_flight_cap is not None,
         retention=retention_out(org),
+        approval_expiry_days=org.approval_expiry_days,
         limits=limits_out(org),
     )
 
@@ -272,6 +281,32 @@ def set_retention(body: RetentionIn, user: CurrentUser, org: CurrentOrganisation
             "organisation",
             org.id,
             {"setting": "retention", "from": old.model_dump(), "to": new.model_dump()},
+        )
+    db.commit()
+    return organisation_out(db, org, user)
+
+
+@router.put(
+    "/organisation/approval-expiry",
+    response_model=OrganisationOut,
+    dependencies=[allow(Action.run_organisation)],
+)
+def set_approval_expiry(
+    body: ApprovalExpiryIn, user: CurrentUser, org: CurrentOrganisation, db: DB
+):
+    """Set how many days an approval waits undecided before it expires, audited when it
+    changes. It applies to approvals made from now on; an approval node may set its own."""
+    old = org.approval_expiry_days
+    org.approval_expiry_days = body.days
+    if body.days != old:
+        audit.enqueue(
+            db,
+            org.id,
+            audit.person(user.id),
+            "settings.changed",
+            "organisation",
+            org.id,
+            {"setting": "approval_expiry_days", "from": old, "to": body.days},
         )
     db.commit()
     return organisation_out(db, org, user)

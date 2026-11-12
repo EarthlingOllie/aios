@@ -382,7 +382,10 @@ test("with no agents, says so and links to creating one", async ({ page }) => {
   api.addWorkflow("Review");
   await page.goto(inOrg("/workflows/new"));
   await page.getByLabel("Add node").click();
-  await expect(page.getByRole("listbox").getByRole("option")).toHaveText(["Review"]);
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveText([
+    "Review",
+    "Approval: a person decides",
+  ]);
   await expect(page.getByText("You have no agents yet.")).toBeVisible();
   await expect(page.getByRole("link", { name: "Create one" })).toHaveAttribute(
     "href",
@@ -672,6 +675,7 @@ test("the workflow itself and ones that run it are shown but can't be added", as
     "OuterRuns this workflow",
     "ReportCurrent workflow",
     "Review",
+    "Approval: a person decides",
   ]);
   const option = (name: string) => page.getByRole("option", { name, exact: true });
   await expect(option("Report")).toHaveAttribute("aria-disabled", "true");
@@ -682,7 +686,7 @@ test("the workflow itself and ones that run it are shown but can't be added", as
   // Choosing one does nothing; the list stays open for another choice.
   await option("Outer").click({ force: true });
   await expect(page.getByRole("listbox")).toBeVisible();
-  await expect(picker).toHaveText("Choose an agent or workflow…");
+  await expect(picker).toHaveText("Choose an agent, workflow or approval…");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add", exact: true })).toBeDisabled();
@@ -701,6 +705,8 @@ test("the picker can be used with the keyboard", async ({ page }) => {
   expect(await active()).toBe("Researcher");
   // The current workflow can be reached, so it's announced, but not chosen.
   await page.keyboard.press("End");
+  expect(await active()).toBe("Approval: a person decides");
+  await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
   expect(await active()).toBe("ReportCurrent workflow");
   await page.keyboard.press("Enter");

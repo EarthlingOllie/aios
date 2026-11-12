@@ -28,10 +28,13 @@ export type Tab = {
 export function Tabs({
   tabs,
   label,
+  renamed,
 }: {
   tabs: Tab[];
   /** Names the tab list for screen readers. */
   label?: string;
+  /** Tabs' old ids, by the id each is now: an old link opens the tab under its new name. */
+  renamed?: Record<string, string>;
 }) {
   const requested = useParams().tab;
   const { pathname, search } = useLocation();
@@ -43,7 +46,7 @@ export function Tabs({
   const page = requested === undefined ? pathname.replace(/\/$/, "") : pathname.replace(/\/[^/]*\/?$/, "");
   const current = activeTab(ids, requested ?? null);
   const selected = tabs.find((t) => t.id === current);
-  const redirect = tabRedirect(page, ids, requested, search);
+  const redirect = tabRedirect(page, ids, requested, search, renamed);
 
   const select = (id: string) => navigate(tabHref(page, ids, id, search), { replace: true });
 

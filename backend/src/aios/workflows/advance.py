@@ -14,6 +14,10 @@ A run holds no process while it goes. Two kinds of run service item move it on
 - **A workflow node** (`run_node`): an agent node's turn, on its own agent run, as a child
   invocation of the run's. Its step records how it went, and it enqueues an advance.
 
+An approval node waits for a person's decision: its step records a new approval and waits on it,
+and its approvers are notified once the advance commits. The decision (or expiry, which counts as
+not approved) enqueues an advance, which finishes the step with the outcome.
+
 A node whose agent asks for a schema change waits for a member's decision: its step becomes
 `waiting`, and once nothing else can run, so does the run. The decision enqueues an advance
 (`aios.run_service.work.enqueue_resume`), which finds the waiting step's request decided and
@@ -30,7 +34,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import jev, turns
+from aios import approvals, jev, turns
 
 # Read on the package at call time, where tests replace them.
 from aios import workflows as package
@@ -167,6 +171,9 @@ class _Advance:
     works: list[Work] = field(default_factory=list)
     # Once a node of the run has failed, no more nodes start.
     failed: bool = False
+    # Approvals its approval nodes made, with the least role that may decide each: their
+    # approvers are notified once it commits.
+    new_approvals: list[tuple[uuid.UUID, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.failed = any(s.status == WorkflowStepStatus.failed for s in self.steps.values())
@@ -193,6 +200,13 @@ class _Advance:
                 live = [s for s in sources if self._active(graph, path, s, node.key, done[s])]
                 if sources and not live:
                     outcome = self.skip(node, at)
+                elif node.approval is not None:
+                    outcome = self.approval(
+                        node,
+                        at,
+                        lambda n=node, live=live: self._input(graph, n, live, done, given),
+                        lambda n=node, live=live: self._prompt(n, live, done, given),
+                    )
                 else:
                     outcome = self.node(
                         node, at, lambda n=node, live=live: self._input(graph, n, live, done, given)
@@ -294,6 +308,86 @@ class _Advance:
                 )
         return result
 
+    def _prompt(self, node: Node, live: list[str], done: dict[str, _Outcome], given: _Given) -> str:
+        """An approval node's prompt, rendered from its template with the run's input and its
+        active predecessors' outputs, for a person to read (nothing is wrapped: no model reads
+        it). Raises `_InputFailed`."""
+        try:
+            rendered = structured.render(
+                node.approval.prompt_template,
+                given.value,
+                {s: done[s].value for s in live},
+                lambda text, _key: text,
+            )
+        except structured.TemplateMissing as exc:
+            raise _InputFailed(f"The prompt can't be written: {exc}") from exc
+        return rendered.text
+
+    def approval(
+        self, node: Node, path: tuple[str, ...], make_input, make_prompt
+    ) -> _Outcome | None:
+        """Move a ready approval node on (`aios.approvals`). Reached, it renders its prompt,
+        records its step waiting on a new approval with the prompt and its input, and waits
+        (its approvers are notified once the advance commits). Once the approval is decided
+        (or has expired, or been cancelled), its step succeeds with the outcome. None if it
+        can't start."""
+        step = self.steps.get(path)
+        if step is None:
+            if self.failed:
+                return None
+            try:
+                given = make_input()
+                prompt = make_prompt()
+            except _InputFailed as exc:
+                failed = _Outcome(WorkflowStepStatus.failed, error=str(exc))
+                step = _record_step(
+                    self.store, self.run.id, path, node, failed.status, error=failed.error
+                )
+                self.steps[path] = step
+                self.failed = True
+                return failed
+            step = _start_step(self.store, self.run.id, self.run.created_by, path, node, given.text)
+            step.input_json = None if isinstance(given.value, str) else given.value
+            step.status = WorkflowStepStatus.waiting
+            self.store.flush()
+            self.steps[path] = step
+            spec = node.approval
+            days = spec.expiry_days or approvals.store_expiry_days(self.data_store_id)
+            made = approvals.create_step_approval(
+                self.store,
+                step,
+                prompt=prompt,
+                input=given.value,
+                role=spec.approver_role,
+                days=days,
+            )
+            self.new_approvals.append((made.id, spec.approver_role))
+            return _WAITING
+        if (recorded := _recorded(step)) is not None:
+            return recorded
+        found = (
+            self.store.get(approvals.Approval, step.approval_id)
+            if step.approval_id is not None
+            else None
+        )
+        if found is None:
+            return self._finish(
+                step,
+                _Outcome(WorkflowStepStatus.failed, error="Its approval is gone."),
+            )
+        if not approvals.decided(found):
+            return _WAITING
+        result = approvals.outcome(found, self.organisation_id)
+        found.resumed_at = func.now()
+        return self._finish(
+            step,
+            _Outcome(
+                WorkflowStepStatus.succeeded,
+                output=structured.compact(result),
+                output_json=result,
+            ),
+        )
+
     def skip(self, node: Node, path: tuple[str, ...]) -> _Outcome | None:
         """Record that no active path reached a ready node (no agent run); None if nothing can
         start any more."""
@@ -342,7 +436,7 @@ class _Advance:
                 self.works.append(self._node_work(step))
                 return _RUNNING
             if not self.failed and decided_wait(self.store, step):
-                step.status, step.waiting_on_request_id = WorkflowStepStatus.running, None
+                step.status, step.approval_id = WorkflowStepStatus.running, None
                 self.works.append(self._node_work(step, resume=True))
                 return _RUNNING
             return _WAITING
@@ -509,7 +603,8 @@ def advance_run(
             # Holding nothing until a decision enqueues its next advance.
             run.status, run.waiting_since = WorkflowRunStatus.waiting, func.now()
         store.commit()
-        return moving.works, None
+    approvals.notify(data_store_id, moving.new_approvals)
+    return moving.works, None
 
 
 def end_after_rollback(store: Session, run_id: int, error: str) -> Ended:

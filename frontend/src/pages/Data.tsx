@@ -4,7 +4,7 @@ import { Loader2 } from "lucide-react";
 import { DocumentsSection, useDataStore } from "@/components/Documents";
 import { TablesSection } from "@/components/Tables";
 import { DroppedSection } from "@/components/Dropped";
-import { ChangesSection } from "@/components/SchemaChanges";
+import { ApprovalsSection } from "@/components/Approvals";
 import { SourcesSection } from "@/components/Sources";
 import { Tabs } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,7 @@ const statusVariant = {
 
 /**
  * What's in the organisation's data store. Each section is a tab with its own URL (`/data` for the
- * Overview, `/data/tables`, `/data/changes`, `/data/dropped`,
+ * Overview, `/data/tables`, `/data/approvals`, `/data/dropped`,
  * `/data/documents`, `/data/sources`), so other pages and notifications can link straight to one.
  */
 export function DataPage() {
@@ -43,6 +43,8 @@ export function DataPage() {
         </header>
         <Tabs
           label="Data sections"
+          // The Changes tab became Approvals: old links still open it.
+          renamed={{ changes: "approvals" }}
           tabs={[
             {
               id: "overview",
@@ -52,7 +54,7 @@ export function DataPage() {
               ),
             },
             { id: "tables", label: "Tables", content: <TablesSection /> },
-            { id: "changes", label: "Changes", content: <ChangesSection /> },
+            { id: "approvals", label: "Approvals", content: <ApprovalsSection /> },
             { id: "dropped", label: "Dropped", content: <DroppedSection /> },
             { id: "documents", label: "Documents", content: <DocumentsSection /> },
             { id: "sources", label: "Sources", content: <SourcesSection /> },

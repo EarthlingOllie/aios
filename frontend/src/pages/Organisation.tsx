@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2, Pencil } from "lucide-react";
 
 import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } from "@/components/crud";
+import { ApprovalExpirySection } from "@/components/ApprovalExpiry";
 import { ApprovalRulesSection } from "@/components/ApprovalRules";
 import { AuditLogSection } from "@/components/AuditLog";
 import { FlaggedSection } from "@/components/FlaggedDocuments";
@@ -66,6 +67,7 @@ export function OrganisationPage() {
           {/* Only admins see flagged content and release it. */}
           {org.role === "admin" && <FlaggedSection key={`flagged-${org.id}`} />}
           <ApprovalRulesSection key={`rules-${org.id}`} />
+          <ApprovalExpirySection key={`expiry-${org.id}`} org={org} onChanged={reload} />
           <RetentionSection key={`retention-${org.id}`} org={org} onChanged={reload} />
           <OrganisationLimitsSection key={`limits-${org.id}`} org={org} onChanged={reload} />
           <LeaveSection

@@ -28,7 +28,7 @@ const TABLE: Record<Action, { roles: Role[]; does: string }> = {
     does: "create, edit, archive or unarchive agents, skills, workflows and schedules",
   },
   documents: { roles: BUILDERS, does: "upload or delete documents" },
-  decide: { roles: BUILDERS, does: "approve or reject schema change requests" },
+  decide: { roles: BUILDERS, does: "approve or reject schema changes and workflow approvals" },
   restore: { roles: ADMINS, does: "restore dropped tables and columns" },
   tables: { roles: BUILDERS, does: "share, unshare or transfer data tables" },
   sources: { roles: ADMINS, does: "add, change, pause or remove sources" },

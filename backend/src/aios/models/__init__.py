@@ -8,6 +8,8 @@ from aios.models.agents import (
     AgentRunStatus,
 )
 from aios.models.approvals import (
+    ApprovalKind,
+    ApprovalStatus,
     SchemaChangeStatus,
 )
 from aios.models.audit import (
@@ -89,6 +91,8 @@ __all__ = [
     "WorkKind",
     "WorkLane",
     "SchemaChangeStatus",
+    "ApprovalKind",
+    "ApprovalStatus",
     "Notification",
     "ChatMemberKind",
     "ChatAuthorKind",

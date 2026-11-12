@@ -37,7 +37,7 @@ test("a drop's card shows what it removes, and approves only with the names type
   const api = await fakeApi(page);
   const request = dropRequest(api);
 
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
 
   const removes = card(page).getByRole("list", { name: "What it removes" });
   await expect(removes).toContainText("Column weight_kg of data.fish: a value in 2 of 3 rows");
@@ -53,7 +53,7 @@ test("a drop's card shows what it removes, and approves only with the names type
   await expect(card(page)).toContainText("Applying");
   expect(api.writes).toContainEqual([
     "POST",
-    orgApi(`/schema-changes/${request.id}/approve`),
+    orgApi(`/approvals/${request.id}/approve`),
     { confirm: "fish, eels" },
   ]);
 });
@@ -62,7 +62,7 @@ test("a refusal from the server is shown on the card", async ({ page }) => {
   const api = await fakeApi(page);
   const request = dropRequest(api);
   // The names it takes changed (the page is out of date): the server refuses the old ones.
-  await page.goto(inOrg("/data/changes"));
+  await page.goto(inOrg("/data/approvals"));
   await expect(card(page).getByLabel("Type fish, eels to confirm")).toBeVisible();
   request.confirm_with = "fish";
 

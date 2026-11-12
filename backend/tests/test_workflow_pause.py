@@ -146,7 +146,7 @@ def test_a_requesting_node_waits_while_an_independent_branch_finishes(
     assert (by_path["other"]["status"], by_path["other"]["output"]) == ("succeeded", "other(go)")
     build = by_path["build"]
     assert build["status"] == "waiting"
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert request["status"] == "pending"
     assert build["waiting_on_request_ids"] == [request["id"]]
     # Nothing is queued: the run holds nothing until it's decided.
@@ -170,9 +170,9 @@ def test_approving_resumes_the_waiting_node_and_the_run_completes(api, builder, 
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     assert "after" not in steps(waiting)
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
 
-    r = api.post(f"/api/schema-changes/{request['id']}/approve")
+    r = api.post(f"/api/approvals/{request['id']}/approve")
     assert r.status_code == 200, r.text
     with use_model(model(flow)):
         run_queued(queued)
@@ -208,7 +208,7 @@ def test_a_decided_run_goes_from_waiting_to_running_and_holds_nothing_until_then
     waiting = start(api, queued, workflow, flow)
     assert waiting["status"] == "waiting"
     assert nothing_queued(queued)
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     seen = []
 
     async def watched(messages, info):
@@ -219,7 +219,7 @@ def test_a_decided_run_goes_from_waiting_to_running_and_holds_nothing_until_then
         async for item in flow(messages, info):
             yield item
 
-    api.post(f"/api/schema-changes/{request['id']}/reject", json={})
+    api.post(f"/api/approvals/{request['id']}/reject", json={})
     with use_model(model(watched)):
         run_queued(queued)
     assert seen == [("running", "running", None)]
@@ -232,9 +232,9 @@ def test_rejecting_resumes_the_waiting_node_with_the_rejection(api, builder, sto
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
 
-    r = api.post(f"/api/schema-changes/{request['id']}/reject", json={"note": "Not now"})
+    r = api.post(f"/api/approvals/{request['id']}/reject", json={"note": "Not now"})
     assert r.status_code == 200, r.text
     with use_model(model(flow)):
         run_queued(queued)
@@ -271,8 +271,8 @@ def test_a_long_wait_isnt_failed_for_the_time_limit(api, db, builder, store, que
     listed = api.get(f"/api/workflows/{workflow['id']}/runs").json()
     assert [r["status"] for r in listed] == ["waiting"]
 
-    [request] = api.get("/api/schema-changes").json()
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    [request] = api.get("/api/approvals").json()
+    api.post(f"/api/approvals/{request['id']}/approve")
     with use_model(model(flow)):
         run_queued(queued)
 
@@ -299,8 +299,8 @@ def test_a_run_resumes_with_only_what_was_left_of_its_time_limit(
         )
     )
     db.commit()
-    [request] = api.get("/api/schema-changes").json()
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    [request] = api.get("/api/approvals").json()
+    api.post(f"/api/approvals/{request['id']}/approve")
 
     async def slow(messages, info):
         await asyncio.sleep(2)
@@ -316,8 +316,8 @@ def test_a_run_resumes_with_only_what_was_left_of_its_time_limit(
 
 def decide(api, queued: list, flow: Flow, decision: str = "approve") -> None:
     """Decide the one pending request, and run what that queues."""
-    [request] = [r for r in api.get("/api/schema-changes").json() if r["status"] == "pending"]
-    r = api.post(f"/api/schema-changes/{request['id']}/{decision}", json={})
+    [request] = [r for r in api.get("/api/approvals").json() if r["status"] == "pending"]
+    r = api.post(f"/api/approvals/{request['id']}/{decision}", json={})
     assert r.status_code == 200, r.text
     with use_model(model(flow)):
         run_queued(queued)
@@ -395,8 +395,8 @@ def test_a_run_ending_while_its_request_is_applied_leaves_no_conversation_waitin
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
-    [request] = api.get("/api/schema-changes").json()
-    api.post(f"/api/schema-changes/{request['id']}/approve")
+    [request] = api.get("/api/approvals").json()
+    api.post(f"/api/approvals/{request['id']}/approve")
     # Before it's applied, the run is resumed by another decision and ends: failed, say.
     in_store.execute(
         update(WorkflowRun)
@@ -421,9 +421,9 @@ def test_deleting_a_waiting_run_cancels_its_pending_request(api, builder, store,
     r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
 
     assert r.status_code == 204, r.text
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert request["status"] == "cancelled"
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 409
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 409
     assert api.get("/api/me/notifications").json()["unread"] == 0
     assert nothing_queued(queued)
     assert data_tables(store) == []
@@ -441,7 +441,7 @@ def test_deleting_a_waiting_run_whose_agent_is_gone_still_cancels_its_request(
     r = api.delete(f"/api/workflows/{workflow['id']}/runs/{waiting['id']}")
 
     assert r.status_code == 204, r.text
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert request["status"] == "cancelled"
     assert api.get("/api/me/notifications").json()["unread"] == 0
 
@@ -452,13 +452,12 @@ def test_a_request_past_the_expiry_resumes_its_waiting_run_with_expired(
     workflow = chain(api, builder)
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
-    [request] = api.get("/api/schema-changes").json()
-    age = timedelta(days=get_settings().schema_change_request_expiry_days, minutes=1)
+    [request] = api.get("/api/approvals").json()
     with store_session(store.id) as db:
         db.execute(
             update(SchemaChangeRequest)
             .where(SchemaChangeRequest.id == request["id"])
-            .values(created_at=func.now() - age)
+            .values(expires_at=func.now() - timedelta(minutes=1))
         )
         db.commit()
 
@@ -533,7 +532,7 @@ def test_a_node_failing_while_another_waits_fails_the_run_and_cancels_the_reques
         "failed",
         "The run stopped before this step finished.",
     )
-    [request] = api.get("/api/schema-changes").json()
+    [request] = api.get("/api/approvals").json()
     assert request["status"] == "cancelled"
     conversation = api.get(f"/api/agents/{build['agent_id']}/runs/{build['agent_run_id']}").json()
     assert conversation["waiting"] is False
@@ -551,17 +550,17 @@ def test_a_decision_made_while_the_run_is_running_isnt_missed(api, builder, stor
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     assert [s["status"] for s in waiting["steps"]] == ["waiting", "waiting"]
-    by_table = {r["summary"]: r for r in api.get("/api/schema-changes").json()}
+    by_table = {r["summary"]: r for r in api.get("/api/approvals").json()}
     contacts = by_table["Create table data.contacts"]
     places_request = by_table["Create table data.places"]
-    api.post(f"/api/schema-changes/{contacts['id']}/reject", json={})
+    api.post(f"/api/approvals/{contacts['id']}/reject", json={})
 
     async def decide_meanwhile(messages, info):
         if instructions(messages) == "builder" and last_tool_results(messages):
             # The places node has found nothing decided, and waits again, by now.
             await asyncio.sleep(0.5)
             await asyncio.to_thread(
-                api.post, f"/api/schema-changes/{places_request['id']}/reject", json={}
+                api.post, f"/api/approvals/{places_request['id']}/reject", json={}
             )
         async for item in flow(messages, info):
             yield item
@@ -638,7 +637,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     flow = Flow()
     waiting = start(api, queued, workflow, flow)
     build = steps(waiting)["build"]
-    [pending] = api.get("/api/schema-changes").json()
+    [pending] = api.get("/api/approvals").json()
     with store_session(store.id) as db:
         orphan = SchemaChangeRequest(
             ops=[{**CONTACTS, "name": "gone"}],
@@ -661,7 +660,7 @@ def test_a_decided_request_no_call_waits_on_is_dealt_with_and_doesnt_requeue_the
     out = read(api, workflow, waiting["id"])
     assert out["status"] == "waiting"
     assert steps(out)["build"]["waiting_on_request_ids"] == [pending["id"]]
-    assert api.get(f"/api/schema-changes/{orphan_id}").json()["resumed_at"] is not None
+    assert api.get(f"/api/approvals/{orphan_id}").json()["resumed_at"] is not None
     assert nothing_queued(queued)
 
 
@@ -684,17 +683,17 @@ def test_a_node_asking_twice_shows_both_requests_and_resumes_once_both_are_decid
     workflow = chain(api, builder)
     waiting = start(api, queued, workflow, ask_twice)
 
-    requests = {r["summary"]: r["id"] for r in api.get("/api/schema-changes").json()}
+    requests = {r["summary"]: r["id"] for r in api.get("/api/approvals").json()}
     assert sorted(steps(waiting)["build"]["waiting_on_request_ids"]) == sorted(requests.values())
 
-    api.post(f"/api/schema-changes/{requests['Create table data.places']}/reject", json={})
+    api.post(f"/api/approvals/{requests['Create table data.places']}/reject", json={})
     with use_model(model(ask_twice)):
         run_queued(queued)
     out = read(api, workflow, waiting["id"])
     assert out["status"] == "waiting"
     assert steps(out)["build"]["waiting_on_request_ids"] == [requests["Create table data.contacts"]]
 
-    api.post(f"/api/schema-changes/{requests['Create table data.contacts']}/approve")
+    api.post(f"/api/approvals/{requests['Create table data.contacts']}/approve")
     with use_model(model(ask_twice)):
         run_queued(queued)
     out = read(api, workflow, waiting["id"])
@@ -793,8 +792,8 @@ def test_a_resumed_run_rebuilds_its_skips_and_conditions_from_its_steps(
             .values(output_json={"score": 1})
         )
         db.commit()
-    [request] = api.get("/api/schema-changes").json()
-    assert api.post(f"/api/schema-changes/{request['id']}/approve").status_code == 200
+    [request] = api.get("/api/approvals").json()
+    assert api.post(f"/api/approvals/{request['id']}/approve").status_code == 200
     with use_model(model(script)):
         run_queued(queued)
 

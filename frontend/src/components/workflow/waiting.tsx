@@ -1,7 +1,7 @@
 /**
- * A waiting workflow run's page: the nodes waiting for the user to decide a schema change
- * request, with each request's card (approve and reject), and the pins it will resume on that
- * have changed since it started.
+ * A waiting workflow run's page: the nodes waiting for a decision (an agent node's schema change,
+ * or an approval node's approval), with each approval's card (approve and reject), and the pins
+ * it will resume on that have changed since it started.
  */
 import { useCallback } from "react";
 import { Link } from "react-router";
@@ -9,7 +9,7 @@ import { Database, MessageSquare } from "lucide-react";
 
 import { useLoad } from "@/components/crud";
 import { Notice } from "@/components/Notice";
-import { SchemaChangeCard } from "@/components/SchemaChanges";
+import { ApprovalCard } from "@/components/Approvals";
 import { Button } from "@/components/ui/button";
 import { api, type SchemaChangeRequest, type StalePin, type WorkflowRunStep } from "@/lib/api";
 
@@ -19,7 +19,7 @@ export function useWaitingRequests(steps: WorkflowRunStep[]) {
   const load = useLoad(
     useCallback(async () => {
       const ids = key ? key.split(",") : [];
-      const requests = await Promise.all(ids.map((id) => api.getSchemaChange(id)));
+      const requests = await Promise.all(ids.map((id) => api.getApproval(id)));
       return Object.fromEntries(requests.map((r) => [r.id, r]));
     }, [key]),
   );
@@ -48,9 +48,8 @@ export function WaitingSection({
     >
       <h2 className="text-sm font-semibold">Waiting for your decision</h2>
       <p className="text-muted-foreground text-sm">
-        The run is paused, holding no worker, until you approve or reject{" "}
-        {count === 1 ? "this request" : "these requests"}. It then carries on from
-        where it stopped.
+        The run is paused, holding no worker, until {count === 1 ? "this is" : "these are"}{" "}
+        approved or rejected. It then carries on from where it stopped.
       </p>
       {error && (
         <Notice label="Requests" error className="px-3 py-2">
@@ -63,7 +62,9 @@ export function WaitingSection({
           <div key={step.id} className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="font-mono">{step.path.join(" / ")}</span>
-              <span className="text-muted-foreground">asks:</span>
+              <span className="text-muted-foreground">
+                {step.kind === "approval" ? "waits for:" : "asks:"}
+              </span>
               <span className="ml-auto flex gap-2">
                 {step.agent_id !== null && step.agent_run_id !== null && (
                   <Button asChild size="sm" variant="ghost">
@@ -74,15 +75,15 @@ export function WaitingSection({
                   </Button>
                 )}
                 <Button asChild size="sm" variant="ghost">
-                  <Link to="/data/changes">
+                  <Link to="/data/approvals">
                     <Database />
-                    All schema changes
+                    All approvals
                   </Link>
                 </Button>
               </span>
             </div>
             {asks.map((request) => (
-              <SchemaChangeCard key={request.id} request={request} onDecided={onDecided} />
+              <ApprovalCard key={request.id} request={request} onDecided={onDecided} />
             ))}
           </div>
         );

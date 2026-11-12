@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { WorkflowNode } from "@/lib/api";
 import {
+  addApprovalNode,
   addNode,
   canConnect,
   connect,
@@ -284,5 +285,51 @@ describe("structured workflows in the draft", () => {
     const draft = fromVersion({ nodes: [], edges: [], input_schema: score }, {});
     expect(draft.input_schema).toEqual(score);
     expect(draft.output_schema).toBeNull();
+  });
+});
+
+describe("approval nodes", () => {
+  it("adds one that runs nothing, keyed approval, decided by an editor", () => {
+    const one = addApprovalNode(chain);
+    const two = addApprovalNode(one);
+    expect(one.nodes.at(-1)).toMatchObject({
+      key: "approval",
+      kind: "approval",
+      version_id: null,
+      approver_role: "editor",
+      expiry_days: null,
+    });
+    expect(two.nodes.at(-1)!.key).toBe("approval-2");
+  });
+
+  it("saves its prompt, role and own expiry, and never a version", () => {
+    let draft = connect(addApprovalNode(chain), "c", "approval");
+    draft = setNodeSpec(draft, "approval", {
+      prompt_template: "Ship {{nodes.c.title}}?",
+      approver_role: "admin",
+      expiry_days: 2,
+    });
+    expect(toInput(draft, { name: "W", description: "" }).nodes.at(-1)).toEqual({
+      key: "approval",
+      kind: "approval",
+      version_id: null,
+      prompt_template: "Ship {{nodes.c.title}}?",
+      approver_role: "admin",
+      expiry_days: 2,
+    });
+    // Renaming a node it names renames it in its prompt too.
+    const renamed = renameNode(draft, "c", "draft");
+    expect(renamed.nodes.at(-1)!.prompt_template).toBe("Ship {{nodes.draft.title}}?");
+  });
+
+  it("leaves out an expiry it doesn't set", () => {
+    const draft = setNodeSpec(addApprovalNode(chain), "approval", { prompt_template: "Go?" });
+    expect(toInput(draft, { name: "W", description: "" }).nodes.at(-1)).toEqual({
+      key: "approval",
+      kind: "approval",
+      version_id: null,
+      prompt_template: "Go?",
+      approver_role: "editor",
+    });
   });
 });

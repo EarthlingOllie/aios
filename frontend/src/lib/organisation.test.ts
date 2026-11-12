@@ -16,6 +16,7 @@ const base: Organisation = {
   created_at: "2026-10-14T08:00:00Z",
   deletion: null,
   retention: { run_days: null, chat_days: null },
+  approval_expiry_days: 7,
   limits: {
     defaults: { turn_model_calls: 200, turn_tokens: 5_000_000, turn_cost: 25, run_model_calls: 2000, run_cost: 100 },
     overrides: { turn_model_calls: null, turn_tokens: null, turn_cost: null, run_model_calls: null, run_cost: null },

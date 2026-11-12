@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, FiniteFloat, ValidationError, model_seria
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from aios import audit
+from aios import approvals, audit
 from aios.api.provenance import built_by
 from aios.datastores.models import (
     Agent,
@@ -88,7 +88,15 @@ class _Declared(BaseModel):
     @model_serializer(mode="wrap")
     def _only_declared(self, handler) -> dict[str, Any]:
         out = handler(self)
-        for name in ("input_schema", "output_schema", "input_template", "condition"):
+        for name in (
+            "input_schema",
+            "output_schema",
+            "input_template",
+            "condition",
+            "prompt_template",
+            "approver_role",
+            "expiry_days",
+        ):
             if name in out and out[name] is None:
                 del out[name]
         return out
@@ -97,12 +105,16 @@ class _Declared(BaseModel):
 class ExportedNode(_Declared):
     key: str
     kind: WorkflowNodeKind
-    # The agent or workflow it runs, by its reference in the file.
-    ref: str
+    # The agent or workflow it runs, by its reference in the file; None for an approval node.
+    ref: str | None = None
     # What it declares, if anything (`aios.workflows.structured`).
     input_schema: Any = None
     output_schema: Any = None
     input_template: Any = None
+    # An approval node's (`aios.approvals`).
+    prompt_template: str | None = None
+    approver_role: Literal["editor", "admin"] | None = None
+    expiry_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class ExportedEdge(_Declared):
@@ -190,8 +202,10 @@ class _Exporter:
             for node in version.nodes:
                 if node.kind == WorkflowNodeKind.agent:
                     ref = self.agent(node.agent_version)
-                else:
+                elif node.kind == WorkflowNodeKind.workflow:
                     ref = self.workflow(node.subworkflow_version)
+                else:
+                    ref = None
                 nodes.append(
                     ExportedNode(
                         key=node.key,
@@ -200,6 +214,9 @@ class _Exporter:
                         input_schema=node.input_schema,
                         output_schema=node.output_schema,
                         input_template=node.input_template,
+                        prompt_template=node.prompt_template,
+                        approver_role=node.approver_role,
+                        expiry_days=node.expiry_days,
                     )
                 )
             # Numbered once its nested workflows are, so they come first in the file.
@@ -304,6 +321,13 @@ def parse(data: bytes) -> ExportFile:
             raise NotAnExport(f"Agent {ref!r} has a tool more than once.")
     for ref, workflow in file.workflows.items():
         for node in workflow.nodes:
+            if node.kind == WorkflowNodeKind.approval:
+                if node.ref is not None or not (node.prompt_template or "").strip():
+                    raise NotAnExport(
+                        f"Workflow {ref!r} has an approval node without a prompt, or that"
+                        " refers to something."
+                    )
+                continue
             pool = file.agents if node.kind == WorkflowNodeKind.agent else file.workflows
             if node.ref not in pool:
                 raise NotAnExport(
@@ -320,7 +344,9 @@ def parse(data: bytes) -> ExportFile:
                 NodeDeclared(
                     n.key,
                     n.input_schema,
-                    n.output_schema
+                    approvals.OUTCOME_SCHEMA
+                    if n.kind == WorkflowNodeKind.approval
+                    else n.output_schema
                     if n.output_schema is not None or n.kind == WorkflowNodeKind.agent
                     else file.workflows[n.ref].output_schema,
                     n.input_template,
@@ -425,6 +451,7 @@ def plan(store: Session, file: ExportFile, org: ToolOrganisation) -> Plan:
             {
                 f"the {n.kind} {pool[n.ref].imported_name}"
                 for n in workflow.nodes
+                if n.kind != WorkflowNodeKind.approval
                 for pool in [agents if n.kind == WorkflowNodeKind.agent else workflows]
                 if pool[n.ref].unrunnable
             }
@@ -494,10 +521,17 @@ def apply(store: Session, the_plan: Plan, user_id: int, filename: str) -> None:
                         agent_versions[n.ref].id
                         if n.kind == WorkflowNodeKind.agent
                         else workflow_versions[n.ref].id
+                        if n.kind == WorkflowNodeKind.workflow
+                        else None
                     ),
                     input_schema=n.input_schema,
                     output_schema=n.output_schema,
                     input_template=n.input_template,
+                    prompt_template=n.prompt_template,
+                    approver_role=(n.approver_role or "editor")
+                    if n.kind == WorkflowNodeKind.approval
+                    else None,
+                    expiry_days=n.expiry_days,
                 )
                 for n in exported.nodes
             ],

@@ -22,7 +22,7 @@ describe("describeNotification", () => {
     expect(describeNotification(notification({}))).toEqual({
       heading: "A schema change is waiting for you",
       detail: "Create table data.contacts",
-      to: "/data/changes?request=r1",
+      to: "/data/approvals?approval=r1",
       organisation: "acme",
     });
   });
@@ -113,18 +113,18 @@ describe("notificationLink", () => {
 
   it("opens one from the organisation the page is in within the page", () => {
     expect(notificationLink(view, "acme")).toEqual({
-      to: "/data/changes?request=r1",
+      to: "/data/approvals?approval=r1",
       reload: false,
     });
   });
 
   it("opens one from another organisation in that organisation, as a new page load", () => {
     expect(notificationLink(view, "globex")).toEqual({
-      to: "/o/acme/data/changes?request=r1",
+      to: "/o/acme/data/approvals?approval=r1",
       reload: true,
     });
     expect(notificationLink(view, null)).toEqual({
-      to: "/o/acme/data/changes?request=r1",
+      to: "/o/acme/data/approvals?approval=r1",
       reload: true,
     });
   });

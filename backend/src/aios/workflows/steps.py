@@ -183,7 +183,7 @@ def _wait_step(data_store_id: uuid.UUID, step_id: int, request_id: uuid.UUID | N
             .where(
                 WorkflowRunStep.id == step_id, WorkflowRunStep.status == WorkflowStepStatus.running
             )
-            .values(status=WorkflowStepStatus.waiting, waiting_on_request_id=request_id)
+            .values(status=WorkflowStepStatus.waiting, approval_id=request_id)
             .returning(WorkflowRunStep.run_id)
         )
         for (run_id,) in waiting:

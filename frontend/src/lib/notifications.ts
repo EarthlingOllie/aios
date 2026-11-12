@@ -16,7 +16,7 @@ const HEADINGS: Record<string, string> = {
   mention: "You were mentioned in a chat",
   reply: "A reply in a chat",
   run_failed: "A run failed",
-  approval_needed: "A schema change is waiting for you",
+  approval_needed: "An approval is waiting for you",
   released_document_changed: "A document you released has changed",
   organisation_deletion_scheduled: "An organisation is scheduled for deletion.",
   organisation_deletion_cancelled: "An organisation will no longer be deleted.",
@@ -28,7 +28,7 @@ export function notificationPath({ kind, ref }: Notification): string | null {
   const id = (key: string) => encodeURIComponent(String(ref[key]));
   switch (kind) {
     case "approval_needed":
-      return `/data/changes?request=${id("approval_id")}`;
+      return `/data/approvals?approval=${id("approval_id")}`;
     case "mention":
     case "reply":
     case "run_failed":

@@ -31,8 +31,15 @@ model wrapped as untrusted (derived text). A run's output is its final nodes' th
 output, or an object of several's by node; none ran, it succeeds with none ("No final step
 ran"). Without schemas, templates or conditions, a workflow runs exactly as described above.
 
+An approval node (`aios.approvals`) pauses the run for a person: reaching it renders its prompt
+(a template, with placeholders as an input template's) and creates a workflow step approval with
+the prompt and its input, decided by its role (editor or admin) or above; its step waits on it,
+and once nothing else can run, so does the run. The decision (or its expiry, or the run's
+cancellation) enqueues an advance, which finishes the step with the outcome (`approvals.outcome`:
+approved, note, decided_by, status), which its outgoing edges' conditions can branch on.
+
 An agent node whose agent asks for a schema change (`request_schema_change`, a LangGraph
-interrupt) waits for a member's decision: its step becomes `waiting`, with the request, and the
+interrupt) also waits for a member's decision: its step becomes `waiting`, with the request, and the
 nodes that don't depend on it carry on. Once nothing else can run, the run becomes `waiting`. The
 decision enqueues an advance, which resumes the waiting node on its agent run's thread with the
 outcome. It's still on the versions it pinned; a pin that can no longer run fails its step when
@@ -74,6 +81,7 @@ from aios.workflows.steps import (
 from aios.workflows.validation import (
     KEY_PATTERN,
     AgentNode,
+    ApprovalNode,
     Graph,
     GraphError,
     Node,
@@ -87,6 +95,7 @@ from aios.workflows.validation import (
 
 __all__ = [
     "AgentNode",
+    "ApprovalNode",
     "Ended",
     "Graph",
     "GraphError",

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { ArrowRight, Bot, Workflow as WorkflowIcon } from "lucide-react";
+import { ArrowRight, Bot, ShieldCheck, Workflow as WorkflowIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { VersionBadge } from "@/components/versions";
@@ -72,7 +72,7 @@ function NodeDetails({
   edges: WorkflowEdge[];
   edit?: { key: ReactNode; controls: ReactNode };
 }) {
-  const Icon = node.kind === "agent" ? Bot : WorkflowIcon;
+  const Icon = node.kind === "agent" ? Bot : node.kind === "approval" ? ShieldCheck : WorkflowIcon;
   const href = node.kind === "agent" ? `/agents/${node.target_id}` : `/workflows/${node.target_id}`;
   const before = edges.filter((e) => e.target === node.key).map((e) => e.source);
   const after = edges.filter((e) => e.source === node.key).map((e) => e.target);
@@ -80,7 +80,7 @@ function NodeDetails({
     <>
       <header className="flex items-center gap-2">
         <Icon className="text-muted-foreground size-4" aria-hidden />
-        <span className="font-semibold">{node.kind === "agent" ? "Agent" : "Workflow"} node</span>
+        <span className="font-semibold">{KIND_LABELS[node.kind]} node</span>
       </header>
       <dl className="flex flex-col gap-3">
         {edit ? (
@@ -90,26 +90,11 @@ function NodeDetails({
             <span className="font-mono">{node.key}</span>
           </Row>
         )}
-        <Row label="Runs">
-          <span className="flex flex-wrap items-center gap-2">
-            {/* A deleted target's page is gone, so it's named without a link. */}
-            {node.latest_version === null ? (
-              <span className="font-medium">{node.name}</span>
-            ) : (
-              <Link to={href} className="font-medium hover:underline">
-                {node.name}
-              </Link>
-            )}
-            <VersionBadge version={node.version} />
-            {node.latest_version === null ? (
-              <Badge variant="destructive">deleted</Badge>
-            ) : (
-              node.latest_version > node.version && (
-                <Badge variant="outline">v{node.latest_version} available</Badge>
-              )
-            )}
-          </span>
-        </Row>
+        {node.kind === "approval" ? (
+          <ApprovalRows node={node} edit={!!edit} />
+        ) : (
+          <TargetRow node={node} href={href} />
+        )}
         <Row label="Input">
           {node.input_template !== null && node.input_template !== undefined
             ? `${before.length === 0 ? "Start" : `After ${listing(before)}`}: built from its template.`
@@ -118,6 +103,7 @@ function NodeDetails({
               : `After ${listing(before)}: receives ${before.length === 1 ? "its output" : "the outputs of those that ran"}.`}
         </Row>
         <Row label="Output">
+          {node.kind === "approval" && "Its decision: approved, note, decided_by and status. "}
           {after.length === 0
             ? "End: its output is part of the workflow's output."
             : `Then ${listing(after)}.`}
@@ -140,6 +126,55 @@ function NodeDetails({
         )}
       </dl>
       {edit?.controls}
+    </>
+  );
+}
+
+const KIND_LABELS = { agent: "Agent", workflow: "Workflow", approval: "Approval" } as const;
+
+/** What an agent or workflow node runs, at which version. */
+function TargetRow({ node, href }: { node: WorkflowNode; href: string }) {
+  return (
+    <Row label="Runs">
+      <span className="flex flex-wrap items-center gap-2">
+        {/* A deleted target's page is gone, so it's named without a link. */}
+        {node.latest_version === null ? (
+          <span className="font-medium">{node.name}</span>
+        ) : (
+          <Link to={href} className="font-medium hover:underline">
+            {node.name}
+          </Link>
+        )}
+        {node.version !== null && <VersionBadge version={node.version} />}
+        {node.latest_version === null ? (
+          <Badge variant="destructive">deleted</Badge>
+        ) : (
+          node.version !== null && node.latest_version > node.version && (
+            <Badge variant="outline">v{node.latest_version} available</Badge>
+          )
+        )}
+      </span>
+    </Row>
+  );
+}
+
+/** An approval node's: who decides it, when it expires, and (outside the editor) its prompt. */
+function ApprovalRows({ node, edit }: { node: WorkflowNode; edit: boolean }) {
+  return (
+    <>
+      <Row label="Decided by">
+        {node.approver_role === "admin" ? "An admin" : "An editor or an admin"}
+      </Row>
+      <Row label="Expires">
+        {node.expiry_days
+          ? `After ${node.expiry_days} ${node.expiry_days === 1 ? "day" : "days"} undecided, as not approved.`
+          : "After the organisation's approval expiry, as not approved."}
+      </Row>
+      {!edit && node.prompt_template && (
+        <Row label="Prompt">
+          <JsonBlock value={node.prompt_template} />
+        </Row>
+      )}
     </>
   );
 }

@@ -33,16 +33,21 @@ import type { Page, Route } from "@playwright/test";
  * `streamGone` closes them with `gone` and that reason.
  */
 
-type Kind = "agent" | "workflow";
+type Kind = "agent" | "workflow" | "approval";
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 /** What a node declares, if anything: its schemas and its input template. */
 type NodeIn = {
   key: string;
   kind: Kind;
-  version_id: number;
+  /** Null for an approval node, which runs nothing. */
+  version_id: number | null;
   input_schema?: Json | null;
   output_schema?: Json | null;
   input_template?: Json | null;
+  /** An approval node's. */
+  prompt_template?: string | null;
+  approver_role?: "editor" | "admin" | null;
+  expiry_days?: number | null;
 };
 /** `condition`: a JSONLogic condition, if the edge has one. */
 type Edge = { source: string; target: string; condition?: Json | null };
@@ -156,6 +161,13 @@ export type TurnRow = {
 
 export type SchemaChangeRow = {
   id: string;
+  /** schema_change unless set: a workflow approval step's is workflow_step. */
+  kind?: "schema_change" | "workflow_step";
+  /** A workflow approval step's: its input and its step. */
+  input?: Json | null;
+  step?: { workflow_id: number; workflow_name: string; run_id: number; step_id: number; path: string[] } | null;
+  expires_at?: string | null;
+  decided_by?: { id: number; name: string; former_member: boolean } | null;
   data_store_id: string;
   status: "pending" | "approved" | "rejected" | "expired" | "applied" | "failed" | "stale" | "cancelled";
   summary: string;
@@ -365,6 +377,8 @@ export type StepRow = {
   agent_id: number | null;
   agent_run_id: number | null;
   waiting_on_request_ids: string[];
+  /** The approval it waits on, or an approval node's once decided. */
+  approval_id?: string | null;
   started_at: string;
   finished_at: string | null;
   input_json?: Json | null;
@@ -759,6 +773,8 @@ export class FakeApi {
   mentionRetryAfter = 42;
   /** How long runs and chat history are kept (`PUT /api/organisation/retention`). */
   retention: { run_days: number | null; chat_days: number | null } = { run_days: null, chat_days: null };
+  /** How many days an approval waits undecided (`PUT /api/organisation/approval-expiry`). */
+  approvalExpiryDays = 7;
   /** How many days a scheduled deletion waits, as `ORGANISATION_DELETION_GRACE_DAYS` does. */
   deletionGraceDays = 14;
   /** The organisation's open invitation links, oldest first (made with `POST`, or seeded). */
@@ -896,6 +912,7 @@ export class FakeApi {
       members: this.organisation.members.map((m) => ({ ...m, role: this.roleOf(m.user.id) })),
       deletion: this.organisation.deletion ?? null,
       retention: { ...this.retention },
+      approval_expiry_days: this.approvalExpiryDays,
       limits: { defaults: { ...DEFAULT_LIMITS }, overrides: { ...this.limits }, in_force: this.limitsInForce() },
     };
   }
@@ -1520,6 +1537,50 @@ export class FakeApi {
     return request;
   }
 
+  /**
+   * Adds a workflow approval step's approval, pending unless `fields` say otherwise: the
+   * approval node `path` of `run` waits on it (that step is added, waiting, unless it's there).
+   */
+  addApprovalStep(
+    run: RunRow,
+    path: string[],
+    fields: Partial<SchemaChangeRow> = {},
+  ): SchemaChangeRow {
+    const workflow = this.workflows.get(run.workflow_id)!;
+    let step = run.steps.find((s) => s.path.join("/") === path.join("/"));
+    const id = `apr-${this.id()}`;
+    if (!step) {
+      step = this.addStep(run, { path, kind: "approval", status: "waiting" });
+    }
+    Object.assign(step, { waiting_on_request_ids: [id], approval_id: id });
+    return this.addSchemaChange({
+      id,
+      kind: "workflow_step",
+      summary: "Spend 250 on laptops?",
+      reason: "Spend 250 on laptops?\nThe risk is high.",
+      sql: null as unknown as string,
+      ops: null as unknown as Record<string, unknown>[],
+      input: { risk: "high", amount: 250 },
+      step: {
+        workflow_id: workflow.id,
+        workflow_name: workflow.name,
+        run_id: run.id,
+        step_id: step.id,
+        path,
+      },
+      needs_role: "admin",
+      expires_at: "2026-10-21T09:00:00Z",
+      ...fields,
+    });
+  }
+
+  /** Marks the approval's notifications read, for everyone: it no longer waits. */
+  private clearApprovalNotifications(id: string) {
+    for (const n of this.notifications) {
+      if (n.kind === "approval_needed" && n.ref.approval_id === id && !n.read_at) n.read_at = NOW;
+    }
+  }
+
   /** Adds a dropped table or column, as if a drop was approved earlier. */
   addDropped(fields: Partial<DroppedRow> & Pick<DroppedRow, "kind" | "table">): DroppedRow {
     const name = fields.column ?? fields.table;
@@ -1567,7 +1628,9 @@ export class FakeApi {
     if (n.kind !== "approval_needed" || n.organisation.id !== this.organisation.id) return n;
     const request = this.schemaChanges.find((r) => r.id === n.ref.approval_id);
     if (!request) return null;
-    return { ...n, title: "A schema change is waiting for you", detail: request.summary };
+    const title =
+      request.kind === "workflow_step" ? "An approval is waiting for you" : "A schema change is waiting for you";
+    return { ...n, title, detail: request.summary };
   }
 
   /** The user's own, as the API lists them: unread first, newest first; gone ones dropped and read. */
@@ -1620,6 +1683,10 @@ export class FakeApi {
     const { run_id, decider, impact: _, ...fields } = request;
     const run = run_id === null ? undefined : this.agentRuns.get(run_id);
     return {
+      kind: "schema_change",
+      step: null,
+      input: null,
+      approver_role: request.needs_role,
       ...fields,
       run: run ? { agent_id: run.agent_id, run_id: run.id, title: run.title } : null,
       can_decide: decider && request.status === "pending" && this.decides(request.needs_role),
@@ -2135,7 +2202,7 @@ export class FakeApi {
         n
           .map(
             (x) =>
-              `${x.key}/${x.kind}/${x.version_id}/${JSON.stringify([x.input_schema ?? null, x.output_schema ?? null, x.input_template ?? null])}`,
+              `${x.key}/${x.kind}/${x.version_id}/${JSON.stringify([x.input_schema ?? null, x.output_schema ?? null, x.input_template ?? null, x.prompt_template ?? null, x.approver_role ?? null, x.expiry_days ?? null])}`,
           )
           .sort(),
         e.map((x) => `${x.source}>${x.target}/${JSON.stringify(x.condition ?? null)}`).sort(),
@@ -2247,8 +2314,19 @@ export class FakeApi {
   }
 
   private nodeOut(node: NodeIn) {
+    if (node.kind === "approval") {
+      return {
+        ...node,
+        version_id: null,
+        target_id: null,
+        name: "Approval",
+        version: null,
+        latest_version: null,
+        latest_version_id: null,
+      };
+    }
     if (node.kind === "agent") {
-      const [agentId, version] = this.agentVersions.get(node.version_id)!;
+      const [agentId, version] = this.agentVersions.get(node.version_id!)!;
       const agent = this.agents.get(agentId)!;
       return {
         ...node,
@@ -2259,7 +2337,7 @@ export class FakeApi {
         latest_version_id: agent.versions.at(-1)!,
       };
     }
-    const pinned = this.workflowVersions.get(node.version_id)!;
+    const pinned = this.workflowVersions.get(node.version_id!)!;
     const target = this.workflows.get(pinned.workflow_id)!;
     return {
       ...node,
@@ -2574,7 +2652,7 @@ export class FakeApi {
   private contains(version: WorkflowVersionRow, found = new Set<number>()) {
     for (const n of version.nodes) {
       if (n.kind !== "workflow") continue;
-      const pinned = this.workflowVersions.get(n.version_id)!;
+      const pinned = this.workflowVersions.get(n.version_id!)!;
       found.add(pinned.workflow_id);
       this.contains(pinned, found);
     }
@@ -2868,6 +2946,14 @@ export class FakeApi {
         totals: this.usage[group] ?? [],
       });
     }
+    if (path === "/api/organisation/approval-expiry" && method === "PUT") {
+      const refused = this.refuseUnlessAdmin();
+      if (refused) return fail(403, refused);
+      const days = body?.days;
+      if (!Number.isInteger(days) || days < 1 || days > 365) return fail(422, "Invalid days");
+      this.approvalExpiryDays = days;
+      return reply(200, this.organisationOut());
+    }
     if (path === "/api/organisation/retention" && method === "PUT") {
       const refused = this.refuseUnlessAdmin();
       if (refused) return fail(403, refused);
@@ -3052,34 +3138,45 @@ export class FakeApi {
       }
       return fail(404, "Not Found");
     }
-    if (path === "/api/schema-changes" && method === "GET") {
-      const pending = this.schemaChanges.filter((r) => r.status === "pending");
-      const decided = this.schemaChanges.filter((r) => r.status !== "pending").reverse();
+    if (path === "/api/approvals" && method === "GET") {
+      const kind = url.searchParams.get("kind");
+      const status = url.searchParams.get("status");
+      const shown = this.schemaChanges.filter(
+        (r) =>
+          (!kind || (r.kind ?? "schema_change") === kind) && (!status || r.status === status),
+      );
+      const pending = shown.filter((r) => r.status === "pending");
+      const decided = shown.filter((r) => r.status !== "pending").reverse();
       return reply(
         200,
         [...pending, ...decided].map((r) => this.schemaChangeOut(r)),
       );
     }
-    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/impact$/)) && method === "GET") {
+    if ((m = path.match(/^\/api\/approvals\/([\w-]+)\/impact$/)) && method === "GET") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
-      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      if (!request || !request.decider) return fail(404, "Approval not found");
+      if (request.kind === "workflow_step") return fail(422, "Only a schema change has an impact.");
       return reply(200, { removes: request.impact });
     }
-    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)$/)) && method === "GET") {
+    if ((m = path.match(/^\/api\/approvals\/([\w-]+)$/)) && method === "GET") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
-      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      if (!request || !request.decider) return fail(404, "Approval not found");
       return reply(200, this.schemaChangeOut(request));
     }
-    if ((m = path.match(/^\/api\/schema-changes\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
+    if ((m = path.match(/^\/api\/approvals\/([\w-]+)\/(approve|reject)$/)) && method === "POST") {
       const request = this.schemaChanges.find((r) => r.id === m![1]);
-      if (!request || !request.decider) return fail(404, "Schema change request not found");
+      if (!request || !request.decider) return fail(404, "Approval not found");
       if (request.status !== "pending") {
-        return fail(409, `This request has already been ${request.status}`);
+        return fail(409, `This approval has already been ${request.status}`);
       }
       if (!this.decides(request.needs_role)) {
+        const why =
+          request.kind === "workflow_step"
+            ? "its workflow's approval step"
+            : "the organisation's approval rules";
         return fail(
           403,
-          `This request needs ${request.needs_role === "admin" ? "an admin" : "an editor"} to approve or reject it (the organisation's approval rules). Ask one.`,
+          `This approval needs ${request.needs_role === "admin" ? "an admin" : "an editor"} to approve or reject it (${why}). Ask one.`,
         );
       }
       const typed = (body?.confirm ?? "").trim();
@@ -3087,15 +3184,11 @@ export class FakeApi {
         return fail(422, `This request drops data: Type \`${request.confirm_with}\` to confirm.`);
       }
       request.decided_at = NOW;
-      if (m[2] === "approve") {
-        request.status = "approved";
-      } else {
-        request.status = "rejected";
-        request.note = (body?.note ?? "").trim() || null;
-      }
-      for (const n of this.notifications) {
-        if (n.kind === "approval_needed" && n.ref.approval_id === request.id && !n.read_at) n.read_at = NOW;
-      }
+      const name = `${this.me.first_name} ${this.me.last_name}`;
+      request.decided_by = { id: this.me.id, name, former_member: false };
+      request.note = (body?.note ?? "").trim() || null;
+      request.status = m[2] === "approve" ? "approved" : "rejected";
+      this.clearApprovalNotifications(request.id);
       return reply(200, this.schemaChangeOut(request));
     }
     if (path === "/api/jev-status" && method === "GET") {
@@ -3577,7 +3670,7 @@ export class FakeApi {
             name: w.name,
             version: w.versions.length,
             direct: this.current(w).nodes.some(
-              (n) => n.kind === "workflow" && this.workflowVersions.get(n.version_id)!.workflow_id === workflow.id,
+              (n) => n.kind === "workflow" && this.workflowVersions.get(n.version_id!)!.workflow_id === workflow.id,
             ),
             triggers: [],
           })),
@@ -3653,6 +3746,36 @@ export class FakeApi {
           workflow_name: workflow.name,
         });
       }
+      if ((m = rest.match(/^\/runs\/(\d+)\/cancel$/)) && method === "POST") {
+        const run = this.runs.get(Number(m[1]));
+        if (!run || run.workflow_id !== workflow.id) return fail(404, "Not Found");
+        if (!["queued", "running", "waiting"].includes(run.status)) {
+          return fail(409, "This run has already ended.");
+        }
+        Object.assign(run, {
+          status: "failed",
+          error: `Cancelled by ${this.me.first_name} ${this.me.last_name}.`,
+          finished_at: NOW,
+          waiting_since: null,
+        });
+        for (const step of run.steps) {
+          if (step.status !== "running" && step.status !== "waiting") continue;
+          for (const id of step.waiting_on_request_ids) {
+            const approval = this.schemaChanges.find((r) => r.id === id);
+            if (approval?.status === "pending") {
+              Object.assign(approval, { status: "cancelled", decided_at: NOW, resumed_at: NOW });
+              this.clearApprovalNotifications(id);
+            }
+          }
+          Object.assign(step, {
+            status: "failed",
+            error: "The run stopped before this step finished.",
+            finished_at: NOW,
+            waiting_on_request_ids: [],
+          });
+        }
+        return reply(200, { ...this.runOut(run), workflow_name: workflow.name });
+      }
       if ((m = rest.match(/^\/runs\/(\d+)\/subworkflow$/)) && method === "GET") {
         const run = this.runs.get(Number(m[1]));
         if (!run || run.workflow_id !== workflow.id) return fail(404, "Not Found");
@@ -3661,7 +3784,7 @@ export class FakeApi {
         for (const key of url.searchParams.getAll("path")) {
           const node = version.nodes.find((n) => n.key === key);
           if (!node || node.kind !== "workflow") return fail(404, "Not Found");
-          version = this.workflowVersions.get(node.version_id)!;
+          version = this.workflowVersions.get(node.version_id!)!;
         }
         return reply(200, this.versionOut(version));
       }
@@ -3938,11 +4061,17 @@ export class FakeApi {
     }
     if (new Set(keys).size !== keys.length) return "Each node key can be used only once";
     for (const n of body.nodes) {
-      if (n.kind === "agent" && !this.agentVersions.has(n.version_id)) {
+      if (n.kind === "approval") {
+        if (!(n.prompt_template ?? "").trim()) {
+          return `nodes.${n.key}.prompt_template: Write the prompt its approvers see`;
+        }
+        continue;
+      }
+      if (n.kind === "agent" && !this.agentVersions.has(n.version_id!)) {
         return "Unknown agent version";
       }
       if (n.kind === "workflow") {
-        const v = this.workflowVersions.get(n.version_id);
+        const v = this.workflowVersions.get(n.version_id!);
         if (!v) return "Unknown workflow version";
         if (workflow && v.workflow_id === workflow.id) return "A workflow can't contain itself";
         if (workflow && this.contains(v).has(workflow.id)) {

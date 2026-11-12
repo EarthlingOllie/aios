@@ -11,11 +11,10 @@ import psycopg
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import approval_rules, notifications, outbox
+from aios import approval_rules, approvals, outbox
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import AgentRun, SchemaChangeRequest
-from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
 from aios.models import DataStore, EventType, SchemaChangeStatus
 
@@ -142,6 +141,7 @@ def propose(
         for op in change.ops
     ]
     checked = check(SchemaChange(ops=fresh), schema)
+    days = approvals.store_expiry_days(data_store_id)
     request = SchemaChangeRequest(
         ops=checked.model_dump(mode="json", exclude_none=True)["ops"],
         sql=compile_sql(checked),
@@ -150,6 +150,7 @@ def propose(
         requested_by_run=run_id,
         tool_call_id=tool_call_id,
         base_revision=revision,
+        expires_at=approvals.expires_in(days),
     )
     with store_session(data_store_id) as store:
         if run_id is not None:
@@ -165,17 +166,7 @@ def propose(
         store.add(request)
         store.commit()
         least = approval_rules.needed_for(store, request.ops)
-    with SessionLocal() as db:
-        data_store = db.get(DataStore, data_store_id)
-        if data_store is not None and data_store.owner_organisation_id is not None:
-            notifications.notify(
-                db,
-                approvers(db, data_store, least),
-                data_store.owner_organisation_id,
-                notifications.APPROVAL_NEEDED,
-                notifications.approval_ref(request.id),
-            )
-            db.commit()
+    approvals.notify(data_store_id, [(request.id, least)])
     return request
 
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from aios import tracing
 from aios.datastores.models import Agent, AgentVersion, Workflow, WorkflowNode, WorkflowVersion
-from aios.models import WorkflowNodeKind
+from aios.models import Role, WorkflowNodeKind
 from aios.runner import version_tools
 from aios.tools import AgentTool, ToolError, ToolOrganisation
 
@@ -89,12 +89,24 @@ class AgentNode:
 
 
 @dataclass(frozen=True)
+class ApprovalNode:
+    """What an approval node asks (`aios.approvals`): its prompt template (placeholders as an
+    input template's), the least role that may decide it, and its own expiry in days (None: the
+    organisation's setting)."""
+
+    prompt_template: str
+    approver_role: Role
+    expiry_days: int | None
+
+
+@dataclass(frozen=True)
 class Node:
     key: str
     kind: WorkflowNodeKind
-    # Exactly one of these, matching `kind`; neither for an agent node that can't run.
+    # Exactly one of these, matching `kind`; none for an agent node that can't run.
     agent: AgentNode | None = None
     graph: "Graph | None" = None
+    approval: ApprovalNode | None = None
     # Why its pinned agent version can't run any more (see `load_graph`).
     error: str | None = None
     # What it declares (`aios.workflows.structured`): its input is checked against its input
@@ -230,6 +242,14 @@ def _build_graph(
         if node.kind == WorkflowNodeKind.workflow:
             graph = _build_graph(versions, node.subworkflow_version_id, loaded, strict, org)
             nodes.append(Node(node.key, node.kind, graph=graph, **declared))
+            continue
+        if node.kind == WorkflowNodeKind.approval:
+            approval = ApprovalNode(
+                prompt_template=node.prompt_template or "",
+                approver_role=Role(node.approver_role or Role.editor),
+                expiry_days=node.expiry_days,
+            )
+            nodes.append(Node(node.key, node.kind, approval=approval, **declared))
             continue
         pinned = node.agent_version
         agent = pinned.agent

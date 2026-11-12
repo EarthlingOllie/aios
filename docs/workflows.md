@@ -98,8 +98,35 @@ never blocked, by any member.
   the metadata (see [Tracing](tracing.md)).
 - An agent node whose agent requests a schema change waits for the decision, and the run waits
   with it once nothing else can run (see [Tools](tools.md#request-schema-changes)).
+- An approval node waits for a person's decision (see [Approval nodes](#approval-nodes)).
 - Starting a run is refused if any agent version in the graph, at any depth, couldn't run (a
   tool that has left the library), if an agent or workflow in it is archived ("The agent <name>
   is archived."), or if it has no nodes. A run already going isn't checked again: an agent
   archived since it started still runs its node. Deleting a run deletes its agent runs;
   archiving the workflow leaves its runs.
+
+## Approval nodes
+
+An **approval node** (kind `approval`, pinning nothing) pauses a run for a person in a set role
+to approve or reject it (`aios.approvals`; one of the two kinds of approval, beside schema
+changes, in the Data page's Approvals list).
+
+- **Configured** with a prompt template (placeholders as an input template's: `{{input}}`,
+  `{{nodes.<key>}}` and fields of them, predecessors only), the approver role (`editor`, the
+  default, or `admin`: that role or above decides it) and an optional expiry in days (else the
+  organisation's approval expiry setting). It declares no output schema: its output is its
+  decision. Saving refuses a missing prompt, a placeholder naming a non-predecessor, or these
+  fields on another kind of node, each with the item it's about (422).
+- **Reached**, it renders its prompt and records a pending workflow step approval with the
+  prompt (its reason, in full) and its input; its step waits on it (`approval_id`), and the run
+  waits once nothing else can run. Only members whose role may decide it are notified ("approval
+  needed").
+- **Decided** (approved or rejected, with an optional note, in the Approvals list or on the run's
+  page), expired, or cancelled, the run resumes and the node outputs
+  `{approved, note, decided_by: {id, name}, status}` (`status` approved, rejected, expired or
+  cancelled; an expired approval counts as not approved), which its outgoing edges' conditions
+  branch on, e.g. `{"==": [{"var": "output.approved"}, true]}`.
+- **Cancelling the run** (`POST /api/o/{org}/workflows/{id}/runs/{run_id}/cancel`, anyone who may
+  start runs) fails it ("Cancelled by <name>."), cancels the approvals it waits on and clears
+  their notifications; deleting it does the same.
+
