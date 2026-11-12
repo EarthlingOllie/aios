@@ -51,6 +51,8 @@ PLATFORM_TABLES = {
     "agent_store_roles",
     # Connectors' credentials (`aios.connectors`): encrypted, kept out of every store on purpose.
     "connector_credentials",
+    # What each store used when measured (`aios.datastores.quota`): sizes, for Insights.
+    "store_usage_samples",
 }
 MOVED = (
     "triggers",

@@ -62,6 +62,7 @@ import { LoginPage, RegisterPage } from "@/pages/Auth";
 import { DataPage } from "@/pages/Data";
 import { SourcePage } from "@/pages/SourcePage";
 import { ConnectorPage } from "@/pages/ConnectorPage";
+import { InsightsPage } from "@/pages/Insights";
 import { InviteRoute } from "@/pages/Invite";
 import { OrganisationPage } from "@/pages/Organisation";
 import { RunPage } from "@/pages/Run";
@@ -265,6 +266,7 @@ export default function App({ organisation = null }: { organisation?: string | n
           <Route path=":skillId/versions/:version" element={<SkillVersionPage />} />
         </Route>
         <Route path="search" element={<SearchPage />} />
+        <Route path="insights" element={<InsightsPage />} />
         <Route path="agents" element={<AgentsSection />}>
           <Route index element={<AgentsIndex />} />
           <Route path="new" element={<AgentForm />} />
@@ -350,13 +352,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { to: "/search", label: "Search", icon: Search, end: false },
-  {
-    to: "/insights",
-    label: "Insights",
-    icon: ChartLine,
-    end: false,
-    stub: "See how your agents are used and how they perform.",
-  },
+  { to: "/insights", label: "Insights", icon: ChartLine, end: false },
   { to: "/chats", label: "Chats", icon: MessagesSquare, end: false },
   { to: "/agents", label: "Agents", icon: Bot, end: false },
   { to: "/skills", label: "Skills", icon: Sparkles, end: false },

@@ -193,12 +193,22 @@ def web_searches(response: AIMessage) -> int:
     )
 
 
-def tool_call_count(response: AIMessage) -> int:
-    """The tool calls in a model response: the agent's, and the provider's own (e.g. web
-    search), which are content blocks of the response (as the run page counts them)."""
+def tool_call_names(response: AIMessage) -> list[str]:
+    """The tools a model response calls, by name, once per call: the agent's, and the
+    provider's own (e.g. web search), which are content blocks of the response (as the run page
+    counts them)."""
     blocks = response.content if isinstance(response.content, list) else []
-    server = sum(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in blocks)
-    return len(response.tool_calls) + server
+    server = [
+        str(b.get("name") or "server_tool")
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "server_tool_use"
+    ]
+    return [str(c.get("name") or "tool") for c in response.tool_calls] + server
+
+
+def tool_call_count(response: AIMessage) -> int:
+    """The tool calls in a model response (`tool_call_names`)."""
+    return len(tool_call_names(response))
 
 
 def record_model_call(store: Session, charge: Charge, model: str, response: AIMessage) -> bool:
@@ -245,12 +255,14 @@ def record_turn_call(charge: Charge, model: str, response: AIMessage) -> None:
     with store_session(charge.data_store_id) as store:
         if record_model_call(store, charge, model, response) and charge.turn_id is not None:
             usage = response.usage_metadata or {}
+            tools = tool_call_names(response)
             turns.count(
                 store,
                 charge.turn_id,
-                tool_calls=tool_call_count(response),
+                tool_calls=len(tools),
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
+                tools=tools,
             )
             streams.turn_changed(store, charge.turn_id)
         store.commit()

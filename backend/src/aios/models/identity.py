@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    false,
     func,
     text,
 )
@@ -101,6 +103,11 @@ class Organisation(Base):
     # How many days an approval (`aios.approvals`) waits undecided before it expires, counting
     # as not approved; an approval node may set its own. Only admins set it.
     approval_expiry_days: Mapped[int] = mapped_column(Integer, default=7, server_default=text("7"))
+    # Whether Insights shows usage by person to every member (`aios.api.insights`), not only to
+    # admins. Off by default; only admins switch it.
+    insights_people_visible: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     # Its caps on turns and workflow runs (`aios.limits`), where an admin overrode the
     # deployment's, by name; empty for all the defaults.
     limits: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))

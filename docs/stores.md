@@ -250,6 +250,18 @@ identifiers, counts, times and statuses only, never text: no messages, titles, i
 or errors. Both roles read them through the store's default privileges; neither may write
 through them (`upgrade_store` revokes it each migration).
 
+The `insights` schema (store revision 0030) holds the Insights page's metrics-only views
+(`aios.insights`): `insights.turns` (with the workflow a turn ran in and who it's charged to,
+and agent runs from before turns were recorded as one untracked turn each, counters null),
+`insights.workflow_runs` and `insights.workflow_steps` (times running without the time waited
+for approvals), `insights.usage`, `insights.tool_calls` (each turn's calls by tool, from
+`aios.turn_tool_calls`), `insights.approvals`, `insights.chats`, `insights.chat_messages`,
+`insights.mentions`, `insights.agents` and `insights.workflows`. Identifiers, names, counts,
+times, statuses and costs only: no message text, brief, tool input or output, memory, synced
+text or error. The panels read them as `_ro` in a read-only transaction, each panel cached per
+store, range and grouping for `INSIGHTS_CACHE_SECONDS` (5 minutes). Any migration changing a
+table they read updates them in the same migration.
+
 - **Named by store and id.** Ids repeat across stores, so everything outside the store that
   names a row of it carries the store too: worker task arguments (`apply_schema_change_task`),
   the run service's work items, the turn lease's Redis channels, a
@@ -527,7 +539,9 @@ the store as the write comes in. What each store uses is also recorded on its `d
 for the Data page's Overview, which shows both against their caps, warning from 80%: the
 routine worker's beat measures every ready store every five minutes, as its `_ro` role,
 and uploads and deletes record the documents' bytes straight away. Deleting documents or rows
-makes room at once; the Overview shows rows' room at the next measurement. The checks first read
+makes room at once; the Overview shows rows' room at the next measurement. Each measurement also
+keeps a sample on the platform (`store_usage_samples`), which Insights draws against the caps
+over time; samples older than `STORAGE_HISTORY_DAYS` (400) are pruned nightly with retention. The checks first read
 the database's size, which is never less than the data, and only measure the data once that
 size reaches the cap. Deleting rows doesn't bring the size back down, so from then on each check
 measures: `pgstattuple_approx` reads the pages vacuum hasn't marked all-visible, the ones

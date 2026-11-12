@@ -343,6 +343,11 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key: SecretStr = SecretStr("")
     github_app_slug: str = ""
+    # Insights (`aios.insights`): each panel's data is kept for `insights_cache_seconds` per
+    # organisation, panel, range and grouping. Each store usage measurement also keeps a sample
+    # (`aios.datastores.quota`), pruned after `storage_history_days`.
+    insights_cache_seconds: float = Field(default=5 * 60, ge=0)
+    storage_history_days: float = Field(default=400, gt=0)
 
     # Sandboxed Python (the `run_python` tool, `aios.sandbox`). With no backend the tool tells the
     # model it isn't available.

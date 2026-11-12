@@ -7,23 +7,25 @@ deletes carry on. The checks measure the store as the write comes in (`upload_re
 
 What each store uses is also recorded on its `data_stores` row, for the Data page: both sizes by
 `measure_all`, on a schedule (`aios.worker`), and the documents' bytes again after each upload
-and delete (`record_files`), so room made shows straight away.
+and delete (`record_files`), so room made shows straight away. Each measurement also keeps a
+sample (`StoreUsageSample`), for Insights' storage over time (`aios.insights`), pruned after
+`storage_history_days` (`prune_samples`, nightly with retention).
 """
 
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from aios.config import get_settings
 from aios.datastores.connections import dispose_engine, store_session
 from aios.db import SessionLocal
-from aios.models import DataStore, DataStoreStatus
+from aios.models import DataStore, DataStoreStatus, StoreUsageSample
 
 log = logging.getLogger(__name__)
 
@@ -194,10 +196,31 @@ def record_files(data_store_id: uuid.UUID, store: Session) -> None:
 
 
 def measure(data_store_id: uuid.UUID) -> None:
-    """Measure what the store uses now, and record it on its row."""
+    """Measure what the store uses now, and record it on its row, and as a sample (for
+    Insights' storage over time), at the same time."""
     with store_session(data_store_id, "ro") as store:
         db_bytes, files_bytes = _db_bytes(store), store.scalar(_FILES_BYTES)
-    _record(data_store_id, db_bytes=db_bytes, files_bytes=files_bytes, usage_measured_at=func.now())
+    with SessionLocal() as db:
+        db.execute(
+            update(DataStore)
+            .where(DataStore.id == data_store_id)
+            .values(db_bytes=db_bytes, files_bytes=files_bytes, usage_measured_at=func.now())
+        )
+        db.add(
+            StoreUsageSample(
+                data_store_id=data_store_id, db_bytes=db_bytes, files_bytes=files_bytes
+            )
+        )
+        db.commit()
+
+
+def prune_samples() -> int:
+    """Delete usage samples older than `storage_history_days`; how many went."""
+    cutoff = func.now() - timedelta(days=get_settings().storage_history_days)
+    with SessionLocal() as db:
+        gone = db.execute(delete(StoreUsageSample).where(StoreUsageSample.measured_at < cutoff))
+        db.commit()
+    return gone.rowcount
 
 
 def measure_all() -> None:

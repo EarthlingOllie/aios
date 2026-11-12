@@ -588,6 +588,21 @@ class Turn(StoreBase):
     )
 
 
+class TurnToolCall(StoreBase):
+    """How many times a turn called a tool, by its name (`aios.turns.count`): for Insights' most
+    used tools. Turns from before these were kept have only their total (`Turn.tool_calls`)."""
+
+    __tablename__ = "turn_tool_calls"
+
+    turn_id: Mapped[int] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), primary_key=True
+    )
+    tool: Mapped[str] = mapped_column(String(255), primary_key=True)
+    calls: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+
+    __table_args__ = ({"comment": "How many times each turn called each tool"},)
+
+
 class SandboxSession(StoreBase):
     """The sandbox an agent run's `run_python` calls go to (see `aios.sandbox`)."""
 

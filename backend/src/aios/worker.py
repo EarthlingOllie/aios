@@ -482,14 +482,19 @@ def publish_queue_metrics_task() -> None:
 @celery_app.task(name="aios.prune_retention")
 def prune_retention_task() -> None:
     """Prune every store's runs and chat history past its organisation's retention, in batches,
-    recording each prune in its audit log (`aios.retention.prune_all`); and read notifications
-    past `notification_retention_days` (`aios.notifications.prune`)."""
+    recording each prune in its audit log (`aios.retention.prune_all`); read notifications
+    past `notification_retention_days` (`aios.notifications.prune`); and store usage samples
+    past `storage_history_days` (`aios.datastores.quota.prune_samples`)."""
     from aios import notifications, retention
+    from aios.datastores import quota
 
     try:
         retention.prune_all()
     finally:
-        notifications.prune()
+        try:
+            notifications.prune()
+        finally:
+            quota.prune_samples()
 
 
 @celery_app.task(name="aios.expire_schema_change_requests")

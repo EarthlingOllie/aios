@@ -101,7 +101,132 @@ export type Organisation = OrganisationSummary & {
   approval_expiry_days: number;
   /** The caps on turns and workflow runs; every member sees them, admins change them. */
   limits: OrganisationLimits;
+  /** Whether Insights shows usage by person to every member, not only admins; admins change it. */
+  insights_people_visible: boolean;
 };
+
+/** One day of an Insights activity series. */
+export type InsightsDay = {
+  day: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  /** Turns from before counts were kept. */
+  not_tracked: number;
+};
+
+/** An agent's, workflow's, cause's or person's days; `key` null for none. */
+export type InsightsSeries = { key: number | string | null; name: string | null; days: InsightsDay[] };
+
+export type InsightsActivity = {
+  group: string;
+  start: string;
+  end: string;
+  turns: InsightsSeries[];
+  workflow_runs: InsightsSeries[];
+};
+
+export type InsightsUsageRow = {
+  key: number | string | null;
+  name: string | null;
+  turns: number;
+  not_tracked: number;
+  /** Null when none of the group's turns is tracked: "not tracked", not zero. */
+  model_calls: number | null;
+  tool_calls: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  /** Estimated, in GBP; null if nothing in it was priced. */
+  cost: number | null;
+  unpriced: number;
+};
+
+export type InsightsUsage = {
+  group: string;
+  start: string;
+  end: string;
+  currency: "GBP";
+  rows: InsightsUsageRow[];
+  top_agents: { key: number; name: string; turns: number }[];
+  top_tools: { tool: string; calls: number }[];
+};
+
+export type InsightsWorkflows = {
+  start: string;
+  end: string;
+  slowest_workflows: {
+    workflow_id: number;
+    name: string;
+    runs: number;
+    mean_seconds: number;
+    max_seconds: number;
+    waited_seconds: number;
+  }[];
+  slowest_nodes: {
+    workflow_id: number;
+    name: string;
+    node: string;
+    kind: string;
+    runs: number;
+    mean_seconds: number;
+    max_seconds: number;
+  }[];
+  failures: {
+    workflow_id: number;
+    name: string;
+    node: string;
+    kind: string;
+    failures: number;
+    latest_at: string | null;
+    latest_run_id: number;
+  }[];
+};
+
+export type InsightsApprovals = {
+  start: string;
+  end: string;
+  kinds: {
+    kind: string;
+    total: number;
+    approved: number;
+    rejected: number;
+    expired: number;
+    cancelled: number;
+    pending: number;
+    mean_wait_seconds: number | null;
+    max_wait_seconds: number | null;
+  }[];
+};
+
+export type InsightsChats = {
+  start: string;
+  end: string;
+  chats: {
+    chat_id: number;
+    name: string;
+    archived: boolean;
+    messages: number;
+    agent_messages: number;
+    mentions: number;
+    succeeded: number;
+    failed: number;
+    refused: number;
+    in_progress: number;
+  }[];
+};
+
+export type InsightsStorage = {
+  start: string;
+  end: string;
+  db_quota_bytes: number;
+  files_quota_bytes: number;
+  db_bytes: number | null;
+  files_bytes: number | null;
+  measured_at: string | null;
+  samples: { measured_at: string; db_bytes: number; files_bytes: number }[];
+};
+
+export type InsightsSources = { shown: boolean; sources: Source[] };
 
 /** Who may invoke an agent or workflow by mentioning it. */
 export type InvocableBy = "everyone" | "editors" | "admins";
@@ -1559,6 +1684,16 @@ export const api = {
   /** Admins only: override the deployment's caps (null: the default). */
   setLimits: (limits: Limits) =>
     request<Organisation>(`${organisationApi()}/organisation/limits`, json("PUT", limits)),
+  /** Admins only: show usage by person on Insights to every member (true) or admins only. */
+  setInsightsPeopleVisible: (visible: boolean) =>
+    request<Organisation>(`${organisationApi()}/organisation/insights-people`, json("PUT", { visible })),
+  /** An Insights panel's data for a range of days (and, for activity and usage, a grouping):
+   * every member's, but a person grouping is a 403 unless they may see it. */
+  insights: <T>(panel: string, range: { start: string; end: string }, group?: string) => {
+    const params = new URLSearchParams(range);
+    if (group) params.set("group", group);
+    return request<T>(`${organisationApi()}/insights/${panel}?${params}`);
+  },
   /** Admins only: usage totals by agent, workflow, person or day, from `start` to `end`. */
   usage: (group: UsageGroup, start?: string, end?: string) => {
     const params = new URLSearchParams({ group });
