@@ -89,6 +89,7 @@ ROUTES = {
     ("GET", "/chats/{chat_id}/messages"): READ,
     ("POST", "/chats/{chat_id}/messages"): POST,
     ("POST", "/chats/{chat_id}/read"): POST,
+    ("GET", "/chats/{chat_id}/stream"): READ,
     ("GET", "/data-store"): READ,
     ("GET", "/data/tables"): READ,
     ("GET", "/data/tables/{table:path}/rows"): READ,

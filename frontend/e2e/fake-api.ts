@@ -22,6 +22,15 @@ import type { Page, Route } from "@playwright/test";
  * agent's turn takes `agentTurns` steps (by agent id; `AGENT_TURN` by default), each a read
  * adding a tool call and tokens to its run's counters. A chat made through the API has the
  * documents assistant (`documentsAssistant`) as its first agent; one added with `addChat` hasn't.
+ *
+ * Streams: a chat's stream and the person's are answered a batch at a time, then end, so the
+ * browser opens them again after `streamRetryMs`, resuming after the last event id it has, as it
+ * does when a real stream drops. Each opening of a chat's stream moves its invocations on a beat
+ * too, as a read does, and sends the messages after the last event id, the invocations still
+ * going, any drafts (`drafts`, or an agent turn's `drafts` as it runs), and the chat's header when
+ * it has changed. The person's stream sends what changed in the organisation's chat list since it
+ * was last opened. `streamsDown` answers both with a 503 and a retry hint (Redis down);
+ * `streamGone` closes them with `gone` and that reason.
  */
 
 type Kind = "agent" | "workflow";
@@ -614,7 +623,14 @@ const NOW = "2026-10-14T09:00:00Z";
 
 /** How a mentioned agent's scripted turn goes: how many reads it runs for (each a model step
  * adding a tool call and `tokensPerStep` tokens), then its reply, or the error it fails with. */
-export type AgentTurn = { steps: number; tokensPerStep: number; reply?: string; error?: string };
+export type AgentTurn = {
+  steps: number;
+  tokensPerStep: number;
+  reply?: string;
+  error?: string;
+  /** The reply so far after each step, as the chat's stream sends it while the turn runs. */
+  drafts?: string[];
+};
 export const AGENT_TURN: AgentTurn = { steps: 2, tokensPerStep: 120 };
 
 /** A message's text: each mention as `@name`. */
@@ -834,6 +850,22 @@ export class FakeApi {
   notificationLists = 0;
   /** The query of each read of a chat's messages, in order (e.g. "?after=12"). */
   messageReads: string[] = [];
+  /** The query of each opening of a chat's stream, in order (e.g. "?last_event_id=12"). */
+  streamReads: string[] = [];
+  /** How many times the person's stream was opened. */
+  personStreamReads = 0;
+  /** How long the browser waits before opening a stream again once a batch has ended (ms). */
+  streamRetryMs = 1000;
+  /** Redis down: streams answer 503 with a retry hint. */
+  streamsDown = false;
+  /** Why streams close for good (`gone`), e.g. "left_organisation"; null while they don't. */
+  streamGone: string | null = null;
+  /** Replies being written, by invocation id. */
+  drafts = new Map<number, string>();
+  /** Each chat's header as its stream last sent it. */
+  private headersSent = new Map<number, string>();
+  /** The chat list as the person's stream last saw it, by chat id. */
+  private listSeen: Map<number, string> | null = null;
   /** Every write the app sent, for assertions: [method, path, body]. */
   writes: [string, string, unknown][] = [];
   /** Each `POST /api/chats/{id}/read`, as [chat id, message id]: not a write the user made. */
@@ -1899,6 +1931,8 @@ export class FakeApi {
   /** Ends an invocation and posts its result back from its agent or workflow, as the API does. */
   private finishInvocation(invocation: InvocationRow, status: "succeeded" | "failed", body: string, error: string | null = null) {
     Object.assign(invocation, { status, error, finished_at: NOW });
+    // The posted reply (or the failure) replaces the draft.
+    this.drafts.delete(invocation.id);
     const target = this.targetOf(invocation);
     this.addChatMessage(
       this.chats.get(invocation.chat_id)!,
@@ -2002,6 +2036,9 @@ export class FakeApi {
         return;
       }
       if (run.tool_call_count! < turn.steps) {
+        if (turn.drafts?.length) {
+          this.drafts.set(invocation.id, turn.drafts[Math.min(run.tool_call_count!, turn.drafts.length - 1)]);
+        }
         run.tool_call_count! += 1;
         run.input_tokens! += turn.tokensPerStep - 20;
         run.output_tokens! += 20;
@@ -2358,6 +2395,83 @@ export class FakeApi {
     };
   }
 
+  /** A stream's answer when it doesn't open: a 503 with a retry hint, or `gone`; else null. */
+  private streamRefusal(route: Route) {
+    if (this.streamsDown) {
+      return route.fulfill({
+        status: 503,
+        headers: { "Retry-After": "1" },
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Live updates aren't available right now. Try again shortly." }),
+      });
+    }
+    if (this.streamGone !== null) return this.events(route, [["gone", { reason: this.streamGone }, null]]);
+    return null;
+  }
+
+  /** A batch of server-sent events, after which the stream ends (see the class comment). */
+  private events(route: Route, events: [string, unknown, number | null][]) {
+    const body = events
+      .map(([event, data, id]) => `${id === null ? "" : `id: ${id}\n`}event: ${event}\ndata: ${JSON.stringify(data, asTheApiNamesThem)}\n\n`)
+      .join("");
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: { "Cache-Control": "no-cache" },
+      body: `retry: ${this.streamRetryMs}\n\n${body}`,
+    });
+  }
+
+  /** What a chat's stream sends as it opens: what's new after `lastEventId`, the invocations still
+   * going, drafts, and the chat's header if it changed. Its invocations move on a beat first. */
+  private chatEvents(chat: ChatRow, lastEventId: string | null): [string, unknown, number | null][] {
+    this.advanceInvocations(chat);
+    const after = lastEventId === null ? null : Number(lastEventId);
+    const out = this.messagesOut(chat, after === null ? [] : chat.messages.filter((m) => m.id > after));
+    const events: [string, unknown, number | null][] = out.messages.map((m) => ["message", m, m.id]);
+    for (const invocation of out.invocations) events.push(["invocation", invocation, null]);
+    for (const [id, text] of this.drafts) {
+      const invocation = this.invocations.get(id);
+      if (invocation?.chat_id === chat.id) events.push(["draft", { invocation_id: id, text }, null]);
+    }
+    const header = {
+      id: chat.id,
+      name: chat.name,
+      description: chat.description,
+      archived_at: chat.archived_at,
+      archived_by: chat.archived_by,
+    };
+    const seen = JSON.stringify(header);
+    if (this.headersSent.has(chat.id) && this.headersSent.get(chat.id) !== seen) events.push(["chat", header, null]);
+    this.headersSent.set(chat.id, seen);
+    return events;
+  }
+
+  /** What the person's stream sends: each chat of the organisation's list that changed since it
+   * last opened (the first opening only notes the list). */
+  private listChanges(): [string, unknown, number | null][] {
+    const now = new Map(
+      this.organisationChats().map((c) => [
+        c.id,
+        JSON.stringify({ ...this.chatSummary(c), unread_count: this.unreadCount(c), newest: c.messages.at(-1)?.id ?? null }),
+      ]),
+    );
+    const before = this.listSeen;
+    this.listSeen = now;
+    if (before === null) return [];
+    const events: [string, unknown, number | null][] = [];
+    for (const [id, summary] of now) {
+      if (before.get(id) === summary) continue;
+      const chat = this.chats.get(id)!;
+      events.push(
+        before.has(id)
+          ? ["chat_activity", { organisation_id: this.organisation.id, chat_id: id, message_id: chat.messages.at(-1)?.id ?? null, unread_count: this.unreadCount(chat) }, null]
+          : ["chat_list", { organisation_id: this.organisation.id, chat_id: id, change: "appeared" }, null],
+      );
+    }
+    return events;
+  }
+
   /** Messages as the API returns them, with the invocations they belong to and those still going. */
   private messagesOut(chat: ChatRow, messages: ChatMessageRow[]) {
     const ids = new Set(messages.map((m) => m.invocation_id));
@@ -2613,6 +2727,12 @@ export class FakeApi {
       });
       this.invites = [];
       return reply(201, this.organisationOut());
+    }
+    if (path === "/api/me/stream" && method === "GET") {
+      this.personStreamReads += 1;
+      const refused = this.streamRefusal(route);
+      if (refused) return refused;
+      return this.events(route, this.listChanges());
     }
     // Everything but the person's own (signing in, the profile, invitations, notifications, the
     // tool library and timezones) is an organisation's, under its prefix (`/api/o/<id>/...`), as
@@ -3553,6 +3673,12 @@ export class FakeApi {
       // Another organisation's chat doesn't exist here.
       if (!chat || chat.organisation_id !== this.organisation.id) return fail(404, "Not Found");
       if (rest === "" && method === "GET") return reply(200, this.chatOut(chat));
+      if (rest === "/stream" && method === "GET") {
+        this.streamReads.push(url.search);
+        const refused = this.streamRefusal(route);
+        if (refused) return refused;
+        return this.events(route, this.chatEvents(chat, url.searchParams.get("last_event_id")));
+      }
       if (rest === "/messages" && method === "GET") {
         this.messageReads.push(url.search);
         this.advanceInvocations(chat);

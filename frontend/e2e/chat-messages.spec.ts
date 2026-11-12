@@ -1,12 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
-import { setHidden } from "./visibility";
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
-// How often the open chat asks for what's new (POLL_MS), and how often once its tab is hidden.
-const POLL_MS = 1000;
-const HIDDEN_POLL_MS = 30_000;
 
 const messageList = (page: Page) => page.getByRole("log", { name: "Messages" });
 /** The message whose body is `text`, exactly. */
@@ -35,7 +31,7 @@ test("posts a markdown message and shows it with its author", async ({ page }) =
   expect(api.writes).toEqual([["POST", orgApi(`/chats/${chat.id}/messages`), { body: "Hello, **world**", mentions: [] }]]);
 });
 
-test("a message posted by someone else appears within a poll", async ({ page }) => {
+test("a message posted by someone else arrives on the chat's stream", async ({ page }) => {
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   api.addChatMember(chat, sam);
@@ -45,13 +41,14 @@ test("a message posted by someone else appears within a poll", async ({ page }) 
 
   api.addChatMessage(chat, "Morning, *all*", sam);
   const theirs = message(page, "Morning, all");
-  await expect(theirs).toBeVisible({ timeout: 2 * POLL_MS + 1000 });
+  await expect(theirs).toBeVisible({ timeout: 2 * api.streamRetryMs + 1000 });
   await expect(theirs).toContainText("Sam Jones");
   await expect(theirs.locator("em")).toHaveText("all");
   // No picture: their initial.
   await expect(theirs.getByRole("img", { name: "Sam Jones" })).toHaveText("S");
-  // It asked for what came after the newest message it had.
-  expect(api.messageReads).toContain(`?after=${first.id}`);
+  // The stream resumed after the newest message it had; nothing asked for what's new.
+  expect(api.streamReads).toContain(`?last_event_id=${first.id}`);
+  expect(api.messageReads.filter((q) => q.startsWith("?after="))).toEqual([]);
 });
 
 test("loads history when scrolled to the top, keeping the reader's place", async ({ page }) => {
@@ -94,28 +91,25 @@ test("follows new messages at the bottom, but not while reading older ones", asy
   await expect(message(page, "Newest")).not.toBeInViewport();
 });
 
-test("a hidden tab asks less often, and catches up as soon as it's shown", async ({ page }) => {
+test("nothing polls the open chat: its stream brings what's new", async ({ page }) => {
   await page.clock.install();
   const api = await fakeApi(page);
   const chat = api.addChat("Design");
   await page.goto(inOrg(`/chats/${chat.id}`));
   await expect(messageList(page)).toContainText("No messages yet");
+  await expect.poll(() => api.streamReads.length).toBeGreaterThan(0);
 
-  await setHidden(page, true);
   const asked = api.messageReads.length;
-  for (let i = 0; i < 3; i++) {
-    await page.clock.runFor(POLL_MS);
-    // Time for a request the timer started to reach the API.
-    await page.waitForTimeout(300);
+  // Each batch of the fake's stream ends, and it's opened again: still no reads.
+  for (let i = 0; i < 5; i++) {
+    await page.clock.runFor(api.streamRetryMs);
+    await page.waitForTimeout(100);
   }
   expect(api.messageReads.length).toBe(asked);
-  // It still asks, just less often.
-  await page.clock.runFor(HIDDEN_POLL_MS);
-  await expect.poll(() => api.messageReads.length).toBe(asked + 1);
-
   api.addChatMessage(chat, "While you were away", sam);
-  await setHidden(page, false);
+  await page.clock.runFor(api.streamRetryMs);
   await expect(message(page, "While you were away")).toBeVisible();
+  expect(api.messageReads.length).toBe(asked);
 });
 
 test("someone not in a chat reads it, and is told posting joins it", async ({ page }) => {

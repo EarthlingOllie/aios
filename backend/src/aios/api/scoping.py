@@ -41,6 +41,8 @@ UNSCOPED: set[tuple[str, str]] = {
     ("PATCH", "/api/me"),
     ("PUT", "/api/me/email"),
     ("PUT", "/api/me/password"),
+    # The person's live updates, across every organisation they're in (`aios.api.streams`).
+    ("GET", "/api/me/stream"),
     # An invitation link's page, and accepting it.
     ("GET", "/api/invites/{token}"),
     ("POST", "/api/invites/{token}/accept"),

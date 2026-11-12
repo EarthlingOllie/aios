@@ -41,7 +41,7 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
   await expect(messageList(page)).toContainText("No messages yet");
 
   await mention(page, report, "Summarise the week");
-  // The acknowledgement and its card come with the message, before any poll.
+  // The acknowledgement and its card come with the message, before the stream brings anything.
   const ack = message(page, "Reading the chat…");
   await expect(ack).toBeVisible();
   await expect(ack.getByText("Report", { exact: true })).toBeVisible();
@@ -57,7 +57,7 @@ test("mentioning a workflow shows its card at once, follows the run and posts th
     ],
   ]);
 
-  // Each poll moves the run on; the card draws where it is.
+  // Each batch of the stream moves the run on; the card draws where it is.
   await expect(node(page, "research")).toHaveAttribute("data-state", "succeeded");
   await expect(node(page, "write")).toHaveAttribute("data-state", "running");
   await expect(card(page)).toContainText("1 of 3 nodes done");
@@ -109,7 +109,7 @@ test("several workflows mentioned in one message each get a card", async ({ page
   await composer(page).press("Enter");
   await expect(card(page)).toHaveCount(2);
   await expect(message(page, "sum done")).toBeVisible();
-  // A poll a second, a node a poll.
+  // A stream batch a second, a node a batch.
   await expect(message(page, "review done")).toBeVisible({ timeout: 10_000 });
 });
 
@@ -118,7 +118,7 @@ test("a card whose run has been deleted says so", async ({ page }) => {
   const { chat, report } = seed(api);
   await page.goto(inOrg(`/chats/${chat.id}`));
   await mention(page, report, "Go");
-  // A poll a second, a node a poll.
+  // A stream batch a second, a node a batch.
   await expect(message(page, "review done")).toBeVisible({ timeout: 10_000 });
 
   const [run] = [...api.runs.values()];

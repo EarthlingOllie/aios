@@ -26,12 +26,12 @@ test("mentioning an agent shows its card at once, ticking and counting, then pos
 }) => {
   const api = await fakeApi(page);
   const { chat, agent } = seed(api);
-  // Long enough to watch the clock tick: a model step a poll, a poll a second.
+  // Long enough to watch the clock tick: a model step a stream batch, a batch a second.
   api.agentTurns.set(agent.id, { steps: 4, tokensPerStep: 600, reply: "Three **sources** found." });
   await page.goto(inOrg(`/chats/${chat.id}`));
 
   await post(page, `@[Scout](agent:${agent.id}) find sources`);
-  // The acknowledgement and its card come with the message, before any poll.
+  // The acknowledgement and its card come with the message, before the stream brings anything.
   const ack = message(page, "Reading the chat…");
   await expect(ack).toBeVisible();
   await expect(ack.getByText("Scout", { exact: true })).toBeVisible();

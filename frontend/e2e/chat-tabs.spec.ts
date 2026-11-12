@@ -5,8 +5,8 @@ import { fakeApi, type ChatUser, inOrg, orgApi } from "./fake-api";
 /** The chat page splits into tabs: Chat (the room) and Members. */
 
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
-// How often the chat list asks again, for unread counts (CHAT_LIST_POLL_MS).
-const LIST_POLL_MS = 5000;
+// At most how long the chat list takes to follow a change, from the person's stream.
+const LIST_UPDATE_MS = 5000;
 
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Chat details" });
 const tab = (page: Page, name: string | RegExp) => tabs(page).getByRole("tab", { name });
@@ -180,7 +180,7 @@ test("messages aren't marked read while Members is open; back on Chat they are",
 
   // Sam posts while Members is open: the list counts it, and nothing reads it.
   const posted = api.addChatMessage(chat, "Anyone around?", sam);
-  await expect(chatLink(page, "Design").getByLabel("unread")).toHaveText("1", { timeout: LIST_POLL_MS + 2000 });
+  await expect(chatLink(page, "Design").getByLabel("unread")).toHaveText("1", { timeout: LIST_UPDATE_MS + 2000 });
   expect(api.chatReads).not.toContainEqual([chat.id, posted.id]);
 
   // Back on Chat, the room reloads, scrolled to the newest, and reading it clears the count.

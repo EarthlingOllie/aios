@@ -41,7 +41,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import limits as caps
-from aios import turns
+from aios import streams, turns
 from aios.config import get_settings
 from aios.datastores import store_id_of, store_session
 from aios.datastores.models import (
@@ -250,6 +250,7 @@ def record_turn_call(charge: Charge, model: str, response: AIMessage) -> None:
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
             )
+            streams.turn_changed(store, charge.turn_id)
         store.commit()
 
 

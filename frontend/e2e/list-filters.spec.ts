@@ -14,8 +14,8 @@ const filter = (page: Page, name: string) =>
   page.getByRole("group", { name: "Show" }).getByRole("button", { name, exact: true });
 const sort = (page: Page, name: string) => page.getByRole("combobox", { name: `Sort ${name}` });
 
-// How often the chat list asks again (CHAT_LIST_POLL_MS).
-const CHAT_LIST_POLL_MS = 5000;
+// At most how long the chat list takes to follow a change, from the person's stream.
+const CHAT_LIST_UPDATE_MS = 5000;
 const sam: ChatUser = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("the agents can be shown by whether they've been run, and sorted by most runs", async ({ page }) => {
@@ -216,12 +216,12 @@ test("the chats can be shown by joined, not joined and unread, as the list refre
   await expect(links(page, "Chats")).toHaveCount(0);
   await expect(list(page, "Chats")).toContainText("No chats match these filters.");
 
-  // Sam posts in Design, and joins us in a new chat: the next refresh shows Design, and the
+  // Sam posts in Design, and joins us in a new chat: the person's stream shows Design, and the
   // filter still applies to what it brings.
   const lobby = api.addChat("Lobby", { owner: sam });
   api.addChatMember(lobby, api.me);
   api.addChatMessage(design, "Anyone around?", sam);
-  await expect(links(page, "Chats")).toHaveText([/Design/], { timeout: CHAT_LIST_POLL_MS + 2000 });
+  await expect(links(page, "Chats")).toHaveText([/Design/], { timeout: CHAT_LIST_UPDATE_MS + 2000 });
   await expect(page.getByText("1 of 4")).toBeVisible();
   await expect(filter(page, "Unread")).toHaveAttribute("aria-pressed", "true");
 });

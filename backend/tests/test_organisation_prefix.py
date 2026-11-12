@@ -94,6 +94,7 @@ UNSCOPED = {
     ("PATCH", "/api/me"),
     ("PUT", "/api/me/email"),
     ("PUT", "/api/me/password"),
+    ("GET", "/api/me/stream"),
     ("GET", "/api/invites/{token}"),
     ("POST", "/api/invites/{token}/accept"),
     ("POST", "/api/organisations"),

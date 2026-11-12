@@ -32,9 +32,13 @@ Each user member keeps the last message they've seen (`POST /api/chats/{id}/read
 to the bottom), and the list counts, per chat they're in, the messages others posted since
 (`unread_count`).
 
-People post markdown messages, read by id: `?after=N` for what's new (what the open chat
-polls), `?before=N` for the page of history before N, and neither for the latest page. A chat's
-last activity is when it was last changed or a message was last posted.
+People post markdown messages, read by id: `?after=N` for what's new (what an open chat reads
+while its stream can't open), `?before=N` for the page of history before N, and neither for the
+latest page. A chat's last activity is when it was last changed or a message was last posted.
+
+Everything here is live: what changes in a chat (messages, run cards, its header and members) is
+published once committed (`aios.streams`), and an open chat follows it on its stream, the chat
+list on the person's (`aios.api.streams`). Nothing polls.
 
 A message can mention members: the composer picks them from `GET /api/chats/{id}/mentionable`, the
 body carries a token for each (`@[name](kind:id)`) and the message stores them structurally,
@@ -46,18 +50,19 @@ response to the post carries the workflow's acknowledgement and run card with th
 its start is enqueued on the run service (`enqueue_starts`, `aios.run_service`), which starts
 the run. Before it does, the handoff (`aios.handoff`) briefs it on the chat: the invocation is
 `briefing`, then its `brief` is kept and prepended to the run's input, and its ack replaces the
-acknowledgement's placeholder (`acknowledgement`, which the poll carries, so a card already shown
-follows it). A read's `invocations` are the state of each invocation its messages belong to and
-of every one in the chat still going, each with its run as the run's page shows it, so a chat's
-live cards cost its one poll. When the run ends, its result is posted back as a message from the
-workflow.
+acknowledgement's placeholder (`acknowledgement`, which its `invocation` event carries, so a
+card already shown follows it). A read's `invocations` are the state of each invocation its
+messages belong to and of every one in the chat still going, each with its run as the run's page
+shows it; the chat's stream sends each as it changes. When the run ends, its result is posted
+back as a message from the workflow.
 
 Mentioning an agent runs one turn of a new run of it, with the brief and the message as the
 user's, the same way: its acknowledgement and card come with the post, and the run service runs
 the handoff and then the turn, in the interactive lane, retrying it elsewhere if its process
 dies, and failing its card after a few attempts. A read's `invocations` carry an agent run's
 status, start and counters (`agent_run`), and the agent's final reply is posted back when the
-turn ends.
+turn ends. While it's being written, the chat's stream carries it as a draft (never stored),
+which the posted reply replaces.
 
 Either run is started by the member who mentioned it (its `created_by`) and executes for the
 organisation, over its store, like any other run: it doesn't depend on whoever made the agent or

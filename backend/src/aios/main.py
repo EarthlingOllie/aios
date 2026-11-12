@@ -25,6 +25,7 @@ from aios.api import (
     schema_changes,
     skills,
     sources,
+    streams,
     tools,
     triggers,
     workflows,
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(search_api.router)
     app.include_router(organisation.router)
     app.include_router(chats.router)
+    app.include_router(streams.router)
     if settings.dev_login_enabled:
         log.warning("DEV_LOGIN_ENABLED is on: anyone can sign in as any user, with no password")
         app.include_router(dev_auth.router)

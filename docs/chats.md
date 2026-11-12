@@ -68,15 +68,15 @@ Each chat you're in shows an **unread count** in the list: the messages others p
 last one you saw, tracked per chat and chat member by message id
 (`chat_members.last_read_message_id`). Reading the open chat to the bottom, with its tab
 visible, reports the newest message (`POST /api/o/{org}/chats/{id}/read` with `{message_id}`; it only
-moves forward) and clears the count; the list asks again every 5 seconds (30 while hidden).
+moves forward) and clears the count; the list follows the person's stream (below), so counts
+go up as others post.
 Joining (or posting, which joins) counts what was already there as read. Nothing is sent off-app.
 
 ## Messages
 
 Chat members post **messages** in markdown, shown with their author's name (a user's full name,
-"First Last") and initial (an agent's or workflow's icon). The open chat asks for what's new
-every second (`GET /api/o/{org}/chats/{id}/messages?after=N`, every 30 seconds while its tab is hidden,
-and at once when it's shown again), follows new messages when scrolled to the bottom and
+"First Last") and initial (an agent's or workflow's icon). The open chat follows its stream
+(below) for what's new, follows new messages when scrolled to the bottom and
 otherwise leaves the reader where they are; scrolling to the top loads the page before
 (`?before=N`, 50 at a time). Anyone in the organisation reads it and posts in it (posting joins:
 a note under the composer says so to anyone who hasn't joined). A read returns `{messages, invocations}` (below). Posting makes a chat the
@@ -141,7 +141,7 @@ invocation, and the invocation goes `succeeded` or `failed`, in one transaction.
 back by the run service's requeue sweep after a minute; one whose start keeps losing its process
 fails after three attempts with "The service stopped mid-run." A read's `invocations` are the state of each invocation its messages belong to
 and of every one in the chat still going, each with its run as the run's page shows it (graph,
-steps), so a chat's live cards cost its one poll a second. The card draws the run's graph still,
+steps), and the chat's stream sends each as it changes. The card draws the run's graph still,
 at a fixed height, with each node's state, "n of m nodes done" and a status badge, and opens the
 run's page when clicked; a run that couldn't start shows why, and one since deleted says so.
 Mentions in what a workflow posts start nothing, so a chat can't loop. Runs started from a chat
@@ -163,6 +163,40 @@ and opens the run's page when clicked. When the turn ends, the agent's final rep
 back as a message from the agent (or the turn's error, failing the card). Several agents and
 workflows mentioned in one message each start; mentions in an agent's reply start nothing. Runs
 started from a chat are listed with the agent's others, marked with the chat.
+
+## Live updates
+
+Nothing polls. Conversations and the chat list update live over server-sent events, fed through
+Redis pub/sub: the API and the run service publish what they change once it's committed
+(`aios.streams`), and each API process relays it to the streams it holds (`aios.api.streams`).
+
+- **A chat's stream** (`GET /api/o/{org}/chats/{id}/stream`): anyone in the organisation opens
+  any chat's, joined or not (a 404 for anyone else). It carries `message` (as the messages read
+  returns it, its id the event id), `invocation` (a run card's state, as it goes queued, briefing,
+  running and finished), `draft` (the whole reply so far of an agent's turn, marked "writing…",
+  which the posted reply replaces in place; a failed turn's draft goes, and its failure shows),
+  `chat` (its header: an archived chat turns read-only, still open), `members`, `gone` and
+  `ping`.
+- **A person's stream** (`GET /api/me/stream`), across every organisation they're in: `chat_activity`
+  (a chat's newest message and their unread count) and `chat_list` (a chat appeared, was joined,
+  left, renamed, archived or unarchived), and `ping`.
+- **Reconnecting.** A stream resumes after the last event id (`Last-Event-ID`, or
+  `?last_event_id=`): it subscribes first, then reads the messages after it, the chat's
+  unfinished invocations and any drafts, and sends them before what it buffered, each message
+  once. The browser always resumes after the newest message it shows.
+- **Drafts** are kept in Redis while the turn runs, with an expiry (`DRAFT_EXPIRY_SECONDS`, 15
+  minutes), and published whole at most every `DRAFT_PUBLISH_INTERVAL_SECONDS` (150 ms). They
+  never reach the database.
+- **Closing.** Leaving the organisation closes the person's streams of it with `gone` and the
+  reason, and the browser stops reconnecting. Leaving a chat doesn't: anyone can read it.
+- **Limits.** An API process holds at most `STREAMS_PER_PROCESS` streams (2,000): past it a new
+  one is a 503 with a retry hint (`Retry-After`, `STREAM_RETRY_SECONDS`). A person holds at most
+  `STREAMS_PER_PERSON` (20) in a process: past it, their oldest closes with `gone: replaced`.
+- **Fallback.** While Redis is down, streams answer 503 (and open ones end); the browser reads
+  what's new every 5 seconds and opens the stream again by itself once it can.
+- **Heartbeats** (`ping`) go every `STREAM_HEARTBEAT_SECONDS` (15). The proxies don't buffer
+  `/api` (`proxy_buffering off` in the compose and full-stack nginx configs) and time out well
+  above the heartbeat (`proxy_read_timeout 300s`, the load balancer's `idle_timeout` 300).
 
 ## The handoff brief
 

@@ -118,6 +118,19 @@ class Settings(BaseSettings):
     # each organisation's retention (`aios.retention`): a quiet one.
     retention_prune_hour: int = Field(default=3, ge=0, le=23)
     redis_url: str = "redis://localhost:6379/0"
+    # Live updates (`aios.streams`, `aios.api.streams`): an open stream sends a heartbeat this
+    # often (seconds), shorter than any proxy's or load balancer's idle timeout; an API process
+    # holds at most `streams_per_process` streams (a 503 past it, with `stream_retry_seconds` as
+    # the retry hint, also given while Redis is down), and a person at most `streams_per_person`
+    # in a process (the oldest closed as replaced past it).
+    stream_heartbeat_seconds: float = Field(default=15, gt=0)
+    streams_per_process: int = Field(default=2000, ge=1)
+    streams_per_person: int = Field(default=20, ge=1)
+    stream_retry_seconds: int = Field(default=5, ge=1)
+    # A reply being written is kept in Redis while its turn runs, and published whole at most
+    # this often (seconds); it expires after `draft_expiry_seconds` if the turn never ends it.
+    draft_publish_interval_seconds: float = Field(default=0.15, ge=0)
+    draft_expiry_seconds: int = Field(default=15 * 60, ge=1)
 
     # Session cookie (Starlette SessionMiddleware, signed with itsdangerous).
     session_secret: SecretStr = SecretStr("dev-insecure-change-me")

@@ -64,7 +64,7 @@ from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import audit, notifications
+from aios import audit, notifications, streams
 from aios.config import get_settings
 from aios.datastores import (
     DataStoreBusy,
@@ -424,6 +424,8 @@ def leave(db: Session, org: Organisation, user: User) -> None:
         )
     )
     leave_chats(db, org.id, user.id)
+    # Their open streams of it close, once it's done.
+    streams.left_organisation(db, org.id, user.id)
     audit.enqueue(db, org.id, audit.person(user.id), "member.left", "member", user.id)
     store_id = db.scalar(select(DataStore.id).where(DataStore.owner_organisation_id == org.id))
     if store_id is not None:
@@ -453,11 +455,13 @@ def leave_chats(db: Session, organisation_id: int, user_id: int) -> None:
     work = ExitStack()
     try:
         store = work.enter_context(store_session(store_id))
-        store.execute(
-            delete(ChatMember).where(
-                ChatMember.kind == ChatMemberKind.user, ChatMember.user_id == user_id
-            )
-        )
+        left = store.scalars(
+            delete(ChatMember)
+            .where(ChatMember.kind == ChatMemberKind.user, ChatMember.user_id == user_id)
+            .returning(ChatMember.chat_id)
+        ).all()
+        for chat_id in left:
+            streams.members_changed(store, chat_id)
     except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
         work.close()
         if not isinstance(exc, DataStoreNotFound):
