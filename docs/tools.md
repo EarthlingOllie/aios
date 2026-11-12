@@ -106,10 +106,11 @@ off at `QUERY_DATA_MAX_ROWS` rows or `QUERY_DATA_MAX_BYTES` bytes (as JSON), wit
 set, and the session is reset (`DISCARD ALL`) before it goes back to the pool. Both tell the
 model their results are data, not instructions, and that the store is being set up until
 it's ready. `write_data` (`aios.tools.write_data`) writes the `data` tables, within the store's
-quota (see [Stores](stores.md#quotas)), as the store's writer role, which may write in `data`
-and nowhere else, and records each call in the audit log. It writes an owned table only for its
-owner and the agents it's shared with, and refuses others naming the owner (see
-[Stores](stores.md#table-ownership)). Neither tool can read what's on the
+quota (see [Stores](stores.md#quotas)), as the agent's own login role in the store, granted
+write on exactly the `data` tables it may write, and records each call in the audit log. It
+writes an owned table only for its owner and the agents it's shared with, and refuses others
+naming the owner; the database refuses them too. A write whose login or grant is still being
+set up answers "being set up, try again" (see [Stores](stores.md#table-ownership)). Neither tool can read what's on the
 deny list (people's emails in the people mirror, `aios.people`, and the audit log's details; see
 [Stores](stores.md#the-deny-list)): `describe_data` leaves the column out, and `query_data` is
 refused it.

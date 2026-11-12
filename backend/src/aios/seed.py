@@ -41,7 +41,13 @@ from aios.api.skills import SkillIn, create_skill
 from aios.api.triggers import TriggerIn, create_trigger
 from aios.api.workflows import WorkflowEdgeIn, WorkflowIn, WorkflowNodeIn, create_workflow
 from aios.config import get_settings
-from aios.datastores import data_store_for, organisation_store, provision, schema_changes
+from aios.datastores import (
+    agent_roles,
+    data_store_for,
+    organisation_store,
+    provision,
+    schema_changes,
+)
 from aios.datastores.connections import store_id_of
 from aios.datastores.models import Agent, SchemaChangeRequest
 from aios.datastores.ownership import share
@@ -251,6 +257,8 @@ def table(
     )
     store.commit()
     schema_changes.apply(store_id, request.id)
+    # As the urgent worker would after applying: the owner's login and grants.
+    agent_roles.apply(store_id)
 
 
 def main(argv: list[str] | None = None) -> int:

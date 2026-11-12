@@ -52,6 +52,8 @@ celery_app.conf.update(
         # (`aios.datastores`).
         "aios.apply_schema_change": {"queue": URGENT},
         "aios.restore_dropped": {"queue": URGENT},
+        # Agents' logins and their grants (`aios.datastores.agent_roles`): a write waits on it.
+        "aios.apply_agent_access": {"queue": URGENT},
         # Routine maintenance: provisioning and its retries, the stores' migrations, measuring,
         # purging, expiry, retention, the event sweep and reconciliation, and what the beat
         # fans out from here.
@@ -439,10 +441,12 @@ def apply_schema_change_task(data_store_id: str, request_id: str) -> None:
     """Apply an approved schema change request to its store, then resume the run that asked
     with how it went (`aios.datastores.schema_changes.apply`). Run again (redelivered), it
     applies nothing twice, and queues the resume if the run hasn't been given the outcome."""
-    from aios.datastores import schema_changes
+    from aios.datastores import agent_roles, schema_changes
 
     store_id, request = uuid.UUID(data_store_id), uuid.UUID(request_id)
     schema_changes.apply(store_id, request)
+    # A new table's owner may have no login yet: made here, before the run resumes to write.
+    agent_roles.apply(store_id)
     enqueue_resume(store_id, request)
 
 
@@ -460,6 +464,23 @@ def restore_dropped_task(data_store_id: str, dropped_id: int) -> None:
     from aios.datastores import dropped
 
     dropped.restore(uuid.UUID(data_store_id), dropped_id)
+
+
+@celery_app.task(
+    name="aios.apply_agent_access",
+    soft_time_limit=APPLY_TIME_LIMIT,
+    time_limit=APPLY_TIME_LIMIT + 60,
+    autoretry_for=(Exception,),
+    max_retries=DECISION_RETRIES,
+    retry_backoff=True,
+)
+def apply_agent_access_task(data_store_id: str) -> None:
+    """Make the store's agents' logins and derive their grants from its ownership records
+    (`aios.datastores.agent_roles`): after a share, transfer, archive and the like. Run again,
+    it derives the same."""
+    from aios.datastores import agent_roles
+
+    agent_roles.apply(uuid.UUID(data_store_id))
 
 
 @celery_app.task(

@@ -27,6 +27,8 @@ from aios.api.provenance import archived, built_by, people, provenance
 from aios.api.skills import unique_name
 from aios.api.triggers import disable_triggers, unindex
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
+from aios.datastores import agent_roles, connections
+from aios.datastores.connections import store_id_of
 from aios.datastores.models import Agent, AgentRun, AgentVersion, Trigger
 from aios.db import DB, DbId
 from aios.models import InvocableBy
@@ -131,7 +133,14 @@ def create_agent(
         )
         audit.configured(store, user.id, "agent", agent, "created")
         store.commit()
+    if _writes(body):
+        # Its login, on the urgent lane, before its first write.
+        agent_roles.enqueue(store_id_of(store))
     return agent_out(db, org.id, agent)
+
+
+def _writes(body: AgentIn) -> bool:
+    return any(t.key == agent_roles.WRITE_TOOL for t in body.tools)
 
 
 def name_clash(store: Session, name: str) -> str:
@@ -161,6 +170,9 @@ def update_agent(
     Who may invoke it and its caps are the agent's, not versioned: only admins raise a cap
     above the organisation's (403)."""
     agent = get_org_agent(store, agent_id)
+    wrote = agent.current_version is not None and any(
+        t.tool_key == agent_roles.WRITE_TOOL for t in agent.current_version.tools
+    )
     tools = resolve_tools(body.tools, ToolOrganisation(org.id, store), agent.current_version)
     skills = resolve_skill_versions(store, body.skill_version_ids)
     lock_agent(store, agent)
@@ -186,6 +198,9 @@ def update_agent(
             refuse_archived_skills(skills)
         audit.configured(store, user.id, "agent", agent, "updated", version=version.version)
         store.commit()
+    if wrote != _writes(body):
+        # Given the write tool, its login; losing it, its login goes (`agent_roles`).
+        agent_roles.enqueue(store_id_of(store))
     return agent_out(db, org.id, agent)
 
 
@@ -209,8 +224,11 @@ def archive_agent(
         # is paused here too; one saved after sees the agent archived.
         paused = disable_triggers(store, Trigger.agent_id == agent.id, user.id)
         audit.configured(store, user.id, "agent", agent, "archived")
+        # Its login and grants go, its connections closed, on the urgent lane.
+        agent_roles.mark_pending(store, agent_id=agent.id)
         store.commit()
         unindex(store, paused)
+        _closed(store, agent.id)
     return agent_out(db, org.id, agent)
 
 
@@ -223,12 +241,25 @@ def unarchive_agent(
     """Bring the agent back. Its schedules stay paused until someone resumes them."""
     agent = get_org_agent(store, agent_id)
     lock_agent(store, agent)
-    if agent.archived_at is not None:
+    was_archived = agent.archived_at is not None
+    if was_archived:
         audit.configured(store, user.id, "agent", agent, "unarchived")
+        # The same login back, with its grants.
+        agent_roles.mark_pending(store, agent_id=agent.id)
     agent.archived_at = None
     agent.archived_by = None
     store.commit()
+    if was_archived:
+        agent_roles.enqueue(store_id_of(store))
     return agent_out(db, org.id, agent)
+
+
+def _closed(store: Session, agent_id: int) -> None:
+    """Close this process's connections as the archived agent, and queue taking away its login
+    and grants (and ending its connections everywhere)."""
+    store_id = store_id_of(store)
+    connections.dispose_engine(store_id, connections.agent_key(agent_id))
+    agent_roles.enqueue(store_id)
 
 
 @router.get(

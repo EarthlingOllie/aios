@@ -18,8 +18,11 @@
   them to its dropped name (`renamed`), restoring it renames them back, and purging it deletes
   them (`aios.datastores.dropped`). A share hangs off its table's ownership row, so it follows both.
 
-The database doesn't enforce any of this yet: the write tool does. Changes take effect at once,
-so the `pending` flag the API answers with is always false until per-agent roles carry them.
+The database enforces it too: `write_data` writes as the agent's own login role, granted write
+on exactly these tables (`aios.datastores.agent_roles`). A change is recorded here at once, and
+shows as `pending` until the urgent lane's task has applied it to the grants; the tool's own
+check (`write_refusal`) goes by the records, so in between the database may still refuse a write
+the records allow, which the tool answers with "being set up, try again".
 """
 
 from dataclasses import dataclass, field
@@ -30,6 +33,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import approval_rules, audit
+from aios.datastores import agent_roles
 from aios.datastores.dropped import VISIBLE_TABLE, is_dropped
 from aios.datastores.models import Agent, TableOwner, TableShare
 from aios.models import Role
@@ -47,7 +51,7 @@ class AgentRef:
 @dataclass
 class Access:
     """Who may write a table: its owner (None: anyone with the tool), and the agents it's shared
-    with, by name. `pending` until the database has applied a change (never, yet)."""
+    with, by name. `pending` until the database's grants carry the last change."""
 
     owner: AgentRef | None = None
     shares: list[AgentRef] = field(default_factory=list)
@@ -88,12 +92,14 @@ def access(store: Session, tables: list[str]) -> dict[str, Access]:
     if not tables:
         return out
     owners = store.execute(
-        select(TableOwner.table_name, Agent)
-        .join(Agent, Agent.id == TableOwner.agent_id)
+        select(TableOwner.table_name, Agent, TableOwner.access_pending_since)
+        .outerjoin(Agent, Agent.id == TableOwner.agent_id)
         .where(TableOwner.table_name.in_(tables))
     ).all()
-    for table, agent in owners:
-        out[table].owner = _ref(agent)
+    for table, agent, pending in owners:
+        if agent is not None:
+            out[table].owner = _ref(agent)
+        out[table].pending = pending is not None
     shares = store.execute(
         select(TableShare.table_name, Agent)
         .join(Agent, Agent.id == TableShare.agent_id)
@@ -115,9 +121,9 @@ def owned_by(store: Session, agent_id: int) -> list[str]:
     return [name for name in names if not is_dropped(name)]
 
 
-# `write_data`'s check, as the read-write role, in the write's transaction: the table's owner
+# `write_data`'s check, as the agent's role, in the write's transaction: the table's owner
 # (name and whether it's archived, if it has one), and whether the run's agent owns it or has
-# a share. Share-locks the ownership row, so a transfer waits for writes in flight.
+# a share. The database's grants back it (`aios.datastores.agent_roles`).
 _WRITE_SQL = """
     WITH me AS (SELECT agent_id FROM aios.agent_runs WHERE id = %(run_id)s)
     SELECT o.agent_id, a.name, a.archived_at IS NOT NULL,
@@ -127,7 +133,6 @@ _WRITE_SQL = """
     FROM aios.table_owners o
     LEFT JOIN aios.agents a ON a.id = o.agent_id
     WHERE o.table_name = %(table)s
-    FOR SHARE OF o
 """
 
 
@@ -262,6 +267,7 @@ def set_owner(store: Session, table: str, agent_id: int | None, user_id: int, ro
     store.execute(
         delete(TableShare).where(TableShare.table_name == table, TableShare.agent_id == agent_id)
     )
+    agent_roles.mark_pending(store, table=table)
     action = "owner_assigned" if before is None else "transferred" if agent else "owner_cleared"
     _audit(store, user_id, action, table, **{"from": _named(before), "to": _named(agent)})
     store.flush()
@@ -289,6 +295,7 @@ def share(store: Session, table: str, agent_id: int, user_id: int) -> Access:
     ).first()
     if made is None:
         raise Conflict(f"`{SCHEMA}.{table}` is shared with the agent {agent.name} already.")
+    agent_roles.mark_pending(store, table=table)
     _audit(store, user_id, "shared", table, agent=_named(agent))
     return access(store, [table])[table]
 
@@ -304,5 +311,6 @@ def unshare(store: Session, table: str, agent_id: int, user_id: int) -> Access:
     ).first()
     if gone is None:
         raise ShareNotFound(agent_id)
+    agent_roles.mark_pending(store, table=table)
     _audit(store, user_id, "unshared", table, agent=_named(store.get(Agent, agent_id)))
     return access(store, [table])[table]

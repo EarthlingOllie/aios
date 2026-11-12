@@ -12,9 +12,12 @@ three roles named after it (never after a user):
   and columns (`aios.datastores.dropped`), which neither may. Neither may create anything.
   Each has its own connection limit, and default statement and idle-in-transaction timeouts,
   which a session may change (`data_store_*` settings).
-- `<prefix>_writer` (no login), which `write_data` writes as: `rw` may `SET ROLE` to it but
-  doesn't inherit it, and it may write in the `data` schema and nowhere else (`_grant_writer`).
-- The deny list (`DENIED_COLUMNS`): columns neither `ro` nor the writer may read (people's
+- `<prefix>_agents` (no login), the agents' group: every agent's own login role
+  (`<prefix>_agent_<id>`, `aios.datastores.agent_roles`), which `write_data` writes as,
+  inherits it but may not `SET ROLE` to it. It reads the store (`grant_group`), writes the
+  `data` tables nobody owns, and inserts into an explicit list of platform tables
+  (`AGENT_WRITES`); nothing else.
+- The deny list (`DENIED_COLUMNS`): columns neither `ro` nor the agents may read (people's
   emails in the people mirror, the audit log's details), applied each time the store is
   migrated. The audit log is append-only to `rw` too (`APPEND_ONLY`), and the `reporting`
   views read-only.
@@ -102,19 +105,37 @@ class StoreNames:
         return cls(store.dbname, f"{p}_owner", f"{p}_rw", f"{p}_ro")
 
     @property
+    def prefix(self) -> str:
+        return self.owner.removesuffix("_owner")
+
+    @property
     def writer(self) -> str:
-        """The role `write_data` writes as (`WRITER_SUFFIX`)."""
-        return writer_of(self.rw)
+        """The role `write_data` wrote as before agents had their own (`WRITER_SUFFIX`): gone
+        once the store is migrated."""
+        return self.prefix + WRITER_SUFFIX
+
+    @property
+    def group(self) -> str:
+        """The agents' group role (`GROUP_SUFFIX`)."""
+        return self.prefix + GROUP_SUFFIX
+
+    def agent(self, agent_id: int) -> str:
+        """The login role of the store's agent `agent_id` (`AGENT_INFIX`)."""
+        return f"{self.prefix}{AGENT_INFIX}{agent_id}"
+
+    @property
+    def agent_pattern(self) -> str:
+        """A `LIKE` pattern matching the store's agents' login roles (and nothing else)."""
+        return (self.prefix + AGENT_INFIX).replace("_", "\\_") + "%"
 
 
-# `write_data`'s role: no login, and `rw` may only `SET ROLE` to it (it doesn't inherit its
-# privileges, nor they rw's), so the tool writes nowhere but the `data` schema.
+# The role `write_data` wrote as before agents had their own login roles: `rw` could `SET ROLE`
+# to it. The store migration command drops it (`_drop_writer`).
 WRITER_SUFFIX = "_writer"
-
-
-def writer_of(rw: str) -> str:
-    """The name of the writer role of the store whose read-write role is `rw`."""
-    return rw.removesuffix("_rw") + WRITER_SUFFIX
+# The agents' group (no login): what every agent's login role inherits, but can't switch to.
+GROUP_SUFFIX = "_agents"
+# Each agent's own login role: `<prefix>_agent_<the agent's id in the store>`.
+AGENT_INFIX = "_agent_"
 
 
 # The statuses a provisioning run takes a store in, and marks it ready from.
@@ -176,7 +197,7 @@ def _create_roles(run: _Run) -> None:
             )
         )
     _set_limits(conn, n)
-    _create_writer(conn, n)
+    _create_group(conn, n)
     # To create the database owned by it, and to act as it inside.
     conn.execute(
         sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET TRUE").format(
@@ -185,17 +206,38 @@ def _create_roles(run: _Run) -> None:
     )
 
 
-def _create_writer(conn: psycopg.Connection, names: StoreNames) -> None:
-    """The store's writer role (`WRITER_SUFFIX`), which `rw` may `SET ROLE` to but doesn't
-    inherit: when the store is made, and on every migration, for stores made before it."""
-    writer = sql.Identifier(names.writer)
-    if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (names.writer,)).fetchone():
-        conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(writer))
-    conn.execute(
-        sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE").format(
-            writer, sql.Identifier(names.rw)
+def _create_group(conn: psycopg.Connection, names: StoreNames) -> None:
+    """The agents' group role (`GROUP_SUFFIX`): when the store is made, and on every
+    migration, for stores made before it."""
+    if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (names.group,)).fetchone():
+        conn.execute(
+            sql.SQL("CREATE ROLE {} NOLOGIN NOINHERIT").format(sql.Identifier(names.group))
         )
-    )
+
+
+def _drop_writer(names: StoreNames) -> None:
+    """Drop the writer role stores had before agents had their own (`WRITER_SUFFIX`), and
+    whatever it was granted in the store, if it's still there: on every migration."""
+    url = get_settings().data_store_provisioner_url
+    with psycopg.connect(
+        libpq_conninfo(url), autocommit=True, connect_timeout=CONNECT_TIMEOUT
+    ) as server:
+        if not server.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (names.writer,)
+        ).fetchone():
+            return
+        writer = sql.Identifier(names.writer)
+        # To drop what it was granted: `DROP OWNED` needs the role's privileges.
+        server.execute(
+            sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET FALSE").format(writer)
+        )
+        with psycopg.connect(
+            libpq_conninfo(url, database=names.dbname),
+            autocommit=True,
+            connect_timeout=CONNECT_TIMEOUT,
+        ) as conn:
+            conn.execute(sql.SQL("DROP OWNED BY {}").format(writer))
+        server.execute(sql.SQL("DROP ROLE {}").format(writer))
 
 
 def _create_database(run: _Run) -> None:
@@ -281,7 +323,7 @@ RW_SEARCH_PATH = ("aios", "extensions", "langgraph")
 
 
 # The deny list: columns of the platform's tables in the store that neither the read-only role
-# nor the writer may read (so `query_data`, `describe_data` and the Tables view never see them),
+# nor the agents may read (so `query_data`, `describe_data` and the Tables view never see them),
 # though the read-write role, the platform's own, may. Each table's other columns stay readable.
 DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
     "aios.people": ("email",),
@@ -295,15 +337,21 @@ DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
 # append-only (its trigger refuses even the owner; this is the first line).
 APPEND_ONLY = ("aios.audit_log",)
 
-# What the writer may read besides `data`: what `write_data` plans a write with.
-WRITER_READS = ("aios.embedding_columns", "aios.dropped_objects")
+# The schemas of the platform's own tables in the store, which the agents read
+# (`grant_group`).
+PLATFORM_SCHEMAS = ("aios", "langgraph")
+
+# The platform tables agents' roles may write, all they may write besides `data` tables, and
+# only insert into: what `write_data` records in a write's transaction (its audit entry, and its
+# table written event). An explicit list, never a schema-wide grant or a default privilege.
+AGENT_WRITES = ("aios.audit_log", "aios.events")
 
 
 def _apply_deny_list(conn: psycopg.Connection, names: StoreNames) -> None:
-    """Take the denied columns (`DENIED_COLUMNS`) away from the read-only role and the writer,
-    leaving them the rest. Every time the store is migrated: the default privileges give a new
-    table's every column to both."""
-    readers = _ident(names.ro, names.writer)
+    """Take the denied columns (`DENIED_COLUMNS`) away from the read-only role and the agents'
+    group, leaving them the rest. Every time the store is migrated or its agents' access is
+    applied: the default privileges give a new table's every column to `ro`."""
+    readers = _ident(names.ro, names.group)
     for table, denied in DENIED_COLUMNS.items():
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
@@ -321,37 +369,71 @@ def _apply_deny_list(conn: psycopg.Connection, names: StoreNames) -> None:
         conn.execute(sql.SQL("REVOKE ALL ON TABLE {} FROM {}").format(relation, readers))
         conn.execute(
             sql.SQL("GRANT SELECT ({}) ON TABLE {} TO {}").format(
-                _ident(*columns), relation, _ident(names.ro)
+                _ident(*columns), relation, readers
             )
         )
+        if table in AGENT_WRITES:
+            conn.execute(
+                sql.SQL("GRANT INSERT ON TABLE {} TO {}").format(relation, _ident(names.group))
+            )
 
 
-def _grant_writer(conn: psycopg.Connection, names: StoreNames) -> None:
-    """Give the writer what `write_data` needs, and nothing more: to read, write and delete in
-    the `data` schema (each table as `dropped.grant_access` says), and to read what it plans
-    with. Every time the store is migrated, as the owner."""
+def _schemas(conn: psycopg.Connection, wanted: tuple[str, ...]) -> list[str]:
+    return [
+        name
+        for (name,) in conn.execute(
+            "SELECT nspname FROM pg_namespace WHERE nspname = ANY(%s) ORDER BY nspname",
+            (list(wanted),),
+        )
+    ]
+
+
+def grant_group(conn: psycopg.Connection, names: StoreNames) -> None:
+    """Give the agents' group what every agent's role has (`GROUP_SUFFIX`), and nothing more:
+    to use the store's schemas; to read every platform table (conversation content and memory
+    included) but the denied columns (`DENIED_COLUMNS`), and the reporting views; to insert
+    into `AGENT_WRITES`; and in `data`, to read every table and write those nobody owns (each
+    table as `dropped.grant_access` says; a new one, by default privilege, until its owner is
+    recorded). Every time the store is migrated or its agents' access applied, as the owner."""
     from aios.datastores import dropped
 
-    owner, writer = sql.Identifier(names.owner), sql.Identifier(names.writer)
-    conn.execute(sql.SQL("GRANT USAGE ON SCHEMA aios, data TO {}").format(writer))
-    for table in WRITER_READS:
-        if conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
-            schema, _, name = table.partition(".")
+    owner, group = sql.Identifier(names.owner), sql.Identifier(names.group)
+    present = _schemas(conn, (*PLATFORM_SCHEMAS, "data", "extensions", REPORTING))
+    conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(_ident(*present), group))
+    for schema in (s for s in present if s in (*PLATFORM_SCHEMAS, REPORTING)):
+        ident = sql.Identifier(schema)
+        # Nothing but reads: whatever was granted before (drift) goes.
+        conn.execute(sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM {}").format(ident, group))
+        conn.execute(
+            sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA {} FROM {}").format(ident, group)
+        )
+        conn.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(ident, group))
+    for table in AGENT_WRITES:
+        if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
+            continue
+        schema, _, name = table.partition(".")
+        conn.execute(
+            sql.SQL("GRANT INSERT ON TABLE {} TO {}").format(sql.Identifier(schema, name), group)
+        )
+        for (sequence,) in conn.execute(
+            "SELECT pg_get_serial_sequence(%s, a.attname) FROM pg_attribute a"
+            " WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped"
+            " AND pg_get_serial_sequence(%s, a.attname) IS NOT NULL",
+            (table, table, table),
+        ).fetchall():
             conn.execute(
-                sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(
-                    sql.Identifier(schema, name), writer
-                )
+                sql.SQL("GRANT USAGE ON SEQUENCE {} TO {}").format(sql.SQL(sequence), group)
             )
+    if "data" not in present:
+        return
     for grant in (
-        sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}").format(writer),
-        sql.SQL("GRANT USAGE, SELECT ON SEQUENCES TO {}").format(writer),
+        sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}").format(group),
+        sql.SQL("GRANT USAGE, SELECT ON SEQUENCES TO {}").format(group),
     ):
         conn.execute(
             sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA data ").format(owner) + grant
         )
-    conn.execute(
-        sql.SQL("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA data TO {}").format(writer)
-    )
+    conn.execute(sql.SQL("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA data TO {}").format(group))
     tables = conn.execute(
         "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
         " WHERE n.nspname = 'data' AND c.relkind IN ('r', 'p')"
@@ -396,6 +478,11 @@ def upgrade_store(names: StoreNames) -> Revisions:
             if any(migrations.is_history_revision(r) for r in at):
                 command.upgrade(cfg, f"{migrations.HISTORY}@head")
                 at = conn.scalars(text("SELECT version_num FROM aios.alembic_version")).all()
+            pg = conn.connection.driver_connection
+            # Every time too: a newer LangGraph's checkpointer migrations, for every store.
+            from aios import checkpoints
+
+            checkpoints.set_up_store(pg)
             # Every time, not in a revision: the tree doesn't know the store's role names.
             conn.exec_driver_sql(
                 f"REVOKE INSERT, UPDATE, DELETE ON {', '.join(BOOKKEEPING)} FROM {quote(names.rw)}"
@@ -411,12 +498,7 @@ def upgrade_store(names: StoreNames) -> Revisions:
                     f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {REPORTING}"
                     f" FROM {quote(names.rw)}, {quote(names.ro)}"
                 )
-            pg = conn.connection.driver_connection
-            # Every time too: a newer LangGraph's checkpointer migrations, for every store.
-            from aios import checkpoints
-
-            checkpoints.set_up_store(pg)
-            _grant_writer(pg, names)
+            grant_group(pg, names)
             _apply_deny_list(pg, names)
             conn.commit()
             on_history = [r for r in at if migrations.is_history_revision(r)]
@@ -449,6 +531,14 @@ def _sync_people(store_id: uuid.UUID, names: StoreNames) -> None:
         people.sync(conn, organisation_id)
 
 
+def _apply_access(run: _Run) -> None:
+    """The agents' logins and grants (`aios.datastores.agent_roles`), once it's ready."""
+    from aios.datastores import agent_roles
+
+    if run.ready:
+        agent_roles.apply(run.store_id)
+
+
 def _mark_ready(run: _Run) -> None:
     # No host or port: it's on the platform database's instance, which the app reaches at its
     # own address (`connections.store_url`), not necessarily the provisioner's.
@@ -479,6 +569,7 @@ STEPS: list[Callable[[_Run], None]] = [
     _migrate,
     _fill_people,
     _mark_ready,
+    _apply_access,
 ]
 
 
@@ -563,12 +654,18 @@ def drop(names: StoreNames) -> None:
     tests."""
     url = get_settings().data_store_provisioner_url
     with psycopg.connect(libpq_conninfo(url), autocommit=True) as conn:
+        agents = [
+            name
+            for (name,) in conn.execute(
+                "SELECT rolname FROM pg_roles WHERE rolname LIKE %s", (names.agent_pattern,)
+            )
+        ]
         if conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (names.dbname,)).fetchone():
             db = sql.Identifier(names.dbname)
             conn.execute(sql.SQL("ALTER DATABASE {} WITH ALLOW_CONNECTIONS false").format(db))
             # End its sessions. Ending the login roles' takes their privileges: the provisioner
             # only has ADMIN on them, from creating them.
-            for role in (names.rw, names.ro):
+            for role in (names.rw, names.ro, *agents):
                 if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
                     conn.execute(
                         sql.SQL("GRANT {} TO CURRENT_USER WITH INHERIT TRUE, SET FALSE").format(
@@ -584,7 +681,7 @@ def drop(names: StoreNames) -> None:
             # has no role, so only a superuser may end it). A plain drop stops the worker
             # itself, and waits a few seconds for the sessions ended above to exit.
             conn.execute(sql.SQL("DROP DATABASE {}").format(db))
-        for role in (names.rw, names.ro, names.writer, names.owner):
+        for role in (*agents, names.rw, names.ro, names.writer, names.group, names.owner):
             conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
 
 
@@ -599,8 +696,7 @@ class _Deletion:
 def _dispose_engines(deletion: _Deletion) -> None:
     # This process's: another's pool on it is cut off by the drop, and can't be reopened (the
     # store isn't ready).
-    for role in ("rw", "ro"):
-        connections.dispose_engine(deletion.store_id, role)
+    connections.dispose_store_engines(deletion.store_id)
 
 
 def _drop(deletion: _Deletion) -> None:
@@ -612,6 +708,9 @@ def _delete_files(deletion: _Deletion) -> None:
 
 
 def _mark_deleted(deletion: _Deletion) -> None:
+    from aios.datastores import agent_roles
+
+    agent_roles.mark_dropped(deletion.store_id)
     with SessionLocal() as db:
         db.execute(
             update(DataStore)
@@ -707,8 +806,16 @@ def migrate_store(store_id: uuid.UUID, wait: bool = True) -> str | None:
                 raise LookupError(f"Data store {store_id} isn't ready")
             names = StoreNames.of(store)
         _set_limits(server, names)
-        _create_writer(server, names)
+        _create_group(server, names)
         revisions = upgrade_store(names)
+        _drop_writer(names)
+        # Its agents' logins and grants, made and then checked against the records.
+        from aios.datastores import agent_roles
+
+        agent_roles.apply(store_id)
+        problems = agent_roles.verify(store_id)
+        if problems:
+            raise RuntimeError("Agents' access doesn't match the records: " + "; ".join(problems))
         # A store migrated to the mirror's revision gets it filled; one that has it is caught up.
         _sync_people(store_id, names)
         with SessionLocal() as db:

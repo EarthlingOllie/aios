@@ -3,8 +3,9 @@
 The model never sends SQL. It names a table in `data`, an operation (insert, upsert, update or
 delete), and the rows, values and filters as JSON; the platform checks each table and column
 against the catalog and each value against its column's type, then builds the statements
-itself, with quoted identifiers and bound values. It runs as the store's read-write role (`rw`),
-in one transaction per call: a call is written whole, or not at all.
+itself, with quoted identifiers and bound values. It runs as the agent's own login role in the
+store (`aios.datastores.agent_roles`), in one transaction per call: a call is written whole, or
+not at all.
 
 - Updates and deletes must say which rows they touch, by equality on columns (the primary key,
   or any others): there's no "every row".
@@ -12,12 +13,15 @@ in one transaction per call: a call is written whole, or not at all.
   before anything is run, as are updates and deletes that match more (they're counted first).
 - Only the table's owner, and the agents it's shared with, may write an owned table; a table
   whose owner is archived is read-only; a table with no owner is anyone's to write
-  (`aios.datastores.ownership`). A refusal names the owner.
-- Only `data` tables: the platform's (`aios`) are never written here. It runs as the store's
-  writer role (`as_writer`), which may write in `data` and nowhere else.
+  (`aios.datastores.ownership`). A refusal names the owner. The agent's role is granted write on
+  exactly those tables, so the database refuses the rest whatever this checks.
+- A write whose role, or grant, is still being set up (an agent just given the tool, a share
+  not yet applied) is answered "being set up, try again", and applying it is queued: the turn
+  goes on.
+- Only `data` tables: the platform's (`aios`) are never written here, and the agent's role
+  can't write them, but for inserting the two records below.
 - Each call that writes is recorded in the store's audit log (`aios.audit`), in its
-  transaction, as the read-write role once the writer is done: its table, operation and row
-  count, and the run and agent that made it.
+  transaction: its table, operation and row count, and the run and agent that made it.
 
 Embedding columns are marked in `aios.embedding_columns`: a `vector(EMBEDDING_DIM)` column, and
 the text column in the same table it embeds. Writing the text writes its embedding too, made
@@ -46,10 +50,10 @@ from sqlalchemy.orm import Session
 from aios import outbox
 from aios.agent import ChatDeps
 from aios.config import get_settings
-from aios.datastores import ownership, quota, store_session
+from aios.datastores import agent_roles, ownership, quota, store_session
+from aios.datastores.connections import AgentRoleMissing, agent_session
 from aios.datastores.dropped import VISIBLE_COLUMN, VISIBLE_TABLE
 from aios.datastores.models import EMBEDDING_DIM
-from aios.datastores.provision import writer_of
 from aios.datastores.reads import jsonable
 from aios.embeddings import embed_documents
 from aios.models import EventType
@@ -504,11 +508,25 @@ class NeedsEmbedding:
     texts: list[str]
 
 
+class SettingUp(Exception):
+    """The agent's role, or its grant on the table, isn't there yet: being set up."""
+
+
+def being_set_up(table: str) -> str:
+    return (
+        f"Your access to `{table}` is still being set up. Nothing was written: try again in a"
+        " moment."
+    )
+
+
 def _execute(cur: psycopg.Cursor, query: sql.Composed, params: dict, where: str) -> None:
     """Runs one of the call's statements; a failure is the model's to fix (a constraint, a
-    value Postgres can't read...)."""
+    value Postgres can't read...), but for a refusal of the role's: the tool's own check let it
+    through, so its grant hasn't been applied yet."""
     try:
         cur.execute(query, params)
+    except psycopg.errors.InsufficientPrivilege as exc:
+        raise SettingUp() from exc
     except psycopg.Error as exc:
         raise _refused(exc, where) from exc
 
@@ -525,27 +543,40 @@ def _over_cap(plan: Plan, max_rows: int) -> Refused:
     )
 
 
-def as_writer(pg: psycopg.Connection) -> None:
-    """Act as the store's writer role for the rest of the transaction (`SET LOCAL`, so nothing
-    outlives it on a pooled connection): it may write only in `data`
-    (`provision.WRITER_SUFFIX`), whatever the read-write role it's reached as may."""
-    (rw,) = pg.execute("SELECT current_user").fetchone()
-    pg.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(writer_of(rw))))
+def _agent_of(data_store_id: uuid.UUID, run_id: int | None) -> int | None:
+    if run_id is None:
+        return None
+    with store_session(data_store_id, "ro") as session:
+        pg: psycopg.Connection = session.connection().connection.driver_connection
+        found = pg.execute("SELECT agent_id FROM aios.agent_runs WHERE id = %s", (run_id,))
+        row = found.fetchone()
+        return row[0] if row else None
 
 
 def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> Any:
     """Writes the call, or says what it needs embedding first (`NeedsEmbedding`)."""
+    agent_id = _agent_of(data_store_id, call.run_id)
+    if agent_id is None:
+        return {"error": "Only an agent's run can write data."}
+    try:
+        return _apply_as(data_store_id, agent_id, call, embedded)
+    except (AgentRoleMissing, SettingUp):
+        agent_roles.enqueue(data_store_id)
+        table = call.table.strip()
+        return {"error": being_set_up(table if "." in table else f"{SCHEMA}.{table}")}
+
+
+def _apply_as(
+    data_store_id: uuid.UUID, agent_id: int, call: Call, embedded: Embedded | None
+) -> Any:
     max_rows = get_settings().write_data_max_rows
-    with store_session(data_store_id, "rw") as session:
+    with agent_session(data_store_id, agent_id) as session:
         pg: psycopg.Connection = session.connection().connection.driver_connection
-        # Asked as the read-write role (the writer reads only `data`), holding the table's
-        # ownership until the write is done.
         schema, dot, table = call.table.strip().rpartition(".")
         if not dot or schema == SCHEMA:
             refusal = ownership.write_refusal(pg, table, call.run_id)
             if refusal is not None:
                 return {"error": refusal}
-        as_writer(pg)
         try:
             plan = _plan(pg, call)
             vectors: list[list[float]] = []
@@ -585,6 +616,8 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
                 # A constraint checked only at commit (deferred), say; not the connection.
                 if exc.connection_invalidated or not isinstance(exc.orig, psycopg.Error):
                     raise
+                if isinstance(exc.orig, psycopg.errors.InsufficientPrivilege):
+                    raise SettingUp() from exc
                 raise _refused(exc.orig) from exc
         except Refused as exc:
             return {"error": str(exc)}
@@ -594,8 +627,9 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
     return result
 
 
-# The audit entry of a call (`aios.audit`), written as the read-write role in the call's
-# transaction: the writer may not touch the audit log. The agent is the run's.
+# The audit entry of a call (`aios.audit`), written as the agent's role in the call's
+# transaction: it may insert into the audit log, and do nothing else to it. The agent is the
+# run's.
 AUDIT_SQL = """
     INSERT INTO aios.audit_log
         (actor_kind, actor_user_id, actor_agent_id, actor_run_id, action, target_kind, target_id,
@@ -607,24 +641,25 @@ AUDIT_SQL = """
 
 def _audit(pg: psycopg.Connection, call: Call, plan: Plan, count: int) -> None:
     """Record the call in the store's audit log: its table, operation and row count, and the
-    run (and agent) that made it. Back as the read-write role for the rest of the transaction,
-    after everything the call writes."""
-    pg.execute("SET LOCAL ROLE NONE")
+    run (and agent) that made it, after everything the call writes."""
     table = plan.table.qualified
-    pg.execute(
-        AUDIT_SQL,
-        {
-            "user_id": call.user_id,
-            "run_id": call.run_id,
-            "table": table,
-            "details": Jsonb({"table": table, "operation": plan.operation, "row_count": count}),
-        },
-    )
+    try:
+        pg.execute(
+            AUDIT_SQL,
+            {
+                "user_id": call.user_id,
+                "run_id": call.run_id,
+                "table": table,
+                "details": Jsonb({"table": table, "operation": plan.operation, "row_count": count}),
+            },
+        )
+    except psycopg.errors.InsufficientPrivilege as exc:
+        raise SettingUp() from exc
 
 
 def _emit(session: Session, pg: psycopg.Connection, call: Call, plan: Plan, count: int) -> None:
     """The call's table written event (`aios.outbox`), caused by the writing run's invocation,
-    in the call's transaction (as the read-write role, after `_audit`)."""
+    in the call's transaction (after `_audit`)."""
     agent_id = None
     if call.run_id is not None:
         found = pg.execute(

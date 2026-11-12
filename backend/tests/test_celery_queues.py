@@ -12,7 +12,7 @@ from aios import worker
 
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
 
-URGENT = {"aios.apply_schema_change", "aios.restore_dropped"}
+URGENT = {"aios.apply_schema_change", "aios.restore_dropped", "aios.apply_agent_access"}
 ROUTINE = {
     "aios.provision_data_store",
     "aios.retry_unfinished_data_stores",

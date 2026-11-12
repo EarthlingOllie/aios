@@ -46,6 +46,9 @@ PLATFORM_TABLES = {
     "audit_outbox",
     # The run service's work queue (`aios.run_service`): store ids, deleted once done.
     "work_items",
+    # Agents' login roles in their stores (`aios.datastores.agent_roles`): names and encrypted
+    # passwords, credentials like the stores' own.
+    "agent_store_roles",
 }
 MOVED = (
     "triggers",

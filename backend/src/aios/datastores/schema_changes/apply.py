@@ -268,12 +268,15 @@ def _tables(change: SchemaChange) -> list[str]:
 
 
 def _access_changed(change: SchemaChange) -> list[str]:
-    """The tables (as they're named once it's applied) whose login roles' access a change
-    sets anew (`dropped.grant_access`): those it drops, drops columns from, or adds columns to
-    (which may have dropped columns, so get their privileges column by column)."""
+    """The tables (as they're named once it's applied) whose roles' access a change sets anew
+    (`dropped.grant_access`): those it makes (written only by their owner, once it's recorded),
+    drops, drops columns from, or adds columns to (which may have dropped columns, so get their
+    privileges column by column)."""
     tables: list[str] = []
     for op in change.ops:
-        if isinstance(op, DropTable):
+        if isinstance(op, CreateTable):
+            tables.append(op.name)
+        elif isinstance(op, DropTable):
             tables.append(op.dropped_as)
         elif isinstance(op, (DropColumn, AddColumn)):
             tables.append(op.table)
