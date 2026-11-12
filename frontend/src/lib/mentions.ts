@@ -102,3 +102,25 @@ export function remarkMentions(mentions: ChatMention[]) {
   };
   return () => (tree: MdNode) => visit(tree);
 }
+
+/**
+ * Who the composer offers to mention: the chat's members, then the organisation's agents and
+ * workflows the chat doesn't include. Posting a mention of one of those is refused, naming it,
+ * and the room offers to add it to the chat (`postRefusal`). Just the chat's own until the
+ * organisation's have loaded.
+ */
+export function composerMentionables(
+  chat: Mentionables | undefined,
+  organisation: (ChatMentionRef & { name: string })[] | undefined,
+): Mentionables | undefined {
+  if (!chat || !organisation) return chat;
+  const included = new Set([...chat.agents, ...chat.workflows].map((m) => `${m.kind}:${m.id}`));
+  const more = organisation
+    .filter((t) => t.kind !== "user" && !included.has(`${t.kind}:${t.id}`))
+    .map((t) => ({ kind: t.kind, id: t.id, name: t.name, first_name: null, last_name: null }));
+  return {
+    users: chat.users,
+    agents: [...chat.agents, ...more.filter((m) => m.kind === "agent")],
+    workflows: [...chat.workflows, ...more.filter((m) => m.kind === "workflow")],
+  };
+}

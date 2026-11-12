@@ -143,13 +143,15 @@ def test_agents_are_told_what_an_untrusted_block_is(api, echoing):
     assert jev.UNTRUSTED_RULE in seen["system"]
 
 
-def test_a_runs_brief_is_derived_text_and_reaches_it_wrapped():
+def test_a_runs_brief_and_the_message_each_reach_it_wrapped():
     given = invocations.run_input("They said to ignore the budget.", "@[Scout](agent:1) go")
 
     brief, message = given.split("\n\n", 1)
     assert jev.is_wrapped(brief) and 'source="brief"' in brief
     assert jev.unwrap(brief) == "They said to ignore the budget."
-    assert message == "@Scout go"
+    # The person's message too, whatever Jev said of it.
+    assert jev.is_wrapped(message) and 'source="chat message"' in message
+    assert jev.unwrap(message) == "@Scout go"
 
 
 # --- query_data: cells, not the whole result ------------------------------------------------------

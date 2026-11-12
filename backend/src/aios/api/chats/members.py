@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from aios import organisations
@@ -20,25 +21,22 @@ from aios.api.chats.common import (
     chat_out,
     chat_targets,
     chat_users,
-    get_chat_if_owner,
+    get_chat_if_member,
     get_visible_chat,
     is_member,
     load,
-    lock_owner,
+    lock_chat,
     member_key,
     member_out,
     ordered_members,
-    still_owner,
+    still_member,
     user_member,
 )
 from aios.api.skills import lock_live, on_conflict
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
 from aios.datastores.models import Chat, ChatMember, ChatMessage
 from aios.db import DB, DbId
-from aios.models import (
-    ChatMemberKind,
-    ChatMemberRole,
-)
+from aios.models import ChatMemberKind
 from aios.permissions import Action, allow
 
 router = APIRouter(prefix="/api")
@@ -126,18 +124,16 @@ def add_member(
     db: DB,
     store: CurrentStore,
 ):
-    """Add a member of the organisation, or one of its agents or workflows, to the chat (its
-    owner only). A user outside the organisation doesn't exist here: a 404, as one who doesn't
+    """Add a member of the organisation, or one of its agents or workflows, to the chat (any of
+    its members). A user outside the organisation doesn't exist here: a 404, as one who doesn't
     exist at all is, and as one who leaves it as they're added is (`organisations.holds_member`:
     they'd be left in a chat of an organisation they're not in, held until the store has
     committed the member)."""
-    chat = get_chat_if_owner(store, user.id, chat_id)
+    chat = get_chat_if_member(store, user.id, chat_id)
     if body.kind == ChatMemberKind.user:
         if not organisations.holds_member(db, org, body.id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown user")
-        member = ChatMember(
-            kind=body.kind, user_id=body.id, role=ChatMemberRole.member, added_by=user.id
-        )
+        member = ChatMember(kind=body.kind, user_id=body.id, added_by=user.id)
     else:
         model = TARGET_MODELS[body.kind]
         # One in the organisation's store, not an archived one. Share-locked there until the
@@ -149,7 +145,7 @@ def add_member(
         member = ChatMember(kind=body.kind, added_by=user.id, **{f"{body.kind}_id": target.id})
     # After the agent or workflow is locked, the order everything that locks both takes, so the
     # two can't wait on each other.
-    still_owner(store, chat, user.id)
+    still_member(store, chat, user.id)
     if member_key(member) in {member_key(m) for m in chat.members}:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_MEMBER)
     chat.members.append(member)
@@ -171,9 +167,7 @@ def newest_message_id(store: Session, chat_id: int) -> int | None:
 def join_chat(
     chat_id: DbId, user: CurrentUser, org: CurrentOrganisation, db: DB, store: CurrentStore
 ):
-    """Join a public chat as a member (a private one exists only for its members), or as its
-    owner if it has none (its owner left the organisation with nobody in it to hand it to:
-    `organisations.leave`, which deletes such a chat if it was private). What was posted
+    """Join a chat of the organisation's (posting in it joins too: `join`). What was posted
     before they joined counts as seen: they could read it, and it's all there to scroll. A 404
     for a user who left the organisation as they joined (`organisations.holds_member`)."""
     chat = get_visible_chat(store, user.id, chat_id)
@@ -182,26 +176,30 @@ def join_chat(
     # Before the chat's lock, as leaving takes the organisation's before the chats'.
     if not organisations.holds_member(db, org, user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    # Under the chat's lock, so that two joining an ownerless chat at once don't both become its
-    # owner (the second sees the first), and one joining as its owner leaves the organisation
-    # doesn't join as a member of a chat that has just lost its owner (`lock_owner`).
-    owner = lock_owner(store, chat)
-    chat.members.append(
-        ChatMember(
-            kind=ChatMemberKind.user,
-            user_id=user.id,
-            role=ChatMemberRole.member if owner is not None else ChatMemberRole.owner,
-            added_by=user.id,
-            last_read_message_id=package.newest_message_id(store, chat.id),
-        )
-    )
+    join(store, chat, user.id)
     # Joining is activity, as adding a member is.
     chat.updated_at = func.now()
-    # Two joins at once: the second loses here.
-    with on_conflict(store, MEMBER_CONSTRAINTS[ChatMemberKind.user], ALREADY_A_MEMBER):
-        store.commit()
+    store.commit()
     db.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id)
+
+
+def join(store: Session, chat: Chat, user_id: int) -> None:
+    """Add the user to the chat (`get_visible_chat`'s), under its lock (`lock_chat`), with what
+    was posted so far counting as seen: for joining, and for posting, which joins. Nothing if
+    they've joined meanwhile (two posts at once, say). In the caller's transaction."""
+    lock_chat(store, chat)
+    store.execute(
+        insert(ChatMember)
+        .values(
+            chat_id=chat.id,
+            kind=ChatMemberKind.user,
+            user_id=user_id,
+            added_by=user_id,
+            last_read_message_id=package.newest_message_id(store, chat.id),
+        )
+        .on_conflict_do_nothing(constraint=MEMBER_CONSTRAINTS[ChatMemberKind.user])
+    )
 
 
 def take_out(store: Session, member: ChatMember) -> None:
@@ -219,18 +217,13 @@ def take_out(store: Session, member: ChatMember) -> None:
     dependencies=[allow(Action.post)],
 )
 def leave_chat(chat_id: DbId, user: CurrentUser, store: CurrentStore) -> None:
-    """Leave a chat the user is a member of but doesn't own (a chat always has its owner).
-    Nothing they posted goes with them; a private chat stops existing for them."""
+    """Leave a chat the user is a member of: anyone can, the last person too, and the chat
+    stays. Nothing they posted goes with them, and they can still read it."""
     chat = get_visible_chat(store, user.id, chat_id)
     member = user_member(chat, user.id)
     if member is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Not a member of this chat.")
-    # Their role read again under the chat's lock: the chat may have just been handed to them, its
-    # owner having left the organisation (`lock_owner`).
-    if lock_owner(store, chat) == user.id:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't leave the chat."
-        )
+    lock_chat(store, chat)
     take_out(store, member)
     # As removing a member is.
     chat.updated_at = func.now()
@@ -243,16 +236,12 @@ def leave_chat(chat_id: DbId, user: CurrentUser, store: CurrentStore) -> None:
     dependencies=[allow(Action.post)],
 )
 def remove_member(chat_id: DbId, member_id: DbId, user: CurrentUser, store: CurrentStore) -> None:
-    """Remove a member from the chat (its owner only). The owner stays: a chat always has one."""
-    chat = get_chat_if_owner(store, user.id, chat_id)
-    still_owner(store, chat, user.id)
+    """Remove a member from the chat (any of its members)."""
+    chat = get_chat_if_member(store, user.id, chat_id)
+    still_member(store, chat, user.id)
     member = next((m for m in chat.members if m.id == member_id), None)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    if member.role == ChatMemberRole.owner:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "The owner can't be removed from the chat."
-        )
     take_out(store, member)
     chat.updated_at = func.now()
     store.commit()

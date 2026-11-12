@@ -95,11 +95,16 @@ def message_text(body: str) -> str:
     return TOKEN.sub(lambda m: "@" + re.sub(r"\\(.)", r"\1", m.group(1)), body)
 
 
+# Where a person's chat message says it's from, in its untrusted block.
+CHAT_MESSAGE = "chat message"
+
+
 def run_input(brief: str | None, body: str) -> str:
     """A run's input: the handoff's brief, a blank line, then the message's text (just the
-    text if the chat had nothing to brief it on). The brief is derived text, written by the
-    handoff's model from the chat, so it's wrapped as untrusted (`aios.jev.wrap`)."""
-    text = message_text(body)
+    text if the chat had nothing to brief it on). Each is wrapped as untrusted (`aios.jev.wrap`),
+    whatever Jev said of the message: the message is a person's, which Jev may have misjudged,
+    and the brief is derived text, written by the handoff's model from the chat."""
+    text = jev.wrap(message_text(body), CHAT_MESSAGE)
     return f"{jev.wrap(brief, 'brief')}\n\n{text}" if brief else text
 
 

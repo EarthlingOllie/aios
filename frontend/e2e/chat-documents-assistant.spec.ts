@@ -50,8 +50,8 @@ test("/ opens the most recent chat I'm in", async ({ page }) => {
   const api = await fakeApi(page);
   api.addChat("Older");
   const newer = api.addChat("Newer");
-  // A public chat I'm not in isn't one to land on.
-  api.addChat("Theirs", { visibility: "public", owner: { id: 2, first_name: "Sam", last_name: "Jones" } });
+  // A chat I'm not in isn't one to land on.
+  api.addChat("Theirs", { owner: { id: 2, first_name: "Sam", last_name: "Jones" } });
   await page.goto(inOrg("/"));
 
   await expect(page).toHaveURL(inOrg(`/chats/${newer.id}`));

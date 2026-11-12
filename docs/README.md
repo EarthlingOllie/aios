@@ -11,7 +11,7 @@ the architecture and a quick start. The words are the glossary's, [`CONTEXT.md`]
 | [Agents and skills](agents-and-skills.md) | Defining agents and skills, their versions, agent runs and their history, the documents assistant, and deleting an agent. |
 | [Tools](tools.md) | The tool library: how tools are registered, web search, Run Python, the data tools, schema change requests, and the Search page. |
 | [Workflows](workflows.md) | Graphs of agents and workflows: the editor, versions, nesting, and how a workflow run is run. |
-| [Chats](chats.md) | Group conversations: chat members, visibility, unread counts, messages, mentions, invocations and the handoff brief. |
+| [Chats](chats.md) | Open chats: chat members, joining, unread counts, messages and the Jev check, mentions, invocations and the handoff brief. |
 | [Triggers](triggers.md) | Schedules and the scheduler. |
 | [Usage, limits and mention guards](usage-and-limits.md) | The usage ledger in GBP and its reporting view, caps on turns and workflow runs, and the checks a mention passes before it runs. |
 | [Run service](run-service.md) | The service that runs mentioned turns, handoffs and schedules: its fair work queue, leases, retries and the in-flight cap. |

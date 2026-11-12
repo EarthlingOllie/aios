@@ -1,4 +1,4 @@
-import type { ChatInvocation, ChatListed, ChatMessage } from "@/lib/api";
+import { ApiError, describeError, type ChatInvocation, type ChatListed, type ChatMention, type ChatMessage } from "@/lib/api";
 
 /** How many messages the API returns at most per read (`MESSAGE_PAGE` in `api/chats/messages.py`). */
 export const MESSAGE_PAGE = 50;
@@ -90,4 +90,31 @@ export function unreadBadge(count: number | null): string | null {
 export function landingPath(chats: ChatListed[]): string {
   const chat = chats.find((c) => c.is_member);
   return chat ? `/chats/${chat.id}` : "/chats/new";
+}
+
+/** Why a post was refused, as the room shows it, and what the chat would need to include for it. */
+export type PostRefusal = {
+  message: string;
+  /** The agents and workflows mentioned that the chat doesn't include: **Add it to this chat**. */
+  missing: ChatMention[];
+};
+
+/**
+ * A refused post, from its error: a mention of an agent or workflow the chat doesn't include
+ * (`missing`, to offer adding), a message Jev flagged (with Jev's reason), or anything else as
+ * `describeError` says it (Jev not answering is "try again").
+ */
+export function postRefusal(err: unknown): PostRefusal {
+  if (err instanceof ApiError) {
+    try {
+      const detail = JSON.parse(err.message)?.detail;
+      if (detail && typeof detail === "object" && typeof detail.message === "string") {
+        const message = detail.reason ? `${detail.message} ${detail.reason}` : detail.message;
+        return { message, missing: Array.isArray(detail.missing) ? detail.missing : [] };
+      }
+    } catch {
+      // not JSON: described below
+    }
+  }
+  return { message: describeError(err), missing: [] };
 }

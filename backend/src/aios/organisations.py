@@ -32,9 +32,8 @@ store (`leave_chats`; adding them to one, or their making or joining one, waits 
 under way and is then refused: `holds_member`) and their unread notifications about its schema
 change requests go. Nothing is
 made for them: they're left in the organisations they're still in, or in none. What they made
-stays in the organisation, and a chat they owned goes to its member added first
-(`hand_over_chats`); one with nobody left in it goes to whoever joins it next if it's public, and
-is deleted if it's private, as nobody could join it.
+stays in the organisation, and so do the chats they were in, open to everyone in it as before:
+nothing is handed over.
 
 **The people mirror.** Joining, leaving, and changes to a member's name, email or role mark the
 organisation's store's people mirror as changed (`aios.datastores.people.changed`), which is
@@ -74,11 +73,9 @@ from aios.datastores import (
     people,
     store_session,
 )
-from aios.datastores.models import Chat, ChatMember
+from aios.datastores.models import ChatMember
 from aios.models import (
     ChatMemberKind,
-    ChatMemberRole,
-    ChatVisibility,
     DataStore,
     DataStoreStatus,
     Notification,
@@ -443,9 +440,9 @@ _STORE_WORK = "aios.leave_chats"
 
 
 def leave_chats(db: Session, organisation_id: int, user_id: int) -> None:
-    """Take the user out of the organisation's chats, in its store, handing those they owned
-    over (`hand_over_chats`): flushed there, in a store transaction that commits as `db`'s
-    does, just before it, so the chats it changed stay locked as long as the leave is under way.
+    """Take the user out of the organisation's chats, in its store, handing nothing over (every
+    chat is open, and stays when its last person leaves): flushed there, in a store transaction
+    that commits as `db`'s does, just before it, so the leave is all or nothing.
     Nothing if the store has none to take them out of (it isn't provisioned yet); one that can't
     be reached now is logged, and they stay in its chats (which only its members can reach)."""
     store_id = db.scalar(
@@ -456,12 +453,11 @@ def leave_chats(db: Session, organisation_id: int, user_id: int) -> None:
     work = ExitStack()
     try:
         store = work.enter_context(store_session(store_id))
-        left = store.execute(
-            delete(ChatMember)
-            .where(ChatMember.kind == ChatMemberKind.user, ChatMember.user_id == user_id)
-            .returning(ChatMember.chat_id, ChatMember.role)
-        ).all()
-        hand_over_chats(store, [chat_id for chat_id, role in left if role == ChatMemberRole.owner])
+        store.execute(
+            delete(ChatMember).where(
+                ChatMember.kind == ChatMemberKind.user, ChatMember.user_id == user_id
+            )
+        )
     except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy) as exc:
         work.close()
         if not isinstance(exc, DataStoreNotFound):
@@ -485,48 +481,6 @@ def _close_store_work(session: Session) -> None:
     for _, work in session.info.pop(_STORE_WORK, ()):
         # Rolls back what wasn't committed.
         work.close()
-
-
-def hand_over_chats(store: Session, chat_ids: list[int]) -> None:
-    """Give each of these chats, the ones a leaver owned, to its user member added first, so a
-    chat is never left that nobody can change or delete. A public one with nobody left in it goes
-    to whoever joins it next (`api.chats.join_chat`): the organisation keeps it and its history,
-    as it keeps what a leaver made. A private one with nobody left in it is deleted: it exists
-    only for its members, so with none it would exist for nobody, nobody could join it, and its
-    name would stay taken. Deleted as its owner deleting it is (`api.chats.delete_chat`): a
-    statement, its members, messages and invocations going with it in the database, and a run one
-    of those started staying, to finish without it.
-
-    Only these, found as the leave deleted the leaver's member rows: no other chat can have lost
-    its owner by it (nothing else that changes a chat's members leaves it without one:
-    `api.chats.lock_owner`), so a leave holds up nothing in the organisation's other chats. Those
-    left without one before leaving handed them over were repaired by revisions 0048, 0049 and
-    0051. These are locked before they're read, as every change to a chat's members locks it
-    first, so one that read the leaver as its owner either went in before this and is seen by
-    it, or waits and sees the owner this gives it, or that the chat is gone."""
-    if not chat_ids:
-        return
-    store.execute(select(Chat.id).where(Chat.id.in_(chat_ids)).with_for_update())
-    owned = select(ChatMember.chat_id).where(ChatMember.role == ChatMemberRole.owner)
-    first = (
-        select(func.min(ChatMember.id))
-        .where(
-            ChatMember.chat_id.in_(chat_ids),
-            ChatMember.chat_id.not_in(owned),
-            ChatMember.kind == ChatMemberKind.user,
-        )
-        .group_by(ChatMember.chat_id)
-    )
-    store.execute(
-        update(ChatMember).where(ChatMember.id.in_(first)).values(role=ChatMemberRole.owner)
-    )
-    store.execute(
-        delete(Chat).where(
-            Chat.id.in_(chat_ids),
-            Chat.id.not_in(owned),
-            Chat.visibility == ChatVisibility.private,
-        )
-    )
 
 
 def _forget_requests(db: Session, user: User, store_id: uuid.UUID) -> None:

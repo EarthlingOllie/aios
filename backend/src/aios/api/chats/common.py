@@ -11,12 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from aios.api.provenance import Provenance, UserOut, people, provenance
 from aios.datastores.models import Agent, Chat, ChatMember, Workflow
 from aios.db import DbId
-from aios.models import (
-    ChatMemberKind,
-    ChatMemberRole,
-    ChatVisibility,
-    User,
-)
+from aios.models import ChatMemberKind, User
 
 CHAT_NAME_INDEX = "uq_chats_name"
 # What an agent or workflow member is.
@@ -36,7 +31,6 @@ ALREADY_A_MEMBER = "Already a member of this chat."
 class ChatIn(BaseModel):
     name: str = Field(min_length=1, max_length=255, pattern=r"\S")
     description: str = ""
-    visibility: ChatVisibility = ChatVisibility.private
 
 
 class MemberIn(BaseModel):
@@ -50,8 +44,6 @@ class ChatMemberOut(BaseModel):
     # The member row's id, which `DELETE /api/chats/{id}/members/{member_id}` takes.
     id: int
     kind: ChatMemberKind
-    # Users only.
-    role: ChatMemberRole | None
     # The user's, agent's or workflow's id.
     target_id: int
     # A user's full name ("First Last").
@@ -63,7 +55,7 @@ class ChatMemberOut(BaseModel):
 
 
 class ChatMembersOut(BaseModel):
-    """A chat's members, grouped by kind: the owner first, then in the order they were added."""
+    """A chat's members, grouped by kind, in the order they were added."""
 
     users: list[ChatMemberOut]
     agents: list[ChatMemberOut]
@@ -74,11 +66,8 @@ class ChatSummary(Provenance):
     id: int
     name: str
     description: str
-    visibility: ChatVisibility
-    # Whether the signed-in user is its owner (their member row's role), so the UI knows to offer
-    # the owner's actions.
-    is_owner: bool
-    # Whether the signed-in user is in it, and so can post (a public chat can be read by anyone).
+    # Whether the signed-in user has joined it (anyone in the organisation reads it, and posting
+    # joins them).
     is_member: bool
     member_count: int
     created_at: datetime
@@ -138,7 +127,6 @@ def member_out(member: ChatMember, targets: Targets, users: Users) -> ChatMember
         return ChatMemberOut(
             id=member.id,
             kind=member.kind,
-            role=member.role,
             target_id=user.id,
             name=user.full_name,
             added_at=member.added_at,
@@ -148,7 +136,6 @@ def member_out(member: ChatMember, targets: Targets, users: Users) -> ChatMember
     return ChatMemberOut(
         id=member.id,
         kind=member.kind,
-        role=None,
         target_id=target_id,
         name=name,
         added_at=member.added_at,
@@ -157,9 +144,9 @@ def member_out(member: ChatMember, targets: Targets, users: Users) -> ChatMember
 
 
 def ordered_members(chat: Chat) -> list[ChatMember]:
-    """The chat's members: the owner first, the rest as they were added (ids go up with time).
-    An archived agent or workflow stays a member, shown as archived."""
-    return sorted(chat.members, key=lambda m: (m.role != ChatMemberRole.owner, m.id))
+    """The chat's members as they were added (ids go up with time). An archived agent or
+    workflow stays a member, shown as archived."""
+    return sorted(chat.members, key=lambda m: m.id)
 
 
 def members_out(db: Session, store: Session, chat: Chat) -> ChatMembersOut:
@@ -181,11 +168,11 @@ def chat_summary(
     organisation_id: int,
     chat: Chat,
     member_count: int,
-    role: ChatMemberRole | None,
+    joined: bool,
     known: dict[int, UserOut] | None = None,
 ) -> ChatSummary:
-    """The organisation's chat as the list shows it, to a user with this `role` in it (None: not
-    a member); who made and changed it from `known` when given (see `people`), else read now."""
+    """The organisation's chat as the list shows it, to a user who has `joined` it or not; who
+    made and changed it from `known` when given (see `people`), else read now."""
     if known is None:
         known = people(db, organisation_id, [chat.created_by, chat.updated_by])
     return ChatSummary(
@@ -193,9 +180,7 @@ def chat_summary(
         id=chat.id,
         name=chat.name,
         description=chat.description,
-        visibility=chat.visibility,
-        is_owner=role == ChatMemberRole.owner,
-        is_member=role is not None,
+        is_member=joined,
         member_count=member_count,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
@@ -206,10 +191,9 @@ def chat_out(
     db: Session, store: Session, organisation_id: int, chat: Chat, user_id: int
 ) -> ChatOut:
     """The organisation's chat (in its store, `store`), as the user sees it."""
-    member = user_member(chat, user_id)
     return ChatOut(
         **chat_summary(
-            db, organisation_id, chat, len(ordered_members(chat)), member.role if member else None
+            db, organisation_id, chat, len(ordered_members(chat)), is_member(chat, user_id)
         ).model_dump(),
         members=members_out(db, store, chat),
     )
@@ -241,27 +225,19 @@ def is_member(chat: Chat, user_id: int) -> bool:
 
 
 def get_visible_chat(store: Session, user_id: int, chat_id: int) -> Chat:
-    """The chat, if it exists for the user: any public chat of their organisation's store, or a
-    private one of it they're in."""
+    """The chat, which exists for everyone in its organisation (its store's), joined or not; a
+    404 if there's no such chat."""
     chat = store.scalars(select(Chat).where(Chat.id == chat_id).options(*LOAD)).one_or_none()
-    if chat is None or (chat.visibility == ChatVisibility.private and not is_member(chat, user_id)):
+    if chat is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return chat
 
 
-def is_owner(chat: Chat, user_id: int) -> bool:
-    """Whether the user holds the chat's owner role."""
-    member = user_member(chat, user_id)
-    return member is not None and member.role == ChatMemberRole.owner
-
-
 def lock_chat(store: Session, chat: Chat) -> None:
     """Lock the chat until commit, for a change to it or to what's in it; a 404 if it has been
-    deleted since `get_visible_chat` read it: by its owner, or by its owner leaving the
-    organisation with nobody else in it (`organisations.hand_over_chats`, which locks it first).
-    Under the lock that waits for the deletion and sees the chat gone, where adding a member or a
-    message to it would break their foreign key (a 500), and a deletion that comes after waits
-    and takes what the change added with the chat.
+    deleted since `get_visible_chat` read it. Under the lock that waits for the deletion and sees
+    the chat gone, where adding a member or a message to it would break their foreign key (a
+    500), and a deletion that comes after waits and takes what the change added with the chat.
     `FOR NO KEY UPDATE`: the lock the change to `updated_at` each of them makes takes anyway, only
     sooner, so it doesn't hold up what that wouldn't (a message's foreign key takes a key share)."""
     locked = select(Chat.id).where(Chat.id == chat.id).with_for_update(key_share=True)
@@ -269,36 +245,28 @@ def lock_chat(store: Session, chat: Chat) -> None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
-def lock_owner(store: Session, chat: Chat) -> int | None:
-    """Lock the chat (`lock_chat`), and read who holds its owner role now (None: nobody), for a
-    change to its members. The members `get_visible_chat` loaded can be out of date by then: the
-    owner leaving the organisation deletes their member row and hands the chat on, or deletes it
-    (`organisations.hand_over_chats`, which locks the chat first), and a join, add, removal or
-    leaving decided on the owner it loaded would go in after that, leaving a member in a chat
-    nobody owns. Under the lock it waits for the hand-over, or the hand-over waits for it and sees
-    what it did."""
-    lock_chat(store, chat)
-    return store.scalar(
-        select(ChatMember.user_id).where(
-            ChatMember.chat_id == chat.id, ChatMember.role == ChatMemberRole.owner
-        )
-    )
+NOT_JOINED = "Only the chat's members can do that: join it first."
 
 
-OWNER_ONLY = "Only the chat's owner can do that."
-
-
-def get_chat_if_owner(store: Session, user_id: int, chat_id: int) -> Chat:
-    """The chat, for one of the owner's actions: a 403 for anyone else it's visible to."""
+def get_chat_if_member(store: Session, user_id: int, chat_id: int) -> Chat:
+    """The chat, for one of its members' actions (changing it and its agents and workflows): a
+    403 for anyone in the organisation who hasn't joined it."""
     chat = get_visible_chat(store, user_id, chat_id)
-    if not is_owner(chat, user_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)
+    if not is_member(chat, user_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_JOINED)
     return chat
 
 
-def still_owner(store: Session, chat: Chat, user_id: int) -> None:
-    """A 403 unless the user still holds the chat's owner role, read under its lock
-    (`lock_owner`), for an owner's change to its members: their leaving the organisation may
-    have got in since `get_chat_if_owner`."""
-    if lock_owner(store, chat) != user_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, OWNER_ONLY)
+def still_member(store: Session, chat: Chat, user_id: int) -> None:
+    """Lock the chat (`lock_chat`) and a 403 unless the user is still in it, read under the lock:
+    their leaving it, or the organisation, may have got in since `get_chat_if_member`."""
+    lock_chat(store, chat)
+    found = store.scalar(
+        select(ChatMember.id).where(
+            ChatMember.chat_id == chat.id,
+            ChatMember.kind == ChatMemberKind.user,
+            ChatMember.user_id == user_id,
+        )
+    )
+    if found is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, NOT_JOINED)

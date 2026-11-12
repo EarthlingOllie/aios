@@ -190,13 +190,13 @@ test("the skills can be shown by whether an agent uses them, with search and sor
   await expect(page).toHaveURL(inOrg("/skills?filter=used&sort=updated&q=tone"));
 });
 
-test("the chats can be shown by joined, not joined, unread and private, as the list refreshes", async ({
+test("the chats can be shown by joined, not joined and unread, as the list refreshes", async ({
   page,
 }) => {
   const api = await fakeApi(page);
   const design = api.addChat("Design");
-  api.addChat("Support", { visibility: "public" });
-  api.addChat("Town hall", { visibility: "public", owner: sam });
+  api.addChat("Support");
+  api.addChat("Town hall", { owner: sam });
   await page.goto(inOrg("/chats"));
 
   await expect(sort(page, "chats")).toHaveCount(0);
@@ -209,8 +209,7 @@ test("the chats can be shown by joined, not joined, unread and private, as the l
   await filter(page, "Not joined").click();
   await expect(links(page, "Chats")).toHaveText([/Town hall/]);
 
-  await filter(page, "Private").click();
-  await expect(links(page, "Chats")).toHaveText([/Design/]);
+  await expect(filter(page, "Private")).toHaveCount(0);
 
   await filter(page, "Unread").click();
   await expect(page).toHaveURL(inOrg("/chats?filter=unread"));
@@ -219,7 +218,7 @@ test("the chats can be shown by joined, not joined, unread and private, as the l
 
   // Sam posts in Design, and joins us in a new chat: the next refresh shows Design, and the
   // filter still applies to what it brings.
-  const lobby = api.addChat("Lobby", { visibility: "public", owner: sam });
+  const lobby = api.addChat("Lobby", { owner: sam });
   api.addChatMember(lobby, api.me);
   api.addChatMessage(design, "Anyone around?", sam);
   await expect(links(page, "Chats")).toHaveText([/Design/], { timeout: CHAT_LIST_POLL_MS + 2000 });

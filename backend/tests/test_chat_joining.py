@@ -1,4 +1,4 @@
-"""Public chats are found in the list, read before joining, joined in one step and left; each chat
+"""Every chat is found in the list, read before joining, joined in one step and left; each chat
 the user is in counts the messages they haven't seen."""
 
 import pytest
@@ -22,16 +22,14 @@ def listed(api) -> dict[str, dict]:
     return {c["name"]: c for c in resp.json()}
 
 
-def test_the_list_has_public_chats_im_not_in_flagged_as_not_joined(api, user, other):
+def test_the_list_has_chats_im_not_in_flagged_as_not_joined(api, user, other):
     with signed_in_as(other):
-        make_chat(api, "Theirs public", visibility="public")
-        make_chat(api, "Theirs private", visibility="private")
-    make_chat(api, "Mine", visibility="private")
+        make_chat(api, "Theirs")
+    make_chat(api, "Mine")
     chats = listed(api)
-    # Not their private one: a private chat doesn't exist for anyone not in it.
-    assert list(chats) == ["Mine", "Theirs public"]
-    theirs = chats["Theirs public"]
-    assert (theirs["is_member"], theirs["is_owner"]) == (False, False)
+    assert list(chats) == ["Mine", "Theirs"]
+    theirs = chats["Theirs"]
+    assert theirs["is_member"] is False
     assert chats["Mine"]["is_member"] is True
     # No unread count for a chat they're not in.
     assert theirs["unread_count"] is None
@@ -44,23 +42,16 @@ def join(api, chat: dict) -> dict:
     return resp.json()
 
 
-def test_a_public_chat_is_read_before_joining_and_posted_in_after(api, user, other):
-    chat = make_chat(api, "Open", visibility="public")
+def test_a_chat_is_read_before_joining_and_joined_in_one_step(api, user, other):
+    chat = make_chat(api, "Open")
     hello = post(api, chat, "Hello")
     with signed_in_as(other):
-        # Readable, but not theirs to post in until they join.
         assert api.get(f"/api/chats/{chat['id']}").json()["is_member"] is False
         assert messages(api, chat)["messages"] == [hello]
-        resp = api.post(f"/api/chats/{chat['id']}/messages", json={"body": "Hi"})
-        assert resp.status_code == 403
-        assert resp.json()["detail"] == "Only the chat's members can post in it."
 
         joined = join(api, chat)
-        assert joined["is_member"] is True and joined["is_owner"] is False
-        assert [(m["target_id"], m["role"]) for m in joined["members"]["users"]] == [
-            (user.id, "owner"),
-            (other.id, "member"),
-        ]
+        assert joined["is_member"] is True
+        assert [m["target_id"] for m in joined["members"]["users"]] == [user.id, other.id]
         hi = post(api, chat, "Hi")
         assert listed(api)["Open"]["is_member"] is True
         # Once is enough.
@@ -70,27 +61,17 @@ def test_a_public_chat_is_read_before_joining_and_posted_in_after(api, user, oth
     assert [m["id"] for m in messages(api, chat)["messages"]] == [hello["id"], hi["id"]]
 
 
-def test_a_private_chat_cant_be_joined(api, other):
-    chat = make_chat(api, "Secret", visibility="private")
-    with signed_in_as(other):
-        assert api.post(f"/api/chats/{chat['id']}/join").status_code == 404
-        assert api.post(f"/api/chats/{chat['id']}/leave").status_code == 404
-    # Nor joined again by its owner, who's in it.
-    assert api.post(f"/api/chats/{chat['id']}/join").status_code == 409
-
-
 def test_a_member_leaves_and_rejoins_to_find_the_history_still_there(api, user, other):
-    chat = make_chat(api, "Open", visibility="public")
+    chat = make_chat(api, "Open")
     with signed_in_as(other):
         join(api, chat)
         hi = post(api, chat, "Hi")
         assert api.post(f"/api/chats/{chat['id']}/leave").status_code == 204
-        # Out of it, so the chat is back to one they could join, and they can't post.
+        # Out of it, so the chat is back to one they could join.
         left = api.get(f"/api/chats/{chat['id']}").json()
-        # The owner and their documents assistant.
+        # Its maker and their documents assistant.
         assert (left["is_member"], left["member_count"]) == (False, 2)
         assert listed(api)["Open"]["is_member"] is False
-        assert api.post(f"/api/chats/{chat['id']}/messages", json={"body": "?"}).status_code == 403
         # Leaving twice isn't leaving.
         resp = api.post(f"/api/chats/{chat['id']}/leave")
         assert resp.status_code == 409
@@ -101,21 +82,17 @@ def test_a_member_leaves_and_rejoins_to_find_the_history_still_there(api, user, 
         assert messages(api, chat)["messages"] == [hi]
 
 
-def test_the_owner_cant_leave(api, user):
-    chat = make_chat(api, "Mine", visibility="public")
-    resp = api.post(f"/api/chats/{chat['id']}/leave")
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == "The owner can't leave the chat."
-    assert api.get(f"/api/chats/{chat['id']}").json()["is_member"] is True
-
-
-def test_leaving_a_private_chat_makes_it_disappear(api, user, other):
-    chat = make_chat(api, "Secret", visibility="private")
-    add_user(api, chat, other)
+def test_the_last_person_leaves_and_the_chat_stays(api, user, other):
+    chat = make_chat(api, "Mine")
+    hello = post(api, chat, "Hello")
+    assert api.post(f"/api/chats/{chat['id']}/leave").status_code == 204
+    left = api.get(f"/api/chats/{chat['id']}").json()
+    assert left["is_member"] is False and left["members"]["users"] == []
+    assert listed(api)["Mine"]["is_member"] is False
+    # Still there for anyone to read and join.
     with signed_in_as(other):
-        assert api.post(f"/api/chats/{chat['id']}/leave").status_code == 204
-        assert api.get(f"/api/chats/{chat['id']}").status_code == 404
-        assert listed(api) == {}
+        assert messages(api, chat)["messages"] == [hello]
+        assert join(api, chat)["is_member"] is True
 
 
 def unread(api, name: str) -> int | None:
@@ -128,7 +105,7 @@ def read_up_to(api, chat: dict, message: dict) -> None:
 
 
 def test_the_unread_count_rises_with_others_messages_and_clears_on_reading(api, user, other):
-    chat = make_chat(api, "Design", visibility="public")
+    chat = make_chat(api, "Design")
     with signed_in_as(other):
         join(api, chat)
         first = post(api, chat, "one")
@@ -155,7 +132,7 @@ def test_the_unread_count_rises_with_others_messages_and_clears_on_reading(api, 
 
 
 def test_a_member_added_later_has_the_history_to_read(api, user, other):
-    chat = make_chat(api, "Design", visibility="private")
+    chat = make_chat(api, "Design")
     post(api, chat, "one")
     post(api, chat, "two")
     add_user(api, chat, other)
@@ -163,7 +140,7 @@ def test_a_member_added_later_has_the_history_to_read(api, user, other):
         assert [m["body"] for m in messages(api, chat)["messages"]] == ["one", "two"]
         assert unread(api, "Design") == 2
     # Whereas one who joins has seen what was there to read before they did.
-    public = make_chat(api, "Open", visibility="public")
+    public = make_chat(api, "Open")
     post(api, public, "hello")
     with signed_in_as(other):
         join(api, public)
@@ -171,7 +148,7 @@ def test_a_member_added_later_has_the_history_to_read(api, user, other):
 
 
 def test_only_a_member_marks_a_chat_read(api, other):
-    chat = make_chat(api, "Open", visibility="public")
+    chat = make_chat(api, "Open")
     hello = post(api, chat, "hello")
     with signed_in_as(other):
         resp = api.post(f"/api/chats/{chat['id']}/read", json={"message_id": hello["id"]})

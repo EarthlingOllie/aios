@@ -2,14 +2,15 @@ import { expect, test } from "@playwright/test";
 
 import { fakeApi, inOrg, orgApi } from "./fake-api";
 
-/** Chats are the organisation's: "public" is its members, names are unique within it, the owner
- * adds any of its members and agents, and another organisation's chats don't exist here. */
+/** Chats are the organisation's: every one is open to its members, names are unique within it, a
+ * chat's members add any of its members and agents, and another organisation's chats don't exist
+ * here. */
 
 const sam = { id: 2, first_name: "Sam", last_name: "Jones" };
 
 test("the chat header says which member created it", async ({ page }) => {
   const api = await fakeApi(page);
-  const theirs = api.addChat("Design", { visibility: "public", owner: sam });
+  const theirs = api.addChat("Design", { owner: sam });
   const mine = api.addChat("Planning");
   await page.goto(inOrg(`/chats/${theirs.id}`));
 
@@ -23,8 +24,8 @@ test("the chat header says which member created it", async ({ page }) => {
 
 test("another organisation's chats aren't listed, don't open, and don't take a name", async ({ page }) => {
   const api = await fakeApi(page);
-  api.addChat("Open", { visibility: "public", owner: sam });
-  const elsewhere = api.addChat("general", { visibility: "public", owner: sam, organisation_id: 99 });
+  api.addChat("Open", { owner: sam });
+  const elsewhere = api.addChat("general", { owner: sam, organisation_id: 99 });
   await page.goto(inOrg("/chats"));
 
   const list = page.getByRole("list").filter({ hasText: "Open" });
@@ -44,7 +45,7 @@ test("another organisation's chats aren't listed, don't open, and don't take a n
   await expect(page.getByRole("alert")).toHaveText("The organisation already has a chat with that name.");
 });
 
-test("the owner adds a fellow member and another member's agent", async ({ page }) => {
+test("a member adds a fellow member and another member's agent", async ({ page }) => {
   const api = await fakeApi(page);
   api.organisation.members.push({ user: sam, joined_at: "2026-10-15T08:00:00Z", invite_id: null });
   const agent = api.addAgent("Their reviewer");
@@ -56,7 +57,7 @@ test("the owner adds a fellow member and another member's agent", async ({ page 
   await members.getByLabel("Add a member").selectOption("Sam Jones");
   await members.getByRole("button", { name: "Add member" }).click();
   await expect(members.getByRole("list", { name: "Users" }).getByRole("listitem")).toHaveText([
-    /Tester.*owner/,
+    /Tester/,
     /Sam Jones/,
   ]);
   // Everyone in the organisation is in it now: nobody left to add.

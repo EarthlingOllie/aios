@@ -52,9 +52,8 @@ class Verdict(enum.StrEnum):
     - `clean`: Jev passed it.
     - `flagged`: Jev judged it a prompt injection; kept, but out of search and context.
     - `released`: flagged, then released by an admin; searchable, still wrapped.
-    - `derived`: what agents wrote from possibly untrusted content (run messages, briefs), and,
-      until chat messages are checked when posted, people's chat messages: not checked again,
-      searchable, always wrapped.
+    - `derived`: what agents and workflows wrote from possibly untrusted content (their posts,
+      run messages, briefs): not checked again, searchable, always wrapped.
     """
 
     awaiting_check = "awaiting_check"

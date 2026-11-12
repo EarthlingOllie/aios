@@ -346,7 +346,7 @@ def test_the_search_page_shows_a_person_everything_in_the_organisation(
 ):
     """Even a private chat they're not in: search items have no visibility."""
     with signed_in_as(member):
-        secret = make_chat(api, "Members only", visibility="private")
+        secret = make_chat(api, "Members only")
         post(api, secret, "The sourdough starter lives in the fridge.")
 
     hits = found(api, "sourdough")

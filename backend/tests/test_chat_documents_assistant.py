@@ -142,5 +142,6 @@ def test_mentioning_the_assistant_searches_the_chat_owners_documents_and_posts_t
     assert invocation["agent_run"]["tool_call_count"] == 1
     assert searched == [(store_of(user), "fish")]
     history = checkpoints.history(store_of(user), invocation["agent_run_id"])
-    assert history[0].text == f"{jev.wrap('They study fish.', 'brief')}\n\n@{NAME} fish?"
+    brief = jev.wrap("They study fish.", "brief")
+    assert history[0].text == f"{brief}\n\n{jev.wrap(f'@{NAME} fish?', 'chat message')}"
     assert replies_from(api, chat) == [(NAME, "Found Zebrafish. [fish.md]")]

@@ -9,7 +9,7 @@ from test_chats import add, make_chat, messages
 from test_triggers import make_agent
 from test_workflows import agent_node, make_workflow
 
-from aios import checkpoints
+from aios import checkpoints, jev
 from aios.testing.fake_model import ToolCall, Usage, model, replies, use_model
 from aios.tools import TOOLS
 
@@ -95,7 +95,7 @@ def test_mentioning_an_agent_runs_a_turn_followed_by_its_card_and_posts_the_repl
     # The run is the agent's, run with the message (a mention as `@name`), marked as from the chat.
     run_id = live["agent_run_id"]
     history = checkpoints.history(store_of(user), run_id)
-    assert history[0].text == "@Bot find fruit"
+    assert history[0].text == jev.wrap("@Bot find fruit", "chat message")
     [listed] = api.get(runs_url).json()
     assert (listed["id"], listed["chat_id"], listed["chat_name"]) == (run_id, chat["id"], "Design")
     assert messages(api, chat, after=result["id"]) == {"messages": [], "invocations": []}

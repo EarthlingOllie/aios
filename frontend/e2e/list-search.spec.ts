@@ -185,8 +185,8 @@ test("the chats list keeps the search as it refreshes", async ({ page }) => {
   await expect(links(page, "Chats")).toHaveText([/Support/]);
 
   // Chats that arrive with the next refresh are searched too.
-  api.addChat("Customer feedback", { visibility: "public", owner: sam });
-  api.addChat("Random", { visibility: "public", owner: sam });
+  api.addChat("Customer feedback", { owner: sam });
+  api.addChat("Random", { owner: sam });
   await expect(links(page, "Chats")).toHaveCount(2, { timeout: CHAT_LIST_POLL_MS + 2000 });
   await expect(links(page, "Chats").filter({ hasText: "Random" })).toHaveCount(0);
   await expect(search(page, "chats")).toHaveValue("customer");

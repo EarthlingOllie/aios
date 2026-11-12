@@ -1,33 +1,40 @@
 """Chats: group conversations between users, agents and workflows.
 
 A chat belongs to an organisation (`aios.organisations`), and doesn't exist for anyone outside it:
-every endpoint is a 404 for them. Within it, a chat has an owner (the member who made it: a role in
-the chat, held on their member row, not ownership of data), a name unique among the organisation's
-chats, a description and a visibility, and says which member made it and last changed it
-(`aios.api.provenance`). Its members are users, agents and workflows of the organisation (an agent
-or workflow since deleted is no longer one; its row stays, and what it posted stays either way). A
-private chat doesn't exist for a member who isn't in it either. A public one exists for every
-member of the organisation: the list carries the public chats a member isn't in (`is_member` false)
-for them to find, and they join it in one step and leave it as easily (the owner can't: a chat
-always has one). Only the owner can change a chat, add or remove its members or delete it: a 403
-for anyone else. An owner who leaves the organisation hands the chat to its member added first
-(`organisations.leave`); with nobody left in it, whoever joins a public one next owns it, and a
-private one, which nobody could join, is deleted, as its owner deleting it would be. Leaving the
-chat or being removed from it deletes nothing, and whoever joins later reads the history from the
-start. A new chat's first agent is the organisation's documents assistant (`aios.assistant`).
+every endpoint is a 404 for them. Within it, every chat is open: anyone in the organisation lists
+it (`is_member` says whether they've joined), and reads its messages, members and run cards
+without joining. A chat has a name unique among the organisation's chats (a 409), a description,
+and says which member made it and last changed it (`aios.api.provenance`). Its members are
+people, agents and workflows of the organisation (an archived agent or workflow stays one, shown
+as archived). People join in one step (or by posting) and leave as easily, the last one too: the
+chat stays. Its members (not others) change it, add or remove its agents and workflows, or delete
+it: a 403 for anyone who hasn't joined. Someone leaving the organisation leaves its chats.
+Leaving deletes nothing, and whoever joins later reads the history from the start. A new chat's
+first agent is the organisation's documents assistant (`aios.assistant`).
+
+The agents and workflows among a chat's members are the ones it includes: only those can be
+mentioned there. A message mentioning one it doesn't include is a 422 naming what's missing
+(`detail.missing`), so the screen can offer to add it and send the message.
+
+Every message a person posts goes through one path (`post_message`): the permission and mention
+checks, then Jev (`aios.jev`) with the source "chat message", before anything is written. A
+message Jev flags is a 422 with its reason; one Jev can't check in time
+(`jev_chat_timeout_seconds`) is a 503 saying to try again; either way nothing is stored, indexed
+or started. One that passes is stored `clean`, and its search item says so; posting joins the
+poster in the same transaction. What agents and workflows post is `derived`, never checked here.
 
 Each user member keeps the last message they've seen (`POST /api/chats/{id}/read`, as they read
-to the bottom), and the list counts, per chat, the messages others posted since (`unread_count`).
+to the bottom), and the list counts, per chat they're in, the messages others posted since
+(`unread_count`).
 
-Its members post markdown messages, read by id: `?after=N` for what's new (what the open chat
-polls), `?before=N` for the page of history before N, and neither for the latest page. Anyone
-the chat exists for can read them; only a member can post (a 403 for anyone else). A chat's last
-activity is when it was last changed or a message was last posted.
+People post markdown messages, read by id: `?after=N` for what's new (what the open chat
+polls), `?before=N` for the page of history before N, and neither for the latest page. A chat's
+last activity is when it was last changed or a message was last posted.
 
 A message can mention members: the composer picks them from `GET /api/chats/{id}/mentionable`, the
 body carries a token for each (`@[name](kind:id)`) and the message stores them structurally,
 `[{kind, id, name}]`, so an agent and a workflow with the same name are never confused. Mentioning
-anyone who isn't a member is a 422.
+a person who isn't a member is a 422, as is an agent or workflow the chat doesn't include.
 
 Mentioning a workflow starts a run of it, with the message as its input (`aios.invocations`): the
 response to the post carries the workflow's acknowledgement and run card with the message, and
@@ -67,7 +74,7 @@ from aios.api.chats.common import (
     CHAT_NAME_INDEX,
     LOAD,
     MEMBER_CONSTRAINTS,
-    OWNER_ONLY,
+    NOT_JOINED,
     TARGET_MODELS,
     ChatIn,
     ChatMemberOut,
@@ -77,18 +84,16 @@ from aios.api.chats.common import (
     MemberIn,
     chat_out,
     chat_summary,
-    get_chat_if_owner,
+    get_chat_if_member,
     get_visible_chat,
     is_member,
-    is_owner,
     load,
     lock_chat,
-    lock_owner,
     member_key,
     member_out,
     members_out,
     ordered_members,
-    still_owner,
+    still_member,
     user_member,
 )
 from aios.api.chats.crud import (
@@ -104,6 +109,7 @@ from aios.api.chats.members import (
     MentionableOut,
     MentionablesOut,
     add_member,
+    join,
     join_chat,
     leave_chat,
     list_mentionable,
@@ -114,10 +120,12 @@ from aios.api.chats.members import (
     take_out,
 )
 from aios.api.chats.messages import (
+    FLAGGED,
     MESSAGE_PAGE,
-    NOT_A_MEMBER,
     NOT_A_MEMBER_READING,
+    NOT_INCLUDED,
     NOT_MENTIONABLE,
+    UNCHECKED,
     AgentRunLiveOut,
     InvocationOut,
     MentionIn,
@@ -158,6 +166,7 @@ __all__ = [
     "InvocationOut",
     "LOAD",
     "MEMBER_CONSTRAINTS",
+    "FLAGGED",
     "MESSAGE_PAGE",
     "MemberIn",
     "MentionIn",
@@ -168,10 +177,11 @@ __all__ = [
     "MessageIn",
     "MessageOut",
     "MessagesOut",
-    "NOT_A_MEMBER",
     "NOT_A_MEMBER_READING",
+    "NOT_INCLUDED",
     "NOT_MENTIONABLE",
-    "OWNER_ONLY",
+    "UNCHECKED",
+    "NOT_JOINED",
     "ReadIn",
     "TARGET_MODELS",
     "add_member",
@@ -183,11 +193,11 @@ __all__ = [
     "delete_chat",
     "enqueue_starts",
     "get_chat",
-    "get_chat_if_owner",
+    "get_chat_if_member",
     "get_visible_chat",
     "invocation_out",
     "is_member",
-    "is_owner",
+    "join",
     "join_chat",
     "leave_chat",
     "list_chats",
@@ -196,7 +206,6 @@ __all__ = [
     "ordered_members",
     "load",
     "lock_chat",
-    "lock_owner",
     "mark_read",
     "member_key",
     "member_out",
@@ -209,7 +218,7 @@ __all__ = [
     "post_message",
     "remove_member",
     "resolve_mentions",
-    "still_owner",
+    "still_member",
     "take_out",
     "update_chat",
     "user_member",

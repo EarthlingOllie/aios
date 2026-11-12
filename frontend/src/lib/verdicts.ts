@@ -43,3 +43,10 @@ export function jevNotice(up: boolean | null): string | null {
   if (up !== false) return null;
   return "Jev, the prompt-injection check, is down. New documents wait to be checked before they're searchable, and agents' code and data tools return errors until it's back.";
 }
+
+/** What a chat's composer says while Jev is down (`up` false): every message a person posts is
+ * checked by Jev first, so none can be posted. Nothing while it's up or unknown. */
+export function composerJevNotice(up: boolean | null): string | null {
+  if (up !== false) return null;
+  return "Messages can't be checked right now: Jev, the prompt-injection check, is down, so posting won't work until it's back.";
+}

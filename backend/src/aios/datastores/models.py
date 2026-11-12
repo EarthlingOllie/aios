@@ -42,9 +42,7 @@ from aios.models.audit import AuditActorKind
 from aios.models.chats import (
     ChatAuthorKind,
     ChatMemberKind,
-    ChatMemberRole,
     ChatMessageKind,
-    ChatVisibility,
     InvocationCause,
     InvocationStatus,
 )
@@ -760,10 +758,9 @@ class Trigger(StoreBase):
     )
 
 
-# Chats are group conversations between people, agents and workflows. A member row says who is
-# in a chat; which kind it is decides which id column is set, like a trigger's target. Only
-# people have a role: the owner (one per chat: who made it, or whom it was handed to when they
-# left the organisation) can change the chat, remove members and delete it.
+# Chats are open conversations between people, agents and workflows: anyone in the organisation
+# reads any chat, and posting joins. A member row says who is in a chat; which kind it is decides
+# which id column is set, like a trigger's target.
 
 
 class Chat(StoreBase):
@@ -777,8 +774,6 @@ class Chat(StoreBase):
     updated_by: Mapped[int | None] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, server_default="")
-    # A private chat doesn't exist for a member who isn't in it.
-    visibility: Mapped[ChatVisibility] = mapped_column(Enum(ChatVisibility, name="chat_visibility"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # When it was last active: when it was last changed, or a message was last posted.
     updated_at: Mapped[datetime] = mapped_column(
@@ -812,10 +807,6 @@ class ChatMember(StoreBase):
     user_id: Mapped[int | None] = mapped_column(Integer)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"))
     workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"))
-    # People only: the chat's owner, or an ordinary member.
-    role: Mapped[ChatMemberRole | None] = mapped_column(
-        Enum(ChatMemberRole, name="chat_member_role")
-    )
     added_by: Mapped[int | None] = mapped_column(Integer)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # People only: the id of the last of the chat's messages they've seen (null: none yet), from
@@ -833,17 +824,9 @@ class ChatMember(StoreBase):
             " AND agent_id IS NULL)",
             name="ck_chat_members_target",
         ),
-        CheckConstraint("(kind = 'user') = (role IS NOT NULL)", name="ck_chat_members_role"),
         UniqueConstraint("chat_id", "user_id", name="uq_chat_members_chat_id_user_id"),
         UniqueConstraint("chat_id", "agent_id", name="uq_chat_members_chat_id_agent_id"),
         UniqueConstraint("chat_id", "workflow_id", name="uq_chat_members_chat_id_workflow_id"),
-        # One owner at most: none only while nobody is left in it to hand the chat to.
-        Index(
-            "uq_chat_members_chat_id_owner",
-            "chat_id",
-            unique=True,
-            postgresql_where=sql_text("role = 'owner'"),
-        ),
         Index("ix_chat_members_user_id", "user_id"),
         Index("ix_chat_members_agent_id", "agent_id"),
         Index("ix_chat_members_workflow_id", "workflow_id"),
@@ -869,6 +852,16 @@ class ChatMessage(StoreBase):
     body: Mapped[str] = mapped_column(Text)
     # Who the message mentions, `[{kind, id, name}]`, with the names as they were when posted.
     mentions: Mapped[list] = mapped_column(JSONB, server_default=sql_text("'[]'::jsonb"))
+    # Jev's verdict (`aios.jev.Verdict`): a person's message is checked as it's posted, and
+    # stored only if clean; what agents, workflows and the chat post is derived, never checked.
+    # Copied onto its search item.
+    verdict: Mapped[Verdict] = mapped_column(
+        Enum(Verdict, name="verdict"),
+        server_default=Verdict.derived.value,
+        default=Verdict.derived,
+        comment="Jev's verdict: clean for a person's message (checked as it's posted),"
+        " derived for what agents, workflows and the chat post.",
+    )
     # The invocation it's part of: a run card's, or the result the run posted back.
     invocation_id: Mapped[int | None] = mapped_column(
         ForeignKey(
