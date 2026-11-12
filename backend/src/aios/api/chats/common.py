@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from fastapi import HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -31,6 +31,22 @@ MEMBER_CONSTRAINTS = {
 class ChatIn(BaseModel):
     name: str = Field(min_length=1, max_length=255, pattern=r"\S")
     description: str = ""
+
+
+class ChatCreateIn(BaseModel):
+    """A new chat: named, or, given one agent and no name (**Chat with this agent**), named for
+    it (`aios.api.chats.crud.agent_chat_name`)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255, pattern=r"\S")
+    description: str = ""
+    # The one agent to include instead of the documents assistant.
+    agent_id: DbId | None = None
+
+    @model_validator(mode="after")
+    def named_or_for_an_agent(self) -> "ChatCreateIn":
+        if self.name is None and self.agent_id is None:
+            raise ValueError("A chat needs a name, or an agent to chat with.")
+        return self
 
 
 class MemberIn(BaseModel):

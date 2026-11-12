@@ -62,6 +62,19 @@ post their results there. Renames (`chat.renamed`), archiving (`chat.archived`) 
 Each new chat has the organisation's documents assistant as its first agent (see
 [Agents and skills](agents-and-skills.md#the-documents-assistant)).
 
+## Chat with this agent
+
+Talking to one agent happens in an open chat like any other. **Chat with this agent**, on an
+agent's page, creates a chat with that agent and no name (`POST /api/o/{org}/chats` with
+`{agent_id}`): a new chat that includes only that agent (not the documents assistant), with the
+person as its first chat member, named "<Agent> – <person> – <date>" (the date in UTC, as
+`2026-11-12`). A clash with any chat's name, archived ones too, adds " (2)", " (3)" and so on, so
+each click makes a new chat. It needs permission to invoke the agent: someone its **invocable by**
+leaves out is refused with the reason (a 403, "Only editors and admins can invoke the agent
+Payroll."), and an archived agent is a 409. The chat opens with a mention of the agent in the
+composer; its chat members rename it like any chat. Every chat page says that the whole
+organisation can see it.
+
 ## Unread counts
 
 Each chat you're in shows an **unread count** in the list: the messages others posted since the

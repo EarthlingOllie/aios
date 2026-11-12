@@ -1,16 +1,19 @@
 """Chats: listing, creating, reading and updating them, and archiving and unarchiving them.
 Nobody deletes a chat."""
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import Session, aliased
 
-from aios import assistant, audit, organisations, streams
+from aios import assistant, audit, guards, organisations, streams
+from aios.api.agents.common import lock_live_agent
 from aios.api.chats import rules
 from aios.api.chats.common import (
     CHAT_NAME_INDEX,
+    ChatCreateIn,
     ChatIn,
     ChatOut,
     ChatSummary,
@@ -24,12 +27,18 @@ from aios.api.chats.rules import ChatAction
 from aios.api.provenance import built_by, people
 from aios.api.skills import unique_name
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
-from aios.datastores.models import Chat, ChatMember, ChatMessage
+from aios.datastores.models import Agent, Chat, ChatMember, ChatMessage
 from aios.db import DB, DbId
-from aios.models import ChatMemberKind
+from aios.models import ChatMemberKind, TriggerTargetKind
 from aios.permissions import Action, CurrentRole, allow
 
 router = APIRouter(prefix="/api")
+
+# The transaction-level advisory lock naming a chat for an agent takes, in the organisation's
+# store (`agent_chat_name`).
+NAMING_LOCK = 0x61696F73_63686174  # "aioschat"
+# Room for a " (n)" after a generated name, within the 255 a chat's name may have.
+NAME_BASE_MAX = 245
 
 
 class ChatListed(ChatSummary):
@@ -98,7 +107,7 @@ def list_chats(
     dependencies=[allow(Action.post)],
 )
 def create_chat(
-    body: ChatIn,
+    body: ChatCreateIn,
     user: CurrentUser,
     org: CurrentOrganisation,
     role: CurrentRole,
@@ -108,13 +117,28 @@ def create_chat(
     """Make a chat of the organisation's, open to all of it, with the user as its first member,
     and the organisation's documents assistant (`aios.assistant`) as its first agent. A 404 for a
     user who left the organisation as they made it (`organisations.holds_member`, held until the
-    store has committed the chat): they'd be left in a chat of an organisation they're not in."""
+    store has committed the chat): they'd be left in a chat of an organisation they're not in.
+
+    **Chat with this agent** (`agent_id`): the chat includes that agent only, not the documents
+    assistant, and without a name is named for it (`agent_chat_name`). It needs permission to
+    invoke the agent (its **invocable by**: a 403 saying who may), and the agent not archived
+    (a 409); an agent the organisation hasn't got is a 404."""
     if not organisations.holds_member(db, org, user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    agent = assistant.documents_assistant(store, user.id)
+    if body.agent_id is None:
+        agent = assistant.documents_assistant(store, user.id)
+    else:
+        agent = store.get(Agent, body.agent_id)
+        if agent is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown agent")
+        refused = guards.refusals(store, role, [(TriggerTargetKind.agent, agent.id)])
+        if refused:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, next(iter(refused.values())))
+        # Share-locked until the chat commits, so archiving it meanwhile waits or wins.
+        lock_live_agent(store, agent, read=True)
     chat = Chat(
         **built_by(user.id),
-        name=body.name,
+        name=body.name or agent_chat_name(store, agent.name, user.full_name),
         description=body.description,
     )
     chat.members.append(
@@ -138,6 +162,20 @@ def create_chat(
         store.commit()
     db.commit()
     return chat_out(db, store, org.id, load(store, chat.id), user.id, role)
+
+
+def agent_chat_name(store: Session, agent: str, person: str) -> str:
+    """The name "<agent> – <person> – <date>" (today, UTC), or the first of it with " (2)",
+    " (3)"… that none of the organisation's chats (archived ones too) is called. Holds a lock,
+    for the transaction, that two chats named this way at once both take, so they don't pick
+    one name."""
+    store.execute(select(func.pg_advisory_xact_lock(NAMING_LOCK)))
+    base = f"{agent} – {person} – {datetime.now(UTC).date().isoformat()}"[:NAME_BASE_MAX]
+    taken = set(store.scalars(select(Chat.name).where(Chat.name.startswith(base))))
+    n = 1
+    while (name := base if n == 1 else f"{base} ({n})") in taken:
+        n += 1
+    return name
 
 
 @router.get("/chats/{chat_id}", response_model=ChatOut, dependencies=[allow(Action.read)])

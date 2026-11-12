@@ -1611,6 +1611,10 @@ export const api = {
     request<ChatListed[]>(archived ? `${organisationApi()}/chats?archived=true` : `${organisationApi()}/chats`),
   getChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}`),
   createChat: (body: ChatInput) => request<Chat>(`${organisationApi()}/chats`, json("POST", body)),
+  /** **Chat with this agent**: a new chat with that agent only, named for it and the person
+   * ("<Agent> – <person> – <date>", " (2)" and so on on a clash); a 403 saying who may invoke it. */
+  chatWithAgent: (agentId: number) =>
+    request<Chat>(`${organisationApi()}/chats`, json("POST", { agent_id: agentId })),
   updateChat: (id: number, body: ChatInput) =>
     request<Chat>(`${organisationApi()}/chats/${id}`, json("PUT", body)),
   archiveChat: (id: number) => request<Chat>(`${organisationApi()}/chats/${id}/archive`, { method: "POST" }),
