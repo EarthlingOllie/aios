@@ -22,7 +22,7 @@ from sqlalchemy import Select, func, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from aios import invocations
+from aios import invocations, streams
 from aios.datastores.models import AgentRun, Invocation, Turn, TurnToolCall
 from aios.models import AgentRunStatus, InvocationStatus
 
@@ -110,7 +110,9 @@ def count(
 
 def end(store: Session, turn_id: int, error: str | None) -> bool:
     """End the running turn: succeeded, or failed with `error`. Whether it was still running (a
-    turn failed as stalled stays failed)."""
+    turn failed as stalled stays failed). Its run's card is published (`aios.streams`): a turn
+    that ends waiting on an approval finishes no invocation and posts no message, and its card
+    says so only by this."""
     ended = store.execute(
         update(Turn)
         .where(Turn.id == turn_id, Turn.status == AgentRunStatus.running)
@@ -120,6 +122,8 @@ def end(store: Session, turn_id: int, error: str | None) -> bool:
             finished_at=func.now(),
         )
     )
+    if ended.rowcount:
+        streams.turn_changed(store, turn_id)
     return bool(ended.rowcount)
 
 

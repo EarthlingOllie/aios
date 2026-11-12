@@ -432,3 +432,26 @@ def test_turns_in_two_chats_run_at_the_same_time(api):
     assert answered_meanwhile == [True]
     [in_sales], [in_launch] = cards(api, sales), cards(api, launch)
     assert in_sales["agent_run_id"] != in_launch["agent_run_id"]
+
+
+def test_a_turn_ending_on_an_approval_shows_its_card_waiting_on_the_stream(
+    api,
+    agent,  # noqa: F811
+):
+    """A turn that ends waiting on an approval finishes no invocation and posts no message: its
+    card, open in the chat, still says it's waiting (the full-stack story's first step)."""
+    from sse import open_stream
+
+    chat = make_chat(api, "Design")
+    add(api, chat, "agent", agent)
+    with open_stream(api, f"/api/chats/{chat['id']}/stream") as stream:
+        with use_model(model(AsksThenAnswers())):
+            say(api, chat, f"{token(agent)} please change it", mention(agent))
+        events = stream.until(
+            lambda es: any(
+                e.event == "invocation" and (e.data.get("agent_run") or {}).get("waiting")
+                for e in es
+            )
+        )
+    [card] = [e.data for e in events if e.event == "invocation"][-1:]
+    assert card["status"] == "running" and card["agent_run"]["waiting"] is True
