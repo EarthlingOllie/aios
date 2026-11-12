@@ -105,6 +105,32 @@ export type Organisation = OrganisationSummary & {
   insights_people_visible: boolean;
 };
 
+/** A member's allowance and spend this month (`GET /api/organisation/budget`). */
+export type MemberSpend = {
+  user: User;
+  role: Role;
+  /** Their own allowance, an admin's override; null follows their role's. */
+  allowance: number | null;
+  /** What counts: their own, else their role's, else none (null). */
+  allowance_in_force: number | null;
+  spent: number;
+};
+
+/** The organisation's monthly budget and allowances, in estimated GBP per calendar month (UTC). */
+export type Budget = {
+  /** This month, as `YYYY-MM`. */
+  month: string;
+  /** Null for none: nothing is refused. */
+  budget: number | null;
+  spent: number;
+  /** Admins are warned once a month when spending passes this share of the budget. */
+  warning_threshold: number;
+  role_allowances: Record<Role, number | null>;
+  /** Every member's, or only the viewer's for one who may not see everyone's (`everyone`). */
+  members: MemberSpend[];
+  everyone: boolean;
+};
+
 /** One day of an Insights activity series. */
 export type InsightsDay = {
   day: string;
@@ -942,14 +968,14 @@ export type Notification = {
    * in): it's labelled with it, and opens there. */
   organisation: { id: number; slug: string; name: string };
   /** `mention`, `reply`, `run_failed`, `approval_needed`, `released_document_changed`,
-   * `released_item_changed`, `source_attention`, `organisation_deletion_scheduled` or
-   * `organisation_deletion_cancelled`. */
+   * `released_item_changed`, `source_attention`, `organisation_deletion_scheduled`,
+   * `organisation_deletion_cancelled`, `budget_warning` or `budget_reached`. */
   kind: string;
   /** What it's about, never what it says: for `mention`, `reply` and a chat's `run_failed`,
    * `chat_id` and `message_id`; for a run's `run_failed`, `agent_id` or `workflow_id`, and
    * `run_id`; for `approval_needed`, `approval_id`; for `released_document_changed`,
    * `document_id`; for `released_item_changed`, `synced_item_id`; for `source_attention`,
-   * `source_id`; for an organisation's deletion, nothing. */
+   * `source_id`; for an organisation's deletion, nothing; for a budget's, `month`. */
   ref: Record<string, string | number>;
   /** What it says, in a line, read from its organisation as it's listed; null while that can't be read. */
   title: string | null;
@@ -1725,6 +1751,17 @@ export const api = {
   /** Admins only: show usage by person on Insights to every member (true) or admins only. */
   setInsightsPeopleVisible: (visible: boolean) =>
     request<Organisation>(`${organisationApi()}/organisation/insights-people`, json("PUT", { visible })),
+  /** The budget, this month's spend, and the allowances: every member reads it. */
+  getBudget: () => request<Budget>(`${organisationApi()}/organisation/budget`),
+  /** Admins only: the monthly budget and each role's allowance (null: none). */
+  setBudget: (budget: number | null, roleAllowances: Partial<Record<Role, number | null>>) =>
+    request<Budget>(
+      `${organisationApi()}/organisation/budget`,
+      json("PUT", { budget, role_allowances: roleAllowances }),
+    ),
+  /** Admins only: a member's own allowance (null: their role's). */
+  setAllowance: (userId: number, allowance: number | null) =>
+    request<Budget>(`${organisationApi()}/organisation/members/${userId}/allowance`, json("PUT", { allowance })),
   /** An Insights panel's data for a range of days (and, for activity and usage, a grouping):
    * every member's, but a person grouping is a 403 unless they may see it. */
   insights: <T>(panel: string, range: { start: string; end: string }, group?: string) => {

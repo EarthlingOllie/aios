@@ -125,6 +125,7 @@ STORE_TABLES = {
         "skills",
         "source_syncs",
         "sources",
+        "spend_totals",
         "synced_items",
         "table_owners",
         "table_shares",

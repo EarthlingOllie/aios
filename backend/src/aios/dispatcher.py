@@ -28,6 +28,10 @@
   4. **Rate:** not past `event_trigger_rate_per_minute` firings in the last minute; the trigger
      shows "Rate limited".
 
+  Then, as each fires (a debounce batch as it closes), the **budget**: not once the
+  organisation has reached its monthly budget, or the person at the root of the event's chain
+  of causes (a chat message's poster, say) their allowance (`aios.budgets`).
+
   Each refusal is the trigger's last outcome (`refused`, or `rate_limited`, with why) and is
   audited (`trigger.refused`, by the system). No run starts.
 - **Firing** starts a run as a schedule does (`aios.scheduler`), started by no member, with an
@@ -66,7 +70,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, exists, func, select, text, update
 from sqlalchemy.orm import Session
 
-from aios import audit, outbox
+from aios import audit, budgets, guards, outbox
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.config import get_settings
@@ -222,7 +226,12 @@ def _fire(
 ) -> None:
     """Start the trigger's run for the event (or for a debounce `batch`, `outbox.batch_document`,
     whose last event is `event`), in a savepoint: one that can't start is recorded as failed,
-    without a run."""
+    without a run. Refused, as the loop rules refuse, at the organisation's budget or the
+    event's root person's allowance (`aios.budgets`)."""
+    reason = guards.check_budget(store, organisation_id, budgets.root_person(store, event=event))
+    if reason is not None:
+        _refuse(store, trigger, event, _Refusal(TriggerStatus.refused, "budget", reason), fired_at)
+        return
     document = batch if batch is not None else outbox.event_document(event)
     data_store_id = store_id_of(store)
     try:

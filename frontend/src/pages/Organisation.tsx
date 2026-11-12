@@ -5,6 +5,7 @@ import { ErrorBanner, formatDate, Placeholder, RoleNote, selectClass, useLoad } 
 import { ApprovalExpirySection } from "@/components/ApprovalExpiry";
 import { ApprovalRulesSection } from "@/components/ApprovalRules";
 import { AuditLogSection } from "@/components/AuditLog";
+import { AllowanceEditor, BudgetSection, spendText } from "@/components/Budget";
 import { FlaggedSection } from "@/components/FlaggedDocuments";
 import { Tabs, type Tab } from "@/components/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +17,7 @@ import { InvitesSection } from "@/components/OrganisationInvites";
 import { OrganisationLimitsSection } from "@/components/Limits";
 import { RetentionSection } from "@/components/Retention";
 import { UsageSection } from "@/components/Usage";
-import { api, describeError, type Me, type Organisation, type Role } from "@/lib/api";
+import { api, describeError, type Budget, type Me, type Organisation, type Role } from "@/lib/api";
 import { useCurrentUser, useReloadCurrentUser } from "@/lib/current-user";
 import { describeOrganisation, linkName } from "@/lib/organisation";
 import { landingPath, recentOrganisations } from "@/lib/organisation-path";
@@ -26,9 +27,10 @@ const ROLES: Role[] = ["admin", "editor", "participant"];
 
 /**
  * The user's organisation: its name (admins rename it) above three tabs, as on the agent
- * page: its creator and members with their roles, which admins change (`/organisation`), its
+ * page: its creator and members with their roles, which admins change, and each one's allowance
+ * and spend this month where the viewer may see it, which admins override (`/organisation`), its
  * invitation links (`/organisation/invitations`, admins' only), its settings: the flagged list
- * (admins' only), the approval rules, retention, limits, leaving it and deleting it
+ * (admins' only), the approval rules, retention, limits, the budget, leaving it and deleting it
  * (`/organisation/settings`), its audit log (`/organisation/audit-log`, admins' only) and its
  * usage totals (`/organisation/usage`, admins' only).
  */
@@ -36,6 +38,10 @@ export function OrganisationPage() {
   const me = useCurrentUser();
   const reloadMe = useReloadCurrentUser();
   const { data: org, error: loadError, reload } = useLoad(api.getOrganisation);
+  const { data: loadedBudget } = useLoad(api.getBudget);
+  // What a save answered with, until the next load.
+  const [savedBudget, setSavedBudget] = useState<Budget>();
+  const budget = savedBudget ?? loadedBudget;
   const [renaming, setRenaming] = useState(false);
 
   if (!org) {
@@ -53,7 +59,7 @@ export function OrganisationPage() {
       id: "members",
       label: "Members",
       count: org.members.length,
-      content: <MembersList org={org} me={me} onChanged={reload} />,
+      content: <MembersList org={org} me={me} budget={budget} onChanged={reload} onBudget={setSavedBudget} />,
     },
     // Only admins make and revoke links, so only they have the tab.
     ...(org.role === "admin"
@@ -70,6 +76,14 @@ export function OrganisationPage() {
           <ApprovalExpirySection key={`expiry-${org.id}`} org={org} onChanged={reload} />
           <RetentionSection key={`retention-${org.id}`} org={org} onChanged={reload} />
           <OrganisationLimitsSection key={`limits-${org.id}`} org={org} onChanged={reload} />
+          {budget && (
+            <BudgetSection
+              key={`budget-${org.id}`}
+              budget={budget}
+              admin={org.role === "admin"}
+              onChanged={setSavedBudget}
+            />
+          )}
           <LeaveSection
             org={org}
             onLeft={(after) => {
@@ -136,12 +150,18 @@ export function OrganisationPage() {
 function MembersList({
   org,
   me,
+  budget,
   onChanged,
+  onBudget,
 }: {
   org: Organisation;
   me: Me | null;
+  /** Each member's allowance and spend this month, where the viewer may see it. */
+  budget: Budget | undefined;
   onChanged: () => Promise<void>;
+  onBudget: (budget: Budget) => void;
 }) {
+  const spends = new Map(budget?.members.map((s) => [s.user.id, s]));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const admin = org.role === "admin";
@@ -177,7 +197,20 @@ function MembersList({
                 Joined {formatDate(m.joined_at)}
                 {m.invite_id && ` through ${linkName(m.invite_id)}`}
               </div>
+              {spends.get(m.user.id) && (
+                <div className="text-muted-foreground truncate text-xs" aria-label={`${m.user.name}'s spend`}>
+                  {spendText(spends.get(m.user.id)!)}
+                </div>
+              )}
             </div>
+            {admin && spends.get(m.user.id) && (
+              <AllowanceEditor
+                key={`${m.user.id}-${spends.get(m.user.id)!.allowance}`}
+                spend={spends.get(m.user.id)!}
+                name={m.user.name}
+                onChanged={onBudget}
+              />
+            )}
             {admin ? (
               <select
                 aria-label={`${m.user.name}'s role`}

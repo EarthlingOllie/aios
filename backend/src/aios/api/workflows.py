@@ -9,7 +9,16 @@ from pydantic import BaseModel, Field, FiniteFloat, model_serializer, model_vali
 from sqlalchemy import Row, delete, func, or_, select, update
 from sqlalchemy.orm import Session, aliased, object_session, selectinload
 
-from aios import approvals, audit, checkpoints, invocations, limits, run_service, used_by
+from aios import (
+    approvals,
+    audit,
+    checkpoints,
+    guards,
+    invocations,
+    limits,
+    run_service,
+    used_by,
+)
 from aios.api.agents.common import apply_guards, organisation_limits
 from aios.api.agents.runs import InvocationRecordOut, run_chats
 from aios.api.provenance import (
@@ -1342,8 +1351,10 @@ def create_workflow_run(
     background: BackgroundTasks,
 ):
     """Start a run of the workflow's current version. The run service runs it, node by node
-    (`aios.workflows.advance`)."""
+    (`aios.workflows.advance`). A 409 with why at the organisation's budget or the person's
+    allowance (`aios.budgets`)."""
     workflow = get_org_workflow(store, workflow_id)
+    guards.refuse_at_budget(store, org.id, user.id)
     run = new_workflow_run(
         store, org.id, workflow, body.input, input_json=body.input_json, created_by=user.id
     )

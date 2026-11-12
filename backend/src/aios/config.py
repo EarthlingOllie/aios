@@ -398,6 +398,9 @@ class Settings(BaseSettings):
     event_retention_days: int = Field(default=14, ge=1)
     event_trigger_rate_per_minute: int = Field(default=60, ge=1)
     chain_max_depth: int = Field(default=8, ge=1)
+    # Budgets (`aios.budgets`): admins are warned once a month when the organisation's spending
+    # passes this share of its monthly budget.
+    budget_warning_threshold: float = Field(default=0.8, gt=0, le=1)
     # A debounced trigger fires once with at most `event_batch_cap` of the events it gathered,
     # counting the rest as dropped.
     event_batch_cap: int = Field(default=500, ge=1)

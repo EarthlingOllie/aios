@@ -89,6 +89,14 @@ describe("describeNotification", () => {
     );
   });
 
+  it("opens a budget's warning and its being reached on the organisation's settings", () => {
+    for (const kind of ["budget_warning", "budget_reached"]) {
+      const view = describeNotification(notification({ kind, ref: { month: "2026-11" }, title: null }));
+      expect(view.to).toBe("/organisation/settings");
+      expect(view.heading).toMatch(/monthly budget/);
+    }
+  });
+
   it("still says what kind it is while its organisation's store can't be read", () => {
     const unread = notification({
       kind: "reply",

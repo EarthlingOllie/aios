@@ -1,7 +1,8 @@
 """What the run service does with each kind of item (`aios.models.WorkKind`).
 
-- **Invocation start**, a mention's: runs the handoff (`aios.handoff`), then enqueues the
-  agent's first turn, or starts the workflow's run and enqueues its first advance.
+- **Invocation start**, a mention's: refuses it if the budget, or its poster's allowance, was
+  reached since it was posted (`aios.budgets`); else runs the handoff (`aios.handoff`), then
+  enqueues the agent's first turn, or starts the workflow's run and enqueues its first advance.
 - **Agent turn**: starts the mentioned agent's run, if it hasn't one yet, and runs one turn of
   it under the run's turn lease, through the turn code every turn shares
   (`aios.api.agents.turn_stream`); a schedule's run was started when the schedule fired
@@ -40,6 +41,7 @@ from sqlalchemy.orm import Session
 
 from aios import (
     approvals,
+    guards,
     handback,
     handoff,
     invocations,
@@ -50,6 +52,7 @@ from aios import (
     sync,
     turn_lease,
     turns,
+    usage,
     workflows,
 )
 from aios.api import agents as agents_api
@@ -217,6 +220,21 @@ def _fail_unstarted(data_store_id: uuid.UUID, invocation_id: int, error: str) ->
         store.commit()
 
 
+def _refuse_at_budget(data_store_id: uuid.UUID, organisation_id: int, invocation_id: int) -> bool:
+    """Refuse a queued mention, before its handoff, if the budget or its poster's allowance
+    was reached since it was posted (`aios.budgets`); whether it was."""
+    with store_session(data_store_id) as store:
+        invocation = store.get(Invocation, invocation_id)
+        if invocation is None or invocation.status != InvocationStatus.queued:
+            return False
+        reason = guards.check_budget(store, organisation_id, usage.person_of(invocation))
+        if reason is None:
+            return False
+        invocations.refuse_unstarted(store, invocation_id, reason)
+        store.commit()
+        return True
+
+
 def _start_workflow_run(data_store_id: uuid.UUID, invocation_id: int) -> None:
     """Start the mentioned workflow's run with the brief and the message as its input, and
     enqueue its first advance; the run then finishes the invocation (`aios.invocations`).
@@ -277,6 +295,8 @@ async def start_invocation(item: Claimed) -> Outcome:
     store_id, invocation_id = item.data_store_id, item.payload["invocation_id"]
     found = await run_in_threadpool(_find, store_id, invocation_id)
     if found is None or found.status not in invocations.NOT_STARTED:
+        return Done()
+    if await run_in_threadpool(_refuse_at_budget, store_id, item.organisation_id, invocation_id):
         return Done()
     try:
         await handoff.brief(store_id, invocation_id)

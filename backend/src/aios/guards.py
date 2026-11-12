@@ -8,11 +8,15 @@
 3. **Rate.** The allowed mentions are counted per person per organisation in Redis
    (`mention_rate_per_person`, 60 a minute). Past it, the whole post is a 429 with when to try
    again, and nothing is written. Refused mentions don't count.
-4. **Budget.** Nothing yet (phase 3).
+4. **Budget.** The organisation at its monthly budget, or the poster at their allowance
+   (`aios.budgets`): each mention still allowed is posted refused, the reason on its card; no
+   model is called for it. The run service checks again before the handoff, for a mention
+   queued just as the budget was reached.
 5. **The handoff**, on the run service, for each allowed mention.
 
-Schedules and manual starts don't come through here: they skip the count and rate checks, and
-are capped and charged like any turn (`aios.limits`, `aios.usage`).
+Schedules and manual starts don't come through here: they skip the count and rate checks, are
+refused at the budget too (`check_budget`), and are capped and charged like any turn
+(`aios.limits`, `aios.usage`).
 """
 
 from collections.abc import Sequence
@@ -21,7 +25,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from aios import ratelimits
+from aios import budgets, ratelimits
 from aios.config import get_settings
 from aios.datastores.models import Agent, Workflow
 from aios.models import InvocableBy, Role, TriggerTargetKind
@@ -77,5 +81,13 @@ def check_rate(organisation_id: int, user_id: int, allowed: int) -> None:
         )
 
 
-def check_budget() -> None:
-    """4. A no-op until phase 3."""
+def check_budget(store: Session, organisation_id: int, person_id: int | None) -> str | None:
+    """4. Why new work charged to `person_id` (the chain's root person; None for a schedule's
+    or an event's with no person behind it) is refused at the budget, if it is."""
+    return budgets.refusal(store, organisation_id, person_id)
+
+
+def refuse_at_budget(store: Session, organisation_id: int, person_id: int) -> None:
+    """A 409 with why, for a person starting new work by hand at the budget (`check_budget`)."""
+    if reason := check_budget(store, organisation_id, person_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, reason)

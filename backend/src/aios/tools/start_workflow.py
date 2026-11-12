@@ -24,7 +24,8 @@ call, so the agent stays usable for its other workflows:
   a chain with no person behind it (a schedule's, an event's) was set up by an editor, as was
   the allowed list, so it isn't checked;
 - past `start_workflow_rate_per_agent` runs a minute for the agent in the organisation;
-- budgets: nothing yet (`aios.guards.check_budget`);
+- the organisation at its monthly budget, or the chain's root person at their allowance
+  (`aios.budgets`; the organisation's budget only, for a chain with no person behind it);
 - input that doesn't fit the workflow's input schema, with each error's path and message.
 
 **Results.** The call waits up to its wait time for the run to end, looking every
@@ -251,7 +252,9 @@ def start(
     _check_chain(store, calling, target)
     person = calling.requested_by if calling is not None else charge.person_id
     _check_invocable(organisation_id, person, target)
-    guards.check_budget()
+    charged_to = usage.person_of(calling) if calling is not None else charge.person_id
+    if reason := guards.check_budget(store, organisation_id, charged_to):
+        raise Refused(reason)
     text, value = (given, None) if isinstance(given, str) else (None, given)
     if text is None and value is None:
         raise Refused(CANT_START.format(name=target.name, reason="it was given no input."))

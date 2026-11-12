@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Double,
     Enum,
     ForeignKey,
     Identity,
@@ -111,6 +112,13 @@ class Organisation(Base):
     # Its caps on turns and workflow runs (`aios.limits`), where an admin overrode the
     # deployment's, by name; empty for all the defaults.
     limits: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    # Budgets (`aios.budgets`): its monthly budget in estimated pounds sterling, per calendar
+    # month in UTC (null: none, the default, and nothing is refused); and each role's default
+    # monthly allowance, by role (a role missing: no allowance). Only admins set them.
+    budget: Mapped[float | None] = mapped_column(Double)
+    role_allowances: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])
     members: Mapped[list["OrganisationMember"]] = relationship(
@@ -135,6 +143,7 @@ class Organisation(Base):
             "approval_expiry_days BETWEEN 1 AND 365",
             name="ck_organisations_approval_expiry_days",
         ),
+        CheckConstraint("budget >= 0", name="ck_organisations_budget"),
         # The sweep's: those whose grace period is over.
         Index(
             "ix_organisations_deletes_at",
@@ -209,6 +218,9 @@ class OrganisationMember(Base):
     # link's role.
     role: Mapped[Role] = mapped_column(ROLE_TYPE, server_default=Role.editor.value)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Their own monthly allowance in GBP, an admin's override of their role's (`aios.budgets`);
+    # null follows the role's.
+    allowance: Mapped[float | None] = mapped_column(Double)
 
     organisation: Mapped[Organisation] = relationship(back_populates="members")
     user: Mapped["User"] = relationship()
@@ -216,4 +228,5 @@ class OrganisationMember(Base):
     __table_args__ = (
         # For listing a person's organisations (`aios.organisations.memberships`).
         Index("ix_organisation_members_user_id", "user_id"),
+        CheckConstraint("allowance >= 0", name="ck_organisation_members_allowance"),
     )

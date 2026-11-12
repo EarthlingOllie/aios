@@ -65,8 +65,42 @@ Posting a message checks its mentions in this order (`aios.guards`):
 3. **Rate.** Allowed mentions per person per organisation, counted in Redis
    (`MENTION_RATE_PER_PERSON`, `60/minute`); past it, a 429 with `Retry-After` and when to try
    again, and nothing is written. Refused mentions don't count. The composer keeps the draft.
-4. **Budget.** Nothing yet.
+4. **Budget.** The organisation at its monthly budget, or the poster at their allowance (see
+   below): every mention still allowed is posted `refused`, the reason on its card, and calls no
+   model. The run service checks again before the handoff, for a mention queued as the budget
+   was reached.
 5. **The handoff**, on the run service.
 
-Schedules and manual starts skip the count and rate checks, and are capped and charged like any
-turn. Participants mention like anyone else.
+Schedules and manual starts skip the count and rate checks, are refused at the budget too, and
+are capped and charged like any turn. Participants mention like anyone else.
+
+## Budgets
+
+An organisation can set a ceiling on what it spends (`aios.budgets`), in the ledger's estimated
+pounds sterling per calendar month in UTC. None is set by default, and then nothing is refused.
+
+- **Budget and allowances.** Admins set a monthly budget and default monthly allowances per role
+  on the Settings tab (`PUT /api/o/{org}/organisation/budget`), and override a member's allowance
+  on the Members tab (`PUT .../organisation/members/{user_id}/allowance`; blank follows their
+  role's). Changes take effect at once and are audited (`settings.changed`,
+  `member.allowance_changed`). Every member reads the budget and this month's spend
+  (`GET .../organisation/budget`); each member's spend is admins' only, unless usage by person is
+  shown to everyone (as on Insights), and anyone else sees only their own.
+- **Totals.** `aios.spend_totals` keeps a running total per month for the organisation (person
+  0) and per person, added to in the same transaction as each priced ledger row, so checks read
+  two rows rather than summing the ledger. The routine worker reconciles them against the ledger
+  nightly, half an hour after `RETENTION_PRUNE_HOUR`, logging any drift
+  (`aios.budgets.reconcile_all`).
+- **Attribution.** Spending is charged to the person at the root of the chain of causes
+  (`Invocation.charged_to`, the ledger's person): whoever mentioned an agent or workflow, started
+  a run by hand, or posted the message that fired a chat-message trigger, through any
+  `start_workflow` calls and triggers that followed. A chain a schedule, or an event with no
+  person behind it, began counts only against the organisation's budget.
+- **Refusals.** At 100% of the budget, or of the root person's allowance, new work is refused
+  before any model call: a mention on its card, a schedule's or event trigger's firing on the
+  trigger (`refused`, with why, audited as `trigger.refused`), an agent's `start_workflow` call
+  as the tool's result, and a run started by hand as a 409. Runs already going, and resumes of
+  waiting runs, aren't new work and finish, even past the budget.
+- **Notifications.** Every admin is warned once a month when spending passes
+  `BUDGET_WARNING_THRESHOLD` (0.8) of the budget (`budget_warning`), and told once when it reaches
+  it (`budget_reached`); lowering the budget below this month's spend tells them at once.
