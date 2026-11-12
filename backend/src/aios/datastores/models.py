@@ -600,6 +600,12 @@ class Turn(StoreBase):
     tool_calls: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
     input_tokens: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
     output_tokens: Mapped[int] = mapped_column(Integer, server_default=sql_text("0"))
+    # What the run was told about tools left out of the turn (`aios.turns.note`).
+    notices: Mapped[list] = mapped_column(
+        JSONB,
+        server_default=sql_text("'[]'::jsonb"),
+        comment="What the run was told about tools left out of the turn, in order.",
+    )
 
     __table_args__ = (
         Index("ix_turns_agent_run_id_id", "agent_run_id", "id"),

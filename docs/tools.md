@@ -4,7 +4,8 @@ A **tool** is a capability from the tool library that an agent version may use, 
 settings: web search; search, the hybrid search over everything in the agent's organisation
 (see [Stores](stores.md#the-search-index)), with document search and run history search, the
 same search fixed to documents or to past runs; Remember and Forget, an agent's memory; Post
-message, posting into other chats; Run Python; and the data tools. `GET /api/tools`
+message, posting into other chats; Start workflow; connector tools, acting in connected systems;
+Run Python; and the data tools. `GET /api/tools`
 (`aios.api.tools`) lists the library, with each tool's settings schema. See
 [Agents and skills](agents-and-skills.md) for how agents are given them.
 
@@ -99,6 +100,42 @@ model in the run.
 
 A run an agent started says so on its page, naming the agent and the run that started it. See
 `aios.tools.start_workflow`.
+
+## Connector tools
+
+**Connector tools** (`connector`) give an agent a connector's actions (see
+[Stores](stores.md#sources) for connectors): its provider's tools, served over MCP's streamable
+HTTP transport (`aios.mcp_client`, on the `mcp` library, pinned exactly). In the agent editor
+each of the organisation's connectors is a group of the tools it offers now
+(`GET /api/connectors/{id}/tools`, a 409 while it needs reconnecting); the version pins each
+connector (by id and provider) and the tool names picked, so a provider adding tools changes
+nothing. See `aios.tools.connector`.
+
+- **Checked** when a version is saved, restored or run (the tool's organisation-aware check):
+  another organisation's connector is refused, and one since removed too, so a version that
+  used it refuses to start: "the Test connector was removed". New settings, and a restored
+  version's, are also checked against what the connector offers now: a tool name it doesn't
+  offer is refused.
+- **Each turn** lists the connector's tools (cached per connector for
+  `CONNECTOR_TOOL_CACHE_SECONDS`, 5 minutes by default) and gives the model only the pinned
+  ones, named `<provider>__<tool>`. A pinned tool that vanished upstream is left out, logged,
+  and the turn still runs. A connector that's paused, being removed, needs reconnecting or whose
+  provider is unavailable leaves all its tools out. Either way the model is told (after its
+  instructions) and the turn notes it (`turns.notices`, shown with the run's turns).
+- **A call** goes to the connector's MCP server with its credential, through `aios.outbound`'s
+  allowed hosts, after checking the connector again, so stopping it stops its tools at once.
+  The result is cut to `CONNECTOR_TOOL_RESULT_CAP_BYTES` (64 KiB), saying so; it comes from
+  outside, so Jev checks it inline and it's wrapped as untrusted, and a flagged or unchecked
+  result reaches the agent as an error. A tool's own error reaches it as an error too.
+- **Audited.** A call to a tool with side effects (any the provider doesn't mark read-only) is
+  in the audit log as `connector.tool_called`: the agent and run, the connector, the tool, its
+  target (the channel or repository it names), the turn, the person behind the invocation, and
+  whether it succeeded, never the content.
+
+Participants cause these actions by mentioning the agent; the agent's **invocable by** still
+limits who can start it. The connector's credential never reaches the model, the API, logs,
+traces or the store. The test provider's tools (`post_message`, `read_channel`) are served by a
+fake MCP server in the process (`aios.testing.fake_mcp`), the tests' seam for the protocol.
 
 ## Web search
 

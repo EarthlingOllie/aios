@@ -246,6 +246,7 @@ async def _run_agent(
         Resume,
         _begin_turn,
         _mark_resumed,
+        _note_turn,
         _record_turn,
         _resume_command,
         _start_turn,
@@ -315,6 +316,8 @@ async def _run_agent(
             # (`aios.usage`).
             charge = None
             if turn_id is not None:
+                if agent.notices:
+                    await asyncio.to_thread(_note_turn, store_id, turn_id, list(agent.notices))
                 charge = await asyncio.to_thread(usage.for_turn, store_id, turn_id)
             limit = usage.recursion_limit(charge)
             invoke_config = config if limit is None else {**config, "recursion_limit": limit}

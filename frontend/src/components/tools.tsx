@@ -3,8 +3,18 @@ import { useEffect, useState } from "react";
 import { Field } from "@/components/crud";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { api, type AgentTool, type SchemaProperty, type ToolInfo, type WorkflowSummary } from "@/lib/api";
-import { workflowOptions } from "@/lib/tools";
+import {
+  api,
+  ApiError,
+  type AgentTool,
+  type Connector,
+  type ConnectorPin,
+  type ConnectorTool,
+  type SchemaProperty,
+  type ToolInfo,
+  type WorkflowSummary,
+} from "@/lib/api";
+import { connectorToolOptions, pinConnectorTools, workflowOptions } from "@/lib/tools";
 
 type Config = Record<string, unknown>;
 
@@ -40,6 +50,15 @@ export function ToolSettingsFields({
               key={name}
               prop={prop}
               value={Array.isArray(current) ? (current as number[]) : []}
+              onChange={set}
+            />
+          );
+        } else if (prop["x-picker"] === "connectors") {
+          return (
+            <ConnectorToolPicker
+              key={name}
+              prop={prop}
+              value={Array.isArray(current) ? (current as ConnectorPin[]) : []}
               onChange={set}
             />
           );
@@ -153,7 +172,137 @@ function WorkflowPicker({
   );
 }
 
+/** Picks connectors' tools by name (the `connector` tool's settings): each of the
+ * organisation's connectors is a group of the tools it offers now, and connectors or tools picked
+ * since removed stay listed, saying so, so they can be removed. */
+function ConnectorToolPicker({
+  prop,
+  value,
+  onChange,
+}: {
+  prop: SchemaProperty;
+  value: ConnectorPin[];
+  onChange: (value: ConnectorPin[]) => void;
+}) {
+  const [connectors, setConnectors] = useState<Connector[]>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    api
+      .listConnectors()
+      .then((found) => live && setConnectors(found))
+      .catch(() => live && setError("Couldn't load the connectors."));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const shown = (connectors ?? []).filter((c) => c.status !== "removing");
+  const known = new Set(shown.map((c) => c.id));
+  const removed = connectors ? value.filter((p) => !known.has(p.connector_id)) : [];
+  return (
+    <fieldset className="flex flex-col gap-3" data-testid="connector-tools">
+      <legend className="text-sm font-medium">{prop.title ?? "Connectors"}</legend>
+      {prop.description && <p className="text-muted-foreground text-xs">{prop.description}</p>}
+      {error && <p className="text-destructive text-xs">{error}</p>}
+      {connectors && shown.length === 0 && removed.length === 0 && (
+        <p className="text-muted-foreground text-xs">
+          There are no connectors yet: an admin connects them on the Sources tab.
+        </p>
+      )}
+      {shown.map((connector) => (
+        <ConnectorGroup
+          key={connector.id}
+          connector={connector}
+          pinned={value.find((p) => p.connector_id === connector.id)?.tools ?? []}
+          onChange={(tools) => onChange(pinConnectorTools(value, connector, tools))}
+        />
+      ))}
+      {removed.map((pin) => (
+        <div key={pin.connector_id} className="flex flex-col gap-1" data-testid="connector-group">
+          <span className="flex items-center gap-2 text-sm font-medium">
+            {pin.provider} connector <Badge variant="secondary">removed</Badge>
+          </span>
+          <button
+            type="button"
+            className="text-muted-foreground self-start text-xs underline"
+            onClick={() =>
+              onChange(pinConnectorTools(value, { id: pin.connector_id, provider: pin.provider }, []))
+            }
+          >
+            Remove its tools
+          </button>
+        </div>
+      ))}
+    </fieldset>
+  );
+}
+
+/** One connector's tools, as checkboxes. */
+function ConnectorGroup({
+  connector,
+  pinned,
+  onChange,
+}: {
+  connector: Connector;
+  pinned: string[];
+  onChange: (tools: string[]) => void;
+}) {
+  const [offered, setOffered] = useState<ConnectorTool[]>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    api
+      .connectorTools(connector.id)
+      .then((found) => live && setOffered(found))
+      .catch(
+        (e) =>
+          live &&
+          setError(e instanceof ApiError ? e.message : "Couldn't load this connector's tools."),
+      );
+    return () => {
+      live = false;
+    };
+  }, [connector.id]);
+  const options = connectorToolOptions(error ? undefined : offered, pinned);
+  const toggle = (name: string, on: boolean) =>
+    onChange(on ? [...pinned.filter((n) => n !== name), name] : pinned.filter((n) => n !== name));
+  return (
+    <div className="flex flex-col gap-1" data-testid="connector-group">
+      <span className="text-sm font-medium">{connector.name}</span>
+      {error && <p className="text-destructive text-xs">{error}</p>}
+      {!error && !offered && <p className="text-muted-foreground text-xs">Loading its tools…</p>}
+      {offered && !error && options.length === 0 && (
+        <p className="text-muted-foreground text-xs">It offers no tools.</p>
+      )}
+      {options.map((option) => (
+        <label key={option.name} className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={option.checked}
+            onChange={(e) => toggle(option.name, e.target.checked)}
+          />
+          <span className="flex flex-col">
+            <span className="flex items-center gap-2">
+              <span className="font-mono text-xs">{option.name}</span>
+              {option.readOnly && <Badge variant="outline">read-only</Badge>}
+              {option.gone && <Badge variant="secondary">no longer offered</Badge>}
+            </span>
+            {option.description && (
+              <span className="text-muted-foreground text-xs">{option.description}</span>
+            )}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function formatSetting(value: unknown): string | undefined {
+  if (Array.isArray(value) && value.some((v) => v && typeof v === "object" && "tools" in v)) {
+    const pins = value as ConnectorPin[];
+    return pins.map((p) => `${p.provider}: ${p.tools.join(", ")}`).join("; ") || undefined;
+  }
   if (Array.isArray(value)) return value.length ? value.join(", ") : undefined;
   if (value === null || value === undefined || value === "") return undefined;
   return String(value);

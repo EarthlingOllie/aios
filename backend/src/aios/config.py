@@ -341,6 +341,11 @@ class Settings(BaseSettings):
         "github": ["github.com", "api.github.com"],
         "test": ["test.invalid"],
     }
+    # Connector tools (`aios.tools.connector`): a connector's tool listing is cached per
+    # connector for `connector_tool_cache_seconds` (0: listed afresh each time), and a tool's
+    # result is cut to `connector_tool_result_cap_bytes`.
+    connector_tool_cache_seconds: float = Field(default=5 * 60, ge=0)
+    connector_tool_result_cap_bytes: int = Field(default=64 * 1024, ge=1)
     slack_client_id: str = ""
     slack_client_secret: SecretStr = SecretStr("")
     google_client_id: str = ""

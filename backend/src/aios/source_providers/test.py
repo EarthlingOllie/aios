@@ -15,6 +15,11 @@ fresh token. Each sync makes the calls its feeds list (`calls`) through `aios.ou
 reach only the provider's allowed hosts (served in-process, never sent); a feed notes the tokens it
 was called with (`tokens`), and revoked tokens are noted in `REVOKED`. A removed connector's
 message items are kept as one Markdown document per feed (channel) per month.
+
+**Its tools** are served by a fake MCP server in the process (`MCP`, `aios.testing.fake_mcp`), at
+`https://test.invalid/mcp`: `post_message` posts a message to a feed (a side effect), and
+`read_channel` reads one (read-only). Tests change them (add, remove, make one fail);
+`reset_tools` puts them back as they start.
 """
 
 import hashlib
@@ -40,8 +45,10 @@ from aios.source_providers import (
     Provider,
     ScopeOption,
     SourceView,
+    Tools,
     _test_unavailable,
 )
+from aios.testing.fake_mcp import FakeServer, FakeTool
 
 
 class FeedBroken(Exception):
@@ -329,6 +336,57 @@ def _message_lines(row: SyncedItem, quote: str) -> list[str]:
     return [quote + head, quote.rstrip(), *body, ""]
 
 
+# --- Its tools ----------------------------------------------------------------------------------
+
+MCP = FakeServer()
+CHANNEL = {"type": "string", "description": "The channel (feed): its name."}
+
+
+def _post(args: dict) -> str:
+    channel = FEEDS.get(args.get("channel", ""))
+    if channel is None:
+        raise ValueError(f"There's no channel {args.get('channel')!r}.")
+    item = channel.message(f"posted-{len(channel.log)}", str(args.get("text", "")))
+    return f"Posted {item.external_id} to {channel.name}."
+
+
+def _read(args: dict) -> str:
+    channel = FEEDS.get(args.get("channel", ""))
+    if channel is None:
+        raise ValueError(f"There's no channel {args.get('channel')!r}.")
+    return "\n".join(e.content.text or "" for e in channel.items.values())
+
+
+def reset_tools() -> None:
+    """The test provider's tools as they start: `post_message` and `read_channel`."""
+    MCP.tools.clear()
+    MCP.listings, MCP.calls[:], MCP.tokens[:] = 0, [], []
+    MCP.add(
+        FakeTool(
+            "post_message",
+            "Post a message to a channel.",
+            {
+                "type": "object",
+                "properties": {"channel": CHANNEL, "text": {"type": "string"}},
+                "required": ["channel", "text"],
+            },
+            reply=_post,
+        )
+    )
+    MCP.add(
+        FakeTool(
+            "read_channel",
+            "Read a channel's messages.",
+            {"type": "object", "properties": {"channel": CHANNEL}, "required": ["channel"]},
+            reply=_read,
+            read_only=True,
+        )
+    )
+
+
+reset_tools()
+
+
 PROVIDER = Provider(
     TEST,
     "Test",
@@ -338,4 +396,5 @@ PROVIDER = Provider(
     exchange=_exchange,
     revoke=_revoke,
     keep_groups=_keep_groups,
+    tools=Tools("https://test.invalid/mcp", transport=MCP.transport),
 )

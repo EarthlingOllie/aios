@@ -70,6 +70,13 @@ def begin(
     return turn.id
 
 
+def note(store: Session, turn_id: int, notices: list[str]) -> None:
+    """Note on the turn what its run was told about tools left out of it (`aios.tools`'
+    notices: a connector that's unavailable, a tool that vanished upstream)."""
+    if notices:
+        store.execute(update(Turn).where(Turn.id == turn_id).values(notices=list(notices)))
+
+
 def count(
     store: Session,
     turn_id: int,

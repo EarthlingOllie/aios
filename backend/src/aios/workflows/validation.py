@@ -2,6 +2,7 @@
 starts that nothing in it is archived (`archived_in_graph`), and loaded to run, with the agent
 versions it pins checked that they still can (`load_graph`)."""
 
+import dataclasses
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from aios import tracing
 from aios.datastores.models import Agent, AgentVersion, Workflow, WorkflowNode, WorkflowVersion
 from aios.models import Role, WorkflowNodeKind
 from aios.runner import version_tools
-from aios.tools import AgentTool, ToolError, ToolOrganisation
+from aios.tools import AgentTool, ToolError, ToolOrganisation, with_notices
 
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -86,6 +87,9 @@ class AgentNode:
     tools: list[AgentTool]
     # The version's part of its runs' trace metadata (see `tracing.agent_version_metadata`).
     metadata: dict[str, Any]
+    # What building its tools left out, and why (`ToolOrganisation.notices`): its model is told
+    # (in `instructions`), and its turns note them (`aios.turns.note`).
+    notices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -255,7 +259,8 @@ def _build_graph(
         agent = pinned.agent
         try:
             try:
-                tools = version_tools(pinned, org)
+                built_in = dataclasses.replace(org, notices=[])
+                tools = version_tools(pinned, built_in)
             except ToolError as exc:
                 raise RunError(f"Agent {agent.name} v{pinned.version} can't run: {exc}") from exc
         except RunError as exc:
@@ -269,9 +274,10 @@ def _build_graph(
             agent_version_id=pinned.id,
             agent_version=pinned.version,
             model=pinned.model,
-            instructions=pinned.instructions,
+            instructions=with_notices(pinned.instructions, built_in.notices),
             tools=tools,
             metadata=tracing.agent_version_metadata(pinned),
+            notices=tuple(built_in.notices),
         )
         nodes.append(Node(node.key, node.kind, agent=agent_node, **declared))
     sources: dict[str, list[str]] = {node.key: [] for node in nodes}

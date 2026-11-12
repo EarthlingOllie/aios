@@ -132,6 +132,7 @@ describe("turnCounters", () => {
     tool_calls: 2,
     input_tokens: 1000,
     output_tokens: 30,
+    notices: [],
   };
 
   it("says how long it took, its model calls, tool calls and tokens", () => {

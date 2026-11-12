@@ -9,6 +9,7 @@ To add a tool, write a module that calls `register(ToolSpec(...))` and import it
 """
 
 from aios.tools import (  # noqa: F401  (registers the tools)
+    connector,
     data,
     history_search,
     hybrid_search,
@@ -33,6 +34,7 @@ from aios.tools.registry import (
     stored_settings,
     unusable_tools,
     validate_tool,
+    with_notices,
 )
 
 __all__ = [
@@ -47,4 +49,5 @@ __all__ = [
     "stored_settings",
     "unusable_tools",
     "validate_tool",
+    "with_notices",
 ]

@@ -8,15 +8,17 @@ Tools can be served over MCP's streamable HTTP transport. A fake MCP connector s
 
 **Blocked by:** [01: Sources foundation: organisation-aware tool checks, Uploads source](01-sources-foundation.md), [04: Connectors: credentials, allowlist, choosing what syncs, removal](04-connectors.md), [Phase 1 · 07: Roles and permissions on every route](../phase-1-foundation/07-roles-and-permissions.md), [Phase 1 · 15: Jev: classify untrusted content](../phase-1-foundation/15-jev-classification.md), [Phase 1 · 11: Usage ledger in GBP, caps, mention guards](../phase-1-foundation/11-usage-caps-and-mention-guards.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Saving, restoring or running a version with another organisation's connector, or a tool name the connector doesn't offer, is refused.
-- [ ] A turn lists and uses only the pinned tools; a tool that vanished upstream is omitted, the turn still runs, and the run's events say so.
-- [ ] A connector that is paused, being removed or needs reconnecting leaves all its tools out, and the model is told it's unavailable.
-- [ ] A result over the cap is cut and says so. Every result, over MCP or native, is classified by Jev inline and wrapped as untrusted; a flagged result, or one Jev can't check, reaches the agent as an error.
-- [ ] A test-provider action with side effects writes an audit entry with the agent, target, turn and the person who caused the invocation, without the content.
-- [ ] Tool listing and calls work end to end over MCP through the fake MCP server, and the listing cache honours its setting.
-- [ ] Participants can cause these actions through agents; **invocable by** still limits who can start the agent.
-- [ ] The MCP client library is pinned exactly.
-- [ ] The credentials adversarial test passes: after syncs and tool listings, no secret appears in any API response, captured log, trace, store column or model-facing listing.
-- [ ] Agent versions that used a removed connector refuse to start with "the <provider> connector was removed".
+- [x] Saving, restoring or running a version with another organisation's connector, or a tool name the connector doesn't offer, is refused.
+- [x] A turn lists and uses only the pinned tools; a tool that vanished upstream is omitted, the turn still runs, and the run's events say so.
+- [x] A connector that is paused, being removed or needs reconnecting leaves all its tools out, and the model is told it's unavailable.
+- [x] A result over the cap is cut and says so. Every result, over MCP or native, is classified by Jev inline and wrapped as untrusted; a flagged result, or one Jev can't check, reaches the agent as an error.
+- [x] A test-provider action with side effects writes an audit entry with the agent, target, turn and the person who caused the invocation, without the content.
+- [x] Tool listing and calls work end to end over MCP through the fake MCP server, and the listing cache honours its setting.
+- [x] Participants can cause these actions through agents; **invocable by** still limits who can start the agent.
+- [x] The MCP client library is pinned exactly.
+- [x] The credentials adversarial test passes: after syncs and tool listings, no secret appears in any API response, captured log, trace, store column or model-facing listing.
+- [x] Agent versions that used a removed connector refuse to start with "the <provider> connector was removed".
+
+**Notes:** Settings are `connectors`, a list of pins (connector id, provider, tool names), because a version holds each tool key once: one `connector` tool covers every connector an agent uses, each a group in the picker. Tool names offered are checked when settings are new and when a version is restored; a run leaves out what vanished instead of refusing (a removed connector, or one not the organisation's, refuses everywhere). "The run's events" are the turn's notices (`turns.notices`, store revision 0033, shown with the run's turns). The MCP client is `mcp==1.30.0`. Per-tool target restrictions (channels, repositories) come with the providers' own tools (Slack, GitHub).

@@ -111,6 +111,9 @@ class TurnOut(BaseModel):
     tool_calls: int
     input_tokens: int
     output_tokens: int
+    # What the run was told about tools left out of the turn (a connector's that's
+    # unavailable, a tool that vanished upstream).
+    notices: list[str]
 
 
 def run_invocation(store: Session, run_id: int) -> InvocationRecordOut | None:
@@ -143,6 +146,7 @@ def run_turns(store: Session, run_id: int) -> list[TurnOut]:
             tool_calls=turn.tool_calls,
             input_tokens=turn.input_tokens,
             output_tokens=turn.output_tokens,
+            notices=turn.notices or [],
         )
         for turn, version in rows
     ]
