@@ -49,7 +49,8 @@ export function InsightsPage() {
   // Today's range, fixed while the page is open: panels aren't re-read as the clock moves on.
   const range = useMemo(() => rangeDays(view.range), [view.range]);
   const setView = (next: Partial<InsightsView>) =>
-    setParams(paramsOf({ ...view, ...next }), { replace: true });
+    // Functional form: two changes before a re-render must both land, not the later one alone.
+    setParams((prev) => paramsOf({ ...viewOf(prev), ...next }), { replace: true });
 
   return (
     <div className="h-full overflow-y-auto">
