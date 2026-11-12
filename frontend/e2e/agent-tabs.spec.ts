@@ -200,7 +200,7 @@ test("the Schedule tab shows the agent's schedules", async ({ page }) => {
   await tab(page, "Schedule").click();
   await expect(page).toHaveURL(/\/schedule$/);
   await expect(
-    panel(page).getByText("No schedules. Add one to run this agent automatically."),
+    panel(page).getByText("No schedules or triggers. Add one to run this agent automatically."),
   ).toBeVisible();
   await expect(page.getByText("You are Researcher.")).toHaveCount(0);
 });

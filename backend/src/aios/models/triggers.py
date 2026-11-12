@@ -19,6 +19,17 @@ from aios.models.base import Base
 
 class TriggerKind(enum.StrEnum):
     schedule = "schedule"
+    # Fires when something happens in the store (`aios.events`).
+    event = "event"
+
+
+class EventType(enum.StrEnum):
+    """What happened in the store, as its outbox records it (`aios.events`)."""
+
+    document_ingested = "document_ingested"
+    table_written = "table_written"
+    schema_change_applied = "schema_change_applied"
+    chat_message = "chat_message"
 
 
 class TriggerTargetKind(enum.StrEnum):
@@ -30,6 +41,9 @@ class TriggerStatus(enum.StrEnum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+    # An event trigger's firing the loop rules refused (`aios.events`), and one past its rate.
+    refused = "refused"
+    rate_limited = "rate_limited"
 
 
 class ScheduleDue(Base):

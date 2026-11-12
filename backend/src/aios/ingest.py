@@ -14,11 +14,12 @@ from io import BytesIO
 from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
-from aios import verdicts
+from aios import outbox, verdicts
 from aios.config import get_settings
 from aios.datastores import DataStoreBusy, files
 from aios.datastores.models import Chunk, Document, DocumentStatus
 from aios.jev import JevUnavailable, Verdict
+from aios.models import EventType
 from aios.search_index import index_chunks
 
 # Deliveries before giving up; a doc that crashes the worker would otherwise be redelivered forever.
@@ -116,7 +117,7 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
             .values(verdict=Verdict.awaiting_check)
         )
         index_chunks(db, document_id, Verdict.awaiting_check)
-        set_status(db, document_id, DocumentStatus.ready, None)
+        _ready(db, document_id)
     except DataStoreBusy:
         raise  # Left processing, for the task's retry to claim again (`aios.worker`).
     except files.FilesUnavailable as exc:
@@ -142,6 +143,29 @@ def ingest_document(db: Session, document_id: int, *, last_try: bool = True) -> 
         # Ingested, but Jev couldn't check it: the task retries the check
         # (`aios.worker.check_document_task`), and the sweep checks it should that give up.
         raise JevUnavailable(f"Jev couldn't check document {document_id}")
+
+
+def _ready(db: Session, document_id: int) -> None:
+    """Mark the document ready, with its document ingested event (`aios.outbox`), in one
+    transaction, and commit."""
+    doc = db.execute(
+        update(Document)
+        .where(Document.id == document_id)
+        .values(status=DocumentStatus.ready, error=None)
+        .returning(Document.filename, Document.content_type, Document.source_id)
+    ).one_or_none()
+    if doc is not None:
+        outbox.emit(
+            db,
+            EventType.document_ingested,
+            {
+                "document_id": document_id,
+                "name": doc.filename,
+                "content_type": doc.content_type,
+                "source_id": doc.source_id,
+            },
+        )
+    db.commit()
 
 
 def _fail(db: Session, document_id: int, exc: BaseException) -> bool:

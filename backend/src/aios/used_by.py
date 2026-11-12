@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import ColumnElement, Select, false, literal, select
 from sqlalchemy.orm import Session
 
-from aios import cron
+from aios import cron, outbox
 from aios.datastores import ownership
 from aios.datastores.models import (
     Agent,
@@ -42,9 +42,11 @@ from aios.datastores.models import (
 class UsedByTrigger(BaseModel):
     id: int
     enabled: bool
-    cron: str
+    # Schedules: the cron expression and timezone; null for an event trigger.
+    cron: str | None
+    # When it fires, in plain English: the schedule, or the event.
     description: str
-    timezone: str
+    timezone: str | None
     next_run_at: datetime | None
 
 
@@ -101,7 +103,9 @@ def _trigger_out(trigger: Trigger) -> UsedByTrigger:
         id=trigger.id,
         enabled=trigger.enabled,
         cron=trigger.cron,
-        description=cron.describe(trigger.cron),
+        description=cron.describe(trigger.cron)
+        if trigger.cron
+        else outbox.DESCRIPTIONS[trigger.event_type],
         timezone=trigger.timezone,
         next_run_at=trigger.next_run_at,
     )

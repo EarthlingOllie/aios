@@ -1,8 +1,16 @@
 """Triggers: what starts agents and workflows without a user in the loop.
 
-Schedules are the only kind so far. Each targets one agent (a new run of its current version,
-starting with the trigger's `input` as the user's message) or one workflow (a new run of its
-current version, with `input` as the run's input). `aios.scheduler` fires them.
+Each targets one agent (a new run of its current version) or one workflow (a new run of its
+current version). Two kinds:
+
+- **Schedules** start the agent's run with the trigger's `input` as the user's message, or the
+  workflow's with `input` as its input. `aios.scheduler` fires them.
+- **Event triggers** fire on an event in the store's outbox of their `event_type`, that passes
+  their `filter` (`aios.outbox`). The agent's run gets `input` (if any) and the event; the
+  workflow's input is `input` as a template rendered with the event, or the event as JSON.
+  `aios.dispatcher` fires them, under the loop rules; a firing they refuse is the trigger's
+  last outcome (`refused`, or `rate_limited`). So far only document ingested triggers can be
+  made (`outbox.TRIGGERABLE`).
 
 A trigger is its organisation's, like its target, and is in its store beside it: every member
 sees, changes and deletes every one, and each says which member made it and which last changed
@@ -19,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from aios import audit, cron, schedules
+from aios import audit, cron, outbox, schedules
 from aios.api.provenance import Provenance, UserOut, built_by, people, provenance
 from aios.api.skills import lock_live
 from aios.auth import CurrentOrganisation, CurrentStore, CurrentUser
@@ -27,6 +35,7 @@ from aios.datastores import store_id_of
 from aios.datastores.models import Agent, Trigger, Workflow, WorkflowRun
 from aios.db import DB, DbId
 from aios.models import (
+    EventType,
     TriggerKind,
     TriggerStatus,
     TriggerTargetKind,
@@ -40,14 +49,22 @@ PREVIEW_RUNS = 5
 
 
 class TriggerIn(BaseModel):
-    kind: Literal[TriggerKind.schedule] = TriggerKind.schedule
+    kind: Literal[TriggerKind.schedule, TriggerKind.event] = TriggerKind.schedule
     target_kind: TriggerTargetKind
     target_id: DbId
     enabled: bool = True
-    # The message an agent run starts with, or a workflow run's input; required.
+    # Schedules: the message an agent run starts with, or a workflow run's input; required.
+    # Event triggers: what an agent's run is told besides the event, or the template a
+    # workflow run's input is rendered from (`aios.dispatcher.workflow_input`); optional.
     input: str = Field("", max_length=100_000)
-    cron: str = Field(max_length=255)
+    # Schedules only.
+    cron: str | None = Field(None, max_length=255)
     timezone: str = Field("UTC", max_length=64)
+    # Event triggers only: the event type, the filter (by `outbox.FILTERS`' fields), and
+    # whether it may fire on events its own target caused.
+    event_type: EventType | None = None
+    filter: dict = Field(default_factory=dict)
+    fire_on_own_events: bool = False
 
 
 class TriggerOut(Provenance):
@@ -58,13 +75,22 @@ class TriggerOut(Provenance):
     target_name: str
     enabled: bool
     input: str
-    cron: str
-    # The cron expression in plain English, e.g. "At 09:00 on Monday".
+    # Schedules: the cron expression; else null. When it fires, in plain English: "At 09:00 on
+    # Monday", or "When a document is ingested".
+    cron: str | None
     description: str
-    timezone: str
+    timezone: str | None
+    # Event triggers: what fires them; else null, empty and false.
+    event_type: EventType | None
+    filter: dict
+    fire_on_own_events: bool
+    # Why the platform turned it off, if it did.
+    disabled_reason: str | None
     next_run_at: datetime | None
     last_fired_at: datetime | None
-    # For a workflow, its last run's: a worker runs it after the schedule has fired.
+    # For a workflow, its last run's: a worker runs it after the trigger has fired. An event
+    # trigger's firing the loop rules refused is `refused` (`rate_limited` past its rate), with
+    # why as the error.
     last_status: TriggerStatus | None
     last_error: str | None
     # The agent run (agents) or workflow run (workflows) it last started.
@@ -169,8 +195,14 @@ def trigger_out(
         enabled=trigger.enabled,
         input=trigger.input,
         cron=trigger.cron,
-        description=cron.describe(trigger.cron),
+        description=cron.describe(trigger.cron)
+        if trigger.cron
+        else outbox.DESCRIPTIONS[trigger.event_type],
         timezone=trigger.timezone,
+        event_type=trigger.event_type,
+        filter=trigger.filter or {},
+        fire_on_own_events=trigger.fire_on_own_events,
+        disabled_reason=trigger.disabled_reason,
         next_run_at=trigger.next_run_at,
         last_fired_at=trigger.last_fired_at,
         last_status=last_status,
@@ -210,8 +242,15 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> No
     """Set the trigger from the request (made by `user_id`), checked, and schedule its next run.
     Its target must be one of the organisation's, in its store, `store`, whose share lock on the
     target is held until the caller ends `store`'s transaction."""
-    expr, tz = checked_schedule(body.cron, body.timezone)
-    if not body.input.strip():
+    if body.kind == TriggerKind.event:
+        expr = tz = None
+        event_type, event_filter = checked_event(body)
+    else:
+        if body.cron is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A schedule needs a cron.")
+        expr, tz = checked_schedule(body.cron, body.timezone)
+        event_type, event_filter = None, {}
+    if body.kind == TriggerKind.schedule and not body.input.strip():
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "A schedule for an agent needs a message to start its run with."
@@ -242,8 +281,32 @@ def apply(store: Session, user_id: int, trigger: Trigger, body: TriggerIn) -> No
     trigger.input = body.input
     trigger.cron = expr
     trigger.timezone = tz
+    trigger.event_type = event_type
+    trigger.filter = event_filter
+    trigger.fire_on_own_events = body.fire_on_own_events and event_type is not None
+    trigger.disabled_reason = None
     trigger.updated_by = user_id
-    trigger.next_run_at = cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled else None
+    trigger.next_run_at = (
+        cron.next_run(expr, tz, datetime.now(UTC)) if body.enabled and expr is not None else None
+    )
+
+
+def checked_event(body: TriggerIn) -> tuple[EventType, dict]:
+    """An event trigger's event type and filter (normalised); a 422 if there's no event type, or
+    one triggers can't be made for yet, or the filter has an unknown field or a bad value."""
+    if body.event_type is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "An event trigger needs an event type."
+        )
+    if body.event_type not in outbox.TRIGGERABLE:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Triggers can't fire on {body.event_type.value} events yet.",
+        )
+    try:
+        return body.event_type, outbox.checked_filter(body.event_type, body.filter)
+    except outbox.BadFilter as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
 
 def cancel_unstarted_firing(store: Session, *where) -> None:
@@ -298,7 +361,16 @@ def reindex(store: Session, triggers: Sequence[Trigger]) -> None:
 
 
 def _described(trigger: Trigger) -> dict:
-    """What an audit entry says of a schedule: what it starts, when, and whether it's on."""
+    """What an audit entry says of a trigger: what it starts, when, and whether it's on."""
+    if trigger.kind == TriggerKind.event:
+        return {
+            "target_kind": trigger.target_kind.value,
+            "target_id": trigger.agent_id or trigger.workflow_id,
+            "event_type": trigger.event_type.value,
+            "filter": trigger.filter,
+            "fire_on_own_events": trigger.fire_on_own_events,
+            "enabled": trigger.enabled,
+        }
     return {
         "target_kind": trigger.target_kind.value,
         "target_id": trigger.agent_id or trigger.workflow_id,
@@ -306,6 +378,11 @@ def _described(trigger: Trigger) -> dict:
         "timezone": trigger.timezone,
         "enabled": trigger.enabled,
     }
+
+
+def _audited(trigger: Trigger) -> str:
+    """What the audit log calls the trigger: a schedule, or an event trigger."""
+    return "schedule" if trigger.kind == TriggerKind.schedule else "trigger"
 
 
 def unindex(store: Session, trigger_ids: Sequence[int]) -> None:
@@ -353,7 +430,7 @@ def create_trigger(
     trigger = Trigger(**built_by(user.id))
     apply(store, user.id, trigger, body)
     store.add(trigger)
-    audit.configured(store, user.id, "schedule", trigger, "created", **_described(trigger))
+    audit.configured(store, user.id, _audited(trigger), trigger, "created", **_described(trigger))
     store.commit()
     reindex(store, [trigger])
     return trigger_out(db, store, org.id, load(store, trigger.id))
@@ -396,7 +473,7 @@ def update_trigger(
     apply(store, user.id, trigger, body)
     store.flush()
     cancel_unstarted_firing(store, Trigger.id == trigger.id)
-    audit.configured(store, user.id, "schedule", trigger, "updated", **_described(trigger))
+    audit.configured(store, user.id, _audited(trigger), trigger, "updated", **_described(trigger))
     store.commit()
     reindex(store, [trigger])
     return trigger_out(db, store, org.id, load(store, trigger.id))
@@ -413,7 +490,7 @@ def delete_trigger(
     """Delete the trigger. The runs it started stay, no longer naming it (their foreign key
     clears it, leaving their `updated_at`, which listings sort by)."""
     trigger = get_org_trigger(store, trigger_id, lock=True)
-    audit.configured(store, user.id, "schedule", trigger, "deleted", **_described(trigger))
+    audit.configured(store, user.id, _audited(trigger), trigger, "deleted", **_described(trigger))
     store.delete(trigger)
     store.commit()
     unindex(store, [trigger_id])

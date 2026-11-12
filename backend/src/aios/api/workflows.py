@@ -30,6 +30,7 @@ from aios.datastores.models import (
     AgentRun,
     AgentVersion,
     AgentVersionTool,
+    Event,
     Invocation,
     SchemaChangeRequest,
     Trigger,
@@ -1086,6 +1087,7 @@ def new_workflow_run(
     created_by: int | None,
     trigger_id: int | None = None,
     by_mention: bool = False,
+    event: Event | None = None,
 ) -> WorkflowRun:
     """Add (and flush, not commit) a run of the workflow's current version to the store of the
     organisation `organisation_id` (`store`, where the workflow is), given `input`, started by
@@ -1098,8 +1100,9 @@ def new_workflow_run(
     keeps a concurrent archive waiting until the run counts as already going. Also how a
     schedule starts one (`aios.scheduler`), passing its `trigger_id` and no member.
 
-    Its invocation is made with it (`invocations.for_run`): a schedule's, or one started by hand
-    by `created_by`, running from when the run is queued. A mention's run (`by_mention`) has its
+    Its invocation is made with it (`invocations.for_run`): a schedule's, an event trigger's
+    (with the `event` it fired on), or one started by hand by `created_by`, running from when
+    the run is queued. A mention's run (`by_mention`) has its
     mention's, which the caller links.
     """
     lock_live_workflow(store, workflow)
@@ -1130,6 +1133,7 @@ def new_workflow_run(
             workflow.id,
             requested_by=created_by,
             trigger_id=trigger_id,
+            event=event,
             status=InvocationStatus.running,
         )
         invocation.workflow_run_id = run.id

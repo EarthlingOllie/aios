@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import handoff, invocations, turn_lease, turns, workflows
+from aios import handoff, invocations, outbox, turn_lease, turns, workflows
 from aios.api import agents as agents_api
 from aios.api import workflows as workflows_api
 from aios.datastores import store_id_of, store_session
@@ -39,6 +39,7 @@ from aios.datastores.models import (
     Agent,
     AgentRun,
     ChatMessage,
+    Event,
     Invocation,
     SchemaChangeRequest,
     Trigger,
@@ -616,8 +617,14 @@ def lost(store: Session, older_than_seconds: float) -> list[tuple[int, Work]]:
         if trigger is None:
             # Fired again since, or edited: the turn still runs, recorded on nothing.
             trigger = store.get_one(Trigger, invocation.trigger_id)
-            schedule = Schedule(trigger.id, datetime.fromtimestamp(0, UTC), trigger.input)
+            fired_at = datetime.fromtimestamp(0, UTC)
         else:
-            schedule = Schedule(trigger.id, trigger.last_fired_at, trigger.input)
+            fired_at = trigger.last_fired_at
+        message = trigger.input
+        if invocation.event_id is not None:
+            # An event trigger's: told the event too (`aios.outbox.agent_message`).
+            event = store.get(Event, invocation.event_id)
+            message = outbox.agent_message(trigger, event) if event else trigger.input
+        schedule = Schedule(trigger.id, fired_at, message)
         out.append((invocation.id, turn_work(organisation_id, store_id, invocation.id, schedule)))
     return out

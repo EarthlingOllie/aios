@@ -9,6 +9,8 @@
   it can't run yet. One that raises is handed back to be tried again, counting the attempt.
 - With `scheduler_enabled`, it fires due schedules (`aios.scheduler.tick`) every
   `scheduler_interval_seconds`; and it runs the requeue sweep (`aios.run_service.sweep`).
+- It dispatches stores' events to event triggers (`aios.dispatcher.run_forever`) when woken
+  and every `event_dispatch_poll_seconds`.
 - On a termination signal it stops claiming, lets its items finish for up to
   `run_service_shutdown_grace_seconds`, then cancels the rest and hands them back to the queue
   without counting the attempt.
@@ -248,7 +250,7 @@ async def _every(interval: float, name: str, step) -> None:
 async def run_forever(stopping: asyncio.Event | None = None) -> None:
     """Run the run service in this process until `stopping` is set (or a termination signal
     arrives), then stop gracefully."""
-    from aios import scheduler
+    from aios import dispatcher, scheduler
     from aios.run_service import sweep
 
     settings = get_settings()
@@ -265,6 +267,7 @@ async def run_forever(stopping: asyncio.Event | None = None) -> None:
         asyncio.create_task(executor.extend_forever(), name="leases"),
         asyncio.create_task(_every(SWEEP_SECONDS, "requeue sweep", sweep.run), name="sweep"),
     ]
+    helpers.append(asyncio.create_task(dispatcher.run_forever(), name="event dispatcher"))
     if settings.scheduler_enabled:
         helpers.append(
             asyncio.create_task(

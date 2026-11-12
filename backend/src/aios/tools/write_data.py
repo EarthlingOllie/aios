@@ -41,7 +41,9 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
 
+from aios import outbox
 from aios.agent import ChatDeps
 from aios.config import get_settings
 from aios.datastores import ownership, quota, store_session
@@ -50,6 +52,7 @@ from aios.datastores.models import EMBEDDING_DIM
 from aios.datastores.provision import writer_of
 from aios.datastores.reads import jsonable
 from aios.embeddings import embed_documents
+from aios.models import EventType
 from aios.tools.data import (
     DATA_NOT_INSTRUCTIONS,
     embedding_markers,
@@ -574,6 +577,8 @@ def _apply(data_store_id: uuid.UUID, call: Call, embedded: Embedded | None) -> A
                             for row in cur.fetchall()
                         ]
             _audit(pg, call, plan, count)
+            if count:
+                _emit(session, pg, call, plan, count)
             try:
                 session.commit()
             except DBAPIError as exc:
@@ -614,6 +619,28 @@ def _audit(pg: psycopg.Connection, call: Call, plan: Plan, count: int) -> None:
             "table": table,
             "details": Jsonb({"table": table, "operation": plan.operation, "row_count": count}),
         },
+    )
+
+
+def _emit(session: Session, pg: psycopg.Connection, call: Call, plan: Plan, count: int) -> None:
+    """The call's table written event (`aios.outbox`), caused by the writing run's invocation,
+    in the call's transaction (as the read-write role, after `_audit`)."""
+    agent_id = None
+    if call.run_id is not None:
+        found = pg.execute(
+            "SELECT agent_id FROM aios.agent_runs WHERE id = %s", (call.run_id,)
+        ).fetchone()
+        agent_id = found[0] if found else None
+    outbox.emit(
+        session,
+        EventType.table_written,
+        {
+            "table": plan.table.qualified,
+            "operation": plan.operation,
+            "row_count": count,
+            "agent_id": agent_id,
+        },
+        run_id=call.run_id,
     )
 
 

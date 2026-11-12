@@ -21,6 +21,7 @@ from aios.datastores.models import (
     AgentRun,
     AgentVersion,
     Chat,
+    Event,
     Invocation,
     SchemaChangeRequest,
     Turn,
@@ -267,6 +268,7 @@ def new_agent_run(
     created_by: int | None,
     trigger_id: int | None = None,
     by_mention: bool = False,
+    event: Event | None = None,
 ) -> AgentRun:
     """Add (and flush, not commit) a run of the agent's current version to the store of the
     organisation `organisation_id` (`store`, where the agent is), started by the member
@@ -278,8 +280,9 @@ def new_agent_run(
     here, held until then, keeps a concurrent archive from missing the run. Also how a schedule
     starts one (`aios.scheduler`), passing its `trigger_id` and no member.
 
-    Its invocation is made with it (`invocations.for_run`): a schedule's, or one started by hand
-    by `created_by`. A mention's run (`by_mention`) has its mention's, which the caller links.
+    Its invocation is made with it (`invocations.for_run`): a schedule's, an event trigger's
+    (with the `event` it fired on), or one started by hand by `created_by`. A mention's run
+    (`by_mention`) has its mention's, which the caller links.
     """
     lock_live_agent(store, agent, read=True)
     # Checked now, so a version that can't be run doesn't leave behind a run that can't be used.
@@ -300,6 +303,7 @@ def new_agent_run(
             agent.id,
             requested_by=created_by,
             trigger_id=trigger_id,
+            event=event,
         )
         invocation.agent_run_id = run.id
         store.flush()

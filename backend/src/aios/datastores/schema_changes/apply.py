@@ -11,13 +11,13 @@ import psycopg
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import approval_rules, notifications
+from aios import approval_rules, notifications, outbox
 from aios.config import get_settings
 from aios.datastores.connections import store_session
 from aios.datastores.models import AgentRun, SchemaChangeRequest
 from aios.datastores.resolve import approvers
 from aios.db import SessionLocal
-from aios.models import DataStore, SchemaChangeStatus
+from aios.models import DataStore, EventType, SchemaChangeStatus
 
 if TYPE_CHECKING:
     from aios.datastores.provision import StoreNames
@@ -227,6 +227,13 @@ def _run(names: "StoreNames", request: SchemaChangeRequest) -> None:
             if table_exists(conn, table):
                 dropped.grant_access(conn, names, table)
         record_history(conn, request.summary, request.sql, request.id)
+        # Its event, with the change (`aios.outbox`): caused by the run that asked for it.
+        outbox.emit_pg(
+            conn,
+            EventType.schema_change_applied,
+            {"request_id": str(request.id), "tables": _tables(spec)},
+            run_id=request.requested_by_run,
+        )
 
 
 @contextmanager
@@ -252,6 +259,12 @@ def record_history(
         "INSERT INTO aios.schema_history (request_id, summary, sql) VALUES (%s, %s, %s)",
         (request_id, summary, sql),
     )
+
+
+def _tables(change: SchemaChange) -> list[str]:
+    """The tables a change makes or changes, as it names them, in order."""
+    tables = [getattr(op, "table", None) or getattr(op, "name", None) for op in change.ops]
+    return list(dict.fromkeys(t for t in tables if t))
 
 
 def _access_changed(change: SchemaChange) -> list[str]:
@@ -290,6 +303,7 @@ def apply(data_store_id: uuid.UUID, request_id: uuid.UUID) -> SchemaChangeStatus
         with provisioner_locked(data_store_id):
             _run(names, request)
         status = SchemaChangeStatus.applied
+        outbox.pending(data_store_id)
     except _Stale as exc:
         status, error = SchemaChangeStatus.stale, str(exc)
     except psycopg.Error as exc:
