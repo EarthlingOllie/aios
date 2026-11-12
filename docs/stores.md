@@ -242,7 +242,7 @@ agent run is a row of `aios.turns`: its run, invocation, agent version, status a
 and model calls, tool calls and tokens (`aios.turns`). A run's status, times and counters are
 derived from its turns (its latest turn's status and times, the counters summed), so the run's
 own columns for them were dropped. The run page lists the turns, each with any tools it left out
-and why (`turns.notices`, store revision `0033`: a connector's tools that were unavailable, a
+and why (`turns.notices`, store revision `0035`: a connector's tools that were unavailable, a
 pinned tool that vanished upstream; see [Tools](tools.md#connector-tools)).
 
 The `reporting` schema holds read-only views for agents to query with `query_data`:
@@ -367,7 +367,7 @@ Connecting, scope changes and removal (with the keep-or-delete choice) are in th
 Agents act in connected systems with [connector tools](tools.md#connector-tools).
 
 **URL, webhook and email sources** (`aios.url_sources`, `aios.push_sources`, store revision
-`0033`, platform revision `0081`). Admins add them on the Sources tab (`GET .../source-kinds` says
+`0036`, platform revision `0082`). Admins add them on the Sources tab (`GET .../source-kinds` says
 which this deployment offers, and why any isn't).
 
 - **A URL source** fetches one web page on its interval as a file item (a document), through
