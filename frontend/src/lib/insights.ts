@@ -88,6 +88,7 @@ const CAUSES: Record<string, string> = {
   schedule: "Schedules",
   manual: "Started by hand",
   event: "Events",
+  start_workflow: "Started by agents",
 };
 
 /** A group's row name: its name, or what the key is, or what having none means. */
