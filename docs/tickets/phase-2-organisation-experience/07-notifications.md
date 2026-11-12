@@ -20,16 +20,16 @@
 
 **Blocked by:** [04: Streamed conversations and chat list, with limits and fallback](04-streaming.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The bell lists notifications from every organisation the person is in, each labelled with its organisation. Clicking one from another organisation switches to it and opens the notification.
-- [ ] New and read notifications reach the bell through the person stream, with no polling.
-- [ ] A notification whose reference no longer exists (pruned, or in an organisation the person left) is dropped from the list and marked read.
-- [ ] Mention notifications go to the people mentioned, never for mentioning yourself.
-- [ ] The reply notification is skipped while the asker has the conversation's stream open in a visible tab; the client reports visibility on the stream.
-- [ ] A failed run notifies whoever caused it.
-- [ ] Repeats about the same thing never create a second unread notification.
-- [ ] Reading a conversation past a message clears the reply, mention and run-failed notifications about it. Mark all read works.
-- [ ] Approval notifications behave as before under the "approval needed" kind, and clear for everyone once the approval is decided, cancelled or expired.
-- [ ] Leaving an organisation deletes its notifications for that person. Read notifications older than the retention setting are pruned.
-- [ ] The old notification routes and reference keys are gone, and the browser tests use only the new routes.
+- [x] The bell lists notifications from every organisation the person is in, each labelled with its organisation. Clicking one from another organisation switches to it and opens the notification.
+- [x] New and read notifications reach the bell through the person stream, with no polling.
+- [x] A notification whose reference no longer exists (pruned, or in an organisation the person left) is dropped from the list and marked read.
+- [x] Mention notifications go to the people mentioned, never for mentioning yourself.
+- [x] The reply notification is skipped while the asker has the conversation's stream open in a visible tab; the client reports visibility on the stream.
+- [x] A failed run notifies whoever caused it.
+- [x] Repeats about the same thing never create a second unread notification.
+- [x] Reading a conversation past a message clears the reply, mention and run-failed notifications about it. Mark all read works.
+- [x] Approval notifications behave as before under the "approval needed" kind, and clear for everyone once the approval is decided, cancelled or expired.
+- [x] Leaving an organisation deletes its notifications for that person. Read notifications older than the retention setting are pruned.
+- [x] The old notification routes and reference keys are gone, and the browser tests use only the new routes.

@@ -403,23 +403,25 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
             run_id=None,
             tool_call_id=None,
         )
-        about = notifications.SCHEMA_CHANGE_REQUEST
+        about = notifications.APPROVAL_NEEDED
         other = org_of(db, elsewhere).id
-        notifications.notify(
-            db, [member.id], other, about, {"request_id": "2", "data_store_id": "other"}
+        # One from another organisation (as if they were in it too) stays.
+        db.add(
+            Notification(
+                user_id=member.id,
+                organisation_id=other,
+                kind=about,
+                ref=notifications.approval_ref("2"),
+            )
         )
-        # One they've read already no longer reaches them, and stays.
+        # One they've read already goes too: every one of theirs from it does.
         notifications.notify(
-            db,
-            [member.id],
-            org_of(db, user).id,
-            about,
-            {"request_id": "3", "data_store_id": str(store_id)},
+            db, [member.id], org_of(db, user).id, about, notifications.approval_ref("3")
         )
         db.flush()
         db.execute(
             update(Notification)
-            .where(Notification.user_id == member.id, Notification.ref["request_id"].astext == "3")
+            .where(Notification.user_id == member.id, Notification.ref["approval_id"].astext == "3")
             .values(read_at=func.now())
         )
         db.commit()
@@ -446,10 +448,10 @@ def test_a_member_leaves_and_only_their_membership_goes(api, db, user, member, p
         assert rows_of(user).scalars(theirs_now) == []
         assert rows_of(elsewhere).scalars(theirs_now) == [theirs["id"]]
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == member.id))
-        assert sorted(r["request_id"] for r in refs) == ["2", "3"]
+        assert sorted(r["approval_id"] for r in refs) == ["2"]
         # The members who stay are still notified of it.
         refs = db.scalars(select(Notification.ref).where(Notification.user_id == user.id))
-        assert [r["request_id"] for r in refs] == [str(request.id)]
+        assert [r["approval_id"] for r in refs] == [str(request.id)]
     finally:
         delete_user(db, elsewhere)
 

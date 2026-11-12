@@ -19,9 +19,11 @@ from aios.models.base import Base
 
 class Notification(Base):
     """Something in the app for a user to see (`aios.notifications`): what kind it is, and a
-    reference to what it's about (for a schema change request, its id and its store's). Not tied
-    to any one feature, so other kinds can use it later. It's read once the user marks it so, or
-    once what it's about no longer needs them (a request decided)."""
+    reference to what it's about in its organisation (a chat message, a run, an approval), never
+    its content, which is read from the organisation's store when it's listed. It's read once
+    the user marks it so, or once what it's about no longer needs them (an approval decided, a
+    chat read past the message). At most one is unread per person, organisation, kind and
+    reference."""
 
     __tablename__ = "notifications"
 
@@ -44,4 +46,14 @@ class Notification(Base):
         Index("ix_notifications_user_id_read_at", "user_id", "read_at"),
         # The notifications about something (`ref @> ...`), to mark them read.
         Index("ix_notifications_ref", "ref", postgresql_using="gin"),
+        # At most one unread about the same thing: a repeat adds nothing.
+        Index(
+            "ux_notifications_unread",
+            "user_id",
+            "organisation_id",
+            "kind",
+            "ref",
+            unique=True,
+            postgresql_where=text("read_at IS NULL"),
+        ),
     )

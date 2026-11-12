@@ -130,8 +130,8 @@ celery_app.conf.beat_schedule = {
         "schedule": REPAIR_STORES_EVERY,
         "options": {"expires": REPAIR_STORES_EVERY},
     },
-    # Runs and chat history past each organisation's retention (`aios.retention`), nightly at
-    # a quiet hour. A day's run that waited past the next is stale.
+    # Runs and chat history past each organisation's retention (`aios.retention`), and old read
+    # notifications, nightly at a quiet hour. A day's run that waited past the next is stale.
     "prune-retention": {
         "task": "aios.prune_retention",
         "schedule": crontab(minute=0, hour=settings.retention_prune_hour),
@@ -482,10 +482,14 @@ def publish_queue_metrics_task() -> None:
 @celery_app.task(name="aios.prune_retention")
 def prune_retention_task() -> None:
     """Prune every store's runs and chat history past its organisation's retention, in batches,
-    recording each prune in its audit log (`aios.retention.prune_all`)."""
-    from aios import retention
+    recording each prune in its audit log (`aios.retention.prune_all`); and read notifications
+    past `notification_retention_days` (`aios.notifications.prune`)."""
+    from aios import notifications, retention
 
-    retention.prune_all()
+    try:
+        retention.prune_all()
+    finally:
+        notifications.prune()
 
 
 @celery_app.task(name="aios.expire_schema_change_requests")

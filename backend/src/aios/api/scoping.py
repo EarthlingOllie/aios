@@ -49,8 +49,9 @@ UNSCOPED: set[tuple[str, str]] = {
     # Creating an organisation (the welcome page's).
     ("POST", "/api/organisations"),
     # The person's notifications, from every organisation they're in.
-    ("GET", "/api/notifications"),
-    ("POST", "/api/notifications/{notification_id}/read"),
+    ("GET", "/api/me/notifications"),
+    ("POST", "/api/me/notifications/read"),
+    ("POST", "/api/me/notifications/{notification_id}/read"),
     # The tool library and the timezones schedules can use: the same for everyone.
     ("GET", "/api/tools"),
     ("GET", "/api/triggers/timezones"),

@@ -207,11 +207,15 @@ export type DroppedRow = {
 export type NotificationRow = {
   id: string;
   /** The organisation it's from: the fake's own unless a test says otherwise. */
-  organisation: { id: number; slug: string };
+  organisation: { id: number; slug: string; name: string };
   kind: string;
-  ref: Record<string, string>;
-  /** For a kind other than a schema change request (whose title is its summary). */
+  /** What it's about, never what it says (`approval_id` for an approval, `chat_id` and
+   * `message_id` for a mention, reply or chat's failed run). */
+  ref: Record<string, string | number>;
+  /** What it says, for a kind other than an approval in the fake's organisation (whose title and
+   * detail are read from its request, as the API reads them from the store). */
   title: string | null;
+  detail: string | null;
   created_at: string;
   read_at: string | null;
   /** Whether it's the signed-in user's; the API never shows them another user's. */
@@ -843,9 +847,12 @@ export class FakeApi {
   dropped: DroppedRow[] = [];
   /**
    * Notifications, oldest first. As on the server, a pending request the user may decide
-   * notifies them, and deciding it marks that read; `mine: false` ones are another user's.
+   * notifies them (approval needed), and deciding it marks that read; reading a chat past a
+   * message reads those about it; `mine: false` ones are another user's.
    */
   notifications: NotificationRow[] = [];
+  /** The user's notifications as the person's stream last saw them (id: read), to tell it of changes. */
+  private notificationsSeen: Map<string, boolean> | null = null;
   /** How many times the app asked for the user's notifications. */
   notificationLists = 0;
   /** The query of each read of a chat's messages, in order (e.g. "?after=12"). */
@@ -1508,7 +1515,7 @@ export class FakeApi {
     };
     this.schemaChanges.push(request);
     if (request.status === "pending" && request.decider) {
-      this.addNotification({ ref: { request_id: request.id, data_store_id: request.data_store_id } });
+      this.addNotification({ ref: { approval_id: request.id } });
     }
     return request;
   }
@@ -1535,14 +1542,15 @@ export class FakeApi {
     return { ...fields, purge_at: new Date(Date.now() + purge_in_days * 86400_000).toISOString() };
   }
 
-  /** Adds a notification: the user's own, about a schema change request, unless told otherwise. */
+  /** Adds a notification: the user's own, an approval needed, unless told otherwise. */
   addNotification(fields: Partial<NotificationRow> = {}): NotificationRow {
     const notification: NotificationRow = {
       id: `note-${this.id()}`,
-      organisation: { id: this.organisation.id, slug: this.organisation.slug },
-      kind: "schema_change_request",
+      organisation: { id: this.organisation.id, slug: this.organisation.slug, name: this.organisation.name },
+      kind: "approval_needed",
       ref: {},
       title: null,
+      detail: null,
       // Later ones are newer, so they list first.
       created_at: new Date(Date.parse(NOW) + this.notifications.length * 1000).toISOString(),
       read_at: null,
@@ -1553,11 +1561,41 @@ export class FakeApi {
     return notification;
   }
 
+  /** As the API lists it, what it says read now; null if what it's about has gone (an approval
+   * of the fake's organisation whose request doesn't exist). */
   private notificationOut({ mine: _mine, ...n }: NotificationRow) {
-    const request = n.kind === "schema_change_request"
-      ? this.schemaChanges.find((r) => r.id === n.ref.request_id)
-      : undefined;
-    return { ...n, title: request ? request.summary : n.title };
+    if (n.kind !== "approval_needed" || n.organisation.id !== this.organisation.id) return n;
+    const request = this.schemaChanges.find((r) => r.id === n.ref.approval_id);
+    if (!request) return null;
+    return { ...n, title: "A schema change is waiting for you", detail: request.summary };
+  }
+
+  /** The user's own, as the API lists them: unread first, newest first; gone ones dropped and read. */
+  private notificationList() {
+    const mine = this.notifications.filter((n) => n.mine).reverse();
+    const ordered = [...mine.filter((n) => !n.read_at), ...mine.filter((n) => n.read_at)];
+    const listed = [];
+    for (const n of ordered) {
+      const out = this.notificationOut(n);
+      if (out) listed.push(out);
+      else n.read_at ??= NOW;
+    }
+    return { unread: mine.filter((n) => !n.read_at).length, notifications: listed };
+  }
+
+  /** What the person's stream sends of the user's notifications: one `notification` event if they
+   * changed since it last opened (the first opening only notes them). */
+  private notificationChanges(): [string, unknown, number | null][] {
+    const mine = this.notifications.filter((n) => n.mine);
+    const now = new Map(mine.map((n) => [n.id, n.read_at !== null]));
+    const before = this.notificationsSeen;
+    this.notificationsSeen = now;
+    if (before === null) return [];
+    const added = [...now].some(([id, read]) => !read && before.get(id) !== false);
+    const read = [...now].some(([id, isRead]) => isRead && before.get(id) === false);
+    if (!added && !read) return [];
+    const unread = mine.filter((n) => !n.read_at).length;
+    return [["notification", { change: added ? "new" : "read", unread }, null]];
   }
 
   /**
@@ -2713,6 +2751,20 @@ export class FakeApi {
     }
 
     if (path === "/api/me") return reply(200, this.meOut(account));
+    if (path === "/api/me/notifications" && method === "GET") {
+      this.notificationLists++;
+      return reply(200, this.notificationList());
+    }
+    if (path === "/api/me/notifications/read" && method === "POST") {
+      for (const n of this.notifications) if (n.mine) n.read_at ??= NOW;
+      return reply(204);
+    }
+    if ((m = path.match(/^\/api\/me\/notifications\/([\w-]+)\/read$/)) && method === "POST") {
+      const notification = this.notifications.find((n) => n.id === m![1] && n.mine);
+      if (!notification) return fail(404, "Notification not found");
+      notification.read_at ??= NOW;
+      return reply(200, this.notificationOut(notification) ?? notification);
+    }
     if (path === "/api/organisations" && method === "POST") {
       const name = String(body?.name ?? "").trim();
       if (!name) return reply(422, { detail: [{ loc: ["body", "name"], msg: "String should match pattern '\\S'" }] });
@@ -2732,13 +2784,13 @@ export class FakeApi {
       this.personStreamReads += 1;
       const refused = this.streamRefusal(route);
       if (refused) return refused;
-      return this.events(route, this.listChanges());
+      return this.events(route, [...this.listChanges(), ...this.notificationChanges()]);
     }
-    // Everything but the person's own (signing in, the profile, invitations, notifications, the
-    // tool library and timezones) is an organisation's, under its prefix (`/api/o/<id>/...`), as
-    // in the API: the fake's organisation answers (as it was before the prefix, from here on),
+    // Everything but the person's own (signing in, the profile and notifications, invitations,
+    // the tool library and timezones) is an organisation's, under its prefix (`/api/o/<id>/...`),
+    // as in the API: the fake's organisation answers (as it was before the prefix, from here on),
     // and any other is a 404, as for one that doesn't exist. Nothing answers without the prefix.
-    const unscoped = /^\/api\/(notifications|tools|triggers\/timezones)(\/|$)/.test(path);
+    const unscoped = /^\/api\/(tools|triggers\/timezones)(\/|$)/.test(path);
     if (!unscoped) {
       const scoped = path.match(/^\/api\/o\/([^/]+)(\/.*)$/);
       if (!scoped) return fail(404, "Not Found");
@@ -3032,7 +3084,7 @@ export class FakeApi {
         request.note = (body?.note ?? "").trim() || null;
       }
       for (const n of this.notifications) {
-        if (n.ref.request_id === request.id && !n.read_at) n.read_at = NOW;
+        if (n.kind === "approval_needed" && n.ref.approval_id === request.id && !n.read_at) n.read_at = NOW;
       }
       return reply(200, this.schemaChangeOut(request));
     }
@@ -3125,23 +3177,6 @@ export class FakeApi {
       if (item.refuseRestore) item.restore_error = item.refuseRestore;
       else if (!item.stallRestore) this.dropped = this.dropped.filter((d) => d !== item);
       return reply(202, { ...out, blocked: null });
-    }
-    if (path === "/api/notifications" && method === "GET") {
-      this.notificationLists++;
-      const mine = this.notifications.filter((n) => n.mine).reverse();
-      const unread = mine.filter((n) => !n.read_at);
-      return reply(200, {
-        unread: unread.length,
-        notifications: [...unread, ...mine.filter((n) => n.read_at)].map((n) =>
-          this.notificationOut(n),
-        ),
-      });
-    }
-    if ((m = path.match(/^\/api\/notifications\/([\w-]+)\/read$/)) && method === "POST") {
-      const notification = this.notifications.find((n) => n.id === m![1] && n.mine);
-      if (!notification) return fail(404, "Notification not found");
-      notification.read_at ??= NOW;
-      return reply(200, this.notificationOut(notification));
     }
     if (path === "/api/tools") return reply(200, this.tools);
     if (path === "/api/skills" && method === "GET") {
@@ -3717,6 +3752,13 @@ export class FakeApi {
         this.chatReads.push([chat.id, body.message_id]);
         const seen = Math.min(body.message_id, chat.messages.at(-1)?.id ?? 0);
         mine.last_read = Math.max(mine.last_read ?? 0, seen);
+        // And the mention, reply and run failed notifications about what they've read.
+        for (const n of this.notifications) {
+          const about = n.organisation.id === this.organisation.id && n.ref.chat_id === chat.id;
+          if (n.mine && about && ["mention", "reply", "run_failed"].includes(n.kind) && Number(n.ref.message_id) <= seen) {
+            n.read_at ??= NOW;
+          }
+        }
         return reply(204);
       }
       if (rest === "/messages" && method === "POST") {

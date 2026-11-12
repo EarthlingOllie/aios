@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 # Read on the package at call time, where tests replace them.
 from aios.datastores import schema_changes as package
 from aios.datastores.schema_changes.compile import _quote, compile_sql, confirmation
-from aios.datastores.schema_changes.expiry import _notification_ref
 from aios.datastores.schema_changes.spec import (
     DROPPED_PREFIX,
     SCHEMA,
@@ -173,8 +172,8 @@ def propose(
                 db,
                 approvers(db, data_store, least),
                 data_store.owner_organisation_id,
-                notifications.SCHEMA_CHANGE_REQUEST,
-                _notification_ref(data_store_id, request.id),
+                notifications.APPROVAL_NEEDED,
+                notifications.approval_ref(request.id),
             )
             db.commit()
     return request

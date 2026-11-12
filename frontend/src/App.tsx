@@ -22,6 +22,7 @@ import { formatDate } from "@/components/crud";
 import { Documents, DocumentsProvider } from "@/components/Documents";
 import { JevNotice } from "@/components/JevNotice";
 import { NotificationsMenu, NotificationsProvider } from "@/components/Notifications";
+import { PersonStreamProvider } from "@/components/PersonStream";
 import { Button } from "@/components/ui/button";
 import {
   api,
@@ -236,17 +237,19 @@ export default function App({ organisation = null }: { organisation?: string | n
       <Route
         element={
           <DocumentsProvider>
-            <NotificationsProvider>
-              <CurrentUserContext.Provider value={auth.user}>
-                <CurrentOrganisationContext.Provider value={membership ?? null}>
-                  <SetCurrentUserContext.Provider value={setUser}>
-                    <ReloadCurrentUserContext.Provider value={loadMe}>
-                      <Shell user={auth.user} current={apiOrganisation} onSignOut={signOut} />
-                    </ReloadCurrentUserContext.Provider>
-                  </SetCurrentUserContext.Provider>
-                </CurrentOrganisationContext.Provider>
-              </CurrentUserContext.Provider>
-            </NotificationsProvider>
+            <PersonStreamProvider>
+              <NotificationsProvider>
+                <CurrentUserContext.Provider value={auth.user}>
+                  <CurrentOrganisationContext.Provider value={membership ?? null}>
+                    <SetCurrentUserContext.Provider value={setUser}>
+                      <ReloadCurrentUserContext.Provider value={loadMe}>
+                        <Shell user={auth.user} current={apiOrganisation} onSignOut={signOut} />
+                      </ReloadCurrentUserContext.Provider>
+                    </SetCurrentUserContext.Provider>
+                  </CurrentOrganisationContext.Provider>
+                </CurrentUserContext.Provider>
+              </NotificationsProvider>
+            </PersonStreamProvider>
           </DocumentsProvider>
         }
       >

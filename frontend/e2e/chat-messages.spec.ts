@@ -47,7 +47,7 @@ test("a message posted by someone else arrives on the chat's stream", async ({ p
   // No picture: their initial.
   await expect(theirs.getByRole("img", { name: "Sam Jones" })).toHaveText("S");
   // The stream resumed after the newest message it had; nothing asked for what's new.
-  expect(api.streamReads).toContain(`?last_event_id=${first.id}`);
+  expect(api.streamReads).toContain(`?visible=true&last_event_id=${first.id}`);
   expect(api.messageReads.filter((q) => q.startsWith("?after="))).toEqual([]);
 });
 

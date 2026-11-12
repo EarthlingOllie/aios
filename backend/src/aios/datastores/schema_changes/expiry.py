@@ -1,9 +1,10 @@
 """Closing requests out: their notifications, cancelling those nothing waits on any more
 (`cancel`), and expiring those left undecided (`expire`).
 
-Requests are in their store, the source of truth, and notifications on the platform, which
-name each request by its id and store: a request is closed in its store first, and its
-notifications are cleared once that has committed (`clear_notifications_of`)."""
+Requests are in their store, the source of truth, and notifications (`approval_needed`) on the
+platform, which name each request by its id, from its store's organisation: a request is closed
+in its store first, and its notifications are cleared once that has committed
+(`clear_notifications_of`)."""
 
 import logging
 import uuid
@@ -33,35 +34,6 @@ log = logging.getLogger(__package__)
 StoredRequest = tuple[uuid.UUID, uuid.UUID]
 
 
-def _notification_ref(data_store_id: uuid.UUID, request_id: uuid.UUID) -> dict[str, str]:
-    return {"request_id": str(request_id), "data_store_id": str(data_store_id)}
-
-
-def summaries(refs: Iterable[tuple[Any, Any]]) -> dict[str, str]:
-    """The summaries of those of these requests (each its store's id and its own, as
-    notifications name them, as text) that still exist, by request id: what their
-    notifications say. A store that can't be read leaves its requests without one."""
-    by_store: dict[uuid.UUID, set[uuid.UUID]] = {}
-    for store_id, request_id in refs:
-        try:
-            by_store.setdefault(uuid.UUID(store_id), set()).add(uuid.UUID(request_id))
-        except (TypeError, ValueError, AttributeError):
-            continue
-    found: dict[str, str] = {}
-    for store_id, ids in by_store.items():
-        try:
-            with store_session(store_id, "ro") as store:
-                rows = store.execute(
-                    select(SchemaChangeRequest.id, SchemaChangeRequest.summary).where(
-                        SchemaChangeRequest.id.in_(ids)
-                    )
-                )
-                found.update((str(request_id), summary) for request_id, summary in rows)
-        except (DataStoreNotFound, DataStoreNotReady, DataStoreBusy):
-            continue
-    return found
-
-
 def not_given() -> list[ColumnElement[bool]]:
     """A request the run that asked still waits on: not yet given its outcome, nor cancelled
     (whose run has been told, or is gone)."""
@@ -80,7 +52,7 @@ def clear_notifications(
     # One by one, each by the jsonb index; there are seldom more than a few at once.
     for request_id in request_ids:
         notifications.mark_read_about(
-            db, notifications.SCHEMA_CHANGE_REQUEST, {"request_id": str(request_id)}, at
+            db, notifications.APPROVAL_NEEDED, notifications.approval_ref(request_id), at
         )
 
 
@@ -190,5 +162,5 @@ def restore_notifications(db: Session, request_id: uuid.UUID, cleared_at: dateti
     those it marked read as of `cleared_at` are unread again; any a user marked read themselves
     stay read. In the caller's transaction."""
     notifications.mark_unread_about(
-        db, notifications.SCHEMA_CHANGE_REQUEST, {"request_id": str(request_id)}, cleared_at
+        db, notifications.APPROVAL_NEEDED, notifications.approval_ref(request_id), cleared_at
     )

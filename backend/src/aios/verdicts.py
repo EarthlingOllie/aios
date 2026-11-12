@@ -27,7 +27,7 @@ from datetime import datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from aios import audit, jev
+from aios import audit, jev, notifications
 from aios.datastores import store_id_of, store_session
 from aios.datastores.models import Chunk, Document, DocumentStatus, SearchItem, SearchItemKind
 from aios.jev import JevUnavailable, Verdict
@@ -36,7 +36,7 @@ from aios.notifications import notify_from_store
 log = logging.getLogger(__name__)
 
 # The notification the admin who released a document gets when its content changes.
-RELEASED_DOCUMENT_CHANGED = "released_document_changed"
+RELEASED_DOCUMENT_CHANGED = notifications.RELEASED_DOCUMENT_CHANGED
 
 # A document's chunks are classified this many at once; each batch within Jev's timeout.
 DOCUMENT_BATCH = 16
@@ -147,11 +147,7 @@ def _unrelease(store: Session, document_id: int, filename: str, released_by: int
             store_id_of(store),
             [released_by],
             RELEASED_DOCUMENT_CHANGED,
-            {
-                "data_store_id": str(store_id_of(store)),
-                "document_id": document_id,
-                "filename": filename,
-            },
+            {"document_id": document_id},
         )
 
 

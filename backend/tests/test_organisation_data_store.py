@@ -215,8 +215,8 @@ def test_another_organisation_sees_none_of_the_stores_documents_or_tables(
 
 def notified(api, request: SchemaChangeRequest) -> bool:
     """Whether the signed-in user has an unread notification of the request."""
-    listed = api.get("/api/notifications").json()["notifications"]
-    return any(n["ref"]["request_id"] == str(request.id) and not n["read_at"] for n in listed)
+    listed = api.get("/api/me/notifications").json()["notifications"]
+    return any(n["ref"]["approval_id"] == str(request.id) and not n["read_at"] for n in listed)
 
 
 def test_a_schema_change_request_notifies_those_who_may_decide_it_and_any_of_them_decides_it(
@@ -297,7 +297,7 @@ def test_another_organisation_cant_see_or_decide_the_stores_requests_or_restore_
     [table] = listed(api)
 
     with signed_in_as(outsider):
-        assert api.get("/api/notifications").json()["notifications"] == []
+        assert api.get("/api/me/notifications").json()["notifications"] == []
         assert api.get("/api/schema-changes").json() == []
         assert api.get(f"/api/schema-changes/{request.id}").status_code == 404
         assert api.get(f"/api/schema-changes/{request.id}/impact").status_code == 404

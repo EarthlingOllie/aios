@@ -11,44 +11,48 @@ export type NotificationView = {
   organisation: string;
 };
 
-/** How a notification shows in the navigation's list. */
+/** What a notification's line says while its organisation's store can't be read (its `title` null). */
+const HEADINGS: Record<string, string> = {
+  mention: "You were mentioned in a chat",
+  reply: "A reply in a chat",
+  run_failed: "A run failed",
+  approval_needed: "A schema change is waiting for you",
+  released_document_changed: "A document you released has changed",
+  organisation_deletion_scheduled: "An organisation is scheduled for deletion.",
+  organisation_deletion_cancelled: "An organisation will no longer be deleted.",
+};
+
+/** Where a notification opens, in its organisation: what it's about, or nowhere for a kind this
+ * app doesn't know. */
+export function notificationPath({ kind, ref }: Notification): string | null {
+  const id = (key: string) => encodeURIComponent(String(ref[key]));
+  switch (kind) {
+    case "approval_needed":
+      return `/data/changes?request=${id("approval_id")}`;
+    case "mention":
+    case "reply":
+    case "run_failed":
+      if (ref.chat_id !== undefined) return `/chats/${id("chat_id")}`;
+      if (ref.agent_id !== undefined) return `/agents/${id("agent_id")}/runs/${id("run_id")}`;
+      if (ref.workflow_id !== undefined) return `/workflows/${id("workflow_id")}/runs/${id("run_id")}`;
+      return null;
+    case "released_document_changed":
+      return "/data/documents";
+    case "organisation_deletion_scheduled":
+      return "/organisation/settings";
+    case "organisation_deletion_cancelled":
+      return "/organisation";
+    default:
+      return null;
+  }
+}
+
+/** How a notification shows in the navigation's list: what the API read for it, where it opens. */
 export function describeNotification(notification: Notification): NotificationView {
-  if (notification.kind === "schema_change_request") {
-    return {
-      heading: "A schema change is waiting for you",
-      detail: notification.title ?? "This request no longer exists.",
-      to: `/data/changes?request=${encodeURIComponent(notification.ref.request_id)}`,
-      organisation: notification.organisation.slug,
-    };
-  }
-  if (notification.kind === "organisation_deletion_scheduled") {
-    return {
-      heading: notification.title ?? "An organisation is scheduled for deletion.",
-      detail: "Its creator can cancel it until then.",
-      to: "/organisation/settings",
-      organisation: notification.organisation.slug,
-    };
-  }
-  if (notification.kind === "organisation_deletion_cancelled") {
-    return {
-      heading: notification.title ?? "An organisation will no longer be deleted.",
-      detail: null,
-      to: "/organisation",
-      organisation: notification.organisation.slug,
-    };
-  }
-  if (notification.kind === "released_document_changed") {
-    return {
-      heading: "A document you released has changed",
-      detail: `${notification.ref.filename ?? "It"} is waiting for Jev to check it again, and isn't searchable until then.`,
-      to: "/data/documents",
-      organisation: notification.organisation.slug,
-    };
-  }
   return {
-    heading: notification.title ?? "Notification",
-    detail: null,
-    to: null,
+    heading: notification.title ?? HEADINGS[notification.kind] ?? "Notification",
+    detail: notification.detail,
+    to: notificationPath(notification),
     organisation: notification.organisation.slug,
   };
 }

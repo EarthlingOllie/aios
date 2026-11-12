@@ -1,28 +1,30 @@
-"""The signed-in user's notifications (`aios.notifications`), which the SPA polls for its unread
-badge. Each user only ever sees, or marks, their own: anyone else's is a 404. They're the
-person's, from every organisation they're in (so not under the organisation prefix), each
-naming the organisation it's from, to open in it."""
+"""The signed-in person's notifications (`aios.notifications`), from every organisation they're
+in, under the person (`/api/me/notifications`), not any organisation: list them, mark one read,
+mark all read. Each person only ever sees, or marks, their own: anyone else's is a 404.
+
+What each says is read from its organisation's store as it's listed; one whose reference no
+longer exists there, or from an organisation the person has left, is dropped from the list and
+marked read. The bell hears of changes on the person's stream (`aios.api.streams`)."""
 
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from aios.auth import CurrentUser
-from aios.datastores import schema_changes
+from aios import notifications
+from aios.auth import CurrentUser, same_origin
 from aios.db import DB
 from aios.models import Notification, Organisation
-from aios.notifications import SCHEMA_CHANGE_REQUEST
-from aios.organisations import ORGANISATION_DELETION_CANCELLED, ORGANISATION_DELETION_SCHEDULED
 
-router = APIRouter(prefix="/api")
+# Its POSTs refuse cross-site requests.
+router = APIRouter(prefix="/api/me/notifications", dependencies=[Depends(same_origin)])
 
-# The most listed at once: all the unread ones a user is likely to have, and the latest read.
+# The most listed at once: all the unread ones a person is likely to have, and the latest read.
 LIST_LIMIT = 50
 
 
@@ -30,80 +32,81 @@ class NotificationOrganisationOut(BaseModel):
     id: int
     # What links in the browser name it by: opening the notification goes to `/o/<slug>/...`.
     slug: str
+    # What the bell labels it with.
+    name: str
 
 
 class NotificationOut(BaseModel):
     id: uuid.UUID
     # The organisation it's from.
     organisation: NotificationOrganisationOut
+    # `mention`, `reply`, `run_failed`, `approval_needed`, `released_document_changed`,
+    # `organisation_deletion_scheduled` or `organisation_deletion_cancelled`.
     kind: str
-    # What it's about: for `schema_change_request`, `request_id` and `data_store_id`; for
-    # `organisation_deletion_scheduled` and `organisation_deletion_cancelled`,
-    # `organisation_name` and (scheduled only) `deletes_at`.
+    # What it's about in its organisation, never content: for `mention`, `reply` and a chat's
+    # `run_failed`, `chat_id` and `message_id`; for a run's `run_failed`, `agent_id` or
+    # `workflow_id`, and `run_id`; for `approval_needed`, `approval_id`; for
+    # `released_document_changed`, `document_id`; for an organisation's deletion, nothing.
     ref: dict[str, Any]
-    # What it says, in a line: for a schema change request, what it asks for. None when what
-    # it's about has gone.
+    # What it says, in a line, and more if there's more (an excerpt, why a run failed), read
+    # from its organisation's store now. Null while that can't be read.
     title: str | None
+    detail: str | None
     created_at: datetime
     read_at: datetime | None
 
 
 class NotificationList(BaseModel):
-    # How many of the user's are unread, all told (not only those listed).
+    # How many of the person's are unread, all told (not only those listed).
     unread: int
     # Unread first, then read; newest first within each.
     notifications: list[NotificationOut]
 
 
-def _titles(db: Session, notifications: Sequence[Notification]) -> dict[uuid.UUID, str]:
-    """Each notification's title, by its id: looked up for all of a kind at once (a schema
-    change request's in its store, which the notification names)."""
-    requests = {
-        n.id: (n.ref.get("data_store_id"), n.ref.get("request_id"))
-        for n in notifications
-        if n.kind == SCHEMA_CHANGE_REQUEST
-    }
-    summaries = schema_changes.summaries(set(requests.values()))
-    titles = {n: summaries[r] for n, (_, r) in requests.items() if r in summaries}
-    for n in notifications:
-        if n.kind in DELETION_TITLES:
-            titles[n.id] = DELETION_TITLES[n.kind].format(name=n.ref.get("organisation_name"))
-    return titles
+def _organisations(db: Session, ids: set[int]) -> dict[int, Organisation]:
+    return {o.id: o for o in db.scalars(select(Organisation).where(Organisation.id.in_(ids)))}
 
 
-# The titles of an organisation's deletion being scheduled and cancelled, from its name then.
-DELETION_TITLES = {
-    ORGANISATION_DELETION_SCHEDULED: "{name} is scheduled for deletion.",
-    ORGANISATION_DELETION_CANCELLED: "{name} will no longer be deleted.",
-}
-
-
-def _out(db: Session, notifications: Sequence[Notification]) -> list[NotificationOut]:
-    titles = _titles(db, notifications)
-    slugs = dict(
-        db.execute(
-            select(Organisation.id, Organisation.slug).where(
-                Organisation.id.in_({n.organisation_id for n in notifications})
-            )
-        ).all()
+def _out(
+    n: Notification, org: Organisation, said: notifications.Description | None
+) -> NotificationOut:
+    return NotificationOut(
+        id=n.id,
+        organisation=NotificationOrganisationOut(id=org.id, slug=org.slug, name=org.name),
+        kind=n.kind,
+        ref=n.ref,
+        title=said.title if said else None,
+        detail=said.detail if said else None,
+        created_at=n.created_at,
+        read_at=n.read_at,
     )
+
+
+def _unread(db: Session, user_id: int) -> int:
+    return db.scalar(
+        select(func.count())
+        .select_from(Notification)
+        .where(Notification.user_id == user_id, Notification.read_at.is_(None))
+    )
+
+
+def _listed(db: Session, user_id: int, rows: Sequence[Notification]) -> list[NotificationOut]:
+    """The rows as listed: those whose references are gone dropped, and marked read
+    (committed)."""
+    said = notifications.describe(db, rows)
+    gone = [n.id for n in rows if n.id in said and said[n.id] is None]
+    if gone:
+        notifications.mark_read(db, user_id, gone)
+        db.commit()
+    orgs = _organisations(db, {n.organisation_id for n in rows})
     return [
-        NotificationOut(
-            id=n.id,
-            organisation=NotificationOrganisationOut(
-                id=n.organisation_id, slug=slugs[n.organisation_id]
-            ),
-            kind=n.kind,
-            ref=n.ref,
-            title=titles.get(n.id),
-            created_at=n.created_at,
-            read_at=n.read_at,
-        )
-        for n in notifications
+        _out(n, orgs[n.organisation_id], said.get(n.id))
+        for n in rows
+        if n.id not in gone and n.organisation_id in orgs
     ]
 
 
-@router.get("/notifications", response_model=NotificationList)
+@router.get("", response_model=NotificationList)
 def list_notifications(user: CurrentUser, db: DB):
     rows = db.scalars(
         select(Notification)
@@ -111,27 +114,22 @@ def list_notifications(user: CurrentUser, db: DB):
         .order_by(Notification.read_at.is_not(None), Notification.created_at.desc())
         .limit(LIST_LIMIT)
     ).all()
-    unread = db.scalar(
-        select(func.count())
-        .select_from(Notification)
-        .where(Notification.user_id == user.id, Notification.read_at.is_(None))
-    )
-    return NotificationList(unread=unread, notifications=_out(db, rows))
+    listed = _listed(db, user.id, rows)
+    return NotificationList(unread=_unread(db, user.id), notifications=listed)
 
 
-@router.post("/notifications/{notification_id}/read", response_model=NotificationOut)
+@router.post("/read", status_code=status.HTTP_204_NO_CONTENT)
+def mark_all_read(user: CurrentUser, db: DB) -> None:
+    """Mark every one of the person's notifications read."""
+    notifications.mark_all_read(db, user.id)
+    db.commit()
+
+
+@router.post("/{notification_id}/read", response_model=NotificationOut)
 def mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DB):
-    """Mark one of the user's notifications read. Idempotent: one already read keeps when it was
-    first read."""
-    db.execute(
-        update(Notification)
-        .where(
-            Notification.id == notification_id,
-            Notification.user_id == user.id,
-            Notification.read_at.is_(None),
-        )
-        .values(read_at=func.now())
-    )
+    """Mark one of the person's notifications read. Idempotent: one already read keeps when it
+    was first read."""
+    notifications.mark_read(db, user.id, [notification_id])
     db.commit()
     notification = db.scalar(
         select(Notification).where(
@@ -140,5 +138,6 @@ def mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DB):
     )
     if notification is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Notification not found")
-    [out] = _out(db, [notification])
-    return out
+    said = notifications.describe(db, [notification]).get(notification.id)
+    [org] = _organisations(db, {notification.organisation_id}).values()
+    return _out(notification, org, said)

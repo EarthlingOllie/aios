@@ -98,8 +98,9 @@ UNSCOPED = {
     ("GET", "/api/invites/{token}"),
     ("POST", "/api/invites/{token}/accept"),
     ("POST", "/api/organisations"),
-    ("GET", "/api/notifications"),
-    ("POST", "/api/notifications/{notification_id}/read"),
+    ("GET", "/api/me/notifications"),
+    ("POST", "/api/me/notifications/read"),
+    ("POST", "/api/me/notifications/{notification_id}/read"),
     ("GET", "/api/tools"),
     ("GET", "/api/triggers/timezones"),
 }

@@ -266,12 +266,12 @@ def test_a_notification_opens_the_right_organisations_approval(api, db, user):
                 run_id=None,
                 tool_call_id=None,
             )
-        listed = api.get("/api/notifications").json()["notifications"]
-        by_request = {n["ref"]["request_id"]: n for n in listed}
+        listed = api.get("/api/me/notifications").json()["notifications"]
+        by_request = {n["ref"]["approval_id"]: n for n in listed}
         for org_id, request in made.items():
             n = by_request[str(request.id)]
             assert n["organisation"]["id"] == org_id
-            assert n["title"] == request.summary
+            assert n["detail"] == request.summary
             # Opened in its organisation, the approval is there; in the other, it isn't.
             here = api.get(f"/api/o/{org_id}/schema-changes/{request.id}")
             assert here.status_code == 200, here.text

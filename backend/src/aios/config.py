@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # The hour (UTC, 0-23) the routine worker's beat prunes runs and chat history past
     # each organisation's retention (`aios.retention`): a quiet one.
     retention_prune_hour: int = Field(default=3, ge=0, le=23)
+    # Read notifications older than this many days are pruned, daily at `retention_prune_hour`
+    # (`aios.notifications.prune`).
+    notification_retention_days: float = Field(default=90, gt=0)
     redis_url: str = "redis://localhost:6379/0"
     # Live updates (`aios.streams`, `aios.api.streams`): an open stream sends a heartbeat this
     # often (seconds), shorter than any proxy's or load balancer's idle timeout; an API process
