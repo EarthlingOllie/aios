@@ -455,6 +455,29 @@ def test_a_mention_queued_as_the_budget_is_reached_is_refused_before_its_handoff
     assert budget(api)["spent"] == 0
 
 
+def test_mentions_queued_behind_one_refused_at_the_budget_are_refused_in_turn(api, run_service):
+    """Continuing runs queue an agent's later mentions in a chat behind its earlier one; when
+    that one is refused at the budget, the ones behind it come up and are refused too, rather
+    than waiting forever."""
+    agent = make_agent(api, "Helper")
+    chat = make_chat(api, "Ops")
+    add(api, chat, "agent", agent)
+    run_service.auto = False
+    for word in ("one", "two"):
+        say(api, chat, word, ("agent", agent))
+    set_budget(api, 0)
+    handoffs: list = []
+
+    with use_handoff(counted_handoffs(handoffs)), use_model(thirty_pence()):
+        run_service.drain()
+
+    assert handoffs == []
+    cards = [m for m in messages(api, chat)["messages"] if m["kind"] == "run_card"]
+    assert [c["body"] for c in cards] == [budgets.BUDGET_REACHED.format(amount="0.00")] * 2
+    assert [i["status"] for i in messages(api, chat)["invocations"]] == ["refused", "refused"]
+    assert replies_from(api, chat) == []
+
+
 def test_the_totals_are_reconciled_nightly_on_the_routine_worker():
     from aios import worker
 
