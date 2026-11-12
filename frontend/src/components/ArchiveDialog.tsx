@@ -26,7 +26,8 @@ function Group({ title, empty, children }: { title: string; empty?: boolean; chi
 }
 
 function schedule(t: UsedByTrigger): string {
-  return `${t.description} (${t.timezone})${t.enabled ? "" : " · paused"}`;
+  const zone = t.timezone ? ` (${t.timezone})` : "";
+  return `${t.description}${zone}${t.enabled ? "" : " · paused"}`;
 }
 
 function Workflows({ title, workflows }: { title: string; workflows: UsedByWorkflow[] }) {
@@ -48,7 +49,7 @@ function Workflows({ title, workflows }: { title: string; workflows: UsedByWorkf
 
 function Schedules({ triggers }: { triggers: UsedByTrigger[] }) {
   return (
-    <Group title="Its schedules, which pause" empty={!triggers.length}>
+    <Group title="Its triggers, which pause" empty={!triggers.length}>
       <ul className="flex flex-col gap-0.5 text-sm">
         {triggers.map((t) => (
           <li key={t.id}>{schedule(t)}</li>

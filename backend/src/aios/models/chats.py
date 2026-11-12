@@ -46,6 +46,8 @@ class InvocationCause(enum.StrEnum):
     mention = "mention"
     schedule = "schedule"
     manual = "manual"
+    # An event trigger's firing (`aios.events`).
+    event = "event"
 
 
 class InvocationStatus(enum.StrEnum):

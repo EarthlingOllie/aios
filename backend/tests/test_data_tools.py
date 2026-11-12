@@ -111,6 +111,7 @@ STORE_TABLES = {
         "chunks",
         "documents",
         "embedding_columns",
+        "events",
         "invocations",
         "people",
         "sandbox_sessions",

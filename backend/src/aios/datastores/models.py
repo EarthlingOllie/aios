@@ -48,7 +48,7 @@ from aios.models.chats import (
     InvocationCause,
     InvocationStatus,
 )
-from aios.models.triggers import TriggerKind, TriggerStatus, TriggerTargetKind
+from aios.models.triggers import EventType, TriggerKind, TriggerStatus, TriggerTargetKind
 from aios.models.usage import InvocableBy, UsageKind, UsagePurpose
 from aios.models.workflows import WorkflowNodeKind, WorkflowRunStatus, WorkflowStepStatus
 
@@ -682,10 +682,11 @@ class WorkflowRunStep(StoreBase):
 
 
 class Trigger(StoreBase):
-    """Starts an agent (a new run of its current version) or a workflow when it fires. The
-    only kind so far is a schedule: a cron expression in a timezone. The platform keeps a thin
-    index of when each is next due (`aios.models.ScheduleDue`, `aios.schedules`), written
-    whenever one is saved and rebuilt from these by the repair sweep."""
+    """Starts an agent (a new run of its current version) or a workflow when it fires. A
+    schedule is a cron expression in a timezone: the platform keeps a thin index of when each
+    is next due (`aios.models.ScheduleDue`, `aios.schedules`), written whenever one is saved and
+    rebuilt from these by the repair sweep. An event trigger fires when the store's outbox has
+    a matching event (`aios.events`)."""
 
     __tablename__ = "triggers"
 
@@ -706,6 +707,14 @@ class Trigger(StoreBase):
     # Schedules: a 5-field cron expression (or a macro like @daily), in an IANA timezone.
     cron: Mapped[str | None] = mapped_column(String(255))
     timezone: Mapped[str | None] = mapped_column(String(64))
+    # Event triggers: the event type it fires on, and what the event must match (by filter
+    # field, `aios.events.FILTERS`).
+    event_type: Mapped[EventType | None] = mapped_column(Enum(EventType, name="event_type"))
+    filter: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"))
+    # Whether it may fire on events its own target caused (the loop rules, `aios.events`).
+    fire_on_own_events: Mapped[bool] = mapped_column(Boolean, server_default=sql_text("false"))
+    # Why it was turned off, when the platform did it.
+    disabled_reason: Mapped[str | None] = mapped_column(Text)
     # When it next fires; null while disabled. Missed runs aren't caught up: a schedule that's
     # overdue (the service was down) fires once, then moves on from now.
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -747,6 +756,14 @@ class Trigger(StoreBase):
         CheckConstraint(
             "kind <> 'schedule' OR (cron IS NOT NULL AND timezone IS NOT NULL)",
             name="ck_triggers_schedule",
+        ),
+        CheckConstraint(
+            "kind::text <> 'event' OR event_type IS NOT NULL", name="ck_triggers_event"
+        ),
+        Index(
+            "ix_triggers_event_type",
+            "event_type",
+            postgresql_where=sql_text("event_type IS NOT NULL"),
         ),
         Index("ix_triggers_agent_id", "agent_id"),
         Index("ix_triggers_workflow_id", "workflow_id"),
@@ -923,6 +940,13 @@ class Invocation(StoreBase):
     requested_by: Mapped[int | None] = mapped_column(Integer)
     trigger_id: Mapped[int | None] = mapped_column(ForeignKey("triggers.id", ondelete="SET NULL"))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("invocations.id", ondelete="SET NULL"))
+    # An event trigger's: the event that fired it (cleared once the event is pruned).
+    event_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "events.id", ondelete="SET NULL", use_alter=True, name="fk_invocations_event_id"
+        ),
+    )
     # Loop prevention: its ancestors' ids, the root first, and how many there are.
     ancestor_ids: Mapped[list[int]] = mapped_column(
         ARRAY(Integer), default=list, server_default=sql_text("'{}'::integer[]")
@@ -976,6 +1000,7 @@ class Invocation(StoreBase):
         Index("ix_invocations_workflow_run_id", "workflow_run_id"),
         Index("ix_invocations_trigger_id", "trigger_id"),
         Index("ix_invocations_parent_id", "parent_id"),
+        Index("ix_invocations_event_id", "event_id"),
         # The unfinished ones: what a chat's poll reports on, and what waits for a turn.
         Index(
             "ix_invocations_unfinished",
@@ -983,6 +1008,39 @@ class Invocation(StoreBase):
             postgresql_where=sql_text("status IN ('queued', 'briefing', 'running')"),
         ),
         {"comment": "Why each run ran: a mention, a schedule, or a person starting it by hand"},
+    )
+
+
+class Event(StoreBase):
+    """The outbox (`aios.events`): something that happened in the store, written in the same
+    transaction as the change, for event triggers to react to. Dispatched ones are pruned after
+    `event_retention_days`."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    type: Mapped[EventType] = mapped_column(Enum(EventType, name="event_type"))
+    payload: Mapped[dict] = mapped_column(JSONB, server_default=sql_text("'{}'::jsonb"))
+    # The invocation whose run caused it; null for a person's own action.
+    invocation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invocations.id", ondelete="SET NULL")
+    )
+    # Its chain of causes, root first: the causing invocation's ancestors, then it; empty for a
+    # person's own action.
+    chain: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), default=list, server_default=sql_text("'{}'::integer[]")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_events_undispatched", "id", postgresql_where=sql_text("dispatched_at IS NULL")),
+        Index(
+            "ix_events_dispatched_at",
+            "dispatched_at",
+            postgresql_where=sql_text("dispatched_at IS NOT NULL"),
+        ),
+        {"comment": "The outbox: what happened in the store, for event triggers"},
     )
 
 

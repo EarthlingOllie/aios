@@ -592,6 +592,16 @@ export const HANDOFF: Handoff = { ack: "On it.", brief: "" };
 const ACKNOWLEDGEMENT = "Reading the chat…";
 const CHAT_NAME_TAKEN = "The organisation already has a chat with that name.";
 
+/** An event trigger's filter as the API normalises it: lower-case content types, empty fields left out. */
+function normalisedFilter(filter: Record<string, unknown[]> = {}): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = {};
+  for (const [key, values] of Object.entries(filter)) {
+    const kept = values.map((v) => (typeof v === "string" ? v.trim().toLowerCase() : v)).filter((v) => v !== "");
+    if (kept.length) out[key] = kept;
+  }
+  return out;
+}
+
 export class FakeApi {
   private nextId = 100;
   agents = new Map<number, AgentRow>();
@@ -1282,6 +1292,61 @@ export class FakeApi {
       agent_version: agent.versions.length,
       skill_version: version,
     }));
+  }
+
+  /** Adds an enabled document ingested trigger of the agent or workflow, with `fields` set. */
+  addEventTrigger(
+    kind: "agent" | "workflow",
+    target: AgentRow | WorkflowRow,
+    fields: Record<string, unknown> = {},
+  ) {
+    const trigger = {
+      ...this.triggerOut({
+        kind: "event",
+        target_kind: kind,
+        target_id: target.id,
+        enabled: true,
+        input: "",
+        cron: null,
+        timezone: "UTC",
+        event_type: "document_ingested",
+        filter: {},
+        fire_on_own_events: false,
+      }),
+      ...fields,
+    };
+    this.schedules.push(trigger);
+    return trigger;
+  }
+
+  /** A trigger as the API returns it, from what a form sent (`TriggerInput`). */
+  private triggerOut(body: Record<string, unknown>, id = this.id()): Record<string, unknown> {
+    const target = this.chatTarget(body.target_kind as Kind, Number(body.target_id));
+    const isEvent = body.kind === "event";
+    return {
+      id,
+      kind: body.kind,
+      target_kind: body.target_kind,
+      target_id: body.target_id,
+      target_name: target?.name ?? "",
+      enabled: body.enabled,
+      input: body.input ?? "",
+      cron: isEvent ? null : body.cron,
+      description: isEvent ? "When a document is ingested" : `At "${body.cron}"`,
+      timezone: isEvent ? null : body.timezone,
+      event_type: isEvent ? body.event_type : null,
+      filter: isEvent ? normalisedFilter(body.filter as Record<string, unknown[]>) : {},
+      fire_on_own_events: isEvent ? !!body.fire_on_own_events : false,
+      disabled_reason: null,
+      next_run_at: isEvent || !body.enabled ? null : NOW,
+      last_fired_at: null,
+      last_status: null,
+      last_error: null,
+      last_run_id: null,
+      last_workflow_run_id: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
   }
 
   /** Adds an enabled daily schedule of the agent or workflow. */
@@ -3080,6 +3145,30 @@ export class FakeApi {
         200,
         this.schedules.filter((t) => kind === null || (t.target_kind === kind && t.target_id === target)),
       );
+    }
+    if (path === "/api/triggers" && method === "POST") {
+      const refused = this.refuseUnlessBuilder();
+      if (refused) return fail(403, refused);
+      if (body.kind === "event") {
+        const unknown = Object.keys(body.filter ?? {}).find((k) => !["sources", "content_types"].includes(k));
+        if (unknown) return fail(422, `Unknown filter field '${unknown}' (known: content_types, sources).`);
+      }
+      const trigger = this.triggerOut(body);
+      this.schedules.push(trigger);
+      return reply(201, trigger);
+    }
+    if ((m = path.match(/^\/api\/triggers\/(\d+)$/)) && method !== "GET") {
+      const at = this.schedules.findIndex((t) => t.id === Number(m![1]));
+      if (at < 0) return fail(404, "Not Found");
+      const refused = this.refuseUnlessBuilder();
+      if (refused) return fail(403, refused);
+      if (method === "DELETE") {
+        this.schedules.splice(at, 1);
+        return reply(204, null);
+      }
+      const old = this.schedules[at];
+      this.schedules[at] = { ...old, ...this.triggerOut(body, old.id as number), last_fired_at: old.last_fired_at, last_status: old.last_status, last_error: old.last_error };
+      return reply(200, this.schedules[at]);
     }
     if (path === "/api/triggers/timezones") return reply(200, this.timezones);
     if (path === "/api/triggers/preview" && method === "POST") {

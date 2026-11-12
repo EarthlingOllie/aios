@@ -267,6 +267,20 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_interval_seconds: float = 15
 
+    # Event triggers (`aios.outbox`, `aios.dispatcher`). Run service processes drain stores
+    # whose outbox has pending events when woken, and every `event_dispatch_poll_seconds`
+    # regardless, `event_dispatch_batch` events at a time. The sweep (every
+    # `event_sweep_interval_seconds`) stamps stores whose pending stamp was lost, and prunes
+    # events dispatched more than `event_retention_days` ago. A chain of causes (a trigger's
+    # run causing an event that fires another, ...) may be at most `chain_max_depth` long, and
+    # each event trigger fires at most `event_trigger_rate_per_minute` times a minute.
+    event_dispatch_poll_seconds: float = Field(default=5, gt=0)
+    event_dispatch_batch: int = Field(default=100, ge=1)
+    event_sweep_interval_seconds: float = Field(default=60, gt=0)
+    event_retention_days: int = Field(default=14, ge=1)
+    event_trigger_rate_per_minute: int = Field(default=60, ge=1)
+    chain_max_depth: int = Field(default=8, ge=1)
+
     # The run service (`aios.run_service`): each process runs up to `run_service_concurrency`
     # items at once, `run_service_interactive_reserve` of them kept for people waiting in chat.
     # It's woken when work arrives, and polls every `run_service_idle_poll_seconds` regardless.

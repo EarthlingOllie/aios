@@ -147,6 +147,13 @@ celery_app.conf.beat_schedule = {
         "schedule": settings.audit_drain_seconds,
         "options": {"expires": settings.audit_drain_seconds},
     },
+    # Stores whose events pending stamp was lost, and old dispatched events
+    # (`aios.dispatcher.sweep`).
+    "sweep-events": {
+        "task": "aios.sweep_events",
+        "schedule": settings.event_sweep_interval_seconds,
+        "options": {"expires": settings.event_sweep_interval_seconds},
+    },
 }
 
 
@@ -469,6 +476,15 @@ def purge_dropped_task() -> None:
     from aios.datastores import dropped
 
     dropped.purge_all()
+
+
+@celery_app.task(name="aios.sweep_events")
+def sweep_events_task() -> None:
+    """Stamp every store with undispatched events whose stamp was lost, so the dispatcher comes
+    to it, and prune events dispatched past their retention (`aios.dispatcher.sweep`)."""
+    from aios import dispatcher
+
+    dispatcher.sweep()
 
 
 @celery_app.task(name="aios.prune_retention")

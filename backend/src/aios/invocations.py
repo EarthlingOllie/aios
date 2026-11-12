@@ -53,12 +53,13 @@ from collections.abc import Sequence
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from aios import checkpoints, jev, limits, search_index
+from aios import checkpoints, jev, limits, outbox, search_index
 from aios.datastores import store_id_of
 from aios.datastores.models import (
     Agent,
     Chat,
     ChatMessage,
+    Event,
     Invocation,
     SchemaChangeRequest,
     Workflow,
@@ -111,26 +112,35 @@ def for_run(
     requested_by: int | None,
     trigger_id: int | None = None,
     parent: Invocation | None = None,
+    event: Event | None = None,
     status: InvocationStatus = InvocationStatus.queued,
 ) -> Invocation:
     """Add (and flush) the invocation of a run of the agent or workflow (kind, id) that no
     mention started: a workflow agent node's (`parent`, its workflow run's invocation, whose
-    cause it takes), a schedule's (`trigger_id`), else one started by hand by `requested_by`.
-    The caller links the run to it; in the caller's transaction."""
+    cause it takes), an event trigger's (`trigger_id` and the `event` it fired on, whose chain
+    of causes it continues), a schedule's (`trigger_id`), else one started by hand by
+    `requested_by`. The caller links the run to it; in the caller's transaction."""
     if parent is not None:
         cause = parent.cause
+        ancestors = [*parent.ancestor_ids, parent.id]
+    elif event is not None:
+        cause = InvocationCause.event
+        ancestors = list(event.chain)
     elif trigger_id is not None:
         cause = InvocationCause.schedule
+        ancestors = []
     else:
         cause = InvocationCause.manual
+        ancestors = []
     is_agent = kind == TriggerTargetKind.agent
     invocation = Invocation(
         cause=cause,
         requested_by=requested_by,
         trigger_id=trigger_id,
         parent_id=None if parent is None else parent.id,
-        ancestor_ids=[] if parent is None else [*parent.ancestor_ids, parent.id],
-        depth=0 if parent is None else parent.depth + 1,
+        event_id=None if event is None else event.id,
+        ancestor_ids=ancestors,
+        depth=len(ancestors),
         target_kind=kind,
         agent_id=target_id if is_agent else None,
         workflow_id=None if is_agent else target_id,
@@ -301,6 +311,7 @@ def _finish(
     )
     store.add(result)
     search_index.index_chat_message(store, result)
+    outbox.message_posted(store, result, invocation_id=invocation.id)
     # A result is activity.
     store.execute(update(Chat).where(Chat.id == invocation.chat_id).values(updated_at=func.now()))
 

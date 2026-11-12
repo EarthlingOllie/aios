@@ -42,6 +42,7 @@ from aios.models.stores import (
     DataStoreStatus,
 )
 from aios.models.triggers import (
+    EventType,
     ScheduleDue,
     TriggerKind,
     TriggerStatus,
@@ -80,6 +81,7 @@ __all__ = [
     "WorkflowRunStatus",
     "WorkflowStepStatus",
     "TriggerKind",
+    "EventType",
     "TriggerTargetKind",
     "TriggerStatus",
     "ScheduleDue",

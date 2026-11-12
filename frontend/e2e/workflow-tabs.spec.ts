@@ -70,7 +70,7 @@ test("switches tabs on click, keeps the tab in the URL, and shows counts", async
   await tab(page, "Schedule").click();
   await expect(page).toHaveURL(/\/schedule$/);
   await expect(
-    panel(page).getByText("No schedules. Add one to run this workflow automatically."),
+    panel(page).getByText("No schedules or triggers. Add one to run this workflow automatically."),
   ).toBeVisible();
 
   // A reload, or a shared link, opens on the same tab.

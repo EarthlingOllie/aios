@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -85,8 +86,16 @@ class DataStore(Base):
     db_bytes: Mapped[int | None] = mapped_column(BigInteger)
     files_bytes: Mapped[int | None] = mapped_column(BigInteger)
     usage_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When its outbox last got events the dispatcher hasn't seen (`aios.events`): stamped once
+    # the store has committed them, cleared as the dispatcher claims the store. Null: none.
+    events_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
+        Index(
+            "ix_data_stores_events_pending_at",
+            "events_pending_at",
+            postgresql_where=text("events_pending_at IS NOT NULL"),
+        ),
         CheckConstraint(
             "owner_organisation_id IS NOT NULL OR status IN ('deleting', 'deleted')",
             name="ck_data_stores_owner_organisation",

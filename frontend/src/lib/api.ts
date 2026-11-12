@@ -687,9 +687,9 @@ export type NotificationList = {
   notifications: Notification[];
 };
 
-export type InvocationCause = "mention" | "schedule" | "manual";
+export type InvocationCause = "mention" | "schedule" | "manual" | "event";
 
-/** Why a run ran: a mention, a schedule, or a person starting it by hand. A workflow agent
+/** Why a run ran: a mention, a schedule, an event trigger, or a person starting it by hand. A workflow agent
  * node's is a child of its workflow run's. */
 export type InvocationRecord = {
   id: number;
@@ -926,23 +926,39 @@ export type WorkflowRunPage = WorkflowRun & {
 };
 
 export type TriggerTargetKind = "agent" | "workflow";
-export type TriggerStatus = "running" | "succeeded" | "failed";
+/** How a trigger last went: its run's status, or why the loop rules refused an event trigger's
+ * firing (`refused`; `rate_limited` past its rate). */
+export type TriggerStatus = "running" | "succeeded" | "failed" | "refused" | "rate_limited";
+export type TriggerKind = "schedule" | "event";
+/** What happened in the store, as its outbox records it. */
+export type EventType = "document_ingested" | "table_written" | "schema_change_applied" | "chat_message";
+/** What an event trigger's event must match: document ingested triggers filter by source ids and
+ * content types (`text/*` matches every text type). Each field left out matches anything. */
+export type TriggerFilter = { sources?: number[]; content_types?: string[] };
 
-/** Starts an agent or a workflow by itself. Schedules (cron) are the only kind so far. */
+/** Starts an agent or a workflow by itself: on a schedule (cron), or on an event in the store. */
 export type Trigger = Provenance & {
   id: number;
-  kind: "schedule";
+  kind: TriggerKind;
   target_kind: TriggerTargetKind;
   target_id: number;
   target_name: string;
   enabled: boolean;
-  /** The message an agent's run starts with, or a workflow run's input. */
+  /** Schedules: the message an agent's run starts with, or a workflow run's input. Event
+   * triggers: what an agent's run is told besides the event, or a workflow input's template. */
   input: string;
-  cron: string;
-  /** The cron expression in plain English. */
+  /** Schedules only. */
+  cron: string | null;
+  /** When it fires, in plain English: the schedule, or the event. */
   description: string;
-  timezone: string;
-  /** Null while disabled. */
+  timezone: string | null;
+  /** Event triggers only. */
+  event_type: EventType | null;
+  filter: TriggerFilter;
+  fire_on_own_events: boolean;
+  /** Why the platform turned it off, if it did. */
+  disabled_reason: string | null;
+  /** Null while disabled, and for event triggers. */
   next_run_at: string | null;
   last_fired_at: string | null;
   /** For a workflow, how the run it last started is going (a worker runs it). */
@@ -957,24 +973,28 @@ export type Trigger = Provenance & {
 };
 
 export type TriggerInput = {
-  kind: "schedule";
+  kind: TriggerKind;
   target_kind: TriggerTargetKind;
   target_id: number;
   enabled: boolean;
   input: string;
-  cron: string;
+  cron: string | null;
   timezone: string;
+  event_type?: EventType | null;
+  filter?: TriggerFilter;
+  fire_on_own_events?: boolean;
 };
 
 export type SchedulePreview = { description: string; next_runs: string[] };
 
-/** A schedule that starts runs of something an archive confirmation lists. */
+/** A trigger that starts runs of something an archive confirmation lists. */
 export type UsedByTrigger = {
   id: number;
   enabled: boolean;
-  cron: string;
+  /** Schedules only. */
+  cron: string | null;
   description: string;
-  timezone: string;
+  timezone: string | null;
   next_run_at: string | null;
 };
 
