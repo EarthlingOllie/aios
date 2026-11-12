@@ -430,16 +430,45 @@ export type Source = {
   last_sync: SourceSync | null;
   next_sync_at: string | null;
   created_at: string;
+  /** A URL source's page. */
+  url?: string | null;
+  /** An email source's allowed senders: addresses, and whole domains as `@example.com`. */
+  allowed_senders?: string[] | null;
 };
 
 /** A source with its most recent syncs, newest first. */
-export type SourceDetail = Source & { syncs: SourceSync[] };
+export type SourceDetail = Source & {
+  syncs: SourceSync[];
+  /** A webhook source's endpoint. */
+  webhook_url?: string | null;
+  /** Only as it's made or rotated: a webhook source's signing secret, an email source's address. */
+  webhook_secret?: string | null;
+  email_address?: string | null;
+};
+
+/** A kind of source an admin can add (besides a provider's); `unavailable` says why it can't here. */
+export type SourceKindOption = { kind: "url" | "webhook" | "email"; unavailable: string | null };
 
 /** A provider a source can be added with here; `unavailable` says why it can't, if it can't. */
 export type SourceProvider = { provider: string; unavailable: string | null };
 
-export type SourceCreate = { name: string; provider: string; feed?: string; interval_seconds?: number };
-export type SourceUpdate = { name?: string; paused?: boolean; interval_seconds?: number };
+/** A provider's source (`kind` "connector", with `provider`), or a URL, webhook or email source. */
+export type SourceCreate = {
+  name: string;
+  kind?: "connector" | "url" | "webhook" | "email";
+  provider?: string;
+  feed?: string;
+  url?: string;
+  allowed_senders?: string[];
+  interval_seconds?: number;
+};
+export type SourceUpdate = {
+  name?: string;
+  paused?: boolean;
+  interval_seconds?: number;
+  url?: string;
+  allowed_senders?: string[];
+};
 
 /** A provider a connector can be made with; `unavailable` says why it can't here, if it can't. */
 export type ConnectorProvider = {
@@ -1837,10 +1866,17 @@ export const api = {
   listSources: () => request<Source[]>(`${organisationApi()}/sources`),
   getSource: (id: number) => request<SourceDetail>(`${organisationApi()}/sources/${id}`),
   listSourceProviders: () => request<SourceProvider[]>(`${organisationApi()}/source-providers`),
-  /** Admins only; a 422 for a provider not offered here or an interval under the minimum. */
+  listSourceKinds: () => request<SourceKindOption[]>(`${organisationApi()}/source-kinds`),
+  /** Admins only; a 422 for a kind or provider not offered here, a URL aios can't reach ("This
+   * address isn't reachable from aios"), or an interval under the minimum. A webhook source's
+   * secret, or an email source's address, is in the answer this once. */
   createSource: (body: SourceCreate) => request<SourceDetail>(`${organisationApi()}/sources`, json("POST", body)),
   updateSource: (id: number, body: SourceUpdate) =>
     request<SourceDetail>(`${organisationApi()}/sources/${id}`, json("PATCH", body)),
+  /** Admins only: a webhook source's new secret (and URL), or an email source's new address,
+   * answered this once; the old one stops working. */
+  rotateSourceSecret: (id: number) =>
+    request<SourceDetail>(`${organisationApi()}/sources/${id}/secret`, { method: "POST" }),
   /** Admins only: queued (202), or a 409 while a sync of it runs, or for Uploads or a paused source. */
   syncSource: (id: number, full = false) =>
     request<void>(`${organisationApi()}/sources/${id}/sync`, json("POST", { full })),

@@ -104,6 +104,7 @@ test("an admin adds a source, and it's listed", async ({ page }) => {
 
   await page.getByRole("button", { name: "Add source" }).click();
   const form = page.getByRole("form", { name: "Add source" });
+  await form.getByLabel("Kind").selectOption({ label: "Test provider" });
   await form.getByLabel("Name").fill("Team wiki");
   await form.getByLabel("Sync every (minutes)").fill("2");
   await form.getByRole("button", { name: "Add" }).click();
@@ -227,4 +228,108 @@ test("an admin releases a flagged synced item from the flagged list", async ({ p
 
   await expect(page.getByRole("region", { name: "Flagged content" })).toContainText("Nothing is flagged.");
   expect(api.flaggedItems[0].released).toBe(true);
+});
+
+test("an admin adds a web page, and an address aios can't reach is refused with why", async ({ page }) => {
+  const api = await fakeApi(page);
+  await page.goto(inOrg("/data/sources"));
+
+  await page.getByRole("button", { name: "Add source" }).click();
+  const form = page.getByRole("form", { name: "Add source" });
+  await expect(form.getByLabel("Kind")).toHaveValue("url");
+  await form.getByLabel("Name").fill("Price page");
+  await form.getByLabel("URL").fill("http://169.254.169.254/latest/meta-data");
+  await form.getByRole("button", { name: "Add" }).click();
+  await expect(form.getByRole("alert")).toContainText("This address isn't reachable from aios");
+
+  await form.getByLabel("URL").fill("https://example.com/prices");
+  await form.getByRole("button", { name: "Add" }).click();
+
+  await expect(form).toBeHidden();
+  const added = sourceList(page).getByRole("listitem").filter({ hasText: "Price page" });
+  await expect(added).toContainText("Web page");
+  expect(api.sources.find((s) => s.name === "Price page")?.url).toBe("https://example.com/prices");
+
+  await added.getByRole("link", { name: "Price page" }).click();
+  await expect(page.getByRole("link", { name: "https://example.com/prices" })).toBeVisible();
+});
+
+test("an admin adds a webhook: its secret is shown once, and a new one replaces it", async ({ page }) => {
+  await fakeApi(page);
+  await page.goto(inOrg("/data/sources"));
+
+  await page.getByRole("button", { name: "Add source" }).click();
+  const form = page.getByRole("form", { name: "Add source" });
+  await form.getByLabel("Kind").selectOption({ label: "Webhook" });
+  await expect(form.getByLabel("Sync every (minutes)")).toBeHidden();
+  await form.getByLabel("Name").fill("Orders");
+  await form.getByRole("button", { name: "Add" }).click();
+
+  const shown = page.getByRole("region", { name: "Shown once" });
+  await expect(shown.getByLabel("Signing secret")).toHaveValue("whsec_secret1");
+  await expect(shown.getByLabel("Webhook URL")).toHaveValue(/\/api\/webhooks\/token1$/);
+  await expect(shown).toContainText("won't be shown again");
+  await shown.getByRole("button", { name: "Done" }).click();
+  await expect(shown).toBeHidden();
+
+  const added = sourceList(page).getByRole("listitem").filter({ hasText: "Orders" });
+  await expect(added).toContainText("Webhook");
+  await added.getByRole("link", { name: "Orders" }).click();
+  // Its URL stays on its page; its secret doesn't. It has nothing to sync.
+  await expect(page.getByLabel("Webhook URL")).toHaveValue(/token1$/);
+  await expect(page.getByText("whsec_secret1")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Sync now" })).toHaveCount(0);
+  await expect(page.getByText("Nothing has arrived yet.")).toBeVisible();
+
+  await page.getByRole("button", { name: "New secret" }).click();
+  const rotated = page.getByRole("region", { name: "Shown once" });
+  await expect(rotated.getByLabel("Signing secret")).toHaveValue("whsec_secret2");
+  await rotated.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByLabel("Webhook URL")).toHaveValue(/token2$/);
+});
+
+test("an admin adds an email source: its address is shown once, and senders are allowed on its page", async ({
+  page,
+}) => {
+  const api = await fakeApi(page);
+  await page.goto(inOrg("/data/sources"));
+
+  await page.getByRole("button", { name: "Add source" }).click();
+  const form = page.getByRole("form", { name: "Add source" });
+  await form.getByLabel("Kind").selectOption({ label: "Email" });
+  await form.getByLabel("Name").fill("Forwarded mail");
+  await form.getByLabel("Allowed senders").fill("Alice@example.com\n@example.org");
+  await form.getByRole("button", { name: "Add" }).click();
+
+  const shown = page.getByRole("region", { name: "Shown once" });
+  await expect(shown.getByLabel("Address")).toHaveValue("in-address1@in.aios.test");
+  await shown.getByRole("button", { name: "Done" }).click();
+  const source = api.sources.find((s) => s.name === "Forwarded mail");
+  expect(source?.allowed_senders).toEqual(["Alice@example.com", "@example.org"]);
+
+  await page.goto(inOrg(`/data/sources/${source!.id}`));
+  await expect(page.getByText("in-address1@in.aios.test")).toBeHidden();
+  await page.getByRole("textbox", { name: "Allowed senders" }).fill("bob@example.net");
+  await page.getByRole("button", { name: "Save senders" }).click();
+  await expect
+    .poll(() => api.sources.find((s) => s.id === source!.id)?.allowed_senders)
+    .toEqual(["bob@example.net"]);
+
+  await page.getByRole("button", { name: "New address" }).click();
+  const rotated = page.getByRole("region", { name: "Shown once" });
+  await expect(rotated.getByLabel("Address")).toHaveValue("in-address2@in.aios.test");
+});
+
+test("email is shown as unavailable where the deployment has no inbound mail", async ({ page }) => {
+  const api = await fakeApi(page);
+  const why =
+    "Email sources need an inbound mail service, which this deployment doesn't have. They're on the roadmap for deployments like this one.";
+  api.sourceKinds = api.sourceKinds.map((k) => (k.kind === "email" ? { ...k, unavailable: why } : k));
+  await page.goto(inOrg("/data/sources"));
+
+  await page.getByRole("button", { name: "Add source" }).click();
+  const form = page.getByRole("form", { name: "Add source" });
+  await expect(form.getByRole("option", { name: "Email (unavailable)" })).toBeDisabled();
+  await expect(form).toContainText(`Email: ${why}`);
+  await expect(form.getByRole("option", { name: "Webhook" })).toBeEnabled();
 });

@@ -61,6 +61,9 @@ UNSCOPED: set[tuple[str, str]] = {
     # Webhook triggers' public endpoint: no one signs in; the token leads to the organisation
     # (`aios.api.webhooks`).
     ("POST", "/api/webhooks/{token}"),
+    # The receiving mail service's: each recipient's address leads to the organisation
+    # (`aios.api.inbound_mail`).
+    ("POST", "/api/inbound-mail"),
 }
 
 

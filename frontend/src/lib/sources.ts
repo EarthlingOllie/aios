@@ -31,6 +31,19 @@ export function documentsFrom(docs: DocumentInfo[], sourceId: number | undefined
   return sourceId === undefined ? docs : docs.filter((d) => d.source.id === sourceId);
 }
 
+/** Whether a source is pushed to (webhook, email) rather than synced: it has nothing to sync. */
+export function isPushed(kind: SourceKind): boolean {
+  return kind === "webhook" || kind === "email";
+}
+
+/** Allowed senders as typed: one per line or comma, blanks left out. */
+export function parseSenders(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Whether a source may be paused or removed at all: never Uploads, so uploading is always on. */
 export function canChangeSource(source: Pick<Source, "kind">): boolean {
   return source.kind !== "upload";

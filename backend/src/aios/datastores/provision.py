@@ -337,6 +337,9 @@ DENIED_COLUMNS: dict[str, tuple[str, ...]] = {
     "aios.audit_log": ("details",),
     # A webhook trigger's token hash and encrypted signing secret (`aios.webhooks`).
     "aios.triggers": ("webhook_token_hash", "webhook_secret"),
+    # A webhook source's encrypted signing secret, and the hash of its token or an email
+    # source's address (`aios.push_sources`).
+    "aios.sources": ("secret", "token_hash"),
 }
 
 # What the read-write role, the platform's own, may only insert and read: the audit log is

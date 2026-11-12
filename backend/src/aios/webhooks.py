@@ -1,4 +1,5 @@
-"""Webhook triggers' secrets, tokens and signatures (the endpoint is `aios.api.webhooks`).
+"""Webhooks' secrets, tokens and signatures (the endpoint is `aios.api.webhooks`): webhook
+triggers', and webhook sources' (`aios.push_sources`), which keep their deliveries.
 
 - **The secret.** Each webhook trigger has a random signing secret, kept encrypted on the
   trigger (`credentials.encrypt`), shown once when it's made or rotated.
@@ -68,9 +69,16 @@ def signed(secret: str, timestamp: str, body: bytes, given: str) -> bool:
     return given.isascii() and hmac.compare_digest(signature(secret, timestamp, body), given)
 
 
-def index(data_store_id: uuid.UUID, organisation_id: int, trigger_id: int, hashed: str) -> None:
-    """Lead the token with this hash to the trigger; committed at once, before the store commits
-    the trigger's hash."""
+def index(
+    data_store_id: uuid.UUID,
+    organisation_id: int,
+    trigger_id: int | None,
+    hashed: str,
+    *,
+    source_id: int | None = None,
+) -> None:
+    """Lead the token with this hash to the trigger (or webhook source); committed at once,
+    before the store commits its hash."""
     with SessionLocal() as db:
         db.execute(
             insert(WebhookToken)
@@ -78,6 +86,7 @@ def index(data_store_id: uuid.UUID, organisation_id: int, trigger_id: int, hashe
                 token_hash=hashed,
                 data_store_id=data_store_id,
                 trigger_id=trigger_id,
+                source_id=source_id,
                 organisation_id=organisation_id,
             )
             .on_conflict_do_nothing()

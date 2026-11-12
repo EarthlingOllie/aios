@@ -11,7 +11,8 @@
     (`aios.api.chats.messages`, `aios.tools.post_message`, `aios.invocations`): chat message,
     with its text, for keyword filters;
   - a call a webhook trigger's endpoint accepted (`aios.api.webhooks`): webhook received, for
-    that trigger alone.
+    that trigger alone; a delivery a webhook source stored, clean (`aios.push_sources`):
+    webhook received, for the triggers listening to that source.
 - **Filters.** Each event type's triggers filter on its fields (`FILTERS`, checked by
   `checked_filter`, matched by `matches`): tables by name without `data.`, keywords as whole
   words ignoring case (`keyword_pattern`).
@@ -245,7 +246,9 @@ FILTERS: dict[EventType, dict[str, FilterField]] = {
         "mentions": FilterField(str, pattern=MENTION),
         "keywords": FilterField(str),
     },
-    EventType.webhook_received: {},
+    # A trigger with sources listens to those webhook sources' deliveries rather than having an
+    # endpoint of its own.
+    EventType.webhook_received: {"sources": FilterField(int)},
 }
 
 # What an event trigger fires on, in plain English.
@@ -354,6 +357,9 @@ def matches(type: EventType, filter: dict[str, list], payload: dict[str, Any]) -
         keywords = filter.get("keywords")
         text = payload.get("text") or ""
         if keywords and not any(keyword_pattern(k).search(text) for k in keywords):
+            return False
+    elif type == EventType.webhook_received and "source_id" in payload:
+        if payload["source_id"] not in (filter.get("sources") or []):
             return False
     elif type == EventType.document_ingested:
         sources = filter.get("sources")

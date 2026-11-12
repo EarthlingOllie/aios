@@ -44,6 +44,8 @@ PLATFORM_TABLES = {
     "schedule_due",
     # Where each webhook trigger's token leads (`aios.webhooks`): token hashes and store ids.
     "webhook_tokens",
+    # Where each email source's address leads (`aios.push_sources`): address hashes and store ids.
+    "inbound_addresses",
     # Platform-side audit entries on their way to their store's audit log (`aios.audit`).
     "audit_outbox",
     # The run service's work queue (`aios.run_service`): store ids, deleted once done.

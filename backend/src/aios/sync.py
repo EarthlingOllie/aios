@@ -33,6 +33,11 @@ admin, once (`aios.notifications.SOURCE_ATTENTION`). A sync that succeeds makes 
 
 **Health** (`health`) is derived from its status and recent syncs: healthy, delayed, failing or
 needs reconnecting.
+
+**Kinds.** A URL source's adapter fetches its page (`aios.url_sources`); a connector's and the
+test provider's are their provider's (`aios.source_providers`). Webhook and email sources are
+pushed to (`PUSHED`): they never sync, so their items are never reconciled away. What's pushed
+to them is written by the same code (`push`), recorded as a sync of its own.
 """
 
 import contextlib
@@ -63,6 +68,7 @@ from aios.datastores.models import (
 from aios.jev import Verdict
 from aios.source_providers import (
     Adapter,
+    Content,
     Item,
     NeedsReconnecting,
     SourceView,
@@ -83,6 +89,10 @@ NEEDS_RECONNECTING = "needs_reconnecting"
 
 # Where documents' ids come from: an item's file is stored under its document's id.
 DOCUMENT_IDS = func.pg_get_serial_sequence(Document.__table__.fullname, "id")
+
+
+# The kinds that are pushed to rather than synced: they never sync, and nothing reconciles them.
+PUSHED = (SourceKind.webhook, SourceKind.email)
 
 
 def view(source: Source, credential: str | None = None) -> SourceView:
@@ -145,6 +155,7 @@ def _start(store: Session, source_id: int, kind: SyncKind) -> SourceSync | None:
     if (
         source is None
         or source.kind == SourceKind.upload
+        or source.kind in PUSHED
         or source.status in (SourceStatus.paused, SourceStatus.removing)
     ):
         store.rollback()
@@ -458,6 +469,14 @@ def _ingest(store_id: uuid.UUID, document_ids: list[int]) -> None:
 # --- One sync ----------------------------------------------------------------------------------
 
 
+def _adapter(source: Source) -> Adapter:
+    if source.kind == SourceKind.url:
+        from aios.url_sources import UrlAdapter
+
+        return UrlAdapter()
+    return adapter_for(source.settings or {})
+
+
 def _full(source: Source, kind: SyncKind) -> bool:
     """Whether this sync lists everything: a full one, the source's first, or reconciliation
     being due."""
@@ -490,7 +509,7 @@ def run_sync(
             store.commit()
         run = None
         try:
-            adapter = adapter_for(source.settings or {})
+            adapter = _adapter(source)
             credential = None
             if source.connector_id is not None:
                 from aios import connectors
@@ -623,6 +642,67 @@ def _failed(
         )
 
 
+# --- Pushed items ----------------------------------------------------------------------------
+
+
+class _Given:
+    """The adapter for content already in hand: what was pushed to a source."""
+
+    def __init__(self, contents: dict[str, Content]):
+        self.contents = contents
+
+    def fetch(self, source: SourceView, item: Item) -> Content:
+        return self.contents[item.external_id]
+
+
+def push(
+    data_store_id: uuid.UUID,
+    source_id: int,
+    items: list[Item],
+    contents: dict[str, Content],
+    *,
+    dropped: int = 0,
+    error: str | None = None,
+) -> SourceSync | None:
+    """Write items pushed to a source (an email, and its attachments) as a sync writes them, Jev
+    checking each, and record what was written, and any `dropped`, as a sync of its own. None
+    if the source is gone or doesn't take them now (paused, being removed)."""
+    with store_session(data_store_id, "rw") as store:
+        source = store.get(Source, source_id)
+        if source is None or source.status in (SourceStatus.paused, SourceStatus.removing):
+            return None
+        run = _Sync(store, data_store_id, source, _Given(contents))
+        run.counts.dropped = dropped
+        if items:
+            run.write_all(items)
+        return record_push(store, source_id, run.counts, run.awaiting(), error)
+
+
+def record_push(
+    store: Session, source_id: int, counts: Counts, awaiting: int, error: str | None = None
+) -> SourceSync:
+    """Record what was pushed to a source as a finished sync (committed)."""
+    record = SourceSync(
+        source_id=source_id,
+        kind=SyncKind.incremental,
+        status=SyncStatus.succeeded,
+        finished_at=func.now(),
+        added=counts.added,
+        updated=counts.updated,
+        dropped=counts.dropped,
+        skipped=counts.skipped,
+        storage_full=counts.storage_full,
+        awaiting_check=awaiting,
+        error=error or (STORAGE_FULL if counts.storage_full else None),
+    )
+    store.add(record)
+    prune(store, source_id)
+    store.commit()
+    store.refresh(record)
+    store.expunge(record)
+    return record
+
+
 def prune(store: Session, source_id: int | None = None) -> int:
     """Delete sync records older than `sync_history_days` (the source's, or every source's), in
     the caller's transaction; how many went. A running one is never pruned."""
@@ -642,7 +722,7 @@ def health(source: Source, last: SourceSync | None, last_success: datetime | Non
     """The source's health, from its status and recent syncs: needs reconnecting or failing by
     its status; delayed if its last sync failed, or nothing has succeeded for two of its
     intervals; else healthy (as Uploads, and a paused source, always are)."""
-    if source.kind == SourceKind.upload or source.status == SourceStatus.paused:
+    if source.kind in (SourceKind.upload, *PUSHED) or source.status == SourceStatus.paused:
         return HEALTHY
     if source.status == SourceStatus.needs_reauth:
         return NEEDS_RECONNECTING
@@ -667,7 +747,7 @@ def due(store: Session) -> list[int]:
         for source in store.scalars(
             select(Source)
             .where(
-                Source.kind != SourceKind.upload,
+                Source.kind.not_in([SourceKind.upload, *PUSHED]),
                 Source.status.in_([SourceStatus.active, SourceStatus.failing]),
                 (Source.next_sync_at.is_(None)) | (Source.next_sync_at <= func.now()),
             )

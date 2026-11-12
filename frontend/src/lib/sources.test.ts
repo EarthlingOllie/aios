@@ -6,6 +6,8 @@ import {
   canDeleteDocument,
   documentsFrom,
   intervalLabel,
+  isPushed,
+  parseSenders,
   sourceHealthLabel,
   sourceKindLabel,
   sourceStatusLabel,
@@ -92,5 +94,26 @@ describe("canDeleteDocument", () => {
   it("offers to delete only uploads: a synced document is removed at its source", () => {
     expect(canDeleteDocument(doc(1, uploads))).toBe(true);
     expect(canDeleteDocument(doc(2, { id: 3, kind: "connector", name: "Wiki" }))).toBe(false);
+  });
+});
+
+describe("isPushed", () => {
+  it("is true for webhook and email sources, which never sync", () => {
+    expect(isPushed("webhook")).toBe(true);
+    expect(isPushed("email")).toBe(true);
+    expect(isPushed("url")).toBe(false);
+    expect(isPushed("connector")).toBe(false);
+    expect(isPushed("upload")).toBe(false);
+  });
+});
+
+describe("parseSenders", () => {
+  it("takes one sender per line or comma, leaving out blanks", () => {
+    expect(parseSenders("alice@example.com, @example.org\n\n  bob@example.net ,")).toEqual([
+      "alice@example.com",
+      "@example.org",
+      "bob@example.net",
+    ]);
+    expect(parseSenders("  ")).toEqual([]);
   });
 });

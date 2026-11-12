@@ -1399,6 +1399,11 @@ class Source(StoreBase):
         unique=True,
         comment="The connector it syncs (kind connector, made from one).",
     )
+    # A webhook source's signing secret, encrypted (`aios.push_sources`); on the deny list.
+    secret: Mapped[str | None] = mapped_column(Text, deferred=True)
+    # The SHA-256 of what leads to a webhook or email source from outside: its token, or its
+    # address. On the deny list.
+    token_hash: Mapped[str | None] = mapped_column(String(64), deferred=True)
     # The member who added it, by platform user id; null for Uploads.
     created_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1407,6 +1412,7 @@ class Source(StoreBase):
     )
 
     __table_args__ = (
+        Index("uq_sources_token_hash", "token_hash", unique=True),
         # Exactly one Uploads: the migration makes it, and no second can be added.
         Index(
             "uq_sources_upload",

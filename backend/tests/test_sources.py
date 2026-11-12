@@ -44,7 +44,12 @@ def test_a_new_store_has_exactly_one_source_uploads(api):
     assert listed[0]["document_count"] == 0
     one = api.get(f"/api/sources/{listed[0]['id']}")
     assert one.status_code == 200
-    assert one.json() == listed[0] | {"syncs": []}
+    assert one.json() == listed[0] | {
+        "syncs": [],
+        "webhook_url": None,
+        "webhook_secret": None,
+        "email_address": None,
+    }
 
 
 def test_there_is_never_a_second_uploads_source(user):

@@ -188,3 +188,25 @@ test("a webhook trigger shows its URL and secret once, and the secret can be rot
   await secret.getByRole("button", { name: "I've copied it" }).click();
   await expect(row.getByTestId("webhook-url")).toContainText(`${WEBHOOK_URL}token-${made.id}-2`);
 });
+
+test("a webhook trigger can listen to webhook sources instead of having its own URL", async ({ page }) => {
+  const api = await fakeApi(page);
+  const workflow = api.addWorkflow("Orders");
+  const orders = api.addSource("Order feed", "webhook", { interval_seconds: null });
+  api.addSource("Price page", "url");
+  await page.goto(inOrg(`/workflows/${workflow.id}/schedule`));
+
+  await page.getByRole("button", { name: "Add event trigger" }).click();
+  const form = page.getByRole("form", { name: "New event trigger" });
+  await form.getByLabel("When").selectOption("webhook_received");
+  const webhookSources = form.getByRole("group", { name: "Webhook sources" });
+  await expect(webhookSources.getByRole("checkbox")).toHaveCount(1);
+  await webhookSources.getByLabel("Order feed").check();
+  await form.getByRole("button", { name: "Create trigger" }).click();
+
+  const [made] = api.schedules;
+  expect(made.filter).toEqual({ sources: [orders.id] });
+  expect(made.webhook_url).toBeNull();
+  await expect(page.getByRole("region", { name: "Webhook secret" })).toHaveCount(0);
+  await expect(page.getByTestId("event-trigger-row")).toContainText("from Order feed");
+});

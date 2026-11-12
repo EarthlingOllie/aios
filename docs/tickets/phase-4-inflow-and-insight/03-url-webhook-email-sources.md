@@ -12,15 +12,15 @@
 
 **Blocked by:** [02: Sync engine, file items, source health](02-sync-engine.md), [Phase 3 · 12: More events: table written, schema applied, chat message, debounce, webhooks](../phase-3-agents-and-automation/12-more-events.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] An unchanged page isn't re-ingested; a changed page replaces its document's content; a 404 or 410 removes the document while the source stays active.
-- [ ] Every case in the request-forgery suite is refused: private, loopback, link-local and metadata addresses, a redirect to a private address, a DNS answer that changes between check and connect, and a non-standard port; saving shows "This address isn't reachable from aios".
-- [ ] URL size, redirect and time limits are enforced from settings.
-- [ ] A webhook source's secret is shown once and can be rotated; bad signatures, replays and oversized bodies are rejected and nothing is stored.
-- [ ] A valid delivery Jev finds clean is stored, searchable and fires `webhook.received`; webhook items are never reconciled away.
-- [ ] With the fake classifier, a flagged delivery is stored as flagged, isn't searchable, fires nothing and answers 422; an unchecked one answers 503 and stores nothing. A flagged web page or email isn't searchable and fires nothing, and one awaiting check becomes searchable once a retry finds it clean.
-- [ ] An email source with no allowed senders accepts nothing; spoofed or unauthenticated mail is dropped and counted on the sync record.
-- [ ] Email replies thread together, attachments are ingested within the size cap, and rotating the address cuts off the old one.
-- [ ] Email is shown as unavailable when the deployment has no inbound mail domain.
-- [ ] An event trigger filtered to a source fires for that source's documents and not for uploads; uploads still fire `document.ingested` with the Uploads source.
+- [x] An unchanged page isn't re-ingested; a changed page replaces its document's content; a 404 or 410 removes the document while the source stays active.
+- [x] Every case in the request-forgery suite is refused: private, loopback, link-local and metadata addresses, a redirect to a private address, a DNS answer that changes between check and connect, and a non-standard port; saving shows "This address isn't reachable from aios".
+- [x] URL size, redirect and time limits are enforced from settings.
+- [x] A webhook source's secret is shown once and can be rotated; bad signatures, replays and oversized bodies are rejected and nothing is stored.
+- [x] A valid delivery Jev finds clean is stored, searchable and fires `webhook.received`; webhook items are never reconciled away.
+- [x] With the fake classifier, a flagged delivery is stored as flagged, isn't searchable, fires nothing and answers 422; an unchecked one answers 503 and stores nothing. A flagged web page or email isn't searchable and fires nothing, and one awaiting check becomes searchable once a retry finds it clean.
+- [x] An email source with no allowed senders accepts nothing; spoofed or unauthenticated mail is dropped and counted on the sync record.
+- [x] Email replies thread together, attachments are ingested within the size cap, and rotating the address cuts off the old one.
+- [x] Email is shown as unavailable when the deployment has no inbound mail domain.
+- [x] An event trigger filtered to a source fires for that source's documents and not for uploads; uploads still fire `document.ingested` with the Uploads source.

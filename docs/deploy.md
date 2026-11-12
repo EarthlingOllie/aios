@@ -119,3 +119,12 @@ Known limits:
   (with their own endpoints, and the proxy and runner reached across VPCs), whose DNS Firewall
   allows only the proxy's Cloud Map name and the ECR, S3 and CloudWatch Logs endpoint names.
 - The three interface endpoints cost about $45 a month across two AZs, plus data processing.
+
+## Inbound mail (email sources)
+
+Email sources need an inbound mail service, which the AWS stack doesn't provision. Where a
+deployment has one, set `INBOUND_MAIL_DOMAIN` to the domain it receives for, and have it post
+each message as JSON to `/api/inbound-mail` with `INBOUND_MAIL_SECRET` (kept as a secret, like
+`CONNECTOR_CREDENTIALS_KEY`) as its bearer token, reporting its SPF and DKIM results (see
+`aios.api.inbound_mail` for the shape). Without a domain, email sources are shown as
+unavailable.

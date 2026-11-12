@@ -43,7 +43,7 @@ a list any of whose values matches (`filter` on the API; an unknown field is a 4
 | Table written | `write_data` commits | `tables` (with or without `data.`), `operations` |
 | Schema change applied | an approved schema change is applied | `tables` |
 | Chat message | any message is posted in any chat | `chat_id` (required), `author_kinds`, `mentions` (`agent:3`), `keywords` |
-| Webhook received | its own endpoint accepts a call | none |
+| Webhook received | its own endpoint accepts a call, or a webhook source it listens to stores a clean delivery | `sources` (webhook sources; then it has no endpoint of its own) |
 
 - **Keywords** match whole words or phrases, ignoring case: `outage` doesn't match `outages`.
 - **Any chat.** A chat message trigger may listen to any chat of the organisation, and deliver
@@ -71,6 +71,11 @@ a list any of whose values matches (`filter` on the API; an unknown field is a 4
   template, rendered with `{{payload.body...}}`). Only the token's hash is kept, in the store
   and in the platform's `webhook_tokens` index; the secret is encrypted; both are on the store's
   deny list.
+- **Webhook sources.** A webhook that keeps its deliveries is a webhook source (see
+  [Stores](stores.md#sources)): the same endpoint and checks, each delivery stored as a
+  searchable message item. A trigger whose filter names webhook sources fires on their clean
+  deliveries (its run is given the source, delivery id, item and body) and has no endpoint of
+  its own.
 
 ## Delivering results to a chat
 
